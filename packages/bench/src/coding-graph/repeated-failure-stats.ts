@@ -1,5 +1,6 @@
 import path from "node:path";
 import { writeFileAtomically } from "@remnic/core/maintenance/atomic-file";
+import { compareCodePoints } from "../codepoint-order.js";
 import { resolveContainedPath } from "../filename-safety.js";
 import { createSeededRandom, type SeededRandom } from "../seeded-random.js";
 import type {
@@ -20,6 +21,10 @@ export interface AnalyzeRepeatedFailureOptions {
   level?: number;
   alpha?: number;
   timingMinimumRrr?: number;
+  timingMinimumAbsoluteBenefit?: number;
+  timingMinimumBenefitIntervalLower?: number;
+  contentMinimumRepeatedFailureBenefitIntervalLower?: number;
+  contentMinimumTaskPassBenefitIntervalLower?: number;
   timidityPassMargin?: number;
   timidityStepsMargin?: number;
 }
@@ -213,7 +218,11 @@ function prepareComparison(
 
   const groups: TaskArmMean[] = [];
   const cuts: RepeatedFailureTaskCut[] = [];
-  for (const [taskId, expected] of [...expectedByTask.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+  for (
+    const [taskId, expected] of [...expectedByTask.entries()].sort(
+      ([left], [right]) => compareCodePoints(left, right),
+    )
+  ) {
     const reasons = new Set<string>();
     const expectedCells = new Map<string, Partial<Record<RepeatedFailureArm, RepeatedFailureRowIdentity>>>();
     for (const identity of expected) {
@@ -269,7 +278,7 @@ function prepareComparison(
       cuts.push({
         hypothesis,
         taskId,
-        reasons: [...reasons].sort(),
+        reasons: [...reasons].sort(compareCodePoints),
       });
       continue;
     }
@@ -427,7 +436,9 @@ function analyzeComparison(
 export function holmAdjust(
   hypotheses: readonly { id: "TIMING" | "CONTENT"; p: number }[]
 ): RepeatedFailureHolmResult[] {
-  const sorted = [...hypotheses].sort((left, right) => left.p - right.p || left.id.localeCompare(right.id));
+  const sorted = [...hypotheses].sort(
+    (left, right) => left.p - right.p || compareCodePoints(left.id, right.id),
+  );
   let priorAdjusted = 0;
   const adjustedById = new Map<"TIMING" | "CONTENT", RepeatedFailureHolmResult>();
   sorted.forEach((hypothesis, index) => {
@@ -446,15 +457,17 @@ export function holmAdjust(
     return adjusted;
   });
 }
-
 export function decideRepeatedFailureTiming(
   timing: RepeatedFailureEffectAnalysis,
   adjustedP: number | undefined,
   minimumRrr: number,
-  alpha: number
+  minimumAbsoluteBenefit: number,
+  minimumBenefitIntervalLower: number,
+  alpha: number,
 ): RepeatedFailureSupportDecision {
   if (
     timing.taskCount === 0 ||
+    timing.repeatedFailureBenefit === null ||
     timing.relativeRiskReduction === null ||
     timing.relativeRiskReductionInterval === null ||
     timing.repeatedFailureBenefitInterval === null ||
@@ -463,8 +476,9 @@ export function decideRepeatedFailureTiming(
   ) {
     return "NOT_ESTIMABLE";
   }
-  return timing.relativeRiskReduction >= minimumRrr &&
-    timing.repeatedFailureBenefitInterval.lower > 0 &&
+  return timing.repeatedFailureBenefit >= minimumAbsoluteBenefit &&
+    timing.relativeRiskReduction >= minimumRrr &&
+    timing.repeatedFailureBenefitInterval.lower > minimumBenefitIntervalLower &&
     adjustedP < alpha
     ? "SUPPORTED"
     : "REJECTED";
@@ -474,7 +488,9 @@ export function decideRepeatedFailureContent(
   content: RepeatedFailureEffectAnalysis,
   compoundP: number | null,
   adjustedP: number | undefined,
-  alpha: number
+  minimumRepeatedFailureBenefitIntervalLower: number,
+  minimumTaskPassBenefitIntervalLower: number,
+  alpha: number,
 ): RepeatedFailureSupportDecision {
   if (
     content.taskCount === 0 ||
@@ -485,8 +501,8 @@ export function decideRepeatedFailureContent(
   ) {
     return "NOT_ESTIMABLE";
   }
-  return content.repeatedFailureBenefitInterval.lower > 0 &&
-    content.taskPassBenefitInterval.lower > 0 &&
+  return content.repeatedFailureBenefitInterval.lower > minimumRepeatedFailureBenefitIntervalLower &&
+    content.taskPassBenefitInterval.lower > minimumTaskPassBenefitIntervalLower &&
     adjustedP < alpha
     ? "SUPPORTED"
     : "REJECTED";
@@ -528,6 +544,12 @@ export function analyzeRepeatedFailureRows(
   const level = options.level ?? REPEATED_FAILURE_CONFIDENCE_LEVEL;
   const alpha = options.alpha ?? 0.05;
   const timingMinimumRrr = options.timingMinimumRrr ?? 0.3;
+  const timingMinimumAbsoluteBenefit = options.timingMinimumAbsoluteBenefit ?? 0.05;
+  const timingMinimumBenefitIntervalLower = options.timingMinimumBenefitIntervalLower ?? 0;
+  const contentMinimumRepeatedFailureBenefitIntervalLower =
+    options.contentMinimumRepeatedFailureBenefitIntervalLower ?? 0;
+  const contentMinimumTaskPassBenefitIntervalLower =
+    options.contentMinimumTaskPassBenefitIntervalLower ?? 0;
   const timidityPassMargin = options.timidityPassMargin ?? 0.02;
   const timidityStepsMargin = options.timidityStepsMargin ?? 2;
   if (!Number.isSafeInteger(draws) || draws <= 0) throw new Error("draws must be a positive safe integer");
@@ -634,21 +656,37 @@ export function analyzeRepeatedFailureRows(
       stepsInterval: bootstrap.stepsDifferenceInterval,
       passMargin: timidityPassMargin,
       stepsMargin: timidityStepsMargin,
-      equivalent: isRepeatedFailureTimidityEquivalent(
-        bootstrap.taskPassBenefitInterval,
-        bootstrap.stepsDifferenceInterval,
-        timidityPassMargin,
-        timidityStepsMargin
-      ),
+      equivalent: timidityPreparation.cuts.length > 0
+        ? null
+        : isRepeatedFailureTimidityEquivalent(
+          bootstrap.taskPassBenefitInterval,
+          bootstrap.stepsDifferenceInterval,
+          timidityPassMargin,
+          timidityStepsMargin,
+        ),
     };
   }
 
   const timingDecision = timingPreparation.cuts.length > 0
     ? "NOT_ESTIMABLE"
-    : decideRepeatedFailureTiming(timing, timingAdjustedP, timingMinimumRrr, alpha);
+    : decideRepeatedFailureTiming(
+      timing,
+      timingAdjustedP,
+      timingMinimumRrr,
+      timingMinimumAbsoluteBenefit,
+      timingMinimumBenefitIntervalLower,
+      alpha,
+    );
   const contentDecision = contentPreparation.cuts.length > 0
     ? "NOT_ESTIMABLE"
-    : decideRepeatedFailureContent(content, contentCompoundP, contentAdjustedP, alpha);
+    : decideRepeatedFailureContent(
+      content,
+      contentCompoundP,
+      contentAdjustedP,
+      contentMinimumRepeatedFailureBenefitIntervalLower,
+      contentMinimumTaskPassBenefitIntervalLower,
+      alpha,
+    );
   return {
     schemaVersion: 1,
     seed: options.seed,
@@ -656,7 +694,8 @@ export function analyzeRepeatedFailureRows(
     level,
     alpha,
     cuts: [...timingPreparation.cuts, ...contentPreparation.cuts, ...timidityPreparation.cuts].sort(
-      (left, right) => left.hypothesis.localeCompare(right.hypothesis) || left.taskId.localeCompare(right.taskId)
+      (left, right) => compareCodePoints(left.hypothesis, right.hypothesis)
+        || compareCodePoints(left.taskId, right.taskId),
     ),
     timing,
     content,

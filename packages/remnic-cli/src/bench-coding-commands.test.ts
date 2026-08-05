@@ -9,6 +9,7 @@ import {
   parseBenchCodingArgs,
   runBenchCodingCommand,
 } from "./bench-coding-commands.js";
+import { resolveHomeDir } from "./path-utils.js";
 
 async function writeH6RunMetadata(directory: string): Promise<void> {
   await writeFile(
@@ -17,16 +18,21 @@ async function writeH6RunMetadata(directory: string): Promise<void> {
       schemaVersion: 1,
       suiteVersion: "h6-failure-gate-v1-test",
       runId: "h6-test-run",
+      datasetInventoryHash: "f4ddf669759abe0afad42e84be57764817a40efb797c89b77409f97f7adf268c",
+      decisionRuleHash: "a".repeat(64),
+      preregistrationPath: "docs/research/failure-gate/preregistration.md",
+      preregistrationHash: "723f38f33af98836956588bfe0664595a260edb431f861f7fa7cff3ead419602",
     }),
     "utf8",
   );
 }
 
-test("bench coding help documents the four H6 command forms and frozen task count", () => {
+test("bench coding help documents the five H6 command forms and frozen task count", () => {
   assert.match(BENCH_CODING_USAGE, /repo-gen \[--count 30\]/);
   assert.match(BENCH_CODING_USAGE, /repo-gen verify-all \[DIR\]/);
   assert.match(BENCH_CODING_USAGE, /repeated-failure --seeds N/);
   assert.match(BENCH_CODING_USAGE, /repeated-failure stats --run DIR/);
+  assert.match(BENCH_CODING_USAGE, /repeated-failure report --run DIR/);
   assert.match(BENCH_CODING_USAGE, /exactly 30/);
 });
 
@@ -71,6 +77,33 @@ test("repo-gen verify-all rejects ambiguous arguments and unknown flags", () => 
     () => parseBenchCodingArgs(["repo-gen", "verify-all", "--json"]),
     /unknown option --json/,
   );
+});
+
+test("repeated-failure defaults outside the checkout and preserves explicit output paths", () => {
+  const requiredArgs = [
+    "repeated-failure",
+    "--seeds",
+    "5",
+    "--profile",
+    "./profiles/model-a.json",
+    "--profile",
+    "./profiles/model-b.json",
+  ];
+  const defaultCommand = parseBenchCodingArgs(requiredArgs);
+  const explicitCommand = parseBenchCodingArgs([...requiredArgs, "--out", "./run"]);
+
+  assert.equal(defaultCommand.kind, "repeated-run");
+  assert.equal(
+    defaultCommand.outputDir,
+    path.join(resolveHomeDir(), ".remnic", "bench", "results", "h6-repeated-failure"),
+  );
+  const relativeToCheckout = path.relative(process.cwd(), defaultCommand.outputDir);
+  assert.ok(
+    relativeToCheckout === ".." || relativeToCheckout.startsWith(`..${path.sep}`),
+    `default output must be outside the checkout, got ${defaultCommand.outputDir}`,
+  );
+  assert.equal(explicitCommand.kind, "repeated-run");
+  assert.equal(explicitCommand.outputDir, "./run");
 });
 
 test("repeated-failure parser requires immutable profiles and exact registered draws and seeds", () => {
@@ -192,7 +225,7 @@ test("repeated-failure parser requires immutable profiles and exact registered d
       phase: "main",
       seedCount: 5,
       profilePaths: ["./p1.json", "./p2.json"],
-      outputDir: "./h6-repeated-failure",
+      outputDir: path.join(resolveHomeDir(), ".remnic", "bench", "results", "h6-repeated-failure"),
       pilotRunDir: "./pilot-dir",
     },
   );
@@ -238,6 +271,22 @@ test("repeated-failure parser requires immutable profiles and exact registered d
     /--max-steps must be an integer between 12 and 12/,
   );
 
+  assert.throws(
+    () =>
+      parseBenchCodingArgs([
+        "repeated-failure",
+        "--seeds",
+        "5",
+        "--profile",
+        "./p1.json",
+        "--profile",
+        "./p2.json",
+        "--preregistration",
+        "./replacement.md",
+      ]),
+    /unknown option --preregistration/,
+  );
+
 });
 
 test("repeated-failure stats accepts only --run for offline replay", () => {
@@ -256,6 +305,55 @@ test("repeated-failure stats accepts only --run for offline replay", () => {
     () => parseBenchCodingArgs(["repeated-failure", "stats", "--run", "./run", "--draws", "1000"]),
     /unknown option --draws/,
   );
+});
+
+test("repeated-failure report accepts only --run and dispatches without a model", async () => {
+  assert.deepEqual(
+    parseBenchCodingArgs(["repeated-failure", "report", "--run", "./run"]),
+    {
+      kind: "repeated-report",
+      runDir: "./run",
+    },
+  );
+  assert.throws(
+    () => parseBenchCodingArgs(["repeated-failure", "report", "--run", "./run", "--profile", "./profile.json"]),
+    /unknown option --profile/,
+  );
+
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-h6-report-"));
+  await writeH6RunMetadata(root);
+  let liveRunnerCalls = 0;
+  try {
+    const result = await runBenchCodingCommand(
+      ["repeated-failure", "report", "--run", root],
+      {
+        loadBenchModule: async () => ({
+          runRepeatedFailurePaperReportCliCommand: async (options: unknown) => {
+            assert.deepEqual(options, { runDir: root });
+            return {
+              exitCode: 0,
+              output: JSON.stringify({
+                reportPath: "paper/report.md",
+                manifestPath: "paper/report-manifest.json",
+              }),
+            };
+          },
+          runRepeatedFailureCliCommand: async () => {
+            liveRunnerCalls += 1;
+            throw new Error("report must not create a driver");
+          },
+        }),
+      },
+    );
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.output, JSON.stringify({
+      reportPath: "paper/report.md",
+      manifestPath: "paper/report-manifest.json",
+    }));
+    assert.equal(liveRunnerCalls, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("help and invalid input never load the optional bench package", async () => {
@@ -397,6 +495,52 @@ test("explicit memory-dir environment roots protect resume targets", async () =>
     assert.equal(result.exitCode, 1);
     assert.match(result.output, /^refusing benchmark output inside a Remnic memory store/);
     assert.equal(loads, 0);
+  } finally {
+    if (previous === undefined) Reflect.deleteProperty(process.env, "REMNIC_MEMORY_DIR");
+    else process.env.REMNIC_MEMORY_DIR = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("stats rejects configured and recognizable memory roots before writing", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-h6-stats-memory-"));
+  const configuredRoot = path.join(root, "configured");
+  const recognizableRoot = path.join(root, "recognizable");
+  const configuredRun = path.join(configuredRoot, "run");
+  const recognizableRun = path.join(recognizableRoot, "run");
+  await mkdir(configuredRun, { recursive: true });
+  await mkdir(path.join(recognizableRoot, "facts"), { recursive: true });
+  await mkdir(recognizableRun, { recursive: true });
+  await writeFile(path.join(recognizableRoot, "profile.md"), "# Profile\n", "utf8");
+  await writeH6RunMetadata(configuredRun);
+  await writeH6RunMetadata(recognizableRun);
+
+  const previous = process.env.REMNIC_MEMORY_DIR;
+  process.env.REMNIC_MEMORY_DIR = configuredRoot;
+  let writes = 0;
+  const loadBenchModule = async () => ({
+    replayRepeatedFailureStatistics: async ({ runDir }: { runDir: string }) => {
+      writes += 1;
+      await writeFile(path.join(runDir, "statistics.json"), "{}", "utf8");
+      return { exitCode: 0, output: "wrote statistics" };
+    },
+  });
+
+  try {
+    for (const runDir of [configuredRun, recognizableRun]) {
+      const result = await runBenchCodingCommand(
+        ["repeated-failure", "stats", "--run", runDir],
+        { loadBenchModule },
+      );
+      assert.equal(result.exitCode, 1);
+      assert.match(result.output, /^refusing benchmark output inside a Remnic memory store/);
+      assert.doesNotMatch(result.output, new RegExp(runDir));
+      await assert.rejects(
+        readFile(path.join(runDir, "statistics.json"), "utf8"),
+        /ENOENT/,
+      );
+    }
+    assert.equal(writes, 0);
   } finally {
     if (previous === undefined) Reflect.deleteProperty(process.env, "REMNIC_MEMORY_DIR");
     else process.env.REMNIC_MEMORY_DIR = previous;

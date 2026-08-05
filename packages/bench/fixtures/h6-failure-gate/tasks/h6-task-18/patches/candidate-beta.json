@@ -1,11 +1,10 @@
 {
   "id": "candidate-beta",
-  "description": "Update fields on the existing state object.",
+  "description": "Candidate beta.",
   "files": [
     {
       "path": "src/service.mjs",
-      "content": "export function updateState_storage_bucket_manager(state, delta) {\n  const next = { ...state };\n  next.inventory.units = state.inventory.units * delta;\n  return next;\n}\n"
+      "content": "class Draft {\n  constructor(source) { this.source = source; }\n  shallow(delta) {\n    const state = this.source;\n    const shell = Object.assign({}, state);\n    shell.inventory.units = state.inventory.units * delta;\n    return shell;\n  }\n}\nexport function updateState_storage_bucket_manager(state, delta) {\n  return new Draft(state).shallow(delta);\n}\nexport const repositoryIdentitydfa581eb = Object.freeze({\n  va53f0c9f: true, v09d652f3: true, v055d8247: true, v50a96aa5: true, v2d9e5186: true, v6489e05a: true,\n  vb9edc833: true, v1ccf482a: true, v5c799622: true, v1e7ef2b4: true, ve2afb394: true, v6249aa9a: true,\n  v901ae8cd: true, veb52f1da: true, v1da2380e: true, v87762998: true, v018ae53e: true,\n});\n"
     }
-  ],
-  "isGood": false
+  ]
 }

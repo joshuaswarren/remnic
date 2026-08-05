@@ -2,10 +2,19 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { writeFileAtomically } from "@remnic/core/maintenance/atomic-file";
+import { z } from "zod";
+import { sanitizeFilenameSegment } from "../filename-safety.js";
+import { compareCodePoints } from "../codepoint-order.js";
+import {
+  H6_FROZEN_SPLITS,
+  validateH6Dataset,
+  type H6BenchmarkDataset,
+} from "./repo-gen/index.js";
 import type {
   RepeatedFailureEpisodeDriver,
   RepeatedFailureFinalState,
   RepeatedFailureInvalidReason,
+  RepeatedFailureEpisodeRow,
   RepeatedFailureRowIdentity,
   RepeatedFailureTokenUsage,
 } from "./repeated-failure-types.js";
@@ -14,6 +23,11 @@ import {
   RepeatedFailureRowStore,
   buildRepeatedFailureRowKey,
 } from "./repeated-failure-store.js";
+import {
+  assertNoSymlinkComponents,
+  containedPath,
+  containedRegularFile,
+} from "./repeated-failure-suite-shared.js";
 import {
   loadFixtureBundle,
   computeAnalysisHarnessHash,
@@ -27,10 +41,52 @@ const DEFAULT_CAPS: ControlledResponsesCaps = Object.freeze({
   maxTurns: 12,
   maxToolCalls: 8,
   maxTotalTokens: 16_384,
-  maxDurationMs: 120_000,
-  requestTimeoutMs: 60_000,
+  maxDurationMs: 600_000,
+  requestTimeoutMs: 180_000,
 });
 const DEFAULT_TOOL_OUTPUT_CHARS = 16_384;
+const ResumeTraceIdentitySchema = z.object({
+  suiteVersion: z.string().min(1),
+  taskId: z.string().min(1),
+  variantId: z.string().min(1),
+  modelProfileId: z.string().min(1),
+  modelProfileHash: z.string().min(1),
+  seed: z.number().int(),
+  arm: z.string().min(1),
+}).strict();
+const ResumeTraceTokensSchema = z.object({
+  input: z.number().int().nonnegative(),
+  output: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
+  cachedInput: z.number().int().nonnegative(),
+  cacheWriteInput: z.number().int().nonnegative(),
+  reasoningOutput: z.number().int().nonnegative(),
+}).strict();
+const ResumeTraceSchema = z.union([
+  z.object({
+    schemaVersion: z.literal(1),
+    identity: ResumeTraceIdentitySchema,
+    preflightInvalidReason: z.string().min(1),
+  }).passthrough(),
+  z.object({
+    schemaVersion: z.literal(1),
+    identity: ResumeTraceIdentitySchema,
+    hostFault: z.object({ code: z.string().min(1) }).passthrough(),
+    usage: ResumeTraceTokensSchema,
+    finalRepoEvidence: z.object({
+      checkResult: z.enum(["TRAPPED", "FIXED", "UNFIXED", "NO_TRAP", "INDETERMINATE"]),
+    }).passthrough(),
+  }).passthrough(),
+  z.object({
+    schemaVersion: z.literal(1),
+    identity: ResumeTraceIdentitySchema,
+    result: z.object({ usage: ResumeTraceTokensSchema }).passthrough(),
+    finalRepoEvidence: z.object({
+      checkResult: z.enum(["TRAPPED", "FIXED", "UNFIXED", "NO_TRAP", "INDETERMINATE"]),
+    }).passthrough(),
+    armAudit: z.object({ badStrategyExecuted: z.boolean() }).passthrough(),
+  }).passthrough(),
+]);
 
 export interface RepeatedFailureTrapAuditRow {
   taskId: string;
@@ -42,6 +98,13 @@ export interface RepeatedFailureTrapAuditRow {
   tryCount: number;
   durationMs: number;
   tokens: RepeatedFailureTokenUsage;
+}
+
+export interface RepeatedFailureTrapAuditThresholds {
+  minimumTrappedRate: number;
+  minimumNonFixedRate: number;
+  maximumInvalidRows: 0;
+  requireCompleteRows: true;
 }
 
 export interface RepeatedFailureTrapAuditMetrics {
@@ -61,12 +124,32 @@ export interface RepeatedFailureTrapAuditArtifact {
   schemaVersion: 1;
   modelProfileId: string;
   modelProfileHash: string;
+  modelDigest: string;
   datasetInventoryHash: string;
   harnessSourceHash: string;
+  decisionRuleHash: string;
+  thresholds: RepeatedFailureTrapAuditThresholds;
   passed: boolean;
   metrics: RepeatedFailureTrapAuditMetrics;
   rows: readonly RepeatedFailureTrapAuditRow[];
   artifactHash: string;
+}
+
+export interface RepeatedFailureTrapAuditRowIdentity {
+  taskId: string;
+  variantId: string;
+  rowKey: string;
+}
+
+export interface RepeatedFailureTrapAuditExpected {
+  modelProfileId: string;
+  modelProfileHash: string;
+  modelDigest: string;
+  datasetInventoryHash: string;
+  harnessSourceHash: string;
+  decisionRuleHash: string;
+  thresholds: RepeatedFailureTrapAuditThresholds;
+  rowIdentities: readonly RepeatedFailureTrapAuditRowIdentity[];
 }
 
 function canonicalize(value: unknown): unknown {
@@ -75,7 +158,7 @@ function canonicalize(value: unknown): unknown {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>)
         .filter(([, entry]) => entry !== undefined)
-        .sort(([left], [right]) => left.localeCompare(right))
+        .sort(([left], [right]) => compareCodePoints(left, right))
         .map(([key, entry]) => [key, canonicalize(entry)]),
     );
   }
@@ -86,9 +169,21 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(canonicalize(value)) ?? "undefined";
 }
 
+export async function assertTrapDatasetPreflight(
+  dataset: H6BenchmarkDataset,
+): Promise<void> {
+  const report = await validateH6Dataset(dataset);
+  if (report.valid) return;
+  const codes = [...new Set(report.issues.map((issue) => issue.code))]
+    .sort(compareCodePoints)
+    .join(", ");
+  throw new Error(`H6 trap dataset preflight failed: ${codes}`);
+}
+
 export function computeTrapAuditMetrics(
   rows: readonly RepeatedFailureTrapAuditRow[],
   totalTasks: number,
+  thresholds: RepeatedFailureTrapAuditThresholds,
 ): RepeatedFailureTrapAuditMetrics {
   const completedRows = rows.length;
   let trappedCount = 0;
@@ -120,11 +215,13 @@ export function computeTrapAuditMetrics(
   const nonFixedRate = totalTasks > 0 ? nonFixedCount / totalTasks : 0;
 
   const passed =
-    completedRows === totalTasks &&
-    missingCount === 0 &&
-    invalidCount === 0 &&
-    trappedRate >= 0.50 &&
-    nonFixedRate >= 0.80;
+    (!thresholds.requireCompleteRows || (
+      completedRows === totalTasks &&
+      missingCount === 0
+    )) &&
+    invalidCount <= thresholds.maximumInvalidRows &&
+    trappedRate >= thresholds.minimumTrappedRate &&
+    nonFixedRate >= thresholds.minimumNonFixedRate;
 
   return {
     totalTasks,
@@ -147,23 +244,227 @@ export function computeTrapAuditArtifactHash(
   return createHash("sha256").update(canonicalJson(artifactPayload)).digest("hex");
 }
 
+function isNonnegativeSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isTrapAuditRow(value: unknown): value is RepeatedFailureTrapAuditRow {
+  if (!value || typeof value !== "object") return false;
+  const row = value as Partial<RepeatedFailureTrapAuditRow>;
+  const tokens = row.tokens as Partial<RepeatedFailureTokenUsage> | undefined;
+  if (
+    typeof row.taskId !== "string" ||
+    row.taskId.length === 0 ||
+    typeof row.variantId !== "string" ||
+    row.variantId.length === 0 ||
+    typeof row.rowKey !== "string" ||
+    row.rowKey.length === 0 ||
+    !isNonnegativeSafeInteger(row.tryCount) ||
+    row.tryCount < 1 ||
+    row.tryCount > 6 ||
+    typeof row.durationMs !== "number" ||
+    !Number.isFinite(row.durationMs) ||
+    row.durationMs < 0 ||
+    !tokens ||
+    !isNonnegativeSafeInteger(tokens.input) ||
+    !isNonnegativeSafeInteger(tokens.output) ||
+    !isNonnegativeSafeInteger(tokens.total) ||
+    tokens.total !== tokens.input + tokens.output ||
+    !isNonnegativeSafeInteger(tokens.cachedInput) ||
+    !isNonnegativeSafeInteger(tokens.cacheWriteInput) ||
+    !isNonnegativeSafeInteger(tokens.reasoningOutput)
+  ) {
+    return false;
+  }
+  if (row.status === "VALID") {
+    return row.finalState === "TRAPPED" ||
+      row.finalState === "FIXED" ||
+      row.finalState === "UNFIXED" ||
+      row.finalState === "NO_TRAP";
+  }
+  return row.status === "INVALID" &&
+    row.finalState === "INVALID" &&
+    typeof row.invalidReason === "string";
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+}
+
+function hasExactKeys(value: object, expectedKeys: readonly string[]): boolean {
+  const actualKeys = Object.keys(value).sort(compareCodePoints);
+  const sortedExpectedKeys = [...expectedKeys].sort(compareCodePoints);
+  return actualKeys.length === sortedExpectedKeys.length &&
+    actualKeys.every((key, index) => key === sortedExpectedKeys[index]);
+}
+
+function isTrapAuditThresholds(value: unknown): value is RepeatedFailureTrapAuditThresholds {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  if (!hasExactKeys(value, [
+    "maximumInvalidRows",
+    "minimumNonFixedRate",
+    "minimumTrappedRate",
+    "requireCompleteRows",
+  ])) return false;
+  const thresholds = value as Partial<RepeatedFailureTrapAuditThresholds>;
+  return typeof thresholds.minimumTrappedRate === "number" &&
+    Number.isFinite(thresholds.minimumTrappedRate) &&
+    thresholds.minimumTrappedRate >= 0 &&
+    thresholds.minimumTrappedRate <= 1 &&
+    typeof thresholds.minimumNonFixedRate === "number" &&
+    Number.isFinite(thresholds.minimumNonFixedRate) &&
+    thresholds.minimumNonFixedRate >= 0 &&
+    thresholds.minimumNonFixedRate <= 1 &&
+    thresholds.maximumInvalidRows === 0 &&
+    thresholds.requireCompleteRows === true;
+}
+
+async function resumedTraceMatches(
+  outputRoot: string,
+  identity: RepeatedFailureRowIdentity,
+  rowKey: string,
+  row: RepeatedFailureEpisodeRow,
+): Promise<boolean> {
+  if (!row.evidence) return false;
+  const expectedTracePath = `traces/${rowKey}/attempt-${row.tryCount}.json`;
+  if (row.evidence.traceArtifactPath !== expectedTracePath) return false;
+  try {
+    const tracePath = await containedRegularFile(outputRoot, expectedTracePath);
+    const traceBytes = await readFile(tracePath);
+    if (createHash("sha256").update(traceBytes).digest("hex") !== row.evidence.traceArtifactHash) {
+      return false;
+    }
+    const parsed = ResumeTraceSchema.safeParse(JSON.parse(traceBytes.toString("utf8")));
+    if (!parsed.success || canonicalJson(parsed.data.identity) !== canonicalJson(identity)) {
+      return false;
+    }
+    const trace = parsed.data;
+    if ("preflightInvalidReason" in trace) {
+      return row.status === "INVALID" &&
+        row.finalState === "INVALID" &&
+        row.invalidReason === trace.preflightInvalidReason;
+    }
+    const traceCheckResult = trace.finalRepoEvidence.checkResult === "FIXED" ||
+      trace.finalRepoEvidence.checkResult === "NO_TRAP"
+      ? "PASS"
+      : trace.finalRepoEvidence.checkResult === "INDETERMINATE"
+        ? "INDETERMINATE"
+        : "FAIL";
+    if ("hostFault" in trace) {
+      return row.status === "INVALID" &&
+        row.finalState === "INVALID" &&
+        row.invalidReason === "HOST_RETRIES_EXHAUSTED" &&
+        canonicalJson(trace.usage) === canonicalJson(row.tokens) &&
+        traceCheckResult === row.evidence.checkResult;
+    }
+    const finalStateMatches = row.status === "VALID"
+      ? row.finalState === trace.finalRepoEvidence.checkResult
+      : row.finalState === "INVALID";
+    return finalStateMatches &&
+      canonicalJson(trace.result.usage) === canonicalJson(row.tokens) &&
+      traceCheckResult === row.evidence.checkResult &&
+      row.evidence.repeatedFailure === (
+        trace.finalRepoEvidence.checkResult === "TRAPPED" && trace.armAudit.badStrategyExecuted
+      );
+  } catch {
+    return false;
+  }
+}
+
+function rowIdentityKey(identity: RepeatedFailureTrapAuditRowIdentity): string {
+  return canonicalJson({
+    rowKey: identity.rowKey,
+    taskId: identity.taskId,
+    variantId: identity.variantId,
+  });
+}
+
+function validatedExpectedRowIdentityKeys(
+  identities: readonly RepeatedFailureTrapAuditRowIdentity[],
+): string[] | undefined {
+  if (identities.length === 0) return undefined;
+  const keys = identities.map((identity) => {
+    if (
+      !identity ||
+      typeof identity !== "object" ||
+      typeof identity.taskId !== "string" ||
+      identity.taskId.length === 0 ||
+      typeof identity.variantId !== "string" ||
+      identity.variantId.length === 0 ||
+      typeof identity.rowKey !== "string" ||
+      identity.rowKey.length === 0
+    ) return undefined;
+    return rowIdentityKey(identity);
+  });
+  if (keys.some((key) => key === undefined)) return undefined;
+  const definedKeys = keys as string[];
+  if (new Set(definedKeys).size !== definedKeys.length) return undefined;
+  return definedKeys.sort(compareCodePoints);
+}
+
 export function verifyTrapAuditArtifact(
   artifact: unknown,
-  expected?: {
-    modelProfileId?: string;
-    modelProfileHash?: string;
-    datasetInventoryHash?: string;
-    harnessSourceHash?: string;
-  },
+  expected: RepeatedFailureTrapAuditExpected,
 ): { valid: boolean; error?: string } {
-  if (!artifact || typeof artifact !== "object") {
+  if (!expected) {
+    return { valid: false, error: "expected decision rule is required for trap-audit verification" };
+  }
+  if (
+    typeof expected.modelProfileId !== "string" ||
+    expected.modelProfileId.length === 0 ||
+    !isSha256(expected.modelProfileHash) ||
+    !isSha256(expected.modelDigest) ||
+    !isSha256(expected.datasetInventoryHash) ||
+    !isSha256(expected.harnessSourceHash) ||
+    !isSha256(expected.decisionRuleHash) ||
+    !isTrapAuditThresholds(expected.thresholds) ||
+    !Array.isArray(expected.rowIdentities)
+  ) {
+    return { valid: false, error: "expected trap-audit identity or decision rule is invalid" };
+  }
+  const expectedRowIdentityKeys = validatedExpectedRowIdentityKeys(expected.rowIdentities);
+  if (!expectedRowIdentityKeys) {
+    return { valid: false, error: "expected trap-audit row identities are invalid" };
+  }
+  if (!artifact || typeof artifact !== "object" || Array.isArray(artifact)) {
     return { valid: false, error: "audit artifact is not an object" };
   }
+  if (!hasExactKeys(artifact, [
+    "artifactHash",
+    "datasetInventoryHash",
+    "decisionRuleHash",
+    "harnessSourceHash",
+    "metrics",
+    "modelProfileHash",
+    "modelDigest",
+    "modelProfileId",
+    "passed",
+    "rows",
+    "schemaVersion",
+    "thresholds",
+  ])) {
+    return { valid: false, error: "audit artifact fields do not match schemaVersion 1" };
+  }
+
   const art = artifact as RepeatedFailureTrapAuditArtifact;
   if (art.schemaVersion !== 1) {
     return { valid: false, error: "invalid schemaVersion (expected 1)" };
   }
-  if (typeof art.artifactHash !== "string" || !/^[a-f0-9]{64}$/.test(art.artifactHash)) {
+  if (
+    typeof art.modelProfileId !== "string" ||
+    art.modelProfileId.length === 0 ||
+    !isSha256(art.modelProfileHash) ||
+    !isSha256(art.modelDigest) ||
+    !isSha256(art.datasetInventoryHash) ||
+    !isSha256(art.harnessSourceHash) ||
+    !isSha256(art.decisionRuleHash)
+  ) {
+    return { valid: false, error: "audit identity contains a missing or invalid hash" };
+  }
+  if (!isTrapAuditThresholds(art.thresholds)) {
+    return { valid: false, error: "audit trap-audit thresholds are invalid" };
+  }
+  if (!isSha256(art.artifactHash)) {
     return { valid: false, error: "missing or invalid artifactHash" };
   }
 
@@ -172,49 +473,100 @@ export function verifyTrapAuditArtifact(
   if (computedHash !== artifactHash) {
     return { valid: false, error: "artifactHash mismatch (tampered audit artifact)" };
   }
-
-  if (expected) {
-    if (expected.modelProfileId && art.modelProfileId !== expected.modelProfileId) {
-      return {
-        valid: false,
-        error: `modelProfileId mismatch: expected ${expected.modelProfileId}, got ${art.modelProfileId}`,
-      };
-    }
-    if (expected.modelProfileHash && art.modelProfileHash !== expected.modelProfileHash) {
-      return {
-        valid: false,
-        error: `modelProfileHash mismatch: expected ${expected.modelProfileHash}, got ${art.modelProfileHash}`,
-      };
-    }
-    if (expected.datasetInventoryHash && art.datasetInventoryHash !== expected.datasetInventoryHash) {
-      return {
-        valid: false,
-        error: `datasetInventoryHash mismatch: expected ${expected.datasetInventoryHash}, got ${art.datasetInventoryHash}`,
-      };
-    }
-    if (expected.harnessSourceHash && art.harnessSourceHash !== expected.harnessSourceHash) {
-      return {
-        valid: false,
-        error: `harnessSourceHash mismatch: expected ${expected.harnessSourceHash}, got ${art.harnessSourceHash}`,
-      };
-    }
-  }
-
-  if (!art.passed) {
+  if (art.modelProfileId !== expected.modelProfileId) {
     return {
       valid: false,
-      error: `audit did not pass (trappedRate=${art.metrics.trappedRate.toFixed(2)}, nonFixedRate=${art.metrics.nonFixedRate.toFixed(2)}, invalidCount=${art.metrics.invalidCount}, missingCount=${art.metrics.missingCount})`,
+      error: `modelProfileId mismatch: expected ${expected.modelProfileId}, got ${art.modelProfileId}`,
+    };
+  }
+  if (art.modelProfileHash !== expected.modelProfileHash) {
+    return {
+      valid: false,
+      error: `modelProfileHash mismatch: expected ${expected.modelProfileHash}, got ${art.modelProfileHash}`,
+    };
+  }
+  if (art.modelDigest !== expected.modelDigest) {
+    return {
+      valid: false,
+      error: `modelDigest mismatch: expected ${expected.modelDigest}, got ${art.modelDigest}`,
+    };
+  }
+  if (art.datasetInventoryHash !== expected.datasetInventoryHash) {
+    return {
+      valid: false,
+      error: `datasetInventoryHash mismatch: expected ${expected.datasetInventoryHash}, got ${art.datasetInventoryHash}`,
+    };
+  }
+  if (art.harnessSourceHash !== expected.harnessSourceHash) {
+    return {
+      valid: false,
+      error: `harnessSourceHash mismatch: expected ${expected.harnessSourceHash}, got ${art.harnessSourceHash}`,
+    };
+  }
+  if (art.decisionRuleHash !== expected.decisionRuleHash) {
+    return {
+      valid: false,
+      error: `decisionRuleHash mismatch: expected ${expected.decisionRuleHash}, got ${art.decisionRuleHash}`,
+    };
+  }
+  if (canonicalJson(art.thresholds) !== canonicalJson(expected.thresholds)) {
+    return { valid: false, error: "trap-audit thresholds do not match the frozen decision rule" };
+  }
+  if (
+    typeof art.passed !== "boolean" ||
+    !art.metrics ||
+    typeof art.metrics !== "object" ||
+    Array.isArray(art.metrics) ||
+    !hasExactKeys(art.metrics, [
+      "completedRows",
+      "fixedCount",
+      "invalidCount",
+      "missingCount",
+      "nonFixedCount",
+      "nonFixedRate",
+      "passed",
+      "totalTasks",
+      "trappedCount",
+      "trappedRate",
+      "unfixedCount",
+    ]) ||
+    !isNonnegativeSafeInteger(art.metrics.totalTasks) ||
+    !Array.isArray(art.rows) ||
+    !art.rows.every(isTrapAuditRow)
+  ) {
+    return { valid: false, error: "audit rows or metrics are invalid" };
+  }
+  const actualRowIdentityKeys = art.rows
+    .map(rowIdentityKey)
+    .sort(compareCodePoints);
+  if (canonicalJson(actualRowIdentityKeys) !== canonicalJson(expectedRowIdentityKeys)) {
+    return { valid: false, error: "audit row identities do not match the frozen dataset" };
+  }
+
+  const totalTasks = expectedRowIdentityKeys.length;
+  if (art.metrics.totalTasks !== totalTasks) {
+    return {
+      valid: false,
+      error: `totalTasks mismatch: expected ${totalTasks}, got ${art.metrics.totalTasks}`,
     };
   }
 
-  const recomputed = computeTrapAuditMetrics(art.rows, art.metrics.totalTasks);
+  const recomputed = computeTrapAuditMetrics(
+    art.rows,
+    totalTasks,
+    expected.thresholds,
+  );
   if (
-    recomputed.trappedRate !== art.metrics.trappedRate ||
-    recomputed.nonFixedRate !== art.metrics.nonFixedRate ||
-    recomputed.invalidCount !== art.metrics.invalidCount ||
-    recomputed.missingCount !== art.metrics.missingCount
+    canonicalJson(recomputed) !== canonicalJson(art.metrics) ||
+    art.passed !== recomputed.passed
   ) {
-    return { valid: false, error: "audit metrics recomputation mismatch" };
+    return { valid: false, error: "audit metrics or pass verdict recomputation mismatch" };
+  }
+  if (!recomputed.passed) {
+    return {
+      valid: false,
+      error: `audit did not pass (trappedRate=${recomputed.trappedRate.toFixed(2)}, nonFixedRate=${recomputed.nonFixedRate.toFixed(2)}, invalidCount=${recomputed.invalidCount}, missingCount=${recomputed.missingCount})`,
+    };
   }
 
   return { valid: true };
@@ -225,7 +577,7 @@ export interface RunTrapAuditOptions {
   outputDir: string;
   fixtureDir?: string;
   seed?: number;
-  maxHostRetries?: 0 | 1 | 2;
+  maxHostRetries?: 0 | 1 | 2 | 3 | 4 | 5;
   caps?: Partial<ControlledResponsesCaps>;
   maxToolOutputChars?: number;
 }
@@ -233,12 +585,15 @@ export interface RunTrapAuditOptions {
 export async function runTrapAudit(
   options: RunTrapAuditOptions,
 ): Promise<RepeatedFailureTrapAuditArtifact> {
+  const outputRoot = path.resolve(options.outputDir);
+  await assertNoSymlinkComponents(path.parse(outputRoot).root, outputRoot);
   const bundle = await loadFixtureBundle(options.fixtureDir);
+  await assertTrapDatasetPreflight(bundle.dataset);
   const harnessSourceHash = await computeAnalysisHarnessHash();
+  await options.driver.preflight?.();
+  await mkdir(outputRoot, { recursive: true });
   const seed = options.seed ?? 1;
-
-  const store = new RepeatedFailureRowStore(options.outputDir);
-
+  const store = new RepeatedFailureRowStore(outputRoot);
   const auditRows: RepeatedFailureTrapAuditRow[] = [];
 
   for (const task of bundle.dataset.tasks) {
@@ -246,7 +601,7 @@ export async function runTrapAudit(
     if (!variant) continue;
 
     const identity: RepeatedFailureRowIdentity = {
-      suiteVersion: `h6-failure-gate-v1-${bundle.dataset.inventoryHash}`,
+      suiteVersion: `h6-failure-gate-v1-${bundle.dataset.inventoryHash}-${harnessSourceHash}`,
       taskId: task.id,
       variantId: variant.variantId,
       modelProfileId: options.driver.modelProfileId,
@@ -257,7 +612,11 @@ export async function runTrapAudit(
 
     const rowKey = buildRepeatedFailureRowKey(identity);
 
-    const episodeRow = await runEpisodeForAudit({
+    const resumedRow = await store.loadTerminalForResume(identity);
+    if (resumedRow && !(await resumedTraceMatches(outputRoot, identity, rowKey, resumedRow))) {
+      throw new Error(`trap-audit checkpoint ${rowKey} has invalid trace evidence`);
+    }
+    const episodeRow = resumedRow ?? await runEpisodeForAudit({
       identity,
       rowKey,
       task,
@@ -281,14 +640,21 @@ export async function runTrapAudit(
     });
   }
 
-  const metrics = computeTrapAuditMetrics(auditRows, bundle.dataset.tasks.length);
+  const metrics = computeTrapAuditMetrics(
+    auditRows,
+    bundle.dataset.tasks.length,
+    bundle.decisionRule.trapAudit,
+  );
 
   const payload: Omit<RepeatedFailureTrapAuditArtifact, "artifactHash"> = {
     schemaVersion: 1,
     modelProfileId: options.driver.modelProfileId,
     modelProfileHash: options.driver.modelProfileHash,
+    modelDigest: options.driver.modelDigest,
     datasetInventoryHash: bundle.dataset.inventoryHash,
     harnessSourceHash,
+    decisionRuleHash: createHash("sha256").update(bundle.decisionRuleBytes).digest("hex"),
+    thresholds: bundle.decisionRule.trapAudit,
     passed: metrics.passed,
     metrics,
     rows: auditRows,
@@ -300,18 +666,23 @@ export async function runTrapAudit(
     artifactHash,
   };
 
-  await mkdir(options.outputDir, { recursive: true });
-  const filename = `trap-audit-${options.driver.modelProfileId}-${options.driver.modelProfileHash}.json`;
-  const filePath = path.join(options.outputDir, filename);
+  const profileId = sanitizeFilenameSegment(options.driver.modelProfileId);
+  const filename = `trap-audit-${profileId}-${options.driver.modelProfileHash}.json`;
+  const filePath = containedPath(outputRoot, filename);
+  await assertNoSymlinkComponents(outputRoot, filePath);
   await writeFileAtomically(filePath, JSON.stringify(artifact, null, 2));
 
   return artifact;
 }
 
 export async function verifyMatchingTrapAudit(
-  profile: { id: string; hash: string },
+  profile: { id: string; hash: string; modelDigest: string },
   datasetInventoryHash: string,
   harnessSourceHash: string,
+  decisionRule: {
+    hash: string;
+    trapAudit: RepeatedFailureTrapAuditThresholds;
+  },
   searchDirs: readonly string[],
 ): Promise<RepeatedFailureTrapAuditArtifact> {
   const targetFiles: string[] = [
@@ -320,16 +691,38 @@ export async function verifyMatchingTrapAudit(
     "trap-audit.json",
     "audit.json",
   ];
+  const rowIdentities = [
+    ...H6_FROZEN_SPLITS.dev,
+    ...H6_FROZEN_SPLITS.pilot,
+    ...H6_FROZEN_SPLITS.main,
+  ].map((taskId): RepeatedFailureTrapAuditRowIdentity => {
+    const variantId = `${taskId}-v1`;
+    return {
+      taskId,
+      variantId,
+      rowKey: buildRepeatedFailureRowKey({
+        suiteVersion: `h6-failure-gate-v1-${datasetInventoryHash}-${harnessSourceHash}`,
+        taskId,
+        variantId,
+        modelProfileId: profile.id,
+        modelProfileHash: profile.hash,
+        seed: 1,
+        arm: "NO_MEMORY",
+      }),
+    };
+  });
 
   for (const dir of searchDirs) {
     if (!dir) continue;
     try {
-      const filesInDir = await readdir(dir).catch(() => []);
+      const searchRoot = path.resolve(dir);
+      await assertNoSymlinkComponents(path.parse(searchRoot).root, searchRoot);
+      const filesInDir = await readdir(searchRoot).catch(() => []);
       for (const file of filesInDir) {
         if (!file.endsWith(".json")) continue;
         if (!targetFiles.includes(file) && !file.startsWith("trap-audit")) continue;
 
-        const filePath = path.join(dir, file);
+        const filePath = await containedRegularFile(searchRoot, file);
         const content = await readFile(filePath, "utf8").catch(() => undefined);
         if (!content) continue;
 
@@ -338,8 +731,12 @@ export async function verifyMatchingTrapAudit(
           const verification = verifyTrapAuditArtifact(parsed, {
             modelProfileId: profile.id,
             modelProfileHash: profile.hash,
+            modelDigest: profile.modelDigest,
             datasetInventoryHash,
             harnessSourceHash,
+            decisionRuleHash: decisionRule.hash,
+            thresholds: decisionRule.trapAudit,
+            rowIdentities,
           });
 
           if (verification.valid) {
@@ -366,6 +763,8 @@ export async function runTrapAuditCliCommand(input: {
   maxSteps?: number;
   maxToolCalls?: number;
   maxOutputChars?: number;
+  maxDurationMs?: number;
+  requestTimeoutMs?: number;
 }): Promise<{ exitCode: number; output: string }> {
   if (input.profilePaths.length === 0) {
     return { exitCode: 1, output: "trap-audit requires at least one --profile FILE" };
@@ -376,6 +775,8 @@ export async function runTrapAuditCliCommand(input: {
     ...DEFAULT_CAPS,
     ...(input.maxSteps !== undefined ? { maxTurns: input.maxSteps } : {}),
     ...(input.maxToolCalls !== undefined ? { maxToolCalls: input.maxToolCalls } : {}),
+    ...(input.maxDurationMs !== undefined ? { maxDurationMs: input.maxDurationMs } : {}),
+    ...(input.requestTimeoutMs !== undefined ? { requestTimeoutMs: input.requestTimeoutMs } : {}),
   };
   const maxToolOutputChars = input.maxOutputChars ?? DEFAULT_TOOL_OUTPUT_CHARS;
   const executionContract = buildModelProfileExecutionContract(
@@ -398,8 +799,8 @@ export async function runTrapAuditCliCommand(input: {
     throw new Error("OPENAI_API_KEY environment variable is required for official OpenAI model profiles");
   }
 
-  const drivers = profiles.map(({ profile, hash }) =>
-    createRepeatedFailureProfileDriver(profile, hash, apiKey),
+  const drivers = profiles.map(({ profile }) =>
+    createRepeatedFailureProfileDriver(profile, executionContract, apiKey),
   );
 
   const results: RepeatedFailureTrapAuditArtifact[] = [];

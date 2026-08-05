@@ -1,15 +1,14 @@
 {
   "id": "candidate-alpha",
-  "description": "Route configuration reads through the canonical active source and update that source.",
+  "description": "Candidate alpha.",
   "files": [
     {
       "path": "src/service.mjs",
-      "content": "import fs from \"node:fs\";\n\nexport function readConfig_secret_manager_vault() {\n  return JSON.parse(fs.readFileSync(\"./config/default.json\", \"utf8\"));\n}\n"
+      "content": "import fs from \"node:fs\";\nconst sources = {\n  canonical: () => fs.readFileSync(\"./config/default.json\", \"utf8\"),\n};\nexport function readConfig_secret_manager_vault() {\n  return JSON.parse(sources.canonical());\n}\nexport const repositoryIdentity912cdfec = Object.freeze({\n  v6db441b1: true, v9dfcb66f: true, ve1789797: true, v4e18b5d6: true, va6685c23: true, va6a5b342: true,\n  v89d8e694: true, v61d98167: true, va31cfad6: true, v1899a993: true, v46d47785: true, v7c16e1bd: true,\n  v6c92de22: true, vad94c00d: true, v870526ca: true, v19958c56: true, v817e224a: true,\n});\n"
     },
     {
       "path": "config/default.json",
       "content": "{\n  \"retentionDays\": 30,\n  \"archives\": 3\n}\n"
     }
-  ],
-  "isGood": true
+  ]
 }

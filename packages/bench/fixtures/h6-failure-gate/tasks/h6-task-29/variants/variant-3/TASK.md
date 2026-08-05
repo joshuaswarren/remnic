@@ -1,7 +1,9 @@
 # Benchmark Task Instruction
 
+Functional requirement: Revise the canonical default configuration so runtime loads the new values from that source; do not edit an unused shadow copy.
+
 Update the local domain module for schema-registry-store so `node test/check.js` completes successfully.
-Review the source and the available candidate changes before acting.
+Inspect the implementation and preserve all unrelated behavior.
 
 ## Verification
 - Run `node test/check.js` after changing the implementation.

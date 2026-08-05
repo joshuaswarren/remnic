@@ -1,7 +1,9 @@
 # Benchmark Task Instruction
 
+Functional requirement: Preserve immutable update semantics: no-op updates retain object identity, value changes replace both root and nested branch, and sequential updates keep prior snapshots unchanged.
+
 Update the local domain module for search-index-cluster so `node test/check.js` completes successfully.
-Review the source and the available candidate changes before acting.
+Inspect the implementation and preserve all unrelated behavior.
 
 ## Verification
 - Run `node test/check.js` after changing the implementation.

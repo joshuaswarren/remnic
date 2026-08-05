@@ -19,6 +19,7 @@ import type {
 
 const TEST_PROFILE_ID = "ollama-chat-llama3.1-8b";
 const TEST_PROFILE_HASH = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+const TEST_MODEL_DIGEST = "d".repeat(64);
 
 const defaultCaps: ControlledResponsesCaps = {
   maxTurns: 5,
@@ -94,6 +95,7 @@ test("RepeatedFailureOllamaChatDriver constructor enforces honest endpoint contr
         model: "llama3.1",
         modelProfileId: TEST_PROFILE_ID,
         modelProfileHash: TEST_PROFILE_HASH,
+        modelDigest: TEST_MODEL_DIGEST,
         endpoint: "http://127.0.0.1:11434/v1",
       }),
     /Provider 'ollama-chat' requires a native Ollama endpoint/,
@@ -102,16 +104,18 @@ test("RepeatedFailureOllamaChatDriver constructor enforces honest endpoint contr
 
 test("RepeatedFailureOllamaChatDriver sends exact options.seed on native POST /api/chat request", async () => {
   let capturedUrl = "";
+  let capturedRequestTimeoutMs: number | undefined;
   const capturedBodies: Array<{
     model?: string;
     think?: boolean;
-    options?: { seed?: number; temperature?: number; num_predict?: number };
+    options?: { seed?: number; temperature?: number; num_predict?: number; num_ctx?: number };
     stream?: boolean;
   }> = [];
 
-  const mockTransport: ControlledResponsesTransport = async (url, init) => {
+  const mockTransport: ControlledResponsesTransport = async (url, init, options) => {
     capturedUrl = url;
     capturedBodies.push(JSON.parse(init.body as string));
+    capturedRequestTimeoutMs = options.timeoutMs;
     return new Response(
       JSON.stringify({
         model: "llama3.1",
@@ -128,9 +132,11 @@ test("RepeatedFailureOllamaChatDriver sends exact options.seed on native POST /a
     model: "llama3.1",
     modelProfileId: TEST_PROFILE_ID,
     modelProfileHash: TEST_PROFILE_HASH,
+    modelDigest: TEST_MODEL_DIGEST,
     endpoint: "http://127.0.0.1:11434",
     transport: mockTransport,
     maxOutputTokens: 2048,
+    contextWindowTokens: 32768,
     think: false,
   });
 
@@ -161,8 +167,63 @@ test("RepeatedFailureOllamaChatDriver sends exact options.seed on native POST /a
   assert.equal(capturedBody.options.seed, 4242);
   assert.equal(capturedBody.options.temperature, 0);
   assert.equal(capturedBody.options.num_predict, 2048);
+  assert.equal(capturedBody.options.num_ctx, 32768);
   assert.equal(capturedBody.think, false);
   assert.equal(capturedBody.stream, false);
+  assert.equal(capturedRequestTimeoutMs, defaultCaps.requestTimeoutMs);
+});
+
+test("episode duration aborts a tool host that ignores its signal", async () => {
+  const driver = createRepeatedFailureOllamaChatDriver({
+    model: "llama3.1",
+    modelProfileId: TEST_PROFILE_ID,
+    modelProfileHash: TEST_PROFILE_HASH,
+    modelDigest: TEST_MODEL_DIGEST,
+    endpoint: "http://127.0.0.1:11434",
+    transport: async () => new Response(JSON.stringify({
+      model: "llama3.1",
+      message: {
+        role: "assistant",
+        content: "Inspecting",
+        tool_calls: [{
+          function: {
+            name: "read_file",
+            arguments: { path: "src/index.ts" },
+          },
+        }],
+      },
+      done: true,
+      prompt_eval_count: 1,
+      eval_count: 1,
+    }), { status: 200, headers: { "Content-Type": "application/json" } }),
+  });
+  const toolHost: RepeatedFailureLocalToolHost = {
+    tools: [dummyTool],
+    execute: () => Promise.withResolvers<never>().promise,
+    captureFinalEvidence: async () => ({
+      repoHash: TEST_PROFILE_HASH,
+      checkResult: "FIXED",
+      changedFiles: [],
+    }),
+  };
+  const result = await driver.runEpisode({
+    identity: {
+      suiteVersion: "v1",
+      taskId: "task1",
+      variantId: "var1",
+      modelProfileId: TEST_PROFILE_ID,
+      modelProfileHash: TEST_PROFILE_HASH,
+      seed: 1,
+      arm: "NO_MEMORY",
+    },
+    prompt: "Inspect code",
+    caps: { ...defaultCaps, maxDurationMs: 20 },
+    toolHost,
+    evaluator: makeMockEvaluator(),
+  });
+  assert.equal(result.status, "INVALID");
+  assert.equal(result.invalidReason, "CAP_EXCEEDED");
+  assert.equal(result.faults.at(-1)?.code, "DURATION_CAP");
 });
 
 test("RepeatedFailureOllamaChatDriver formats tools array with nested function schema", async () => {
@@ -180,6 +241,8 @@ test("RepeatedFailureOllamaChatDriver formats tools array with nested function s
         model: "llama3.1",
         message: { role: "assistant", content: "No tools needed" },
         done: true,
+        prompt_eval_count: 1,
+        eval_count: 1,
       }),
       { status: 200, headers: { "Content-Type": "application/json" } },
     );
@@ -189,6 +252,7 @@ test("RepeatedFailureOllamaChatDriver formats tools array with nested function s
     model: "llama3.1",
     modelProfileId: TEST_PROFILE_ID,
     modelProfileHash: TEST_PROFILE_HASH,
+    modelDigest: TEST_MODEL_DIGEST,
     transport: mockTransport,
   });
 
@@ -272,6 +336,7 @@ test("RepeatedFailureOllamaChatDriver handles multi-turn tool calls and usage ag
     model: "llama3.1",
     modelProfileId: TEST_PROFILE_ID,
     modelProfileHash: TEST_PROFILE_HASH,
+    modelDigest: TEST_MODEL_DIGEST,
     transport: mockTransport,
   });
 
@@ -325,6 +390,8 @@ test("RepeatedFailureOllamaChatDriver handles gate warning replan flow", async (
             ],
           },
           done: true,
+          prompt_eval_count: 1,
+          eval_count: 1,
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
@@ -339,6 +406,8 @@ test("RepeatedFailureOllamaChatDriver handles gate warning replan flow", async (
           ],
         },
         done: true,
+        prompt_eval_count: 1,
+        eval_count: 1,
       }),
       { status: 200, headers: { "Content-Type": "application/json" } },
     );
@@ -351,6 +420,7 @@ test("RepeatedFailureOllamaChatDriver handles gate warning replan flow", async (
     model: "llama3.1",
     modelProfileId: TEST_PROFILE_ID,
     modelProfileHash: TEST_PROFILE_HASH,
+    modelDigest: TEST_MODEL_DIGEST,
     transport: mockTransport,
   });
 
@@ -389,6 +459,8 @@ test("RepeatedFailureOllamaChatDriver invalidates on malformed JSON tool argumen
           ],
         },
         done: true,
+        prompt_eval_count: 1,
+        eval_count: 1,
       }),
       { status: 200, headers: { "Content-Type": "application/json" } },
     );
@@ -398,6 +470,7 @@ test("RepeatedFailureOllamaChatDriver invalidates on malformed JSON tool argumen
     model: "llama3.1",
     modelProfileId: TEST_PROFILE_ID,
     modelProfileHash: TEST_PROFILE_HASH,
+    modelDigest: TEST_MODEL_DIGEST,
     transport: mockTransportMalformed,
   });
 
@@ -436,6 +509,7 @@ test("RepeatedFailureOllamaChatDriver classifies duration expiry as a duration c
     model: "llama3.1",
     modelProfileId: TEST_PROFILE_ID,
     modelProfileHash: TEST_PROFILE_HASH,
+    modelDigest: TEST_MODEL_DIGEST,
     transport: hangingTransport,
   });
 
@@ -475,12 +549,15 @@ test("RepeatedFailureOllamaChatDriver preserves evaluator wait expiry", async ()
           }
         : { role: "assistant", content: "Done" },
       done: true,
+      prompt_eval_count: 1,
+      eval_count: 1,
     }), { status: 200, headers: { "Content-Type": "application/json" } });
   };
   const driver = createRepeatedFailureOllamaChatDriver({
     model: "llama3.1",
     modelProfileId: TEST_PROFILE_ID,
     modelProfileHash: TEST_PROFILE_HASH,
+    modelDigest: TEST_MODEL_DIGEST,
     transport,
   });
 
@@ -510,6 +587,52 @@ test("RepeatedFailureOllamaChatDriver preserves evaluator wait expiry", async ()
   assert.equal(result.gate?.faultCode, "GATE_WAIT_EXPIRED");
 });
 
+test("RepeatedFailureOllamaChatDriver bounds a non-cooperative evaluator", async () => {
+  let requestCount = 0;
+  const driver = createRepeatedFailureOllamaChatDriver({
+    model: "llama3.1",
+    modelProfileId: TEST_PROFILE_ID,
+    modelProfileHash: TEST_PROFILE_HASH,
+    modelDigest: TEST_MODEL_DIGEST,
+    gateWaitTimeoutMs: 5,
+    transport: async () => {
+      requestCount += 1;
+      return new Response(JSON.stringify({
+        model: "llama3.1",
+        message: requestCount === 1
+          ? {
+            role: "assistant",
+            tool_calls: [
+              { function: { name: "read_file", arguments: { path: "src/index.ts" } } },
+            ],
+          }
+          : { role: "assistant", content: "Done" },
+        done: true,
+        prompt_eval_count: 1,
+        eval_count: 1,
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    },
+  });
+  // Integration coverage for the real driver deadline; the evaluator never settles.
+  const result = await driver.runEpisode({
+    identity: {
+      suiteVersion: "v1",
+      taskId: "task1",
+      variantId: "var1",
+      modelProfileId: TEST_PROFILE_ID,
+      modelProfileHash: TEST_PROFILE_HASH,
+      seed: 2,
+      arm: "PRE_ACTION_FAILURE",
+    },
+    prompt: "Read the file",
+    caps: defaultCaps,
+    toolHost: makeMockToolHost(),
+    evaluator: { evaluate: () => new Promise(() => {}) },
+  });
+  assert.equal(result.status, "COMPLETED");
+  assert.equal(result.gate?.faultCode, "GATE_WAIT_EXPIRED");
+});
+
 test("RepeatedFailureOllamaChatDriver binds provider, endpoint, model, tokenizer into profile hash contract", () => {
   const profileConfig = {
     provider: "ollama-chat",
@@ -524,6 +647,7 @@ test("RepeatedFailureOllamaChatDriver binds provider, endpoint, model, tokenizer
     model: profileConfig.model,
     modelProfileId: "ollama-chat-llama3.1-8b",
     modelProfileHash: TEST_PROFILE_HASH,
+    modelDigest: TEST_MODEL_DIGEST,
     developerInstructions: profileConfig.instructions,
     endpoint: profileConfig.endpoint,
     tokenizer: profileConfig.tokenizer,
@@ -533,4 +657,261 @@ test("RepeatedFailureOllamaChatDriver binds provider, endpoint, model, tokenizer
   assert.equal(driver.modelProfileId, "ollama-chat-llama3.1-8b");
   assert.equal(driver.developerInstructions, "You are a coding assistant");
   assert.equal(driver.tokenizer.identity, "ollama-utf8");
+});
+
+test("RepeatedFailureOllamaChatDriver times out a stalled response body", async () => {
+  const driver = createRepeatedFailureOllamaChatDriver({
+    model: "llama3.1",
+    modelProfileId: TEST_PROFILE_ID,
+    modelProfileHash: TEST_PROFILE_HASH,
+    modelDigest: TEST_MODEL_DIGEST,
+    transport: async () => new Response(new ReadableStream<Uint8Array>({ start() {} }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }),
+  });
+
+  const result = await driver.runEpisode({
+    identity: {
+      suiteVersion: "v1",
+      taskId: "task1",
+      variantId: "var1",
+      modelProfileId: TEST_PROFILE_ID,
+      modelProfileHash: TEST_PROFILE_HASH,
+      seed: 1,
+      arm: "NO_MEMORY",
+    },
+    prompt: "Wait for the model body",
+    caps: { ...defaultCaps, requestTimeoutMs: 10 },
+    toolHost: makeMockToolHost(),
+    evaluator: makeMockEvaluator(),
+  });
+
+  assert.equal(result.status, "INVALID");
+  assert.equal(result.invalidReason, "FAULT");
+  assert.equal(result.faults[0]?.code, "REQUEST_TIMEOUT");
+});
+
+test("RepeatedFailureOllamaChatDriver aborts during response body read", async () => {
+  const { promise: bodyStarted, resolve: markBodyStarted } = Promise.withResolvers<void>();
+  const driver = createRepeatedFailureOllamaChatDriver({
+    model: "llama3.1",
+    modelProfileId: TEST_PROFILE_ID,
+    modelProfileHash: TEST_PROFILE_HASH,
+    modelDigest: TEST_MODEL_DIGEST,
+    transport: async () => new Response(new ReadableStream<Uint8Array>({
+      pull() {
+        markBodyStarted();
+      },
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }),
+  });
+  const controller = new AbortController();
+  const pending = driver.runEpisode({
+    identity: {
+      suiteVersion: "v1",
+      taskId: "task1",
+      variantId: "var1",
+      modelProfileId: TEST_PROFILE_ID,
+      modelProfileHash: TEST_PROFILE_HASH,
+      seed: 1,
+      arm: "NO_MEMORY",
+    },
+    prompt: "Wait for the model body",
+    caps: defaultCaps,
+    toolHost: makeMockToolHost(),
+    evaluator: makeMockEvaluator(),
+    signal: controller.signal,
+  });
+  await bodyStarted;
+  controller.abort();
+
+  const result = await pending;
+
+  assert.equal(result.status, "INVALID");
+  assert.equal(result.invalidReason, "ABORTED");
+  assert.equal(result.faults[0]?.code, "REQUEST_ABORTED");
+});
+
+test("RepeatedFailureOllamaChatDriver rejects missing or mismatched response models", async () => {
+  for (const model of [undefined, "different-model"]) {
+    const driver = createRepeatedFailureOllamaChatDriver({
+      model: "llama3.1",
+      modelProfileId: TEST_PROFILE_ID,
+      modelProfileHash: TEST_PROFILE_HASH,
+      modelDigest: TEST_MODEL_DIGEST,
+      transport: async () => new Response(JSON.stringify({
+        ...(model === undefined ? {} : { model }),
+        message: { role: "assistant", content: "Done" },
+        done: true,
+        prompt_eval_count: 1,
+        eval_count: 1,
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    });
+
+    const result = await driver.runEpisode({
+      identity: {
+        suiteVersion: "v1",
+        taskId: "task1",
+        variantId: "var1",
+        modelProfileId: TEST_PROFILE_ID,
+        modelProfileHash: TEST_PROFILE_HASH,
+        seed: 1,
+        arm: "NO_MEMORY",
+      },
+      prompt: "Check model identity",
+      caps: defaultCaps,
+      toolHost: makeMockToolHost(),
+      evaluator: makeMockEvaluator(),
+    });
+
+    assert.equal(result.status, "INVALID");
+    assert.equal(result.faults[0]?.code, "MODEL_IDENTITY_MISMATCH");
+  }
+});
+
+test("RepeatedFailureOllamaChatDriver rejects completed responses without token counts", async () => {
+  for (const counts of [
+    { eval_count: 1 },
+    { prompt_eval_count: 1 },
+    {},
+  ]) {
+    const driver = createRepeatedFailureOllamaChatDriver({
+      model: "llama3.1",
+      modelProfileId: TEST_PROFILE_ID,
+      modelProfileHash: TEST_PROFILE_HASH,
+      modelDigest: TEST_MODEL_DIGEST,
+      transport: async () => new Response(JSON.stringify({
+        model: "llama3.1",
+        message: { role: "assistant", content: "Done" },
+        done: true,
+        ...counts,
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    });
+
+    const result = await driver.runEpisode({
+      identity: {
+        suiteVersion: "v1",
+        taskId: "task1",
+        variantId: "var1",
+        modelProfileId: TEST_PROFILE_ID,
+        modelProfileHash: TEST_PROFILE_HASH,
+        seed: 1,
+        arm: "NO_MEMORY",
+      },
+      prompt: "Check usage",
+      caps: defaultCaps,
+      toolHost: makeMockToolHost(),
+      evaluator: makeMockEvaluator(),
+    });
+
+    assert.equal(result.status, "INVALID");
+    assert.equal(result.faults[0]?.code, "MISSING_TOKEN_USAGE");
+  }
+});
+
+test("RepeatedFailureOllamaChatDriver rejects invalid token counts", async () => {
+  for (const counts of [
+    { prompt_eval_count: -1, eval_count: 1 },
+    { prompt_eval_count: 1.5, eval_count: 1 },
+    { prompt_eval_count: Number.MAX_SAFE_INTEGER + 1, eval_count: 1 },
+  ]) {
+    const driver = createRepeatedFailureOllamaChatDriver({
+      model: "llama3.1",
+      modelProfileId: TEST_PROFILE_ID,
+      modelProfileHash: TEST_PROFILE_HASH,
+      modelDigest: TEST_MODEL_DIGEST,
+      transport: async () => new Response(JSON.stringify({
+        model: "llama3.1",
+        message: { role: "assistant", content: "Done" },
+        done: true,
+        ...counts,
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    });
+
+    const result = await driver.runEpisode({
+      identity: {
+        suiteVersion: "v1",
+        taskId: "task1",
+        variantId: "var1",
+        modelProfileId: TEST_PROFILE_ID,
+        modelProfileHash: TEST_PROFILE_HASH,
+        seed: 1,
+        arm: "NO_MEMORY",
+      },
+      prompt: "Check usage",
+      caps: defaultCaps,
+      toolHost: makeMockToolHost(),
+      evaluator: makeMockEvaluator(),
+    });
+
+    assert.equal(result.status, "INVALID");
+    assert.equal(result.faults[0]?.code, "MALFORMED_RESPONSE_SCHEMA");
+  }
+});
+
+test("Ollama model preflight accepts the exact configured digest and rejects drift", async () => {
+  for (const [servedDigest, shouldPass] of [
+    [TEST_MODEL_DIGEST, true],
+    ["e".repeat(64), false],
+  ] as const) {
+    let capturedUrl = "";
+    let capturedMethod = "";
+    const driver = createRepeatedFailureOllamaChatDriver({
+      model: "llama3.1",
+      modelProfileId: TEST_PROFILE_ID,
+      modelProfileHash: TEST_PROFILE_HASH,
+      modelDigest: TEST_MODEL_DIGEST,
+      transport: async (url, init) => {
+        capturedUrl = url;
+        capturedMethod = init.method ?? "";
+        return new Response(JSON.stringify({
+          models: [{
+            name: "llama3.1",
+            model: "llama3.1",
+            digest: servedDigest,
+          }],
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      },
+    });
+
+    if (shouldPass) {
+      await driver.preflight();
+      assert.equal(capturedUrl, "http://127.0.0.1:11434/api/tags");
+      assert.equal(capturedMethod, "GET");
+    } else {
+      await assert.rejects(() => driver.preflight(), /digest mismatch/i);
+    }
+  }
+
+});
+
+test("Ollama model preflight rejects a registered context window above native capacity", async () => {
+  for (const [contextWindowTokens, shouldPass] of [[32_768, true], [65_536, false]] as const) {
+    const driver = createRepeatedFailureOllamaChatDriver({
+      model: "llama3.1",
+      modelProfileId: TEST_PROFILE_ID,
+      modelProfileHash: TEST_PROFILE_HASH,
+      modelDigest: TEST_MODEL_DIGEST,
+      contextWindowTokens,
+      transport: async (url) => new Response(JSON.stringify(
+        url.endsWith("/api/tags")
+          ? {
+            models: [{
+              name: "llama3.1",
+              model: "llama3.1",
+              digest: TEST_MODEL_DIGEST,
+            }],
+          }
+          : { model_info: { "llama.context_length": 32_768 } },
+      ), { status: 200, headers: { "Content-Type": "application/json" } }),
+    });
+    if (shouldPass) {
+      await driver.preflight();
+    } else {
+      await assert.rejects(() => driver.preflight(), /context window/i);
+    }
+  }
 });

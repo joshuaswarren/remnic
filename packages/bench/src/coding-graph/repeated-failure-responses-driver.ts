@@ -1,26 +1,68 @@
 import { createHash } from "node:crypto";
-import { z } from "zod";
 import type {
-  RepeatedFailureEpisodeDriver,
   RepeatedFailureEpisodeInput,
   RepeatedFailureGateEvent,
   RepeatedFailureProposedAction,
-  RepeatedFailureTokenizer,
   RepeatedFailureTokenUsage,
-  RepeatedFailureToolDefinition,
 } from "./repeated-failure-types.js";
 import {
   RetryFetchHttpError,
   retryFetch,
-  type RetryFetchOptions,
 } from "../providers/retry-fetch.js";
 import {
   failedToolExecutionResult,
   normalizeFinalEvidence,
   serializeBoundedToolOutput,
 } from "./repeated-failure-driver-utils.js";
+import {
+  ResponsesApiResponseSchema,
+  type ControlledGateDecision,
+  type ControlledResponsesAgentDriver,
+  type ControlledResponsesAgentDriverConfig,
+  type ControlledResponsesCaps,
+  type ControlledResponsesDisposition,
+  type ControlledResponsesDriverConfig,
+  type ControlledResponsesEpisodeInput,
+  type ControlledResponsesEpisodeResult,
+  type ControlledResponsesFault,
+  type ControlledResponsesResponseEvent,
+  type ControlledResponsesToolDefinition,
+  type ControlledResponsesToolEvent,
+  type ControlledResponsesTransport,
+  type NormalizedGateEvaluation,
+  type ParsedResponsesApiResponse,
+  type RepeatedFailureActionEvaluator,
+  type RepeatedFailureToolExecutionResult,
+  type ResponsesApiOutputItem,
+  type ResponsesApiRequest,
+  type ResponsesApiUsage,
+} from "./repeated-failure-responses-contracts.js";
+export type {
+  ResponsesApiOutputItem,
+  ResponsesApiUsage,
+  ResponsesApiResponse,
+  ResponsesApiRequest,
+  ControlledResponsesTransport,
+  RepeatedFailureToolExecutionResult,
+  RepeatedFailureFinalRepoEvidence,
+  ControlledResponsesToolDefinition,
+  RepeatedFailureLocalToolHost,
+  ControlledGateDecision,
+  RepeatedFailureActionEvaluator,
+  NormalizedGateEvaluation,
+  ControlledResponsesSeedCapability,
+  ControlledResponsesDriverConfig,
+  ControlledResponsesAgentDriverConfig,
+  ControlledResponsesAgentDriver,
+  ControlledResponsesCaps,
+  ControlledResponsesEpisodeInput,
+  ControlledResponsesResponseEvent,
+  ControlledResponsesToolEvent,
+  ControlledResponsesFault,
+  ControlledResponsesDisposition,
+  ControlledResponsesEpisodeResult,
+} from "./repeated-failure-responses-contracts.js";
 const MAX_TOOL_ARGUMENT_BYTES = 16_384;
-
 const DEFAULT_RESPONSES_BASE_URL = "https://api.openai.com/v1";
 const MAX_FAULTS = 32;
 const DEFAULT_GATE_WAIT_TIMEOUT_MS = 5_000;
@@ -34,239 +76,103 @@ const SUPPORTED_JSON_SCHEMA_TYPES = {
   boolean: true,
   null: true,
 } as const satisfies Readonly<Record<string, true>>;
-const ResponseStatusSchema = z.enum([
-  "completed",
-  "failed",
-  "incomplete",
-  "cancelled",
-  "queued",
-  "in_progress",
-]);
-const ResponseUsageCountSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
-const ResponsesApiUsageSchema = z.object({
-  input_tokens: ResponseUsageCountSchema,
-  output_tokens: ResponseUsageCountSchema,
-  total_tokens: ResponseUsageCountSchema.optional(),
-  input_tokens_details: z.object({
-    cached_tokens: ResponseUsageCountSchema.optional(),
-    cache_write_tokens: ResponseUsageCountSchema.optional(),
-  }).strict().optional(),
-  output_tokens_details: z.object({
-    reasoning_tokens: ResponseUsageCountSchema.optional(),
-  }).strict().optional(),
-}).strict().superRefine((usage, context) => {
-  const derivedTotal = usage.input_tokens + usage.output_tokens;
-  if (
-    !Number.isSafeInteger(derivedTotal) ||
-    (usage.total_tokens !== undefined && usage.total_tokens !== derivedTotal)
-  ) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["total_tokens"],
-      message: "total_tokens must equal input_tokens plus output_tokens",
-    });
+export async function evaluateControlledGateWithDeadline(
+  evaluator: RepeatedFailureActionEvaluator,
+  action: RepeatedFailureProposedAction,
+  episodeSignal: AbortSignal,
+  timeoutMs: number,
+): Promise<ControlledGateDecision | "WAIT_EXPIRED"> {
+  const gateController = new AbortController();
+  const abortFromEpisode = () => gateController.abort();
+  episodeSignal.addEventListener("abort", abortFromEpisode, { once: true });
+  if (episodeSignal.aborted) gateController.abort();
+  let expired = false;
+  const { promise: waitExpired, resolve: expireWait } = Promise.withResolvers<"WAIT_EXPIRED">();
+  const gateTimer = setTimeout(() => {
+    expired = true;
+    gateController.abort();
+    expireWait("WAIT_EXPIRED");
+  }, timeoutMs);
+  const evaluation = evaluator.evaluate(action, { signal: gateController.signal }).then(
+    (decision) => expired ? new Promise<never>(() => {}) : decision,
+    (error) => expired ? new Promise<never>(() => {}) : Promise.reject(error),
+  );
+  try {
+    return await Promise.race([raceAbort(evaluation, episodeSignal), waitExpired]);
+  } finally {
+    clearTimeout(gateTimer);
+    gateController.abort();
+    episodeSignal.removeEventListener("abort", abortFromEpisode);
   }
-});
-const ResponsesApiResponseSchema = z.object({
-  id: z.string().min(1).max(256),
-  model: z.string().min(1).max(256),
-  status: ResponseStatusSchema,
-  output: z.array(z.object({}).catchall(z.unknown())),
-  usage: ResponsesApiUsageSchema,
-}).passthrough();
-type ParsedResponsesApiResponse = z.infer<typeof ResponsesApiResponseSchema>;
-
-export interface ResponsesApiOutputItem {
-  type?: string;
-  id?: string;
-  call_id?: string;
-  name?: string;
-  arguments?: string;
-  role?: string;
-  status?: string;
-  content?: unknown;
-  [key: string]: unknown;
 }
 
-export interface ResponsesApiUsage {
-  input_tokens?: number;
-  output_tokens?: number;
-  total_tokens?: number;
-  input_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
-  output_tokens_details?: { reasoning_tokens?: number };
-}
-
-export interface ResponsesApiResponse {
-  id?: string;
-  model?: string;
-  status?: z.infer<typeof ResponseStatusSchema>;
-  error?: { code?: string; message?: string } | null;
-  incomplete_details?: { reason?: string } | null;
-  output?: ResponsesApiOutputItem[];
-  usage?: ResponsesApiUsage;
-}
-
-export interface ResponsesApiRequest {
-  model: string;
-  seed?: number;
-  instructions?: string;
-  max_output_tokens?: number;
-  temperature?: 0;
-  reasoning?: { effort: "low" | "medium" | "high" };
-  include: readonly ["reasoning.encrypted_content"];
-  input: Array<Record<string, unknown>>;
-  tools: Array<{
-    type: "function";
-    name: string;
-    description: string;
-    parameters: Readonly<Record<string, unknown>>;
-    strict: true;
-  }>;
-  tool_choice: "auto";
-  parallel_tool_calls: false;
-  stream: false;
-  store: false;
-}
-
-export type ControlledResponsesTransport = (
-  url: string,
-  init: RequestInit,
-  options: RetryFetchOptions,
-) => Promise<Response>;
-
-export interface RepeatedFailureToolExecutionResult {
-  status: "completed" | "failed";
-  output: unknown;
-}
-
-export interface RepeatedFailureFinalRepoEvidence {
-  repoHash: string;
-  checkResult: "UNFIXED" | "TRAPPED" | "FIXED" | "NO_TRAP" | "INDETERMINATE";
-  changedFiles: readonly string[];
-}
-
-export interface ControlledResponsesToolDefinition extends RepeatedFailureToolDefinition {
-  gateEligible: boolean;
-}
-
-export interface RepeatedFailureLocalToolHost {
-  readonly tools: readonly ControlledResponsesToolDefinition[];
-  execute(
-    action: RepeatedFailureProposedAction,
-    context: { signal: AbortSignal },
-  ): Promise<RepeatedFailureToolExecutionResult>;
-  captureFinalEvidence(context: { signal: AbortSignal }): Promise<RepeatedFailureFinalRepoEvidence>;
-}
-
-export interface ControlledGateDecision extends RepeatedFailureGateEvent {
-  advisoryText?: string;
-  waitExpired?: boolean;
-}
-
-export interface RepeatedFailureActionEvaluator {
-  evaluate(
-    action: RepeatedFailureProposedAction,
-    context: { signal: AbortSignal },
-  ): Promise<ControlledGateDecision>;
-}
-
-export interface ControlledResponsesSeedCapability {
-  readonly kind: "request_parameter";
-  readonly requestField: "seed";
-}
-
-export interface ControlledResponsesDriverConfig {
-  model: string;
-  modelProfileId?: string;
-  modelProfileHash?: string;
-  instructions?: string;
-  seedCapability?: ControlledResponsesSeedCapability;
-  gateWaitTimeoutMs?: number;
-  maxOutputTokens?: number;
-  temperature?: 0;
-  reasoningEffort?: "low" | "medium" | "high";
-  apiKey?: string;
-  baseUrl?: string;
-  headers?: Readonly<Record<string, string>>;
-  transport?: ControlledResponsesTransport;
-  toolHost: RepeatedFailureLocalToolHost;
-  evaluator: RepeatedFailureActionEvaluator;
-}
-
-export interface ControlledResponsesAgentDriverConfig
-  extends Omit<ControlledResponsesDriverConfig, "toolHost" | "evaluator" | "modelProfileId" | "modelProfileHash"> {
-  modelProfileId: string;
-  modelProfileHash: string;
-  developerInstructions?: string;
-  tokenizer?: RepeatedFailureTokenizer;
-}
-
-export interface ControlledResponsesAgentDriver extends RepeatedFailureEpisodeDriver {
-  readonly driverKind: "responses";
-}
-
-export interface ControlledResponsesCaps {
-  maxTurns: number;
-  maxToolCalls: number;
-  maxTotalTokens: number;
-  maxDurationMs: number;
-  requestTimeoutMs: number;
-}
-
-export interface ControlledResponsesEpisodeInput {
-  prompt: string;
-  seed?: number;
-  caps: ControlledResponsesCaps;
-  signal?: AbortSignal;
-}
-
-export interface ControlledResponsesResponseEvent {
-  turn: number;
-  responseId: string;
-  status: NonNullable<ResponsesApiResponse["status"]>;
-  model: string;
-  outputItemTypes: readonly string[];
-  usage: RepeatedFailureTokenUsage;
-}
-
-export interface ControlledResponsesToolEvent {
-  callId: string;
-  tool: string;
-  fingerprint: string;
-  status: "completed" | "failed";
-  outputHash: string;
-}
-
-export interface ControlledResponsesFault {
-  code: string;
-  stage: "transport" | "response" | "tool_call" | "tool" | "caps" | "evidence";
-  messageHash: string;
-}
-
-export type ControlledResponsesDisposition =
-  | "NONE"
-  | "EXECUTED"
-  | "RESUBMITTED"
-  | "CHANGED"
-  | "ABANDONED";
-
-export interface ControlledResponsesEpisodeResult {
-  status: "COMPLETED" | "INVALID";
-  invalidReason?: "FAULT" | "ABORTED" | "CAP_EXCEEDED";
-  disposition: ControlledResponsesDisposition;
-  outputTextHash: string;
-  outputTextBytes: number;
-  originalCallId?: string;
-  originalFingerprint?: string;
-  replacementCallId?: string;
-  replacementFingerprint?: string;
-  gate?: RepeatedFailureGateEvent;
-  gateEvents: readonly RepeatedFailureGateEvent[];
-  responses: readonly ControlledResponsesResponseEvent[];
-  tools: readonly ControlledResponsesToolEvent[];
-  usage: RepeatedFailureTokenUsage;
-  faults: readonly ControlledResponsesFault[];
-  finalRepoEvidence?: RepeatedFailureFinalRepoEvidence;
+export function normalizeControlledGateDecision(
+  decision: unknown,
+  fallbackFingerprintHash: string,
+): NormalizedGateEvaluation {
+  if (!decision || typeof decision !== "object") {
+    return {
+      event: {
+        status: "ERROR_FAIL_OPEN",
+        fingerprintHash: fallbackFingerprintHash,
+        faultCode: "INVALID_EVALUATOR_RESULT",
+      },
+    };
+  }
+  const candidate = decision as Partial<ControlledGateDecision>;
+  if (
+    (
+      candidate.status !== "NO_MATCH" &&
+      candidate.status !== "MATCH_WARN" &&
+      candidate.status !== "ERROR_FAIL_OPEN"
+    ) ||
+    !isBoundedString(candidate.fingerprintHash, 256) ||
+    (candidate.waitExpired !== undefined && typeof candidate.waitExpired !== "boolean")
+  ) {
+    return {
+      event: {
+        status: "ERROR_FAIL_OPEN",
+        fingerprintHash: fallbackFingerprintHash,
+        faultCode: "INVALID_EVALUATOR_RESULT",
+      },
+    };
+  }
+  const fingerprintHash = normalizeDigest(candidate.fingerprintHash);
+  if (candidate.waitExpired === true) {
+    return {
+      event: {
+        status: "ERROR_FAIL_OPEN",
+        fingerprintHash,
+        faultCode: "GATE_WAIT_EXPIRED",
+      },
+    };
+  }
+  if (candidate.status !== "MATCH_WARN") {
+    return {
+      event: {
+        status: candidate.status,
+        fingerprintHash,
+        ...(candidate.faultCode ? { faultCode: boundedCode(candidate.faultCode) } : {}),
+      },
+    };
+  }
+  if (!isBoundedString(candidate.advisoryText, 4096)) {
+    return {
+      event: {
+        status: "ERROR_FAIL_OPEN",
+        fingerprintHash,
+        faultCode: "INVALID_ADVISORY",
+      },
+    };
+  }
+  return {
+    event: {
+      status: "MATCH_WARN",
+      fingerprintHash,
+      warningHash: normalizeDigest(candidate.warningHash ?? candidate.advisoryText),
+    },
+    advisoryText: candidate.advisoryText,
+  };
 }
 
 interface EpisodeState {
@@ -414,6 +320,17 @@ export class ControlledResponsesDriver {
           return finalizeResult(state, "INVALID", "FAULT");
         }
         const payload = parsedPayload.response;
+        if (payload.model !== this.modelId) {
+          pushFault(
+            state,
+            fault(
+              "MODEL_IDENTITY_MISMATCH",
+              "response",
+              payload.model === undefined ? "missing" : payload.model,
+            ),
+          );
+          return finalizeResult(state, "INVALID", "FAULT");
+        }
 
         const usage = normalizeUsage(payload.usage);
         if (!addUsage(state.usage, usage)) {
@@ -577,9 +494,8 @@ export class ControlledResponsesDriver {
       requestExpired = true;
       requestController.abort();
     }, caps.requestTimeoutMs);
-    let response: Response;
     try {
-      response = await raceAbort(
+      const response = await raceAbort(
         this.transport(
           `${(this.config.baseUrl ?? DEFAULT_RESPONSES_BASE_URL).replace(/\/+$/, "")}/responses`,
           {
@@ -601,6 +517,22 @@ export class ControlledResponsesDriver {
         ),
         requestController.signal,
       );
+      if (!response.ok) {
+        return {
+          ok: false,
+          fault: fault(`HTTP_${response.status}`, "transport", String(response.status)),
+        };
+      }
+      try {
+        const body = await raceAbort(response.json(), requestController.signal);
+        return { ok: true, response: body };
+      } catch (error) {
+        if (requestController.signal.aborted) throw error;
+        return {
+          ok: false,
+          fault: fault("MALFORMED_RESPONSE", "response", errorMessage(error)),
+        };
+      }
     } catch (error) {
       const code = signal.aborted
         ? "ABORTED"
@@ -614,115 +546,37 @@ export class ControlledResponsesDriver {
       clearTimeout(requestTimer);
       signal.removeEventListener("abort", onEpisodeAbort);
     }
-    if (!response.ok) {
-      return {
-        ok: false,
-        fault: fault(`HTTP_${response.status}`, "transport", String(response.status)),
-      };
-    }
-    try {
-      return { ok: true, response: await response.json() };
-    } catch (error) {
-      return { ok: false, fault: fault("MALFORMED_RESPONSE", "response", errorMessage(error)) };
-    }
   }
 
   private async evaluateGate(
     action: RepeatedFailureProposedAction,
     signal: AbortSignal,
   ): Promise<{ event: RepeatedFailureGateEvent; advisoryText?: string }> {
-    const gateController = new AbortController();
-    const abortFromEpisode = () => gateController.abort();
-    signal.addEventListener("abort", abortFromEpisode, { once: true });
-    if (signal.aborted) gateController.abort();
-    const { promise: waitExpired, resolve: expireWait } = Promise.withResolvers<"WAIT_EXPIRED">();
-    const gateTimer = setTimeout(() => {
-      expireWait("WAIT_EXPIRED");
-      gateController.abort();
-    }, this.config.gateWaitTimeoutMs ?? DEFAULT_GATE_WAIT_TIMEOUT_MS);
-
+    const fallbackFingerprintHash = fingerprintAction(action);
     try {
-      const decision = await Promise.race([
-        raceAbort(
-          this.config.evaluator.evaluate(action, { signal: gateController.signal }),
-          signal,
-        ),
-        waitExpired,
-      ]);
-      if (decision === "WAIT_EXPIRED") {
-        return {
+      const decision = await evaluateControlledGateWithDeadline(
+        this.config.evaluator,
+        action,
+        signal,
+        this.config.gateWaitTimeoutMs ?? DEFAULT_GATE_WAIT_TIMEOUT_MS,
+      );
+      return decision === "WAIT_EXPIRED"
+        ? {
           event: {
             status: "ERROR_FAIL_OPEN",
-            fingerprintHash: fingerprintAction(action),
+            fingerprintHash: fallbackFingerprintHash,
             faultCode: "GATE_WAIT_EXPIRED",
           },
-        };
-      }
-      if (
-        (
-          decision.status !== "NO_MATCH" &&
-          decision.status !== "MATCH_WARN" &&
-          decision.status !== "ERROR_FAIL_OPEN"
-        ) ||
-        !isBoundedString(decision.fingerprintHash, 256) ||
-        (decision.waitExpired !== undefined && typeof decision.waitExpired !== "boolean")
-      ) {
-        return {
-          event: {
-            status: "ERROR_FAIL_OPEN",
-            fingerprintHash: fingerprintAction(action),
-            faultCode: "INVALID_EVALUATOR_RESULT",
-          },
-        };
-      }
-      const fingerprintHash = normalizeDigest(decision.fingerprintHash);
-      if (decision.waitExpired === true) {
-        return {
-          event: {
-            status: "ERROR_FAIL_OPEN",
-            fingerprintHash,
-            faultCode: "GATE_WAIT_EXPIRED",
-          },
-        };
-      }
-      if (decision.status !== "MATCH_WARN") {
-        return {
-          event: {
-            status: decision.status,
-            fingerprintHash,
-            ...(decision.faultCode ? { faultCode: boundedCode(decision.faultCode) } : {}),
-          },
-        };
-      }
-      if (!isBoundedString(decision.advisoryText, 4096)) {
-        return {
-          event: {
-            status: "ERROR_FAIL_OPEN",
-            fingerprintHash,
-            faultCode: "INVALID_ADVISORY",
-          },
-        };
-      }
-      const warningHash = normalizeDigest(decision.warningHash ?? decision.advisoryText);
-      return {
-        event: {
-          status: "MATCH_WARN",
-          fingerprintHash,
-          warningHash,
-        },
-        advisoryText: decision.advisoryText,
-      };
+        }
+        : normalizeControlledGateDecision(decision, fallbackFingerprintHash);
     } catch (error) {
       return {
         event: {
           status: "ERROR_FAIL_OPEN",
-          fingerprintHash: fingerprintAction(action),
+          fingerprintHash: fallbackFingerprintHash,
           faultCode: isAbortError(error) ? "EVALUATOR_ABORTED" : "EVALUATOR_ERROR",
         },
       };
-    } finally {
-      clearTimeout(gateTimer);
-      signal.removeEventListener("abort", abortFromEpisode);
     }
   }
 
@@ -785,6 +639,9 @@ export function createControlledResponsesAgentDriver(
   if (!/^[a-f0-9]{64}$/.test(config.modelProfileHash)) {
     throw new Error("modelProfileHash must be a lowercase SHA-256 digest");
   }
+  if (!/^[a-f0-9]{64}$/.test(config.modelDigest)) {
+    throw new Error("modelDigest must be a lowercase SHA-256 digest");
+  }
   if (config.seedCapability === undefined) {
     throw new Error("Controlled Responses agent driver requires registered seed capability");
   }
@@ -798,6 +655,7 @@ export function createControlledResponsesAgentDriver(
       implementation: "nfkc-whitespace-v1",
     },
     modelProfileHash: config.modelProfileHash,
+    modelDigest: config.modelDigest,
     async runEpisode(request: RepeatedFailureEpisodeInput): Promise<ControlledResponsesEpisodeResult> {
       const driver = new ControlledResponsesDriver({
         ...config,

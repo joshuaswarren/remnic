@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
+import { compareCodePoints } from "../../codepoint-order.js";
+import { runOfflineCheck } from "../repeated-failure-suite-shared.js";
 import type { H6TrapId, StrategyPatch, SyntheticFile } from "./types.js";
 import { regenerateH6Fixtures } from "../../../fixtures/h6-failure-gate/generator/regenerate.js";
 import { H6BenchmarkDatasetSchema, H6_TRAP_IDS } from "./types.js";
 import {
+  H6_TASK_JSON_SCHEMA,
   loadCommittedH6BenchmarkDataset,
   resolveCommittedH6FixtureDirectory,
   evaluateTaskState,
@@ -16,8 +19,10 @@ import {
   generateH6BenchmarkDataset,
   materializeTaskRepo,
   validateH6Dataset,
+  validateH6StateDefiningIndependence,
   calculateJaccardSimilarity,
   tokenizeContent,
+  writeH6FixtureBundle,
 } from "./index.js";
 
 function applyPatch(files: SyntheticFile[], patch: StrategyPatch): SyntheticFile[] {
@@ -37,7 +42,7 @@ function corruptGoodBehavior(trapId: H6TrapId, content: string): string {
       );
     case "misleading-error-message":
       return content.replace(
-        "return validateRecord(record);",
+        /return (?:validateRecord|inspect)\(record\);/,
         "return { profile: { email: \"reader@example.test\", age: 0 } };",
       );
     case "wrong-layer-fix":
@@ -69,7 +74,7 @@ async function generatedTreeInventory(
 ): Promise<Array<[string, string]>> {
   const inventory: Array<[string, string]> = [];
   const entries = await readdir(current, { withFileTypes: true });
-  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+  for (const entry of entries.sort((a, b) => compareCodePoints(a.name, b.name))) {
     const entryPath = join(current, entry.name);
     if (entry.isDirectory()) {
       inventory.push(...await generatedTreeInventory(root, entryPath));
@@ -127,6 +132,120 @@ test("regeneration writes all committed fixture artifacts byte-for-byte", async 
   }
 });
 
+test("regeneration rejects symlinked roots and owned components", async () => {
+  const container = await mkdtemp(join(tmpdir(), "h6-regeneration-symlink-"));
+  const outside = await mkdtemp(join(tmpdir(), "h6-regeneration-outside-"));
+  const linkedRoot = join(container, "linked-root");
+  const componentRoot = join(container, "component-root");
+  const dataset = await loadCommittedH6BenchmarkDataset();
+
+  try {
+    await symlink(outside, linkedRoot, "dir");
+    await assert.rejects(writeH6FixtureBundle(linkedRoot, dataset), /symlink/i);
+
+    await mkdir(componentRoot);
+    await symlink(outside, join(componentRoot, "schema"), "dir");
+    await assert.rejects(writeH6FixtureBundle(componentRoot, dataset), /symlink/i);
+  } finally {
+    await rm(container, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("regeneration removes stale files from every owned output subtree", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "h6-regeneration-stale-"));
+  const dataset = await loadCommittedH6BenchmarkDataset();
+
+  try {
+    await writeH6FixtureBundle(tempDir, dataset);
+    const expected = await generatedTreeInventory(tempDir);
+    await writeFile(join(tempDir, "stale-output.json"), "{}\n", "utf8");
+    await writeFile(join(tempDir, "arms", "stale.json"), "{}\n", "utf8");
+    await writeFile(join(tempDir, "schema", "stale.json"), "{}\n", "utf8");
+    await mkdir(join(tempDir, "tasks", "stale-task"), { recursive: true });
+    await writeFile(join(tempDir, "tasks", "stale-task", "task.json"), "{}\n", "utf8");
+
+    await writeH6FixtureBundle(tempDir, dataset);
+
+    assert.deepEqual(await generatedTreeInventory(tempDir), expected);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("generated action intent names every file changed by the failed strategy", async () => {
+  const dataset = await generateH6BenchmarkDataset(81);
+
+  for (const task of dataset.tasks) {
+    for (const variant of task.variants) {
+      assert.deepEqual(
+        [...new Set(variant.badStrategyPatch.files.map((file) => file.path))],
+        [task.normalizedActionIntent.filePath],
+        task.id,
+      );
+    }
+  }
+});
+
+test("generated strategy descriptions are opaque neutral labels", async () => {
+  const dataset = await generateH6BenchmarkDataset(81);
+
+  for (const task of dataset.tasks) {
+    for (const variant of task.variants) {
+      assert.deepEqual(
+        variant.strategyCandidates.map(({ id, description }) => ({ id, description })),
+        [
+          { id: "candidate-alpha", description: "Candidate alpha." },
+          { id: "candidate-beta", description: "Candidate beta." },
+        ],
+        variant.variantId,
+      );
+      assert.ok(
+        variant.strategyCandidates.every((candidate) => !Object.hasOwn(candidate, "isGood")),
+        variant.variantId,
+      );
+    }
+  }
+});
+
+test("strategy patch schema omits model-visible correctness labels", () => {
+  assert.deepEqual(
+    H6_TASK_JSON_SCHEMA.definitions.strategyPatch.required,
+    ["id", "description", "files"],
+  );
+  assert.equal(
+    Object.hasOwn(H6_TASK_JSON_SCHEMA.definitions.strategyPatch.properties, "isGood"),
+    false,
+  );
+});
+
+test("validator rejects action intent that names a file absent from the failed strategy", async () => {
+  const dataset = await generateH6BenchmarkDataset(81);
+  dataset.tasks[0].normalizedActionIntent.filePath = "src/not-in-candidate.ts";
+
+  const report = await validateH6Dataset(dataset);
+
+  assert.ok(
+    report.issues.some((issue) => issue.code === "ACTION_INTENT_PATCH_MISMATCH"),
+  );
+});
+
+test("validator rejects a candidate patch that leaves its variant byte-identical", async () => {
+  const dataset = await generateH6BenchmarkDataset(81);
+  const variant = dataset.tasks[0].variants[0];
+  const candidateFile = variant.badStrategyPatch.files[0];
+  const baseFile = variant.files.find((file) => file.path === candidateFile.path);
+  assert.ok(baseFile);
+  candidateFile.content = baseFile.content;
+
+  const report = await validateH6Dataset(dataset);
+
+  assert.ok(
+    report.issues.some((issue) => issue.code === "CANDIDATE_PATCH_NO_OP"),
+  );
+});
+
+
 test("full dataset validation & split balance", async () => {
   const dataset = await loadCommittedH6BenchmarkDataset();
   const report = await validateH6Dataset(dataset);
@@ -135,10 +254,11 @@ test("full dataset validation & split balance", async () => {
   assert.equal(report.issues.length, 0);
   assert.equal(report.metrics.totalTasks, 30);
   assert.equal(report.metrics.totalVariants, 90);
-  assert.equal(report.metrics.devTaskCount, 6);
-  assert.equal(report.metrics.pilotTaskCount, 6);
+  assert.equal(report.metrics.devTaskCount, 0);
+  assert.equal(report.metrics.pilotTaskCount, 12);
   assert.equal(report.metrics.mainTaskCount, 18);
   assert.ok(report.metrics.maxPairwiseSimilarity <= 0.40);
+  assert.ok(report.metrics.maxStateDefiningSimilarity <= 0.40);
 });
 
 test("each trap class uses independently generated trap-relevant fixtures", async () => {
@@ -154,6 +274,71 @@ test("each trap class uses independently generated trap-relevant fixtures", asyn
     });
     assert.equal(new Set(hashes).size, tasks.length, trapId);
   }
+});
+
+test("validator rejects duplicated state-defining files within a trap class", async () => {
+  const dataset = structuredClone(await loadCommittedH6BenchmarkDataset());
+  const [source, duplicate] = dataset.tasks.filter(
+    (task) => task.trapId === dataset.tasks[0].trapId,
+  );
+  assert.ok(source);
+  assert.ok(duplicate);
+  for (const filePath of [source.fingerprint.file, "test/check.js"]) {
+    const sourceFile = source.variants[0].files.find((file) => file.path === filePath);
+    const duplicateFile = duplicate.variants[0].files.find((file) => file.path === filePath);
+    assert.ok(sourceFile);
+    assert.ok(duplicateFile);
+    duplicateFile.content = sourceFile.content;
+  }
+
+  const report = await validateH6Dataset(dataset);
+  assert.ok(
+    report.issues.some((issue) => issue.code === "STATE_DEFINING_SIMILARITY_EXCEEDED"),
+  );
+});
+
+test("state-defining gate uses normalized unigram Jaccard instead of trigram order", async () => {
+  const dataset = await generateH6BenchmarkDataset(81);
+  const tasks = structuredClone(
+    dataset.tasks.filter((task) => task.trapId === dataset.tasks[0].trapId).slice(0, 2),
+  );
+  const setStateContents = (contents: readonly [string, string]) => {
+    for (const [index, task] of tasks.entries()) {
+      for (const filePath of [task.fingerprint.file, "test/check.js"]) {
+        const file = task.variants[0].files.find((candidate) => candidate.path === filePath);
+        assert.ok(file);
+        file.content = contents[index];
+      }
+    }
+  };
+  setStateContents([
+    "alpha beta gamma",
+    "alpha beta delta epsilon",
+  ]);
+  const boundary = validateH6StateDefiningIndependence({ ...dataset, tasks });
+  assert.equal(boundary.maxSimilarity, 0.40);
+  assert.equal(boundary.issues.length, 0);
+
+  setStateContents([
+    "alpha beta gamma delta epsilon",
+    "alpha gamma epsilon beta delta",
+  ]);
+  const report = validateH6StateDefiningIndependence({ ...dataset, tasks });
+
+  assert.equal(report.maxSimilarity, 1);
+  assert.deepEqual(
+    report.issues.map((issue) => issue.path),
+    [tasks[0].fingerprint.file, "test/check.js"],
+  );
+});
+
+test("generated state-defining source and check files satisfy the registered threshold", async () => {
+  const dataset = await generateH6BenchmarkDataset(81);
+  const report = validateH6StateDefiningIndependence(dataset);
+
+  assert.equal(report.issues.length, 0);
+  assert.ok(report.maxSimilarity > 0);
+  assert.ok(report.maxSimilarity <= 0.40);
 });
 
 test("registered content tokenizer uses NFKC lowercase alphanumeric unigrams", () => {
@@ -254,12 +439,18 @@ test("agent-visible text is neutral and successful candidate positions are balan
       task.id,
     );
     const position = task.variants[0].strategyCandidates.findIndex(
-      (candidate) => candidate.isGood,
+      (candidate) => candidate.id === task.variants[0].goodStrategyPatch.id,
     );
     assert.ok(position === 0 || position === 1, task.id);
     successfulPositions[position] += 1;
     assert.equal(task.fingerprint.strategyId, task.variants[0].badStrategyPatch.id);
     assert.notEqual(task.fingerprint.strategyId, task.variants[0].goodStrategyPatch.id);
+    assert.ok(
+      task.variants[0].strategyCandidates.every(
+        (candidate) => !Object.hasOwn(candidate, "isGood"),
+      ),
+      task.id,
+    );
   }
   assert.deepEqual(successfulPositions, [15, 15]);
 });
@@ -300,7 +491,7 @@ test("schema rejects a task without its canonical base files", async () => {
 });
 
 test("all trap classes transition UNFIXED -> TRAPPED -> FIXED -> no-trap", async () => {
-  const dataset = await loadCommittedH6BenchmarkDataset();
+  const dataset = await generateH6BenchmarkDataset(81);
   const firstTaskByTrap = new Map<H6TrapId, (typeof dataset.tasks)[number]>();
   for (const task of dataset.tasks) {
     if (!firstTaskByTrap.has(task.trapId)) firstTaskByTrap.set(task.trapId, task);
@@ -409,6 +600,46 @@ test("malformed package failures stay silent and return bounded diagnostics", as
   );
 });
 
+test("offline checker strips inherited secrets and denies host filesystem, processes, and network", async () => {
+  const dataset = await loadCommittedH6BenchmarkDataset();
+  const task = dataset.tasks[0];
+  const variant = task.variants[0];
+  const sandboxCheck = `
+import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+const failures = [];
+if (process.env.H6_SANDBOX_SECRET) failures.push("environment");
+try { readFileSync("/etc/passwd", "utf8"); failures.push("filesystem"); } catch (error) {
+  if (error.code !== "ERR_ACCESS_DENIED") failures.push("filesystem-code");
+}
+try { spawnSync(process.execPath, ["--version"]); failures.push("process"); } catch (error) {
+  if (error.code !== "ERR_ACCESS_DENIED") failures.push("process-code");
+}
+try {
+  await fetch("http://1.1.1.1", { signal: AbortSignal.timeout(1000) });
+  failures.push("network");
+} catch (error) {
+  if (error.cause?.code !== "ENETUNREACH") failures.push("network-code");
+}
+process.exit(failures.length === 0 ? 0 : 1);
+`;
+  const files = variant.files.map((file) =>
+    file.path === "test/check.js" ? { ...file, content: sandboxCheck } : file
+  );
+  const previous = process.env.H6_SANDBOX_SECRET;
+  process.env.H6_SANDBOX_SECRET = "must-not-cross";
+  const repo = await materializeTaskRepo(files);
+  try {
+    const result = await runOfflineCheck(repo.dir, task);
+    assert.equal(result.state, "FIXED");
+    assert.equal(result.exitCode, 0);
+  } finally {
+    if (previous === undefined) delete process.env.H6_SANDBOX_SECRET;
+    else process.env.H6_SANDBOX_SECRET = previous;
+    await repo.cleanup();
+  }
+});
+
 test("git materialization ignores inherited Git config and pins SHA-1 revisions", async () => {
   const injectedEnvironment = {
     GIT_CONFIG_COUNT: "1",
@@ -458,7 +689,9 @@ test("materializer rejects traversal, duplicate paths, and nested Git metadata",
 test("corrupted manifest and inventory hash are rejected", async () => {
   const dataset = await loadCommittedH6BenchmarkDataset();
   const corrupted = JSON.parse(JSON.stringify(dataset));
-  corrupted.splits.dev[0] = corrupted.splits.dev[1];
+  // dev is empty in the frozen 0/12/18 layout, so corrupt pilot to actually
+  // produce a duplicate membership.
+  corrupted.splits.pilot[0] = corrupted.splits.pilot[1];
 
   const report = await validateH6Dataset(corrupted);
 
@@ -470,12 +703,13 @@ test("corrupted manifest and inventory hash are rejected", async () => {
 test("balanced split swaps and task split drift fail the frozen membership contract", async () => {
   const dataset = await loadCommittedH6BenchmarkDataset();
   const swapped = JSON.parse(JSON.stringify(dataset));
-  const devTaskId = swapped.splits.dev[0];
+  // Swap across the two populated splits: dev is empty under 0/12/18.
   const pilotTaskId = swapped.splits.pilot[0];
-  swapped.splits.dev[0] = pilotTaskId;
-  swapped.splits.pilot[0] = devTaskId;
-  swapped.tasks.find((task: { id: string }) => task.id === devTaskId).split = "pilot";
-  swapped.tasks.find((task: { id: string }) => task.id === pilotTaskId).split = "dev";
+  const mainTaskId = swapped.splits.main[0];
+  swapped.splits.pilot[0] = mainTaskId;
+  swapped.splits.main[0] = pilotTaskId;
+  swapped.tasks.find((task: { id: string }) => task.id === pilotTaskId).split = "main";
+  swapped.tasks.find((task: { id: string }) => task.id === mainTaskId).split = "pilot";
   const { inventoryHash: _swappedHash, ...swappedContents } = swapped;
   swapped.inventoryHash = computeH6InventoryHash(swappedContents);
 
@@ -488,7 +722,9 @@ test("balanced split swaps and task split drift fail the frozen membership contr
   );
 
   const mismatchedTask = JSON.parse(JSON.stringify(dataset));
-  mismatchedTask.tasks[0].split = "pilot";
+  // tasks[0] is a pilot member under 0/12/18, so claim "main" to create real
+  // drift between the task record and its frozen split membership.
+  mismatchedTask.tasks[0].split = "main";
   const { inventoryHash: _taskHash, ...taskContents } = mismatchedTask;
   mismatchedTask.inventoryHash = computeH6InventoryHash(taskContents);
   const taskReport = await validateH6Dataset(mismatchedTask);
@@ -507,7 +743,7 @@ test("valid but regenerated inventories are rejected as non-frozen", async () =>
 test("support artifact hashes are independently verified", async () => {
   const dataset = await loadCommittedH6BenchmarkDataset();
   const corrupted = JSON.parse(JSON.stringify(dataset));
-  corrupted.supportArtifactHashes["decision-rule.json"] = "0".repeat(64);
+  corrupted.supportArtifactHashes["arms/arms.json"] = "0".repeat(64);
   const { inventoryHash: _oldHash, ...hashableDataset } = corrupted;
   corrupted.inventoryHash = computeH6InventoryHash(hashableDataset);
 

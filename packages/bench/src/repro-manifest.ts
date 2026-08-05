@@ -5,7 +5,7 @@ import { createReadStream } from "node:fs";
 import { lstat, mkdir, readFile, readdir, readlink, realpath, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { z } from "zod";
+import { compareCodePoints } from "./codepoint-order.js";
 import {
   type CodexCreditReceipt,
   buildCodexCreditReceipt,
@@ -15,207 +15,29 @@ import { listBenchmarkResults, loadBenchmarkResult } from "./results-store.js";
 import { resolveBenchmarkRunId } from "./run-identity.js";
 import { redactUrlSecrets as redactUrlSecretMaterial } from "./security/url-secrets.js";
 import type { BenchmarkMode, BenchmarkResult } from "./types.js";
+import { BENCHMARK_REPRO_MANIFEST_SCHEMA_VERSION } from "./repro-manifest-schema.js";
+import type {
+  BenchmarkReproManifest,
+  BenchmarkReproManifestDataset,
+  BenchmarkReproManifestFile,
+  BenchmarkReproManifestResult,
+  BenchmarkReproManifestSupplementalArtifact,
+} from "./repro-manifest-schema.js";
+
+export {
+  BENCHMARK_REPRO_MANIFEST_SCHEMA_VERSION,
+  BenchmarkReproManifestSchema,
+  parseBenchmarkReproManifest,
+} from "./repro-manifest-schema.js";
+export type {
+  BenchmarkReproManifest,
+  BenchmarkReproManifestDataset,
+  BenchmarkReproManifestFile,
+  BenchmarkReproManifestResult,
+  BenchmarkReproManifestSupplementalArtifact,
+} from "./repro-manifest-schema.js";
 
 export const BENCHMARK_REPRO_MANIFEST_FILENAME = "MANIFEST.json";
-export const BENCHMARK_REPRO_MANIFEST_SCHEMA_VERSION = 2;
-
-export interface BenchmarkReproManifestSupplementalArtifact {
-  path: string;
-  sha256: string;
-  sizeBytes: number;
-}
-
-export interface BenchmarkReproManifestFile {
-  path: string;
-  kind: "file" | "symlink";
-  sizeBytes: number;
-  sha256: string;
-  target?: string;
-}
-
-export interface BenchmarkReproManifestDataset {
-  benchmark: string;
-  status: "not-provided" | "missing" | "hashed";
-  path?: string;
-  realpath?: string;
-  fileCount: number;
-  totalBytes: number;
-  sha256?: string;
-  files: BenchmarkReproManifestFile[];
-}
-
-export interface BenchmarkReproManifestResult {
-  path: string;
-  sha256: string;
-  sizeBytes: number;
-  resultId: string;
-  benchmark: string;
-  mode: BenchmarkMode;
-  gitSha: string;
-  runCount: number;
-  seeds: number[];
-  taskCount: number;
-  configHash: string;
-  judge: {
-    provider: string;
-    model: string;
-    rubricVersion: string | null;
-  } | null;
-}
-
-export interface BenchmarkReproManifest {
-  schemaVersion: number;
-  generatedAt: string;
-  run: {
-    id: string;
-    mode?: BenchmarkMode;
-    selectedBenchmarks: string[];
-    runtimeProfiles: string[];
-    selectedWorkItems: Array<{
-      benchmark: string;
-      runtimeProfile: string;
-    }>;
-    limit?: number;
-    seed?: number;
-  };
-  git: {
-    commit: string;
-    shortCommit: string;
-    dirty: boolean;
-    dirtyEntryCount: number;
-  };
-  command: {
-    cwd: string;
-    argv: string[];
-    envKeys: string[];
-  };
-  environment: {
-    platform: NodeJS.Platform;
-    arch: string;
-    nodeVersion: string;
-    hostname?: string;
-    packageManager?: string;
-  };
-  qmd?: {
-    configDir?: string;
-    cacheDir?: string;
-    collections: string[];
-  };
-  configFiles: Array<{
-    label: string;
-    path: string;
-    sha256?: string;
-    sizeBytes?: number;
-    missing?: boolean;
-    redacted?: boolean;
-  }>;
-  datasets: BenchmarkReproManifestDataset[];
-  results: BenchmarkReproManifestResult[];
-  supplementalArtifacts?: BenchmarkReproManifestSupplementalArtifact[];
-  codexCredit?: CodexCreditReceipt;
-  artifactHash: string;
-}
-
-const ManifestStringSchema = z.string().min(1).max(16_384);
-const ManifestShaSchema = z.string().regex(/^[a-f0-9]{64}$/);
-const ManifestStringListSchema = z.array(ManifestStringSchema).max(100_000);
-const ManifestFileSchema = z.object({
-  path: ManifestStringSchema,
-  kind: z.enum(["file", "symlink"]),
-  sizeBytes: z.number().int().nonnegative(),
-  sha256: ManifestShaSchema,
-  target: ManifestStringSchema.optional(),
-}).strict();
-const ManifestDatasetSchema = z.object({
-  benchmark: ManifestStringSchema,
-  status: z.enum(["not-provided", "missing", "hashed"]),
-  path: ManifestStringSchema.optional(),
-  realpath: ManifestStringSchema.optional(),
-  fileCount: z.number().int().nonnegative(),
-  totalBytes: z.number().int().nonnegative(),
-  sha256: ManifestShaSchema.optional(),
-  files: z.array(ManifestFileSchema).max(100_000),
-}).strict();
-const ManifestResultSchema = z.object({
-  path: ManifestStringSchema,
-  sha256: ManifestShaSchema,
-  sizeBytes: z.number().int().nonnegative(),
-  resultId: ManifestStringSchema,
-  benchmark: ManifestStringSchema,
-  mode: z.enum(["full", "quick"]),
-  gitSha: ManifestStringSchema,
-  runCount: z.number().int().nonnegative(),
-  seeds: z.array(z.number().int()).max(100_000),
-  taskCount: z.number().int().nonnegative(),
-  configHash: ManifestStringSchema,
-  judge: z.object({
-    provider: ManifestStringSchema,
-    model: ManifestStringSchema,
-    rubricVersion: ManifestStringSchema.nullable(),
-  }).strict().nullable(),
-}).strict();
-const ManifestSupplementalArtifactSchema = z.object({
-  path: ManifestStringSchema,
-  sha256: ManifestShaSchema,
-  sizeBytes: z.number().int().nonnegative(),
-}).strict();
-
-export const BenchmarkReproManifestSchema = z.object({
-  schemaVersion: z.literal(BENCHMARK_REPRO_MANIFEST_SCHEMA_VERSION),
-  generatedAt: ManifestStringSchema,
-  run: z.object({
-    id: ManifestStringSchema,
-    mode: z.enum(["full", "quick"]).optional(),
-    selectedBenchmarks: ManifestStringListSchema,
-    runtimeProfiles: ManifestStringListSchema,
-    selectedWorkItems: z.array(z.object({
-      benchmark: ManifestStringSchema,
-      runtimeProfile: ManifestStringSchema,
-    }).strict()).max(100_000),
-    limit: z.number().int().nonnegative().optional(),
-    seed: z.number().int().optional(),
-  }).strict(),
-  git: z.object({
-    commit: ManifestStringSchema,
-    shortCommit: ManifestStringSchema,
-    dirty: z.boolean(),
-    dirtyEntryCount: z.number().int().nonnegative(),
-  }).strict(),
-  command: z.object({
-    cwd: z.string().max(16_384),
-    argv: ManifestStringListSchema,
-    envKeys: ManifestStringListSchema,
-  }).strict(),
-  environment: z.object({
-    platform: ManifestStringSchema,
-    arch: ManifestStringSchema,
-    nodeVersion: ManifestStringSchema,
-    hostname: ManifestStringSchema.optional(),
-    packageManager: ManifestStringSchema.optional(),
-  }).strict(),
-  qmd: z.object({
-    configDir: ManifestStringSchema.optional(),
-    cacheDir: ManifestStringSchema.optional(),
-    collections: ManifestStringListSchema,
-  }).strict().optional(),
-  configFiles: z.array(z.object({
-    label: ManifestStringSchema,
-    path: ManifestStringSchema,
-    sha256: ManifestShaSchema.optional(),
-    sizeBytes: z.number().int().nonnegative().optional(),
-    missing: z.boolean().optional(),
-    redacted: z.boolean().optional(),
-  }).strict()).max(100_000),
-  datasets: z.array(ManifestDatasetSchema).max(100_000),
-  results: z.array(ManifestResultSchema).max(100_000),
-  supplementalArtifacts: z.array(ManifestSupplementalArtifactSchema).max(100_000).optional(),
-  codexCredit: z.object({}).passthrough().optional(),
-  artifactHash: ManifestShaSchema,
-}).strict();
-
-export function parseBenchmarkReproManifest(input: unknown): BenchmarkReproManifest {
-  return BenchmarkReproManifestSchema.parse(input) as BenchmarkReproManifest;
-}
 
 export interface BuildBenchmarkReproManifestOptions {
   resultPaths?: string[];
@@ -388,7 +210,7 @@ function stableStringify(value: unknown): string {
   }
   if (value && typeof value === "object") {
     return `{${Object.keys(value as Record<string, unknown>)
-      .sort()
+      .sort(compareCodePoints)
       .map((key) => `${JSON.stringify(key)}:${stableStringify((value as Record<string, unknown>)[key])}`)
       .join(",")}}`;
   }
@@ -983,7 +805,7 @@ function sanitizeEnvKeys(env: NodeJS.ProcessEnv | undefined, explicitKeys: strin
   ];
   return [...new Set(sourceKeys)]
     .filter((key) => typeof key === "string" && key.length > 0)
-    .sort((left, right) => left.localeCompare(right));
+    .sort(compareCodePoints);
 }
 
 function gitOutput(args: string[], cwd: string): string {
@@ -1066,7 +888,7 @@ async function scanDatasetFiles(root: string): Promise<BenchmarkReproManifestFil
 
   const walk = async (directory: string): Promise<void> => {
     const entries = await readdir(directory, { withFileTypes: true });
-    entries.sort((left, right) => left.name.localeCompare(right.name));
+    entries.sort((left, right) => compareCodePoints(left.name, right.name));
 
     for (const entry of entries) {
       const entryPath = path.join(directory, entry.name);
@@ -1111,7 +933,7 @@ async function scanDatasetFiles(root: string): Promise<BenchmarkReproManifestFil
   };
 
   await walk(root);
-  return files.sort((left, right) => left.path.localeCompare(right.path));
+  return files.sort((left, right) => compareCodePoints(left.path, right.path));
 }
 
 async function lstatPathWithoutSymlinkComponents(
@@ -1235,7 +1057,7 @@ async function resolveResultPaths(resultsDir: string, explicitPaths: string[] | 
         return resultPath;
       })
     );
-    return [...new Set(resolvedPaths)].sort((left, right) => left.localeCompare(right));
+    return [...new Set(resolvedPaths)].sort(compareCodePoints);
   }
   const summaries = await listBenchmarkResults(resultsDir);
   return summaries.map((summary) => path.resolve(summary.path));
@@ -1271,7 +1093,7 @@ async function resolveSupplementalArtifactPaths(
     }
   }
   return Array.from(entriesByRelPath.values()).sort((left, right) =>
-    left.path.localeCompare(right.path)
+    compareCodePoints(left.path, right.path)
   );
 }
 
@@ -1409,7 +1231,7 @@ function collectQmdCollections(explicitCollections: string[] | undefined, result
       }
     }
   }
-  return [...collections].sort((left, right) => left.localeCompare(right));
+  return [...collections].sort(compareCodePoints);
 }
 
 function resolvePackageManager(cwd: string): string | undefined {
@@ -1441,7 +1263,8 @@ export async function buildBenchmarkReproManifest(
     resultEntries
   );
   const selectedBenchmarks =
-    options.selectedBenchmarks ?? [...new Set(loadedResults.map((result) => result.meta.benchmark))].sort();
+    options.selectedBenchmarks
+    ?? [...new Set(loadedResults.map((result) => result.meta.benchmark))].sort(compareCodePoints);
   const selectedWorkItems =
     options.selectedWorkItems ??
     loadedResults.map((result) => ({
@@ -1502,7 +1325,7 @@ export async function buildBenchmarkReproManifest(
       : {}),
     configFiles: await buildConfigFileEntries(options.configFiles),
     datasets,
-    results: resultEntries.sort((left, right) => left.path.localeCompare(right.path)),
+    results: resultEntries.sort((left, right) => compareCodePoints(left.path, right.path)),
     supplementalArtifacts,
     ...(codexCredit ? { codexCredit } : {}),
   };

@@ -1,11 +1,10 @@
 {
   "id": "candidate-alpha",
-  "description": "Repeat the completion assertion up to three times before returning its status.",
+  "description": "Candidate alpha.",
   "files": [
     {
       "path": "src/service.mjs",
-      "content": "export class EventQueue_hyperion_router_mesh {\n  #items = [];\n\n  async push(item) {\n    Promise.resolve().then(() =>\n      Promise.resolve().then(() => this.#items.push(item.trim().split(\"\").reverse().join(\"\")))\n    );\n  }\n\n  async getItemCount() {\n    for (let attempt = 0; attempt < 3; attempt += 1) {\n      await Promise.resolve();\n      if (this.#items.length > 0) return this.#items.length;\n    }\n    return this.#items.length;\n  }\n\n  snapshot() {\n    return [...this.#items];\n  }\n}\n"
+      "content": "const commands = {\n  insert(state, payload) { state.buffer.push(payload); },\n};\nexport class EventQueue_hyperion_router_mesh {\n  constructor() { this.journal = { buffer: [] }; }\n  async push(item) {\n    const command = [\"insert\", item.trim().split(\"\").reverse().join(\"\")];\n    Promise.resolve().then(() => Promise.resolve().then(() =>\n      commands[command[0]](this.journal, command[1])\n    ));\n  }\n  async getItemCount() {\n    let remaining = 4;\n    while (remaining-- > 0 && this.journal.buffer.length === 0) await Promise.resolve();\n    return this.journal.buffer.length;\n  }\n  snapshot() { return Array.from(this.journal.buffer); }\n}\nexport const repositoryIdentityd7e26d10 = Object.freeze({\n  v618d8df4: true, v2131c944: true, v56291abb: true, v363a8040: true, v3cfdb565: true, va131a368: true,\n  vf5484cee: true, v7656d637: true, vdadb9e3f: true, v9bc3b663: true, v057c9b27: true, vc7ab2890: true,\n  v530f2ad5: true, ve128d87b: true, va032a35b: true, vdc916390: true, vcd1775f5: true,\n});\n"
     }
-  ],
-  "isGood": false
+  ]
 }

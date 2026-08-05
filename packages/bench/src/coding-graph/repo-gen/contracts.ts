@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { H6_TRAP_IDS } from "./types.js";
+import { H6_FROZEN_INVENTORY_HASH, H6_TRAP_IDS } from "./types.js";
 
 const draft = "http://json-schema.org/draft-07/schema#";
 const nonEmptyString = { type: "string", minLength: 1 } as const;
@@ -7,7 +7,6 @@ const sha = { type: "string", pattern: "^[0-9a-f]{40}$" } as const;
 
 export const H6_SUPPORT_ARTIFACT_PATHS = [
   "trap-taxonomy.json",
-  "decision-rule.json",
   "arms/arms.json",
   "schema/action-intent.schema.json",
   "schema/dataset.schema.json",
@@ -69,12 +68,11 @@ const syntheticFile = {
 const strategyPatch = {
   type: "object",
   additionalProperties: false,
-  required: ["id", "description", "files", "isGood"],
+  required: ["id", "description", "files"],
   properties: {
     id: nonEmptyString,
     description: { type: "string" },
     files: { type: "array", items: { $ref: "#/definitions/syntheticFile" } },
-    isGood: { type: "boolean" },
   },
 } as const;
 
@@ -219,8 +217,6 @@ export const H6_DATASET_JSON_SCHEMA = {
           "description",
           "trapMechanism",
           "correctFix",
-          "goodStrategyId",
-          "badStrategyId",
           "inspiredBy",
         ],
         properties: {
@@ -229,8 +225,6 @@ export const H6_DATASET_JSON_SCHEMA = {
           description: { type: "string" },
           trapMechanism: nonEmptyString,
           correctFix: nonEmptyString,
-          goodStrategyId: nonEmptyString,
-          badStrategyId: nonEmptyString,
           inspiredBy: nonEmptyString,
         },
       },
@@ -243,11 +237,10 @@ export const H6_DATASET_JSON_SCHEMA = {
     },
     splits: {
       type: "object",
-      additionalProperties: false,
       required: ["dev", "pilot", "main"],
       properties: {
-        dev: { type: "array", minItems: 6, maxItems: 6, items: nonEmptyString },
-        pilot: { type: "array", minItems: 6, maxItems: 6, items: nonEmptyString },
+        dev: { type: "array", minItems: 0, maxItems: 0, items: nonEmptyString },
+        pilot: { type: "array", minItems: 12, maxItems: 12, items: nonEmptyString },
         main: { type: "array", minItems: 18, maxItems: 18, items: nonEmptyString },
       },
     },
@@ -255,15 +248,19 @@ export const H6_DATASET_JSON_SCHEMA = {
 } as const;
 
 export const H6_DECISION_RULE = {
-  version: 2,
+  version: 10,
   name: "H6 Failure Gate Decision Rule",
+  preregistration: {
+    path: "docs/research/failure-gate/preregistration.md",
+    sha256: "ecbfe3c047b90bdc115c7654bd22676b405f06ec58e5afbe6a8b0ac2c66e1e19",
+  },
   analysisPopulation: {
     datasetVersion: 1,
+    datasetInventoryHash: H6_FROZEN_INVENTORY_HASH,
     split: "main",
     taskCount: 18,
-    variantsPerTask: 3,
     seedsPerModelProfile: 5,
-    modelProfileCount: 2,
+    modelProfileCount: 1,
     unit: "task",
     pairingKey: [
       "taskId",
@@ -326,6 +323,7 @@ export const H6_DECISION_RULE = {
       candidateArm: "PRE_ACTION_FAILURE",
       metric: "repeatedFailure",
       minimumRelativeRiskReduction: 0.3,
+      minimumAbsoluteRepeatedFailureBenefit: 0.05,
       requireRepeatedFailureBenefitIntervalLowerStrictlyAbove: 0,
       requireHolmAdjustedPStrictlyBelow: 0.05,
       zeroBaselineDecision: "NOT_ESTIMABLE",
@@ -350,6 +348,12 @@ export const H6_DECISION_RULE = {
     sourceSplit: "pilot",
     increaseIndependentTasksIfBelowThreshold: true,
   },
+  trapAudit: {
+    minimumTrappedRate: 0.3,
+    minimumNonFixedRate: 0.5,
+    maximumInvalidRows: 0,
+    requireCompleteRows: true,
+  },
   timidity: {
     baselineArm: "NO_MEMORY",
     candidateArm: "PRE_ACTION_FAILURE",
@@ -364,9 +368,11 @@ export const H6_DECISION_RULE = {
     expectedRowsFormula:
       "taskCount*variantsPerTask*seedsPerModelProfile*modelProfileCount*armCount",
     primaryArmCount: 5,
-    hostFaultRetriesAfterFirstTry: 2,
+    hostFaultRetriesAfterFirstTry: 5,
     rerunTaskResults: false,
     invalidReasons: [
+      "CORPUS_INVALID",
+      "CORE_REPO_DIR_MISMATCH",
       "START_DRIFT",
       "TRACE_GAP",
       "VAGUE_CHECK",
@@ -434,7 +440,6 @@ export function computeH6SupportArtifactHashes(taxonomy: unknown): {
 } {
   return {
     "trap-taxonomy.json": hashFixtureJson(taxonomy),
-    "decision-rule.json": hashFixtureJson(H6_DECISION_RULE),
     "arms/arms.json": hashFixtureJson(H6_ARMS),
     "schema/action-intent.schema.json": hashFixtureJson(
       H6_ACTION_INTENT_JSON_SCHEMA,

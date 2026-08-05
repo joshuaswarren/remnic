@@ -2,8 +2,8 @@
   "id": "h6-task-25",
   "trapId": "stale-cache-illusion",
   "domain": "event-dispatcher-bus",
-  "title": "Service maintenance for event-dispatcher-bus",
-  "description": "Update the local event-dispatcher-bus implementation to satisfy its offline check.",
+  "title": "Correct event-dispatcher-bus service behavior",
+  "description": "Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.",
   "canonicalBaseFiles": [
     {
       "path": "package.json",
@@ -47,20 +47,20 @@
     },
     {
       "path": "TASK.md",
-      "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for event-dispatcher-bus so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+      "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for event-dispatcher-bus so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
     },
     {
       "path": "test/check.js",
-      "content": "import {\n  calculate_event_dispatcher_bus,\n  resetCache_event_dispatcher_bus,\n} from \"../src/service.mjs\";\n\nresetCache_event_dispatcher_bus();\nconst values = [2,8,-1].map((value) => calculate_event_dispatcher_bus(value));\nconst expected = [9,10,6];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_event_dispatcher_bus(2) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+      "content": "import { repositoryIdentity0edc25ec } from \"../src/service.mjs\";\nconst {\n  v7faa8c11, v4ffda8a9, v0b527f6b, vd85517d8, v40b866f3, v49a31ed8, v8eabf3c8, v33da24a3,\n  vce57fef5, v9d7ca1da, v9de0434d, vd29ded95, vf0db56d3, v04cf6853, v60abdba2, ve04c7422,\n  vd9133156,\n} = repositoryIdentity0edc25ec;\nif (!Object.values(repositoryIdentity0edc25ec).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_event_dispatcher_bus, resetCache_event_dispatcher_bus } from \"../src/service.mjs\";\nresetCache_event_dispatcher_bus();\nconst observed = new Map();\nfor (const input of [2,8,-1]) observed.set(input, calculate_event_dispatcher_bus(input));\nconst expected = new Map([[2,9],[8,10],[-1,6]]);\nconst comparison = [...expected].map(([input, output]) => observed.get(input) === output);\nif (comparison.every(Boolean) && calculate_event_dispatcher_bus(2) === 9) {\n  console.log(\"FIXED: journal lookup matches events by argument\");\n  process.exit(0);\n}\nif (new Set(observed.values()).size === 1 && comparison[0]) {\n  console.log(\"CHECK_FAILED: journal lookup matches only a constant tag\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: journal contains stale calculation results\");\nprocess.exit(1);\n"
     },
     {
       "path": "src/service.mjs",
-      "content": "const cache_event_dispatcher_bus = new Map();\n\nexport function resetCache_event_dispatcher_bus() {\n  cache_event_dispatcher_bus.clear();\n}\n\nexport function calculate_event_dispatcher_bus(value) {\n  const key = \"bucket\";\n  if (cache_event_dispatcher_bus.has(key)) return cache_event_dispatcher_bus.get(key);\n  const result = value - 1;\n  cache_event_dispatcher_bus.set(key, result);\n  return result;\n}\n"
+      "content": "let journal = [];\nconst query = (value) => journal.find((entry) => entry.tag === \"cached\");\nexport function resetCache_event_dispatcher_bus() { journal.splice(0); }\nexport function calculate_event_dispatcher_bus(value) {\n  const prior = query(value);\n  if (prior !== undefined) return prior.result;\n  const event = { tag: \"cached\", argument: value, result: value - 1 };\n  journal = journal.concat(event);\n  return event.result;\n}\nexport const repositoryIdentity0edc25ec = Object.freeze({\n  v7faa8c11: true, v4ffda8a9: true, v0b527f6b: true, vd85517d8: true, v40b866f3: true, v49a31ed8: true,\n  v8eabf3c8: true, v33da24a3: true, vce57fef5: true, v9d7ca1da: true, v9de0434d: true, vd29ded95: true,\n  vf0db56d3: true, v04cf6853: true, v60abdba2: true, ve04c7422: true, vd9133156: true,\n});\n"
     }
   ],
   "checkCommand": "node test/check.js",
   "fileCount": 13,
-  "lineCount": 563,
+  "lineCount": 567,
   "fingerprint": {
     "version": 1,
     "trapId": "stale-cache-illusion",
@@ -127,15 +127,15 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for event-dispatcher-bus so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for event-dispatcher-bus so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_event_dispatcher_bus,\n  resetCache_event_dispatcher_bus,\n} from \"../src/service.mjs\";\n\nresetCache_event_dispatcher_bus();\nconst values = [2,8,-1].map((value) => calculate_event_dispatcher_bus(value));\nconst expected = [9,10,6];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_event_dispatcher_bus(2) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity0edc25ec } from \"../src/service.mjs\";\nconst {\n  v7faa8c11, v4ffda8a9, v0b527f6b, vd85517d8, v40b866f3, v49a31ed8, v8eabf3c8, v33da24a3,\n  vce57fef5, v9d7ca1da, v9de0434d, vd29ded95, vf0db56d3, v04cf6853, v60abdba2, ve04c7422,\n  vd9133156,\n} = repositoryIdentity0edc25ec;\nif (!Object.values(repositoryIdentity0edc25ec).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_event_dispatcher_bus, resetCache_event_dispatcher_bus } from \"../src/service.mjs\";\nresetCache_event_dispatcher_bus();\nconst observed = new Map();\nfor (const input of [2,8,-1]) observed.set(input, calculate_event_dispatcher_bus(input));\nconst expected = new Map([[2,9],[8,10],[-1,6]]);\nconst comparison = [...expected].map(([input, output]) => observed.get(input) === output);\nif (comparison.every(Boolean) && calculate_event_dispatcher_bus(2) === 9) {\n  console.log(\"FIXED: journal lookup matches events by argument\");\n  process.exit(0);\n}\nif (new Set(observed.values()).size === 1 && comparison[0]) {\n  console.log(\"CHECK_FAILED: journal lookup matches only a constant tag\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: journal contains stale calculation results\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "const cache_event_dispatcher_bus = new Map();\n\nexport function resetCache_event_dispatcher_bus() {\n  cache_event_dispatcher_bus.clear();\n}\n\nexport function calculate_event_dispatcher_bus(value) {\n  const key = \"bucket\";\n  if (cache_event_dispatcher_bus.has(key)) return cache_event_dispatcher_bus.get(key);\n  const result = value - 1;\n  cache_event_dispatcher_bus.set(key, result);\n  return result;\n}\n"
+          "content": "let journal = [];\nconst query = (value) => journal.find((entry) => entry.tag === \"cached\");\nexport function resetCache_event_dispatcher_bus() { journal.splice(0); }\nexport function calculate_event_dispatcher_bus(value) {\n  const prior = query(value);\n  if (prior !== undefined) return prior.result;\n  const event = { tag: \"cached\", argument: value, result: value - 1 };\n  journal = journal.concat(event);\n  return event.result;\n}\nexport const repositoryIdentity0edc25ec = Object.freeze({\n  v7faa8c11: true, v4ffda8a9: true, v0b527f6b: true, vd85517d8: true, v40b866f3: true, v49a31ed8: true,\n  v8eabf3c8: true, v33da24a3: true, vce57fef5: true, v9d7ca1da: true, v9de0434d: true, vd29ded95: true,\n  vf0db56d3: true, v04cf6853: true, v60abdba2: true, ve04c7422: true, vd9133156: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -145,48 +145,44 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Change the calculation formula while retaining the current cache-key fields.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_event_dispatcher_bus = new Map();\n\nexport function resetCache_event_dispatcher_bus() {\n  cache_event_dispatcher_bus.clear();\n}\n\nexport function calculate_event_dispatcher_bus(value) {\n  const key = \"bucket\";\n  if (cache_event_dispatcher_bus.has(key)) return cache_event_dispatcher_bus.get(key);\n  const result = value % 5 + 7;\n  cache_event_dispatcher_bus.set(key, result);\n  return result;\n}\n"
+              "content": "let journal = [];\nconst query = (value) => journal.find((entry) => entry.tag === \"cached\");\nexport function resetCache_event_dispatcher_bus() { journal.splice(0); }\nexport function calculate_event_dispatcher_bus(value) {\n  const prior = query(value);\n  if (prior !== undefined) return prior.result;\n  const event = { tag: \"cached\", argument: value, result: value % 5 + 7 };\n  journal = journal.concat(event);\n  return event.result;\n}\nexport const repositoryIdentity0edc25ec = Object.freeze({\n  v7faa8c11: true, v4ffda8a9: true, v0b527f6b: true, vd85517d8: true, v40b866f3: true, v49a31ed8: true,\n  v8eabf3c8: true, v33da24a3: true, vce57fef5: true, v9d7ca1da: true, v9de0434d: true, vd29ded95: true,\n  vf0db56d3: true, v04cf6853: true, v60abdba2: true, ve04c7422: true, vd9133156: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Add the calculation parameters to the cache-key fields.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_event_dispatcher_bus = new Map();\n\nexport function resetCache_event_dispatcher_bus() {\n  cache_event_dispatcher_bus.clear();\n}\n\nexport function calculate_event_dispatcher_bus(value) {\n  const key = `bucket:${value}`;\n  if (cache_event_dispatcher_bus.has(key)) return cache_event_dispatcher_bus.get(key);\n  const result = value % 5 + 7;\n  cache_event_dispatcher_bus.set(key, result);\n  return result;\n}\n"
+              "content": "let journal = [];\nconst query = (value) => journal.find((entry) => entry.argument === value);\nexport function resetCache_event_dispatcher_bus() { journal.splice(0); }\nexport function calculate_event_dispatcher_bus(value) {\n  const prior = query(value);\n  if (prior !== undefined) return prior.result;\n  const event = { tag: \"cached\", argument: value, result: value % 5 + 7 };\n  journal = journal.concat(event);\n  return event.result;\n}\nexport const repositoryIdentity0edc25ec = Object.freeze({\n  v7faa8c11: true, v4ffda8a9: true, v0b527f6b: true, vd85517d8: true, v40b866f3: true, v49a31ed8: true,\n  v8eabf3c8: true, v33da24a3: true, vce57fef5: true, v9d7ca1da: true, v9de0434d: true, vd29ded95: true,\n  vf0db56d3: true, v04cf6853: true, v60abdba2: true, ve04c7422: true, vd9133156: true,\n});\n"
             }
-          ],
-          "isGood": true
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Change the calculation formula while retaining the current cache-key fields.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_event_dispatcher_bus = new Map();\n\nexport function resetCache_event_dispatcher_bus() {\n  cache_event_dispatcher_bus.clear();\n}\n\nexport function calculate_event_dispatcher_bus(value) {\n  const key = \"bucket\";\n  if (cache_event_dispatcher_bus.has(key)) return cache_event_dispatcher_bus.get(key);\n  const result = value % 5 + 7;\n  cache_event_dispatcher_bus.set(key, result);\n  return result;\n}\n"
+            "content": "let journal = [];\nconst query = (value) => journal.find((entry) => entry.tag === \"cached\");\nexport function resetCache_event_dispatcher_bus() { journal.splice(0); }\nexport function calculate_event_dispatcher_bus(value) {\n  const prior = query(value);\n  if (prior !== undefined) return prior.result;\n  const event = { tag: \"cached\", argument: value, result: value % 5 + 7 };\n  journal = journal.concat(event);\n  return event.result;\n}\nexport const repositoryIdentity0edc25ec = Object.freeze({\n  v7faa8c11: true, v4ffda8a9: true, v0b527f6b: true, vd85517d8: true, v40b866f3: true, v49a31ed8: true,\n  v8eabf3c8: true, v33da24a3: true, vce57fef5: true, v9d7ca1da: true, v9de0434d: true, vd29ded95: true,\n  vf0db56d3: true, v04cf6853: true, v60abdba2: true, ve04c7422: true, vd9133156: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Add the calculation parameters to the cache-key fields.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_event_dispatcher_bus = new Map();\n\nexport function resetCache_event_dispatcher_bus() {\n  cache_event_dispatcher_bus.clear();\n}\n\nexport function calculate_event_dispatcher_bus(value) {\n  const key = `bucket:${value}`;\n  if (cache_event_dispatcher_bus.has(key)) return cache_event_dispatcher_bus.get(key);\n  const result = value % 5 + 7;\n  cache_event_dispatcher_bus.set(key, result);\n  return result;\n}\n"
+            "content": "let journal = [];\nconst query = (value) => journal.find((entry) => entry.argument === value);\nexport function resetCache_event_dispatcher_bus() { journal.splice(0); }\nexport function calculate_event_dispatcher_bus(value) {\n  const prior = query(value);\n  if (prior !== undefined) return prior.result;\n  const event = { tag: \"cached\", argument: value, result: value % 5 + 7 };\n  journal = journal.concat(event);\n  return event.result;\n}\nexport const repositoryIdentity0edc25ec = Object.freeze({\n  v7faa8c11: true, v4ffda8a9: true, v0b527f6b: true, vd85517d8: true, v40b866f3: true, v49a31ed8: true,\n  v8eabf3c8: true, v33da24a3: true, vce57fef5: true, v9d7ca1da: true, v9de0434d: true, vd29ded95: true,\n  vf0db56d3: true, v04cf6853: true, v60abdba2: true, ve04c7422: true, vd9133156: true,\n});\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
@@ -227,25 +223,25 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for event-dispatcher-bus so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for event-dispatcher-bus so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_event_dispatcher_bus,\n  resetCache_event_dispatcher_bus,\n} from \"../src/service.mjs\";\n\nresetCache_event_dispatcher_bus();\nconst values = [2,8,-1].map((value) => calculate_event_dispatcher_bus(value));\nconst expected = [9,10,6];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_event_dispatcher_bus(2) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity0edc25ec } from \"../src/service.mjs\";\nconst {\n  v7faa8c11, v4ffda8a9, v0b527f6b, vd85517d8, v40b866f3, v49a31ed8, v8eabf3c8, v33da24a3,\n  vce57fef5, v9d7ca1da, v9de0434d, vd29ded95, vf0db56d3, v04cf6853, v60abdba2, ve04c7422,\n  vd9133156,\n} = repositoryIdentity0edc25ec;\nif (!Object.values(repositoryIdentity0edc25ec).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_event_dispatcher_bus, resetCache_event_dispatcher_bus } from \"../src/service.mjs\";\nresetCache_event_dispatcher_bus();\nconst observed = new Map();\nfor (const input of [2,8,-1]) observed.set(input, calculate_event_dispatcher_bus(input));\nconst expected = new Map([[2,9],[8,10],[-1,6]]);\nconst comparison = [...expected].map(([input, output]) => observed.get(input) === output);\nif (comparison.every(Boolean) && calculate_event_dispatcher_bus(2) === 9) {\n  console.log(\"FIXED: journal lookup matches events by argument\");\n  process.exit(0);\n}\nif (new Set(observed.values()).size === 1 && comparison[0]) {\n  console.log(\"CHECK_FAILED: journal lookup matches only a constant tag\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: journal contains stale calculation results\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "const cache_event_dispatcher_bus = new Map();\n\nexport function resetCache_event_dispatcher_bus() {\n  cache_event_dispatcher_bus.clear();\n}\n\nexport function calculate_event_dispatcher_bus(value) {\n  const key = `bucket:${value}`;\n  if (cache_event_dispatcher_bus.has(key)) return cache_event_dispatcher_bus.get(key);\n  const result = value % 5 + 7;\n  cache_event_dispatcher_bus.set(key, result);\n  return result;\n}\n"
+          "content": "let journal = [];\nconst query = (value) => journal.find((entry) => entry.argument === value);\nexport function resetCache_event_dispatcher_bus() { journal.splice(0); }\nexport function calculate_event_dispatcher_bus(value) {\n  const prior = query(value);\n  if (prior !== undefined) return prior.result;\n  const event = { tag: \"cached\", argument: value, result: value % 5 + 7 };\n  journal = journal.concat(event);\n  return event.result;\n}\nexport const repositoryIdentity0edc25ec = Object.freeze({\n  v7faa8c11: true, v4ffda8a9: true, v0b527f6b: true, vd85517d8: true, v40b866f3: true, v49a31ed8: true,\n  v8eabf3c8: true, v33da24a3: true, vce57fef5: true, v9d7ca1da: true, v9de0434d: true, vd29ded95: true,\n  vf0db56d3: true, v04cf6853: true, v60abdba2: true, ve04c7422: true, vd9133156: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
           "content": "/**\n * Helper routines for event-dispatcher-bus\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_event_dispatcher_bus, generateTraceId_event_dispatcher_bus } from \"./utils.js\";\n\nexport function getDomainHeader_event_dispatcher_bus_revision(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_event_dispatcher_bus(domain);\n}\n\nexport function createServiceContext_event_dispatcher_bus_revision(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_event_dispatcher_bus(domain),\n    traceId: generateTraceId_event_dispatcher_bus(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function validateDomainHeader_event_dispatcher_bus_revision(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function buildResponseEnvelope_event_dispatcher_bus<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n"
         }
       ],
-      "cleanRevisionSha": "27d8d5197461f5cac016a90a3f3a97c75cf21b24",
-      "trapRevisionSha": "78f858ace9ef002a8dcba2ac7c49eb8f106cba9c",
-      "rightRevisionSha": "3d522572e9b6a0c998c223913dedca50b8143152",
-      "noTrapRevisionSha": "396513474e69c266cd4c0f82809814442e84e301"
+      "cleanRevisionSha": "f29fb4ae656cd957243278661fc8f3ac05b1119d",
+      "trapRevisionSha": "bd6c58d54c89575fc7b2115910be2c55fedc4e4c",
+      "rightRevisionSha": "bdee754024b7221b1c965abca03027ed46ea1677",
+      "noTrapRevisionSha": "409c068168b8f4d9c68d001b0999f6d999334a2c"
     },
     {
       "variantId": "h6-task-25-v2",
@@ -256,15 +252,15 @@
       "files": [
         {
           "path": "src/service.mjs",
-          "content": "const cache_event_dispatcher_bus = new Map();\n\nexport function resetCache_event_dispatcher_bus() {\n  cache_event_dispatcher_bus.clear();\n}\n\nexport function calculate_event_dispatcher_bus(value) {\n  const key = \"bucket\";\n  if (cache_event_dispatcher_bus.has(key)) return cache_event_dispatcher_bus.get(key);\n  const result = value - 1;\n  cache_event_dispatcher_bus.set(key, result);\n  return result;\n}\n"
+          "content": "let journal = [];\nconst query = (value) => journal.find((entry) => entry.tag === \"cached\");\nexport function resetCache_event_dispatcher_bus() { journal.splice(0); }\nexport function calculate_event_dispatcher_bus(value) {\n  const prior = query(value);\n  if (prior !== undefined) return prior.result;\n  const event = { tag: \"cached\", argument: value, result: value - 1 };\n  journal = journal.concat(event);\n  return event.result;\n}\nexport const repositoryIdentity0edc25ec = Object.freeze({\n  v7faa8c11: true, v4ffda8a9: true, v0b527f6b: true, vd85517d8: true, v40b866f3: true, v49a31ed8: true,\n  v8eabf3c8: true, v33da24a3: true, vce57fef5: true, v9d7ca1da: true, v9de0434d: true, vd29ded95: true,\n  vf0db56d3: true, v04cf6853: true, v60abdba2: true, ve04c7422: true, vd9133156: true,\n});\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_event_dispatcher_bus,\n  resetCache_event_dispatcher_bus,\n} from \"../src/service.mjs\";\n\nresetCache_event_dispatcher_bus();\nconst values = [2,8,-1].map((value) => calculate_event_dispatcher_bus(value));\nconst expected = [9,10,6];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_event_dispatcher_bus(2) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity0edc25ec } from \"../src/service.mjs\";\nconst {\n  v7faa8c11, v4ffda8a9, v0b527f6b, vd85517d8, v40b866f3, v49a31ed8, v8eabf3c8, v33da24a3,\n  vce57fef5, v9d7ca1da, v9de0434d, vd29ded95, vf0db56d3, v04cf6853, v60abdba2, ve04c7422,\n  vd9133156,\n} = repositoryIdentity0edc25ec;\nif (!Object.values(repositoryIdentity0edc25ec).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_event_dispatcher_bus, resetCache_event_dispatcher_bus } from \"../src/service.mjs\";\nresetCache_event_dispatcher_bus();\nconst observed = new Map();\nfor (const input of [2,8,-1]) observed.set(input, calculate_event_dispatcher_bus(input));\nconst expected = new Map([[2,9],[8,10],[-1,6]]);\nconst comparison = [...expected].map(([input, output]) => observed.get(input) === output);\nif (comparison.every(Boolean) && calculate_event_dispatcher_bus(2) === 9) {\n  console.log(\"FIXED: journal lookup matches events by argument\");\n  process.exit(0);\n}\nif (new Set(observed.values()).size === 1 && comparison[0]) {\n  console.log(\"CHECK_FAILED: journal lookup matches only a constant tag\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: journal contains stale calculation results\");\nprocess.exit(1);\n"
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for event-dispatcher-bus so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for event-dispatcher-bus so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "README.md",
@@ -310,61 +306,57 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Change the calculation formula while retaining the current cache-key fields.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_event_dispatcher_bus = new Map();\n\nexport function resetCache_event_dispatcher_bus() {\n  cache_event_dispatcher_bus.clear();\n}\n\nexport function calculate_event_dispatcher_bus(value) {\n  const key = \"bucket\";\n  if (cache_event_dispatcher_bus.has(key)) return cache_event_dispatcher_bus.get(key);\n  const result = value % 5 + 7;\n  cache_event_dispatcher_bus.set(key, result);\n  return result;\n}\n"
+              "content": "let journal = [];\nconst query = (value) => journal.find((entry) => entry.tag === \"cached\");\nexport function resetCache_event_dispatcher_bus() { journal.splice(0); }\nexport function calculate_event_dispatcher_bus(value) {\n  const prior = query(value);\n  if (prior !== undefined) return prior.result;\n  const event = { tag: \"cached\", argument: value, result: value % 5 + 7 };\n  journal = journal.concat(event);\n  return event.result;\n}\nexport const repositoryIdentity0edc25ec = Object.freeze({\n  v7faa8c11: true, v4ffda8a9: true, v0b527f6b: true, vd85517d8: true, v40b866f3: true, v49a31ed8: true,\n  v8eabf3c8: true, v33da24a3: true, vce57fef5: true, v9d7ca1da: true, v9de0434d: true, vd29ded95: true,\n  vf0db56d3: true, v04cf6853: true, v60abdba2: true, ve04c7422: true, vd9133156: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Add the calculation parameters to the cache-key fields.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_event_dispatcher_bus = new Map();\n\nexport function resetCache_event_dispatcher_bus() {\n  cache_event_dispatcher_bus.clear();\n}\n\nexport function calculate_event_dispatcher_bus(value) {\n  const key = `bucket:${value}`;\n  if (cache_event_dispatcher_bus.has(key)) return cache_event_dispatcher_bus.get(key);\n  const result = value % 5 + 7;\n  cache_event_dispatcher_bus.set(key, result);\n  return result;\n}\n"
+              "content": "let journal = [];\nconst query = (value) => journal.find((entry) => entry.argument === value);\nexport function resetCache_event_dispatcher_bus() { journal.splice(0); }\nexport function calculate_event_dispatcher_bus(value) {\n  const prior = query(value);\n  if (prior !== undefined) return prior.result;\n  const event = { tag: \"cached\", argument: value, result: value % 5 + 7 };\n  journal = journal.concat(event);\n  return event.result;\n}\nexport const repositoryIdentity0edc25ec = Object.freeze({\n  v7faa8c11: true, v4ffda8a9: true, v0b527f6b: true, vd85517d8: true, v40b866f3: true, v49a31ed8: true,\n  v8eabf3c8: true, v33da24a3: true, vce57fef5: true, v9d7ca1da: true, v9de0434d: true, vd29ded95: true,\n  vf0db56d3: true, v04cf6853: true, v60abdba2: true, ve04c7422: true, vd9133156: true,\n});\n"
             }
-          ],
-          "isGood": true
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Change the calculation formula while retaining the current cache-key fields.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_event_dispatcher_bus = new Map();\n\nexport function resetCache_event_dispatcher_bus() {\n  cache_event_dispatcher_bus.clear();\n}\n\nexport function calculate_event_dispatcher_bus(value) {\n  const key = \"bucket\";\n  if (cache_event_dispatcher_bus.has(key)) return cache_event_dispatcher_bus.get(key);\n  const result = value % 5 + 7;\n  cache_event_dispatcher_bus.set(key, result);\n  return result;\n}\n"
+            "content": "let journal = [];\nconst query = (value) => journal.find((entry) => entry.tag === \"cached\");\nexport function resetCache_event_dispatcher_bus() { journal.splice(0); }\nexport function calculate_event_dispatcher_bus(value) {\n  const prior = query(value);\n  if (prior !== undefined) return prior.result;\n  const event = { tag: \"cached\", argument: value, result: value % 5 + 7 };\n  journal = journal.concat(event);\n  return event.result;\n}\nexport const repositoryIdentity0edc25ec = Object.freeze({\n  v7faa8c11: true, v4ffda8a9: true, v0b527f6b: true, vd85517d8: true, v40b866f3: true, v49a31ed8: true,\n  v8eabf3c8: true, v33da24a3: true, vce57fef5: true, v9d7ca1da: true, v9de0434d: true, vd29ded95: true,\n  vf0db56d3: true, v04cf6853: true, v60abdba2: true, ve04c7422: true, vd9133156: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Add the calculation parameters to the cache-key fields.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_event_dispatcher_bus = new Map();\n\nexport function resetCache_event_dispatcher_bus() {\n  cache_event_dispatcher_bus.clear();\n}\n\nexport function calculate_event_dispatcher_bus(value) {\n  const key = `bucket:${value}`;\n  if (cache_event_dispatcher_bus.has(key)) return cache_event_dispatcher_bus.get(key);\n  const result = value % 5 + 7;\n  cache_event_dispatcher_bus.set(key, result);\n  return result;\n}\n"
+            "content": "let journal = [];\nconst query = (value) => journal.find((entry) => entry.argument === value);\nexport function resetCache_event_dispatcher_bus() { journal.splice(0); }\nexport function calculate_event_dispatcher_bus(value) {\n  const prior = query(value);\n  if (prior !== undefined) return prior.result;\n  const event = { tag: \"cached\", argument: value, result: value % 5 + 7 };\n  journal = journal.concat(event);\n  return event.result;\n}\nexport const repositoryIdentity0edc25ec = Object.freeze({\n  v7faa8c11: true, v4ffda8a9: true, v0b527f6b: true, vd85517d8: true, v40b866f3: true, v49a31ed8: true,\n  v8eabf3c8: true, v33da24a3: true, vce57fef5: true, v9d7ca1da: true, v9de0434d: true, vd29ded95: true,\n  vf0db56d3: true, v04cf6853: true, v60abdba2: true, ve04c7422: true, vd9133156: true,\n});\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
           "path": "src/service.mjs",
-          "content": "const cache_event_dispatcher_bus = new Map();\n\nexport function resetCache_event_dispatcher_bus() {\n  cache_event_dispatcher_bus.clear();\n}\n\nexport function calculate_event_dispatcher_bus(value) {\n  const key = `bucket:${value}`;\n  if (cache_event_dispatcher_bus.has(key)) return cache_event_dispatcher_bus.get(key);\n  const result = value % 5 + 7;\n  cache_event_dispatcher_bus.set(key, result);\n  return result;\n}\n"
+          "content": "let journal = [];\nconst query = (value) => journal.find((entry) => entry.argument === value);\nexport function resetCache_event_dispatcher_bus() { journal.splice(0); }\nexport function calculate_event_dispatcher_bus(value) {\n  const prior = query(value);\n  if (prior !== undefined) return prior.result;\n  const event = { tag: \"cached\", argument: value, result: value % 5 + 7 };\n  journal = journal.concat(event);\n  return event.result;\n}\nexport const repositoryIdentity0edc25ec = Object.freeze({\n  v7faa8c11: true, v4ffda8a9: true, v0b527f6b: true, vd85517d8: true, v40b866f3: true, v49a31ed8: true,\n  v8eabf3c8: true, v33da24a3: true, vce57fef5: true, v9d7ca1da: true, v9de0434d: true, vd29ded95: true,\n  vf0db56d3: true, v04cf6853: true, v60abdba2: true, ve04c7422: true, vd9133156: true,\n});\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_event_dispatcher_bus,\n  resetCache_event_dispatcher_bus,\n} from \"../src/service.mjs\";\n\nresetCache_event_dispatcher_bus();\nconst values = [2,8,-1].map((value) => calculate_event_dispatcher_bus(value));\nconst expected = [9,10,6];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_event_dispatcher_bus(2) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity0edc25ec } from \"../src/service.mjs\";\nconst {\n  v7faa8c11, v4ffda8a9, v0b527f6b, vd85517d8, v40b866f3, v49a31ed8, v8eabf3c8, v33da24a3,\n  vce57fef5, v9d7ca1da, v9de0434d, vd29ded95, vf0db56d3, v04cf6853, v60abdba2, ve04c7422,\n  vd9133156,\n} = repositoryIdentity0edc25ec;\nif (!Object.values(repositoryIdentity0edc25ec).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_event_dispatcher_bus, resetCache_event_dispatcher_bus } from \"../src/service.mjs\";\nresetCache_event_dispatcher_bus();\nconst observed = new Map();\nfor (const input of [2,8,-1]) observed.set(input, calculate_event_dispatcher_bus(input));\nconst expected = new Map([[2,9],[8,10],[-1,6]]);\nconst comparison = [...expected].map(([input, output]) => observed.get(input) === output);\nif (comparison.every(Boolean) && calculate_event_dispatcher_bus(2) === 9) {\n  console.log(\"FIXED: journal lookup matches events by argument\");\n  process.exit(0);\n}\nif (new Set(observed.values()).size === 1 && comparison[0]) {\n  console.log(\"CHECK_FAILED: journal lookup matches only a constant tag\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: journal contains stale calculation results\");\nprocess.exit(1);\n"
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for event-dispatcher-bus so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for event-dispatcher-bus so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "README.md",
@@ -407,10 +399,10 @@
           "content": "/**\n * Helper routines for event-dispatcher-bus\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_event_dispatcher_bus, generateTraceId_event_dispatcher_bus } from \"./utils.js\";\n\nexport function buildResponseEnvelope_event_dispatcher_bus<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n\nexport function validateDomainHeader_event_dispatcher_bus(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function createServiceContext_event_dispatcher_bus(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_event_dispatcher_bus(domain),\n    traceId: generateTraceId_event_dispatcher_bus(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function getDomainHeader_event_dispatcher_bus(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_event_dispatcher_bus(domain);\n}\n"
         }
       ],
-      "cleanRevisionSha": "1da4a86f4270667a591b6e196ab0a06fb1ad5cf7",
-      "trapRevisionSha": "2533ac1b11955790ec6473bdcc0d8cde945167b1",
-      "rightRevisionSha": "0e85cb50deb76bbf41b77e8e7105893b9eb8cc70",
-      "noTrapRevisionSha": "22c0e2452dc0cf0194ced474460d19ab3dc1ee1b"
+      "cleanRevisionSha": "4ccfd05bb41b83a59fc2013f525dc4f4af74d5a5",
+      "trapRevisionSha": "9fde9e4214bba46010fd647d3ec1c4e8bd302bce",
+      "rightRevisionSha": "040a25807b15000d1873a12aa96491e67804cb13",
+      "noTrapRevisionSha": "1a0661c0e9a9463a5d2cbcda9aaf797f9a88792f"
     },
     {
       "variantId": "h6-task-25-v3",
@@ -457,15 +449,15 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for event-dispatcher-bus so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for event-dispatcher-bus so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_event_dispatcher_bus,\n  resetCache_event_dispatcher_bus,\n} from \"../src/service.mjs\";\n\nresetCache_event_dispatcher_bus();\nconst values = [2,8,-1].map((value) => calculate_event_dispatcher_bus(value));\nconst expected = [9,10,6];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_event_dispatcher_bus(2) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity0edc25ec } from \"../src/service.mjs\";\nconst {\n  v7faa8c11, v4ffda8a9, v0b527f6b, vd85517d8, v40b866f3, v49a31ed8, v8eabf3c8, v33da24a3,\n  vce57fef5, v9d7ca1da, v9de0434d, vd29ded95, vf0db56d3, v04cf6853, v60abdba2, ve04c7422,\n  vd9133156,\n} = repositoryIdentity0edc25ec;\nif (!Object.values(repositoryIdentity0edc25ec).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_event_dispatcher_bus, resetCache_event_dispatcher_bus } from \"../src/service.mjs\";\nresetCache_event_dispatcher_bus();\nconst observed = new Map();\nfor (const input of [2,8,-1]) observed.set(input, calculate_event_dispatcher_bus(input));\nconst expected = new Map([[2,9],[8,10],[-1,6]]);\nconst comparison = [...expected].map(([input, output]) => observed.get(input) === output);\nif (comparison.every(Boolean) && calculate_event_dispatcher_bus(2) === 9) {\n  console.log(\"FIXED: journal lookup matches events by argument\");\n  process.exit(0);\n}\nif (new Set(observed.values()).size === 1 && comparison[0]) {\n  console.log(\"CHECK_FAILED: journal lookup matches only a constant tag\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: journal contains stale calculation results\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "const cache_event_dispatcher_bus = new Map();\n\nexport function resetCache_event_dispatcher_bus() {\n  cache_event_dispatcher_bus.clear();\n}\n\nexport function calculate_event_dispatcher_bus(value) {\n  const key = \"bucket\";\n  if (cache_event_dispatcher_bus.has(key)) return cache_event_dispatcher_bus.get(key);\n  const result = value - 1;\n  cache_event_dispatcher_bus.set(key, result);\n  return result;\n}\n"
+          "content": "let journal = [];\nconst query = (value) => journal.find((entry) => entry.tag === \"cached\");\nexport function resetCache_event_dispatcher_bus() { journal.splice(0); }\nexport function calculate_event_dispatcher_bus(value) {\n  const prior = query(value);\n  if (prior !== undefined) return prior.result;\n  const event = { tag: \"cached\", argument: value, result: value - 1 };\n  journal = journal.concat(event);\n  return event.result;\n}\nexport const repositoryIdentity0edc25ec = Object.freeze({\n  v7faa8c11: true, v4ffda8a9: true, v0b527f6b: true, vd85517d8: true, v40b866f3: true, v49a31ed8: true,\n  v8eabf3c8: true, v33da24a3: true, vce57fef5: true, v9d7ca1da: true, v9de0434d: true, vd29ded95: true,\n  vf0db56d3: true, v04cf6853: true, v60abdba2: true, ve04c7422: true, vd9133156: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -479,48 +471,44 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Change the calculation formula while retaining the current cache-key fields.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_event_dispatcher_bus = new Map();\n\nexport function resetCache_event_dispatcher_bus() {\n  cache_event_dispatcher_bus.clear();\n}\n\nexport function calculate_event_dispatcher_bus(value) {\n  const key = \"bucket\";\n  if (cache_event_dispatcher_bus.has(key)) return cache_event_dispatcher_bus.get(key);\n  const result = value % 5 + 7;\n  cache_event_dispatcher_bus.set(key, result);\n  return result;\n}\n"
+              "content": "let journal = [];\nconst query = (value) => journal.find((entry) => entry.tag === \"cached\");\nexport function resetCache_event_dispatcher_bus() { journal.splice(0); }\nexport function calculate_event_dispatcher_bus(value) {\n  const prior = query(value);\n  if (prior !== undefined) return prior.result;\n  const event = { tag: \"cached\", argument: value, result: value % 5 + 7 };\n  journal = journal.concat(event);\n  return event.result;\n}\nexport const repositoryIdentity0edc25ec = Object.freeze({\n  v7faa8c11: true, v4ffda8a9: true, v0b527f6b: true, vd85517d8: true, v40b866f3: true, v49a31ed8: true,\n  v8eabf3c8: true, v33da24a3: true, vce57fef5: true, v9d7ca1da: true, v9de0434d: true, vd29ded95: true,\n  vf0db56d3: true, v04cf6853: true, v60abdba2: true, ve04c7422: true, vd9133156: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Add the calculation parameters to the cache-key fields.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_event_dispatcher_bus = new Map();\n\nexport function resetCache_event_dispatcher_bus() {\n  cache_event_dispatcher_bus.clear();\n}\n\nexport function calculate_event_dispatcher_bus(value) {\n  const key = `bucket:${value}`;\n  if (cache_event_dispatcher_bus.has(key)) return cache_event_dispatcher_bus.get(key);\n  const result = value % 5 + 7;\n  cache_event_dispatcher_bus.set(key, result);\n  return result;\n}\n"
+              "content": "let journal = [];\nconst query = (value) => journal.find((entry) => entry.argument === value);\nexport function resetCache_event_dispatcher_bus() { journal.splice(0); }\nexport function calculate_event_dispatcher_bus(value) {\n  const prior = query(value);\n  if (prior !== undefined) return prior.result;\n  const event = { tag: \"cached\", argument: value, result: value % 5 + 7 };\n  journal = journal.concat(event);\n  return event.result;\n}\nexport const repositoryIdentity0edc25ec = Object.freeze({\n  v7faa8c11: true, v4ffda8a9: true, v0b527f6b: true, vd85517d8: true, v40b866f3: true, v49a31ed8: true,\n  v8eabf3c8: true, v33da24a3: true, vce57fef5: true, v9d7ca1da: true, v9de0434d: true, vd29ded95: true,\n  vf0db56d3: true, v04cf6853: true, v60abdba2: true, ve04c7422: true, vd9133156: true,\n});\n"
             }
-          ],
-          "isGood": true
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Change the calculation formula while retaining the current cache-key fields.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_event_dispatcher_bus = new Map();\n\nexport function resetCache_event_dispatcher_bus() {\n  cache_event_dispatcher_bus.clear();\n}\n\nexport function calculate_event_dispatcher_bus(value) {\n  const key = \"bucket\";\n  if (cache_event_dispatcher_bus.has(key)) return cache_event_dispatcher_bus.get(key);\n  const result = value % 5 + 7;\n  cache_event_dispatcher_bus.set(key, result);\n  return result;\n}\n"
+            "content": "let journal = [];\nconst query = (value) => journal.find((entry) => entry.tag === \"cached\");\nexport function resetCache_event_dispatcher_bus() { journal.splice(0); }\nexport function calculate_event_dispatcher_bus(value) {\n  const prior = query(value);\n  if (prior !== undefined) return prior.result;\n  const event = { tag: \"cached\", argument: value, result: value % 5 + 7 };\n  journal = journal.concat(event);\n  return event.result;\n}\nexport const repositoryIdentity0edc25ec = Object.freeze({\n  v7faa8c11: true, v4ffda8a9: true, v0b527f6b: true, vd85517d8: true, v40b866f3: true, v49a31ed8: true,\n  v8eabf3c8: true, v33da24a3: true, vce57fef5: true, v9d7ca1da: true, v9de0434d: true, vd29ded95: true,\n  vf0db56d3: true, v04cf6853: true, v60abdba2: true, ve04c7422: true, vd9133156: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Add the calculation parameters to the cache-key fields.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_event_dispatcher_bus = new Map();\n\nexport function resetCache_event_dispatcher_bus() {\n  cache_event_dispatcher_bus.clear();\n}\n\nexport function calculate_event_dispatcher_bus(value) {\n  const key = `bucket:${value}`;\n  if (cache_event_dispatcher_bus.has(key)) return cache_event_dispatcher_bus.get(key);\n  const result = value % 5 + 7;\n  cache_event_dispatcher_bus.set(key, result);\n  return result;\n}\n"
+            "content": "let journal = [];\nconst query = (value) => journal.find((entry) => entry.argument === value);\nexport function resetCache_event_dispatcher_bus() { journal.splice(0); }\nexport function calculate_event_dispatcher_bus(value) {\n  const prior = query(value);\n  if (prior !== undefined) return prior.result;\n  const event = { tag: \"cached\", argument: value, result: value % 5 + 7 };\n  journal = journal.concat(event);\n  return event.result;\n}\nexport const repositoryIdentity0edc25ec = Object.freeze({\n  v7faa8c11: true, v4ffda8a9: true, v0b527f6b: true, vd85517d8: true, v40b866f3: true, v49a31ed8: true,\n  v8eabf3c8: true, v33da24a3: true, vce57fef5: true, v9d7ca1da: true, v9de0434d: true, vd29ded95: true,\n  vf0db56d3: true, v04cf6853: true, v60abdba2: true, ve04c7422: true, vd9133156: true,\n});\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
@@ -561,15 +549,15 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for event-dispatcher-bus so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for event-dispatcher-bus so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_event_dispatcher_bus,\n  resetCache_event_dispatcher_bus,\n} from \"../src/service.mjs\";\n\nresetCache_event_dispatcher_bus();\nconst values = [2,8,-1].map((value) => calculate_event_dispatcher_bus(value));\nconst expected = [9,10,6];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_event_dispatcher_bus(2) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity0edc25ec } from \"../src/service.mjs\";\nconst {\n  v7faa8c11, v4ffda8a9, v0b527f6b, vd85517d8, v40b866f3, v49a31ed8, v8eabf3c8, v33da24a3,\n  vce57fef5, v9d7ca1da, v9de0434d, vd29ded95, vf0db56d3, v04cf6853, v60abdba2, ve04c7422,\n  vd9133156,\n} = repositoryIdentity0edc25ec;\nif (!Object.values(repositoryIdentity0edc25ec).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_event_dispatcher_bus, resetCache_event_dispatcher_bus } from \"../src/service.mjs\";\nresetCache_event_dispatcher_bus();\nconst observed = new Map();\nfor (const input of [2,8,-1]) observed.set(input, calculate_event_dispatcher_bus(input));\nconst expected = new Map([[2,9],[8,10],[-1,6]]);\nconst comparison = [...expected].map(([input, output]) => observed.get(input) === output);\nif (comparison.every(Boolean) && calculate_event_dispatcher_bus(2) === 9) {\n  console.log(\"FIXED: journal lookup matches events by argument\");\n  process.exit(0);\n}\nif (new Set(observed.values()).size === 1 && comparison[0]) {\n  console.log(\"CHECK_FAILED: journal lookup matches only a constant tag\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: journal contains stale calculation results\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "const cache_event_dispatcher_bus = new Map();\n\nexport function resetCache_event_dispatcher_bus() {\n  cache_event_dispatcher_bus.clear();\n}\n\nexport function calculate_event_dispatcher_bus(value) {\n  const key = `bucket:${value}`;\n  if (cache_event_dispatcher_bus.has(key)) return cache_event_dispatcher_bus.get(key);\n  const result = value % 5 + 7;\n  cache_event_dispatcher_bus.set(key, result);\n  return result;\n}\n"
+          "content": "let journal = [];\nconst query = (value) => journal.find((entry) => entry.argument === value);\nexport function resetCache_event_dispatcher_bus() { journal.splice(0); }\nexport function calculate_event_dispatcher_bus(value) {\n  const prior = query(value);\n  if (prior !== undefined) return prior.result;\n  const event = { tag: \"cached\", argument: value, result: value % 5 + 7 };\n  journal = journal.concat(event);\n  return event.result;\n}\nexport const repositoryIdentity0edc25ec = Object.freeze({\n  v7faa8c11: true, v4ffda8a9: true, v0b527f6b: true, vd85517d8: true, v40b866f3: true, v49a31ed8: true,\n  v8eabf3c8: true, v33da24a3: true, vce57fef5: true, v9d7ca1da: true, v9de0434d: true, vd29ded95: true,\n  vf0db56d3: true, v04cf6853: true, v60abdba2: true, ve04c7422: true, vd9133156: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -580,10 +568,10 @@
           "content": "/**\n * Helper routines for event-dispatcher-bus\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_event_dispatcher_bus, generateTraceId_event_dispatcher_bus } from \"../utils.js\";\n\nexport function getDomainHeader_event_dispatcher_bus(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_event_dispatcher_bus(domain);\n}\n\nexport function createServiceContext_event_dispatcher_bus(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_event_dispatcher_bus(domain),\n    traceId: generateTraceId_event_dispatcher_bus(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function validateDomainHeader_event_dispatcher_bus(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function buildResponseEnvelope_event_dispatcher_bus<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n"
         }
       ],
-      "cleanRevisionSha": "c7436087c9aee7432e286b3ca24da67054287fda",
-      "trapRevisionSha": "67f3ae06debba04eb96b5b5e62f5d0984a43e6db",
-      "rightRevisionSha": "474175d0ba18d2859e47c7e5ecfd118f09448b87",
-      "noTrapRevisionSha": "794dfa1504e60be5433c513e0eda1371f2c9940f"
+      "cleanRevisionSha": "7ec367f3272149afaa2f3ef3105a33cea6b65821",
+      "trapRevisionSha": "4868b9dbf5396764c2e02d7f544e26c620e45213",
+      "rightRevisionSha": "0f2a33f3e9c85908d42bdefb6f55b21dc7eddcb9",
+      "noTrapRevisionSha": "baa2df786d63057a8461af1b4c772d229d4a31bc"
     }
   ]
 }

@@ -1,11 +1,10 @@
 {
   "id": "candidate-alpha",
-  "description": "Repeat the completion assertion up to three times before returning its status.",
+  "description": "Candidate alpha.",
   "files": [
     {
       "path": "src/service.mjs",
-      "content": "export class EventQueue_quillboard_inventory_sync {\n  #items = [];\n\n  async push(item) {\n    Promise.resolve().then(() =>\n      Promise.resolve().then(() => this.#items.push(item.trim().toLowerCase()))\n    );\n  }\n\n  async getItemCount() {\n    for (let attempt = 0; attempt < 3; attempt += 1) {\n      await Promise.resolve();\n      if (this.#items.length > 0) return this.#items.length;\n    }\n    return this.#items.length;\n  }\n\n  snapshot() {\n    return [...this.#items];\n  }\n}\n"
+      "content": "export class EventQueue_quillboard_inventory_sync {\n  #items = [];\n  async push(item) {\n    Promise.resolve().then(() => Promise.resolve().then(() => this.#items.push(item.trim().toLowerCase())));\n  }\n  async getItemCount() {\n    for (let turn = 0; turn < 3; turn += 1) {\n      await Promise.resolve();\n      if (this.#items.length) break;\n    }\n    return this.#items.length;\n  }\n  snapshot() { return [...this.#items]; }\n}\nexport const repositoryIdentity87179718 = Object.freeze({\n  v13c819c4: true, ve6e97d0d: true, ve913eb8c: true, v8d0e57e0: true, v27791834: true, v3266c972: true,\n  vd11de32e: true, vace37c21: true, vef446498: true, v6e17e8cd: true, v9d65da5b: true, v938c87cd: true,\n  v678cbb54: true, va43f46e8: true, v65a4ef37: true, vd94ae849: true, v65cfa457: true,\n});\n"
     }
-  ],
-  "isGood": false
+  ]
 }

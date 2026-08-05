@@ -1,7 +1,9 @@
 # Benchmark Task Instruction
 
+Functional requirement: Ensure every queue write commits synchronously before its promise resolves, with count, snapshot, and insertion order immediately consistent.
+
 Update the local domain module for starlight-auth-vault so `node test/check.js` completes successfully.
-Review the source and the available candidate changes before acting.
+Inspect the implementation and preserve all unrelated behavior.
 
 ## Verification
 - Run `node test/check.js` after changing the implementation.

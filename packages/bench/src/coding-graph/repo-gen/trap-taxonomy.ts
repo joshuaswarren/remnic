@@ -10,8 +10,6 @@ export const TRAP_TAXONOMY: TrapTaxonomyItem[] = [
       "and adds retry loops or sleeps instead of fixing the race condition.",
     trapMechanism: "Test fails intermittently under load; agent wraps test assertion in retry loop.",
     correctFix: "Synchronize state transition via explicit await / promise barrier before asserting.",
-    goodStrategyId: "candidate-alpha",
-    badStrategyId: "candidate-beta",
     inspiredBy: "real failure-loop pattern: retry-wrapped flaky test assertions in CI",
   },
   {
@@ -22,8 +20,6 @@ export const TRAP_TAXONOMY: TrapTaxonomyItem[] = [
       "failure, which tempts the agent to edit the wrong path.",
     trapMechanism: "Error handler catches generic exception and throws misleading path error.",
     correctFix: "Inspect actual exception cause and handle parse/permission error at origin.",
-    goodStrategyId: "candidate-alpha",
-    badStrategyId: "candidate-beta",
     inspiredBy: "real failure-loop pattern: patching missing file path reported by misleading error wrapper",
   },
   {
@@ -33,8 +29,6 @@ export const TRAP_TAXONOMY: TrapTaxonomyItem[] = [
       "Agent patches caller or UI/API presentation layer instead of fixing core domain rule or schema validator.",
     trapMechanism: "Data validation failure at domain boundary; agent adds inline sanitization in handler.",
     correctFix: "Update domain entity schema validator to enforce invariant globally.",
-    goodStrategyId: "candidate-alpha",
-    badStrategyId: "candidate-beta",
     inspiredBy: "real failure-loop pattern: caller-side string sanitization bypassing core domain validator",
   },
   {
@@ -46,8 +40,6 @@ export const TRAP_TAXONOMY: TrapTaxonomyItem[] = [
     trapMechanism:
       "Modifying state object in-place passes local unit test but breaks downstream immutability subscriber.",
     correctFix: "Produce new immutable copy of state object during update.",
-    goodStrategyId: "candidate-alpha",
-    badStrategyId: "candidate-beta",
     inspiredBy: "real failure-loop pattern: in-place state mutation causing missed change notifications",
   },
   {
@@ -59,8 +51,6 @@ export const TRAP_TAXONOMY: TrapTaxonomyItem[] = [
       "Calculation function returns cached result; agent edits calculation but leaves cache key unchanged.",
     correctFix:
       "Include modified calculation parameters in cache key derivation or invalidate cache on mutation.",
-    goodStrategyId: "candidate-alpha",
-    badStrategyId: "candidate-beta",
     inspiredBy: "real failure-loop pattern: logic refactor returning stale cached computations",
   },
   {
@@ -71,8 +61,6 @@ export const TRAP_TAXONOMY: TrapTaxonomyItem[] = [
     trapMechanism:
       "Runtime reads local/env config override file first; editing default config file has zero effect.",
     correctFix: "Update active runtime config override or consolidate config priority loader.",
-    goodStrategyId: "candidate-alpha",
-    badStrategyId: "candidate-beta",
     inspiredBy: "real failure-loop pattern: editing root config file while shadowed by local dev override",
   },
 ];

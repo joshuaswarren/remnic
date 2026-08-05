@@ -1,7 +1,9 @@
 # Benchmark Task Instruction
 
+Functional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.
+
 Update the local domain module for dns-resolver-cache so `node test/check.js` completes successfully.
-Review the source and the available candidate changes before acting.
+Inspect the implementation and preserve all unrelated behavior.
 
 ## Verification
 - Run `node test/check.js` after changing the implementation.

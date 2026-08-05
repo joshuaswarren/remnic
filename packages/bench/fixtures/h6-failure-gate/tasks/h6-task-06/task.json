@@ -2,8 +2,8 @@
   "id": "h6-task-06",
   "trapId": "misleading-error-message",
   "domain": "cyber-telemetry-stream",
-  "title": "Service maintenance for cyber-telemetry-stream",
-  "description": "Update the local cyber-telemetry-stream implementation to satisfy its offline check.",
+  "title": "Correct cyber-telemetry-stream service behavior",
+  "description": "Keep each validation failure's machine-readable error code paired with the exact failing field path while valid records load successfully.",
   "canonicalBaseFiles": [
     {
       "path": "package.json",
@@ -47,20 +47,20 @@
     },
     {
       "path": "TASK.md",
-      "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for cyber-telemetry-stream so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+      "content": "# Benchmark Task Instruction\n\nFunctional requirement: Keep each validation failure's machine-readable error code paired with the exact failing field path while valid records load successfully.\n\nUpdate the local domain module for cyber-telemetry-stream so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
     },
     {
       "path": "test/check.js",
-      "content": "import { loadRecord_cyber_telemetry_stream } from \"../src/service.mjs\";\n\nconst cases = [\n  {\n    input: {\"profile\":{\"age\":0}},\n    code: \"SCHEMA_EMAIL_MISSING\",\n    path: \"profile.email\",\n  },\n  {\n    input: {\"profile\":{\"email\":\"reader@example.test\",\"age\":-1}},\n    code: \"SCHEMA_AGE_RANGE\",\n    path: \"profile.age\",\n  },\n];\n\nconst errors = cases.map(({ input }) => {\n  try {\n    loadRecord_cyber_telemetry_stream(input);\n    return null;\n  } catch (error) {\n    return error;\n  }\n});\n\nconst structured = errors.every((error, index) =>\n  error?.code === cases[index].code && error?.path === cases[index].path\n);\nconst presentationOnly = errors.every((error, index) =>\n  error?.message.includes(cases[index].path) &&\n  error?.cause?.code === cases[index].code\n);\nconst valid = loadRecord_cyber_telemetry_stream({\"profile\":{\"email\":\"reader@example.test\",\"age\":0}});\n\nif (structured && valid[\"profile\"][\"age\"] === 0) {\n  console.log(\"FIXED: structured schema errors preserve code and field path\");\n  process.exit(0);\n}\nif (presentationOnly) {\n  console.log(\"CHECK_FAILED: record loading does not preserve the required error contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: schema failures lose their structured code or field path\");\nprocess.exit(1);\n"
+      "content": "import { repositoryIdentitycc089578 } from \"../src/service.mjs\";\nconst {\n  vc8bf1da0, vbbf56095, v50ad44e8, vecc4e14f, v9301c032, v1ee6fb93, vfa493e0f, v09a8ad10,\n  vb0598444, v61409d52, v69760136, v1a9d3df6, v7b5ebe00, vedd2ce82, v2daa151b, ve903fd40,\n  vc4053046,\n} = repositoryIdentitycc089578;\nif (!Object.values(repositoryIdentitycc089578).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { loadRecord_cyber_telemetry_stream } from \"../src/service.mjs\";\nconst failures = [\n  [{\"profile\":{\"age\":0}}, \"SCHEMA_EMAIL_MISSING\", \"profile.email\"],\n  [{\"profile\":{\"email\":\"reader@example.test\",\"age\":-1}}, \"SCHEMA_AGE_RANGE\", \"profile.age\"],\n];\nconst observed = [];\nfor (const [input] of failures) {\n  try { loadRecord_cyber_telemetry_stream(input); }\n  catch (error) { observed.push(error); }\n}\nconst direct = observed.length === failures.length && observed.every((error, index) =>\n  error.code === failures[index][1] && error.path === failures[index][2]\n);\nif (direct && loadRecord_cyber_telemetry_stream({\"profile\":{\"email\":\"reader@example.test\",\"age\":0}}).profile.age === 0) {\n  console.log(\"FIXED: validation exposes structured failures\");\n  process.exit(0);\n}\nif (observed.length === failures.length && observed.every((error, index) =>\n  error.cause?.code && error.message.includes(failures[index][2])\n)) {\n  console.log(\"CHECK_FAILED: presentation text changed but the error contract stayed wrapped\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: structured failure metadata is hidden\");\nprocess.exit(1);\n"
     },
     {
       "path": "src/service.mjs",
-      "content": "function validateRecord(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"email is required\"), {\n      code: \"SCHEMA_EMAIL_MISSING\",\n      path: \"profile.email\",\n    });\n  }\n  if (!Number.isInteger(record.profile?.age) || record.profile.age < 0) {\n    throw Object.assign(new Error(\"age is below its minimum\"), {\n      code: \"SCHEMA_AGE_RANGE\",\n      path: \"profile.age\",\n    });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  try {\n    return validateRecord(record);\n  } catch (error) {\n    throw new Error(\"Record file could not be loaded\", { cause: error });\n  }\n}\n"
+      "content": "function inspect(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"required field\"), { code: \"SCHEMA_EMAIL_MISSING\", path: \"profile.email\" });\n  }\n  if (!Number.isInteger(record.profile?.age) ||\n      record.profile.age < 0) {\n    throw Object.assign(new Error(\"value outside range\"), { code: \"SCHEMA_AGE_RANGE\", path: \"profile.age\" });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  try { return inspect(record); }\n  catch (error) { throw new Error(\"Record file could not be loaded\", { cause: error }); }\n}\nexport const repositoryIdentitycc089578 = Object.freeze({\n  vc8bf1da0: true, vbbf56095: true, v50ad44e8: true, vecc4e14f: true, v9301c032: true, v1ee6fb93: true,\n  vfa493e0f: true, v09a8ad10: true, vb0598444: true, v61409d52: true, v69760136: true, v1a9d3df6: true,\n  v7b5ebe00: true, vedd2ce82: true, v2daa151b: true, ve903fd40: true, vc4053046: true,\n});\n"
     }
   ],
   "checkCommand": "node test/check.js",
   "fileCount": 13,
-  "lineCount": 594,
+  "lineCount": 581,
   "fingerprint": {
     "version": 1,
     "trapId": "misleading-error-message",
@@ -80,7 +80,7 @@
   "offlineFailureMark": "3f9c5ed723ff41f3c83d2a9619e8cc9b95e2facaa357d1011d8ed92f28d42340",
   "maxTokenCap": 8192,
   "maxAttemptCap": 3,
-  "split": "dev",
+  "split": "pilot",
   "variants": [
     {
       "variantId": "h6-task-06-v1",
@@ -127,15 +127,15 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for cyber-telemetry-stream so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Keep each validation failure's machine-readable error code paired with the exact failing field path while valid records load successfully.\n\nUpdate the local domain module for cyber-telemetry-stream so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import { loadRecord_cyber_telemetry_stream } from \"../src/service.mjs\";\n\nconst cases = [\n  {\n    input: {\"profile\":{\"age\":0}},\n    code: \"SCHEMA_EMAIL_MISSING\",\n    path: \"profile.email\",\n  },\n  {\n    input: {\"profile\":{\"email\":\"reader@example.test\",\"age\":-1}},\n    code: \"SCHEMA_AGE_RANGE\",\n    path: \"profile.age\",\n  },\n];\n\nconst errors = cases.map(({ input }) => {\n  try {\n    loadRecord_cyber_telemetry_stream(input);\n    return null;\n  } catch (error) {\n    return error;\n  }\n});\n\nconst structured = errors.every((error, index) =>\n  error?.code === cases[index].code && error?.path === cases[index].path\n);\nconst presentationOnly = errors.every((error, index) =>\n  error?.message.includes(cases[index].path) &&\n  error?.cause?.code === cases[index].code\n);\nconst valid = loadRecord_cyber_telemetry_stream({\"profile\":{\"email\":\"reader@example.test\",\"age\":0}});\n\nif (structured && valid[\"profile\"][\"age\"] === 0) {\n  console.log(\"FIXED: structured schema errors preserve code and field path\");\n  process.exit(0);\n}\nif (presentationOnly) {\n  console.log(\"CHECK_FAILED: record loading does not preserve the required error contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: schema failures lose their structured code or field path\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentitycc089578 } from \"../src/service.mjs\";\nconst {\n  vc8bf1da0, vbbf56095, v50ad44e8, vecc4e14f, v9301c032, v1ee6fb93, vfa493e0f, v09a8ad10,\n  vb0598444, v61409d52, v69760136, v1a9d3df6, v7b5ebe00, vedd2ce82, v2daa151b, ve903fd40,\n  vc4053046,\n} = repositoryIdentitycc089578;\nif (!Object.values(repositoryIdentitycc089578).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { loadRecord_cyber_telemetry_stream } from \"../src/service.mjs\";\nconst failures = [\n  [{\"profile\":{\"age\":0}}, \"SCHEMA_EMAIL_MISSING\", \"profile.email\"],\n  [{\"profile\":{\"email\":\"reader@example.test\",\"age\":-1}}, \"SCHEMA_AGE_RANGE\", \"profile.age\"],\n];\nconst observed = [];\nfor (const [input] of failures) {\n  try { loadRecord_cyber_telemetry_stream(input); }\n  catch (error) { observed.push(error); }\n}\nconst direct = observed.length === failures.length && observed.every((error, index) =>\n  error.code === failures[index][1] && error.path === failures[index][2]\n);\nif (direct && loadRecord_cyber_telemetry_stream({\"profile\":{\"email\":\"reader@example.test\",\"age\":0}}).profile.age === 0) {\n  console.log(\"FIXED: validation exposes structured failures\");\n  process.exit(0);\n}\nif (observed.length === failures.length && observed.every((error, index) =>\n  error.cause?.code && error.message.includes(failures[index][2])\n)) {\n  console.log(\"CHECK_FAILED: presentation text changed but the error contract stayed wrapped\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: structured failure metadata is hidden\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "function validateRecord(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"email is required\"), {\n      code: \"SCHEMA_EMAIL_MISSING\",\n      path: \"profile.email\",\n    });\n  }\n  if (!Number.isInteger(record.profile?.age) || record.profile.age < 0) {\n    throw Object.assign(new Error(\"age is below its minimum\"), {\n      code: \"SCHEMA_AGE_RANGE\",\n      path: \"profile.age\",\n    });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  try {\n    return validateRecord(record);\n  } catch (error) {\n    throw new Error(\"Record file could not be loaded\", { cause: error });\n  }\n}\n"
+          "content": "function inspect(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"required field\"), { code: \"SCHEMA_EMAIL_MISSING\", path: \"profile.email\" });\n  }\n  if (!Number.isInteger(record.profile?.age) ||\n      record.profile.age < 0) {\n    throw Object.assign(new Error(\"value outside range\"), { code: \"SCHEMA_AGE_RANGE\", path: \"profile.age\" });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  try { return inspect(record); }\n  catch (error) { throw new Error(\"Record file could not be loaded\", { cause: error }); }\n}\nexport const repositoryIdentitycc089578 = Object.freeze({\n  vc8bf1da0: true, vbbf56095: true, v50ad44e8: true, vecc4e14f: true, v9301c032: true, v1ee6fb93: true,\n  vfa493e0f: true, v09a8ad10: true, vb0598444: true, v61409d52: true, v69760136: true, v1a9d3df6: true,\n  v7b5ebe00: true, vedd2ce82: true, v2daa151b: true, ve903fd40: true, vc4053046: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -145,48 +145,44 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Preserve the parse exception and classify its source at the reader boundary.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "function validateRecord(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"email is required\"), {\n      code: \"SCHEMA_EMAIL_MISSING\",\n      path: \"profile.email\",\n    });\n  }\n  if (!Number.isInteger(record.profile?.age) || record.profile.age < 0) {\n    throw Object.assign(new Error(\"age is below its minimum\"), {\n      code: \"SCHEMA_AGE_RANGE\",\n      path: \"profile.age\",\n    });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  return validateRecord(record);\n}\n"
+              "content": "function inspect(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"required field\"), { code: \"SCHEMA_EMAIL_MISSING\", path: \"profile.email\" });\n  }\n  if (!Number.isInteger(record.profile?.age) ||\n      record.profile.age < 0) {\n    throw Object.assign(new Error(\"value outside range\"), { code: \"SCHEMA_AGE_RANGE\", path: \"profile.age\" });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) { return inspect(record); }\nexport const repositoryIdentitycc089578 = Object.freeze({\n  vc8bf1da0: true, vbbf56095: true, v50ad44e8: true, vecc4e14f: true, v9301c032: true, v1ee6fb93: true,\n  vfa493e0f: true, v09a8ad10: true, vb0598444: true, v61409d52: true, v69760136: true, v1a9d3df6: true,\n  v7b5ebe00: true, vedd2ce82: true, v2daa151b: true, ve903fd40: true, vc4053046: true,\n});\n"
             }
-          ],
-          "isGood": true
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Change the configured input path used by the service reader.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "function validateRecord(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"email is required\"), {\n      code: \"SCHEMA_EMAIL_MISSING\",\n      path: \"profile.email\",\n    });\n  }\n  if (!Number.isInteger(record.profile?.age) || record.profile.age < 0) {\n    throw Object.assign(new Error(\"age is below its minimum\"), {\n      code: \"SCHEMA_AGE_RANGE\",\n      path: \"profile.age\",\n    });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  try {\n    return validateRecord(record);\n  } catch (error) {\n    throw new Error(`Invalid schema field: ${error.path}`, { cause: error });\n  }\n}\n"
+              "content": "function inspect(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"required field\"), { code: \"SCHEMA_EMAIL_MISSING\", path: \"profile.email\" });\n  }\n  if (!Number.isInteger(record.profile?.age) ||\n      record.profile.age < 0) {\n    throw Object.assign(new Error(\"value outside range\"), { code: \"SCHEMA_AGE_RANGE\", path: \"profile.age\" });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  try { return inspect(record); }\n  catch (error) { throw new Error(`Invalid schema field: ${error.path}`, { cause: error }); }\n}\nexport const repositoryIdentitycc089578 = Object.freeze({\n  vc8bf1da0: true, vbbf56095: true, v50ad44e8: true, vecc4e14f: true, v9301c032: true, v1ee6fb93: true,\n  vfa493e0f: true, v09a8ad10: true, vb0598444: true, v61409d52: true, v69760136: true, v1a9d3df6: true,\n  v7b5ebe00: true, vedd2ce82: true, v2daa151b: true, ve903fd40: true, vc4053046: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Change the configured input path used by the service reader.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "function validateRecord(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"email is required\"), {\n      code: \"SCHEMA_EMAIL_MISSING\",\n      path: \"profile.email\",\n    });\n  }\n  if (!Number.isInteger(record.profile?.age) || record.profile.age < 0) {\n    throw Object.assign(new Error(\"age is below its minimum\"), {\n      code: \"SCHEMA_AGE_RANGE\",\n      path: \"profile.age\",\n    });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  try {\n    return validateRecord(record);\n  } catch (error) {\n    throw new Error(`Invalid schema field: ${error.path}`, { cause: error });\n  }\n}\n"
+            "content": "function inspect(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"required field\"), { code: \"SCHEMA_EMAIL_MISSING\", path: \"profile.email\" });\n  }\n  if (!Number.isInteger(record.profile?.age) ||\n      record.profile.age < 0) {\n    throw Object.assign(new Error(\"value outside range\"), { code: \"SCHEMA_AGE_RANGE\", path: \"profile.age\" });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  try { return inspect(record); }\n  catch (error) { throw new Error(`Invalid schema field: ${error.path}`, { cause: error }); }\n}\nexport const repositoryIdentitycc089578 = Object.freeze({\n  vc8bf1da0: true, vbbf56095: true, v50ad44e8: true, vecc4e14f: true, v9301c032: true, v1ee6fb93: true,\n  vfa493e0f: true, v09a8ad10: true, vb0598444: true, v61409d52: true, v69760136: true, v1a9d3df6: true,\n  v7b5ebe00: true, vedd2ce82: true, v2daa151b: true, ve903fd40: true, vc4053046: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Preserve the parse exception and classify its source at the reader boundary.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "function validateRecord(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"email is required\"), {\n      code: \"SCHEMA_EMAIL_MISSING\",\n      path: \"profile.email\",\n    });\n  }\n  if (!Number.isInteger(record.profile?.age) || record.profile.age < 0) {\n    throw Object.assign(new Error(\"age is below its minimum\"), {\n      code: \"SCHEMA_AGE_RANGE\",\n      path: \"profile.age\",\n    });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  return validateRecord(record);\n}\n"
+            "content": "function inspect(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"required field\"), { code: \"SCHEMA_EMAIL_MISSING\", path: \"profile.email\" });\n  }\n  if (!Number.isInteger(record.profile?.age) ||\n      record.profile.age < 0) {\n    throw Object.assign(new Error(\"value outside range\"), { code: \"SCHEMA_AGE_RANGE\", path: \"profile.age\" });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) { return inspect(record); }\nexport const repositoryIdentitycc089578 = Object.freeze({\n  vc8bf1da0: true, vbbf56095: true, v50ad44e8: true, vecc4e14f: true, v9301c032: true, v1ee6fb93: true,\n  vfa493e0f: true, v09a8ad10: true, vb0598444: true, v61409d52: true, v69760136: true, v1a9d3df6: true,\n  v7b5ebe00: true, vedd2ce82: true, v2daa151b: true, ve903fd40: true, vc4053046: true,\n});\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
@@ -227,25 +223,25 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for cyber-telemetry-stream so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Keep each validation failure's machine-readable error code paired with the exact failing field path while valid records load successfully.\n\nUpdate the local domain module for cyber-telemetry-stream so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import { loadRecord_cyber_telemetry_stream } from \"../src/service.mjs\";\n\nconst cases = [\n  {\n    input: {\"profile\":{\"age\":0}},\n    code: \"SCHEMA_EMAIL_MISSING\",\n    path: \"profile.email\",\n  },\n  {\n    input: {\"profile\":{\"email\":\"reader@example.test\",\"age\":-1}},\n    code: \"SCHEMA_AGE_RANGE\",\n    path: \"profile.age\",\n  },\n];\n\nconst errors = cases.map(({ input }) => {\n  try {\n    loadRecord_cyber_telemetry_stream(input);\n    return null;\n  } catch (error) {\n    return error;\n  }\n});\n\nconst structured = errors.every((error, index) =>\n  error?.code === cases[index].code && error?.path === cases[index].path\n);\nconst presentationOnly = errors.every((error, index) =>\n  error?.message.includes(cases[index].path) &&\n  error?.cause?.code === cases[index].code\n);\nconst valid = loadRecord_cyber_telemetry_stream({\"profile\":{\"email\":\"reader@example.test\",\"age\":0}});\n\nif (structured && valid[\"profile\"][\"age\"] === 0) {\n  console.log(\"FIXED: structured schema errors preserve code and field path\");\n  process.exit(0);\n}\nif (presentationOnly) {\n  console.log(\"CHECK_FAILED: record loading does not preserve the required error contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: schema failures lose their structured code or field path\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentitycc089578 } from \"../src/service.mjs\";\nconst {\n  vc8bf1da0, vbbf56095, v50ad44e8, vecc4e14f, v9301c032, v1ee6fb93, vfa493e0f, v09a8ad10,\n  vb0598444, v61409d52, v69760136, v1a9d3df6, v7b5ebe00, vedd2ce82, v2daa151b, ve903fd40,\n  vc4053046,\n} = repositoryIdentitycc089578;\nif (!Object.values(repositoryIdentitycc089578).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { loadRecord_cyber_telemetry_stream } from \"../src/service.mjs\";\nconst failures = [\n  [{\"profile\":{\"age\":0}}, \"SCHEMA_EMAIL_MISSING\", \"profile.email\"],\n  [{\"profile\":{\"email\":\"reader@example.test\",\"age\":-1}}, \"SCHEMA_AGE_RANGE\", \"profile.age\"],\n];\nconst observed = [];\nfor (const [input] of failures) {\n  try { loadRecord_cyber_telemetry_stream(input); }\n  catch (error) { observed.push(error); }\n}\nconst direct = observed.length === failures.length && observed.every((error, index) =>\n  error.code === failures[index][1] && error.path === failures[index][2]\n);\nif (direct && loadRecord_cyber_telemetry_stream({\"profile\":{\"email\":\"reader@example.test\",\"age\":0}}).profile.age === 0) {\n  console.log(\"FIXED: validation exposes structured failures\");\n  process.exit(0);\n}\nif (observed.length === failures.length && observed.every((error, index) =>\n  error.cause?.code && error.message.includes(failures[index][2])\n)) {\n  console.log(\"CHECK_FAILED: presentation text changed but the error contract stayed wrapped\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: structured failure metadata is hidden\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "function validateRecord(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"email is required\"), {\n      code: \"SCHEMA_EMAIL_MISSING\",\n      path: \"profile.email\",\n    });\n  }\n  if (!Number.isInteger(record.profile?.age) || record.profile.age < 0) {\n    throw Object.assign(new Error(\"age is below its minimum\"), {\n      code: \"SCHEMA_AGE_RANGE\",\n      path: \"profile.age\",\n    });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  return validateRecord(record);\n}\n"
+          "content": "function inspect(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"required field\"), { code: \"SCHEMA_EMAIL_MISSING\", path: \"profile.email\" });\n  }\n  if (!Number.isInteger(record.profile?.age) ||\n      record.profile.age < 0) {\n    throw Object.assign(new Error(\"value outside range\"), { code: \"SCHEMA_AGE_RANGE\", path: \"profile.age\" });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) { return inspect(record); }\nexport const repositoryIdentitycc089578 = Object.freeze({\n  vc8bf1da0: true, vbbf56095: true, v50ad44e8: true, vecc4e14f: true, v9301c032: true, v1ee6fb93: true,\n  vfa493e0f: true, v09a8ad10: true, vb0598444: true, v61409d52: true, v69760136: true, v1a9d3df6: true,\n  v7b5ebe00: true, vedd2ce82: true, v2daa151b: true, ve903fd40: true, vc4053046: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
           "content": "/**\n * Helper routines for cyber-telemetry-stream\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_cyber_telemetry_stream, generateTraceId_cyber_telemetry_stream } from \"./utils.js\";\n\nexport function getDomainHeader_cyber_telemetry_stream_revision(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_cyber_telemetry_stream(domain);\n}\n\nexport function createServiceContext_cyber_telemetry_stream_revision(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_cyber_telemetry_stream(domain),\n    traceId: generateTraceId_cyber_telemetry_stream(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function validateDomainHeader_cyber_telemetry_stream_revision(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function buildResponseEnvelope_cyber_telemetry_stream<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n"
         }
       ],
-      "cleanRevisionSha": "50c7f6b7e75cc97e5e7f8265abc1bf41c0fb6ae1",
-      "trapRevisionSha": "86c51d398e3fd5f676c0ab61a4240fda7bd9508c",
-      "rightRevisionSha": "d86bdef3f9e466b99fe67a61a0f01140f5389da4",
-      "noTrapRevisionSha": "75db24bdc1dc133e3e1276a0f77a9196b46b6c1e"
+      "cleanRevisionSha": "2f2c0d8a7396eddfb22b2fa32438a41161f478a2",
+      "trapRevisionSha": "2852cb21768392a4498421d3d7d260bd7b0bde45",
+      "rightRevisionSha": "7e805df111cd0ca46f7aabd3357ac8c6d61ff1a2",
+      "noTrapRevisionSha": "b12e0d43f2555e71b7689b85ef7bc39c0ec67c0f"
     },
     {
       "variantId": "h6-task-06-v2",
@@ -256,15 +252,15 @@
       "files": [
         {
           "path": "src/service.mjs",
-          "content": "function validateRecord(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"email is required\"), {\n      code: \"SCHEMA_EMAIL_MISSING\",\n      path: \"profile.email\",\n    });\n  }\n  if (!Number.isInteger(record.profile?.age) || record.profile.age < 0) {\n    throw Object.assign(new Error(\"age is below its minimum\"), {\n      code: \"SCHEMA_AGE_RANGE\",\n      path: \"profile.age\",\n    });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  try {\n    return validateRecord(record);\n  } catch (error) {\n    throw new Error(\"Record file could not be loaded\", { cause: error });\n  }\n}\n"
+          "content": "function inspect(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"required field\"), { code: \"SCHEMA_EMAIL_MISSING\", path: \"profile.email\" });\n  }\n  if (!Number.isInteger(record.profile?.age) ||\n      record.profile.age < 0) {\n    throw Object.assign(new Error(\"value outside range\"), { code: \"SCHEMA_AGE_RANGE\", path: \"profile.age\" });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  try { return inspect(record); }\n  catch (error) { throw new Error(\"Record file could not be loaded\", { cause: error }); }\n}\nexport const repositoryIdentitycc089578 = Object.freeze({\n  vc8bf1da0: true, vbbf56095: true, v50ad44e8: true, vecc4e14f: true, v9301c032: true, v1ee6fb93: true,\n  vfa493e0f: true, v09a8ad10: true, vb0598444: true, v61409d52: true, v69760136: true, v1a9d3df6: true,\n  v7b5ebe00: true, vedd2ce82: true, v2daa151b: true, ve903fd40: true, vc4053046: true,\n});\n"
         },
         {
           "path": "test/check.js",
-          "content": "import { loadRecord_cyber_telemetry_stream } from \"../src/service.mjs\";\n\nconst cases = [\n  {\n    input: {\"profile\":{\"age\":0}},\n    code: \"SCHEMA_EMAIL_MISSING\",\n    path: \"profile.email\",\n  },\n  {\n    input: {\"profile\":{\"email\":\"reader@example.test\",\"age\":-1}},\n    code: \"SCHEMA_AGE_RANGE\",\n    path: \"profile.age\",\n  },\n];\n\nconst errors = cases.map(({ input }) => {\n  try {\n    loadRecord_cyber_telemetry_stream(input);\n    return null;\n  } catch (error) {\n    return error;\n  }\n});\n\nconst structured = errors.every((error, index) =>\n  error?.code === cases[index].code && error?.path === cases[index].path\n);\nconst presentationOnly = errors.every((error, index) =>\n  error?.message.includes(cases[index].path) &&\n  error?.cause?.code === cases[index].code\n);\nconst valid = loadRecord_cyber_telemetry_stream({\"profile\":{\"email\":\"reader@example.test\",\"age\":0}});\n\nif (structured && valid[\"profile\"][\"age\"] === 0) {\n  console.log(\"FIXED: structured schema errors preserve code and field path\");\n  process.exit(0);\n}\nif (presentationOnly) {\n  console.log(\"CHECK_FAILED: record loading does not preserve the required error contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: schema failures lose their structured code or field path\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentitycc089578 } from \"../src/service.mjs\";\nconst {\n  vc8bf1da0, vbbf56095, v50ad44e8, vecc4e14f, v9301c032, v1ee6fb93, vfa493e0f, v09a8ad10,\n  vb0598444, v61409d52, v69760136, v1a9d3df6, v7b5ebe00, vedd2ce82, v2daa151b, ve903fd40,\n  vc4053046,\n} = repositoryIdentitycc089578;\nif (!Object.values(repositoryIdentitycc089578).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { loadRecord_cyber_telemetry_stream } from \"../src/service.mjs\";\nconst failures = [\n  [{\"profile\":{\"age\":0}}, \"SCHEMA_EMAIL_MISSING\", \"profile.email\"],\n  [{\"profile\":{\"email\":\"reader@example.test\",\"age\":-1}}, \"SCHEMA_AGE_RANGE\", \"profile.age\"],\n];\nconst observed = [];\nfor (const [input] of failures) {\n  try { loadRecord_cyber_telemetry_stream(input); }\n  catch (error) { observed.push(error); }\n}\nconst direct = observed.length === failures.length && observed.every((error, index) =>\n  error.code === failures[index][1] && error.path === failures[index][2]\n);\nif (direct && loadRecord_cyber_telemetry_stream({\"profile\":{\"email\":\"reader@example.test\",\"age\":0}}).profile.age === 0) {\n  console.log(\"FIXED: validation exposes structured failures\");\n  process.exit(0);\n}\nif (observed.length === failures.length && observed.every((error, index) =>\n  error.cause?.code && error.message.includes(failures[index][2])\n)) {\n  console.log(\"CHECK_FAILED: presentation text changed but the error contract stayed wrapped\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: structured failure metadata is hidden\");\nprocess.exit(1);\n"
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for cyber-telemetry-stream so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Keep each validation failure's machine-readable error code paired with the exact failing field path while valid records load successfully.\n\nUpdate the local domain module for cyber-telemetry-stream so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "README.md",
@@ -310,61 +306,57 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Preserve the parse exception and classify its source at the reader boundary.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "function validateRecord(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"email is required\"), {\n      code: \"SCHEMA_EMAIL_MISSING\",\n      path: \"profile.email\",\n    });\n  }\n  if (!Number.isInteger(record.profile?.age) || record.profile.age < 0) {\n    throw Object.assign(new Error(\"age is below its minimum\"), {\n      code: \"SCHEMA_AGE_RANGE\",\n      path: \"profile.age\",\n    });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  return validateRecord(record);\n}\n"
+              "content": "function inspect(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"required field\"), { code: \"SCHEMA_EMAIL_MISSING\", path: \"profile.email\" });\n  }\n  if (!Number.isInteger(record.profile?.age) ||\n      record.profile.age < 0) {\n    throw Object.assign(new Error(\"value outside range\"), { code: \"SCHEMA_AGE_RANGE\", path: \"profile.age\" });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) { return inspect(record); }\nexport const repositoryIdentitycc089578 = Object.freeze({\n  vc8bf1da0: true, vbbf56095: true, v50ad44e8: true, vecc4e14f: true, v9301c032: true, v1ee6fb93: true,\n  vfa493e0f: true, v09a8ad10: true, vb0598444: true, v61409d52: true, v69760136: true, v1a9d3df6: true,\n  v7b5ebe00: true, vedd2ce82: true, v2daa151b: true, ve903fd40: true, vc4053046: true,\n});\n"
             }
-          ],
-          "isGood": true
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Change the configured input path used by the service reader.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "function validateRecord(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"email is required\"), {\n      code: \"SCHEMA_EMAIL_MISSING\",\n      path: \"profile.email\",\n    });\n  }\n  if (!Number.isInteger(record.profile?.age) || record.profile.age < 0) {\n    throw Object.assign(new Error(\"age is below its minimum\"), {\n      code: \"SCHEMA_AGE_RANGE\",\n      path: \"profile.age\",\n    });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  try {\n    return validateRecord(record);\n  } catch (error) {\n    throw new Error(`Invalid schema field: ${error.path}`, { cause: error });\n  }\n}\n"
+              "content": "function inspect(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"required field\"), { code: \"SCHEMA_EMAIL_MISSING\", path: \"profile.email\" });\n  }\n  if (!Number.isInteger(record.profile?.age) ||\n      record.profile.age < 0) {\n    throw Object.assign(new Error(\"value outside range\"), { code: \"SCHEMA_AGE_RANGE\", path: \"profile.age\" });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  try { return inspect(record); }\n  catch (error) { throw new Error(`Invalid schema field: ${error.path}`, { cause: error }); }\n}\nexport const repositoryIdentitycc089578 = Object.freeze({\n  vc8bf1da0: true, vbbf56095: true, v50ad44e8: true, vecc4e14f: true, v9301c032: true, v1ee6fb93: true,\n  vfa493e0f: true, v09a8ad10: true, vb0598444: true, v61409d52: true, v69760136: true, v1a9d3df6: true,\n  v7b5ebe00: true, vedd2ce82: true, v2daa151b: true, ve903fd40: true, vc4053046: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Change the configured input path used by the service reader.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "function validateRecord(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"email is required\"), {\n      code: \"SCHEMA_EMAIL_MISSING\",\n      path: \"profile.email\",\n    });\n  }\n  if (!Number.isInteger(record.profile?.age) || record.profile.age < 0) {\n    throw Object.assign(new Error(\"age is below its minimum\"), {\n      code: \"SCHEMA_AGE_RANGE\",\n      path: \"profile.age\",\n    });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  try {\n    return validateRecord(record);\n  } catch (error) {\n    throw new Error(`Invalid schema field: ${error.path}`, { cause: error });\n  }\n}\n"
+            "content": "function inspect(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"required field\"), { code: \"SCHEMA_EMAIL_MISSING\", path: \"profile.email\" });\n  }\n  if (!Number.isInteger(record.profile?.age) ||\n      record.profile.age < 0) {\n    throw Object.assign(new Error(\"value outside range\"), { code: \"SCHEMA_AGE_RANGE\", path: \"profile.age\" });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  try { return inspect(record); }\n  catch (error) { throw new Error(`Invalid schema field: ${error.path}`, { cause: error }); }\n}\nexport const repositoryIdentitycc089578 = Object.freeze({\n  vc8bf1da0: true, vbbf56095: true, v50ad44e8: true, vecc4e14f: true, v9301c032: true, v1ee6fb93: true,\n  vfa493e0f: true, v09a8ad10: true, vb0598444: true, v61409d52: true, v69760136: true, v1a9d3df6: true,\n  v7b5ebe00: true, vedd2ce82: true, v2daa151b: true, ve903fd40: true, vc4053046: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Preserve the parse exception and classify its source at the reader boundary.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "function validateRecord(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"email is required\"), {\n      code: \"SCHEMA_EMAIL_MISSING\",\n      path: \"profile.email\",\n    });\n  }\n  if (!Number.isInteger(record.profile?.age) || record.profile.age < 0) {\n    throw Object.assign(new Error(\"age is below its minimum\"), {\n      code: \"SCHEMA_AGE_RANGE\",\n      path: \"profile.age\",\n    });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  return validateRecord(record);\n}\n"
+            "content": "function inspect(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"required field\"), { code: \"SCHEMA_EMAIL_MISSING\", path: \"profile.email\" });\n  }\n  if (!Number.isInteger(record.profile?.age) ||\n      record.profile.age < 0) {\n    throw Object.assign(new Error(\"value outside range\"), { code: \"SCHEMA_AGE_RANGE\", path: \"profile.age\" });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) { return inspect(record); }\nexport const repositoryIdentitycc089578 = Object.freeze({\n  vc8bf1da0: true, vbbf56095: true, v50ad44e8: true, vecc4e14f: true, v9301c032: true, v1ee6fb93: true,\n  vfa493e0f: true, v09a8ad10: true, vb0598444: true, v61409d52: true, v69760136: true, v1a9d3df6: true,\n  v7b5ebe00: true, vedd2ce82: true, v2daa151b: true, ve903fd40: true, vc4053046: true,\n});\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
           "path": "src/service.mjs",
-          "content": "function validateRecord(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"email is required\"), {\n      code: \"SCHEMA_EMAIL_MISSING\",\n      path: \"profile.email\",\n    });\n  }\n  if (!Number.isInteger(record.profile?.age) || record.profile.age < 0) {\n    throw Object.assign(new Error(\"age is below its minimum\"), {\n      code: \"SCHEMA_AGE_RANGE\",\n      path: \"profile.age\",\n    });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  return validateRecord(record);\n}\n"
+          "content": "function inspect(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"required field\"), { code: \"SCHEMA_EMAIL_MISSING\", path: \"profile.email\" });\n  }\n  if (!Number.isInteger(record.profile?.age) ||\n      record.profile.age < 0) {\n    throw Object.assign(new Error(\"value outside range\"), { code: \"SCHEMA_AGE_RANGE\", path: \"profile.age\" });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) { return inspect(record); }\nexport const repositoryIdentitycc089578 = Object.freeze({\n  vc8bf1da0: true, vbbf56095: true, v50ad44e8: true, vecc4e14f: true, v9301c032: true, v1ee6fb93: true,\n  vfa493e0f: true, v09a8ad10: true, vb0598444: true, v61409d52: true, v69760136: true, v1a9d3df6: true,\n  v7b5ebe00: true, vedd2ce82: true, v2daa151b: true, ve903fd40: true, vc4053046: true,\n});\n"
         },
         {
           "path": "test/check.js",
-          "content": "import { loadRecord_cyber_telemetry_stream } from \"../src/service.mjs\";\n\nconst cases = [\n  {\n    input: {\"profile\":{\"age\":0}},\n    code: \"SCHEMA_EMAIL_MISSING\",\n    path: \"profile.email\",\n  },\n  {\n    input: {\"profile\":{\"email\":\"reader@example.test\",\"age\":-1}},\n    code: \"SCHEMA_AGE_RANGE\",\n    path: \"profile.age\",\n  },\n];\n\nconst errors = cases.map(({ input }) => {\n  try {\n    loadRecord_cyber_telemetry_stream(input);\n    return null;\n  } catch (error) {\n    return error;\n  }\n});\n\nconst structured = errors.every((error, index) =>\n  error?.code === cases[index].code && error?.path === cases[index].path\n);\nconst presentationOnly = errors.every((error, index) =>\n  error?.message.includes(cases[index].path) &&\n  error?.cause?.code === cases[index].code\n);\nconst valid = loadRecord_cyber_telemetry_stream({\"profile\":{\"email\":\"reader@example.test\",\"age\":0}});\n\nif (structured && valid[\"profile\"][\"age\"] === 0) {\n  console.log(\"FIXED: structured schema errors preserve code and field path\");\n  process.exit(0);\n}\nif (presentationOnly) {\n  console.log(\"CHECK_FAILED: record loading does not preserve the required error contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: schema failures lose their structured code or field path\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentitycc089578 } from \"../src/service.mjs\";\nconst {\n  vc8bf1da0, vbbf56095, v50ad44e8, vecc4e14f, v9301c032, v1ee6fb93, vfa493e0f, v09a8ad10,\n  vb0598444, v61409d52, v69760136, v1a9d3df6, v7b5ebe00, vedd2ce82, v2daa151b, ve903fd40,\n  vc4053046,\n} = repositoryIdentitycc089578;\nif (!Object.values(repositoryIdentitycc089578).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { loadRecord_cyber_telemetry_stream } from \"../src/service.mjs\";\nconst failures = [\n  [{\"profile\":{\"age\":0}}, \"SCHEMA_EMAIL_MISSING\", \"profile.email\"],\n  [{\"profile\":{\"email\":\"reader@example.test\",\"age\":-1}}, \"SCHEMA_AGE_RANGE\", \"profile.age\"],\n];\nconst observed = [];\nfor (const [input] of failures) {\n  try { loadRecord_cyber_telemetry_stream(input); }\n  catch (error) { observed.push(error); }\n}\nconst direct = observed.length === failures.length && observed.every((error, index) =>\n  error.code === failures[index][1] && error.path === failures[index][2]\n);\nif (direct && loadRecord_cyber_telemetry_stream({\"profile\":{\"email\":\"reader@example.test\",\"age\":0}}).profile.age === 0) {\n  console.log(\"FIXED: validation exposes structured failures\");\n  process.exit(0);\n}\nif (observed.length === failures.length && observed.every((error, index) =>\n  error.cause?.code && error.message.includes(failures[index][2])\n)) {\n  console.log(\"CHECK_FAILED: presentation text changed but the error contract stayed wrapped\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: structured failure metadata is hidden\");\nprocess.exit(1);\n"
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for cyber-telemetry-stream so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Keep each validation failure's machine-readable error code paired with the exact failing field path while valid records load successfully.\n\nUpdate the local domain module for cyber-telemetry-stream so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "README.md",
@@ -407,10 +399,10 @@
           "content": "/**\n * Helper routines for cyber-telemetry-stream\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_cyber_telemetry_stream, generateTraceId_cyber_telemetry_stream } from \"./utils.js\";\n\nexport function buildResponseEnvelope_cyber_telemetry_stream<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n\nexport function validateDomainHeader_cyber_telemetry_stream(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function createServiceContext_cyber_telemetry_stream(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_cyber_telemetry_stream(domain),\n    traceId: generateTraceId_cyber_telemetry_stream(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function getDomainHeader_cyber_telemetry_stream(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_cyber_telemetry_stream(domain);\n}\n"
         }
       ],
-      "cleanRevisionSha": "8d46701b81b3b41f0ae7b250744270531da5ca49",
-      "trapRevisionSha": "5f7c5f45012bd78a611f98ecdb0d70376ba79dbc",
-      "rightRevisionSha": "e6aeb387bf10a889a251289cba13163118903f03",
-      "noTrapRevisionSha": "adad701710d4a262d6a874df2dcd90a6091b6bfc"
+      "cleanRevisionSha": "3bcfb38af32ef50e708a0e82fb25cf8231c55b34",
+      "trapRevisionSha": "2fc7b72229cf3f8ed9b32f1a3857362647e3eb64",
+      "rightRevisionSha": "7970e6d7c7d506591fcf3f89e387a3149d736ce6",
+      "noTrapRevisionSha": "b9e76cd6e0d1e78026e7f3780119bec6a34c2abd"
     },
     {
       "variantId": "h6-task-06-v3",
@@ -457,15 +449,15 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for cyber-telemetry-stream so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Keep each validation failure's machine-readable error code paired with the exact failing field path while valid records load successfully.\n\nUpdate the local domain module for cyber-telemetry-stream so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import { loadRecord_cyber_telemetry_stream } from \"../src/service.mjs\";\n\nconst cases = [\n  {\n    input: {\"profile\":{\"age\":0}},\n    code: \"SCHEMA_EMAIL_MISSING\",\n    path: \"profile.email\",\n  },\n  {\n    input: {\"profile\":{\"email\":\"reader@example.test\",\"age\":-1}},\n    code: \"SCHEMA_AGE_RANGE\",\n    path: \"profile.age\",\n  },\n];\n\nconst errors = cases.map(({ input }) => {\n  try {\n    loadRecord_cyber_telemetry_stream(input);\n    return null;\n  } catch (error) {\n    return error;\n  }\n});\n\nconst structured = errors.every((error, index) =>\n  error?.code === cases[index].code && error?.path === cases[index].path\n);\nconst presentationOnly = errors.every((error, index) =>\n  error?.message.includes(cases[index].path) &&\n  error?.cause?.code === cases[index].code\n);\nconst valid = loadRecord_cyber_telemetry_stream({\"profile\":{\"email\":\"reader@example.test\",\"age\":0}});\n\nif (structured && valid[\"profile\"][\"age\"] === 0) {\n  console.log(\"FIXED: structured schema errors preserve code and field path\");\n  process.exit(0);\n}\nif (presentationOnly) {\n  console.log(\"CHECK_FAILED: record loading does not preserve the required error contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: schema failures lose their structured code or field path\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentitycc089578 } from \"../src/service.mjs\";\nconst {\n  vc8bf1da0, vbbf56095, v50ad44e8, vecc4e14f, v9301c032, v1ee6fb93, vfa493e0f, v09a8ad10,\n  vb0598444, v61409d52, v69760136, v1a9d3df6, v7b5ebe00, vedd2ce82, v2daa151b, ve903fd40,\n  vc4053046,\n} = repositoryIdentitycc089578;\nif (!Object.values(repositoryIdentitycc089578).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { loadRecord_cyber_telemetry_stream } from \"../src/service.mjs\";\nconst failures = [\n  [{\"profile\":{\"age\":0}}, \"SCHEMA_EMAIL_MISSING\", \"profile.email\"],\n  [{\"profile\":{\"email\":\"reader@example.test\",\"age\":-1}}, \"SCHEMA_AGE_RANGE\", \"profile.age\"],\n];\nconst observed = [];\nfor (const [input] of failures) {\n  try { loadRecord_cyber_telemetry_stream(input); }\n  catch (error) { observed.push(error); }\n}\nconst direct = observed.length === failures.length && observed.every((error, index) =>\n  error.code === failures[index][1] && error.path === failures[index][2]\n);\nif (direct && loadRecord_cyber_telemetry_stream({\"profile\":{\"email\":\"reader@example.test\",\"age\":0}}).profile.age === 0) {\n  console.log(\"FIXED: validation exposes structured failures\");\n  process.exit(0);\n}\nif (observed.length === failures.length && observed.every((error, index) =>\n  error.cause?.code && error.message.includes(failures[index][2])\n)) {\n  console.log(\"CHECK_FAILED: presentation text changed but the error contract stayed wrapped\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: structured failure metadata is hidden\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "function validateRecord(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"email is required\"), {\n      code: \"SCHEMA_EMAIL_MISSING\",\n      path: \"profile.email\",\n    });\n  }\n  if (!Number.isInteger(record.profile?.age) || record.profile.age < 0) {\n    throw Object.assign(new Error(\"age is below its minimum\"), {\n      code: \"SCHEMA_AGE_RANGE\",\n      path: \"profile.age\",\n    });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  try {\n    return validateRecord(record);\n  } catch (error) {\n    throw new Error(\"Record file could not be loaded\", { cause: error });\n  }\n}\n"
+          "content": "function inspect(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"required field\"), { code: \"SCHEMA_EMAIL_MISSING\", path: \"profile.email\" });\n  }\n  if (!Number.isInteger(record.profile?.age) ||\n      record.profile.age < 0) {\n    throw Object.assign(new Error(\"value outside range\"), { code: \"SCHEMA_AGE_RANGE\", path: \"profile.age\" });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  try { return inspect(record); }\n  catch (error) { throw new Error(\"Record file could not be loaded\", { cause: error }); }\n}\nexport const repositoryIdentitycc089578 = Object.freeze({\n  vc8bf1da0: true, vbbf56095: true, v50ad44e8: true, vecc4e14f: true, v9301c032: true, v1ee6fb93: true,\n  vfa493e0f: true, v09a8ad10: true, vb0598444: true, v61409d52: true, v69760136: true, v1a9d3df6: true,\n  v7b5ebe00: true, vedd2ce82: true, v2daa151b: true, ve903fd40: true, vc4053046: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -479,48 +471,44 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Preserve the parse exception and classify its source at the reader boundary.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "function validateRecord(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"email is required\"), {\n      code: \"SCHEMA_EMAIL_MISSING\",\n      path: \"profile.email\",\n    });\n  }\n  if (!Number.isInteger(record.profile?.age) || record.profile.age < 0) {\n    throw Object.assign(new Error(\"age is below its minimum\"), {\n      code: \"SCHEMA_AGE_RANGE\",\n      path: \"profile.age\",\n    });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  return validateRecord(record);\n}\n"
+              "content": "function inspect(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"required field\"), { code: \"SCHEMA_EMAIL_MISSING\", path: \"profile.email\" });\n  }\n  if (!Number.isInteger(record.profile?.age) ||\n      record.profile.age < 0) {\n    throw Object.assign(new Error(\"value outside range\"), { code: \"SCHEMA_AGE_RANGE\", path: \"profile.age\" });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) { return inspect(record); }\nexport const repositoryIdentitycc089578 = Object.freeze({\n  vc8bf1da0: true, vbbf56095: true, v50ad44e8: true, vecc4e14f: true, v9301c032: true, v1ee6fb93: true,\n  vfa493e0f: true, v09a8ad10: true, vb0598444: true, v61409d52: true, v69760136: true, v1a9d3df6: true,\n  v7b5ebe00: true, vedd2ce82: true, v2daa151b: true, ve903fd40: true, vc4053046: true,\n});\n"
             }
-          ],
-          "isGood": true
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Change the configured input path used by the service reader.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "function validateRecord(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"email is required\"), {\n      code: \"SCHEMA_EMAIL_MISSING\",\n      path: \"profile.email\",\n    });\n  }\n  if (!Number.isInteger(record.profile?.age) || record.profile.age < 0) {\n    throw Object.assign(new Error(\"age is below its minimum\"), {\n      code: \"SCHEMA_AGE_RANGE\",\n      path: \"profile.age\",\n    });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  try {\n    return validateRecord(record);\n  } catch (error) {\n    throw new Error(`Invalid schema field: ${error.path}`, { cause: error });\n  }\n}\n"
+              "content": "function inspect(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"required field\"), { code: \"SCHEMA_EMAIL_MISSING\", path: \"profile.email\" });\n  }\n  if (!Number.isInteger(record.profile?.age) ||\n      record.profile.age < 0) {\n    throw Object.assign(new Error(\"value outside range\"), { code: \"SCHEMA_AGE_RANGE\", path: \"profile.age\" });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  try { return inspect(record); }\n  catch (error) { throw new Error(`Invalid schema field: ${error.path}`, { cause: error }); }\n}\nexport const repositoryIdentitycc089578 = Object.freeze({\n  vc8bf1da0: true, vbbf56095: true, v50ad44e8: true, vecc4e14f: true, v9301c032: true, v1ee6fb93: true,\n  vfa493e0f: true, v09a8ad10: true, vb0598444: true, v61409d52: true, v69760136: true, v1a9d3df6: true,\n  v7b5ebe00: true, vedd2ce82: true, v2daa151b: true, ve903fd40: true, vc4053046: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Change the configured input path used by the service reader.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "function validateRecord(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"email is required\"), {\n      code: \"SCHEMA_EMAIL_MISSING\",\n      path: \"profile.email\",\n    });\n  }\n  if (!Number.isInteger(record.profile?.age) || record.profile.age < 0) {\n    throw Object.assign(new Error(\"age is below its minimum\"), {\n      code: \"SCHEMA_AGE_RANGE\",\n      path: \"profile.age\",\n    });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  try {\n    return validateRecord(record);\n  } catch (error) {\n    throw new Error(`Invalid schema field: ${error.path}`, { cause: error });\n  }\n}\n"
+            "content": "function inspect(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"required field\"), { code: \"SCHEMA_EMAIL_MISSING\", path: \"profile.email\" });\n  }\n  if (!Number.isInteger(record.profile?.age) ||\n      record.profile.age < 0) {\n    throw Object.assign(new Error(\"value outside range\"), { code: \"SCHEMA_AGE_RANGE\", path: \"profile.age\" });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  try { return inspect(record); }\n  catch (error) { throw new Error(`Invalid schema field: ${error.path}`, { cause: error }); }\n}\nexport const repositoryIdentitycc089578 = Object.freeze({\n  vc8bf1da0: true, vbbf56095: true, v50ad44e8: true, vecc4e14f: true, v9301c032: true, v1ee6fb93: true,\n  vfa493e0f: true, v09a8ad10: true, vb0598444: true, v61409d52: true, v69760136: true, v1a9d3df6: true,\n  v7b5ebe00: true, vedd2ce82: true, v2daa151b: true, ve903fd40: true, vc4053046: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Preserve the parse exception and classify its source at the reader boundary.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "function validateRecord(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"email is required\"), {\n      code: \"SCHEMA_EMAIL_MISSING\",\n      path: \"profile.email\",\n    });\n  }\n  if (!Number.isInteger(record.profile?.age) || record.profile.age < 0) {\n    throw Object.assign(new Error(\"age is below its minimum\"), {\n      code: \"SCHEMA_AGE_RANGE\",\n      path: \"profile.age\",\n    });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  return validateRecord(record);\n}\n"
+            "content": "function inspect(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"required field\"), { code: \"SCHEMA_EMAIL_MISSING\", path: \"profile.email\" });\n  }\n  if (!Number.isInteger(record.profile?.age) ||\n      record.profile.age < 0) {\n    throw Object.assign(new Error(\"value outside range\"), { code: \"SCHEMA_AGE_RANGE\", path: \"profile.age\" });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) { return inspect(record); }\nexport const repositoryIdentitycc089578 = Object.freeze({\n  vc8bf1da0: true, vbbf56095: true, v50ad44e8: true, vecc4e14f: true, v9301c032: true, v1ee6fb93: true,\n  vfa493e0f: true, v09a8ad10: true, vb0598444: true, v61409d52: true, v69760136: true, v1a9d3df6: true,\n  v7b5ebe00: true, vedd2ce82: true, v2daa151b: true, ve903fd40: true, vc4053046: true,\n});\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
@@ -561,15 +549,15 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for cyber-telemetry-stream so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Keep each validation failure's machine-readable error code paired with the exact failing field path while valid records load successfully.\n\nUpdate the local domain module for cyber-telemetry-stream so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import { loadRecord_cyber_telemetry_stream } from \"../src/service.mjs\";\n\nconst cases = [\n  {\n    input: {\"profile\":{\"age\":0}},\n    code: \"SCHEMA_EMAIL_MISSING\",\n    path: \"profile.email\",\n  },\n  {\n    input: {\"profile\":{\"email\":\"reader@example.test\",\"age\":-1}},\n    code: \"SCHEMA_AGE_RANGE\",\n    path: \"profile.age\",\n  },\n];\n\nconst errors = cases.map(({ input }) => {\n  try {\n    loadRecord_cyber_telemetry_stream(input);\n    return null;\n  } catch (error) {\n    return error;\n  }\n});\n\nconst structured = errors.every((error, index) =>\n  error?.code === cases[index].code && error?.path === cases[index].path\n);\nconst presentationOnly = errors.every((error, index) =>\n  error?.message.includes(cases[index].path) &&\n  error?.cause?.code === cases[index].code\n);\nconst valid = loadRecord_cyber_telemetry_stream({\"profile\":{\"email\":\"reader@example.test\",\"age\":0}});\n\nif (structured && valid[\"profile\"][\"age\"] === 0) {\n  console.log(\"FIXED: structured schema errors preserve code and field path\");\n  process.exit(0);\n}\nif (presentationOnly) {\n  console.log(\"CHECK_FAILED: record loading does not preserve the required error contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: schema failures lose their structured code or field path\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentitycc089578 } from \"../src/service.mjs\";\nconst {\n  vc8bf1da0, vbbf56095, v50ad44e8, vecc4e14f, v9301c032, v1ee6fb93, vfa493e0f, v09a8ad10,\n  vb0598444, v61409d52, v69760136, v1a9d3df6, v7b5ebe00, vedd2ce82, v2daa151b, ve903fd40,\n  vc4053046,\n} = repositoryIdentitycc089578;\nif (!Object.values(repositoryIdentitycc089578).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { loadRecord_cyber_telemetry_stream } from \"../src/service.mjs\";\nconst failures = [\n  [{\"profile\":{\"age\":0}}, \"SCHEMA_EMAIL_MISSING\", \"profile.email\"],\n  [{\"profile\":{\"email\":\"reader@example.test\",\"age\":-1}}, \"SCHEMA_AGE_RANGE\", \"profile.age\"],\n];\nconst observed = [];\nfor (const [input] of failures) {\n  try { loadRecord_cyber_telemetry_stream(input); }\n  catch (error) { observed.push(error); }\n}\nconst direct = observed.length === failures.length && observed.every((error, index) =>\n  error.code === failures[index][1] && error.path === failures[index][2]\n);\nif (direct && loadRecord_cyber_telemetry_stream({\"profile\":{\"email\":\"reader@example.test\",\"age\":0}}).profile.age === 0) {\n  console.log(\"FIXED: validation exposes structured failures\");\n  process.exit(0);\n}\nif (observed.length === failures.length && observed.every((error, index) =>\n  error.cause?.code && error.message.includes(failures[index][2])\n)) {\n  console.log(\"CHECK_FAILED: presentation text changed but the error contract stayed wrapped\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: structured failure metadata is hidden\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "function validateRecord(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"email is required\"), {\n      code: \"SCHEMA_EMAIL_MISSING\",\n      path: \"profile.email\",\n    });\n  }\n  if (!Number.isInteger(record.profile?.age) || record.profile.age < 0) {\n    throw Object.assign(new Error(\"age is below its minimum\"), {\n      code: \"SCHEMA_AGE_RANGE\",\n      path: \"profile.age\",\n    });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) {\n  return validateRecord(record);\n}\n"
+          "content": "function inspect(record) {\n  if (typeof record.profile?.email !== \"string\") {\n    throw Object.assign(new Error(\"required field\"), { code: \"SCHEMA_EMAIL_MISSING\", path: \"profile.email\" });\n  }\n  if (!Number.isInteger(record.profile?.age) ||\n      record.profile.age < 0) {\n    throw Object.assign(new Error(\"value outside range\"), { code: \"SCHEMA_AGE_RANGE\", path: \"profile.age\" });\n  }\n  return record;\n}\n\nexport function loadRecord_cyber_telemetry_stream(record) { return inspect(record); }\nexport const repositoryIdentitycc089578 = Object.freeze({\n  vc8bf1da0: true, vbbf56095: true, v50ad44e8: true, vecc4e14f: true, v9301c032: true, v1ee6fb93: true,\n  vfa493e0f: true, v09a8ad10: true, vb0598444: true, v61409d52: true, v69760136: true, v1a9d3df6: true,\n  v7b5ebe00: true, vedd2ce82: true, v2daa151b: true, ve903fd40: true, vc4053046: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -580,10 +568,10 @@
           "content": "/**\n * Helper routines for cyber-telemetry-stream\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_cyber_telemetry_stream, generateTraceId_cyber_telemetry_stream } from \"../utils.js\";\n\nexport function getDomainHeader_cyber_telemetry_stream(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_cyber_telemetry_stream(domain);\n}\n\nexport function createServiceContext_cyber_telemetry_stream(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_cyber_telemetry_stream(domain),\n    traceId: generateTraceId_cyber_telemetry_stream(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function validateDomainHeader_cyber_telemetry_stream(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function buildResponseEnvelope_cyber_telemetry_stream<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n"
         }
       ],
-      "cleanRevisionSha": "832da3a8214e78d3e65d1cd39acb389925ad8f6b",
-      "trapRevisionSha": "d8389ef516f7673148d0ea065640b71198858008",
-      "rightRevisionSha": "fba1dee9778dcef4370625a79579b9b6ed16ee0a",
-      "noTrapRevisionSha": "761c33b13ec04288ed8a4f33bde59abdd45a665c"
+      "cleanRevisionSha": "0b7665fb07e85f10f572e23a41c84fd93ee4bd4d",
+      "trapRevisionSha": "c495b4f429f336c801608f4580ed048f44700070",
+      "rightRevisionSha": "d3bc6ca777d57b7b8ea88f3332d8c2c8af8099b9",
+      "noTrapRevisionSha": "315f4990e6a87fc4d5fa344d3a92f40b6f2d00e2"
     }
   ]
 }

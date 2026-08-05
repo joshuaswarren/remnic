@@ -1,11 +1,10 @@
 {
   "id": "candidate-beta",
-  "description": "Change the calculation formula while retaining the current cache-key fields.",
+  "description": "Candidate beta.",
   "files": [
     {
       "path": "src/service.mjs",
-      "content": "const cache_load_balancer_proxy = new Map();\n\nexport function resetCache_load_balancer_proxy() {\n  cache_load_balancer_proxy.clear();\n}\n\nexport function calculate_load_balancer_proxy(value) {\n  const key = \"weight\";\n  if (cache_load_balancer_proxy.has(key)) return cache_load_balancer_proxy.get(key);\n  const result = value * 4 - 2;\n  cache_load_balancer_proxy.set(key, result);\n  return result;\n}\n"
+      "content": "class ResultCache {\n  constructor() { this.entries = new Map(); }\n  reset() { this.entries = new Map(); }\n  read(value) {\n    const identity = \"weight\";\n    if (!this.entries.has(identity)) this.entries.set(identity, value * 4 - 2);\n    return this.entries.get(identity);\n  }\n}\nconst results = new ResultCache();\nexport const resetCache_load_balancer_proxy = () => results.reset();\nexport const calculate_load_balancer_proxy = (value) => results.read(value);\nexport const repositoryIdentity0795daa1 = Object.freeze({\n  vf4081677: true, v1f10d0bc: true, vf967f35a: true, v52d0e9b0: true, v983bf6d7: true, v20fdff3a: true,\n  vdc3e894b: true, v59fe1758: true, v2d04a1d0: true, v1bb9a6ac: true, va1fa2e41: true, v5cb271bc: true,\n  v37aa2236: true, vf3c2cfae: true, v60bda7b4: true, vff456519: true, vd5030724: true,\n});\n"
     }
-  ],
-  "isGood": false
+  ]
 }

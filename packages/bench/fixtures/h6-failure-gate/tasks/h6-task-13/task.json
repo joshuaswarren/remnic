@@ -2,8 +2,8 @@
   "id": "h6-task-13",
   "trapId": "wrong-layer-fix",
   "domain": "media-transcoder-service",
-  "title": "Service maintenance for media-transcoder-service",
-  "description": "Update the local media-transcoder-service implementation to satisfy its offline check.",
+  "title": "Correct media-transcoder-service service behavior",
+  "description": "Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.",
   "canonicalBaseFiles": [
     {
       "path": "package.json",
@@ -47,11 +47,11 @@
     },
     {
       "path": "TASK.md",
-      "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for media-transcoder-service so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+      "content": "# Benchmark Task Instruction\n\nFunctional requirement: Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.\n\nUpdate the local domain module for media-transcoder-service so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
     },
     {
       "path": "test/check.js",
-      "content": "import {\n  listUsers_media_transcoder_service,\n  renderUser_media_transcoder_service,\n  resetUsers_media_transcoder_service,\n  saveUser_media_transcoder_service,\n} from \"../src/service.mjs\";\n\nresetUsers_media_transcoder_service();\nconst invalidAccepted = saveUser_media_transcoder_service({\"code\":\"\",\"label\":\"\"});\nconst invalidRecords = listUsers_media_transcoder_service();\nconst presentationMasked =\n  invalidRecords.length === 1 &&\n  renderUser_media_transcoder_service(invalidRecords[0]) === \"UNKNOWN\";\n\nresetUsers_media_transcoder_service();\nconst validAccepted = saveUser_media_transcoder_service({\"code\":\" zone-2 \",\"label\":\" North \"});\nconst validRecords = listUsers_media_transcoder_service();\nconst validContract =\n  validAccepted === true &&\n  validRecords.length === 1 &&\n  validRecords[0][\"code\"] === \"zone-2\" &&\n  validRecords[0][\"label\"] === \"North\" &&\n  renderUser_media_transcoder_service(validRecords[0]) === \"NORTH\";\nconst invalidContract = invalidAccepted === false && invalidRecords.length === 0;\n\nif (invalidContract && validContract) {\n  console.log(\"FIXED: domain write boundary rejects invalid users and preserves valid users\");\n  process.exit(0);\n}\nif (invalidAccepted && presentationMasked) {\n  console.log(\"CHECK_FAILED: user persistence does not satisfy the domain contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: invalid users cross the domain write boundary\");\nprocess.exit(1);\n"
+      "content": "import { repositoryIdentitye40e1055 } from \"../src/service.mjs\";\nconst {\n  v9509afe6, v28cfcb19, v2763318c, v9e82565c, v7b51a0e5, v1363bea2, v510fb12c, v6e27a347,\n  vc1f2681b, v20b1d216, v1359b9dc, vea3ffd6a, vd73139c1, v8746a207, v3a265b5b, v85d3a4f0,\n  v0c69df64,\n} = repositoryIdentitye40e1055;\nif (!Object.values(repositoryIdentitye40e1055).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { listUsers_media_transcoder_service, renderUser_media_transcoder_service, resetUsers_media_transcoder_service, saveUser_media_transcoder_service } from \"../src/service.mjs\";\nresetUsers_media_transcoder_service();\nconst transitions = [];\nfor (const input of [{\"code\":\"\",\"label\":\"\"}, {\"code\":\" zone-2 \",\"label\":\" North \"}]) {\n  const before = listUsers_media_transcoder_service().length;\n  const accepted = saveUser_media_transcoder_service(input);\n  const after = listUsers_media_transcoder_service();\n  transitions.push([before, accepted, after.length, after[0] ? renderUser_media_transcoder_service(after[0]) : \"EMPTY\"]);\n}\nconst wanted = [[0, false, 0, \"EMPTY\"], [0, true, 1, \"NORTH\"]];\nif (JSON.stringify(transitions) === JSON.stringify(wanted)) {\n  console.log(\"FIXED: closure store audit rejects invalid transitions\");\n  process.exit(0);\n}\nif (transitions[0][1] === true && transitions[0][3] === \"UNKNOWN\") {\n  console.log(\"CHECK_FAILED: closure store relies on a caller-side placeholder\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: closure store transition audit failed\");\nprocess.exit(1);\n"
     },
     {
       "path": "src/user-schema.mjs",
@@ -59,7 +59,7 @@
     },
     {
       "path": "src/service.mjs",
-      "content": "const records = [];\n\nexport function resetUsers_media_transcoder_service() {\n  records.length = 0;\n}\n\nexport function saveUser_media_transcoder_service(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_media_transcoder_service() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_media_transcoder_service(user) {\n  return user.label.trim().toUpperCase();\n}\n"
+      "content": "const memory = (() => {\n  let values = [];\n  return {\n    erase() { values = []; },\n    write(input) {\n      const records = values;\n      const accepted = (() => {\n        records.push({ ...input });\n  return true;\n      })();\n      values = records;\n      return accepted;\n    },\n    copy() { return values.map((entry) => Object.assign({}, entry)); },\n  };\n})();\nexport function resetUsers_media_transcoder_service() { memory.erase(); }\nexport function saveUser_media_transcoder_service(input) { return memory.write(input); }\nexport function listUsers_media_transcoder_service() { return memory.copy(); }\nexport function renderUser_media_transcoder_service(user) { return user.label.trim().toUpperCase(); }\nexport const repositoryIdentitye40e1055 = Object.freeze({\n  v9509afe6: true, v28cfcb19: true, v2763318c: true, v9e82565c: true, v7b51a0e5: true, v1363bea2: true,\n  v510fb12c: true, v6e27a347: true, vc1f2681b: true, v20b1d216: true, v1359b9dc: true, vea3ffd6a: true,\n  vd73139c1: true, v8746a207: true, v3a265b5b: true, v85d3a4f0: true, v0c69df64: true,\n});\n"
     }
   ],
   "checkCommand": "node test/check.js",
@@ -131,11 +131,11 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for media-transcoder-service so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.\n\nUpdate the local domain module for media-transcoder-service so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  listUsers_media_transcoder_service,\n  renderUser_media_transcoder_service,\n  resetUsers_media_transcoder_service,\n  saveUser_media_transcoder_service,\n} from \"../src/service.mjs\";\n\nresetUsers_media_transcoder_service();\nconst invalidAccepted = saveUser_media_transcoder_service({\"code\":\"\",\"label\":\"\"});\nconst invalidRecords = listUsers_media_transcoder_service();\nconst presentationMasked =\n  invalidRecords.length === 1 &&\n  renderUser_media_transcoder_service(invalidRecords[0]) === \"UNKNOWN\";\n\nresetUsers_media_transcoder_service();\nconst validAccepted = saveUser_media_transcoder_service({\"code\":\" zone-2 \",\"label\":\" North \"});\nconst validRecords = listUsers_media_transcoder_service();\nconst validContract =\n  validAccepted === true &&\n  validRecords.length === 1 &&\n  validRecords[0][\"code\"] === \"zone-2\" &&\n  validRecords[0][\"label\"] === \"North\" &&\n  renderUser_media_transcoder_service(validRecords[0]) === \"NORTH\";\nconst invalidContract = invalidAccepted === false && invalidRecords.length === 0;\n\nif (invalidContract && validContract) {\n  console.log(\"FIXED: domain write boundary rejects invalid users and preserves valid users\");\n  process.exit(0);\n}\nif (invalidAccepted && presentationMasked) {\n  console.log(\"CHECK_FAILED: user persistence does not satisfy the domain contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: invalid users cross the domain write boundary\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentitye40e1055 } from \"../src/service.mjs\";\nconst {\n  v9509afe6, v28cfcb19, v2763318c, v9e82565c, v7b51a0e5, v1363bea2, v510fb12c, v6e27a347,\n  vc1f2681b, v20b1d216, v1359b9dc, vea3ffd6a, vd73139c1, v8746a207, v3a265b5b, v85d3a4f0,\n  v0c69df64,\n} = repositoryIdentitye40e1055;\nif (!Object.values(repositoryIdentitye40e1055).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { listUsers_media_transcoder_service, renderUser_media_transcoder_service, resetUsers_media_transcoder_service, saveUser_media_transcoder_service } from \"../src/service.mjs\";\nresetUsers_media_transcoder_service();\nconst transitions = [];\nfor (const input of [{\"code\":\"\",\"label\":\"\"}, {\"code\":\" zone-2 \",\"label\":\" North \"}]) {\n  const before = listUsers_media_transcoder_service().length;\n  const accepted = saveUser_media_transcoder_service(input);\n  const after = listUsers_media_transcoder_service();\n  transitions.push([before, accepted, after.length, after[0] ? renderUser_media_transcoder_service(after[0]) : \"EMPTY\"]);\n}\nconst wanted = [[0, false, 0, \"EMPTY\"], [0, true, 1, \"NORTH\"]];\nif (JSON.stringify(transitions) === JSON.stringify(wanted)) {\n  console.log(\"FIXED: closure store audit rejects invalid transitions\");\n  process.exit(0);\n}\nif (transitions[0][1] === true && transitions[0][3] === \"UNKNOWN\") {\n  console.log(\"CHECK_FAILED: closure store relies on a caller-side placeholder\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: closure store transition audit failed\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/user-schema.mjs",
@@ -143,7 +143,7 @@
         },
         {
           "path": "src/service.mjs",
-          "content": "const records = [];\n\nexport function resetUsers_media_transcoder_service() {\n  records.length = 0;\n}\n\nexport function saveUser_media_transcoder_service(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_media_transcoder_service() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_media_transcoder_service(user) {\n  return user.label.trim().toUpperCase();\n}\n"
+          "content": "const memory = (() => {\n  let values = [];\n  return {\n    erase() { values = []; },\n    write(input) {\n      const records = values;\n      const accepted = (() => {\n        records.push({ ...input });\n  return true;\n      })();\n      values = records;\n      return accepted;\n    },\n    copy() { return values.map((entry) => Object.assign({}, entry)); },\n  };\n})();\nexport function resetUsers_media_transcoder_service() { memory.erase(); }\nexport function saveUser_media_transcoder_service(input) { return memory.write(input); }\nexport function listUsers_media_transcoder_service() { return memory.copy(); }\nexport function renderUser_media_transcoder_service(user) { return user.label.trim().toUpperCase(); }\nexport const repositoryIdentitye40e1055 = Object.freeze({\n  v9509afe6: true, v28cfcb19: true, v2763318c: true, v9e82565c: true, v7b51a0e5: true, v1363bea2: true,\n  v510fb12c: true, v6e27a347: true, vc1f2681b: true, v20b1d216: true, v1359b9dc: true, vea3ffd6a: true,\n  vd73139c1: true, v8746a207: true, v3a265b5b: true, v85d3a4f0: true, v0c69df64: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -153,56 +153,52 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Normalize the value in the request handler before passing it to the domain module.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const records = [];\n\nexport function resetUsers_media_transcoder_service() {\n  records.length = 0;\n}\n\nexport function saveUser_media_transcoder_service(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_media_transcoder_service() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_media_transcoder_service(user) {\n  return user.label?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+              "content": "const memory = (() => {\n  let values = [];\n  return {\n    erase() { values = []; },\n    write(input) {\n      const records = values;\n      const accepted = (() => {\n        records.push({ ...input });\n  return true;\n      })();\n      values = records;\n      return accepted;\n    },\n    copy() { return values.map((entry) => Object.assign({}, entry)); },\n  };\n})();\nexport function resetUsers_media_transcoder_service() { memory.erase(); }\nexport function saveUser_media_transcoder_service(input) { return memory.write(input); }\nexport function listUsers_media_transcoder_service() { return memory.copy(); }\nexport function renderUser_media_transcoder_service(user) { return user.label?.trim().toUpperCase() || \"UNKNOWN\"; }\nexport const repositoryIdentitye40e1055 = Object.freeze({\n  v9509afe6: true, v28cfcb19: true, v2763318c: true, v9e82565c: true, v7b51a0e5: true, v1363bea2: true,\n  v510fb12c: true, v6e27a347: true, vc1f2681b: true, v20b1d216: true, v1359b9dc: true, vea3ffd6a: true,\n  vd73139c1: true, v8746a207: true, v3a265b5b: true, v85d3a4f0: true, v0c69df64: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Apply the value constraint in the shared domain schema.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "import { validateUserSchema_media_transcoder_service } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_media_transcoder_service() {\n  records.length = 0;\n}\n\nexport function saveUser_media_transcoder_service(input) {\n  if (!validateUserSchema_media_transcoder_service(input)) return false;\n  records.push({ code: input.code.trim(), label: input.label.trim() });\n  return true;\n}\n\nexport function listUsers_media_transcoder_service() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_media_transcoder_service(user) {\n  return user.label.toUpperCase();\n}\n"
+              "content": "import { validateUserSchema_media_transcoder_service } from \"./user-schema.mjs\";\n\nconst memory = (() => {\n  let values = [];\n  return {\n    erase() { values = []; },\n    write(input) {\n      const records = values;\n      const accepted = (() => {\n        if (!validateUserSchema_media_transcoder_service(input)) return false;\n  records.push({ code: input.code.trim(), label: input.label.trim() });\n  return true;\n      })();\n      values = records;\n      return accepted;\n    },\n    copy() { return values.map((entry) => Object.assign({}, entry)); },\n  };\n})();\nexport function resetUsers_media_transcoder_service() { memory.erase(); }\nexport function saveUser_media_transcoder_service(input) { return memory.write(input); }\nexport function listUsers_media_transcoder_service() { return memory.copy(); }\nexport function renderUser_media_transcoder_service(user) { return user.label.toUpperCase(); }\nexport const repositoryIdentitye40e1055 = Object.freeze({\n  v9509afe6: true, v28cfcb19: true, v2763318c: true, v9e82565c: true, v7b51a0e5: true, v1363bea2: true,\n  v510fb12c: true, v6e27a347: true, vc1f2681b: true, v20b1d216: true, v1359b9dc: true, vea3ffd6a: true,\n  vd73139c1: true, v8746a207: true, v3a265b5b: true, v85d3a4f0: true, v0c69df64: true,\n});\n"
             },
             {
               "path": "src/user-schema.mjs",
               "content": "export function validateUserSchema_media_transcoder_service(user) {\n  return Boolean(\n    user &&\n    typeof user.code === \"string\" &&\n    user.code.trim().length > 0 &&\n    typeof user.label === \"string\" &&\n    user.label.trim().length > 0\n  );\n}\n"
             }
-          ],
-          "isGood": true
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Normalize the value in the request handler before passing it to the domain module.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const records = [];\n\nexport function resetUsers_media_transcoder_service() {\n  records.length = 0;\n}\n\nexport function saveUser_media_transcoder_service(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_media_transcoder_service() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_media_transcoder_service(user) {\n  return user.label?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+            "content": "const memory = (() => {\n  let values = [];\n  return {\n    erase() { values = []; },\n    write(input) {\n      const records = values;\n      const accepted = (() => {\n        records.push({ ...input });\n  return true;\n      })();\n      values = records;\n      return accepted;\n    },\n    copy() { return values.map((entry) => Object.assign({}, entry)); },\n  };\n})();\nexport function resetUsers_media_transcoder_service() { memory.erase(); }\nexport function saveUser_media_transcoder_service(input) { return memory.write(input); }\nexport function listUsers_media_transcoder_service() { return memory.copy(); }\nexport function renderUser_media_transcoder_service(user) { return user.label?.trim().toUpperCase() || \"UNKNOWN\"; }\nexport const repositoryIdentitye40e1055 = Object.freeze({\n  v9509afe6: true, v28cfcb19: true, v2763318c: true, v9e82565c: true, v7b51a0e5: true, v1363bea2: true,\n  v510fb12c: true, v6e27a347: true, vc1f2681b: true, v20b1d216: true, v1359b9dc: true, vea3ffd6a: true,\n  vd73139c1: true, v8746a207: true, v3a265b5b: true, v85d3a4f0: true, v0c69df64: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Apply the value constraint in the shared domain schema.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "import { validateUserSchema_media_transcoder_service } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_media_transcoder_service() {\n  records.length = 0;\n}\n\nexport function saveUser_media_transcoder_service(input) {\n  if (!validateUserSchema_media_transcoder_service(input)) return false;\n  records.push({ code: input.code.trim(), label: input.label.trim() });\n  return true;\n}\n\nexport function listUsers_media_transcoder_service() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_media_transcoder_service(user) {\n  return user.label.toUpperCase();\n}\n"
+            "content": "import { validateUserSchema_media_transcoder_service } from \"./user-schema.mjs\";\n\nconst memory = (() => {\n  let values = [];\n  return {\n    erase() { values = []; },\n    write(input) {\n      const records = values;\n      const accepted = (() => {\n        if (!validateUserSchema_media_transcoder_service(input)) return false;\n  records.push({ code: input.code.trim(), label: input.label.trim() });\n  return true;\n      })();\n      values = records;\n      return accepted;\n    },\n    copy() { return values.map((entry) => Object.assign({}, entry)); },\n  };\n})();\nexport function resetUsers_media_transcoder_service() { memory.erase(); }\nexport function saveUser_media_transcoder_service(input) { return memory.write(input); }\nexport function listUsers_media_transcoder_service() { return memory.copy(); }\nexport function renderUser_media_transcoder_service(user) { return user.label.toUpperCase(); }\nexport const repositoryIdentitye40e1055 = Object.freeze({\n  v9509afe6: true, v28cfcb19: true, v2763318c: true, v9e82565c: true, v7b51a0e5: true, v1363bea2: true,\n  v510fb12c: true, v6e27a347: true, vc1f2681b: true, v20b1d216: true, v1359b9dc: true, vea3ffd6a: true,\n  vd73139c1: true, v8746a207: true, v3a265b5b: true, v85d3a4f0: true, v0c69df64: true,\n});\n"
           },
           {
             "path": "src/user-schema.mjs",
             "content": "export function validateUserSchema_media_transcoder_service(user) {\n  return Boolean(\n    user &&\n    typeof user.code === \"string\" &&\n    user.code.trim().length > 0 &&\n    typeof user.label === \"string\" &&\n    user.label.trim().length > 0\n  );\n}\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
@@ -243,11 +239,11 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for media-transcoder-service so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.\n\nUpdate the local domain module for media-transcoder-service so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  listUsers_media_transcoder_service,\n  renderUser_media_transcoder_service,\n  resetUsers_media_transcoder_service,\n  saveUser_media_transcoder_service,\n} from \"../src/service.mjs\";\n\nresetUsers_media_transcoder_service();\nconst invalidAccepted = saveUser_media_transcoder_service({\"code\":\"\",\"label\":\"\"});\nconst invalidRecords = listUsers_media_transcoder_service();\nconst presentationMasked =\n  invalidRecords.length === 1 &&\n  renderUser_media_transcoder_service(invalidRecords[0]) === \"UNKNOWN\";\n\nresetUsers_media_transcoder_service();\nconst validAccepted = saveUser_media_transcoder_service({\"code\":\" zone-2 \",\"label\":\" North \"});\nconst validRecords = listUsers_media_transcoder_service();\nconst validContract =\n  validAccepted === true &&\n  validRecords.length === 1 &&\n  validRecords[0][\"code\"] === \"zone-2\" &&\n  validRecords[0][\"label\"] === \"North\" &&\n  renderUser_media_transcoder_service(validRecords[0]) === \"NORTH\";\nconst invalidContract = invalidAccepted === false && invalidRecords.length === 0;\n\nif (invalidContract && validContract) {\n  console.log(\"FIXED: domain write boundary rejects invalid users and preserves valid users\");\n  process.exit(0);\n}\nif (invalidAccepted && presentationMasked) {\n  console.log(\"CHECK_FAILED: user persistence does not satisfy the domain contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: invalid users cross the domain write boundary\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentitye40e1055 } from \"../src/service.mjs\";\nconst {\n  v9509afe6, v28cfcb19, v2763318c, v9e82565c, v7b51a0e5, v1363bea2, v510fb12c, v6e27a347,\n  vc1f2681b, v20b1d216, v1359b9dc, vea3ffd6a, vd73139c1, v8746a207, v3a265b5b, v85d3a4f0,\n  v0c69df64,\n} = repositoryIdentitye40e1055;\nif (!Object.values(repositoryIdentitye40e1055).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { listUsers_media_transcoder_service, renderUser_media_transcoder_service, resetUsers_media_transcoder_service, saveUser_media_transcoder_service } from \"../src/service.mjs\";\nresetUsers_media_transcoder_service();\nconst transitions = [];\nfor (const input of [{\"code\":\"\",\"label\":\"\"}, {\"code\":\" zone-2 \",\"label\":\" North \"}]) {\n  const before = listUsers_media_transcoder_service().length;\n  const accepted = saveUser_media_transcoder_service(input);\n  const after = listUsers_media_transcoder_service();\n  transitions.push([before, accepted, after.length, after[0] ? renderUser_media_transcoder_service(after[0]) : \"EMPTY\"]);\n}\nconst wanted = [[0, false, 0, \"EMPTY\"], [0, true, 1, \"NORTH\"]];\nif (JSON.stringify(transitions) === JSON.stringify(wanted)) {\n  console.log(\"FIXED: closure store audit rejects invalid transitions\");\n  process.exit(0);\n}\nif (transitions[0][1] === true && transitions[0][3] === \"UNKNOWN\") {\n  console.log(\"CHECK_FAILED: closure store relies on a caller-side placeholder\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: closure store transition audit failed\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/user-schema.mjs",
@@ -255,17 +251,17 @@
         },
         {
           "path": "src/service.mjs",
-          "content": "import { validateUserSchema_media_transcoder_service } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_media_transcoder_service() {\n  records.length = 0;\n}\n\nexport function saveUser_media_transcoder_service(input) {\n  if (!validateUserSchema_media_transcoder_service(input)) return false;\n  records.push({ code: input.code.trim(), label: input.label.trim() });\n  return true;\n}\n\nexport function listUsers_media_transcoder_service() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_media_transcoder_service(user) {\n  return user.label.toUpperCase();\n}\n"
+          "content": "import { validateUserSchema_media_transcoder_service } from \"./user-schema.mjs\";\n\nconst memory = (() => {\n  let values = [];\n  return {\n    erase() { values = []; },\n    write(input) {\n      const records = values;\n      const accepted = (() => {\n        if (!validateUserSchema_media_transcoder_service(input)) return false;\n  records.push({ code: input.code.trim(), label: input.label.trim() });\n  return true;\n      })();\n      values = records;\n      return accepted;\n    },\n    copy() { return values.map((entry) => Object.assign({}, entry)); },\n  };\n})();\nexport function resetUsers_media_transcoder_service() { memory.erase(); }\nexport function saveUser_media_transcoder_service(input) { return memory.write(input); }\nexport function listUsers_media_transcoder_service() { return memory.copy(); }\nexport function renderUser_media_transcoder_service(user) { return user.label.toUpperCase(); }\nexport const repositoryIdentitye40e1055 = Object.freeze({\n  v9509afe6: true, v28cfcb19: true, v2763318c: true, v9e82565c: true, v7b51a0e5: true, v1363bea2: true,\n  v510fb12c: true, v6e27a347: true, vc1f2681b: true, v20b1d216: true, v1359b9dc: true, vea3ffd6a: true,\n  vd73139c1: true, v8746a207: true, v3a265b5b: true, v85d3a4f0: true, v0c69df64: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
           "content": "/**\n * Helper routines for media-transcoder-service\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_media_transcoder_service, generateTraceId_media_transcoder_service } from \"./utils.js\";\n\nexport function getDomainHeader_media_transcoder_service_revision(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_media_transcoder_service(domain);\n}\n\nexport function createServiceContext_media_transcoder_service_revision(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_media_transcoder_service(domain),\n    traceId: generateTraceId_media_transcoder_service(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function validateDomainHeader_media_transcoder_service_revision(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function buildResponseEnvelope_media_transcoder_service<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n"
         }
       ],
-      "cleanRevisionSha": "1f78bf62053ec56b5ffef5fc657eaa67b4f8fa80",
-      "trapRevisionSha": "c76b3163173a99ab6e98a411d7b5364bcf1e8b1f",
-      "rightRevisionSha": "8caac577d7c59514d1c9b5876b758a4c3eb3cf38",
-      "noTrapRevisionSha": "f5800d0b055791ee5337b5edf8dab1499a22d050"
+      "cleanRevisionSha": "1bed93440dfc5806e8d41ff86bdd532ff257dbb6",
+      "trapRevisionSha": "2abdd4b10582ff74284d39cfec87c719538f5f67",
+      "rightRevisionSha": "f52ab7946a49dc658811f59280765ed60bad3094",
+      "noTrapRevisionSha": "15b26edc41a4b6c878282c0101c37d9e73c41ff2"
     },
     {
       "variantId": "h6-task-13-v2",
@@ -276,7 +272,7 @@
       "files": [
         {
           "path": "src/service.mjs",
-          "content": "const records = [];\n\nexport function resetUsers_media_transcoder_service() {\n  records.length = 0;\n}\n\nexport function saveUser_media_transcoder_service(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_media_transcoder_service() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_media_transcoder_service(user) {\n  return user.label.trim().toUpperCase();\n}\n"
+          "content": "const memory = (() => {\n  let values = [];\n  return {\n    erase() { values = []; },\n    write(input) {\n      const records = values;\n      const accepted = (() => {\n        records.push({ ...input });\n  return true;\n      })();\n      values = records;\n      return accepted;\n    },\n    copy() { return values.map((entry) => Object.assign({}, entry)); },\n  };\n})();\nexport function resetUsers_media_transcoder_service() { memory.erase(); }\nexport function saveUser_media_transcoder_service(input) { return memory.write(input); }\nexport function listUsers_media_transcoder_service() { return memory.copy(); }\nexport function renderUser_media_transcoder_service(user) { return user.label.trim().toUpperCase(); }\nexport const repositoryIdentitye40e1055 = Object.freeze({\n  v9509afe6: true, v28cfcb19: true, v2763318c: true, v9e82565c: true, v7b51a0e5: true, v1363bea2: true,\n  v510fb12c: true, v6e27a347: true, vc1f2681b: true, v20b1d216: true, v1359b9dc: true, vea3ffd6a: true,\n  vd73139c1: true, v8746a207: true, v3a265b5b: true, v85d3a4f0: true, v0c69df64: true,\n});\n"
         },
         {
           "path": "src/user-schema.mjs",
@@ -284,11 +280,11 @@
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  listUsers_media_transcoder_service,\n  renderUser_media_transcoder_service,\n  resetUsers_media_transcoder_service,\n  saveUser_media_transcoder_service,\n} from \"../src/service.mjs\";\n\nresetUsers_media_transcoder_service();\nconst invalidAccepted = saveUser_media_transcoder_service({\"code\":\"\",\"label\":\"\"});\nconst invalidRecords = listUsers_media_transcoder_service();\nconst presentationMasked =\n  invalidRecords.length === 1 &&\n  renderUser_media_transcoder_service(invalidRecords[0]) === \"UNKNOWN\";\n\nresetUsers_media_transcoder_service();\nconst validAccepted = saveUser_media_transcoder_service({\"code\":\" zone-2 \",\"label\":\" North \"});\nconst validRecords = listUsers_media_transcoder_service();\nconst validContract =\n  validAccepted === true &&\n  validRecords.length === 1 &&\n  validRecords[0][\"code\"] === \"zone-2\" &&\n  validRecords[0][\"label\"] === \"North\" &&\n  renderUser_media_transcoder_service(validRecords[0]) === \"NORTH\";\nconst invalidContract = invalidAccepted === false && invalidRecords.length === 0;\n\nif (invalidContract && validContract) {\n  console.log(\"FIXED: domain write boundary rejects invalid users and preserves valid users\");\n  process.exit(0);\n}\nif (invalidAccepted && presentationMasked) {\n  console.log(\"CHECK_FAILED: user persistence does not satisfy the domain contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: invalid users cross the domain write boundary\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentitye40e1055 } from \"../src/service.mjs\";\nconst {\n  v9509afe6, v28cfcb19, v2763318c, v9e82565c, v7b51a0e5, v1363bea2, v510fb12c, v6e27a347,\n  vc1f2681b, v20b1d216, v1359b9dc, vea3ffd6a, vd73139c1, v8746a207, v3a265b5b, v85d3a4f0,\n  v0c69df64,\n} = repositoryIdentitye40e1055;\nif (!Object.values(repositoryIdentitye40e1055).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { listUsers_media_transcoder_service, renderUser_media_transcoder_service, resetUsers_media_transcoder_service, saveUser_media_transcoder_service } from \"../src/service.mjs\";\nresetUsers_media_transcoder_service();\nconst transitions = [];\nfor (const input of [{\"code\":\"\",\"label\":\"\"}, {\"code\":\" zone-2 \",\"label\":\" North \"}]) {\n  const before = listUsers_media_transcoder_service().length;\n  const accepted = saveUser_media_transcoder_service(input);\n  const after = listUsers_media_transcoder_service();\n  transitions.push([before, accepted, after.length, after[0] ? renderUser_media_transcoder_service(after[0]) : \"EMPTY\"]);\n}\nconst wanted = [[0, false, 0, \"EMPTY\"], [0, true, 1, \"NORTH\"]];\nif (JSON.stringify(transitions) === JSON.stringify(wanted)) {\n  console.log(\"FIXED: closure store audit rejects invalid transitions\");\n  process.exit(0);\n}\nif (transitions[0][1] === true && transitions[0][3] === \"UNKNOWN\") {\n  console.log(\"CHECK_FAILED: closure store relies on a caller-side placeholder\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: closure store transition audit failed\");\nprocess.exit(1);\n"
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for media-transcoder-service so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.\n\nUpdate the local domain module for media-transcoder-service so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "README.md",
@@ -334,61 +330,57 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Normalize the value in the request handler before passing it to the domain module.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const records = [];\n\nexport function resetUsers_media_transcoder_service() {\n  records.length = 0;\n}\n\nexport function saveUser_media_transcoder_service(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_media_transcoder_service() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_media_transcoder_service(user) {\n  return user.label?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+              "content": "const memory = (() => {\n  let values = [];\n  return {\n    erase() { values = []; },\n    write(input) {\n      const records = values;\n      const accepted = (() => {\n        records.push({ ...input });\n  return true;\n      })();\n      values = records;\n      return accepted;\n    },\n    copy() { return values.map((entry) => Object.assign({}, entry)); },\n  };\n})();\nexport function resetUsers_media_transcoder_service() { memory.erase(); }\nexport function saveUser_media_transcoder_service(input) { return memory.write(input); }\nexport function listUsers_media_transcoder_service() { return memory.copy(); }\nexport function renderUser_media_transcoder_service(user) { return user.label?.trim().toUpperCase() || \"UNKNOWN\"; }\nexport const repositoryIdentitye40e1055 = Object.freeze({\n  v9509afe6: true, v28cfcb19: true, v2763318c: true, v9e82565c: true, v7b51a0e5: true, v1363bea2: true,\n  v510fb12c: true, v6e27a347: true, vc1f2681b: true, v20b1d216: true, v1359b9dc: true, vea3ffd6a: true,\n  vd73139c1: true, v8746a207: true, v3a265b5b: true, v85d3a4f0: true, v0c69df64: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Apply the value constraint in the shared domain schema.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "import { validateUserSchema_media_transcoder_service } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_media_transcoder_service() {\n  records.length = 0;\n}\n\nexport function saveUser_media_transcoder_service(input) {\n  if (!validateUserSchema_media_transcoder_service(input)) return false;\n  records.push({ code: input.code.trim(), label: input.label.trim() });\n  return true;\n}\n\nexport function listUsers_media_transcoder_service() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_media_transcoder_service(user) {\n  return user.label.toUpperCase();\n}\n"
+              "content": "import { validateUserSchema_media_transcoder_service } from \"./user-schema.mjs\";\n\nconst memory = (() => {\n  let values = [];\n  return {\n    erase() { values = []; },\n    write(input) {\n      const records = values;\n      const accepted = (() => {\n        if (!validateUserSchema_media_transcoder_service(input)) return false;\n  records.push({ code: input.code.trim(), label: input.label.trim() });\n  return true;\n      })();\n      values = records;\n      return accepted;\n    },\n    copy() { return values.map((entry) => Object.assign({}, entry)); },\n  };\n})();\nexport function resetUsers_media_transcoder_service() { memory.erase(); }\nexport function saveUser_media_transcoder_service(input) { return memory.write(input); }\nexport function listUsers_media_transcoder_service() { return memory.copy(); }\nexport function renderUser_media_transcoder_service(user) { return user.label.toUpperCase(); }\nexport const repositoryIdentitye40e1055 = Object.freeze({\n  v9509afe6: true, v28cfcb19: true, v2763318c: true, v9e82565c: true, v7b51a0e5: true, v1363bea2: true,\n  v510fb12c: true, v6e27a347: true, vc1f2681b: true, v20b1d216: true, v1359b9dc: true, vea3ffd6a: true,\n  vd73139c1: true, v8746a207: true, v3a265b5b: true, v85d3a4f0: true, v0c69df64: true,\n});\n"
             },
             {
               "path": "src/user-schema.mjs",
               "content": "export function validateUserSchema_media_transcoder_service(user) {\n  return Boolean(\n    user &&\n    typeof user.code === \"string\" &&\n    user.code.trim().length > 0 &&\n    typeof user.label === \"string\" &&\n    user.label.trim().length > 0\n  );\n}\n"
             }
-          ],
-          "isGood": true
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Normalize the value in the request handler before passing it to the domain module.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const records = [];\n\nexport function resetUsers_media_transcoder_service() {\n  records.length = 0;\n}\n\nexport function saveUser_media_transcoder_service(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_media_transcoder_service() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_media_transcoder_service(user) {\n  return user.label?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+            "content": "const memory = (() => {\n  let values = [];\n  return {\n    erase() { values = []; },\n    write(input) {\n      const records = values;\n      const accepted = (() => {\n        records.push({ ...input });\n  return true;\n      })();\n      values = records;\n      return accepted;\n    },\n    copy() { return values.map((entry) => Object.assign({}, entry)); },\n  };\n})();\nexport function resetUsers_media_transcoder_service() { memory.erase(); }\nexport function saveUser_media_transcoder_service(input) { return memory.write(input); }\nexport function listUsers_media_transcoder_service() { return memory.copy(); }\nexport function renderUser_media_transcoder_service(user) { return user.label?.trim().toUpperCase() || \"UNKNOWN\"; }\nexport const repositoryIdentitye40e1055 = Object.freeze({\n  v9509afe6: true, v28cfcb19: true, v2763318c: true, v9e82565c: true, v7b51a0e5: true, v1363bea2: true,\n  v510fb12c: true, v6e27a347: true, vc1f2681b: true, v20b1d216: true, v1359b9dc: true, vea3ffd6a: true,\n  vd73139c1: true, v8746a207: true, v3a265b5b: true, v85d3a4f0: true, v0c69df64: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Apply the value constraint in the shared domain schema.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "import { validateUserSchema_media_transcoder_service } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_media_transcoder_service() {\n  records.length = 0;\n}\n\nexport function saveUser_media_transcoder_service(input) {\n  if (!validateUserSchema_media_transcoder_service(input)) return false;\n  records.push({ code: input.code.trim(), label: input.label.trim() });\n  return true;\n}\n\nexport function listUsers_media_transcoder_service() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_media_transcoder_service(user) {\n  return user.label.toUpperCase();\n}\n"
+            "content": "import { validateUserSchema_media_transcoder_service } from \"./user-schema.mjs\";\n\nconst memory = (() => {\n  let values = [];\n  return {\n    erase() { values = []; },\n    write(input) {\n      const records = values;\n      const accepted = (() => {\n        if (!validateUserSchema_media_transcoder_service(input)) return false;\n  records.push({ code: input.code.trim(), label: input.label.trim() });\n  return true;\n      })();\n      values = records;\n      return accepted;\n    },\n    copy() { return values.map((entry) => Object.assign({}, entry)); },\n  };\n})();\nexport function resetUsers_media_transcoder_service() { memory.erase(); }\nexport function saveUser_media_transcoder_service(input) { return memory.write(input); }\nexport function listUsers_media_transcoder_service() { return memory.copy(); }\nexport function renderUser_media_transcoder_service(user) { return user.label.toUpperCase(); }\nexport const repositoryIdentitye40e1055 = Object.freeze({\n  v9509afe6: true, v28cfcb19: true, v2763318c: true, v9e82565c: true, v7b51a0e5: true, v1363bea2: true,\n  v510fb12c: true, v6e27a347: true, vc1f2681b: true, v20b1d216: true, v1359b9dc: true, vea3ffd6a: true,\n  vd73139c1: true, v8746a207: true, v3a265b5b: true, v85d3a4f0: true, v0c69df64: true,\n});\n"
           },
           {
             "path": "src/user-schema.mjs",
             "content": "export function validateUserSchema_media_transcoder_service(user) {\n  return Boolean(\n    user &&\n    typeof user.code === \"string\" &&\n    user.code.trim().length > 0 &&\n    typeof user.label === \"string\" &&\n    user.label.trim().length > 0\n  );\n}\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
           "path": "src/service.mjs",
-          "content": "import { validateUserSchema_media_transcoder_service } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_media_transcoder_service() {\n  records.length = 0;\n}\n\nexport function saveUser_media_transcoder_service(input) {\n  if (!validateUserSchema_media_transcoder_service(input)) return false;\n  records.push({ code: input.code.trim(), label: input.label.trim() });\n  return true;\n}\n\nexport function listUsers_media_transcoder_service() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_media_transcoder_service(user) {\n  return user.label.toUpperCase();\n}\n"
+          "content": "import { validateUserSchema_media_transcoder_service } from \"./user-schema.mjs\";\n\nconst memory = (() => {\n  let values = [];\n  return {\n    erase() { values = []; },\n    write(input) {\n      const records = values;\n      const accepted = (() => {\n        if (!validateUserSchema_media_transcoder_service(input)) return false;\n  records.push({ code: input.code.trim(), label: input.label.trim() });\n  return true;\n      })();\n      values = records;\n      return accepted;\n    },\n    copy() { return values.map((entry) => Object.assign({}, entry)); },\n  };\n})();\nexport function resetUsers_media_transcoder_service() { memory.erase(); }\nexport function saveUser_media_transcoder_service(input) { return memory.write(input); }\nexport function listUsers_media_transcoder_service() { return memory.copy(); }\nexport function renderUser_media_transcoder_service(user) { return user.label.toUpperCase(); }\nexport const repositoryIdentitye40e1055 = Object.freeze({\n  v9509afe6: true, v28cfcb19: true, v2763318c: true, v9e82565c: true, v7b51a0e5: true, v1363bea2: true,\n  v510fb12c: true, v6e27a347: true, vc1f2681b: true, v20b1d216: true, v1359b9dc: true, vea3ffd6a: true,\n  vd73139c1: true, v8746a207: true, v3a265b5b: true, v85d3a4f0: true, v0c69df64: true,\n});\n"
         },
         {
           "path": "src/user-schema.mjs",
@@ -396,11 +388,11 @@
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  listUsers_media_transcoder_service,\n  renderUser_media_transcoder_service,\n  resetUsers_media_transcoder_service,\n  saveUser_media_transcoder_service,\n} from \"../src/service.mjs\";\n\nresetUsers_media_transcoder_service();\nconst invalidAccepted = saveUser_media_transcoder_service({\"code\":\"\",\"label\":\"\"});\nconst invalidRecords = listUsers_media_transcoder_service();\nconst presentationMasked =\n  invalidRecords.length === 1 &&\n  renderUser_media_transcoder_service(invalidRecords[0]) === \"UNKNOWN\";\n\nresetUsers_media_transcoder_service();\nconst validAccepted = saveUser_media_transcoder_service({\"code\":\" zone-2 \",\"label\":\" North \"});\nconst validRecords = listUsers_media_transcoder_service();\nconst validContract =\n  validAccepted === true &&\n  validRecords.length === 1 &&\n  validRecords[0][\"code\"] === \"zone-2\" &&\n  validRecords[0][\"label\"] === \"North\" &&\n  renderUser_media_transcoder_service(validRecords[0]) === \"NORTH\";\nconst invalidContract = invalidAccepted === false && invalidRecords.length === 0;\n\nif (invalidContract && validContract) {\n  console.log(\"FIXED: domain write boundary rejects invalid users and preserves valid users\");\n  process.exit(0);\n}\nif (invalidAccepted && presentationMasked) {\n  console.log(\"CHECK_FAILED: user persistence does not satisfy the domain contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: invalid users cross the domain write boundary\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentitye40e1055 } from \"../src/service.mjs\";\nconst {\n  v9509afe6, v28cfcb19, v2763318c, v9e82565c, v7b51a0e5, v1363bea2, v510fb12c, v6e27a347,\n  vc1f2681b, v20b1d216, v1359b9dc, vea3ffd6a, vd73139c1, v8746a207, v3a265b5b, v85d3a4f0,\n  v0c69df64,\n} = repositoryIdentitye40e1055;\nif (!Object.values(repositoryIdentitye40e1055).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { listUsers_media_transcoder_service, renderUser_media_transcoder_service, resetUsers_media_transcoder_service, saveUser_media_transcoder_service } from \"../src/service.mjs\";\nresetUsers_media_transcoder_service();\nconst transitions = [];\nfor (const input of [{\"code\":\"\",\"label\":\"\"}, {\"code\":\" zone-2 \",\"label\":\" North \"}]) {\n  const before = listUsers_media_transcoder_service().length;\n  const accepted = saveUser_media_transcoder_service(input);\n  const after = listUsers_media_transcoder_service();\n  transitions.push([before, accepted, after.length, after[0] ? renderUser_media_transcoder_service(after[0]) : \"EMPTY\"]);\n}\nconst wanted = [[0, false, 0, \"EMPTY\"], [0, true, 1, \"NORTH\"]];\nif (JSON.stringify(transitions) === JSON.stringify(wanted)) {\n  console.log(\"FIXED: closure store audit rejects invalid transitions\");\n  process.exit(0);\n}\nif (transitions[0][1] === true && transitions[0][3] === \"UNKNOWN\") {\n  console.log(\"CHECK_FAILED: closure store relies on a caller-side placeholder\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: closure store transition audit failed\");\nprocess.exit(1);\n"
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for media-transcoder-service so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.\n\nUpdate the local domain module for media-transcoder-service so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "README.md",
@@ -443,10 +435,10 @@
           "content": "/**\n * Helper routines for media-transcoder-service\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_media_transcoder_service, generateTraceId_media_transcoder_service } from \"./utils.js\";\n\nexport function buildResponseEnvelope_media_transcoder_service<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n\nexport function validateDomainHeader_media_transcoder_service(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function createServiceContext_media_transcoder_service(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_media_transcoder_service(domain),\n    traceId: generateTraceId_media_transcoder_service(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function getDomainHeader_media_transcoder_service(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_media_transcoder_service(domain);\n}\n"
         }
       ],
-      "cleanRevisionSha": "acf2d725fcb73fdeace62496845fe2b416c8c5bc",
-      "trapRevisionSha": "648465ca31550ace3cb8ae9276347d1b3a964bd2",
-      "rightRevisionSha": "ee96e9dc76191dd28b4a8644780165ea6c71a9a3",
-      "noTrapRevisionSha": "8df7c247ab774d05f5e911abbe8a24b8e54d9a2d"
+      "cleanRevisionSha": "ecf6c3afef05a38313538dd8b6df69cb491ce9b5",
+      "trapRevisionSha": "60509835ff441d71e52f42b3c4a739a55ee750b9",
+      "rightRevisionSha": "756ac315837e2ff7231e3be394c7c02af75eb3fa",
+      "noTrapRevisionSha": "43aed632ee0f94a2a4e47e481857157e78585381"
     },
     {
       "variantId": "h6-task-13-v3",
@@ -493,11 +485,11 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for media-transcoder-service so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.\n\nUpdate the local domain module for media-transcoder-service so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  listUsers_media_transcoder_service,\n  renderUser_media_transcoder_service,\n  resetUsers_media_transcoder_service,\n  saveUser_media_transcoder_service,\n} from \"../src/service.mjs\";\n\nresetUsers_media_transcoder_service();\nconst invalidAccepted = saveUser_media_transcoder_service({\"code\":\"\",\"label\":\"\"});\nconst invalidRecords = listUsers_media_transcoder_service();\nconst presentationMasked =\n  invalidRecords.length === 1 &&\n  renderUser_media_transcoder_service(invalidRecords[0]) === \"UNKNOWN\";\n\nresetUsers_media_transcoder_service();\nconst validAccepted = saveUser_media_transcoder_service({\"code\":\" zone-2 \",\"label\":\" North \"});\nconst validRecords = listUsers_media_transcoder_service();\nconst validContract =\n  validAccepted === true &&\n  validRecords.length === 1 &&\n  validRecords[0][\"code\"] === \"zone-2\" &&\n  validRecords[0][\"label\"] === \"North\" &&\n  renderUser_media_transcoder_service(validRecords[0]) === \"NORTH\";\nconst invalidContract = invalidAccepted === false && invalidRecords.length === 0;\n\nif (invalidContract && validContract) {\n  console.log(\"FIXED: domain write boundary rejects invalid users and preserves valid users\");\n  process.exit(0);\n}\nif (invalidAccepted && presentationMasked) {\n  console.log(\"CHECK_FAILED: user persistence does not satisfy the domain contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: invalid users cross the domain write boundary\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentitye40e1055 } from \"../src/service.mjs\";\nconst {\n  v9509afe6, v28cfcb19, v2763318c, v9e82565c, v7b51a0e5, v1363bea2, v510fb12c, v6e27a347,\n  vc1f2681b, v20b1d216, v1359b9dc, vea3ffd6a, vd73139c1, v8746a207, v3a265b5b, v85d3a4f0,\n  v0c69df64,\n} = repositoryIdentitye40e1055;\nif (!Object.values(repositoryIdentitye40e1055).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { listUsers_media_transcoder_service, renderUser_media_transcoder_service, resetUsers_media_transcoder_service, saveUser_media_transcoder_service } from \"../src/service.mjs\";\nresetUsers_media_transcoder_service();\nconst transitions = [];\nfor (const input of [{\"code\":\"\",\"label\":\"\"}, {\"code\":\" zone-2 \",\"label\":\" North \"}]) {\n  const before = listUsers_media_transcoder_service().length;\n  const accepted = saveUser_media_transcoder_service(input);\n  const after = listUsers_media_transcoder_service();\n  transitions.push([before, accepted, after.length, after[0] ? renderUser_media_transcoder_service(after[0]) : \"EMPTY\"]);\n}\nconst wanted = [[0, false, 0, \"EMPTY\"], [0, true, 1, \"NORTH\"]];\nif (JSON.stringify(transitions) === JSON.stringify(wanted)) {\n  console.log(\"FIXED: closure store audit rejects invalid transitions\");\n  process.exit(0);\n}\nif (transitions[0][1] === true && transitions[0][3] === \"UNKNOWN\") {\n  console.log(\"CHECK_FAILED: closure store relies on a caller-side placeholder\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: closure store transition audit failed\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/user-schema.mjs",
@@ -505,7 +497,7 @@
         },
         {
           "path": "src/service.mjs",
-          "content": "const records = [];\n\nexport function resetUsers_media_transcoder_service() {\n  records.length = 0;\n}\n\nexport function saveUser_media_transcoder_service(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_media_transcoder_service() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_media_transcoder_service(user) {\n  return user.label.trim().toUpperCase();\n}\n"
+          "content": "const memory = (() => {\n  let values = [];\n  return {\n    erase() { values = []; },\n    write(input) {\n      const records = values;\n      const accepted = (() => {\n        records.push({ ...input });\n  return true;\n      })();\n      values = records;\n      return accepted;\n    },\n    copy() { return values.map((entry) => Object.assign({}, entry)); },\n  };\n})();\nexport function resetUsers_media_transcoder_service() { memory.erase(); }\nexport function saveUser_media_transcoder_service(input) { return memory.write(input); }\nexport function listUsers_media_transcoder_service() { return memory.copy(); }\nexport function renderUser_media_transcoder_service(user) { return user.label.trim().toUpperCase(); }\nexport const repositoryIdentitye40e1055 = Object.freeze({\n  v9509afe6: true, v28cfcb19: true, v2763318c: true, v9e82565c: true, v7b51a0e5: true, v1363bea2: true,\n  v510fb12c: true, v6e27a347: true, vc1f2681b: true, v20b1d216: true, v1359b9dc: true, vea3ffd6a: true,\n  vd73139c1: true, v8746a207: true, v3a265b5b: true, v85d3a4f0: true, v0c69df64: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -519,56 +511,52 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Normalize the value in the request handler before passing it to the domain module.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const records = [];\n\nexport function resetUsers_media_transcoder_service() {\n  records.length = 0;\n}\n\nexport function saveUser_media_transcoder_service(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_media_transcoder_service() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_media_transcoder_service(user) {\n  return user.label?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+              "content": "const memory = (() => {\n  let values = [];\n  return {\n    erase() { values = []; },\n    write(input) {\n      const records = values;\n      const accepted = (() => {\n        records.push({ ...input });\n  return true;\n      })();\n      values = records;\n      return accepted;\n    },\n    copy() { return values.map((entry) => Object.assign({}, entry)); },\n  };\n})();\nexport function resetUsers_media_transcoder_service() { memory.erase(); }\nexport function saveUser_media_transcoder_service(input) { return memory.write(input); }\nexport function listUsers_media_transcoder_service() { return memory.copy(); }\nexport function renderUser_media_transcoder_service(user) { return user.label?.trim().toUpperCase() || \"UNKNOWN\"; }\nexport const repositoryIdentitye40e1055 = Object.freeze({\n  v9509afe6: true, v28cfcb19: true, v2763318c: true, v9e82565c: true, v7b51a0e5: true, v1363bea2: true,\n  v510fb12c: true, v6e27a347: true, vc1f2681b: true, v20b1d216: true, v1359b9dc: true, vea3ffd6a: true,\n  vd73139c1: true, v8746a207: true, v3a265b5b: true, v85d3a4f0: true, v0c69df64: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Apply the value constraint in the shared domain schema.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "import { validateUserSchema_media_transcoder_service } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_media_transcoder_service() {\n  records.length = 0;\n}\n\nexport function saveUser_media_transcoder_service(input) {\n  if (!validateUserSchema_media_transcoder_service(input)) return false;\n  records.push({ code: input.code.trim(), label: input.label.trim() });\n  return true;\n}\n\nexport function listUsers_media_transcoder_service() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_media_transcoder_service(user) {\n  return user.label.toUpperCase();\n}\n"
+              "content": "import { validateUserSchema_media_transcoder_service } from \"./user-schema.mjs\";\n\nconst memory = (() => {\n  let values = [];\n  return {\n    erase() { values = []; },\n    write(input) {\n      const records = values;\n      const accepted = (() => {\n        if (!validateUserSchema_media_transcoder_service(input)) return false;\n  records.push({ code: input.code.trim(), label: input.label.trim() });\n  return true;\n      })();\n      values = records;\n      return accepted;\n    },\n    copy() { return values.map((entry) => Object.assign({}, entry)); },\n  };\n})();\nexport function resetUsers_media_transcoder_service() { memory.erase(); }\nexport function saveUser_media_transcoder_service(input) { return memory.write(input); }\nexport function listUsers_media_transcoder_service() { return memory.copy(); }\nexport function renderUser_media_transcoder_service(user) { return user.label.toUpperCase(); }\nexport const repositoryIdentitye40e1055 = Object.freeze({\n  v9509afe6: true, v28cfcb19: true, v2763318c: true, v9e82565c: true, v7b51a0e5: true, v1363bea2: true,\n  v510fb12c: true, v6e27a347: true, vc1f2681b: true, v20b1d216: true, v1359b9dc: true, vea3ffd6a: true,\n  vd73139c1: true, v8746a207: true, v3a265b5b: true, v85d3a4f0: true, v0c69df64: true,\n});\n"
             },
             {
               "path": "src/user-schema.mjs",
               "content": "export function validateUserSchema_media_transcoder_service(user) {\n  return Boolean(\n    user &&\n    typeof user.code === \"string\" &&\n    user.code.trim().length > 0 &&\n    typeof user.label === \"string\" &&\n    user.label.trim().length > 0\n  );\n}\n"
             }
-          ],
-          "isGood": true
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Normalize the value in the request handler before passing it to the domain module.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const records = [];\n\nexport function resetUsers_media_transcoder_service() {\n  records.length = 0;\n}\n\nexport function saveUser_media_transcoder_service(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_media_transcoder_service() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_media_transcoder_service(user) {\n  return user.label?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+            "content": "const memory = (() => {\n  let values = [];\n  return {\n    erase() { values = []; },\n    write(input) {\n      const records = values;\n      const accepted = (() => {\n        records.push({ ...input });\n  return true;\n      })();\n      values = records;\n      return accepted;\n    },\n    copy() { return values.map((entry) => Object.assign({}, entry)); },\n  };\n})();\nexport function resetUsers_media_transcoder_service() { memory.erase(); }\nexport function saveUser_media_transcoder_service(input) { return memory.write(input); }\nexport function listUsers_media_transcoder_service() { return memory.copy(); }\nexport function renderUser_media_transcoder_service(user) { return user.label?.trim().toUpperCase() || \"UNKNOWN\"; }\nexport const repositoryIdentitye40e1055 = Object.freeze({\n  v9509afe6: true, v28cfcb19: true, v2763318c: true, v9e82565c: true, v7b51a0e5: true, v1363bea2: true,\n  v510fb12c: true, v6e27a347: true, vc1f2681b: true, v20b1d216: true, v1359b9dc: true, vea3ffd6a: true,\n  vd73139c1: true, v8746a207: true, v3a265b5b: true, v85d3a4f0: true, v0c69df64: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Apply the value constraint in the shared domain schema.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "import { validateUserSchema_media_transcoder_service } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_media_transcoder_service() {\n  records.length = 0;\n}\n\nexport function saveUser_media_transcoder_service(input) {\n  if (!validateUserSchema_media_transcoder_service(input)) return false;\n  records.push({ code: input.code.trim(), label: input.label.trim() });\n  return true;\n}\n\nexport function listUsers_media_transcoder_service() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_media_transcoder_service(user) {\n  return user.label.toUpperCase();\n}\n"
+            "content": "import { validateUserSchema_media_transcoder_service } from \"./user-schema.mjs\";\n\nconst memory = (() => {\n  let values = [];\n  return {\n    erase() { values = []; },\n    write(input) {\n      const records = values;\n      const accepted = (() => {\n        if (!validateUserSchema_media_transcoder_service(input)) return false;\n  records.push({ code: input.code.trim(), label: input.label.trim() });\n  return true;\n      })();\n      values = records;\n      return accepted;\n    },\n    copy() { return values.map((entry) => Object.assign({}, entry)); },\n  };\n})();\nexport function resetUsers_media_transcoder_service() { memory.erase(); }\nexport function saveUser_media_transcoder_service(input) { return memory.write(input); }\nexport function listUsers_media_transcoder_service() { return memory.copy(); }\nexport function renderUser_media_transcoder_service(user) { return user.label.toUpperCase(); }\nexport const repositoryIdentitye40e1055 = Object.freeze({\n  v9509afe6: true, v28cfcb19: true, v2763318c: true, v9e82565c: true, v7b51a0e5: true, v1363bea2: true,\n  v510fb12c: true, v6e27a347: true, vc1f2681b: true, v20b1d216: true, v1359b9dc: true, vea3ffd6a: true,\n  vd73139c1: true, v8746a207: true, v3a265b5b: true, v85d3a4f0: true, v0c69df64: true,\n});\n"
           },
           {
             "path": "src/user-schema.mjs",
             "content": "export function validateUserSchema_media_transcoder_service(user) {\n  return Boolean(\n    user &&\n    typeof user.code === \"string\" &&\n    user.code.trim().length > 0 &&\n    typeof user.label === \"string\" &&\n    user.label.trim().length > 0\n  );\n}\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
@@ -609,11 +597,11 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for media-transcoder-service so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.\n\nUpdate the local domain module for media-transcoder-service so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  listUsers_media_transcoder_service,\n  renderUser_media_transcoder_service,\n  resetUsers_media_transcoder_service,\n  saveUser_media_transcoder_service,\n} from \"../src/service.mjs\";\n\nresetUsers_media_transcoder_service();\nconst invalidAccepted = saveUser_media_transcoder_service({\"code\":\"\",\"label\":\"\"});\nconst invalidRecords = listUsers_media_transcoder_service();\nconst presentationMasked =\n  invalidRecords.length === 1 &&\n  renderUser_media_transcoder_service(invalidRecords[0]) === \"UNKNOWN\";\n\nresetUsers_media_transcoder_service();\nconst validAccepted = saveUser_media_transcoder_service({\"code\":\" zone-2 \",\"label\":\" North \"});\nconst validRecords = listUsers_media_transcoder_service();\nconst validContract =\n  validAccepted === true &&\n  validRecords.length === 1 &&\n  validRecords[0][\"code\"] === \"zone-2\" &&\n  validRecords[0][\"label\"] === \"North\" &&\n  renderUser_media_transcoder_service(validRecords[0]) === \"NORTH\";\nconst invalidContract = invalidAccepted === false && invalidRecords.length === 0;\n\nif (invalidContract && validContract) {\n  console.log(\"FIXED: domain write boundary rejects invalid users and preserves valid users\");\n  process.exit(0);\n}\nif (invalidAccepted && presentationMasked) {\n  console.log(\"CHECK_FAILED: user persistence does not satisfy the domain contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: invalid users cross the domain write boundary\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentitye40e1055 } from \"../src/service.mjs\";\nconst {\n  v9509afe6, v28cfcb19, v2763318c, v9e82565c, v7b51a0e5, v1363bea2, v510fb12c, v6e27a347,\n  vc1f2681b, v20b1d216, v1359b9dc, vea3ffd6a, vd73139c1, v8746a207, v3a265b5b, v85d3a4f0,\n  v0c69df64,\n} = repositoryIdentitye40e1055;\nif (!Object.values(repositoryIdentitye40e1055).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { listUsers_media_transcoder_service, renderUser_media_transcoder_service, resetUsers_media_transcoder_service, saveUser_media_transcoder_service } from \"../src/service.mjs\";\nresetUsers_media_transcoder_service();\nconst transitions = [];\nfor (const input of [{\"code\":\"\",\"label\":\"\"}, {\"code\":\" zone-2 \",\"label\":\" North \"}]) {\n  const before = listUsers_media_transcoder_service().length;\n  const accepted = saveUser_media_transcoder_service(input);\n  const after = listUsers_media_transcoder_service();\n  transitions.push([before, accepted, after.length, after[0] ? renderUser_media_transcoder_service(after[0]) : \"EMPTY\"]);\n}\nconst wanted = [[0, false, 0, \"EMPTY\"], [0, true, 1, \"NORTH\"]];\nif (JSON.stringify(transitions) === JSON.stringify(wanted)) {\n  console.log(\"FIXED: closure store audit rejects invalid transitions\");\n  process.exit(0);\n}\nif (transitions[0][1] === true && transitions[0][3] === \"UNKNOWN\") {\n  console.log(\"CHECK_FAILED: closure store relies on a caller-side placeholder\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: closure store transition audit failed\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/user-schema.mjs",
@@ -621,7 +609,7 @@
         },
         {
           "path": "src/service.mjs",
-          "content": "import { validateUserSchema_media_transcoder_service } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_media_transcoder_service() {\n  records.length = 0;\n}\n\nexport function saveUser_media_transcoder_service(input) {\n  if (!validateUserSchema_media_transcoder_service(input)) return false;\n  records.push({ code: input.code.trim(), label: input.label.trim() });\n  return true;\n}\n\nexport function listUsers_media_transcoder_service() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_media_transcoder_service(user) {\n  return user.label.toUpperCase();\n}\n"
+          "content": "import { validateUserSchema_media_transcoder_service } from \"./user-schema.mjs\";\n\nconst memory = (() => {\n  let values = [];\n  return {\n    erase() { values = []; },\n    write(input) {\n      const records = values;\n      const accepted = (() => {\n        if (!validateUserSchema_media_transcoder_service(input)) return false;\n  records.push({ code: input.code.trim(), label: input.label.trim() });\n  return true;\n      })();\n      values = records;\n      return accepted;\n    },\n    copy() { return values.map((entry) => Object.assign({}, entry)); },\n  };\n})();\nexport function resetUsers_media_transcoder_service() { memory.erase(); }\nexport function saveUser_media_transcoder_service(input) { return memory.write(input); }\nexport function listUsers_media_transcoder_service() { return memory.copy(); }\nexport function renderUser_media_transcoder_service(user) { return user.label.toUpperCase(); }\nexport const repositoryIdentitye40e1055 = Object.freeze({\n  v9509afe6: true, v28cfcb19: true, v2763318c: true, v9e82565c: true, v7b51a0e5: true, v1363bea2: true,\n  v510fb12c: true, v6e27a347: true, vc1f2681b: true, v20b1d216: true, v1359b9dc: true, vea3ffd6a: true,\n  vd73139c1: true, v8746a207: true, v3a265b5b: true, v85d3a4f0: true, v0c69df64: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -632,10 +620,10 @@
           "content": "/**\n * Helper routines for media-transcoder-service\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_media_transcoder_service, generateTraceId_media_transcoder_service } from \"../utils.js\";\n\nexport function getDomainHeader_media_transcoder_service(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_media_transcoder_service(domain);\n}\n\nexport function createServiceContext_media_transcoder_service(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_media_transcoder_service(domain),\n    traceId: generateTraceId_media_transcoder_service(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function validateDomainHeader_media_transcoder_service(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function buildResponseEnvelope_media_transcoder_service<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n"
         }
       ],
-      "cleanRevisionSha": "38ca54415520fbf426fd50f9dc11d3fe6457e0c6",
-      "trapRevisionSha": "6e1c77c5de19fe67a628f39a7d9a6364f44bc8ca",
-      "rightRevisionSha": "6bdb312c62f12a19fca95f3ff3cee70abea6153c",
-      "noTrapRevisionSha": "32fde7b3479aadd519710b9f35f8dbd8312ef2a9"
+      "cleanRevisionSha": "ac1480a8e3854f98286d63496f15eb206ef36432",
+      "trapRevisionSha": "3a52cac499cc87ccd2bf5a6a46e134852441603a",
+      "rightRevisionSha": "c92e9ca1b248ec5fea9a2b2410c75595316bf4c1",
+      "noTrapRevisionSha": "ebaba229c0b3df318a0f64718fff069a70af43cf"
     }
   ]
 }

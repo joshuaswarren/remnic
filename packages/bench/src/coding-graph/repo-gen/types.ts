@@ -22,43 +22,24 @@ export type DatasetSplit = (typeof DATASET_SPLITS)[number];
 
 export const H6_FROZEN_SEED = 81;
 export const H6_FROZEN_INVENTORY_HASH =
-  "770549eabb45423fadbbcd1699865b19605ed4214bc49c8b3f1b11b916d90835";
+  "687615b5f7ff46977d268a03e30018070f7d0bec9d01e04da2d0c723e59a5b27";
 export const H6_FROZEN_SPLITS = Object.freeze({
-  dev: Object.freeze([
-    "h6-task-01",
-    "h6-task-06",
-    "h6-task-11",
-    "h6-task-16",
-    "h6-task-21",
-    "h6-task-26",
-  ]),
+  dev: Object.freeze([]),
   pilot: Object.freeze([
-    "h6-task-02",
-    "h6-task-07",
-    "h6-task-12",
-    "h6-task-17",
-    "h6-task-22",
-    "h6-task-27",
+    "h6-task-01", "h6-task-02",
+    "h6-task-06", "h6-task-07",
+    "h6-task-11", "h6-task-12",
+    "h6-task-16", "h6-task-17",
+    "h6-task-21", "h6-task-22",
+    "h6-task-26", "h6-task-27",
   ]),
   main: Object.freeze([
-    "h6-task-03",
-    "h6-task-04",
-    "h6-task-05",
-    "h6-task-08",
-    "h6-task-09",
-    "h6-task-10",
-    "h6-task-13",
-    "h6-task-14",
-    "h6-task-15",
-    "h6-task-18",
-    "h6-task-19",
-    "h6-task-20",
-    "h6-task-23",
-    "h6-task-24",
-    "h6-task-25",
-    "h6-task-28",
-    "h6-task-29",
-    "h6-task-30",
+    "h6-task-03", "h6-task-04", "h6-task-05",
+    "h6-task-08", "h6-task-09", "h6-task-10",
+    "h6-task-13", "h6-task-14", "h6-task-15",
+    "h6-task-18", "h6-task-19", "h6-task-20",
+    "h6-task-23", "h6-task-24", "h6-task-25",
+    "h6-task-28", "h6-task-29", "h6-task-30",
   ]),
 } satisfies Readonly<Record<DatasetSplit, readonly string[]>>);
 
@@ -95,7 +76,6 @@ export const StrategyPatchSchema = z.object({
   id: z.string().min(1),
   description: z.string(),
   files: z.array(SyntheticFileSchema),
-  isGood: z.boolean(),
 });
 
 export type StrategyPatch = z.infer<typeof StrategyPatchSchema>;
@@ -147,8 +127,6 @@ export const TrapTaxonomyItemSchema = z.object({
   description: z.string(),
   trapMechanism: z.string().min(1),
   correctFix: z.string().min(1),
-  goodStrategyId: z.string().min(1),
-  badStrategyId: z.string().min(1),
   inspiredBy: z.string().min(1),
 });
 
@@ -161,7 +139,6 @@ export const H6BenchmarkDatasetSchema = z.object({
   inventoryHash: z.string().length(64),
   supportArtifactHashes: z.object({
     "trap-taxonomy.json": z.string().length(64),
-    "decision-rule.json": z.string().length(64),
     "arms/arms.json": z.string().length(64),
     "schema/action-intent.schema.json": z.string().length(64),
     "schema/dataset.schema.json": z.string().length(64),
@@ -171,8 +148,8 @@ export const H6BenchmarkDatasetSchema = z.object({
   taxonomy: z.array(TrapTaxonomyItemSchema).length(6),
   tasks: z.array(BaseTaskSchema).length(30),
   splits: z.object({
-    dev: z.array(z.string()).length(6),
-    pilot: z.array(z.string()).length(6),
+    dev: z.array(z.string()).length(0),
+    pilot: z.array(z.string()).length(12),
     main: z.array(z.string()).length(18),
   }),
 });

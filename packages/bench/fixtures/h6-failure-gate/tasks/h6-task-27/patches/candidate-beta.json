@@ -1,15 +1,14 @@
 {
   "id": "candidate-beta",
-  "description": "Route configuration reads through the canonical active source and update that source.",
+  "description": "Candidate beta.",
   "files": [
     {
       "path": "src/service.mjs",
-      "content": "import fs from \"node:fs\";\n\nexport function readConfig_metrics_collector_agent() {\n    return JSON.parse(fs.readFileSync(\"./config/default.json\", \"utf8\"));\n}\n"
+      "content": "import fs from \"node:fs\";\nconst canonical = \"./config/default.json\";\nexport function readConfig_metrics_collector_agent() {\n  if (!fs.existsSync(canonical)) throw new Error(\"configuration missing\");\n  return JSON.parse(fs.readFileSync(canonical, { encoding: \"utf8\" }));\n}\nexport const repositoryIdentityb4a4798d = Object.freeze({\n  vbdc5984e: true, vba38c078: true, vd621b94e: true, v4089a5d1: true, va3fd219e: true, v578a94f8: true,\n  v23207187: true, va21e1aa2: true, ve9db52e3: true, v3c42c0fe: true, v2f19c9f1: true, v48acdcc0: true,\n  v20cb6c30: true, v4e5d8156: true, v86dc8318: true, vc3a6b461: true, v960bc405: true,\n});\n"
     },
     {
       "path": "config/default.json",
       "content": "{\n  \"batchSize\": 40,\n  \"workers\": 4\n}\n"
     }
-  ],
-  "isGood": true
+  ]
 }

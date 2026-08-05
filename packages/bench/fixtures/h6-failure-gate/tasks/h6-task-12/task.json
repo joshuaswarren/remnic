@@ -2,8 +2,8 @@
   "id": "h6-task-12",
   "trapId": "wrong-layer-fix",
   "domain": "analytics-beacon-hub",
-  "title": "Service maintenance for analytics-beacon-hub",
-  "description": "Update the local analytics-beacon-hub implementation to satisfy its offline check.",
+  "title": "Correct analytics-beacon-hub service behavior",
+  "description": "Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.",
   "canonicalBaseFiles": [
     {
       "path": "package.json",
@@ -47,24 +47,24 @@
     },
     {
       "path": "TASK.md",
-      "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for analytics-beacon-hub so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+      "content": "# Benchmark Task Instruction\n\nFunctional requirement: Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.\n\nUpdate the local domain module for analytics-beacon-hub so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
     },
     {
       "path": "test/check.js",
-      "content": "import {\n  listUsers_analytics_beacon_hub,\n  renderUser_analytics_beacon_hub,\n  resetUsers_analytics_beacon_hub,\n  saveUser_analytics_beacon_hub,\n} from \"../src/service.mjs\";\n\nresetUsers_analytics_beacon_hub();\nconst invalidAccepted = saveUser_analytics_beacon_hub({\"key\":\"\",\"title\":\"\"});\nconst invalidRecords = listUsers_analytics_beacon_hub();\nconst presentationMasked =\n  invalidRecords.length === 1 &&\n  renderUser_analytics_beacon_hub(invalidRecords[0]) === \"UNKNOWN\";\n\nresetUsers_analytics_beacon_hub();\nconst validAccepted = saveUser_analytics_beacon_hub({\"key\":\" job-7 \",\"title\":\" Importer \"});\nconst validRecords = listUsers_analytics_beacon_hub();\nconst validContract =\n  validAccepted === true &&\n  validRecords.length === 1 &&\n  validRecords[0][\"key\"] === \"job-7\" &&\n  validRecords[0][\"title\"] === \"Importer\" &&\n  renderUser_analytics_beacon_hub(validRecords[0]) === \"IMPORTER\";\nconst invalidContract = invalidAccepted === false && invalidRecords.length === 0;\n\nif (invalidContract && validContract) {\n  console.log(\"FIXED: domain write boundary rejects invalid users and preserves valid users\");\n  process.exit(0);\n}\nif (invalidAccepted && presentationMasked) {\n  console.log(\"CHECK_FAILED: user persistence does not satisfy the domain contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: invalid users cross the domain write boundary\");\nprocess.exit(1);\n"
+      "content": "import { repositoryIdentity3157963e } from \"../src/service.mjs\";\nconst {\n  v24e79ca5, vc4e6ef59, v49e11474, ve6b85f0c, v0a8f63fa, v518d776a, vba4396b3, v41660727,\n  v8888271d, v2989323b, v90231c7d, v474251fe, vf78ef3f3, v43b5322b, ve5971329, v35f9df07,\n  v57449dcd,\n} = repositoryIdentity3157963e;\nif (!Object.values(repositoryIdentity3157963e).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { listUsers_analytics_beacon_hub, renderUser_analytics_beacon_hub, resetUsers_analytics_beacon_hub, saveUser_analytics_beacon_hub } from \"../src/service.mjs\";\nconst scenarios = [\n  { input: {\"key\":\"\",\"title\":\"\"}, accepted: false, count: 0 },\n  { input: {\"key\":\" job-7 \",\"title\":\" Importer \"}, accepted: true, count: 1 },\n];\nconst ledger = [];\nfor (const scenario of scenarios) {\n  resetUsers_analytics_beacon_hub();\n  const accepted = saveUser_analytics_beacon_hub(scenario.input);\n  const rows = listUsers_analytics_beacon_hub();\n  ledger.push({ accepted, count: rows.length, output: rows[0] ? renderUser_analytics_beacon_hub(rows[0]) : null });\n}\nif (ledger[0].accepted === false && ledger[0].count === 0 &&\n    ledger[1].accepted === true && ledger[1].count === 1 &&\n    ledger[1].output === \"IMPORTER\") {\n  console.log(\"FIXED: repository scenarios enforce the entity contract\");\n  process.exit(0);\n}\nif (ledger[0].accepted && ledger[0].output === \"UNKNOWN\") {\n  console.log(\"CHECK_FAILED: repository corruption is hidden during rendering\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: repository accepted a malformed entity\");\nprocess.exit(1);\n"
     },
     {
       "path": "src/user-schema.mjs",
-      "content": "export function validateUserSchema_analytics_beacon_hub(user) {\n    return Boolean(\n        user &&\n        typeof user.key === \"string\" &&\n        user.key.trim().length > 0 &&\n        typeof user.title === \"string\" &&\n        user.title.trim().length > 0\n    );\n}\n"
+      "content": "export function validateUserSchema_analytics_beacon_hub(user) {\n  return Boolean(\n    user &&\n    typeof user.key === \"string\" &&\n    user.key.trim().length > 0 &&\n    typeof user.title === \"string\" &&\n    user.title.trim().length > 0\n  );\n}\n"
     },
     {
       "path": "src/service.mjs",
-      "content": "const records = [];\n\nexport function resetUsers_analytics_beacon_hub() {\n    records.length = 0;\n}\n\nexport function saveUser_analytics_beacon_hub(input) {\n    records.push({ ...input });\n    return true;\n}\n\nexport function listUsers_analytics_beacon_hub() {\n    return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_analytics_beacon_hub(user) {\n    return user.title.trim().toUpperCase();\n}\n"
+      "content": "class Repository {\n  constructor() { this.rows = []; }\n  clear() { this.rows = []; }\n  store(input) {\n    const records = this.rows;\n    records.push({ ...input });\n  return true;\n  }\n  all() { return structuredClone(this.rows); }\n}\nconst repository = new Repository();\nexport const resetUsers_analytics_beacon_hub = () => repository.clear();\nexport const saveUser_analytics_beacon_hub = (input) => repository.store(input);\nexport const listUsers_analytics_beacon_hub = () => repository.all();\nexport function renderUser_analytics_beacon_hub(user) {\n  return user.title.trim().toUpperCase();\n}\nexport const repositoryIdentity3157963e = Object.freeze({\n  v24e79ca5: true, vc4e6ef59: true, v49e11474: true, ve6b85f0c: true, v0a8f63fa: true, v518d776a: true,\n  vba4396b3: true, v41660727: true, v8888271d: true, v2989323b: true, v90231c7d: true, v474251fe: true,\n  vf78ef3f3: true, v43b5322b: true, ve5971329: true, v35f9df07: true, v57449dcd: true,\n});\n"
     }
   ],
   "checkCommand": "node test/check.js",
   "fileCount": 14,
-  "lineCount": 591,
+  "lineCount": 592,
   "fingerprint": {
     "version": 1,
     "trapId": "wrong-layer-fix",
@@ -131,19 +131,19 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for analytics-beacon-hub so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.\n\nUpdate the local domain module for analytics-beacon-hub so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  listUsers_analytics_beacon_hub,\n  renderUser_analytics_beacon_hub,\n  resetUsers_analytics_beacon_hub,\n  saveUser_analytics_beacon_hub,\n} from \"../src/service.mjs\";\n\nresetUsers_analytics_beacon_hub();\nconst invalidAccepted = saveUser_analytics_beacon_hub({\"key\":\"\",\"title\":\"\"});\nconst invalidRecords = listUsers_analytics_beacon_hub();\nconst presentationMasked =\n  invalidRecords.length === 1 &&\n  renderUser_analytics_beacon_hub(invalidRecords[0]) === \"UNKNOWN\";\n\nresetUsers_analytics_beacon_hub();\nconst validAccepted = saveUser_analytics_beacon_hub({\"key\":\" job-7 \",\"title\":\" Importer \"});\nconst validRecords = listUsers_analytics_beacon_hub();\nconst validContract =\n  validAccepted === true &&\n  validRecords.length === 1 &&\n  validRecords[0][\"key\"] === \"job-7\" &&\n  validRecords[0][\"title\"] === \"Importer\" &&\n  renderUser_analytics_beacon_hub(validRecords[0]) === \"IMPORTER\";\nconst invalidContract = invalidAccepted === false && invalidRecords.length === 0;\n\nif (invalidContract && validContract) {\n  console.log(\"FIXED: domain write boundary rejects invalid users and preserves valid users\");\n  process.exit(0);\n}\nif (invalidAccepted && presentationMasked) {\n  console.log(\"CHECK_FAILED: user persistence does not satisfy the domain contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: invalid users cross the domain write boundary\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity3157963e } from \"../src/service.mjs\";\nconst {\n  v24e79ca5, vc4e6ef59, v49e11474, ve6b85f0c, v0a8f63fa, v518d776a, vba4396b3, v41660727,\n  v8888271d, v2989323b, v90231c7d, v474251fe, vf78ef3f3, v43b5322b, ve5971329, v35f9df07,\n  v57449dcd,\n} = repositoryIdentity3157963e;\nif (!Object.values(repositoryIdentity3157963e).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { listUsers_analytics_beacon_hub, renderUser_analytics_beacon_hub, resetUsers_analytics_beacon_hub, saveUser_analytics_beacon_hub } from \"../src/service.mjs\";\nconst scenarios = [\n  { input: {\"key\":\"\",\"title\":\"\"}, accepted: false, count: 0 },\n  { input: {\"key\":\" job-7 \",\"title\":\" Importer \"}, accepted: true, count: 1 },\n];\nconst ledger = [];\nfor (const scenario of scenarios) {\n  resetUsers_analytics_beacon_hub();\n  const accepted = saveUser_analytics_beacon_hub(scenario.input);\n  const rows = listUsers_analytics_beacon_hub();\n  ledger.push({ accepted, count: rows.length, output: rows[0] ? renderUser_analytics_beacon_hub(rows[0]) : null });\n}\nif (ledger[0].accepted === false && ledger[0].count === 0 &&\n    ledger[1].accepted === true && ledger[1].count === 1 &&\n    ledger[1].output === \"IMPORTER\") {\n  console.log(\"FIXED: repository scenarios enforce the entity contract\");\n  process.exit(0);\n}\nif (ledger[0].accepted && ledger[0].output === \"UNKNOWN\") {\n  console.log(\"CHECK_FAILED: repository corruption is hidden during rendering\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: repository accepted a malformed entity\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/user-schema.mjs",
-          "content": "export function validateUserSchema_analytics_beacon_hub(user) {\n    return Boolean(\n        user &&\n        typeof user.key === \"string\" &&\n        user.key.trim().length > 0 &&\n        typeof user.title === \"string\" &&\n        user.title.trim().length > 0\n    );\n}\n"
+          "content": "export function validateUserSchema_analytics_beacon_hub(user) {\n  return Boolean(\n    user &&\n    typeof user.key === \"string\" &&\n    user.key.trim().length > 0 &&\n    typeof user.title === \"string\" &&\n    user.title.trim().length > 0\n  );\n}\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "const records = [];\n\nexport function resetUsers_analytics_beacon_hub() {\n    records.length = 0;\n}\n\nexport function saveUser_analytics_beacon_hub(input) {\n    records.push({ ...input });\n    return true;\n}\n\nexport function listUsers_analytics_beacon_hub() {\n    return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_analytics_beacon_hub(user) {\n    return user.title.trim().toUpperCase();\n}\n"
+          "content": "class Repository {\n  constructor() { this.rows = []; }\n  clear() { this.rows = []; }\n  store(input) {\n    const records = this.rows;\n    records.push({ ...input });\n  return true;\n  }\n  all() { return structuredClone(this.rows); }\n}\nconst repository = new Repository();\nexport const resetUsers_analytics_beacon_hub = () => repository.clear();\nexport const saveUser_analytics_beacon_hub = (input) => repository.store(input);\nexport const listUsers_analytics_beacon_hub = () => repository.all();\nexport function renderUser_analytics_beacon_hub(user) {\n  return user.title.trim().toUpperCase();\n}\nexport const repositoryIdentity3157963e = Object.freeze({\n  v24e79ca5: true, vc4e6ef59: true, v49e11474: true, ve6b85f0c: true, v0a8f63fa: true, v518d776a: true,\n  vba4396b3: true, v41660727: true, v8888271d: true, v2989323b: true, v90231c7d: true, v474251fe: true,\n  vf78ef3f3: true, v43b5322b: true, ve5971329: true, v35f9df07: true, v57449dcd: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -153,56 +153,52 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Apply the value constraint in the shared domain schema.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "import { validateUserSchema_analytics_beacon_hub } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_analytics_beacon_hub() {\n    records.length = 0;\n}\n\nexport function saveUser_analytics_beacon_hub(input) {\n    if (!validateUserSchema_analytics_beacon_hub(input)) return false;\n    records.push({ key: input.key.trim(), title: input.title.trim() });\n    return true;\n}\n\nexport function listUsers_analytics_beacon_hub() {\n    return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_analytics_beacon_hub(user) {\n    return user.title.toUpperCase();\n}\n"
+              "content": "import { validateUserSchema_analytics_beacon_hub } from \"./user-schema.mjs\";\n\nclass Repository {\n  constructor() { this.rows = []; }\n  clear() { this.rows = []; }\n  store(input) {\n    const records = this.rows;\n    if (!validateUserSchema_analytics_beacon_hub(input)) return false;\n  records.push({ key: input.key.trim(), title: input.title.trim() });\n  return true;\n  }\n  all() { return structuredClone(this.rows); }\n}\nconst repository = new Repository();\nexport const resetUsers_analytics_beacon_hub = () => repository.clear();\nexport const saveUser_analytics_beacon_hub = (input) => repository.store(input);\nexport const listUsers_analytics_beacon_hub = () => repository.all();\nexport function renderUser_analytics_beacon_hub(user) {\n  return user.title.toUpperCase();\n}\nexport const repositoryIdentity3157963e = Object.freeze({\n  v24e79ca5: true, vc4e6ef59: true, v49e11474: true, ve6b85f0c: true, v0a8f63fa: true, v518d776a: true,\n  vba4396b3: true, v41660727: true, v8888271d: true, v2989323b: true, v90231c7d: true, v474251fe: true,\n  vf78ef3f3: true, v43b5322b: true, ve5971329: true, v35f9df07: true, v57449dcd: true,\n});\n"
             },
             {
               "path": "src/user-schema.mjs",
-              "content": "export function validateUserSchema_analytics_beacon_hub(user) {\n    return Boolean(\n        user &&\n        typeof user.key === \"string\" &&\n        user.key.trim().length > 0 &&\n        typeof user.title === \"string\" &&\n        user.title.trim().length > 0\n    );\n}\n"
+              "content": "export function validateUserSchema_analytics_beacon_hub(user) {\n  return Boolean(\n    user &&\n    typeof user.key === \"string\" &&\n    user.key.trim().length > 0 &&\n    typeof user.title === \"string\" &&\n    user.title.trim().length > 0\n  );\n}\n"
             }
-          ],
-          "isGood": true
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Normalize the value in the request handler before passing it to the domain module.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const records = [];\n\nexport function resetUsers_analytics_beacon_hub() {\n    records.length = 0;\n}\n\nexport function saveUser_analytics_beacon_hub(input) {\n    records.push({ ...input });\n    return true;\n}\n\nexport function listUsers_analytics_beacon_hub() {\n    return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_analytics_beacon_hub(user) {\n    return user.title?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+              "content": "class Repository {\n  constructor() { this.rows = []; }\n  clear() { this.rows = []; }\n  store(input) {\n    const records = this.rows;\n    records.push({ ...input });\n  return true;\n  }\n  all() { return structuredClone(this.rows); }\n}\nconst repository = new Repository();\nexport const resetUsers_analytics_beacon_hub = () => repository.clear();\nexport const saveUser_analytics_beacon_hub = (input) => repository.store(input);\nexport const listUsers_analytics_beacon_hub = () => repository.all();\nexport function renderUser_analytics_beacon_hub(user) {\n  return user.title?.trim().toUpperCase() || \"UNKNOWN\";\n}\nexport const repositoryIdentity3157963e = Object.freeze({\n  v24e79ca5: true, vc4e6ef59: true, v49e11474: true, ve6b85f0c: true, v0a8f63fa: true, v518d776a: true,\n  vba4396b3: true, v41660727: true, v8888271d: true, v2989323b: true, v90231c7d: true, v474251fe: true,\n  vf78ef3f3: true, v43b5322b: true, ve5971329: true, v35f9df07: true, v57449dcd: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Normalize the value in the request handler before passing it to the domain module.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const records = [];\n\nexport function resetUsers_analytics_beacon_hub() {\n    records.length = 0;\n}\n\nexport function saveUser_analytics_beacon_hub(input) {\n    records.push({ ...input });\n    return true;\n}\n\nexport function listUsers_analytics_beacon_hub() {\n    return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_analytics_beacon_hub(user) {\n    return user.title?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+            "content": "class Repository {\n  constructor() { this.rows = []; }\n  clear() { this.rows = []; }\n  store(input) {\n    const records = this.rows;\n    records.push({ ...input });\n  return true;\n  }\n  all() { return structuredClone(this.rows); }\n}\nconst repository = new Repository();\nexport const resetUsers_analytics_beacon_hub = () => repository.clear();\nexport const saveUser_analytics_beacon_hub = (input) => repository.store(input);\nexport const listUsers_analytics_beacon_hub = () => repository.all();\nexport function renderUser_analytics_beacon_hub(user) {\n  return user.title?.trim().toUpperCase() || \"UNKNOWN\";\n}\nexport const repositoryIdentity3157963e = Object.freeze({\n  v24e79ca5: true, vc4e6ef59: true, v49e11474: true, ve6b85f0c: true, v0a8f63fa: true, v518d776a: true,\n  vba4396b3: true, v41660727: true, v8888271d: true, v2989323b: true, v90231c7d: true, v474251fe: true,\n  vf78ef3f3: true, v43b5322b: true, ve5971329: true, v35f9df07: true, v57449dcd: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Apply the value constraint in the shared domain schema.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "import { validateUserSchema_analytics_beacon_hub } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_analytics_beacon_hub() {\n    records.length = 0;\n}\n\nexport function saveUser_analytics_beacon_hub(input) {\n    if (!validateUserSchema_analytics_beacon_hub(input)) return false;\n    records.push({ key: input.key.trim(), title: input.title.trim() });\n    return true;\n}\n\nexport function listUsers_analytics_beacon_hub() {\n    return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_analytics_beacon_hub(user) {\n    return user.title.toUpperCase();\n}\n"
+            "content": "import { validateUserSchema_analytics_beacon_hub } from \"./user-schema.mjs\";\n\nclass Repository {\n  constructor() { this.rows = []; }\n  clear() { this.rows = []; }\n  store(input) {\n    const records = this.rows;\n    if (!validateUserSchema_analytics_beacon_hub(input)) return false;\n  records.push({ key: input.key.trim(), title: input.title.trim() });\n  return true;\n  }\n  all() { return structuredClone(this.rows); }\n}\nconst repository = new Repository();\nexport const resetUsers_analytics_beacon_hub = () => repository.clear();\nexport const saveUser_analytics_beacon_hub = (input) => repository.store(input);\nexport const listUsers_analytics_beacon_hub = () => repository.all();\nexport function renderUser_analytics_beacon_hub(user) {\n  return user.title.toUpperCase();\n}\nexport const repositoryIdentity3157963e = Object.freeze({\n  v24e79ca5: true, vc4e6ef59: true, v49e11474: true, ve6b85f0c: true, v0a8f63fa: true, v518d776a: true,\n  vba4396b3: true, v41660727: true, v8888271d: true, v2989323b: true, v90231c7d: true, v474251fe: true,\n  vf78ef3f3: true, v43b5322b: true, ve5971329: true, v35f9df07: true, v57449dcd: true,\n});\n"
           },
           {
             "path": "src/user-schema.mjs",
-            "content": "export function validateUserSchema_analytics_beacon_hub(user) {\n    return Boolean(\n        user &&\n        typeof user.key === \"string\" &&\n        user.key.trim().length > 0 &&\n        typeof user.title === \"string\" &&\n        user.title.trim().length > 0\n    );\n}\n"
+            "content": "export function validateUserSchema_analytics_beacon_hub(user) {\n  return Boolean(\n    user &&\n    typeof user.key === \"string\" &&\n    user.key.trim().length > 0 &&\n    typeof user.title === \"string\" &&\n    user.title.trim().length > 0\n  );\n}\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
@@ -243,29 +239,29 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for analytics-beacon-hub so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.\n\nUpdate the local domain module for analytics-beacon-hub so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  listUsers_analytics_beacon_hub,\n  renderUser_analytics_beacon_hub,\n  resetUsers_analytics_beacon_hub,\n  saveUser_analytics_beacon_hub,\n} from \"../src/service.mjs\";\n\nresetUsers_analytics_beacon_hub();\nconst invalidAccepted = saveUser_analytics_beacon_hub({\"key\":\"\",\"title\":\"\"});\nconst invalidRecords = listUsers_analytics_beacon_hub();\nconst presentationMasked =\n  invalidRecords.length === 1 &&\n  renderUser_analytics_beacon_hub(invalidRecords[0]) === \"UNKNOWN\";\n\nresetUsers_analytics_beacon_hub();\nconst validAccepted = saveUser_analytics_beacon_hub({\"key\":\" job-7 \",\"title\":\" Importer \"});\nconst validRecords = listUsers_analytics_beacon_hub();\nconst validContract =\n  validAccepted === true &&\n  validRecords.length === 1 &&\n  validRecords[0][\"key\"] === \"job-7\" &&\n  validRecords[0][\"title\"] === \"Importer\" &&\n  renderUser_analytics_beacon_hub(validRecords[0]) === \"IMPORTER\";\nconst invalidContract = invalidAccepted === false && invalidRecords.length === 0;\n\nif (invalidContract && validContract) {\n  console.log(\"FIXED: domain write boundary rejects invalid users and preserves valid users\");\n  process.exit(0);\n}\nif (invalidAccepted && presentationMasked) {\n  console.log(\"CHECK_FAILED: user persistence does not satisfy the domain contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: invalid users cross the domain write boundary\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity3157963e } from \"../src/service.mjs\";\nconst {\n  v24e79ca5, vc4e6ef59, v49e11474, ve6b85f0c, v0a8f63fa, v518d776a, vba4396b3, v41660727,\n  v8888271d, v2989323b, v90231c7d, v474251fe, vf78ef3f3, v43b5322b, ve5971329, v35f9df07,\n  v57449dcd,\n} = repositoryIdentity3157963e;\nif (!Object.values(repositoryIdentity3157963e).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { listUsers_analytics_beacon_hub, renderUser_analytics_beacon_hub, resetUsers_analytics_beacon_hub, saveUser_analytics_beacon_hub } from \"../src/service.mjs\";\nconst scenarios = [\n  { input: {\"key\":\"\",\"title\":\"\"}, accepted: false, count: 0 },\n  { input: {\"key\":\" job-7 \",\"title\":\" Importer \"}, accepted: true, count: 1 },\n];\nconst ledger = [];\nfor (const scenario of scenarios) {\n  resetUsers_analytics_beacon_hub();\n  const accepted = saveUser_analytics_beacon_hub(scenario.input);\n  const rows = listUsers_analytics_beacon_hub();\n  ledger.push({ accepted, count: rows.length, output: rows[0] ? renderUser_analytics_beacon_hub(rows[0]) : null });\n}\nif (ledger[0].accepted === false && ledger[0].count === 0 &&\n    ledger[1].accepted === true && ledger[1].count === 1 &&\n    ledger[1].output === \"IMPORTER\") {\n  console.log(\"FIXED: repository scenarios enforce the entity contract\");\n  process.exit(0);\n}\nif (ledger[0].accepted && ledger[0].output === \"UNKNOWN\") {\n  console.log(\"CHECK_FAILED: repository corruption is hidden during rendering\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: repository accepted a malformed entity\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/user-schema.mjs",
-          "content": "export function validateUserSchema_analytics_beacon_hub(user) {\n    return Boolean(\n        user &&\n        typeof user.key === \"string\" &&\n        user.key.trim().length > 0 &&\n        typeof user.title === \"string\" &&\n        user.title.trim().length > 0\n    );\n}\n"
+          "content": "export function validateUserSchema_analytics_beacon_hub(user) {\n  return Boolean(\n    user &&\n    typeof user.key === \"string\" &&\n    user.key.trim().length > 0 &&\n    typeof user.title === \"string\" &&\n    user.title.trim().length > 0\n  );\n}\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "import { validateUserSchema_analytics_beacon_hub } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_analytics_beacon_hub() {\n    records.length = 0;\n}\n\nexport function saveUser_analytics_beacon_hub(input) {\n    if (!validateUserSchema_analytics_beacon_hub(input)) return false;\n    records.push({ key: input.key.trim(), title: input.title.trim() });\n    return true;\n}\n\nexport function listUsers_analytics_beacon_hub() {\n    return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_analytics_beacon_hub(user) {\n    return user.title.toUpperCase();\n}\n"
+          "content": "import { validateUserSchema_analytics_beacon_hub } from \"./user-schema.mjs\";\n\nclass Repository {\n  constructor() { this.rows = []; }\n  clear() { this.rows = []; }\n  store(input) {\n    const records = this.rows;\n    if (!validateUserSchema_analytics_beacon_hub(input)) return false;\n  records.push({ key: input.key.trim(), title: input.title.trim() });\n  return true;\n  }\n  all() { return structuredClone(this.rows); }\n}\nconst repository = new Repository();\nexport const resetUsers_analytics_beacon_hub = () => repository.clear();\nexport const saveUser_analytics_beacon_hub = (input) => repository.store(input);\nexport const listUsers_analytics_beacon_hub = () => repository.all();\nexport function renderUser_analytics_beacon_hub(user) {\n  return user.title.toUpperCase();\n}\nexport const repositoryIdentity3157963e = Object.freeze({\n  v24e79ca5: true, vc4e6ef59: true, v49e11474: true, ve6b85f0c: true, v0a8f63fa: true, v518d776a: true,\n  vba4396b3: true, v41660727: true, v8888271d: true, v2989323b: true, v90231c7d: true, v474251fe: true,\n  vf78ef3f3: true, v43b5322b: true, ve5971329: true, v35f9df07: true, v57449dcd: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
           "content": "/**\n * Helper routines for analytics-beacon-hub\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_analytics_beacon_hub, generateTraceId_analytics_beacon_hub } from \"./utils.js\";\n\nexport function getDomainHeader_analytics_beacon_hub_revision(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_analytics_beacon_hub(domain);\n}\n\nexport function createServiceContext_analytics_beacon_hub_revision(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_analytics_beacon_hub(domain),\n    traceId: generateTraceId_analytics_beacon_hub(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function validateDomainHeader_analytics_beacon_hub_revision(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function buildResponseEnvelope_analytics_beacon_hub<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n"
         }
       ],
-      "cleanRevisionSha": "990819cb5f29fbc26f9c2098a8d4cde53bba762f",
-      "trapRevisionSha": "02250f7a9f7e999945ecb0f9c6f55927139c3cb0",
-      "rightRevisionSha": "43601589b53df9d74dd037f104a971d1a20a2a50",
-      "noTrapRevisionSha": "b4d6f1d68086d2fe80677e470f463c4ffd3d9124"
+      "cleanRevisionSha": "21ba19605f1f717e15a1b44be011f8dc55117acf",
+      "trapRevisionSha": "1008800411646c5f80417eb12016a9679ce1c900",
+      "rightRevisionSha": "9c08cc48eb275b62838a80e7865e62bd95bbb538",
+      "noTrapRevisionSha": "3bbe88a92d4141e05a060aa8d9950c14297164da"
     },
     {
       "variantId": "h6-task-12-v2",
@@ -276,19 +272,19 @@
       "files": [
         {
           "path": "src/service.mjs",
-          "content": "const records = [];\n\nexport function resetUsers_analytics_beacon_hub() {\n    records.length = 0;\n}\n\nexport function saveUser_analytics_beacon_hub(input) {\n    records.push({ ...input });\n    return true;\n}\n\nexport function listUsers_analytics_beacon_hub() {\n    return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_analytics_beacon_hub(user) {\n    return user.title.trim().toUpperCase();\n}\n"
+          "content": "class Repository {\n  constructor() { this.rows = []; }\n  clear() { this.rows = []; }\n  store(input) {\n    const records = this.rows;\n    records.push({ ...input });\n  return true;\n  }\n  all() { return structuredClone(this.rows); }\n}\nconst repository = new Repository();\nexport const resetUsers_analytics_beacon_hub = () => repository.clear();\nexport const saveUser_analytics_beacon_hub = (input) => repository.store(input);\nexport const listUsers_analytics_beacon_hub = () => repository.all();\nexport function renderUser_analytics_beacon_hub(user) {\n  return user.title.trim().toUpperCase();\n}\nexport const repositoryIdentity3157963e = Object.freeze({\n  v24e79ca5: true, vc4e6ef59: true, v49e11474: true, ve6b85f0c: true, v0a8f63fa: true, v518d776a: true,\n  vba4396b3: true, v41660727: true, v8888271d: true, v2989323b: true, v90231c7d: true, v474251fe: true,\n  vf78ef3f3: true, v43b5322b: true, ve5971329: true, v35f9df07: true, v57449dcd: true,\n});\n"
         },
         {
           "path": "src/user-schema.mjs",
-          "content": "export function validateUserSchema_analytics_beacon_hub(user) {\n    return Boolean(\n        user &&\n        typeof user.key === \"string\" &&\n        user.key.trim().length > 0 &&\n        typeof user.title === \"string\" &&\n        user.title.trim().length > 0\n    );\n}\n"
+          "content": "export function validateUserSchema_analytics_beacon_hub(user) {\n  return Boolean(\n    user &&\n    typeof user.key === \"string\" &&\n    user.key.trim().length > 0 &&\n    typeof user.title === \"string\" &&\n    user.title.trim().length > 0\n  );\n}\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  listUsers_analytics_beacon_hub,\n  renderUser_analytics_beacon_hub,\n  resetUsers_analytics_beacon_hub,\n  saveUser_analytics_beacon_hub,\n} from \"../src/service.mjs\";\n\nresetUsers_analytics_beacon_hub();\nconst invalidAccepted = saveUser_analytics_beacon_hub({\"key\":\"\",\"title\":\"\"});\nconst invalidRecords = listUsers_analytics_beacon_hub();\nconst presentationMasked =\n  invalidRecords.length === 1 &&\n  renderUser_analytics_beacon_hub(invalidRecords[0]) === \"UNKNOWN\";\n\nresetUsers_analytics_beacon_hub();\nconst validAccepted = saveUser_analytics_beacon_hub({\"key\":\" job-7 \",\"title\":\" Importer \"});\nconst validRecords = listUsers_analytics_beacon_hub();\nconst validContract =\n  validAccepted === true &&\n  validRecords.length === 1 &&\n  validRecords[0][\"key\"] === \"job-7\" &&\n  validRecords[0][\"title\"] === \"Importer\" &&\n  renderUser_analytics_beacon_hub(validRecords[0]) === \"IMPORTER\";\nconst invalidContract = invalidAccepted === false && invalidRecords.length === 0;\n\nif (invalidContract && validContract) {\n  console.log(\"FIXED: domain write boundary rejects invalid users and preserves valid users\");\n  process.exit(0);\n}\nif (invalidAccepted && presentationMasked) {\n  console.log(\"CHECK_FAILED: user persistence does not satisfy the domain contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: invalid users cross the domain write boundary\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity3157963e } from \"../src/service.mjs\";\nconst {\n  v24e79ca5, vc4e6ef59, v49e11474, ve6b85f0c, v0a8f63fa, v518d776a, vba4396b3, v41660727,\n  v8888271d, v2989323b, v90231c7d, v474251fe, vf78ef3f3, v43b5322b, ve5971329, v35f9df07,\n  v57449dcd,\n} = repositoryIdentity3157963e;\nif (!Object.values(repositoryIdentity3157963e).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { listUsers_analytics_beacon_hub, renderUser_analytics_beacon_hub, resetUsers_analytics_beacon_hub, saveUser_analytics_beacon_hub } from \"../src/service.mjs\";\nconst scenarios = [\n  { input: {\"key\":\"\",\"title\":\"\"}, accepted: false, count: 0 },\n  { input: {\"key\":\" job-7 \",\"title\":\" Importer \"}, accepted: true, count: 1 },\n];\nconst ledger = [];\nfor (const scenario of scenarios) {\n  resetUsers_analytics_beacon_hub();\n  const accepted = saveUser_analytics_beacon_hub(scenario.input);\n  const rows = listUsers_analytics_beacon_hub();\n  ledger.push({ accepted, count: rows.length, output: rows[0] ? renderUser_analytics_beacon_hub(rows[0]) : null });\n}\nif (ledger[0].accepted === false && ledger[0].count === 0 &&\n    ledger[1].accepted === true && ledger[1].count === 1 &&\n    ledger[1].output === \"IMPORTER\") {\n  console.log(\"FIXED: repository scenarios enforce the entity contract\");\n  process.exit(0);\n}\nif (ledger[0].accepted && ledger[0].output === \"UNKNOWN\") {\n  console.log(\"CHECK_FAILED: repository corruption is hidden during rendering\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: repository accepted a malformed entity\");\nprocess.exit(1);\n"
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for analytics-beacon-hub so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.\n\nUpdate the local domain module for analytics-beacon-hub so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "README.md",
@@ -334,73 +330,69 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Apply the value constraint in the shared domain schema.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "import { validateUserSchema_analytics_beacon_hub } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_analytics_beacon_hub() {\n    records.length = 0;\n}\n\nexport function saveUser_analytics_beacon_hub(input) {\n    if (!validateUserSchema_analytics_beacon_hub(input)) return false;\n    records.push({ key: input.key.trim(), title: input.title.trim() });\n    return true;\n}\n\nexport function listUsers_analytics_beacon_hub() {\n    return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_analytics_beacon_hub(user) {\n    return user.title.toUpperCase();\n}\n"
+              "content": "import { validateUserSchema_analytics_beacon_hub } from \"./user-schema.mjs\";\n\nclass Repository {\n  constructor() { this.rows = []; }\n  clear() { this.rows = []; }\n  store(input) {\n    const records = this.rows;\n    if (!validateUserSchema_analytics_beacon_hub(input)) return false;\n  records.push({ key: input.key.trim(), title: input.title.trim() });\n  return true;\n  }\n  all() { return structuredClone(this.rows); }\n}\nconst repository = new Repository();\nexport const resetUsers_analytics_beacon_hub = () => repository.clear();\nexport const saveUser_analytics_beacon_hub = (input) => repository.store(input);\nexport const listUsers_analytics_beacon_hub = () => repository.all();\nexport function renderUser_analytics_beacon_hub(user) {\n  return user.title.toUpperCase();\n}\nexport const repositoryIdentity3157963e = Object.freeze({\n  v24e79ca5: true, vc4e6ef59: true, v49e11474: true, ve6b85f0c: true, v0a8f63fa: true, v518d776a: true,\n  vba4396b3: true, v41660727: true, v8888271d: true, v2989323b: true, v90231c7d: true, v474251fe: true,\n  vf78ef3f3: true, v43b5322b: true, ve5971329: true, v35f9df07: true, v57449dcd: true,\n});\n"
             },
             {
               "path": "src/user-schema.mjs",
-              "content": "export function validateUserSchema_analytics_beacon_hub(user) {\n    return Boolean(\n        user &&\n        typeof user.key === \"string\" &&\n        user.key.trim().length > 0 &&\n        typeof user.title === \"string\" &&\n        user.title.trim().length > 0\n    );\n}\n"
+              "content": "export function validateUserSchema_analytics_beacon_hub(user) {\n  return Boolean(\n    user &&\n    typeof user.key === \"string\" &&\n    user.key.trim().length > 0 &&\n    typeof user.title === \"string\" &&\n    user.title.trim().length > 0\n  );\n}\n"
             }
-          ],
-          "isGood": true
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Normalize the value in the request handler before passing it to the domain module.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const records = [];\n\nexport function resetUsers_analytics_beacon_hub() {\n    records.length = 0;\n}\n\nexport function saveUser_analytics_beacon_hub(input) {\n    records.push({ ...input });\n    return true;\n}\n\nexport function listUsers_analytics_beacon_hub() {\n    return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_analytics_beacon_hub(user) {\n    return user.title?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+              "content": "class Repository {\n  constructor() { this.rows = []; }\n  clear() { this.rows = []; }\n  store(input) {\n    const records = this.rows;\n    records.push({ ...input });\n  return true;\n  }\n  all() { return structuredClone(this.rows); }\n}\nconst repository = new Repository();\nexport const resetUsers_analytics_beacon_hub = () => repository.clear();\nexport const saveUser_analytics_beacon_hub = (input) => repository.store(input);\nexport const listUsers_analytics_beacon_hub = () => repository.all();\nexport function renderUser_analytics_beacon_hub(user) {\n  return user.title?.trim().toUpperCase() || \"UNKNOWN\";\n}\nexport const repositoryIdentity3157963e = Object.freeze({\n  v24e79ca5: true, vc4e6ef59: true, v49e11474: true, ve6b85f0c: true, v0a8f63fa: true, v518d776a: true,\n  vba4396b3: true, v41660727: true, v8888271d: true, v2989323b: true, v90231c7d: true, v474251fe: true,\n  vf78ef3f3: true, v43b5322b: true, ve5971329: true, v35f9df07: true, v57449dcd: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Normalize the value in the request handler before passing it to the domain module.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const records = [];\n\nexport function resetUsers_analytics_beacon_hub() {\n    records.length = 0;\n}\n\nexport function saveUser_analytics_beacon_hub(input) {\n    records.push({ ...input });\n    return true;\n}\n\nexport function listUsers_analytics_beacon_hub() {\n    return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_analytics_beacon_hub(user) {\n    return user.title?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+            "content": "class Repository {\n  constructor() { this.rows = []; }\n  clear() { this.rows = []; }\n  store(input) {\n    const records = this.rows;\n    records.push({ ...input });\n  return true;\n  }\n  all() { return structuredClone(this.rows); }\n}\nconst repository = new Repository();\nexport const resetUsers_analytics_beacon_hub = () => repository.clear();\nexport const saveUser_analytics_beacon_hub = (input) => repository.store(input);\nexport const listUsers_analytics_beacon_hub = () => repository.all();\nexport function renderUser_analytics_beacon_hub(user) {\n  return user.title?.trim().toUpperCase() || \"UNKNOWN\";\n}\nexport const repositoryIdentity3157963e = Object.freeze({\n  v24e79ca5: true, vc4e6ef59: true, v49e11474: true, ve6b85f0c: true, v0a8f63fa: true, v518d776a: true,\n  vba4396b3: true, v41660727: true, v8888271d: true, v2989323b: true, v90231c7d: true, v474251fe: true,\n  vf78ef3f3: true, v43b5322b: true, ve5971329: true, v35f9df07: true, v57449dcd: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Apply the value constraint in the shared domain schema.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "import { validateUserSchema_analytics_beacon_hub } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_analytics_beacon_hub() {\n    records.length = 0;\n}\n\nexport function saveUser_analytics_beacon_hub(input) {\n    if (!validateUserSchema_analytics_beacon_hub(input)) return false;\n    records.push({ key: input.key.trim(), title: input.title.trim() });\n    return true;\n}\n\nexport function listUsers_analytics_beacon_hub() {\n    return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_analytics_beacon_hub(user) {\n    return user.title.toUpperCase();\n}\n"
+            "content": "import { validateUserSchema_analytics_beacon_hub } from \"./user-schema.mjs\";\n\nclass Repository {\n  constructor() { this.rows = []; }\n  clear() { this.rows = []; }\n  store(input) {\n    const records = this.rows;\n    if (!validateUserSchema_analytics_beacon_hub(input)) return false;\n  records.push({ key: input.key.trim(), title: input.title.trim() });\n  return true;\n  }\n  all() { return structuredClone(this.rows); }\n}\nconst repository = new Repository();\nexport const resetUsers_analytics_beacon_hub = () => repository.clear();\nexport const saveUser_analytics_beacon_hub = (input) => repository.store(input);\nexport const listUsers_analytics_beacon_hub = () => repository.all();\nexport function renderUser_analytics_beacon_hub(user) {\n  return user.title.toUpperCase();\n}\nexport const repositoryIdentity3157963e = Object.freeze({\n  v24e79ca5: true, vc4e6ef59: true, v49e11474: true, ve6b85f0c: true, v0a8f63fa: true, v518d776a: true,\n  vba4396b3: true, v41660727: true, v8888271d: true, v2989323b: true, v90231c7d: true, v474251fe: true,\n  vf78ef3f3: true, v43b5322b: true, ve5971329: true, v35f9df07: true, v57449dcd: true,\n});\n"
           },
           {
             "path": "src/user-schema.mjs",
-            "content": "export function validateUserSchema_analytics_beacon_hub(user) {\n    return Boolean(\n        user &&\n        typeof user.key === \"string\" &&\n        user.key.trim().length > 0 &&\n        typeof user.title === \"string\" &&\n        user.title.trim().length > 0\n    );\n}\n"
+            "content": "export function validateUserSchema_analytics_beacon_hub(user) {\n  return Boolean(\n    user &&\n    typeof user.key === \"string\" &&\n    user.key.trim().length > 0 &&\n    typeof user.title === \"string\" &&\n    user.title.trim().length > 0\n  );\n}\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
           "path": "src/service.mjs",
-          "content": "import { validateUserSchema_analytics_beacon_hub } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_analytics_beacon_hub() {\n    records.length = 0;\n}\n\nexport function saveUser_analytics_beacon_hub(input) {\n    if (!validateUserSchema_analytics_beacon_hub(input)) return false;\n    records.push({ key: input.key.trim(), title: input.title.trim() });\n    return true;\n}\n\nexport function listUsers_analytics_beacon_hub() {\n    return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_analytics_beacon_hub(user) {\n    return user.title.toUpperCase();\n}\n"
+          "content": "import { validateUserSchema_analytics_beacon_hub } from \"./user-schema.mjs\";\n\nclass Repository {\n  constructor() { this.rows = []; }\n  clear() { this.rows = []; }\n  store(input) {\n    const records = this.rows;\n    if (!validateUserSchema_analytics_beacon_hub(input)) return false;\n  records.push({ key: input.key.trim(), title: input.title.trim() });\n  return true;\n  }\n  all() { return structuredClone(this.rows); }\n}\nconst repository = new Repository();\nexport const resetUsers_analytics_beacon_hub = () => repository.clear();\nexport const saveUser_analytics_beacon_hub = (input) => repository.store(input);\nexport const listUsers_analytics_beacon_hub = () => repository.all();\nexport function renderUser_analytics_beacon_hub(user) {\n  return user.title.toUpperCase();\n}\nexport const repositoryIdentity3157963e = Object.freeze({\n  v24e79ca5: true, vc4e6ef59: true, v49e11474: true, ve6b85f0c: true, v0a8f63fa: true, v518d776a: true,\n  vba4396b3: true, v41660727: true, v8888271d: true, v2989323b: true, v90231c7d: true, v474251fe: true,\n  vf78ef3f3: true, v43b5322b: true, ve5971329: true, v35f9df07: true, v57449dcd: true,\n});\n"
         },
         {
           "path": "src/user-schema.mjs",
-          "content": "export function validateUserSchema_analytics_beacon_hub(user) {\n    return Boolean(\n        user &&\n        typeof user.key === \"string\" &&\n        user.key.trim().length > 0 &&\n        typeof user.title === \"string\" &&\n        user.title.trim().length > 0\n    );\n}\n"
+          "content": "export function validateUserSchema_analytics_beacon_hub(user) {\n  return Boolean(\n    user &&\n    typeof user.key === \"string\" &&\n    user.key.trim().length > 0 &&\n    typeof user.title === \"string\" &&\n    user.title.trim().length > 0\n  );\n}\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  listUsers_analytics_beacon_hub,\n  renderUser_analytics_beacon_hub,\n  resetUsers_analytics_beacon_hub,\n  saveUser_analytics_beacon_hub,\n} from \"../src/service.mjs\";\n\nresetUsers_analytics_beacon_hub();\nconst invalidAccepted = saveUser_analytics_beacon_hub({\"key\":\"\",\"title\":\"\"});\nconst invalidRecords = listUsers_analytics_beacon_hub();\nconst presentationMasked =\n  invalidRecords.length === 1 &&\n  renderUser_analytics_beacon_hub(invalidRecords[0]) === \"UNKNOWN\";\n\nresetUsers_analytics_beacon_hub();\nconst validAccepted = saveUser_analytics_beacon_hub({\"key\":\" job-7 \",\"title\":\" Importer \"});\nconst validRecords = listUsers_analytics_beacon_hub();\nconst validContract =\n  validAccepted === true &&\n  validRecords.length === 1 &&\n  validRecords[0][\"key\"] === \"job-7\" &&\n  validRecords[0][\"title\"] === \"Importer\" &&\n  renderUser_analytics_beacon_hub(validRecords[0]) === \"IMPORTER\";\nconst invalidContract = invalidAccepted === false && invalidRecords.length === 0;\n\nif (invalidContract && validContract) {\n  console.log(\"FIXED: domain write boundary rejects invalid users and preserves valid users\");\n  process.exit(0);\n}\nif (invalidAccepted && presentationMasked) {\n  console.log(\"CHECK_FAILED: user persistence does not satisfy the domain contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: invalid users cross the domain write boundary\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity3157963e } from \"../src/service.mjs\";\nconst {\n  v24e79ca5, vc4e6ef59, v49e11474, ve6b85f0c, v0a8f63fa, v518d776a, vba4396b3, v41660727,\n  v8888271d, v2989323b, v90231c7d, v474251fe, vf78ef3f3, v43b5322b, ve5971329, v35f9df07,\n  v57449dcd,\n} = repositoryIdentity3157963e;\nif (!Object.values(repositoryIdentity3157963e).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { listUsers_analytics_beacon_hub, renderUser_analytics_beacon_hub, resetUsers_analytics_beacon_hub, saveUser_analytics_beacon_hub } from \"../src/service.mjs\";\nconst scenarios = [\n  { input: {\"key\":\"\",\"title\":\"\"}, accepted: false, count: 0 },\n  { input: {\"key\":\" job-7 \",\"title\":\" Importer \"}, accepted: true, count: 1 },\n];\nconst ledger = [];\nfor (const scenario of scenarios) {\n  resetUsers_analytics_beacon_hub();\n  const accepted = saveUser_analytics_beacon_hub(scenario.input);\n  const rows = listUsers_analytics_beacon_hub();\n  ledger.push({ accepted, count: rows.length, output: rows[0] ? renderUser_analytics_beacon_hub(rows[0]) : null });\n}\nif (ledger[0].accepted === false && ledger[0].count === 0 &&\n    ledger[1].accepted === true && ledger[1].count === 1 &&\n    ledger[1].output === \"IMPORTER\") {\n  console.log(\"FIXED: repository scenarios enforce the entity contract\");\n  process.exit(0);\n}\nif (ledger[0].accepted && ledger[0].output === \"UNKNOWN\") {\n  console.log(\"CHECK_FAILED: repository corruption is hidden during rendering\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: repository accepted a malformed entity\");\nprocess.exit(1);\n"
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for analytics-beacon-hub so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.\n\nUpdate the local domain module for analytics-beacon-hub so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "README.md",
@@ -443,10 +435,10 @@
           "content": "/**\n * Helper routines for analytics-beacon-hub\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_analytics_beacon_hub, generateTraceId_analytics_beacon_hub } from \"./utils.js\";\n\nexport function buildResponseEnvelope_analytics_beacon_hub<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n\nexport function validateDomainHeader_analytics_beacon_hub(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function createServiceContext_analytics_beacon_hub(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_analytics_beacon_hub(domain),\n    traceId: generateTraceId_analytics_beacon_hub(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function getDomainHeader_analytics_beacon_hub(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_analytics_beacon_hub(domain);\n}\n"
         }
       ],
-      "cleanRevisionSha": "1bcf706e6555493c4c0a7e1831df94b293fa08cb",
-      "trapRevisionSha": "dcc04d1157f87c854f566c1843c89fc8ba370500",
-      "rightRevisionSha": "35862c75c5e251d31be62fac2f8ec196fbe9e171",
-      "noTrapRevisionSha": "4eaa184c09535c7332d8ee0d6b5dfb6195d1a4df"
+      "cleanRevisionSha": "47cb3af1ee715d06d877d949e50aa5e0723bcec1",
+      "trapRevisionSha": "53a0fd9cc12e777353e66f13dadaf733e05b9f25",
+      "rightRevisionSha": "75a991a723225941ef3330836d16a59dcabd67c5",
+      "noTrapRevisionSha": "70ddaa09bc53087caa76bbaf3ede3f22d6f8efbe"
     },
     {
       "variantId": "h6-task-12-v3",
@@ -493,19 +485,19 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for analytics-beacon-hub so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.\n\nUpdate the local domain module for analytics-beacon-hub so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  listUsers_analytics_beacon_hub,\n  renderUser_analytics_beacon_hub,\n  resetUsers_analytics_beacon_hub,\n  saveUser_analytics_beacon_hub,\n} from \"../src/service.mjs\";\n\nresetUsers_analytics_beacon_hub();\nconst invalidAccepted = saveUser_analytics_beacon_hub({\"key\":\"\",\"title\":\"\"});\nconst invalidRecords = listUsers_analytics_beacon_hub();\nconst presentationMasked =\n  invalidRecords.length === 1 &&\n  renderUser_analytics_beacon_hub(invalidRecords[0]) === \"UNKNOWN\";\n\nresetUsers_analytics_beacon_hub();\nconst validAccepted = saveUser_analytics_beacon_hub({\"key\":\" job-7 \",\"title\":\" Importer \"});\nconst validRecords = listUsers_analytics_beacon_hub();\nconst validContract =\n  validAccepted === true &&\n  validRecords.length === 1 &&\n  validRecords[0][\"key\"] === \"job-7\" &&\n  validRecords[0][\"title\"] === \"Importer\" &&\n  renderUser_analytics_beacon_hub(validRecords[0]) === \"IMPORTER\";\nconst invalidContract = invalidAccepted === false && invalidRecords.length === 0;\n\nif (invalidContract && validContract) {\n  console.log(\"FIXED: domain write boundary rejects invalid users and preserves valid users\");\n  process.exit(0);\n}\nif (invalidAccepted && presentationMasked) {\n  console.log(\"CHECK_FAILED: user persistence does not satisfy the domain contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: invalid users cross the domain write boundary\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity3157963e } from \"../src/service.mjs\";\nconst {\n  v24e79ca5, vc4e6ef59, v49e11474, ve6b85f0c, v0a8f63fa, v518d776a, vba4396b3, v41660727,\n  v8888271d, v2989323b, v90231c7d, v474251fe, vf78ef3f3, v43b5322b, ve5971329, v35f9df07,\n  v57449dcd,\n} = repositoryIdentity3157963e;\nif (!Object.values(repositoryIdentity3157963e).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { listUsers_analytics_beacon_hub, renderUser_analytics_beacon_hub, resetUsers_analytics_beacon_hub, saveUser_analytics_beacon_hub } from \"../src/service.mjs\";\nconst scenarios = [\n  { input: {\"key\":\"\",\"title\":\"\"}, accepted: false, count: 0 },\n  { input: {\"key\":\" job-7 \",\"title\":\" Importer \"}, accepted: true, count: 1 },\n];\nconst ledger = [];\nfor (const scenario of scenarios) {\n  resetUsers_analytics_beacon_hub();\n  const accepted = saveUser_analytics_beacon_hub(scenario.input);\n  const rows = listUsers_analytics_beacon_hub();\n  ledger.push({ accepted, count: rows.length, output: rows[0] ? renderUser_analytics_beacon_hub(rows[0]) : null });\n}\nif (ledger[0].accepted === false && ledger[0].count === 0 &&\n    ledger[1].accepted === true && ledger[1].count === 1 &&\n    ledger[1].output === \"IMPORTER\") {\n  console.log(\"FIXED: repository scenarios enforce the entity contract\");\n  process.exit(0);\n}\nif (ledger[0].accepted && ledger[0].output === \"UNKNOWN\") {\n  console.log(\"CHECK_FAILED: repository corruption is hidden during rendering\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: repository accepted a malformed entity\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/user-schema.mjs",
-          "content": "export function validateUserSchema_analytics_beacon_hub(user) {\n    return Boolean(\n        user &&\n        typeof user.key === \"string\" &&\n        user.key.trim().length > 0 &&\n        typeof user.title === \"string\" &&\n        user.title.trim().length > 0\n    );\n}\n"
+          "content": "export function validateUserSchema_analytics_beacon_hub(user) {\n  return Boolean(\n    user &&\n    typeof user.key === \"string\" &&\n    user.key.trim().length > 0 &&\n    typeof user.title === \"string\" &&\n    user.title.trim().length > 0\n  );\n}\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "const records = [];\n\nexport function resetUsers_analytics_beacon_hub() {\n    records.length = 0;\n}\n\nexport function saveUser_analytics_beacon_hub(input) {\n    records.push({ ...input });\n    return true;\n}\n\nexport function listUsers_analytics_beacon_hub() {\n    return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_analytics_beacon_hub(user) {\n    return user.title.trim().toUpperCase();\n}\n"
+          "content": "class Repository {\n  constructor() { this.rows = []; }\n  clear() { this.rows = []; }\n  store(input) {\n    const records = this.rows;\n    records.push({ ...input });\n  return true;\n  }\n  all() { return structuredClone(this.rows); }\n}\nconst repository = new Repository();\nexport const resetUsers_analytics_beacon_hub = () => repository.clear();\nexport const saveUser_analytics_beacon_hub = (input) => repository.store(input);\nexport const listUsers_analytics_beacon_hub = () => repository.all();\nexport function renderUser_analytics_beacon_hub(user) {\n  return user.title.trim().toUpperCase();\n}\nexport const repositoryIdentity3157963e = Object.freeze({\n  v24e79ca5: true, vc4e6ef59: true, v49e11474: true, ve6b85f0c: true, v0a8f63fa: true, v518d776a: true,\n  vba4396b3: true, v41660727: true, v8888271d: true, v2989323b: true, v90231c7d: true, v474251fe: true,\n  vf78ef3f3: true, v43b5322b: true, ve5971329: true, v35f9df07: true, v57449dcd: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -519,56 +511,52 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Apply the value constraint in the shared domain schema.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "import { validateUserSchema_analytics_beacon_hub } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_analytics_beacon_hub() {\n    records.length = 0;\n}\n\nexport function saveUser_analytics_beacon_hub(input) {\n    if (!validateUserSchema_analytics_beacon_hub(input)) return false;\n    records.push({ key: input.key.trim(), title: input.title.trim() });\n    return true;\n}\n\nexport function listUsers_analytics_beacon_hub() {\n    return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_analytics_beacon_hub(user) {\n    return user.title.toUpperCase();\n}\n"
+              "content": "import { validateUserSchema_analytics_beacon_hub } from \"./user-schema.mjs\";\n\nclass Repository {\n  constructor() { this.rows = []; }\n  clear() { this.rows = []; }\n  store(input) {\n    const records = this.rows;\n    if (!validateUserSchema_analytics_beacon_hub(input)) return false;\n  records.push({ key: input.key.trim(), title: input.title.trim() });\n  return true;\n  }\n  all() { return structuredClone(this.rows); }\n}\nconst repository = new Repository();\nexport const resetUsers_analytics_beacon_hub = () => repository.clear();\nexport const saveUser_analytics_beacon_hub = (input) => repository.store(input);\nexport const listUsers_analytics_beacon_hub = () => repository.all();\nexport function renderUser_analytics_beacon_hub(user) {\n  return user.title.toUpperCase();\n}\nexport const repositoryIdentity3157963e = Object.freeze({\n  v24e79ca5: true, vc4e6ef59: true, v49e11474: true, ve6b85f0c: true, v0a8f63fa: true, v518d776a: true,\n  vba4396b3: true, v41660727: true, v8888271d: true, v2989323b: true, v90231c7d: true, v474251fe: true,\n  vf78ef3f3: true, v43b5322b: true, ve5971329: true, v35f9df07: true, v57449dcd: true,\n});\n"
             },
             {
               "path": "src/user-schema.mjs",
-              "content": "export function validateUserSchema_analytics_beacon_hub(user) {\n    return Boolean(\n        user &&\n        typeof user.key === \"string\" &&\n        user.key.trim().length > 0 &&\n        typeof user.title === \"string\" &&\n        user.title.trim().length > 0\n    );\n}\n"
+              "content": "export function validateUserSchema_analytics_beacon_hub(user) {\n  return Boolean(\n    user &&\n    typeof user.key === \"string\" &&\n    user.key.trim().length > 0 &&\n    typeof user.title === \"string\" &&\n    user.title.trim().length > 0\n  );\n}\n"
             }
-          ],
-          "isGood": true
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Normalize the value in the request handler before passing it to the domain module.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const records = [];\n\nexport function resetUsers_analytics_beacon_hub() {\n    records.length = 0;\n}\n\nexport function saveUser_analytics_beacon_hub(input) {\n    records.push({ ...input });\n    return true;\n}\n\nexport function listUsers_analytics_beacon_hub() {\n    return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_analytics_beacon_hub(user) {\n    return user.title?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+              "content": "class Repository {\n  constructor() { this.rows = []; }\n  clear() { this.rows = []; }\n  store(input) {\n    const records = this.rows;\n    records.push({ ...input });\n  return true;\n  }\n  all() { return structuredClone(this.rows); }\n}\nconst repository = new Repository();\nexport const resetUsers_analytics_beacon_hub = () => repository.clear();\nexport const saveUser_analytics_beacon_hub = (input) => repository.store(input);\nexport const listUsers_analytics_beacon_hub = () => repository.all();\nexport function renderUser_analytics_beacon_hub(user) {\n  return user.title?.trim().toUpperCase() || \"UNKNOWN\";\n}\nexport const repositoryIdentity3157963e = Object.freeze({\n  v24e79ca5: true, vc4e6ef59: true, v49e11474: true, ve6b85f0c: true, v0a8f63fa: true, v518d776a: true,\n  vba4396b3: true, v41660727: true, v8888271d: true, v2989323b: true, v90231c7d: true, v474251fe: true,\n  vf78ef3f3: true, v43b5322b: true, ve5971329: true, v35f9df07: true, v57449dcd: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Normalize the value in the request handler before passing it to the domain module.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const records = [];\n\nexport function resetUsers_analytics_beacon_hub() {\n    records.length = 0;\n}\n\nexport function saveUser_analytics_beacon_hub(input) {\n    records.push({ ...input });\n    return true;\n}\n\nexport function listUsers_analytics_beacon_hub() {\n    return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_analytics_beacon_hub(user) {\n    return user.title?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+            "content": "class Repository {\n  constructor() { this.rows = []; }\n  clear() { this.rows = []; }\n  store(input) {\n    const records = this.rows;\n    records.push({ ...input });\n  return true;\n  }\n  all() { return structuredClone(this.rows); }\n}\nconst repository = new Repository();\nexport const resetUsers_analytics_beacon_hub = () => repository.clear();\nexport const saveUser_analytics_beacon_hub = (input) => repository.store(input);\nexport const listUsers_analytics_beacon_hub = () => repository.all();\nexport function renderUser_analytics_beacon_hub(user) {\n  return user.title?.trim().toUpperCase() || \"UNKNOWN\";\n}\nexport const repositoryIdentity3157963e = Object.freeze({\n  v24e79ca5: true, vc4e6ef59: true, v49e11474: true, ve6b85f0c: true, v0a8f63fa: true, v518d776a: true,\n  vba4396b3: true, v41660727: true, v8888271d: true, v2989323b: true, v90231c7d: true, v474251fe: true,\n  vf78ef3f3: true, v43b5322b: true, ve5971329: true, v35f9df07: true, v57449dcd: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Apply the value constraint in the shared domain schema.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "import { validateUserSchema_analytics_beacon_hub } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_analytics_beacon_hub() {\n    records.length = 0;\n}\n\nexport function saveUser_analytics_beacon_hub(input) {\n    if (!validateUserSchema_analytics_beacon_hub(input)) return false;\n    records.push({ key: input.key.trim(), title: input.title.trim() });\n    return true;\n}\n\nexport function listUsers_analytics_beacon_hub() {\n    return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_analytics_beacon_hub(user) {\n    return user.title.toUpperCase();\n}\n"
+            "content": "import { validateUserSchema_analytics_beacon_hub } from \"./user-schema.mjs\";\n\nclass Repository {\n  constructor() { this.rows = []; }\n  clear() { this.rows = []; }\n  store(input) {\n    const records = this.rows;\n    if (!validateUserSchema_analytics_beacon_hub(input)) return false;\n  records.push({ key: input.key.trim(), title: input.title.trim() });\n  return true;\n  }\n  all() { return structuredClone(this.rows); }\n}\nconst repository = new Repository();\nexport const resetUsers_analytics_beacon_hub = () => repository.clear();\nexport const saveUser_analytics_beacon_hub = (input) => repository.store(input);\nexport const listUsers_analytics_beacon_hub = () => repository.all();\nexport function renderUser_analytics_beacon_hub(user) {\n  return user.title.toUpperCase();\n}\nexport const repositoryIdentity3157963e = Object.freeze({\n  v24e79ca5: true, vc4e6ef59: true, v49e11474: true, ve6b85f0c: true, v0a8f63fa: true, v518d776a: true,\n  vba4396b3: true, v41660727: true, v8888271d: true, v2989323b: true, v90231c7d: true, v474251fe: true,\n  vf78ef3f3: true, v43b5322b: true, ve5971329: true, v35f9df07: true, v57449dcd: true,\n});\n"
           },
           {
             "path": "src/user-schema.mjs",
-            "content": "export function validateUserSchema_analytics_beacon_hub(user) {\n    return Boolean(\n        user &&\n        typeof user.key === \"string\" &&\n        user.key.trim().length > 0 &&\n        typeof user.title === \"string\" &&\n        user.title.trim().length > 0\n    );\n}\n"
+            "content": "export function validateUserSchema_analytics_beacon_hub(user) {\n  return Boolean(\n    user &&\n    typeof user.key === \"string\" &&\n    user.key.trim().length > 0 &&\n    typeof user.title === \"string\" &&\n    user.title.trim().length > 0\n  );\n}\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
@@ -609,19 +597,19 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for analytics-beacon-hub so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.\n\nUpdate the local domain module for analytics-beacon-hub so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  listUsers_analytics_beacon_hub,\n  renderUser_analytics_beacon_hub,\n  resetUsers_analytics_beacon_hub,\n  saveUser_analytics_beacon_hub,\n} from \"../src/service.mjs\";\n\nresetUsers_analytics_beacon_hub();\nconst invalidAccepted = saveUser_analytics_beacon_hub({\"key\":\"\",\"title\":\"\"});\nconst invalidRecords = listUsers_analytics_beacon_hub();\nconst presentationMasked =\n  invalidRecords.length === 1 &&\n  renderUser_analytics_beacon_hub(invalidRecords[0]) === \"UNKNOWN\";\n\nresetUsers_analytics_beacon_hub();\nconst validAccepted = saveUser_analytics_beacon_hub({\"key\":\" job-7 \",\"title\":\" Importer \"});\nconst validRecords = listUsers_analytics_beacon_hub();\nconst validContract =\n  validAccepted === true &&\n  validRecords.length === 1 &&\n  validRecords[0][\"key\"] === \"job-7\" &&\n  validRecords[0][\"title\"] === \"Importer\" &&\n  renderUser_analytics_beacon_hub(validRecords[0]) === \"IMPORTER\";\nconst invalidContract = invalidAccepted === false && invalidRecords.length === 0;\n\nif (invalidContract && validContract) {\n  console.log(\"FIXED: domain write boundary rejects invalid users and preserves valid users\");\n  process.exit(0);\n}\nif (invalidAccepted && presentationMasked) {\n  console.log(\"CHECK_FAILED: user persistence does not satisfy the domain contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: invalid users cross the domain write boundary\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity3157963e } from \"../src/service.mjs\";\nconst {\n  v24e79ca5, vc4e6ef59, v49e11474, ve6b85f0c, v0a8f63fa, v518d776a, vba4396b3, v41660727,\n  v8888271d, v2989323b, v90231c7d, v474251fe, vf78ef3f3, v43b5322b, ve5971329, v35f9df07,\n  v57449dcd,\n} = repositoryIdentity3157963e;\nif (!Object.values(repositoryIdentity3157963e).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { listUsers_analytics_beacon_hub, renderUser_analytics_beacon_hub, resetUsers_analytics_beacon_hub, saveUser_analytics_beacon_hub } from \"../src/service.mjs\";\nconst scenarios = [\n  { input: {\"key\":\"\",\"title\":\"\"}, accepted: false, count: 0 },\n  { input: {\"key\":\" job-7 \",\"title\":\" Importer \"}, accepted: true, count: 1 },\n];\nconst ledger = [];\nfor (const scenario of scenarios) {\n  resetUsers_analytics_beacon_hub();\n  const accepted = saveUser_analytics_beacon_hub(scenario.input);\n  const rows = listUsers_analytics_beacon_hub();\n  ledger.push({ accepted, count: rows.length, output: rows[0] ? renderUser_analytics_beacon_hub(rows[0]) : null });\n}\nif (ledger[0].accepted === false && ledger[0].count === 0 &&\n    ledger[1].accepted === true && ledger[1].count === 1 &&\n    ledger[1].output === \"IMPORTER\") {\n  console.log(\"FIXED: repository scenarios enforce the entity contract\");\n  process.exit(0);\n}\nif (ledger[0].accepted && ledger[0].output === \"UNKNOWN\") {\n  console.log(\"CHECK_FAILED: repository corruption is hidden during rendering\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: repository accepted a malformed entity\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/user-schema.mjs",
-          "content": "export function validateUserSchema_analytics_beacon_hub(user) {\n    return Boolean(\n        user &&\n        typeof user.key === \"string\" &&\n        user.key.trim().length > 0 &&\n        typeof user.title === \"string\" &&\n        user.title.trim().length > 0\n    );\n}\n"
+          "content": "export function validateUserSchema_analytics_beacon_hub(user) {\n  return Boolean(\n    user &&\n    typeof user.key === \"string\" &&\n    user.key.trim().length > 0 &&\n    typeof user.title === \"string\" &&\n    user.title.trim().length > 0\n  );\n}\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "import { validateUserSchema_analytics_beacon_hub } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_analytics_beacon_hub() {\n    records.length = 0;\n}\n\nexport function saveUser_analytics_beacon_hub(input) {\n    if (!validateUserSchema_analytics_beacon_hub(input)) return false;\n    records.push({ key: input.key.trim(), title: input.title.trim() });\n    return true;\n}\n\nexport function listUsers_analytics_beacon_hub() {\n    return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_analytics_beacon_hub(user) {\n    return user.title.toUpperCase();\n}\n"
+          "content": "import { validateUserSchema_analytics_beacon_hub } from \"./user-schema.mjs\";\n\nclass Repository {\n  constructor() { this.rows = []; }\n  clear() { this.rows = []; }\n  store(input) {\n    const records = this.rows;\n    if (!validateUserSchema_analytics_beacon_hub(input)) return false;\n  records.push({ key: input.key.trim(), title: input.title.trim() });\n  return true;\n  }\n  all() { return structuredClone(this.rows); }\n}\nconst repository = new Repository();\nexport const resetUsers_analytics_beacon_hub = () => repository.clear();\nexport const saveUser_analytics_beacon_hub = (input) => repository.store(input);\nexport const listUsers_analytics_beacon_hub = () => repository.all();\nexport function renderUser_analytics_beacon_hub(user) {\n  return user.title.toUpperCase();\n}\nexport const repositoryIdentity3157963e = Object.freeze({\n  v24e79ca5: true, vc4e6ef59: true, v49e11474: true, ve6b85f0c: true, v0a8f63fa: true, v518d776a: true,\n  vba4396b3: true, v41660727: true, v8888271d: true, v2989323b: true, v90231c7d: true, v474251fe: true,\n  vf78ef3f3: true, v43b5322b: true, ve5971329: true, v35f9df07: true, v57449dcd: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -632,10 +620,10 @@
           "content": "/**\n * Helper routines for analytics-beacon-hub\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_analytics_beacon_hub, generateTraceId_analytics_beacon_hub } from \"../utils.js\";\n\nexport function getDomainHeader_analytics_beacon_hub(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_analytics_beacon_hub(domain);\n}\n\nexport function createServiceContext_analytics_beacon_hub(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_analytics_beacon_hub(domain),\n    traceId: generateTraceId_analytics_beacon_hub(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function validateDomainHeader_analytics_beacon_hub(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function buildResponseEnvelope_analytics_beacon_hub<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n"
         }
       ],
-      "cleanRevisionSha": "5f96ab45522a44ca6373db40f450b3d77ac8816a",
-      "trapRevisionSha": "6ec7469e99b58be5fc700afdf251468473d17dd9",
-      "rightRevisionSha": "19a970505c6b3df7e149fc69a33f9d32282cc201",
-      "noTrapRevisionSha": "c44312a2d44419caf92835d03d0fccc987958ed2"
+      "cleanRevisionSha": "623d2d2def216c31ca0cf423bb77a229b6f4d758",
+      "trapRevisionSha": "968bb4d5cdda6a3b456b31ade5cdeec8bd753086",
+      "rightRevisionSha": "45ba2bb1f406538e64b90973e67970a6fc1993e4",
+      "noTrapRevisionSha": "a9e74289cd6be6a91268df6abddaef8a6d7c2248"
     }
   ]
 }

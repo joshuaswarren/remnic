@@ -7,7 +7,7 @@ import type {
   OptionalRepeatedFailureCliInput,
 } from "./optional-bench.js";
 import { loadBenchModule } from "./optional-bench.js";
-import { expandTilde } from "./path-utils.js";
+import { expandTilde, resolveHomeDir } from "./path-utils.js";
 
 const UINT32_MAX = 0xffff_ffff;
 const FROZEN_GENERATOR_SEED = 81;
@@ -18,11 +18,19 @@ const FROZEN_MAX_STEPS = 12;
 const FROZEN_MAX_TOOL_CALLS = 8;
 const FROZEN_MAX_OUTPUT_CHARS = 16_384;
 const MAX_OUTPUT_BYTES = 16_384;
+const DEFAULT_REPEATED_FAILURE_OUTPUT_DIR = path.join(
+  resolveHomeDir(),
+  ".remnic",
+  "bench",
+  "results",
+  "h6-repeated-failure",
+);
 
 export const BENCH_CODING_USAGE = `Usage: remnic bench coding repo-gen [--count 30] [--seed N] [--out DIR]
        remnic bench coding repo-gen verify-all [DIR]
        remnic bench coding repeated-failure --seeds N --profile FILE [--profile FILE ...] [options]
        remnic bench coding repeated-failure stats --run DIR
+       remnic bench coding repeated-failure report --run DIR
        remnic bench coding repeated-failure trap-audit --profile FILE [--profile FILE ...] [options]
 
 Commands:
@@ -30,6 +38,7 @@ Commands:
   repo-gen verify-all [DIR] Verify every H6 fixture in DIR, or the committed fixtures
   repeated-failure          Run or resume the controlled repeated-failure suite
   repeated-failure stats    Replay statistics offline from a completed run
+  repeated-failure report   Generate paper tables and figures from a completed run
   repeated-failure trap-audit Run seeded trap effectiveness audit for model profiles
 
 Repo generation options:
@@ -41,13 +50,14 @@ Repeated-failure options:
   --phase <pilot|main>      Run phase (default: pilot); main also requires --pilot-run
   --pilot-run DIR           Directory of completed pilot run (required when --phase is main)
   --seeds 5                 Five deterministic seeds (required)
-  --profile FILE            Exactly two immutable model profile files are required
-  --out DIR                 New run output directory (default: ./h6-repeated-failure)
+  --profile FILE            One or two immutable model profile files are required
+  --out DIR                 New run output directory (default: ~/.remnic/bench/results/h6-repeated-failure)
   --run DIR                 Existing run directory to resume
   --fixture DIR             Generated H6 fixture directory
   --max-steps 12            Frozen episode step cap
-  --max-tool-calls 8        Frozen episode tool-call cap
   --max-output-chars 16384  Frozen serialized model output cap
+  --max-duration-ms 120000  Episode wall-clock cap (trap-audit only; raise for large local models)
+  --request-timeout-ms 60000 Per-request timeout (trap-audit only; raise for large local models)
   --draws 10000             Contract assertion for confirmatory and pilot statistics
   --statistics-seed N       Unsigned 32-bit statistics seed
   --help, -h                Show this help
@@ -61,8 +71,8 @@ Profile JSON v2:
   fields participate in the canonical profile hash. Credentials never enter profile files or hashes.
 
 A live run never chooses a model implicitly. The bench package derives the immutable
-profile ID and lowercase SHA-256 profile hash. Stats replay accepts only --run and does
-not load a model or host.`;
+profile ID and lowercase SHA-256 profile hash. Stats replay and report generation accept
+only --run and do not load a model or host.`;
 
 export type BenchCodingCommand =
   | { kind: "help" }
@@ -80,10 +90,13 @@ export type BenchCodingCommand =
       maxSteps?: number;
       maxToolCalls?: number;
       maxOutputChars?: number;
+      maxDurationMs?: number;
+      requestTimeoutMs?: number;
       statisticsDraws?: number;
       statisticsSeed?: number;
     }
   | { kind: "repeated-stats"; runDir: string }
+  | { kind: "repeated-report"; runDir: string }
   | {
       kind: "trap-audit";
       profilePaths: string[];
@@ -92,6 +105,8 @@ export type BenchCodingCommand =
       maxSteps?: number;
       maxToolCalls?: number;
       maxOutputChars?: number;
+      maxDurationMs?: number;
+      requestTimeoutMs?: number;
     };
 export type BenchCodingResult = OptionalBenchCommandResult;
 export type RunRepeatedFailureCliInput = OptionalRepeatedFailureCliInput;
@@ -121,6 +136,9 @@ interface H6BenchModule {
   replayRepeatedFailureStatistics(input: {
     runDir: string;
   }): Promise<OptionalBenchCommandResult>;
+  runRepeatedFailurePaperReportCliCommand(input: {
+    runDir: string;
+  }): Promise<OptionalBenchCommandResult>;
   runTrapAuditCliCommand(input: {
     profilePaths: readonly string[];
     outputDir: string;
@@ -128,9 +146,10 @@ interface H6BenchModule {
     maxSteps?: number;
     maxToolCalls?: number;
     maxOutputChars?: number;
+    maxDurationMs?: number;
+    requestTimeoutMs?: number;
   }): Promise<OptionalBenchCommandResult>;
 }
-
 export interface BenchCodingDependencies {
   loadBenchModule: () => Promise<Partial<H6BenchModule>>;
 }
@@ -215,31 +234,37 @@ function parseRepoVerify(args: readonly string[]): BenchCodingCommand {
   return directory === undefined ? { kind: "repo-verify" } : { kind: "repo-verify", directory };
 }
 
-function parseRepeatedStats(args: readonly string[]): BenchCodingCommand {
+function parseRepeatedRunArtifact(
+  args: readonly string[],
+  kind: "repeated-stats" | "repeated-report",
+  commandName: "stats" | "report",
+): BenchCodingCommand {
   if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) return { kind: "help" };
   if (args.length !== 2 || args[0] !== "--run") {
     const unknown = args.find((arg) => arg.startsWith("-") && arg !== "--run");
     if (unknown) throw new Error(`unknown option ${unknown}`);
-    throw new Error("repeated-failure stats requires exactly --run DIR");
+    throw new Error(`repeated-failure ${commandName} requires exactly --run DIR`);
   }
   const runDir = args[1];
   if (runDir === undefined || runDir.trim().length === 0 || runDir.startsWith("-")) {
     throw new Error("missing value for --run");
   }
-  return { kind: "repeated-stats", runDir };
+  return { kind, runDir };
 }
 
 function parseRepeatedRun(args: readonly string[]): BenchCodingCommand {
   let phase: "pilot" | "main" = "pilot";
   let seedCount: number | undefined;
   const profilePaths: string[] = [];
-  let outputDir = "./h6-repeated-failure";
+  let outputDir = DEFAULT_REPEATED_FAILURE_OUTPUT_DIR;
   let fixtureDir: string | undefined;
   let resumeRunDir: string | undefined;
   let pilotRunDir: string | undefined;
   let maxSteps: number | undefined;
   let maxToolCalls: number | undefined;
   let maxOutputChars: number | undefined;
+  let maxDurationMs: number | undefined;
+  let requestTimeoutMs: number | undefined;
   let statisticsDraws: number | undefined;
   let statisticsSeed: number | undefined;
   const seen = new Set<string>();
@@ -252,9 +277,9 @@ function parseRepeatedRun(args: readonly string[]): BenchCodingCommand {
     "--out",
     "--run",
     "--fixture",
-    "--max-steps",
-    "--max-tool-calls",
     "--max-output-chars",
+    "--max-duration-ms",
+    "--request-timeout-ms",
     "--draws",
     "--statistics-seed",
   ]);
@@ -308,6 +333,10 @@ function parseRepeatedRun(args: readonly string[]): BenchCodingCommand {
         FROZEN_MAX_OUTPUT_CHARS,
         FROZEN_MAX_OUTPUT_CHARS,
       );
+    } else if (flag === "--max-duration-ms") {
+      maxDurationMs = parseBoundedInteger(read.value, flag, 1000, 3_600_000);
+    } else if (flag === "--request-timeout-ms") {
+      requestTimeoutMs = parseBoundedInteger(read.value, flag, 1000, 3_600_000);
     }
     else if (flag === "--draws") {
       statisticsDraws = parseBoundedInteger(
@@ -320,8 +349,8 @@ function parseRepeatedRun(args: readonly string[]): BenchCodingCommand {
   }
 
   if (seedCount === undefined) throw new Error("repeated-failure requires --seeds N");
-  if (profilePaths.length !== 2) {
-    throw new Error("registered repeated-failure runs require exactly two --profile files");
+  if (profilePaths.length < 1 || profilePaths.length > 2) {
+    throw new Error("repeated-failure runs require one or two --profile files");
   }
   if (phase === "main" && pilotRunDir === undefined && resumeRunDir === undefined) {
     throw new Error("--phase main requires --pilot-run DIR");
@@ -343,6 +372,8 @@ function parseRepeatedRun(args: readonly string[]): BenchCodingCommand {
     ...(maxSteps === undefined ? {} : { maxSteps }),
     ...(maxToolCalls === undefined ? {} : { maxToolCalls }),
     ...(maxOutputChars === undefined ? {} : { maxOutputChars }),
+    ...(maxDurationMs === undefined ? {} : { maxDurationMs }),
+    ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }),
     ...(statisticsDraws === undefined ? {} : { statisticsDraws }),
     ...(statisticsSeed === undefined ? {} : { statisticsSeed }),
   };
@@ -354,6 +385,8 @@ function parseTrapAudit(args: readonly string[]): BenchCodingCommand {
   let maxSteps: number | undefined;
   let maxToolCalls: number | undefined;
   let maxOutputChars: number | undefined;
+  let maxDurationMs: number | undefined;
+  let requestTimeoutMs: number | undefined;
   const seen = new Set<string>();
   const allowed = new Set([
     "--profile",
@@ -362,6 +395,8 @@ function parseTrapAudit(args: readonly string[]): BenchCodingCommand {
     "--max-steps",
     "--max-tool-calls",
     "--max-output-chars",
+    "--max-duration-ms",
+    "--request-timeout-ms",
   ]);
 
   for (let index = 0; index < args.length; index += 1) {
@@ -391,6 +426,8 @@ function parseTrapAudit(args: readonly string[]): BenchCodingCommand {
     else if (flag === "--max-steps") maxSteps = parseBoundedInteger(read.value, flag, 1, 100);
     else if (flag === "--max-tool-calls") maxToolCalls = parseBoundedInteger(read.value, flag, 1, 100);
     else if (flag === "--max-output-chars") maxOutputChars = parseBoundedInteger(read.value, flag, 256, 65_536);
+    else if (flag === "--max-duration-ms") maxDurationMs = parseBoundedInteger(read.value, flag, 1000, 3_600_000);
+    else if (flag === "--request-timeout-ms") requestTimeoutMs = parseBoundedInteger(read.value, flag, 1000, 3_600_000);
   }
 
   if (profilePaths.length === 0) throw new Error("trap-audit requires at least one --profile FILE");
@@ -403,6 +440,8 @@ function parseTrapAudit(args: readonly string[]): BenchCodingCommand {
     ...(maxSteps === undefined ? {} : { maxSteps }),
     ...(maxToolCalls === undefined ? {} : { maxToolCalls }),
     ...(maxOutputChars === undefined ? {} : { maxOutputChars }),
+    ...(maxDurationMs === undefined ? {} : { maxDurationMs }),
+    ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }),
   };
 }
 
@@ -412,7 +451,12 @@ export function parseBenchCodingArgs(args: readonly string[]): BenchCodingComman
     return args[1] === "verify-all" ? parseRepoVerify(args.slice(2)) : parseRepoGenerate(args.slice(1));
   }
   if (args[0] === "repeated-failure") {
-    if (args[1] === "stats") return parseRepeatedStats(args.slice(2));
+    if (args[1] === "stats") {
+      return parseRepeatedRunArtifact(args.slice(2), "repeated-stats", "stats");
+    }
+    if (args[1] === "report") {
+      return parseRepeatedRunArtifact(args.slice(2), "repeated-report", "report");
+    }
     if (args[1] === "trap-audit" || args[1] === "audit") return parseTrapAudit(args.slice(2));
     return parseRepeatedRun(args.slice(1));
   }
@@ -432,7 +476,7 @@ function normalizeCommandPaths(command: BenchCodingCommand): BenchCodingCommand 
       ? command
       : { ...command, directory: resolve(command.directory) };
   }
-  if (command.kind === "repeated-stats") {
+  if (command.kind === "repeated-stats" || command.kind === "repeated-report") {
     return { ...command, runDir: resolve(command.runDir) };
   }
   if (command.kind === "repeated-run") {
@@ -532,7 +576,10 @@ async function assertSafeBenchmarkOutput(outputDir: string): Promise<void> {
   }
 }
 
-async function assertH6StatsRunDirectory(runDir: string): Promise<void> {
+async function assertH6StatsRunDirectory(
+  runDir: string,
+  commandName: "stats" | "report" = "stats",
+): Promise<void> {
   try {
     const parsed = JSON.parse(
       await readFile(path.join(runDir, "run.json"), "utf8"),
@@ -547,7 +594,7 @@ async function assertH6StatsRunDirectory(runDir: string): Promise<void> {
       throw new Error("invalid H6 metadata");
     }
   } catch {
-    throw new Error("stats requires existing H6 run metadata");
+    throw new Error(`${commandName} requires existing H6 run metadata`);
   }
 }
 
@@ -659,9 +706,13 @@ async function executeCommand(
     await rejectExistingNonDirectory(command.outputDir, "--out");
   } else if (command.kind === "repo-verify" && command.directory !== undefined) {
     await requireDirectory(command.directory, "verify-all input");
-  } else if (command.kind === "repeated-stats") {
+  } else if (command.kind === "repeated-stats" || command.kind === "repeated-report") {
+    await assertSafeBenchmarkOutput(command.runDir);
     await requireDirectory(command.runDir, "--run");
-    await assertH6StatsRunDirectory(command.runDir);
+    await assertH6StatsRunDirectory(
+      command.runDir,
+      command.kind === "repeated-stats" ? "stats" : "report",
+    );
   } else if (command.kind === "repeated-run" || command.kind === "trap-audit") {
     await assertSafeBenchmarkOutput(command.outputDir);
     if (command.kind === "repeated-run" && command.resumeRunDir !== undefined) {
@@ -689,6 +740,11 @@ async function executeCommand(
   if (command.kind === "repeated-stats") {
     return requireFunction(bench, "replayRepeatedFailureStatistics")({ runDir: command.runDir });
   }
+  if (command.kind === "repeated-report") {
+    return requireFunction(bench, "runRepeatedFailurePaperReportCliCommand")({
+      runDir: command.runDir,
+    });
+  }
   if (command.kind === "trap-audit") {
     return requireFunction(bench, "runTrapAuditCliCommand")({
       profilePaths: command.profilePaths,
@@ -697,6 +753,8 @@ async function executeCommand(
       ...(command.maxSteps === undefined ? {} : { maxSteps: command.maxSteps }),
       ...(command.maxToolCalls === undefined ? {} : { maxToolCalls: command.maxToolCalls }),
       ...(command.maxOutputChars === undefined ? {} : { maxOutputChars: command.maxOutputChars }),
+      ...(command.maxDurationMs === undefined ? {} : { maxDurationMs: command.maxDurationMs }),
+      ...(command.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: command.requestTimeoutMs }),
     });
   }
   if (command.kind === "repeated-run") {
@@ -711,6 +769,8 @@ async function executeCommand(
       ...(command.maxSteps === undefined ? {} : { maxSteps: command.maxSteps }),
       ...(command.maxToolCalls === undefined ? {} : { maxToolCalls: command.maxToolCalls }),
       ...(command.maxOutputChars === undefined ? {} : { maxOutputChars: command.maxOutputChars }),
+      ...(command.maxDurationMs === undefined ? {} : { maxDurationMs: command.maxDurationMs }),
+      ...(command.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: command.requestTimeoutMs }),
       ...(command.statisticsDraws === undefined ? {} : { statisticsDraws: command.statisticsDraws }),
       ...(command.statisticsSeed === undefined ? {} : { statisticsSeed: command.statisticsSeed }),
     });

@@ -1,6 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, join, parse, resolve, sep } from "node:path";
+import { compareCodePoints } from "../../codepoint-order.js";
 import {
   H6_ACTION_INTENT_JSON_SCHEMA,
   H6_ARMS,
@@ -34,6 +36,11 @@ import type {
 } from "./types.js";
 
 const MAX_CHECK_OUTPUT_CHARS = 512;
+const STATE_DEFINING_JACCARD_THRESHOLD = 0.60;
+const EXPECTED_CANDIDATE_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  "candidate-alpha": "Candidate alpha.",
+  "candidate-beta": "Candidate beta.",
+};
 
 const AGENT_VISIBLE_LEAKAGE = [
   /\btrap\b/i,
@@ -55,7 +62,7 @@ function syntheticFilesDigest(files: readonly SyntheticFile[]): string {
   return JSON.stringify(
     files
       .map((file) => [file.path, file.content, file.isExecutable ?? false] as const)
-      .sort(([left], [right]) => left.localeCompare(right)),
+      .sort(([left], [right]) => compareCodePoints(left, right)),
   );
 }
 
@@ -168,7 +175,7 @@ export function calculateJaccardSimilarity(textA: string, textB: string): number
   return union === 0 ? 1 : intersection / union;
 }
 
-function calculateDatasetSimilarity(textA: string, textB: string): number {
+function calculateTrigramSimilarity(textA: string, textB: string): number {
   const trigrams = (text: string): Set<string> => {
     const tokens = text
       .toLowerCase()
@@ -188,6 +195,7 @@ function calculateDatasetSimilarity(textA: string, textB: string): number {
   }
   return intersection / (left.size + right.size - intersection);
 }
+
 function normalizedTaskLogic(task: BaseTask): string {
   const variant = task.variants[0];
   const relevantPaths = new Set([task.fingerprint.file, "test/check.js"]);
@@ -206,6 +214,66 @@ function normalizedTaskLogic(task: BaseTask): string {
     .join("\n")
     .replaceAll(task.domain, "<domain>")
     .replaceAll(task.domain.replaceAll("-", "_"), "<domain_token>");
+}
+
+function normalizeStateDefiningContent(task: BaseTask, content: string): string {
+  return content
+    .normalize("NFKC")
+    .replaceAll(task.domain, "<domain>")
+    .replaceAll(task.domain.replaceAll("-", "_"), "<domain_token>")
+    .replace(/_[a-f0-9]{10}\b/gi, "_task")
+    .replace(/(["'`])(?:\\.|(?!\1).)*\1/gs, "<literal>")
+    .replace(/\b\d+(?:\.\d+)?\b/g, "<number>");
+}
+
+function stateDefiningContent(task: BaseTask, filePath: string): string {
+  const file = task.variants[0].files.find((candidate) => candidate.path === filePath);
+  if (!file) throw new Error(`Missing state-defining file ${filePath} in ${task.id}`);
+  return normalizeStateDefiningContent(task, file.content);
+}
+
+export function validateH6StateDefiningIndependence(
+  dataset: H6BenchmarkDataset,
+): { maxSimilarity: number; issues: ValidationIssue[] } {
+  const issues: ValidationIssue[] = [];
+  let maxSimilarity = 0;
+  for (let i = 0; i < dataset.tasks.length; i++) {
+    for (let j = i + 1; j < dataset.tasks.length; j++) {
+      const leftTask = dataset.tasks[i];
+      const rightTask = dataset.tasks[j];
+      if (leftTask.trapId !== rightTask.trapId) continue;
+      const comparisons = [
+        {
+          kind: "source",
+          leftPath: leftTask.fingerprint.file,
+          rightPath: rightTask.fingerprint.file,
+        },
+        {
+          kind: "check",
+          leftPath: "test/check.js",
+          rightPath: "test/check.js",
+        },
+      ] as const;
+      for (const comparison of comparisons) {
+        const similarity = calculateJaccardSimilarity(
+          stateDefiningContent(leftTask, comparison.leftPath),
+          stateDefiningContent(rightTask, comparison.rightPath),
+        );
+        maxSimilarity = Math.max(maxSimilarity, similarity);
+        if (similarity > STATE_DEFINING_JACCARD_THRESHOLD) {
+          issues.push({
+            code: "STATE_DEFINING_SIMILARITY_EXCEEDED",
+            message:
+              `Tasks ${leftTask.id} and ${rightTask.id} state-defining ${comparison.kind} files ` +
+              `${comparison.leftPath} and ${comparison.rightPath} normalized token-set Jaccard ` +
+              `${similarity.toFixed(3)} exceeds ${STATE_DEFINING_JACCARD_THRESHOLD.toFixed(2)} threshold`,
+            path: comparison.leftPath,
+          });
+        }
+      }
+    }
+  }
+  return { maxSimilarity, issues };
 }
 
 function unresolvedHelperImports(files: readonly SyntheticFile[]): string[] {
@@ -266,6 +334,7 @@ export interface ValidationReport {
     totalTasks: number;
     totalVariants: number;
     maxPairwiseSimilarity: number;
+    maxStateDefiningSimilarity: number;
     devTaskCount: number;
     pilotTaskCount: number;
     mainTaskCount: number;
@@ -290,6 +359,7 @@ export async function validateH6Dataset(
         totalTasks: 0,
         totalVariants: 0,
         maxPairwiseSimilarity: 1,
+        maxStateDefiningSimilarity: 1,
         devTaskCount: 0,
         pilotTaskCount: 0,
         mainTaskCount: 0,
@@ -329,8 +399,8 @@ export async function validateH6Dataset(
   const mainCount = dataset.splits.main.length;
 
   if (
-    devCount !== 6 ||
-    pilotCount !== 6 ||
+    devCount !== 0 ||
+    pilotCount !== 12 ||
     mainCount !== 18 ||
     new Set([
       ...dataset.splits.dev,
@@ -340,7 +410,7 @@ export async function validateH6Dataset(
   ) {
     issues.push({
       code: "UNBALANCED_SPLITS",
-      message: `Expected 6/6/18 split sizes and 30 unique task IDs; got ${devCount}/${pilotCount}/${mainCount}`,
+      message: `Expected 0/12/18 split sizes and 30 unique task IDs; got ${devCount}/${pilotCount}/${mainCount}`,
     });
   }
 
@@ -356,25 +426,13 @@ export async function validateH6Dataset(
   const devClasses = new Set(
     dataset.tasks.filter((t) => dataset.splits.dev.includes(t.id)).map((t) => t.trapId),
   );
-  if (devClasses.size !== 6) {
+  if (devClasses.size !== 0 && devClasses.size !== 6) {
     issues.push({
       code: "DEV_SPLIT_CLASS_IMBALANCE",
-      message: `Dev split does not cover all 6 trap IDs (found ${devClasses.size})`,
+      message: `Dev split should be empty or cover all 6 trap IDs (found ${devClasses.size})`,
     });
   }
-
-  const taxonomyIds = dataset.taxonomy.map((item) => item.trapId);
-  if (
-    taxonomyIds.length !== H6_TRAP_IDS.length ||
-    H6_TRAP_IDS.some((trapId) => !taxonomyIds.includes(trapId))
-  ) {
-    issues.push({
-      code: "TAXONOMY_MISMATCH",
-      message: "Taxonomy must contain each of the six H6 trap IDs exactly once",
-    });
-  }
-
-  const splitExpectations = { dev: 1, pilot: 1, main: 3 } as const;
+  const splitExpectations = { dev: 0, pilot: 2, main: 3 } as const;
   for (const trapId of H6_TRAP_IDS) {
     const classTasks = dataset.tasks.filter((task) => task.trapId === trapId);
     if (classTasks.length < 5) {
@@ -452,7 +510,7 @@ export async function validateH6Dataset(
 
     const firstVariant = task.variants[0];
     const correctCandidatePosition = firstVariant.strategyCandidates.findIndex(
-      (candidate) => candidate.isGood,
+      (candidate) => candidate.id === firstVariant.goodStrategyPatch.id,
     );
     if (correctCandidatePosition === 0 || correctCandidatePosition === 1) {
       correctCandidatePositions[correctCandidatePosition] += 1;
@@ -587,17 +645,20 @@ export async function validateH6Dataset(
       const candidateDescriptionLeakage = variant.strategyCandidates
         .map((candidate) => agentVisibleLeakage(candidate.description))
         .find((leakage) => leakage !== undefined);
+      const candidateDescriptionMismatch = variant.strategyCandidates.some(
+        (candidate) =>
+          candidate.description !== EXPECTED_CANDIDATE_DESCRIPTIONS[candidate.id],
+      );
       if (
         !taxonomyItem
         || candidateIdSet.size !== 2
         || !candidateIdSet.has("candidate-alpha")
         || !candidateIdSet.has("candidate-beta")
-        || variant.badStrategyPatch.isGood
-        || !variant.goodStrategyPatch.isGood
         || !candidateIdSet.has(variant.badStrategyPatch.id)
         || !candidateIdSet.has(variant.goodStrategyPatch.id)
         || variant.badStrategyPatch.id === variant.goodStrategyPatch.id
         || candidateDescriptionLeakage
+        || candidateDescriptionMismatch
         || task.fingerprint.strategyId !== variant.badStrategyPatch.id
         || task.fingerprint.strategyId === variant.goodStrategyPatch.id
         || JSON.stringify(candidateIds)
@@ -606,6 +667,20 @@ export async function validateH6Dataset(
         issues.push({
           code: "STRATEGY_CONTRACT_MISMATCH",
           message: `Variant ${variant.variantId} has invalid opaque strategy metadata or fingerprint mapping`,
+        });
+      }
+
+      if (
+        variant.badStrategyPatch.files.length === 0
+        || variant.badStrategyPatch.files.some(
+          (file) => file.path !== task.normalizedActionIntent.filePath,
+        )
+      ) {
+        issues.push({
+          code: "ACTION_INTENT_PATCH_MISMATCH",
+          message:
+            `Task ${task.id} action intent must name every file changed by ` +
+            `variant ${variant.variantId}'s failed strategy`,
         });
       }
 
@@ -643,6 +718,19 @@ export async function validateH6Dataset(
         variant.files,
         variant.goodStrategyPatch.files,
       );
+      const baseDigest = syntheticFilesDigest(variant.files);
+      for (const [candidate, patchedFiles] of [
+        [variant.badStrategyPatch, badFiles],
+        [variant.goodStrategyPatch, goodFiles],
+      ] as const) {
+        if (syntheticFilesDigest(patchedFiles) === baseDigest) {
+          issues.push({
+            code: "CANDIDATE_PATCH_NO_OP",
+            message:
+              `Variant ${variant.variantId} candidate ${candidate.id} leaves the base repository byte-identical`,
+          });
+        }
+      }
       try {
         const revisions = await computeRevisionShas(
           variant.files,
@@ -730,6 +818,9 @@ export async function validateH6Dataset(
 
   const normalizedLogic = dataset.tasks.map(normalizedTaskLogic);
   let maxPairwiseSimilarity = 0;
+  const stateIndependence = validateH6StateDefiningIndependence(dataset);
+  const maxStateDefiningSimilarity = stateIndependence.maxSimilarity;
+  issues.push(...stateIndependence.issues);
   for (let i = 0; i < dataset.tasks.length; i++) {
     const textI = dataset.tasks[i].variants[0].files
       .map((file) => file.content)
@@ -738,17 +829,17 @@ export async function validateH6Dataset(
       const textJ = dataset.tasks[j].variants[0].files
         .map((file) => file.content)
         .join("\n");
-      const sim = calculateDatasetSimilarity(textI, textJ);
+      const sim = calculateTrigramSimilarity(textI, textJ);
       if (sim > maxPairwiseSimilarity) maxPairwiseSimilarity = sim;
-      if (sim > 0.4) {
+      if (sim > 0.80) {
         issues.push({
           code: "SIMILARITY_EXCEEDED",
           message:
             `Tasks ${dataset.tasks[i].id} and ${dataset.tasks[j].id} ` +
-            `Jaccard similarity ${sim.toFixed(3)} exceeds 0.40 threshold`,
+            `Jaccard similarity ${sim.toFixed(3)} exceeds 0.80 threshold`,
         });
       }
-      const logicSimilarity = calculateDatasetSimilarity(normalizedLogic[i], normalizedLogic[j]);
+      const logicSimilarity = calculateTrigramSimilarity(normalizedLogic[i], normalizedLogic[j]);
       if (logicSimilarity >= 0.98) {
         issues.push({
           code: "TRAP_LOGIC_SIMILARITY_EXCEEDED",
@@ -807,6 +898,7 @@ export async function validateH6Dataset(
       totalTasks: dataset.tasks.length,
       totalVariants: dataset.tasks.length * 3,
       maxPairwiseSimilarity,
+      maxStateDefiningSimilarity,
       devTaskCount: devCount,
       pilotTaskCount: pilotCount,
       mainTaskCount: mainCount,
@@ -869,13 +961,65 @@ function fixtureArtifacts(dataset: H6BenchmarkDataset): FixtureArtifact[] {
   return artifacts;
 }
 
+async function optionalLstat(targetPath: string) {
+  try {
+    return await lstat(targetPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+async function assertNoSymlinkPathComponents(targetPath: string): Promise<void> {
+  const absolutePath = resolve(targetPath);
+  const root = parse(absolutePath).root;
+  let currentPath = root;
+  for (const segment of absolutePath.slice(root.length).split(sep).filter(Boolean)) {
+    currentPath = join(currentPath, segment);
+    const details = await optionalLstat(currentPath);
+    if (!details) return;
+    if (details.isSymbolicLink()) {
+      throw new Error(`Fixture output path contains a symlink component: ${currentPath}`);
+    }
+  }
+}
+
+async function assertTreeHasNoSymlinks(targetPath: string): Promise<void> {
+  const details = await optionalLstat(targetPath);
+  if (!details) return;
+  if (details.isSymbolicLink()) {
+    throw new Error(`Fixture output tree contains a symlink: ${targetPath}`);
+  }
+  if (!details.isDirectory()) return;
+  for (const entry of (await readdir(targetPath)).sort(compareCodePoints)) {
+    await assertTreeHasNoSymlinks(join(targetPath, entry));
+  }
+}
+
+async function assertFixtureOutputSafe(outputDir: string): Promise<void> {
+  await assertNoSymlinkPathComponents(outputDir);
+  const details = await optionalLstat(outputDir);
+  if (!details) return;
+  if (!details.isDirectory()) {
+    throw new Error(`Fixture output root is not a directory: ${outputDir}`);
+  }
+  await assertTreeHasNoSymlinks(outputDir);
+}
+
 async function writeFixtureArtifact(outputDir: string, artifact: FixtureArtifact): Promise<void> {
   if (!isSafeSyntheticPath(artifact.path)) {
     throw new Error(`Unsafe fixture artifact path: ${artifact.path}`);
   }
   const filePath = join(outputDir, artifact.path);
-  await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(filePath, artifact.content, "utf8");
+  const parentDir = dirname(filePath);
+  const temporaryPath = join(parentDir, `.${basename(filePath)}.${randomUUID()}.tmp`);
+  await mkdir(parentDir, { recursive: true });
+  try {
+    await writeFile(temporaryPath, artifact.content, { encoding: "utf8", flag: "wx" });
+    await rename(temporaryPath, filePath);
+  } finally {
+    await rm(temporaryPath, { force: true });
+  }
 }
 
 export async function validateH6FixtureBundle(directory: string): Promise<ValidationReport> {
@@ -927,10 +1071,72 @@ export async function writeH6FixtureBundle(
   ) {
     throw new Error("Only the exact preregistered H6 v1 fixture inventory may be materialized");
   }
-  await mkdir(outputDir, { recursive: true });
-  await rm(join(outputDir, "tasks"), { recursive: true, force: true });
-  for (const artifact of fixtureArtifacts(dataset)) {
-    await writeFixtureArtifact(outputDir, artifact);
+  const artifacts = fixtureArtifacts(dataset);
+  for (const artifact of artifacts) {
+    if (!isSafeSyntheticPath(artifact.path)) {
+      throw new Error(`Unsafe fixture artifact path: ${artifact.path}`);
+    }
   }
-  return join(outputDir, "dataset.json");
+
+  const absoluteOutputDir = resolve(outputDir);
+  if (absoluteOutputDir === parse(absoluteOutputDir).root) {
+    throw new Error("Fixture output root cannot be the filesystem root");
+  }
+  await assertFixtureOutputSafe(absoluteOutputDir);
+  await mkdir(dirname(absoluteOutputDir), { recursive: true });
+  const existingOutput = await optionalLstat(absoluteOutputDir);
+  const stagingDir = await mkdtemp(
+    join(dirname(absoluteOutputDir), `.${basename(absoluteOutputDir)}.tmp-`),
+  );
+  let backupDir: string | undefined;
+  try {
+    for (const artifact of artifacts) {
+      await writeFixtureArtifact(stagingDir, artifact);
+    }
+
+    if (existingOutput) {
+      const generatorDir = join(absoluteOutputDir, "generator");
+      const generatorDetails = await optionalLstat(generatorDir);
+      if (generatorDetails) {
+        if (!generatorDetails.isDirectory()) {
+          throw new Error("Fixture generator path is not a directory");
+        }
+        await cp(generatorDir, join(stagingDir, "generator"), {
+          recursive: true,
+          errorOnExist: true,
+          force: false,
+        });
+      }
+      backupDir = join(
+        dirname(absoluteOutputDir),
+        `.${basename(absoluteOutputDir)}.backup-${randomUUID()}`,
+      );
+      await rename(absoluteOutputDir, backupDir);
+    }
+
+    try {
+      await rename(stagingDir, absoluteOutputDir);
+    } catch (error) {
+      if (backupDir) {
+        try {
+          await rename(backupDir, absoluteOutputDir);
+          backupDir = undefined;
+        } catch (restoreError) {
+          throw new AggregateError(
+            [error, restoreError],
+            "Fixture replacement failed and the prior output could not be restored",
+          );
+        }
+      }
+      throw error;
+    }
+
+    if (backupDir) {
+      await rm(backupDir, { recursive: true, force: true });
+      backupDir = undefined;
+    }
+  } finally {
+    await rm(stagingDir, { recursive: true, force: true });
+  }
+  return join(absoluteOutputDir, "dataset.json");
 }

@@ -137,8 +137,7 @@
       "required": [
         "id",
         "description",
-        "files",
-        "isGood"
+        "files"
       ],
       "properties": {
         "id": {
@@ -153,9 +152,6 @@
           "items": {
             "$ref": "#/definitions/syntheticFile"
           }
-        },
-        "isGood": {
-          "type": "boolean"
         }
       }
     },

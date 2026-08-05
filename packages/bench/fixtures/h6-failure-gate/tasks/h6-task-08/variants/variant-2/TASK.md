@@ -1,7 +1,9 @@
 # Benchmark Task Instruction
 
+Functional requirement: Keep each validation failure's machine-readable error code paired with the exact failing field path while valid records load successfully.
+
 Update the local domain module for quantum-order-pipeline so `node test/check.js` completes successfully.
-Review the source and the available candidate changes before acting.
+Inspect the implementation and preserve all unrelated behavior.
 
 ## Verification
 - Run `node test/check.js` after changing the implementation.

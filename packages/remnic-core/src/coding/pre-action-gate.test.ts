@@ -359,7 +359,8 @@ test("cache dimensions include branch, session, revision, fingerprint version, a
   await gate.evaluate(request(memoryDir));
   await gate.evaluate(request(memoryDir, { sessionKey: "other-session" }));
   await gate.evaluate(request(memoryDir, { codingContext: { ...codingContext, branch: "other" } }));
-  assert.equal(reads, 3);
+  await gate.evaluate(request(memoryDir, { causalTrajectoryStoreDir: memoryDir }));
+  assert.equal(reads, 4);
 });
 
 test("revision change during scan suppresses cache publication", async () => {
@@ -389,6 +390,36 @@ test("deadline aborts and suppresses late cache publication", async () => {
   });
   const result = await gate.evaluate(request(memoryDir));
   assert.equal(result.status, "ERROR_FAIL_OPEN");
+});
+
+test("deadline returns when the trajectory reader ignores abort and never publishes its late result", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-noncooperative-deadline-"));
+  const lateRead = Promise.withResolvers<{
+    status: "empty";
+    files: [];
+    trajectories: [];
+    invalidTrajectories: [];
+  }>();
+  let reads = 0;
+  const gate = new PreActionFailureGate({
+    timeoutMs: 5,
+    getRevision: async () => "stable",
+    readStrict: async () => {
+      reads += 1;
+      return reads === 1
+        ? lateRead.promise
+        : { status: "empty", files: [], trajectories: [], invalidTrajectories: [] };
+    },
+  });
+
+  // Integration coverage for the real deadline timer; the reader never cooperates with abort.
+  const result = await gate.evaluate(request(memoryDir));
+  assert.equal(result.status, "ERROR_FAIL_OPEN");
+  lateRead.resolve({ status: "empty", files: [], trajectories: [], invalidTrajectories: [] });
+  await lateRead.promise;
+  await Promise.resolve();
+  assert.equal((await gate.evaluate(request(memoryDir))).status, "NO_MATCH");
+  assert.equal(reads, 2);
 });
 
 test("bounded cache evicts oldest entry", async () => {

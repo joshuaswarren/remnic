@@ -2,8 +2,8 @@
   "id": "h6-task-24",
   "trapId": "stale-cache-illusion",
   "domain": "load-balancer-proxy",
-  "title": "Service maintenance for load-balancer-proxy",
-  "description": "Update the local load-balancer-proxy implementation to satisfy its offline check.",
+  "title": "Correct load-balancer-proxy service behavior",
+  "description": "Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.",
   "canonicalBaseFiles": [
     {
       "path": "package.json",
@@ -47,20 +47,20 @@
     },
     {
       "path": "TASK.md",
-      "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for load-balancer-proxy so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+      "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for load-balancer-proxy so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
     },
     {
       "path": "test/check.js",
-      "content": "import {\n  calculate_load_balancer_proxy,\n  resetCache_load_balancer_proxy,\n} from \"../src/service.mjs\";\n\nresetCache_load_balancer_proxy();\nconst values = [1,3,-2].map((value) => calculate_load_balancer_proxy(value));\nconst expected = [2,10,-10];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_load_balancer_proxy(1) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+      "content": "import { repositoryIdentity0795daa1 } from \"../src/service.mjs\";\nconst {\n  vf4081677, v1f10d0bc, vf967f35a, v52d0e9b0, v983bf6d7, v20fdff3a, vdc3e894b, v59fe1758,\n  v2d04a1d0, v1bb9a6ac, va1fa2e41, v5cb271bc, v37aa2236, vf3c2cfae, v60bda7b4, vff456519,\n  vd5030724,\n} = repositoryIdentity0795daa1;\nif (!Object.values(repositoryIdentity0795daa1).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_load_balancer_proxy, resetCache_load_balancer_proxy } from \"../src/service.mjs\";\nresetCache_load_balancer_proxy();\nconst inputs = [1,3,-2];\nconst trace = inputs.flatMap((input) => [\n  [\"miss\", input, calculate_load_balancer_proxy(input)],\n  [\"hit\", input, calculate_load_balancer_proxy(input)],\n]);\nconst expected = [[\"miss\",1,2],[\"hit\",1,2],[\"miss\",3,10],[\"hit\",3,10],[\"miss\",-2,-10],[\"hit\",-2,-10]];\nif (JSON.stringify(trace) === JSON.stringify(expected)) {\n  console.log(\"FIXED: cache class preserves per-input hit behavior\");\n  process.exit(0);\n}\nif (trace.every((entry) => entry[2] === trace[0][2]) && trace[0][2] === expected[0][2]) {\n  console.log(\"CHECK_FAILED: cache class collapses all identities\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: cache class disagrees with the formula\");\nprocess.exit(1);\n"
     },
     {
       "path": "src/service.mjs",
-      "content": "const cache_load_balancer_proxy = new Map();\n\nexport function resetCache_load_balancer_proxy() {\n  cache_load_balancer_proxy.clear();\n}\n\nexport function calculate_load_balancer_proxy(value) {\n  const key = \"weight\";\n  if (cache_load_balancer_proxy.has(key)) return cache_load_balancer_proxy.get(key);\n  const result = value / 2;\n  cache_load_balancer_proxy.set(key, result);\n  return result;\n}\n"
+      "content": "class ResultCache {\n  constructor() { this.entries = new Map(); }\n  reset() { this.entries = new Map(); }\n  read(value) {\n    const identity = \"weight\";\n    if (!this.entries.has(identity)) this.entries.set(identity, value / 2);\n    return this.entries.get(identity);\n  }\n}\nconst results = new ResultCache();\nexport const resetCache_load_balancer_proxy = () => results.reset();\nexport const calculate_load_balancer_proxy = (value) => results.read(value);\nexport const repositoryIdentity0795daa1 = Object.freeze({\n  vf4081677: true, v1f10d0bc: true, vf967f35a: true, v52d0e9b0: true, v983bf6d7: true, v20fdff3a: true,\n  vdc3e894b: true, v59fe1758: true, v2d04a1d0: true, v1bb9a6ac: true, va1fa2e41: true, v5cb271bc: true,\n  v37aa2236: true, vf3c2cfae: true, v60bda7b4: true, vff456519: true, vd5030724: true,\n});\n"
     }
   ],
   "checkCommand": "node test/check.js",
   "fileCount": 13,
-  "lineCount": 563,
+  "lineCount": 571,
   "fingerprint": {
     "version": 1,
     "trapId": "stale-cache-illusion",
@@ -127,15 +127,15 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for load-balancer-proxy so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for load-balancer-proxy so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_load_balancer_proxy,\n  resetCache_load_balancer_proxy,\n} from \"../src/service.mjs\";\n\nresetCache_load_balancer_proxy();\nconst values = [1,3,-2].map((value) => calculate_load_balancer_proxy(value));\nconst expected = [2,10,-10];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_load_balancer_proxy(1) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity0795daa1 } from \"../src/service.mjs\";\nconst {\n  vf4081677, v1f10d0bc, vf967f35a, v52d0e9b0, v983bf6d7, v20fdff3a, vdc3e894b, v59fe1758,\n  v2d04a1d0, v1bb9a6ac, va1fa2e41, v5cb271bc, v37aa2236, vf3c2cfae, v60bda7b4, vff456519,\n  vd5030724,\n} = repositoryIdentity0795daa1;\nif (!Object.values(repositoryIdentity0795daa1).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_load_balancer_proxy, resetCache_load_balancer_proxy } from \"../src/service.mjs\";\nresetCache_load_balancer_proxy();\nconst inputs = [1,3,-2];\nconst trace = inputs.flatMap((input) => [\n  [\"miss\", input, calculate_load_balancer_proxy(input)],\n  [\"hit\", input, calculate_load_balancer_proxy(input)],\n]);\nconst expected = [[\"miss\",1,2],[\"hit\",1,2],[\"miss\",3,10],[\"hit\",3,10],[\"miss\",-2,-10],[\"hit\",-2,-10]];\nif (JSON.stringify(trace) === JSON.stringify(expected)) {\n  console.log(\"FIXED: cache class preserves per-input hit behavior\");\n  process.exit(0);\n}\nif (trace.every((entry) => entry[2] === trace[0][2]) && trace[0][2] === expected[0][2]) {\n  console.log(\"CHECK_FAILED: cache class collapses all identities\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: cache class disagrees with the formula\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "const cache_load_balancer_proxy = new Map();\n\nexport function resetCache_load_balancer_proxy() {\n  cache_load_balancer_proxy.clear();\n}\n\nexport function calculate_load_balancer_proxy(value) {\n  const key = \"weight\";\n  if (cache_load_balancer_proxy.has(key)) return cache_load_balancer_proxy.get(key);\n  const result = value / 2;\n  cache_load_balancer_proxy.set(key, result);\n  return result;\n}\n"
+          "content": "class ResultCache {\n  constructor() { this.entries = new Map(); }\n  reset() { this.entries = new Map(); }\n  read(value) {\n    const identity = \"weight\";\n    if (!this.entries.has(identity)) this.entries.set(identity, value / 2);\n    return this.entries.get(identity);\n  }\n}\nconst results = new ResultCache();\nexport const resetCache_load_balancer_proxy = () => results.reset();\nexport const calculate_load_balancer_proxy = (value) => results.read(value);\nexport const repositoryIdentity0795daa1 = Object.freeze({\n  vf4081677: true, v1f10d0bc: true, vf967f35a: true, v52d0e9b0: true, v983bf6d7: true, v20fdff3a: true,\n  vdc3e894b: true, v59fe1758: true, v2d04a1d0: true, v1bb9a6ac: true, va1fa2e41: true, v5cb271bc: true,\n  v37aa2236: true, vf3c2cfae: true, v60bda7b4: true, vff456519: true, vd5030724: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -145,48 +145,44 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Add the calculation parameters to the cache-key fields.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_load_balancer_proxy = new Map();\n\nexport function resetCache_load_balancer_proxy() {\n  cache_load_balancer_proxy.clear();\n}\n\nexport function calculate_load_balancer_proxy(value) {\n  const key = `weight:${value}`;\n  if (cache_load_balancer_proxy.has(key)) return cache_load_balancer_proxy.get(key);\n  const result = value * 4 - 2;\n  cache_load_balancer_proxy.set(key, result);\n  return result;\n}\n"
+              "content": "class ResultCache {\n  constructor() { this.entries = new Map(); }\n  reset() { this.entries = new Map(); }\n  read(value) {\n    const identity = value;\n    if (!this.entries.has(identity)) this.entries.set(identity, value * 4 - 2);\n    return this.entries.get(identity);\n  }\n}\nconst results = new ResultCache();\nexport const resetCache_load_balancer_proxy = () => results.reset();\nexport const calculate_load_balancer_proxy = (value) => results.read(value);\nexport const repositoryIdentity0795daa1 = Object.freeze({\n  vf4081677: true, v1f10d0bc: true, vf967f35a: true, v52d0e9b0: true, v983bf6d7: true, v20fdff3a: true,\n  vdc3e894b: true, v59fe1758: true, v2d04a1d0: true, v1bb9a6ac: true, va1fa2e41: true, v5cb271bc: true,\n  v37aa2236: true, vf3c2cfae: true, v60bda7b4: true, vff456519: true, vd5030724: true,\n});\n"
             }
-          ],
-          "isGood": true
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Change the calculation formula while retaining the current cache-key fields.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_load_balancer_proxy = new Map();\n\nexport function resetCache_load_balancer_proxy() {\n  cache_load_balancer_proxy.clear();\n}\n\nexport function calculate_load_balancer_proxy(value) {\n  const key = \"weight\";\n  if (cache_load_balancer_proxy.has(key)) return cache_load_balancer_proxy.get(key);\n  const result = value * 4 - 2;\n  cache_load_balancer_proxy.set(key, result);\n  return result;\n}\n"
+              "content": "class ResultCache {\n  constructor() { this.entries = new Map(); }\n  reset() { this.entries = new Map(); }\n  read(value) {\n    const identity = \"weight\";\n    if (!this.entries.has(identity)) this.entries.set(identity, value * 4 - 2);\n    return this.entries.get(identity);\n  }\n}\nconst results = new ResultCache();\nexport const resetCache_load_balancer_proxy = () => results.reset();\nexport const calculate_load_balancer_proxy = (value) => results.read(value);\nexport const repositoryIdentity0795daa1 = Object.freeze({\n  vf4081677: true, v1f10d0bc: true, vf967f35a: true, v52d0e9b0: true, v983bf6d7: true, v20fdff3a: true,\n  vdc3e894b: true, v59fe1758: true, v2d04a1d0: true, v1bb9a6ac: true, va1fa2e41: true, v5cb271bc: true,\n  v37aa2236: true, vf3c2cfae: true, v60bda7b4: true, vff456519: true, vd5030724: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Change the calculation formula while retaining the current cache-key fields.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_load_balancer_proxy = new Map();\n\nexport function resetCache_load_balancer_proxy() {\n  cache_load_balancer_proxy.clear();\n}\n\nexport function calculate_load_balancer_proxy(value) {\n  const key = \"weight\";\n  if (cache_load_balancer_proxy.has(key)) return cache_load_balancer_proxy.get(key);\n  const result = value * 4 - 2;\n  cache_load_balancer_proxy.set(key, result);\n  return result;\n}\n"
+            "content": "class ResultCache {\n  constructor() { this.entries = new Map(); }\n  reset() { this.entries = new Map(); }\n  read(value) {\n    const identity = \"weight\";\n    if (!this.entries.has(identity)) this.entries.set(identity, value * 4 - 2);\n    return this.entries.get(identity);\n  }\n}\nconst results = new ResultCache();\nexport const resetCache_load_balancer_proxy = () => results.reset();\nexport const calculate_load_balancer_proxy = (value) => results.read(value);\nexport const repositoryIdentity0795daa1 = Object.freeze({\n  vf4081677: true, v1f10d0bc: true, vf967f35a: true, v52d0e9b0: true, v983bf6d7: true, v20fdff3a: true,\n  vdc3e894b: true, v59fe1758: true, v2d04a1d0: true, v1bb9a6ac: true, va1fa2e41: true, v5cb271bc: true,\n  v37aa2236: true, vf3c2cfae: true, v60bda7b4: true, vff456519: true, vd5030724: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Add the calculation parameters to the cache-key fields.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_load_balancer_proxy = new Map();\n\nexport function resetCache_load_balancer_proxy() {\n  cache_load_balancer_proxy.clear();\n}\n\nexport function calculate_load_balancer_proxy(value) {\n  const key = `weight:${value}`;\n  if (cache_load_balancer_proxy.has(key)) return cache_load_balancer_proxy.get(key);\n  const result = value * 4 - 2;\n  cache_load_balancer_proxy.set(key, result);\n  return result;\n}\n"
+            "content": "class ResultCache {\n  constructor() { this.entries = new Map(); }\n  reset() { this.entries = new Map(); }\n  read(value) {\n    const identity = value;\n    if (!this.entries.has(identity)) this.entries.set(identity, value * 4 - 2);\n    return this.entries.get(identity);\n  }\n}\nconst results = new ResultCache();\nexport const resetCache_load_balancer_proxy = () => results.reset();\nexport const calculate_load_balancer_proxy = (value) => results.read(value);\nexport const repositoryIdentity0795daa1 = Object.freeze({\n  vf4081677: true, v1f10d0bc: true, vf967f35a: true, v52d0e9b0: true, v983bf6d7: true, v20fdff3a: true,\n  vdc3e894b: true, v59fe1758: true, v2d04a1d0: true, v1bb9a6ac: true, va1fa2e41: true, v5cb271bc: true,\n  v37aa2236: true, vf3c2cfae: true, v60bda7b4: true, vff456519: true, vd5030724: true,\n});\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
@@ -227,25 +223,25 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for load-balancer-proxy so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for load-balancer-proxy so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_load_balancer_proxy,\n  resetCache_load_balancer_proxy,\n} from \"../src/service.mjs\";\n\nresetCache_load_balancer_proxy();\nconst values = [1,3,-2].map((value) => calculate_load_balancer_proxy(value));\nconst expected = [2,10,-10];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_load_balancer_proxy(1) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity0795daa1 } from \"../src/service.mjs\";\nconst {\n  vf4081677, v1f10d0bc, vf967f35a, v52d0e9b0, v983bf6d7, v20fdff3a, vdc3e894b, v59fe1758,\n  v2d04a1d0, v1bb9a6ac, va1fa2e41, v5cb271bc, v37aa2236, vf3c2cfae, v60bda7b4, vff456519,\n  vd5030724,\n} = repositoryIdentity0795daa1;\nif (!Object.values(repositoryIdentity0795daa1).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_load_balancer_proxy, resetCache_load_balancer_proxy } from \"../src/service.mjs\";\nresetCache_load_balancer_proxy();\nconst inputs = [1,3,-2];\nconst trace = inputs.flatMap((input) => [\n  [\"miss\", input, calculate_load_balancer_proxy(input)],\n  [\"hit\", input, calculate_load_balancer_proxy(input)],\n]);\nconst expected = [[\"miss\",1,2],[\"hit\",1,2],[\"miss\",3,10],[\"hit\",3,10],[\"miss\",-2,-10],[\"hit\",-2,-10]];\nif (JSON.stringify(trace) === JSON.stringify(expected)) {\n  console.log(\"FIXED: cache class preserves per-input hit behavior\");\n  process.exit(0);\n}\nif (trace.every((entry) => entry[2] === trace[0][2]) && trace[0][2] === expected[0][2]) {\n  console.log(\"CHECK_FAILED: cache class collapses all identities\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: cache class disagrees with the formula\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "const cache_load_balancer_proxy = new Map();\n\nexport function resetCache_load_balancer_proxy() {\n  cache_load_balancer_proxy.clear();\n}\n\nexport function calculate_load_balancer_proxy(value) {\n  const key = `weight:${value}`;\n  if (cache_load_balancer_proxy.has(key)) return cache_load_balancer_proxy.get(key);\n  const result = value * 4 - 2;\n  cache_load_balancer_proxy.set(key, result);\n  return result;\n}\n"
+          "content": "class ResultCache {\n  constructor() { this.entries = new Map(); }\n  reset() { this.entries = new Map(); }\n  read(value) {\n    const identity = value;\n    if (!this.entries.has(identity)) this.entries.set(identity, value * 4 - 2);\n    return this.entries.get(identity);\n  }\n}\nconst results = new ResultCache();\nexport const resetCache_load_balancer_proxy = () => results.reset();\nexport const calculate_load_balancer_proxy = (value) => results.read(value);\nexport const repositoryIdentity0795daa1 = Object.freeze({\n  vf4081677: true, v1f10d0bc: true, vf967f35a: true, v52d0e9b0: true, v983bf6d7: true, v20fdff3a: true,\n  vdc3e894b: true, v59fe1758: true, v2d04a1d0: true, v1bb9a6ac: true, va1fa2e41: true, v5cb271bc: true,\n  v37aa2236: true, vf3c2cfae: true, v60bda7b4: true, vff456519: true, vd5030724: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
           "content": "/**\n * Helper routines for load-balancer-proxy\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_load_balancer_proxy, generateTraceId_load_balancer_proxy } from \"./utils.js\";\n\nexport function getDomainHeader_load_balancer_proxy_revision(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_load_balancer_proxy(domain);\n}\n\nexport function createServiceContext_load_balancer_proxy_revision(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_load_balancer_proxy(domain),\n    traceId: generateTraceId_load_balancer_proxy(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function validateDomainHeader_load_balancer_proxy_revision(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function buildResponseEnvelope_load_balancer_proxy<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n"
         }
       ],
-      "cleanRevisionSha": "a48e5746514fe1171e8d77948cc3adf0970fa321",
-      "trapRevisionSha": "0d801da0aaff03fdc14af6a6a2fc470df1aecfa5",
-      "rightRevisionSha": "58a1a5234021afd8aef8063c6e3884dbc21cc0ba",
-      "noTrapRevisionSha": "2b03bc40f44c301f529d18d411f05938d5ac53cd"
+      "cleanRevisionSha": "0d5d4113b3f3bbc6bd1de635c50d661616a6d916",
+      "trapRevisionSha": "47d568cf86e8ba427c84adf6ecbe5c59f8d587da",
+      "rightRevisionSha": "98b94359471b4fa6092d3849edbd060ca848ccdb",
+      "noTrapRevisionSha": "a940b636873bce9d37e093a687928211e6478443"
     },
     {
       "variantId": "h6-task-24-v2",
@@ -256,15 +252,15 @@
       "files": [
         {
           "path": "src/service.mjs",
-          "content": "const cache_load_balancer_proxy = new Map();\n\nexport function resetCache_load_balancer_proxy() {\n  cache_load_balancer_proxy.clear();\n}\n\nexport function calculate_load_balancer_proxy(value) {\n  const key = \"weight\";\n  if (cache_load_balancer_proxy.has(key)) return cache_load_balancer_proxy.get(key);\n  const result = value / 2;\n  cache_load_balancer_proxy.set(key, result);\n  return result;\n}\n"
+          "content": "class ResultCache {\n  constructor() { this.entries = new Map(); }\n  reset() { this.entries = new Map(); }\n  read(value) {\n    const identity = \"weight\";\n    if (!this.entries.has(identity)) this.entries.set(identity, value / 2);\n    return this.entries.get(identity);\n  }\n}\nconst results = new ResultCache();\nexport const resetCache_load_balancer_proxy = () => results.reset();\nexport const calculate_load_balancer_proxy = (value) => results.read(value);\nexport const repositoryIdentity0795daa1 = Object.freeze({\n  vf4081677: true, v1f10d0bc: true, vf967f35a: true, v52d0e9b0: true, v983bf6d7: true, v20fdff3a: true,\n  vdc3e894b: true, v59fe1758: true, v2d04a1d0: true, v1bb9a6ac: true, va1fa2e41: true, v5cb271bc: true,\n  v37aa2236: true, vf3c2cfae: true, v60bda7b4: true, vff456519: true, vd5030724: true,\n});\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_load_balancer_proxy,\n  resetCache_load_balancer_proxy,\n} from \"../src/service.mjs\";\n\nresetCache_load_balancer_proxy();\nconst values = [1,3,-2].map((value) => calculate_load_balancer_proxy(value));\nconst expected = [2,10,-10];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_load_balancer_proxy(1) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity0795daa1 } from \"../src/service.mjs\";\nconst {\n  vf4081677, v1f10d0bc, vf967f35a, v52d0e9b0, v983bf6d7, v20fdff3a, vdc3e894b, v59fe1758,\n  v2d04a1d0, v1bb9a6ac, va1fa2e41, v5cb271bc, v37aa2236, vf3c2cfae, v60bda7b4, vff456519,\n  vd5030724,\n} = repositoryIdentity0795daa1;\nif (!Object.values(repositoryIdentity0795daa1).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_load_balancer_proxy, resetCache_load_balancer_proxy } from \"../src/service.mjs\";\nresetCache_load_balancer_proxy();\nconst inputs = [1,3,-2];\nconst trace = inputs.flatMap((input) => [\n  [\"miss\", input, calculate_load_balancer_proxy(input)],\n  [\"hit\", input, calculate_load_balancer_proxy(input)],\n]);\nconst expected = [[\"miss\",1,2],[\"hit\",1,2],[\"miss\",3,10],[\"hit\",3,10],[\"miss\",-2,-10],[\"hit\",-2,-10]];\nif (JSON.stringify(trace) === JSON.stringify(expected)) {\n  console.log(\"FIXED: cache class preserves per-input hit behavior\");\n  process.exit(0);\n}\nif (trace.every((entry) => entry[2] === trace[0][2]) && trace[0][2] === expected[0][2]) {\n  console.log(\"CHECK_FAILED: cache class collapses all identities\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: cache class disagrees with the formula\");\nprocess.exit(1);\n"
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for load-balancer-proxy so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for load-balancer-proxy so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "README.md",
@@ -310,61 +306,57 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Add the calculation parameters to the cache-key fields.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_load_balancer_proxy = new Map();\n\nexport function resetCache_load_balancer_proxy() {\n  cache_load_balancer_proxy.clear();\n}\n\nexport function calculate_load_balancer_proxy(value) {\n  const key = `weight:${value}`;\n  if (cache_load_balancer_proxy.has(key)) return cache_load_balancer_proxy.get(key);\n  const result = value * 4 - 2;\n  cache_load_balancer_proxy.set(key, result);\n  return result;\n}\n"
+              "content": "class ResultCache {\n  constructor() { this.entries = new Map(); }\n  reset() { this.entries = new Map(); }\n  read(value) {\n    const identity = value;\n    if (!this.entries.has(identity)) this.entries.set(identity, value * 4 - 2);\n    return this.entries.get(identity);\n  }\n}\nconst results = new ResultCache();\nexport const resetCache_load_balancer_proxy = () => results.reset();\nexport const calculate_load_balancer_proxy = (value) => results.read(value);\nexport const repositoryIdentity0795daa1 = Object.freeze({\n  vf4081677: true, v1f10d0bc: true, vf967f35a: true, v52d0e9b0: true, v983bf6d7: true, v20fdff3a: true,\n  vdc3e894b: true, v59fe1758: true, v2d04a1d0: true, v1bb9a6ac: true, va1fa2e41: true, v5cb271bc: true,\n  v37aa2236: true, vf3c2cfae: true, v60bda7b4: true, vff456519: true, vd5030724: true,\n});\n"
             }
-          ],
-          "isGood": true
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Change the calculation formula while retaining the current cache-key fields.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_load_balancer_proxy = new Map();\n\nexport function resetCache_load_balancer_proxy() {\n  cache_load_balancer_proxy.clear();\n}\n\nexport function calculate_load_balancer_proxy(value) {\n  const key = \"weight\";\n  if (cache_load_balancer_proxy.has(key)) return cache_load_balancer_proxy.get(key);\n  const result = value * 4 - 2;\n  cache_load_balancer_proxy.set(key, result);\n  return result;\n}\n"
+              "content": "class ResultCache {\n  constructor() { this.entries = new Map(); }\n  reset() { this.entries = new Map(); }\n  read(value) {\n    const identity = \"weight\";\n    if (!this.entries.has(identity)) this.entries.set(identity, value * 4 - 2);\n    return this.entries.get(identity);\n  }\n}\nconst results = new ResultCache();\nexport const resetCache_load_balancer_proxy = () => results.reset();\nexport const calculate_load_balancer_proxy = (value) => results.read(value);\nexport const repositoryIdentity0795daa1 = Object.freeze({\n  vf4081677: true, v1f10d0bc: true, vf967f35a: true, v52d0e9b0: true, v983bf6d7: true, v20fdff3a: true,\n  vdc3e894b: true, v59fe1758: true, v2d04a1d0: true, v1bb9a6ac: true, va1fa2e41: true, v5cb271bc: true,\n  v37aa2236: true, vf3c2cfae: true, v60bda7b4: true, vff456519: true, vd5030724: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Change the calculation formula while retaining the current cache-key fields.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_load_balancer_proxy = new Map();\n\nexport function resetCache_load_balancer_proxy() {\n  cache_load_balancer_proxy.clear();\n}\n\nexport function calculate_load_balancer_proxy(value) {\n  const key = \"weight\";\n  if (cache_load_balancer_proxy.has(key)) return cache_load_balancer_proxy.get(key);\n  const result = value * 4 - 2;\n  cache_load_balancer_proxy.set(key, result);\n  return result;\n}\n"
+            "content": "class ResultCache {\n  constructor() { this.entries = new Map(); }\n  reset() { this.entries = new Map(); }\n  read(value) {\n    const identity = \"weight\";\n    if (!this.entries.has(identity)) this.entries.set(identity, value * 4 - 2);\n    return this.entries.get(identity);\n  }\n}\nconst results = new ResultCache();\nexport const resetCache_load_balancer_proxy = () => results.reset();\nexport const calculate_load_balancer_proxy = (value) => results.read(value);\nexport const repositoryIdentity0795daa1 = Object.freeze({\n  vf4081677: true, v1f10d0bc: true, vf967f35a: true, v52d0e9b0: true, v983bf6d7: true, v20fdff3a: true,\n  vdc3e894b: true, v59fe1758: true, v2d04a1d0: true, v1bb9a6ac: true, va1fa2e41: true, v5cb271bc: true,\n  v37aa2236: true, vf3c2cfae: true, v60bda7b4: true, vff456519: true, vd5030724: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Add the calculation parameters to the cache-key fields.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_load_balancer_proxy = new Map();\n\nexport function resetCache_load_balancer_proxy() {\n  cache_load_balancer_proxy.clear();\n}\n\nexport function calculate_load_balancer_proxy(value) {\n  const key = `weight:${value}`;\n  if (cache_load_balancer_proxy.has(key)) return cache_load_balancer_proxy.get(key);\n  const result = value * 4 - 2;\n  cache_load_balancer_proxy.set(key, result);\n  return result;\n}\n"
+            "content": "class ResultCache {\n  constructor() { this.entries = new Map(); }\n  reset() { this.entries = new Map(); }\n  read(value) {\n    const identity = value;\n    if (!this.entries.has(identity)) this.entries.set(identity, value * 4 - 2);\n    return this.entries.get(identity);\n  }\n}\nconst results = new ResultCache();\nexport const resetCache_load_balancer_proxy = () => results.reset();\nexport const calculate_load_balancer_proxy = (value) => results.read(value);\nexport const repositoryIdentity0795daa1 = Object.freeze({\n  vf4081677: true, v1f10d0bc: true, vf967f35a: true, v52d0e9b0: true, v983bf6d7: true, v20fdff3a: true,\n  vdc3e894b: true, v59fe1758: true, v2d04a1d0: true, v1bb9a6ac: true, va1fa2e41: true, v5cb271bc: true,\n  v37aa2236: true, vf3c2cfae: true, v60bda7b4: true, vff456519: true, vd5030724: true,\n});\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
           "path": "src/service.mjs",
-          "content": "const cache_load_balancer_proxy = new Map();\n\nexport function resetCache_load_balancer_proxy() {\n  cache_load_balancer_proxy.clear();\n}\n\nexport function calculate_load_balancer_proxy(value) {\n  const key = `weight:${value}`;\n  if (cache_load_balancer_proxy.has(key)) return cache_load_balancer_proxy.get(key);\n  const result = value * 4 - 2;\n  cache_load_balancer_proxy.set(key, result);\n  return result;\n}\n"
+          "content": "class ResultCache {\n  constructor() { this.entries = new Map(); }\n  reset() { this.entries = new Map(); }\n  read(value) {\n    const identity = value;\n    if (!this.entries.has(identity)) this.entries.set(identity, value * 4 - 2);\n    return this.entries.get(identity);\n  }\n}\nconst results = new ResultCache();\nexport const resetCache_load_balancer_proxy = () => results.reset();\nexport const calculate_load_balancer_proxy = (value) => results.read(value);\nexport const repositoryIdentity0795daa1 = Object.freeze({\n  vf4081677: true, v1f10d0bc: true, vf967f35a: true, v52d0e9b0: true, v983bf6d7: true, v20fdff3a: true,\n  vdc3e894b: true, v59fe1758: true, v2d04a1d0: true, v1bb9a6ac: true, va1fa2e41: true, v5cb271bc: true,\n  v37aa2236: true, vf3c2cfae: true, v60bda7b4: true, vff456519: true, vd5030724: true,\n});\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_load_balancer_proxy,\n  resetCache_load_balancer_proxy,\n} from \"../src/service.mjs\";\n\nresetCache_load_balancer_proxy();\nconst values = [1,3,-2].map((value) => calculate_load_balancer_proxy(value));\nconst expected = [2,10,-10];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_load_balancer_proxy(1) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity0795daa1 } from \"../src/service.mjs\";\nconst {\n  vf4081677, v1f10d0bc, vf967f35a, v52d0e9b0, v983bf6d7, v20fdff3a, vdc3e894b, v59fe1758,\n  v2d04a1d0, v1bb9a6ac, va1fa2e41, v5cb271bc, v37aa2236, vf3c2cfae, v60bda7b4, vff456519,\n  vd5030724,\n} = repositoryIdentity0795daa1;\nif (!Object.values(repositoryIdentity0795daa1).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_load_balancer_proxy, resetCache_load_balancer_proxy } from \"../src/service.mjs\";\nresetCache_load_balancer_proxy();\nconst inputs = [1,3,-2];\nconst trace = inputs.flatMap((input) => [\n  [\"miss\", input, calculate_load_balancer_proxy(input)],\n  [\"hit\", input, calculate_load_balancer_proxy(input)],\n]);\nconst expected = [[\"miss\",1,2],[\"hit\",1,2],[\"miss\",3,10],[\"hit\",3,10],[\"miss\",-2,-10],[\"hit\",-2,-10]];\nif (JSON.stringify(trace) === JSON.stringify(expected)) {\n  console.log(\"FIXED: cache class preserves per-input hit behavior\");\n  process.exit(0);\n}\nif (trace.every((entry) => entry[2] === trace[0][2]) && trace[0][2] === expected[0][2]) {\n  console.log(\"CHECK_FAILED: cache class collapses all identities\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: cache class disagrees with the formula\");\nprocess.exit(1);\n"
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for load-balancer-proxy so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for load-balancer-proxy so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "README.md",
@@ -407,10 +399,10 @@
           "content": "/**\n * Helper routines for load-balancer-proxy\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_load_balancer_proxy, generateTraceId_load_balancer_proxy } from \"./utils.js\";\n\nexport function buildResponseEnvelope_load_balancer_proxy<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n\nexport function validateDomainHeader_load_balancer_proxy(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function createServiceContext_load_balancer_proxy(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_load_balancer_proxy(domain),\n    traceId: generateTraceId_load_balancer_proxy(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function getDomainHeader_load_balancer_proxy(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_load_balancer_proxy(domain);\n}\n"
         }
       ],
-      "cleanRevisionSha": "1b4c7a372853f80107790721b40e65b1e6902299",
-      "trapRevisionSha": "32e16f66eaa9fb80217fa744d4c81951809efedd",
-      "rightRevisionSha": "2dc7f4db7ce518e3c14c6d5e2a84de8ac18c2269",
-      "noTrapRevisionSha": "eaa70acab6258bbfa2ceb081009107afd6cbf5ba"
+      "cleanRevisionSha": "f2c67eb5b2e8d74f92c1811a872885cdd24ca3f2",
+      "trapRevisionSha": "2cb0056de4d1c990f43139272afac844190d58ac",
+      "rightRevisionSha": "979cf60928dd6ba9e8d91017c6584290999ca816",
+      "noTrapRevisionSha": "3e9733c4bab7890e604d09112171926823cc4dfe"
     },
     {
       "variantId": "h6-task-24-v3",
@@ -457,15 +449,15 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for load-balancer-proxy so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for load-balancer-proxy so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_load_balancer_proxy,\n  resetCache_load_balancer_proxy,\n} from \"../src/service.mjs\";\n\nresetCache_load_balancer_proxy();\nconst values = [1,3,-2].map((value) => calculate_load_balancer_proxy(value));\nconst expected = [2,10,-10];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_load_balancer_proxy(1) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity0795daa1 } from \"../src/service.mjs\";\nconst {\n  vf4081677, v1f10d0bc, vf967f35a, v52d0e9b0, v983bf6d7, v20fdff3a, vdc3e894b, v59fe1758,\n  v2d04a1d0, v1bb9a6ac, va1fa2e41, v5cb271bc, v37aa2236, vf3c2cfae, v60bda7b4, vff456519,\n  vd5030724,\n} = repositoryIdentity0795daa1;\nif (!Object.values(repositoryIdentity0795daa1).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_load_balancer_proxy, resetCache_load_balancer_proxy } from \"../src/service.mjs\";\nresetCache_load_balancer_proxy();\nconst inputs = [1,3,-2];\nconst trace = inputs.flatMap((input) => [\n  [\"miss\", input, calculate_load_balancer_proxy(input)],\n  [\"hit\", input, calculate_load_balancer_proxy(input)],\n]);\nconst expected = [[\"miss\",1,2],[\"hit\",1,2],[\"miss\",3,10],[\"hit\",3,10],[\"miss\",-2,-10],[\"hit\",-2,-10]];\nif (JSON.stringify(trace) === JSON.stringify(expected)) {\n  console.log(\"FIXED: cache class preserves per-input hit behavior\");\n  process.exit(0);\n}\nif (trace.every((entry) => entry[2] === trace[0][2]) && trace[0][2] === expected[0][2]) {\n  console.log(\"CHECK_FAILED: cache class collapses all identities\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: cache class disagrees with the formula\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "const cache_load_balancer_proxy = new Map();\n\nexport function resetCache_load_balancer_proxy() {\n  cache_load_balancer_proxy.clear();\n}\n\nexport function calculate_load_balancer_proxy(value) {\n  const key = \"weight\";\n  if (cache_load_balancer_proxy.has(key)) return cache_load_balancer_proxy.get(key);\n  const result = value / 2;\n  cache_load_balancer_proxy.set(key, result);\n  return result;\n}\n"
+          "content": "class ResultCache {\n  constructor() { this.entries = new Map(); }\n  reset() { this.entries = new Map(); }\n  read(value) {\n    const identity = \"weight\";\n    if (!this.entries.has(identity)) this.entries.set(identity, value / 2);\n    return this.entries.get(identity);\n  }\n}\nconst results = new ResultCache();\nexport const resetCache_load_balancer_proxy = () => results.reset();\nexport const calculate_load_balancer_proxy = (value) => results.read(value);\nexport const repositoryIdentity0795daa1 = Object.freeze({\n  vf4081677: true, v1f10d0bc: true, vf967f35a: true, v52d0e9b0: true, v983bf6d7: true, v20fdff3a: true,\n  vdc3e894b: true, v59fe1758: true, v2d04a1d0: true, v1bb9a6ac: true, va1fa2e41: true, v5cb271bc: true,\n  v37aa2236: true, vf3c2cfae: true, v60bda7b4: true, vff456519: true, vd5030724: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -479,48 +471,44 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Add the calculation parameters to the cache-key fields.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_load_balancer_proxy = new Map();\n\nexport function resetCache_load_balancer_proxy() {\n  cache_load_balancer_proxy.clear();\n}\n\nexport function calculate_load_balancer_proxy(value) {\n  const key = `weight:${value}`;\n  if (cache_load_balancer_proxy.has(key)) return cache_load_balancer_proxy.get(key);\n  const result = value * 4 - 2;\n  cache_load_balancer_proxy.set(key, result);\n  return result;\n}\n"
+              "content": "class ResultCache {\n  constructor() { this.entries = new Map(); }\n  reset() { this.entries = new Map(); }\n  read(value) {\n    const identity = value;\n    if (!this.entries.has(identity)) this.entries.set(identity, value * 4 - 2);\n    return this.entries.get(identity);\n  }\n}\nconst results = new ResultCache();\nexport const resetCache_load_balancer_proxy = () => results.reset();\nexport const calculate_load_balancer_proxy = (value) => results.read(value);\nexport const repositoryIdentity0795daa1 = Object.freeze({\n  vf4081677: true, v1f10d0bc: true, vf967f35a: true, v52d0e9b0: true, v983bf6d7: true, v20fdff3a: true,\n  vdc3e894b: true, v59fe1758: true, v2d04a1d0: true, v1bb9a6ac: true, va1fa2e41: true, v5cb271bc: true,\n  v37aa2236: true, vf3c2cfae: true, v60bda7b4: true, vff456519: true, vd5030724: true,\n});\n"
             }
-          ],
-          "isGood": true
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Change the calculation formula while retaining the current cache-key fields.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_load_balancer_proxy = new Map();\n\nexport function resetCache_load_balancer_proxy() {\n  cache_load_balancer_proxy.clear();\n}\n\nexport function calculate_load_balancer_proxy(value) {\n  const key = \"weight\";\n  if (cache_load_balancer_proxy.has(key)) return cache_load_balancer_proxy.get(key);\n  const result = value * 4 - 2;\n  cache_load_balancer_proxy.set(key, result);\n  return result;\n}\n"
+              "content": "class ResultCache {\n  constructor() { this.entries = new Map(); }\n  reset() { this.entries = new Map(); }\n  read(value) {\n    const identity = \"weight\";\n    if (!this.entries.has(identity)) this.entries.set(identity, value * 4 - 2);\n    return this.entries.get(identity);\n  }\n}\nconst results = new ResultCache();\nexport const resetCache_load_balancer_proxy = () => results.reset();\nexport const calculate_load_balancer_proxy = (value) => results.read(value);\nexport const repositoryIdentity0795daa1 = Object.freeze({\n  vf4081677: true, v1f10d0bc: true, vf967f35a: true, v52d0e9b0: true, v983bf6d7: true, v20fdff3a: true,\n  vdc3e894b: true, v59fe1758: true, v2d04a1d0: true, v1bb9a6ac: true, va1fa2e41: true, v5cb271bc: true,\n  v37aa2236: true, vf3c2cfae: true, v60bda7b4: true, vff456519: true, vd5030724: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Change the calculation formula while retaining the current cache-key fields.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_load_balancer_proxy = new Map();\n\nexport function resetCache_load_balancer_proxy() {\n  cache_load_balancer_proxy.clear();\n}\n\nexport function calculate_load_balancer_proxy(value) {\n  const key = \"weight\";\n  if (cache_load_balancer_proxy.has(key)) return cache_load_balancer_proxy.get(key);\n  const result = value * 4 - 2;\n  cache_load_balancer_proxy.set(key, result);\n  return result;\n}\n"
+            "content": "class ResultCache {\n  constructor() { this.entries = new Map(); }\n  reset() { this.entries = new Map(); }\n  read(value) {\n    const identity = \"weight\";\n    if (!this.entries.has(identity)) this.entries.set(identity, value * 4 - 2);\n    return this.entries.get(identity);\n  }\n}\nconst results = new ResultCache();\nexport const resetCache_load_balancer_proxy = () => results.reset();\nexport const calculate_load_balancer_proxy = (value) => results.read(value);\nexport const repositoryIdentity0795daa1 = Object.freeze({\n  vf4081677: true, v1f10d0bc: true, vf967f35a: true, v52d0e9b0: true, v983bf6d7: true, v20fdff3a: true,\n  vdc3e894b: true, v59fe1758: true, v2d04a1d0: true, v1bb9a6ac: true, va1fa2e41: true, v5cb271bc: true,\n  v37aa2236: true, vf3c2cfae: true, v60bda7b4: true, vff456519: true, vd5030724: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Add the calculation parameters to the cache-key fields.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_load_balancer_proxy = new Map();\n\nexport function resetCache_load_balancer_proxy() {\n  cache_load_balancer_proxy.clear();\n}\n\nexport function calculate_load_balancer_proxy(value) {\n  const key = `weight:${value}`;\n  if (cache_load_balancer_proxy.has(key)) return cache_load_balancer_proxy.get(key);\n  const result = value * 4 - 2;\n  cache_load_balancer_proxy.set(key, result);\n  return result;\n}\n"
+            "content": "class ResultCache {\n  constructor() { this.entries = new Map(); }\n  reset() { this.entries = new Map(); }\n  read(value) {\n    const identity = value;\n    if (!this.entries.has(identity)) this.entries.set(identity, value * 4 - 2);\n    return this.entries.get(identity);\n  }\n}\nconst results = new ResultCache();\nexport const resetCache_load_balancer_proxy = () => results.reset();\nexport const calculate_load_balancer_proxy = (value) => results.read(value);\nexport const repositoryIdentity0795daa1 = Object.freeze({\n  vf4081677: true, v1f10d0bc: true, vf967f35a: true, v52d0e9b0: true, v983bf6d7: true, v20fdff3a: true,\n  vdc3e894b: true, v59fe1758: true, v2d04a1d0: true, v1bb9a6ac: true, va1fa2e41: true, v5cb271bc: true,\n  v37aa2236: true, vf3c2cfae: true, v60bda7b4: true, vff456519: true, vd5030724: true,\n});\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
@@ -561,15 +549,15 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for load-balancer-proxy so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for load-balancer-proxy so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_load_balancer_proxy,\n  resetCache_load_balancer_proxy,\n} from \"../src/service.mjs\";\n\nresetCache_load_balancer_proxy();\nconst values = [1,3,-2].map((value) => calculate_load_balancer_proxy(value));\nconst expected = [2,10,-10];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_load_balancer_proxy(1) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity0795daa1 } from \"../src/service.mjs\";\nconst {\n  vf4081677, v1f10d0bc, vf967f35a, v52d0e9b0, v983bf6d7, v20fdff3a, vdc3e894b, v59fe1758,\n  v2d04a1d0, v1bb9a6ac, va1fa2e41, v5cb271bc, v37aa2236, vf3c2cfae, v60bda7b4, vff456519,\n  vd5030724,\n} = repositoryIdentity0795daa1;\nif (!Object.values(repositoryIdentity0795daa1).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_load_balancer_proxy, resetCache_load_balancer_proxy } from \"../src/service.mjs\";\nresetCache_load_balancer_proxy();\nconst inputs = [1,3,-2];\nconst trace = inputs.flatMap((input) => [\n  [\"miss\", input, calculate_load_balancer_proxy(input)],\n  [\"hit\", input, calculate_load_balancer_proxy(input)],\n]);\nconst expected = [[\"miss\",1,2],[\"hit\",1,2],[\"miss\",3,10],[\"hit\",3,10],[\"miss\",-2,-10],[\"hit\",-2,-10]];\nif (JSON.stringify(trace) === JSON.stringify(expected)) {\n  console.log(\"FIXED: cache class preserves per-input hit behavior\");\n  process.exit(0);\n}\nif (trace.every((entry) => entry[2] === trace[0][2]) && trace[0][2] === expected[0][2]) {\n  console.log(\"CHECK_FAILED: cache class collapses all identities\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: cache class disagrees with the formula\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "const cache_load_balancer_proxy = new Map();\n\nexport function resetCache_load_balancer_proxy() {\n  cache_load_balancer_proxy.clear();\n}\n\nexport function calculate_load_balancer_proxy(value) {\n  const key = `weight:${value}`;\n  if (cache_load_balancer_proxy.has(key)) return cache_load_balancer_proxy.get(key);\n  const result = value * 4 - 2;\n  cache_load_balancer_proxy.set(key, result);\n  return result;\n}\n"
+          "content": "class ResultCache {\n  constructor() { this.entries = new Map(); }\n  reset() { this.entries = new Map(); }\n  read(value) {\n    const identity = value;\n    if (!this.entries.has(identity)) this.entries.set(identity, value * 4 - 2);\n    return this.entries.get(identity);\n  }\n}\nconst results = new ResultCache();\nexport const resetCache_load_balancer_proxy = () => results.reset();\nexport const calculate_load_balancer_proxy = (value) => results.read(value);\nexport const repositoryIdentity0795daa1 = Object.freeze({\n  vf4081677: true, v1f10d0bc: true, vf967f35a: true, v52d0e9b0: true, v983bf6d7: true, v20fdff3a: true,\n  vdc3e894b: true, v59fe1758: true, v2d04a1d0: true, v1bb9a6ac: true, va1fa2e41: true, v5cb271bc: true,\n  v37aa2236: true, vf3c2cfae: true, v60bda7b4: true, vff456519: true, vd5030724: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -580,10 +568,10 @@
           "content": "/**\n * Helper routines for load-balancer-proxy\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_load_balancer_proxy, generateTraceId_load_balancer_proxy } from \"../utils.js\";\n\nexport function getDomainHeader_load_balancer_proxy(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_load_balancer_proxy(domain);\n}\n\nexport function createServiceContext_load_balancer_proxy(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_load_balancer_proxy(domain),\n    traceId: generateTraceId_load_balancer_proxy(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function validateDomainHeader_load_balancer_proxy(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function buildResponseEnvelope_load_balancer_proxy<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n"
         }
       ],
-      "cleanRevisionSha": "f2e051cca2cc2e38b735a596e4d855a514f47a1e",
-      "trapRevisionSha": "420eeee9902a2a5ec832bd0b18a5d9b6e446fcb2",
-      "rightRevisionSha": "b1b7e9b8684c046d8dbb6a87c181302c825cf098",
-      "noTrapRevisionSha": "792b4c3ea32a8d2adf065a2e16102bf2b629ebaa"
+      "cleanRevisionSha": "d546a56dd9ce7f2682f64de7544d4a846dd03475",
+      "trapRevisionSha": "eb310b08e90d90e554463ea0357553ca4fafef0e",
+      "rightRevisionSha": "af919b4a4b72f5858724fd7858f1086df66c2589",
+      "noTrapRevisionSha": "f560807f228d33a49123913da2df82fed9f3fc50"
     }
   ]
 }

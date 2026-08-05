@@ -1,13 +1,17 @@
 {
-  "version": 2,
+  "version": 10,
   "name": "H6 Failure Gate Decision Rule",
+  "preregistration": {
+    "path": "docs/research/failure-gate/preregistration.md",
+    "sha256": "ecbfe3c047b90bdc115c7654bd22676b405f06ec58e5afbe6a8b0ac2c66e1e19"
+  },
   "analysisPopulation": {
     "datasetVersion": 1,
+    "datasetInventoryHash": "687615b5f7ff46977d268a03e30018070f7d0bec9d01e04da2d0c723e59a5b27",
     "split": "main",
     "taskCount": 18,
-    "variantsPerTask": 3,
     "seedsPerModelProfile": 5,
-    "modelProfileCount": 2,
+    "modelProfileCount": 1,
     "unit": "task",
     "pairingKey": [
       "taskId",
@@ -70,6 +74,7 @@
       "candidateArm": "PRE_ACTION_FAILURE",
       "metric": "repeatedFailure",
       "minimumRelativeRiskReduction": 0.3,
+      "minimumAbsoluteRepeatedFailureBenefit": 0.05,
       "requireRepeatedFailureBenefitIntervalLowerStrictlyAbove": 0,
       "requireHolmAdjustedPStrictlyBelow": 0.05,
       "zeroBaselineDecision": "NOT_ESTIMABLE"
@@ -94,6 +99,12 @@
     "sourceSplit": "pilot",
     "increaseIndependentTasksIfBelowThreshold": true
   },
+  "trapAudit": {
+    "minimumTrappedRate": 0.3,
+    "minimumNonFixedRate": 0.5,
+    "maximumInvalidRows": 0,
+    "requireCompleteRows": true
+  },
   "timidity": {
     "baselineArm": "NO_MEMORY",
     "candidateArm": "PRE_ACTION_FAILURE",
@@ -107,9 +118,11 @@
   "completeness": {
     "expectedRowsFormula": "taskCount*variantsPerTask*seedsPerModelProfile*modelProfileCount*armCount",
     "primaryArmCount": 5,
-    "hostFaultRetriesAfterFirstTry": 2,
+    "hostFaultRetriesAfterFirstTry": 5,
     "rerunTaskResults": false,
     "invalidReasons": [
+      "CORPUS_INVALID",
+      "CORE_REPO_DIR_MISMATCH",
       "START_DRIFT",
       "TRACE_GAP",
       "VAGUE_CHECK",

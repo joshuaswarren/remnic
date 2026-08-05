@@ -801,6 +801,8 @@ export {
   runRepeatedFailureSuite,
   runRepeatedFailureCliCommand,
   replayRepeatedFailureStatistics,
+  writeRepeatedFailurePaperArtifacts,
+  runRepeatedFailurePaperReportCliCommand,
 } from "./coding-graph/index.js";
 export type {
   RegressionMetricKey as CodingGraphRegressionKey,

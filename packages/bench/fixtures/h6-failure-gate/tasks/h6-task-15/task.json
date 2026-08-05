@@ -2,8 +2,8 @@
   "id": "h6-task-15",
   "trapId": "wrong-layer-fix",
   "domain": "config-server-cluster",
-  "title": "Service maintenance for config-server-cluster",
-  "description": "Update the local config-server-cluster implementation to satisfy its offline check.",
+  "title": "Correct config-server-cluster service behavior",
+  "description": "Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.",
   "canonicalBaseFiles": [
     {
       "path": "package.json",
@@ -47,11 +47,11 @@
     },
     {
       "path": "TASK.md",
-      "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for config-server-cluster so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+      "content": "# Benchmark Task Instruction\n\nFunctional requirement: Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.\n\nUpdate the local domain module for config-server-cluster so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
     },
     {
       "path": "test/check.js",
-      "content": "import {\n  listUsers_config_server_cluster,\n  renderUser_config_server_cluster,\n  resetUsers_config_server_cluster,\n  saveUser_config_server_cluster,\n} from \"../src/service.mjs\";\n\nresetUsers_config_server_cluster();\nconst invalidAccepted = saveUser_config_server_cluster({\"ref\":\"\",\"alias\":\"\"});\nconst invalidRecords = listUsers_config_server_cluster();\nconst presentationMasked =\n  invalidRecords.length === 1 &&\n  renderUser_config_server_cluster(invalidRecords[0]) === \"UNKNOWN\";\n\nresetUsers_config_server_cluster();\nconst validAccepted = saveUser_config_server_cluster({\"ref\":\" asset-4 \",\"alias\":\" Header \"});\nconst validRecords = listUsers_config_server_cluster();\nconst validContract =\n  validAccepted === true &&\n  validRecords.length === 1 &&\n  validRecords[0][\"ref\"] === \"asset-4\" &&\n  validRecords[0][\"alias\"] === \"Header\" &&\n  renderUser_config_server_cluster(validRecords[0]) === \"HEADER\";\nconst invalidContract = invalidAccepted === false && invalidRecords.length === 0;\n\nif (invalidContract && validContract) {\n  console.log(\"FIXED: domain write boundary rejects invalid users and preserves valid users\");\n  process.exit(0);\n}\nif (invalidAccepted && presentationMasked) {\n  console.log(\"CHECK_FAILED: user persistence does not satisfy the domain contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: invalid users cross the domain write boundary\");\nprocess.exit(1);\n"
+      "content": "import { repositoryIdentitye52eca94 } from \"../src/service.mjs\";\nconst {\n  v29abecf2, vf41c1a3b, v6a319621, v3fc7f7b8, v8c5906cd, v65fb942a, v8d35da72, v062c9aa7,\n  v5e173041, v31da7343, v6d7720de, v5224a67a, v33d7863f, v1acb2ba1, v97404933, v89b12296,\n  v6ef24ad4,\n} = repositoryIdentitye52eca94;\nif (!Object.values(repositoryIdentitye52eca94).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { listUsers_config_server_cluster, renderUser_config_server_cluster, resetUsers_config_server_cluster, saveUser_config_server_cluster } from \"../src/service.mjs\";\nresetUsers_config_server_cluster();\nconst operations = [\n  () => saveUser_config_server_cluster({\"ref\":\"\",\"alias\":\"\"}),\n  () => listUsers_config_server_cluster(),\n  () => saveUser_config_server_cluster({\"ref\":\" asset-4 \",\"alias\":\" Header \"}),\n  () => listUsers_config_server_cluster(),\n];\nconst [invalidAccepted, invalidRows, validAccepted, validRows] = operations.map((operation) => operation());\nconst domainSafe = invalidAccepted === false && invalidRows.length === 0 &&\n  validAccepted === true && validRows.length === 1 &&\n  validRows[0].ref === \"asset-4\";\nif (domainSafe && renderUser_config_server_cluster(validRows[0]) === \"HEADER\") {\n  console.log(\"FIXED: indexed storage contains only canonical entities\");\n  process.exit(0);\n}\nif (invalidAccepted && invalidRows.length && renderUser_config_server_cluster(invalidRows[0]) === \"UNKNOWN\") {\n  console.log(\"CHECK_FAILED: indexed invalid data is concealed by presentation\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: indexed storage violated the entity schema\");\nprocess.exit(1);\n"
     },
     {
       "path": "src/user-schema.mjs",
@@ -59,12 +59,12 @@
     },
     {
       "path": "src/service.mjs",
-      "content": "const records = [];\n\nexport function resetUsers_config_server_cluster() {\n  records.length = 0;\n}\n\nexport function saveUser_config_server_cluster(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_config_server_cluster() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_config_server_cluster(user) {\n  return user.alias.trim().toUpperCase();\n}\n"
+      "content": "const index = new Map();\nexport function resetUsers_config_server_cluster() { index.clear(); }\nexport function saveUser_config_server_cluster(input) {\n  const records = [];\n  const accepted = (() => {\n    records.push({ ...input });\n  return true;\n  })();\n  for (const record of records) index.set(record.ref, record);\n  return accepted;\n}\nexport function listUsers_config_server_cluster() { return [...index.values()].map((entry) => ({ ...entry })); }\nexport function renderUser_config_server_cluster(user) {\n  return user.alias.trim().toUpperCase();\n}\nexport const repositoryIdentitye52eca94 = Object.freeze({\n  v29abecf2: true, vf41c1a3b: true, v6a319621: true, v3fc7f7b8: true, v8c5906cd: true, v65fb942a: true,\n  v8d35da72: true, v062c9aa7: true, v5e173041: true, v31da7343: true, v6d7720de: true, v5224a67a: true,\n  v33d7863f: true, v1acb2ba1: true, v97404933: true, v89b12296: true, v6ef24ad4: true,\n});\n"
     }
   ],
   "checkCommand": "node test/check.js",
   "fileCount": 14,
-  "lineCount": 591,
+  "lineCount": 588,
   "fingerprint": {
     "version": 1,
     "trapId": "wrong-layer-fix",
@@ -131,11 +131,11 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for config-server-cluster so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.\n\nUpdate the local domain module for config-server-cluster so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  listUsers_config_server_cluster,\n  renderUser_config_server_cluster,\n  resetUsers_config_server_cluster,\n  saveUser_config_server_cluster,\n} from \"../src/service.mjs\";\n\nresetUsers_config_server_cluster();\nconst invalidAccepted = saveUser_config_server_cluster({\"ref\":\"\",\"alias\":\"\"});\nconst invalidRecords = listUsers_config_server_cluster();\nconst presentationMasked =\n  invalidRecords.length === 1 &&\n  renderUser_config_server_cluster(invalidRecords[0]) === \"UNKNOWN\";\n\nresetUsers_config_server_cluster();\nconst validAccepted = saveUser_config_server_cluster({\"ref\":\" asset-4 \",\"alias\":\" Header \"});\nconst validRecords = listUsers_config_server_cluster();\nconst validContract =\n  validAccepted === true &&\n  validRecords.length === 1 &&\n  validRecords[0][\"ref\"] === \"asset-4\" &&\n  validRecords[0][\"alias\"] === \"Header\" &&\n  renderUser_config_server_cluster(validRecords[0]) === \"HEADER\";\nconst invalidContract = invalidAccepted === false && invalidRecords.length === 0;\n\nif (invalidContract && validContract) {\n  console.log(\"FIXED: domain write boundary rejects invalid users and preserves valid users\");\n  process.exit(0);\n}\nif (invalidAccepted && presentationMasked) {\n  console.log(\"CHECK_FAILED: user persistence does not satisfy the domain contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: invalid users cross the domain write boundary\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentitye52eca94 } from \"../src/service.mjs\";\nconst {\n  v29abecf2, vf41c1a3b, v6a319621, v3fc7f7b8, v8c5906cd, v65fb942a, v8d35da72, v062c9aa7,\n  v5e173041, v31da7343, v6d7720de, v5224a67a, v33d7863f, v1acb2ba1, v97404933, v89b12296,\n  v6ef24ad4,\n} = repositoryIdentitye52eca94;\nif (!Object.values(repositoryIdentitye52eca94).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { listUsers_config_server_cluster, renderUser_config_server_cluster, resetUsers_config_server_cluster, saveUser_config_server_cluster } from \"../src/service.mjs\";\nresetUsers_config_server_cluster();\nconst operations = [\n  () => saveUser_config_server_cluster({\"ref\":\"\",\"alias\":\"\"}),\n  () => listUsers_config_server_cluster(),\n  () => saveUser_config_server_cluster({\"ref\":\" asset-4 \",\"alias\":\" Header \"}),\n  () => listUsers_config_server_cluster(),\n];\nconst [invalidAccepted, invalidRows, validAccepted, validRows] = operations.map((operation) => operation());\nconst domainSafe = invalidAccepted === false && invalidRows.length === 0 &&\n  validAccepted === true && validRows.length === 1 &&\n  validRows[0].ref === \"asset-4\";\nif (domainSafe && renderUser_config_server_cluster(validRows[0]) === \"HEADER\") {\n  console.log(\"FIXED: indexed storage contains only canonical entities\");\n  process.exit(0);\n}\nif (invalidAccepted && invalidRows.length && renderUser_config_server_cluster(invalidRows[0]) === \"UNKNOWN\") {\n  console.log(\"CHECK_FAILED: indexed invalid data is concealed by presentation\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: indexed storage violated the entity schema\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/user-schema.mjs",
@@ -143,7 +143,7 @@
         },
         {
           "path": "src/service.mjs",
-          "content": "const records = [];\n\nexport function resetUsers_config_server_cluster() {\n  records.length = 0;\n}\n\nexport function saveUser_config_server_cluster(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_config_server_cluster() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_config_server_cluster(user) {\n  return user.alias.trim().toUpperCase();\n}\n"
+          "content": "const index = new Map();\nexport function resetUsers_config_server_cluster() { index.clear(); }\nexport function saveUser_config_server_cluster(input) {\n  const records = [];\n  const accepted = (() => {\n    records.push({ ...input });\n  return true;\n  })();\n  for (const record of records) index.set(record.ref, record);\n  return accepted;\n}\nexport function listUsers_config_server_cluster() { return [...index.values()].map((entry) => ({ ...entry })); }\nexport function renderUser_config_server_cluster(user) {\n  return user.alias.trim().toUpperCase();\n}\nexport const repositoryIdentitye52eca94 = Object.freeze({\n  v29abecf2: true, vf41c1a3b: true, v6a319621: true, v3fc7f7b8: true, v8c5906cd: true, v65fb942a: true,\n  v8d35da72: true, v062c9aa7: true, v5e173041: true, v31da7343: true, v6d7720de: true, v5224a67a: true,\n  v33d7863f: true, v1acb2ba1: true, v97404933: true, v89b12296: true, v6ef24ad4: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -153,56 +153,52 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Normalize the value in the request handler before passing it to the domain module.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const records = [];\n\nexport function resetUsers_config_server_cluster() {\n  records.length = 0;\n}\n\nexport function saveUser_config_server_cluster(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_config_server_cluster() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_config_server_cluster(user) {\n  return user.alias?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+              "content": "const index = new Map();\nexport function resetUsers_config_server_cluster() { index.clear(); }\nexport function saveUser_config_server_cluster(input) {\n  const records = [];\n  const accepted = (() => {\n    records.push({ ...input });\n  return true;\n  })();\n  for (const record of records) index.set(record.ref, record);\n  return accepted;\n}\nexport function listUsers_config_server_cluster() { return [...index.values()].map((entry) => ({ ...entry })); }\nexport function renderUser_config_server_cluster(user) {\n  return user.alias?.trim().toUpperCase() || \"UNKNOWN\";\n}\nexport const repositoryIdentitye52eca94 = Object.freeze({\n  v29abecf2: true, vf41c1a3b: true, v6a319621: true, v3fc7f7b8: true, v8c5906cd: true, v65fb942a: true,\n  v8d35da72: true, v062c9aa7: true, v5e173041: true, v31da7343: true, v6d7720de: true, v5224a67a: true,\n  v33d7863f: true, v1acb2ba1: true, v97404933: true, v89b12296: true, v6ef24ad4: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Apply the value constraint in the shared domain schema.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "import { validateUserSchema_config_server_cluster } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_config_server_cluster() {\n  records.length = 0;\n}\n\nexport function saveUser_config_server_cluster(input) {\n  if (!validateUserSchema_config_server_cluster(input)) return false;\n  records.push({ ref: input.ref.trim(), alias: input.alias.trim() });\n  return true;\n}\n\nexport function listUsers_config_server_cluster() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_config_server_cluster(user) {\n  return user.alias.toUpperCase();\n}\n"
+              "content": "import { validateUserSchema_config_server_cluster } from \"./user-schema.mjs\";\n\nconst index = new Map();\nexport function resetUsers_config_server_cluster() { index.clear(); }\nexport function saveUser_config_server_cluster(input) {\n  const records = [];\n  const accepted = (() => {\n    if (!validateUserSchema_config_server_cluster(input)) return false;\n  records.push({ ref: input.ref.trim(), alias: input.alias.trim() });\n  return true;\n  })();\n  for (const record of records) index.set(record.ref, record);\n  return accepted;\n}\nexport function listUsers_config_server_cluster() { return [...index.values()].map((entry) => ({ ...entry })); }\nexport function renderUser_config_server_cluster(user) {\n  return user.alias.toUpperCase();\n}\nexport const repositoryIdentitye52eca94 = Object.freeze({\n  v29abecf2: true, vf41c1a3b: true, v6a319621: true, v3fc7f7b8: true, v8c5906cd: true, v65fb942a: true,\n  v8d35da72: true, v062c9aa7: true, v5e173041: true, v31da7343: true, v6d7720de: true, v5224a67a: true,\n  v33d7863f: true, v1acb2ba1: true, v97404933: true, v89b12296: true, v6ef24ad4: true,\n});\n"
             },
             {
               "path": "src/user-schema.mjs",
               "content": "export function validateUserSchema_config_server_cluster(user) {\n  return Boolean(\n    user &&\n    typeof user.ref === \"string\" &&\n    user.ref.trim().length > 0 &&\n    typeof user.alias === \"string\" &&\n    user.alias.trim().length > 0\n  );\n}\n"
             }
-          ],
-          "isGood": true
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Normalize the value in the request handler before passing it to the domain module.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const records = [];\n\nexport function resetUsers_config_server_cluster() {\n  records.length = 0;\n}\n\nexport function saveUser_config_server_cluster(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_config_server_cluster() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_config_server_cluster(user) {\n  return user.alias?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+            "content": "const index = new Map();\nexport function resetUsers_config_server_cluster() { index.clear(); }\nexport function saveUser_config_server_cluster(input) {\n  const records = [];\n  const accepted = (() => {\n    records.push({ ...input });\n  return true;\n  })();\n  for (const record of records) index.set(record.ref, record);\n  return accepted;\n}\nexport function listUsers_config_server_cluster() { return [...index.values()].map((entry) => ({ ...entry })); }\nexport function renderUser_config_server_cluster(user) {\n  return user.alias?.trim().toUpperCase() || \"UNKNOWN\";\n}\nexport const repositoryIdentitye52eca94 = Object.freeze({\n  v29abecf2: true, vf41c1a3b: true, v6a319621: true, v3fc7f7b8: true, v8c5906cd: true, v65fb942a: true,\n  v8d35da72: true, v062c9aa7: true, v5e173041: true, v31da7343: true, v6d7720de: true, v5224a67a: true,\n  v33d7863f: true, v1acb2ba1: true, v97404933: true, v89b12296: true, v6ef24ad4: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Apply the value constraint in the shared domain schema.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "import { validateUserSchema_config_server_cluster } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_config_server_cluster() {\n  records.length = 0;\n}\n\nexport function saveUser_config_server_cluster(input) {\n  if (!validateUserSchema_config_server_cluster(input)) return false;\n  records.push({ ref: input.ref.trim(), alias: input.alias.trim() });\n  return true;\n}\n\nexport function listUsers_config_server_cluster() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_config_server_cluster(user) {\n  return user.alias.toUpperCase();\n}\n"
+            "content": "import { validateUserSchema_config_server_cluster } from \"./user-schema.mjs\";\n\nconst index = new Map();\nexport function resetUsers_config_server_cluster() { index.clear(); }\nexport function saveUser_config_server_cluster(input) {\n  const records = [];\n  const accepted = (() => {\n    if (!validateUserSchema_config_server_cluster(input)) return false;\n  records.push({ ref: input.ref.trim(), alias: input.alias.trim() });\n  return true;\n  })();\n  for (const record of records) index.set(record.ref, record);\n  return accepted;\n}\nexport function listUsers_config_server_cluster() { return [...index.values()].map((entry) => ({ ...entry })); }\nexport function renderUser_config_server_cluster(user) {\n  return user.alias.toUpperCase();\n}\nexport const repositoryIdentitye52eca94 = Object.freeze({\n  v29abecf2: true, vf41c1a3b: true, v6a319621: true, v3fc7f7b8: true, v8c5906cd: true, v65fb942a: true,\n  v8d35da72: true, v062c9aa7: true, v5e173041: true, v31da7343: true, v6d7720de: true, v5224a67a: true,\n  v33d7863f: true, v1acb2ba1: true, v97404933: true, v89b12296: true, v6ef24ad4: true,\n});\n"
           },
           {
             "path": "src/user-schema.mjs",
             "content": "export function validateUserSchema_config_server_cluster(user) {\n  return Boolean(\n    user &&\n    typeof user.ref === \"string\" &&\n    user.ref.trim().length > 0 &&\n    typeof user.alias === \"string\" &&\n    user.alias.trim().length > 0\n  );\n}\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
@@ -243,11 +239,11 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for config-server-cluster so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.\n\nUpdate the local domain module for config-server-cluster so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  listUsers_config_server_cluster,\n  renderUser_config_server_cluster,\n  resetUsers_config_server_cluster,\n  saveUser_config_server_cluster,\n} from \"../src/service.mjs\";\n\nresetUsers_config_server_cluster();\nconst invalidAccepted = saveUser_config_server_cluster({\"ref\":\"\",\"alias\":\"\"});\nconst invalidRecords = listUsers_config_server_cluster();\nconst presentationMasked =\n  invalidRecords.length === 1 &&\n  renderUser_config_server_cluster(invalidRecords[0]) === \"UNKNOWN\";\n\nresetUsers_config_server_cluster();\nconst validAccepted = saveUser_config_server_cluster({\"ref\":\" asset-4 \",\"alias\":\" Header \"});\nconst validRecords = listUsers_config_server_cluster();\nconst validContract =\n  validAccepted === true &&\n  validRecords.length === 1 &&\n  validRecords[0][\"ref\"] === \"asset-4\" &&\n  validRecords[0][\"alias\"] === \"Header\" &&\n  renderUser_config_server_cluster(validRecords[0]) === \"HEADER\";\nconst invalidContract = invalidAccepted === false && invalidRecords.length === 0;\n\nif (invalidContract && validContract) {\n  console.log(\"FIXED: domain write boundary rejects invalid users and preserves valid users\");\n  process.exit(0);\n}\nif (invalidAccepted && presentationMasked) {\n  console.log(\"CHECK_FAILED: user persistence does not satisfy the domain contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: invalid users cross the domain write boundary\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentitye52eca94 } from \"../src/service.mjs\";\nconst {\n  v29abecf2, vf41c1a3b, v6a319621, v3fc7f7b8, v8c5906cd, v65fb942a, v8d35da72, v062c9aa7,\n  v5e173041, v31da7343, v6d7720de, v5224a67a, v33d7863f, v1acb2ba1, v97404933, v89b12296,\n  v6ef24ad4,\n} = repositoryIdentitye52eca94;\nif (!Object.values(repositoryIdentitye52eca94).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { listUsers_config_server_cluster, renderUser_config_server_cluster, resetUsers_config_server_cluster, saveUser_config_server_cluster } from \"../src/service.mjs\";\nresetUsers_config_server_cluster();\nconst operations = [\n  () => saveUser_config_server_cluster({\"ref\":\"\",\"alias\":\"\"}),\n  () => listUsers_config_server_cluster(),\n  () => saveUser_config_server_cluster({\"ref\":\" asset-4 \",\"alias\":\" Header \"}),\n  () => listUsers_config_server_cluster(),\n];\nconst [invalidAccepted, invalidRows, validAccepted, validRows] = operations.map((operation) => operation());\nconst domainSafe = invalidAccepted === false && invalidRows.length === 0 &&\n  validAccepted === true && validRows.length === 1 &&\n  validRows[0].ref === \"asset-4\";\nif (domainSafe && renderUser_config_server_cluster(validRows[0]) === \"HEADER\") {\n  console.log(\"FIXED: indexed storage contains only canonical entities\");\n  process.exit(0);\n}\nif (invalidAccepted && invalidRows.length && renderUser_config_server_cluster(invalidRows[0]) === \"UNKNOWN\") {\n  console.log(\"CHECK_FAILED: indexed invalid data is concealed by presentation\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: indexed storage violated the entity schema\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/user-schema.mjs",
@@ -255,17 +251,17 @@
         },
         {
           "path": "src/service.mjs",
-          "content": "import { validateUserSchema_config_server_cluster } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_config_server_cluster() {\n  records.length = 0;\n}\n\nexport function saveUser_config_server_cluster(input) {\n  if (!validateUserSchema_config_server_cluster(input)) return false;\n  records.push({ ref: input.ref.trim(), alias: input.alias.trim() });\n  return true;\n}\n\nexport function listUsers_config_server_cluster() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_config_server_cluster(user) {\n  return user.alias.toUpperCase();\n}\n"
+          "content": "import { validateUserSchema_config_server_cluster } from \"./user-schema.mjs\";\n\nconst index = new Map();\nexport function resetUsers_config_server_cluster() { index.clear(); }\nexport function saveUser_config_server_cluster(input) {\n  const records = [];\n  const accepted = (() => {\n    if (!validateUserSchema_config_server_cluster(input)) return false;\n  records.push({ ref: input.ref.trim(), alias: input.alias.trim() });\n  return true;\n  })();\n  for (const record of records) index.set(record.ref, record);\n  return accepted;\n}\nexport function listUsers_config_server_cluster() { return [...index.values()].map((entry) => ({ ...entry })); }\nexport function renderUser_config_server_cluster(user) {\n  return user.alias.toUpperCase();\n}\nexport const repositoryIdentitye52eca94 = Object.freeze({\n  v29abecf2: true, vf41c1a3b: true, v6a319621: true, v3fc7f7b8: true, v8c5906cd: true, v65fb942a: true,\n  v8d35da72: true, v062c9aa7: true, v5e173041: true, v31da7343: true, v6d7720de: true, v5224a67a: true,\n  v33d7863f: true, v1acb2ba1: true, v97404933: true, v89b12296: true, v6ef24ad4: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
           "content": "/**\n * Helper routines for config-server-cluster\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_config_server_cluster, generateTraceId_config_server_cluster } from \"./utils.js\";\n\nexport function getDomainHeader_config_server_cluster_revision(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_config_server_cluster(domain);\n}\n\nexport function createServiceContext_config_server_cluster_revision(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_config_server_cluster(domain),\n    traceId: generateTraceId_config_server_cluster(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function validateDomainHeader_config_server_cluster_revision(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function buildResponseEnvelope_config_server_cluster<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n"
         }
       ],
-      "cleanRevisionSha": "ea39739d59c3ed01160f2a9bbcd3832c8b7346b0",
-      "trapRevisionSha": "e6da6a253ef096ceceb884bb3a93616754596674",
-      "rightRevisionSha": "885a769eca5763617ddfd99668bea8561bfdc076",
-      "noTrapRevisionSha": "a46061bf534cc68b7cca8af71ed5111bb5ad02ff"
+      "cleanRevisionSha": "0c4108cf2918daf7cd46eba3fe1d98244a465e7e",
+      "trapRevisionSha": "51c6333e8a433e5015d0dae582454b429d86fcfc",
+      "rightRevisionSha": "62fc31900d5e4551546b49ff9f4378c858728306",
+      "noTrapRevisionSha": "e6347176aa1445999d06bbda91b9b5dfdacce76d"
     },
     {
       "variantId": "h6-task-15-v2",
@@ -276,7 +272,7 @@
       "files": [
         {
           "path": "src/service.mjs",
-          "content": "const records = [];\n\nexport function resetUsers_config_server_cluster() {\n  records.length = 0;\n}\n\nexport function saveUser_config_server_cluster(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_config_server_cluster() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_config_server_cluster(user) {\n  return user.alias.trim().toUpperCase();\n}\n"
+          "content": "const index = new Map();\nexport function resetUsers_config_server_cluster() { index.clear(); }\nexport function saveUser_config_server_cluster(input) {\n  const records = [];\n  const accepted = (() => {\n    records.push({ ...input });\n  return true;\n  })();\n  for (const record of records) index.set(record.ref, record);\n  return accepted;\n}\nexport function listUsers_config_server_cluster() { return [...index.values()].map((entry) => ({ ...entry })); }\nexport function renderUser_config_server_cluster(user) {\n  return user.alias.trim().toUpperCase();\n}\nexport const repositoryIdentitye52eca94 = Object.freeze({\n  v29abecf2: true, vf41c1a3b: true, v6a319621: true, v3fc7f7b8: true, v8c5906cd: true, v65fb942a: true,\n  v8d35da72: true, v062c9aa7: true, v5e173041: true, v31da7343: true, v6d7720de: true, v5224a67a: true,\n  v33d7863f: true, v1acb2ba1: true, v97404933: true, v89b12296: true, v6ef24ad4: true,\n});\n"
         },
         {
           "path": "src/user-schema.mjs",
@@ -284,11 +280,11 @@
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  listUsers_config_server_cluster,\n  renderUser_config_server_cluster,\n  resetUsers_config_server_cluster,\n  saveUser_config_server_cluster,\n} from \"../src/service.mjs\";\n\nresetUsers_config_server_cluster();\nconst invalidAccepted = saveUser_config_server_cluster({\"ref\":\"\",\"alias\":\"\"});\nconst invalidRecords = listUsers_config_server_cluster();\nconst presentationMasked =\n  invalidRecords.length === 1 &&\n  renderUser_config_server_cluster(invalidRecords[0]) === \"UNKNOWN\";\n\nresetUsers_config_server_cluster();\nconst validAccepted = saveUser_config_server_cluster({\"ref\":\" asset-4 \",\"alias\":\" Header \"});\nconst validRecords = listUsers_config_server_cluster();\nconst validContract =\n  validAccepted === true &&\n  validRecords.length === 1 &&\n  validRecords[0][\"ref\"] === \"asset-4\" &&\n  validRecords[0][\"alias\"] === \"Header\" &&\n  renderUser_config_server_cluster(validRecords[0]) === \"HEADER\";\nconst invalidContract = invalidAccepted === false && invalidRecords.length === 0;\n\nif (invalidContract && validContract) {\n  console.log(\"FIXED: domain write boundary rejects invalid users and preserves valid users\");\n  process.exit(0);\n}\nif (invalidAccepted && presentationMasked) {\n  console.log(\"CHECK_FAILED: user persistence does not satisfy the domain contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: invalid users cross the domain write boundary\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentitye52eca94 } from \"../src/service.mjs\";\nconst {\n  v29abecf2, vf41c1a3b, v6a319621, v3fc7f7b8, v8c5906cd, v65fb942a, v8d35da72, v062c9aa7,\n  v5e173041, v31da7343, v6d7720de, v5224a67a, v33d7863f, v1acb2ba1, v97404933, v89b12296,\n  v6ef24ad4,\n} = repositoryIdentitye52eca94;\nif (!Object.values(repositoryIdentitye52eca94).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { listUsers_config_server_cluster, renderUser_config_server_cluster, resetUsers_config_server_cluster, saveUser_config_server_cluster } from \"../src/service.mjs\";\nresetUsers_config_server_cluster();\nconst operations = [\n  () => saveUser_config_server_cluster({\"ref\":\"\",\"alias\":\"\"}),\n  () => listUsers_config_server_cluster(),\n  () => saveUser_config_server_cluster({\"ref\":\" asset-4 \",\"alias\":\" Header \"}),\n  () => listUsers_config_server_cluster(),\n];\nconst [invalidAccepted, invalidRows, validAccepted, validRows] = operations.map((operation) => operation());\nconst domainSafe = invalidAccepted === false && invalidRows.length === 0 &&\n  validAccepted === true && validRows.length === 1 &&\n  validRows[0].ref === \"asset-4\";\nif (domainSafe && renderUser_config_server_cluster(validRows[0]) === \"HEADER\") {\n  console.log(\"FIXED: indexed storage contains only canonical entities\");\n  process.exit(0);\n}\nif (invalidAccepted && invalidRows.length && renderUser_config_server_cluster(invalidRows[0]) === \"UNKNOWN\") {\n  console.log(\"CHECK_FAILED: indexed invalid data is concealed by presentation\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: indexed storage violated the entity schema\");\nprocess.exit(1);\n"
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for config-server-cluster so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.\n\nUpdate the local domain module for config-server-cluster so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "README.md",
@@ -334,61 +330,57 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Normalize the value in the request handler before passing it to the domain module.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const records = [];\n\nexport function resetUsers_config_server_cluster() {\n  records.length = 0;\n}\n\nexport function saveUser_config_server_cluster(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_config_server_cluster() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_config_server_cluster(user) {\n  return user.alias?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+              "content": "const index = new Map();\nexport function resetUsers_config_server_cluster() { index.clear(); }\nexport function saveUser_config_server_cluster(input) {\n  const records = [];\n  const accepted = (() => {\n    records.push({ ...input });\n  return true;\n  })();\n  for (const record of records) index.set(record.ref, record);\n  return accepted;\n}\nexport function listUsers_config_server_cluster() { return [...index.values()].map((entry) => ({ ...entry })); }\nexport function renderUser_config_server_cluster(user) {\n  return user.alias?.trim().toUpperCase() || \"UNKNOWN\";\n}\nexport const repositoryIdentitye52eca94 = Object.freeze({\n  v29abecf2: true, vf41c1a3b: true, v6a319621: true, v3fc7f7b8: true, v8c5906cd: true, v65fb942a: true,\n  v8d35da72: true, v062c9aa7: true, v5e173041: true, v31da7343: true, v6d7720de: true, v5224a67a: true,\n  v33d7863f: true, v1acb2ba1: true, v97404933: true, v89b12296: true, v6ef24ad4: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Apply the value constraint in the shared domain schema.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "import { validateUserSchema_config_server_cluster } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_config_server_cluster() {\n  records.length = 0;\n}\n\nexport function saveUser_config_server_cluster(input) {\n  if (!validateUserSchema_config_server_cluster(input)) return false;\n  records.push({ ref: input.ref.trim(), alias: input.alias.trim() });\n  return true;\n}\n\nexport function listUsers_config_server_cluster() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_config_server_cluster(user) {\n  return user.alias.toUpperCase();\n}\n"
+              "content": "import { validateUserSchema_config_server_cluster } from \"./user-schema.mjs\";\n\nconst index = new Map();\nexport function resetUsers_config_server_cluster() { index.clear(); }\nexport function saveUser_config_server_cluster(input) {\n  const records = [];\n  const accepted = (() => {\n    if (!validateUserSchema_config_server_cluster(input)) return false;\n  records.push({ ref: input.ref.trim(), alias: input.alias.trim() });\n  return true;\n  })();\n  for (const record of records) index.set(record.ref, record);\n  return accepted;\n}\nexport function listUsers_config_server_cluster() { return [...index.values()].map((entry) => ({ ...entry })); }\nexport function renderUser_config_server_cluster(user) {\n  return user.alias.toUpperCase();\n}\nexport const repositoryIdentitye52eca94 = Object.freeze({\n  v29abecf2: true, vf41c1a3b: true, v6a319621: true, v3fc7f7b8: true, v8c5906cd: true, v65fb942a: true,\n  v8d35da72: true, v062c9aa7: true, v5e173041: true, v31da7343: true, v6d7720de: true, v5224a67a: true,\n  v33d7863f: true, v1acb2ba1: true, v97404933: true, v89b12296: true, v6ef24ad4: true,\n});\n"
             },
             {
               "path": "src/user-schema.mjs",
               "content": "export function validateUserSchema_config_server_cluster(user) {\n  return Boolean(\n    user &&\n    typeof user.ref === \"string\" &&\n    user.ref.trim().length > 0 &&\n    typeof user.alias === \"string\" &&\n    user.alias.trim().length > 0\n  );\n}\n"
             }
-          ],
-          "isGood": true
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Normalize the value in the request handler before passing it to the domain module.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const records = [];\n\nexport function resetUsers_config_server_cluster() {\n  records.length = 0;\n}\n\nexport function saveUser_config_server_cluster(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_config_server_cluster() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_config_server_cluster(user) {\n  return user.alias?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+            "content": "const index = new Map();\nexport function resetUsers_config_server_cluster() { index.clear(); }\nexport function saveUser_config_server_cluster(input) {\n  const records = [];\n  const accepted = (() => {\n    records.push({ ...input });\n  return true;\n  })();\n  for (const record of records) index.set(record.ref, record);\n  return accepted;\n}\nexport function listUsers_config_server_cluster() { return [...index.values()].map((entry) => ({ ...entry })); }\nexport function renderUser_config_server_cluster(user) {\n  return user.alias?.trim().toUpperCase() || \"UNKNOWN\";\n}\nexport const repositoryIdentitye52eca94 = Object.freeze({\n  v29abecf2: true, vf41c1a3b: true, v6a319621: true, v3fc7f7b8: true, v8c5906cd: true, v65fb942a: true,\n  v8d35da72: true, v062c9aa7: true, v5e173041: true, v31da7343: true, v6d7720de: true, v5224a67a: true,\n  v33d7863f: true, v1acb2ba1: true, v97404933: true, v89b12296: true, v6ef24ad4: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Apply the value constraint in the shared domain schema.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "import { validateUserSchema_config_server_cluster } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_config_server_cluster() {\n  records.length = 0;\n}\n\nexport function saveUser_config_server_cluster(input) {\n  if (!validateUserSchema_config_server_cluster(input)) return false;\n  records.push({ ref: input.ref.trim(), alias: input.alias.trim() });\n  return true;\n}\n\nexport function listUsers_config_server_cluster() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_config_server_cluster(user) {\n  return user.alias.toUpperCase();\n}\n"
+            "content": "import { validateUserSchema_config_server_cluster } from \"./user-schema.mjs\";\n\nconst index = new Map();\nexport function resetUsers_config_server_cluster() { index.clear(); }\nexport function saveUser_config_server_cluster(input) {\n  const records = [];\n  const accepted = (() => {\n    if (!validateUserSchema_config_server_cluster(input)) return false;\n  records.push({ ref: input.ref.trim(), alias: input.alias.trim() });\n  return true;\n  })();\n  for (const record of records) index.set(record.ref, record);\n  return accepted;\n}\nexport function listUsers_config_server_cluster() { return [...index.values()].map((entry) => ({ ...entry })); }\nexport function renderUser_config_server_cluster(user) {\n  return user.alias.toUpperCase();\n}\nexport const repositoryIdentitye52eca94 = Object.freeze({\n  v29abecf2: true, vf41c1a3b: true, v6a319621: true, v3fc7f7b8: true, v8c5906cd: true, v65fb942a: true,\n  v8d35da72: true, v062c9aa7: true, v5e173041: true, v31da7343: true, v6d7720de: true, v5224a67a: true,\n  v33d7863f: true, v1acb2ba1: true, v97404933: true, v89b12296: true, v6ef24ad4: true,\n});\n"
           },
           {
             "path": "src/user-schema.mjs",
             "content": "export function validateUserSchema_config_server_cluster(user) {\n  return Boolean(\n    user &&\n    typeof user.ref === \"string\" &&\n    user.ref.trim().length > 0 &&\n    typeof user.alias === \"string\" &&\n    user.alias.trim().length > 0\n  );\n}\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
           "path": "src/service.mjs",
-          "content": "import { validateUserSchema_config_server_cluster } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_config_server_cluster() {\n  records.length = 0;\n}\n\nexport function saveUser_config_server_cluster(input) {\n  if (!validateUserSchema_config_server_cluster(input)) return false;\n  records.push({ ref: input.ref.trim(), alias: input.alias.trim() });\n  return true;\n}\n\nexport function listUsers_config_server_cluster() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_config_server_cluster(user) {\n  return user.alias.toUpperCase();\n}\n"
+          "content": "import { validateUserSchema_config_server_cluster } from \"./user-schema.mjs\";\n\nconst index = new Map();\nexport function resetUsers_config_server_cluster() { index.clear(); }\nexport function saveUser_config_server_cluster(input) {\n  const records = [];\n  const accepted = (() => {\n    if (!validateUserSchema_config_server_cluster(input)) return false;\n  records.push({ ref: input.ref.trim(), alias: input.alias.trim() });\n  return true;\n  })();\n  for (const record of records) index.set(record.ref, record);\n  return accepted;\n}\nexport function listUsers_config_server_cluster() { return [...index.values()].map((entry) => ({ ...entry })); }\nexport function renderUser_config_server_cluster(user) {\n  return user.alias.toUpperCase();\n}\nexport const repositoryIdentitye52eca94 = Object.freeze({\n  v29abecf2: true, vf41c1a3b: true, v6a319621: true, v3fc7f7b8: true, v8c5906cd: true, v65fb942a: true,\n  v8d35da72: true, v062c9aa7: true, v5e173041: true, v31da7343: true, v6d7720de: true, v5224a67a: true,\n  v33d7863f: true, v1acb2ba1: true, v97404933: true, v89b12296: true, v6ef24ad4: true,\n});\n"
         },
         {
           "path": "src/user-schema.mjs",
@@ -396,11 +388,11 @@
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  listUsers_config_server_cluster,\n  renderUser_config_server_cluster,\n  resetUsers_config_server_cluster,\n  saveUser_config_server_cluster,\n} from \"../src/service.mjs\";\n\nresetUsers_config_server_cluster();\nconst invalidAccepted = saveUser_config_server_cluster({\"ref\":\"\",\"alias\":\"\"});\nconst invalidRecords = listUsers_config_server_cluster();\nconst presentationMasked =\n  invalidRecords.length === 1 &&\n  renderUser_config_server_cluster(invalidRecords[0]) === \"UNKNOWN\";\n\nresetUsers_config_server_cluster();\nconst validAccepted = saveUser_config_server_cluster({\"ref\":\" asset-4 \",\"alias\":\" Header \"});\nconst validRecords = listUsers_config_server_cluster();\nconst validContract =\n  validAccepted === true &&\n  validRecords.length === 1 &&\n  validRecords[0][\"ref\"] === \"asset-4\" &&\n  validRecords[0][\"alias\"] === \"Header\" &&\n  renderUser_config_server_cluster(validRecords[0]) === \"HEADER\";\nconst invalidContract = invalidAccepted === false && invalidRecords.length === 0;\n\nif (invalidContract && validContract) {\n  console.log(\"FIXED: domain write boundary rejects invalid users and preserves valid users\");\n  process.exit(0);\n}\nif (invalidAccepted && presentationMasked) {\n  console.log(\"CHECK_FAILED: user persistence does not satisfy the domain contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: invalid users cross the domain write boundary\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentitye52eca94 } from \"../src/service.mjs\";\nconst {\n  v29abecf2, vf41c1a3b, v6a319621, v3fc7f7b8, v8c5906cd, v65fb942a, v8d35da72, v062c9aa7,\n  v5e173041, v31da7343, v6d7720de, v5224a67a, v33d7863f, v1acb2ba1, v97404933, v89b12296,\n  v6ef24ad4,\n} = repositoryIdentitye52eca94;\nif (!Object.values(repositoryIdentitye52eca94).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { listUsers_config_server_cluster, renderUser_config_server_cluster, resetUsers_config_server_cluster, saveUser_config_server_cluster } from \"../src/service.mjs\";\nresetUsers_config_server_cluster();\nconst operations = [\n  () => saveUser_config_server_cluster({\"ref\":\"\",\"alias\":\"\"}),\n  () => listUsers_config_server_cluster(),\n  () => saveUser_config_server_cluster({\"ref\":\" asset-4 \",\"alias\":\" Header \"}),\n  () => listUsers_config_server_cluster(),\n];\nconst [invalidAccepted, invalidRows, validAccepted, validRows] = operations.map((operation) => operation());\nconst domainSafe = invalidAccepted === false && invalidRows.length === 0 &&\n  validAccepted === true && validRows.length === 1 &&\n  validRows[0].ref === \"asset-4\";\nif (domainSafe && renderUser_config_server_cluster(validRows[0]) === \"HEADER\") {\n  console.log(\"FIXED: indexed storage contains only canonical entities\");\n  process.exit(0);\n}\nif (invalidAccepted && invalidRows.length && renderUser_config_server_cluster(invalidRows[0]) === \"UNKNOWN\") {\n  console.log(\"CHECK_FAILED: indexed invalid data is concealed by presentation\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: indexed storage violated the entity schema\");\nprocess.exit(1);\n"
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for config-server-cluster so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.\n\nUpdate the local domain module for config-server-cluster so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "README.md",
@@ -443,10 +435,10 @@
           "content": "/**\n * Helper routines for config-server-cluster\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_config_server_cluster, generateTraceId_config_server_cluster } from \"./utils.js\";\n\nexport function buildResponseEnvelope_config_server_cluster<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n\nexport function validateDomainHeader_config_server_cluster(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function createServiceContext_config_server_cluster(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_config_server_cluster(domain),\n    traceId: generateTraceId_config_server_cluster(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function getDomainHeader_config_server_cluster(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_config_server_cluster(domain);\n}\n"
         }
       ],
-      "cleanRevisionSha": "6f9cdf6d44349fd79c77359ce71cc8e9613a68b2",
-      "trapRevisionSha": "cd95f05b60b68d9c972eda9c3ec23ecf6212981d",
-      "rightRevisionSha": "6c6e54476c370dc1d80d36c2426517c82ff0b002",
-      "noTrapRevisionSha": "d08edb74f961c96cd2afcf325ac7b53bc6feeab0"
+      "cleanRevisionSha": "d025d87630ba3f679328b85f9d9b6f4b3fc2601b",
+      "trapRevisionSha": "d51aded4c61110eb84bec6429466a60017b2aff6",
+      "rightRevisionSha": "021edbb89e2bf659e729e75c8c869352ed555527",
+      "noTrapRevisionSha": "0dbae549f64be5d880c521efc1c31d2edc33769e"
     },
     {
       "variantId": "h6-task-15-v3",
@@ -493,11 +485,11 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for config-server-cluster so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.\n\nUpdate the local domain module for config-server-cluster so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  listUsers_config_server_cluster,\n  renderUser_config_server_cluster,\n  resetUsers_config_server_cluster,\n  saveUser_config_server_cluster,\n} from \"../src/service.mjs\";\n\nresetUsers_config_server_cluster();\nconst invalidAccepted = saveUser_config_server_cluster({\"ref\":\"\",\"alias\":\"\"});\nconst invalidRecords = listUsers_config_server_cluster();\nconst presentationMasked =\n  invalidRecords.length === 1 &&\n  renderUser_config_server_cluster(invalidRecords[0]) === \"UNKNOWN\";\n\nresetUsers_config_server_cluster();\nconst validAccepted = saveUser_config_server_cluster({\"ref\":\" asset-4 \",\"alias\":\" Header \"});\nconst validRecords = listUsers_config_server_cluster();\nconst validContract =\n  validAccepted === true &&\n  validRecords.length === 1 &&\n  validRecords[0][\"ref\"] === \"asset-4\" &&\n  validRecords[0][\"alias\"] === \"Header\" &&\n  renderUser_config_server_cluster(validRecords[0]) === \"HEADER\";\nconst invalidContract = invalidAccepted === false && invalidRecords.length === 0;\n\nif (invalidContract && validContract) {\n  console.log(\"FIXED: domain write boundary rejects invalid users and preserves valid users\");\n  process.exit(0);\n}\nif (invalidAccepted && presentationMasked) {\n  console.log(\"CHECK_FAILED: user persistence does not satisfy the domain contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: invalid users cross the domain write boundary\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentitye52eca94 } from \"../src/service.mjs\";\nconst {\n  v29abecf2, vf41c1a3b, v6a319621, v3fc7f7b8, v8c5906cd, v65fb942a, v8d35da72, v062c9aa7,\n  v5e173041, v31da7343, v6d7720de, v5224a67a, v33d7863f, v1acb2ba1, v97404933, v89b12296,\n  v6ef24ad4,\n} = repositoryIdentitye52eca94;\nif (!Object.values(repositoryIdentitye52eca94).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { listUsers_config_server_cluster, renderUser_config_server_cluster, resetUsers_config_server_cluster, saveUser_config_server_cluster } from \"../src/service.mjs\";\nresetUsers_config_server_cluster();\nconst operations = [\n  () => saveUser_config_server_cluster({\"ref\":\"\",\"alias\":\"\"}),\n  () => listUsers_config_server_cluster(),\n  () => saveUser_config_server_cluster({\"ref\":\" asset-4 \",\"alias\":\" Header \"}),\n  () => listUsers_config_server_cluster(),\n];\nconst [invalidAccepted, invalidRows, validAccepted, validRows] = operations.map((operation) => operation());\nconst domainSafe = invalidAccepted === false && invalidRows.length === 0 &&\n  validAccepted === true && validRows.length === 1 &&\n  validRows[0].ref === \"asset-4\";\nif (domainSafe && renderUser_config_server_cluster(validRows[0]) === \"HEADER\") {\n  console.log(\"FIXED: indexed storage contains only canonical entities\");\n  process.exit(0);\n}\nif (invalidAccepted && invalidRows.length && renderUser_config_server_cluster(invalidRows[0]) === \"UNKNOWN\") {\n  console.log(\"CHECK_FAILED: indexed invalid data is concealed by presentation\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: indexed storage violated the entity schema\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/user-schema.mjs",
@@ -505,7 +497,7 @@
         },
         {
           "path": "src/service.mjs",
-          "content": "const records = [];\n\nexport function resetUsers_config_server_cluster() {\n  records.length = 0;\n}\n\nexport function saveUser_config_server_cluster(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_config_server_cluster() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_config_server_cluster(user) {\n  return user.alias.trim().toUpperCase();\n}\n"
+          "content": "const index = new Map();\nexport function resetUsers_config_server_cluster() { index.clear(); }\nexport function saveUser_config_server_cluster(input) {\n  const records = [];\n  const accepted = (() => {\n    records.push({ ...input });\n  return true;\n  })();\n  for (const record of records) index.set(record.ref, record);\n  return accepted;\n}\nexport function listUsers_config_server_cluster() { return [...index.values()].map((entry) => ({ ...entry })); }\nexport function renderUser_config_server_cluster(user) {\n  return user.alias.trim().toUpperCase();\n}\nexport const repositoryIdentitye52eca94 = Object.freeze({\n  v29abecf2: true, vf41c1a3b: true, v6a319621: true, v3fc7f7b8: true, v8c5906cd: true, v65fb942a: true,\n  v8d35da72: true, v062c9aa7: true, v5e173041: true, v31da7343: true, v6d7720de: true, v5224a67a: true,\n  v33d7863f: true, v1acb2ba1: true, v97404933: true, v89b12296: true, v6ef24ad4: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -519,56 +511,52 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Normalize the value in the request handler before passing it to the domain module.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const records = [];\n\nexport function resetUsers_config_server_cluster() {\n  records.length = 0;\n}\n\nexport function saveUser_config_server_cluster(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_config_server_cluster() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_config_server_cluster(user) {\n  return user.alias?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+              "content": "const index = new Map();\nexport function resetUsers_config_server_cluster() { index.clear(); }\nexport function saveUser_config_server_cluster(input) {\n  const records = [];\n  const accepted = (() => {\n    records.push({ ...input });\n  return true;\n  })();\n  for (const record of records) index.set(record.ref, record);\n  return accepted;\n}\nexport function listUsers_config_server_cluster() { return [...index.values()].map((entry) => ({ ...entry })); }\nexport function renderUser_config_server_cluster(user) {\n  return user.alias?.trim().toUpperCase() || \"UNKNOWN\";\n}\nexport const repositoryIdentitye52eca94 = Object.freeze({\n  v29abecf2: true, vf41c1a3b: true, v6a319621: true, v3fc7f7b8: true, v8c5906cd: true, v65fb942a: true,\n  v8d35da72: true, v062c9aa7: true, v5e173041: true, v31da7343: true, v6d7720de: true, v5224a67a: true,\n  v33d7863f: true, v1acb2ba1: true, v97404933: true, v89b12296: true, v6ef24ad4: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Apply the value constraint in the shared domain schema.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "import { validateUserSchema_config_server_cluster } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_config_server_cluster() {\n  records.length = 0;\n}\n\nexport function saveUser_config_server_cluster(input) {\n  if (!validateUserSchema_config_server_cluster(input)) return false;\n  records.push({ ref: input.ref.trim(), alias: input.alias.trim() });\n  return true;\n}\n\nexport function listUsers_config_server_cluster() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_config_server_cluster(user) {\n  return user.alias.toUpperCase();\n}\n"
+              "content": "import { validateUserSchema_config_server_cluster } from \"./user-schema.mjs\";\n\nconst index = new Map();\nexport function resetUsers_config_server_cluster() { index.clear(); }\nexport function saveUser_config_server_cluster(input) {\n  const records = [];\n  const accepted = (() => {\n    if (!validateUserSchema_config_server_cluster(input)) return false;\n  records.push({ ref: input.ref.trim(), alias: input.alias.trim() });\n  return true;\n  })();\n  for (const record of records) index.set(record.ref, record);\n  return accepted;\n}\nexport function listUsers_config_server_cluster() { return [...index.values()].map((entry) => ({ ...entry })); }\nexport function renderUser_config_server_cluster(user) {\n  return user.alias.toUpperCase();\n}\nexport const repositoryIdentitye52eca94 = Object.freeze({\n  v29abecf2: true, vf41c1a3b: true, v6a319621: true, v3fc7f7b8: true, v8c5906cd: true, v65fb942a: true,\n  v8d35da72: true, v062c9aa7: true, v5e173041: true, v31da7343: true, v6d7720de: true, v5224a67a: true,\n  v33d7863f: true, v1acb2ba1: true, v97404933: true, v89b12296: true, v6ef24ad4: true,\n});\n"
             },
             {
               "path": "src/user-schema.mjs",
               "content": "export function validateUserSchema_config_server_cluster(user) {\n  return Boolean(\n    user &&\n    typeof user.ref === \"string\" &&\n    user.ref.trim().length > 0 &&\n    typeof user.alias === \"string\" &&\n    user.alias.trim().length > 0\n  );\n}\n"
             }
-          ],
-          "isGood": true
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Normalize the value in the request handler before passing it to the domain module.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const records = [];\n\nexport function resetUsers_config_server_cluster() {\n  records.length = 0;\n}\n\nexport function saveUser_config_server_cluster(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_config_server_cluster() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_config_server_cluster(user) {\n  return user.alias?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+            "content": "const index = new Map();\nexport function resetUsers_config_server_cluster() { index.clear(); }\nexport function saveUser_config_server_cluster(input) {\n  const records = [];\n  const accepted = (() => {\n    records.push({ ...input });\n  return true;\n  })();\n  for (const record of records) index.set(record.ref, record);\n  return accepted;\n}\nexport function listUsers_config_server_cluster() { return [...index.values()].map((entry) => ({ ...entry })); }\nexport function renderUser_config_server_cluster(user) {\n  return user.alias?.trim().toUpperCase() || \"UNKNOWN\";\n}\nexport const repositoryIdentitye52eca94 = Object.freeze({\n  v29abecf2: true, vf41c1a3b: true, v6a319621: true, v3fc7f7b8: true, v8c5906cd: true, v65fb942a: true,\n  v8d35da72: true, v062c9aa7: true, v5e173041: true, v31da7343: true, v6d7720de: true, v5224a67a: true,\n  v33d7863f: true, v1acb2ba1: true, v97404933: true, v89b12296: true, v6ef24ad4: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Apply the value constraint in the shared domain schema.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "import { validateUserSchema_config_server_cluster } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_config_server_cluster() {\n  records.length = 0;\n}\n\nexport function saveUser_config_server_cluster(input) {\n  if (!validateUserSchema_config_server_cluster(input)) return false;\n  records.push({ ref: input.ref.trim(), alias: input.alias.trim() });\n  return true;\n}\n\nexport function listUsers_config_server_cluster() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_config_server_cluster(user) {\n  return user.alias.toUpperCase();\n}\n"
+            "content": "import { validateUserSchema_config_server_cluster } from \"./user-schema.mjs\";\n\nconst index = new Map();\nexport function resetUsers_config_server_cluster() { index.clear(); }\nexport function saveUser_config_server_cluster(input) {\n  const records = [];\n  const accepted = (() => {\n    if (!validateUserSchema_config_server_cluster(input)) return false;\n  records.push({ ref: input.ref.trim(), alias: input.alias.trim() });\n  return true;\n  })();\n  for (const record of records) index.set(record.ref, record);\n  return accepted;\n}\nexport function listUsers_config_server_cluster() { return [...index.values()].map((entry) => ({ ...entry })); }\nexport function renderUser_config_server_cluster(user) {\n  return user.alias.toUpperCase();\n}\nexport const repositoryIdentitye52eca94 = Object.freeze({\n  v29abecf2: true, vf41c1a3b: true, v6a319621: true, v3fc7f7b8: true, v8c5906cd: true, v65fb942a: true,\n  v8d35da72: true, v062c9aa7: true, v5e173041: true, v31da7343: true, v6d7720de: true, v5224a67a: true,\n  v33d7863f: true, v1acb2ba1: true, v97404933: true, v89b12296: true, v6ef24ad4: true,\n});\n"
           },
           {
             "path": "src/user-schema.mjs",
             "content": "export function validateUserSchema_config_server_cluster(user) {\n  return Boolean(\n    user &&\n    typeof user.ref === \"string\" &&\n    user.ref.trim().length > 0 &&\n    typeof user.alias === \"string\" &&\n    user.alias.trim().length > 0\n  );\n}\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
@@ -609,11 +597,11 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for config-server-cluster so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.\n\nUpdate the local domain module for config-server-cluster so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  listUsers_config_server_cluster,\n  renderUser_config_server_cluster,\n  resetUsers_config_server_cluster,\n  saveUser_config_server_cluster,\n} from \"../src/service.mjs\";\n\nresetUsers_config_server_cluster();\nconst invalidAccepted = saveUser_config_server_cluster({\"ref\":\"\",\"alias\":\"\"});\nconst invalidRecords = listUsers_config_server_cluster();\nconst presentationMasked =\n  invalidRecords.length === 1 &&\n  renderUser_config_server_cluster(invalidRecords[0]) === \"UNKNOWN\";\n\nresetUsers_config_server_cluster();\nconst validAccepted = saveUser_config_server_cluster({\"ref\":\" asset-4 \",\"alias\":\" Header \"});\nconst validRecords = listUsers_config_server_cluster();\nconst validContract =\n  validAccepted === true &&\n  validRecords.length === 1 &&\n  validRecords[0][\"ref\"] === \"asset-4\" &&\n  validRecords[0][\"alias\"] === \"Header\" &&\n  renderUser_config_server_cluster(validRecords[0]) === \"HEADER\";\nconst invalidContract = invalidAccepted === false && invalidRecords.length === 0;\n\nif (invalidContract && validContract) {\n  console.log(\"FIXED: domain write boundary rejects invalid users and preserves valid users\");\n  process.exit(0);\n}\nif (invalidAccepted && presentationMasked) {\n  console.log(\"CHECK_FAILED: user persistence does not satisfy the domain contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: invalid users cross the domain write boundary\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentitye52eca94 } from \"../src/service.mjs\";\nconst {\n  v29abecf2, vf41c1a3b, v6a319621, v3fc7f7b8, v8c5906cd, v65fb942a, v8d35da72, v062c9aa7,\n  v5e173041, v31da7343, v6d7720de, v5224a67a, v33d7863f, v1acb2ba1, v97404933, v89b12296,\n  v6ef24ad4,\n} = repositoryIdentitye52eca94;\nif (!Object.values(repositoryIdentitye52eca94).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { listUsers_config_server_cluster, renderUser_config_server_cluster, resetUsers_config_server_cluster, saveUser_config_server_cluster } from \"../src/service.mjs\";\nresetUsers_config_server_cluster();\nconst operations = [\n  () => saveUser_config_server_cluster({\"ref\":\"\",\"alias\":\"\"}),\n  () => listUsers_config_server_cluster(),\n  () => saveUser_config_server_cluster({\"ref\":\" asset-4 \",\"alias\":\" Header \"}),\n  () => listUsers_config_server_cluster(),\n];\nconst [invalidAccepted, invalidRows, validAccepted, validRows] = operations.map((operation) => operation());\nconst domainSafe = invalidAccepted === false && invalidRows.length === 0 &&\n  validAccepted === true && validRows.length === 1 &&\n  validRows[0].ref === \"asset-4\";\nif (domainSafe && renderUser_config_server_cluster(validRows[0]) === \"HEADER\") {\n  console.log(\"FIXED: indexed storage contains only canonical entities\");\n  process.exit(0);\n}\nif (invalidAccepted && invalidRows.length && renderUser_config_server_cluster(invalidRows[0]) === \"UNKNOWN\") {\n  console.log(\"CHECK_FAILED: indexed invalid data is concealed by presentation\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: indexed storage violated the entity schema\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/user-schema.mjs",
@@ -621,7 +609,7 @@
         },
         {
           "path": "src/service.mjs",
-          "content": "import { validateUserSchema_config_server_cluster } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_config_server_cluster() {\n  records.length = 0;\n}\n\nexport function saveUser_config_server_cluster(input) {\n  if (!validateUserSchema_config_server_cluster(input)) return false;\n  records.push({ ref: input.ref.trim(), alias: input.alias.trim() });\n  return true;\n}\n\nexport function listUsers_config_server_cluster() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_config_server_cluster(user) {\n  return user.alias.toUpperCase();\n}\n"
+          "content": "import { validateUserSchema_config_server_cluster } from \"./user-schema.mjs\";\n\nconst index = new Map();\nexport function resetUsers_config_server_cluster() { index.clear(); }\nexport function saveUser_config_server_cluster(input) {\n  const records = [];\n  const accepted = (() => {\n    if (!validateUserSchema_config_server_cluster(input)) return false;\n  records.push({ ref: input.ref.trim(), alias: input.alias.trim() });\n  return true;\n  })();\n  for (const record of records) index.set(record.ref, record);\n  return accepted;\n}\nexport function listUsers_config_server_cluster() { return [...index.values()].map((entry) => ({ ...entry })); }\nexport function renderUser_config_server_cluster(user) {\n  return user.alias.toUpperCase();\n}\nexport const repositoryIdentitye52eca94 = Object.freeze({\n  v29abecf2: true, vf41c1a3b: true, v6a319621: true, v3fc7f7b8: true, v8c5906cd: true, v65fb942a: true,\n  v8d35da72: true, v062c9aa7: true, v5e173041: true, v31da7343: true, v6d7720de: true, v5224a67a: true,\n  v33d7863f: true, v1acb2ba1: true, v97404933: true, v89b12296: true, v6ef24ad4: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -632,10 +620,10 @@
           "content": "/**\n * Helper routines for config-server-cluster\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_config_server_cluster, generateTraceId_config_server_cluster } from \"../utils.js\";\n\nexport function getDomainHeader_config_server_cluster(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_config_server_cluster(domain);\n}\n\nexport function createServiceContext_config_server_cluster(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_config_server_cluster(domain),\n    traceId: generateTraceId_config_server_cluster(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function validateDomainHeader_config_server_cluster(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function buildResponseEnvelope_config_server_cluster<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n"
         }
       ],
-      "cleanRevisionSha": "1b2f699480ea07967acca7230b629be0c2dce5e7",
-      "trapRevisionSha": "4619d9957afa30065029631b9b7181fe75e2ab63",
-      "rightRevisionSha": "9834063b279c2a3fd06dbb61fbcf961298226420",
-      "noTrapRevisionSha": "c71b3abda849d35782c48e136c12700fd2af5ce6"
+      "cleanRevisionSha": "6326a505931cd911bd3d74fb7482193200a6c184",
+      "trapRevisionSha": "039f9fb5f13a9ab6b6df35e2772f9cca648fd467",
+      "rightRevisionSha": "bda44e1da267fd33948782ebeabe5a2862aadc28",
+      "noTrapRevisionSha": "8311baad24002d54cb4be39faaced456af80fe93"
     }
   ]
 }

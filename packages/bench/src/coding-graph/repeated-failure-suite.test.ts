@@ -3,19 +3,37 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
+import { compareCodePoints } from "../codepoint-order.js";
 import {
   computeRepeatedFailureModelProfileHash,
   createRepeatedFailureProfileDriver,
   replayRepeatedFailureStatistics,
   runRepeatedFailureSuite,
 } from "./repeated-failure-suite.ts";
+import { parseRunMetadata } from "./repeated-failure-suite-execution.ts";
+import { bindProfileRequestTimeout } from "./repeated-failure-suite-output.ts";
 import { parseRepeatedFailureEpisodeRow } from "./repeated-failure-store.ts";
 import type { ControlledResponsesEpisodeResult } from "./repeated-failure-responses-driver.ts";
+import {
+  H6_DECISION_RULE,
+  H6_FROZEN_INVENTORY_HASH,
+  H6_SUPPORT_ARTIFACT_PATHS,
+  resolveCommittedH6FixtureDirectory,
+} from "./repo-gen/index.ts";
+import { DecisionRuleSchema, PROMPT_CONTRACT } from "./repeated-failure-suite-shared.ts";
+import type { ModelProfileExecutionContract } from "./repeated-failure-suite-output.ts";
+import {
+  resolvePackagedPreregistrationRoot,
+  verifyPreregistrationBinding,
+} from "./repeated-failure-suite-runner.ts";
+import { REPEATED_FAILURE_ARMS } from "./repeated-failure-types.ts";
 import type {
   RepeatedFailureEpisodeDriver,
   RepeatedFailureEpisodeInput,
   RepeatedFailureProposedAction,
+  RepeatedFailureRunMetadata,
   RepeatedFailureTokenUsage,
 } from "./repeated-failure-types.ts";
 
@@ -30,6 +48,251 @@ const MAIN_TASK_IDS = Object.freeze([
   "h6-task-23", "h6-task-24", "h6-task-25", "h6-task-28", "h6-task-29", "h6-task-30",
 ]);
 
+async function writePreregistrationAt(root: string, bytes: string | Buffer): Promise<void> {
+  const destination = path.join(root, H6_DECISION_RULE.preregistration.path);
+  await mkdir(path.dirname(destination), { recursive: true });
+  await writeFile(destination, bytes);
+}
+function validRunMetadata(): RepeatedFailureRunMetadata {
+  const hash = "1".repeat(64);
+  const revision = "2".repeat(40);
+  const identity = {
+    suiteVersion: "h6-failure-gate-v1-test",
+    taskId: TASK_ID,
+    variantId: VARIANT_ID,
+    modelProfileId: "profile",
+    modelProfileHash: hash,
+    seed: 1,
+    arm: "NO_MEMORY" as const,
+  };
+  return {
+    schemaVersion: 1,
+    runId: "run",
+    suiteVersion: identity.suiteVersion,
+    datasetInventoryHash: H6_FROZEN_INVENTORY_HASH,
+    resumeContractHash: hash,
+    expectedDesignHash: hash,
+    decisionRuleHash: hash,
+    preregistrationPath: H6_DECISION_RULE.preregistration.path,
+    preregistrationHash: H6_DECISION_RULE.preregistration.sha256,
+    analysisVersion: "analysis",
+    harnessVersion: "harness",
+    harnessSourceHash: hash,
+    provenanceHash: hash,
+    gitSha: "",
+    gitDirty: false,
+    gitDirtyEntryCount: 0,
+    phase: "unspecified",
+    mode: "quick",
+    arms: REPEATED_FAILURE_ARMS,
+    modelProfileIds: [identity.modelProfileId],
+    modelProfileHashes: [identity.modelProfileHash],
+    modelDigests: [hash],
+    modelDriverKinds: ["deterministic-fake"],
+    modelTokenizerIdentities: ["test-tokenizer"],
+    modelTokenizerImplementations: ["nfkc-whitespace-v1"],
+    trapAuditReceipts: [],
+    seeds: [identity.seed],
+    splitTaskIds: [identity.taskId],
+    taskRevisions: [{
+      taskId: identity.taskId,
+      variantId: identity.variantId,
+      cleanRevisionSha: revision,
+      trapRevisionSha: revision,
+      rightRevisionSha: revision,
+      noTrapRevisionSha: revision,
+    }],
+    caps: {
+      maxTurns: 1,
+      maxToolCalls: 1,
+      maxTotalTokens: 1,
+      maxDurationMs: 1,
+      requestTimeoutMs: 1,
+      maxToolOutputChars: 1,
+    },
+    toolLocks: {
+      allowedTools: ["apply_strategy"],
+      taskToolSchemaHashes: [{
+        taskId: identity.taskId,
+        variantId: identity.variantId,
+        sha256: hash,
+      }],
+    },
+    sandboxFlags: {
+      networkDisabled: true,
+      isolatedRepoPerArm: true,
+      isolatedMemoryPerArm: true,
+      isolatedSessionPerArm: true,
+      rejectSymlinks: true,
+    },
+    retryRule: {
+      hostApiFaultRetriesAfterFirstTry: 5,
+      rerunTaskResults: false,
+      retainAllTries: true,
+    },
+    runOrder: [{ rowKey: "row", analysis: "PRIMARY", identity }],
+    expectedRowCount: 1,
+    statisticsSeed: 1,
+    statisticsDraws: 1,
+  };
+}
+
+
+
+test("decision rule schema seals preregistration and requires the frozen inventory", () => {
+  const { datasetInventoryHash: _inventoryHash, ...populationWithoutInventory } =
+    H6_DECISION_RULE.analysisPopulation;
+  assert.throws(
+    () => DecisionRuleSchema.parse({
+      ...H6_DECISION_RULE,
+      analysisPopulation: populationWithoutInventory,
+    }),
+    /datasetInventoryHash/,
+  );
+  assert.throws(
+    () => DecisionRuleSchema.parse({
+      ...H6_DECISION_RULE,
+      preregistration: {
+        ...H6_DECISION_RULE.preregistration,
+        sha256: "0".repeat(64),
+      },
+    }),
+    /preregistration|sha256/,
+  );
+  const parsed = DecisionRuleSchema.parse(H6_DECISION_RULE);
+  assert.equal(parsed.version, 10);
+  assert.equal(parsed.analysisPopulation.datasetInventoryHash, H6_FROZEN_INVENTORY_HASH);
+  assert.equal((H6_SUPPORT_ARTIFACT_PATHS as readonly string[]).includes("decision-rule.json"), false);
+  const {
+    requireRepeatedFailureBenefitIntervalLowerStrictlyAbove: _timingIntervalFloor,
+    ...timingWithoutIntervalFloor
+  } = H6_DECISION_RULE.hypotheses["H6-timing"];
+  assert.throws(
+    () => DecisionRuleSchema.parse({
+      ...H6_DECISION_RULE,
+      hypotheses: {
+        ...H6_DECISION_RULE.hypotheses,
+        "H6-timing": timingWithoutIntervalFloor,
+      },
+    }),
+    /requireRepeatedFailureBenefitIntervalLowerStrictlyAbove/,
+  );
+});
+test("run metadata schema rejects missing and stale preregistration bindings", () => {
+  const metadata = validRunMetadata();
+  assert.equal(
+    parseRunMetadata(metadata).preregistrationPath,
+    H6_DECISION_RULE.preregistration.path,
+  );
+  const missingPath = { ...metadata } as Partial<RepeatedFailureRunMetadata>;
+  delete missingPath.preregistrationPath;
+  assert.throws(() => parseRunMetadata(missingPath), /preregistrationPath/);
+  assert.throws(
+    () => parseRunMetadata({ ...metadata, preregistrationPath: "docs/research/old.md" }),
+    /preregistrationPath|Invalid literal/,
+  );
+  assert.throws(
+    () => parseRunMetadata({ ...metadata, preregistrationHash: "0".repeat(64) }),
+    /preregistrationHash|Invalid literal/,
+  );
+  assert.throws(
+    () => parseRunMetadata({ ...metadata, datasetInventoryHash: "0".repeat(64) }),
+    /datasetInventoryHash|Invalid literal/,
+  );
+  const missingDigests = { ...metadata } as Partial<RepeatedFailureRunMetadata>;
+  delete missingDigests.modelDigests;
+  assert.throws(() => parseRunMetadata(missingDigests), /modelDigests/);
+  assert.throws(
+    () => parseRunMetadata({ ...metadata, modelDigests: [] }),
+    /modelDigests|same length/,
+  );
+  assert.throws(
+    () => parseRunMetadata({
+      ...metadata,
+      trapAuditReceipts: [{
+        path: "trap-audit.json",
+        artifactHash: "1".repeat(64),
+        modelProfileId: "profile",
+        modelProfileHash: "1".repeat(64),
+      }],
+    }),
+    /modelDigest/,
+  );
+  assert.throws(
+    () => parseRunMetadata({ ...metadata, phase: "main" }),
+    /pilotEvidence|verified pilot evidence/,
+  );
+});
+
+test("preregistration verification rejects a missing file", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "h6-prereg-missing-"));
+  try {
+    await assert.rejects(
+      () => verifyPreregistrationBinding(root, H6_DECISION_RULE.preregistration),
+      /ENOENT|preregistration file is missing/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("preregistration verification rejects altered raw bytes", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "h6-prereg-altered-"));
+  try {
+    await writePreregistrationAt(root, "altered preregistration bytes\n");
+    await assert.rejects(
+      () => verifyPreregistrationBinding(root, H6_DECISION_RULE.preregistration),
+      /preregistration hash mismatch/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("preregistration verification accepts the sealed raw bytes", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "h6-prereg-valid-"));
+  try {
+    const source = path.resolve(H6_DECISION_RULE.preregistration.path);
+    await writePreregistrationAt(root, await readFile(source));
+    assert.equal(
+      await verifyPreregistrationBinding(root, H6_DECISION_RULE.preregistration),
+      H6_DECISION_RULE.preregistration.sha256,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("packaged preregistration resource exactly matches the sealed source artifact", async () => {
+  const fixtureDir = await resolveCommittedH6FixtureDirectory();
+  const packageRoot = path.join(fixtureDir, "..", "..");
+  const sourceResourcePath = path.join(packageRoot, "preregistration", "h6-failure-gate.md");
+  const bundledResourcePath = path.join(packageRoot, "dist");
+  const bundledModuleUrl = pathToFileURL(
+    path.join(packageRoot, "dist", "index.js"),
+  ).href;
+  const [sourceBytes, packagedBytes] = await Promise.all([
+    readFile(path.resolve(H6_DECISION_RULE.preregistration.path), "utf8"),
+    readFile(sourceResourcePath, "utf8"),
+  ]);
+  assert.equal(resolvePackagedPreregistrationRoot(), path.dirname(sourceResourcePath));
+  assert.equal(resolvePackagedPreregistrationRoot(bundledModuleUrl), bundledResourcePath);
+  assert.equal(packagedBytes, sourceBytes);
+  assert.equal(
+    createHash("sha256").update(packagedBytes).digest("hex"),
+    H6_DECISION_RULE.preregistration.sha256,
+  );
+  assert.equal(
+    await verifyPreregistrationBinding(
+      resolvePackagedPreregistrationRoot(bundledModuleUrl),
+      H6_DECISION_RULE.preregistration,
+      path.basename(sourceResourcePath),
+    ),
+    H6_DECISION_RULE.preregistration.sha256,
+  );
+});
+
+
 test("immutable profile hash binds prompts, tools, tokenizer, decoding, and native Ollama endpoint", () => {
   const profile = {
     schemaVersion: 2,
@@ -37,19 +300,45 @@ test("immutable profile hash binds prompts, tools, tokenizer, decoding, and nati
     provider: "ollama-chat",
     model: "qwen3:8b",
     endpoint: "http://127.0.0.1:11434/api/chat",
+    modelDigest: "a".repeat(64),
     instructions: { system: "system contract", developer: "developer contract" },
     tokenizer: { identity: "qwen3-nfkc-v1", implementation: "nfkc-whitespace-v1" },
     contextWindowTokens: 131_072,
+    requestTimeoutMs: 300_000,
     temperature: 0,
     maxOutputTokens: 8_192,
     think: false,
     seedCapability: { kind: "options_parameter", requestField: "seed" },
   } as const;
   const contract = {
-    prompt: { version: 1, text: "frozen prompt" },
-    tools: [{ name: "apply_strategy", strict: true, parameters: { type: "object" } }],
-    caps: { maxTurns: 8, maxToolCalls: 6, maxTotalTokens: 65_536 },
-  };
+    schemaVersion: 1,
+    datasetInventoryHash: H6_FROZEN_INVENTORY_HASH,
+    prompt: PROMPT_CONTRACT,
+    tools: [{
+      taskId: TASK_ID,
+      variantId: VARIANT_ID,
+      definitions: [{
+        type: "function",
+        name: "apply_strategy",
+        description: "Apply the selected repair strategy.",
+        strict: true,
+        parameters: { type: "object" },
+      }],
+    }],
+    tokenizerUse: "content-pair-counts-and-timing-rendered-counts",
+    decodingAndContext: {
+      caps: {
+        maxTurns: 8,
+        maxToolCalls: 6,
+        maxTotalTokens: 65_536,
+        maxDurationMs: 600_000,
+        requestTimeoutMs: 180_000,
+      },
+      maxToolOutputChars: 16_384,
+      fingerprintVersion: 1,
+      preActionWarningVersion: 1,
+    },
+  } as const satisfies ModelProfileExecutionContract;
   const hash = computeRepeatedFailureModelProfileHash(profile, contract);
 
   assert.notEqual(
@@ -77,16 +366,33 @@ test("immutable profile hash binds prompts, tools, tokenizer, decoding, and nati
     hash,
     computeRepeatedFailureModelProfileHash(profile, {
       ...contract,
-      caps: { ...contract.caps, maxTurns: 9 },
+      decodingAndContext: {
+        ...contract.decodingAndContext,
+        caps: { ...contract.decodingAndContext.caps, maxTurns: 9 },
+      },
     }),
   );
   assert.notEqual(
     hash,
     computeRepeatedFailureModelProfileHash({ ...profile, think: true }, contract),
   );
+  assert.notEqual(
+    hash,
+    computeRepeatedFailureModelProfileHash({ ...profile, requestTimeoutMs: 120_000 }, contract),
+  );
+  assert.notEqual(
+    hash,
+    computeRepeatedFailureModelProfileHash({ ...profile, modelDigest: "b".repeat(64) }, contract),
+  );
+  const { modelDigest: _modelDigest, ...profileWithoutDigest } = profile;
+  assert.throws(
+    () => computeRepeatedFailureModelProfileHash(profileWithoutDigest, contract),
+    /modelDigest/,
+  );
 
-  const driver = createRepeatedFailureProfileDriver(profile, hash);
+  const driver = createRepeatedFailureProfileDriver(profile, contract);
   assert.equal(driver.driverKind, "ollama-chat");
+  assert.equal(driver.modelDigest, profile.modelDigest);
   assert.equal(driver.tokenizer.identity, "qwen3-nfkc-v1");
   assert.throws(
     () => computeRepeatedFailureModelProfileHash(
@@ -95,6 +401,61 @@ test("immutable profile hash binds prompts, tools, tokenizer, decoding, and nati
     ),
     /requires a native Ollama endpoint/,
   );
+});
+
+test("profile request timeout overrides the frozen transport cap", async () => {
+  let observedTimeoutMs = 0;
+  let preflightCalls = 0;
+  const source: RepeatedFailureEpisodeDriver = {
+    driverKind: "deterministic-fake",
+    modelProfileId: "profile",
+    modelProfileHash: PROFILE_HASH,
+    modelDigest: PROFILE_HASH,
+    developerInstructions: "instructions",
+    tokenizer: { identity: "tokenizer", implementation: "nfkc-whitespace-v1" },
+    preflight: async () => {
+      preflightCalls += 1;
+    },
+    runEpisode: async (request) => {
+      observedTimeoutMs = request.caps.requestTimeoutMs;
+      return invalidHostFault(1);
+    },
+  };
+  const driver = bindProfileRequestTimeout(source, 300_000);
+  await driver.preflight?.();
+  await driver.runEpisode({
+    identity: {
+      suiteVersion: "suite",
+      taskId: TASK_ID,
+      variantId: VARIANT_ID,
+      modelProfileId: "profile",
+      modelProfileHash: PROFILE_HASH,
+      seed: 1,
+      arm: "NO_MEMORY",
+    },
+    prompt: "prompt",
+    caps: {
+      maxTurns: 1,
+      maxToolCalls: 1,
+      maxTotalTokens: 1,
+      maxDurationMs: 1,
+      requestTimeoutMs: 60_000,
+    },
+    toolHost: {
+      tools: [],
+      execute: async () => ({ status: "failed", output: "unused" }),
+      captureFinalEvidence: async () => ({
+        repoHash: "repo",
+        checkResult: "INDETERMINATE",
+        changedFiles: [],
+      }),
+    },
+    evaluator: {
+      evaluate: async () => ({ status: "NO_MATCH", fingerprintHash: "unused" }),
+    },
+  });
+  assert.equal(observedTimeoutMs, 300_000);
+  assert.equal(preflightCalls, 1);
 });
 
 interface ParsedEpisodeRow {
@@ -187,6 +548,7 @@ class DeterministicDriver implements RepeatedFailureEpisodeDriver {
     readonly modelProfileHash = PROFILE_HASH,
     private readonly hostFaultsBeforeSuccess = 0,
     private readonly forceTimidityCut = false,
+    readonly modelDigest = modelProfileHash,
   ) {}
 
   async runEpisode(request: RepeatedFailureEpisodeInput): Promise<ControlledResponsesEpisodeResult> {
@@ -234,6 +596,14 @@ class DeterministicDriver implements RepeatedFailureEpisodeDriver {
     return completedResult(request, evidence, [gate], [toolEvent(badAction)], "EXECUTED");
   }
 }
+class PreflightTrackingDriver extends DeterministicDriver {
+  preflightCalls = 0;
+
+  async preflight(): Promise<void> {
+    this.preflightCalls += 1;
+  }
+}
+
 
 class CapExceededDriver extends DeterministicDriver {
   override async runEpisode(request: RepeatedFailureEpisodeInput): Promise<ControlledResponsesEpisodeResult> {
@@ -311,7 +681,15 @@ class DurationCapDriver extends DeterministicDriver {
 }
 
 
-class GateWaitExpiredDriver extends DeterministicDriver {
+class GateFailOpenDriver extends DeterministicDriver {
+  constructor(
+    private readonly faultCode: string,
+    modelProfileId?: string,
+    modelProfileHash?: string,
+  ) {
+    super(modelProfileId, modelProfileHash);
+  }
+
   override async runEpisode(request: RepeatedFailureEpisodeInput): Promise<ControlledResponsesEpisodeResult> {
     if (!request.identity.variantId.endsWith(":no-trap") && request.identity.arm === "PRE_ACTION_FAILURE") {
       const evidence = await request.toolHost.captureFinalEvidence({
@@ -322,8 +700,8 @@ class GateWaitExpiredDriver extends DeterministicDriver {
         evidence,
         [{
           status: "ERROR_FAIL_OPEN",
-          fingerprintHash: sha256("gate-wait"),
-          faultCode: "GATE_WAIT_EXPIRED",
+          fingerprintHash: sha256("gate-failure"),
+          faultCode: this.faultCode,
         }],
         [],
         "NONE",
@@ -481,7 +859,7 @@ async function treeHash(root: string): Promise<string> {
   const hash = createHash("sha256");
   const visit = async (directory: string, relativeRoot: string): Promise<void> => {
     const entries = await readdir(directory, { withFileTypes: true });
-    entries.sort((left, right) => left.name.localeCompare(right.name));
+    entries.sort((left, right) => compareCodePoints(left.name, right.name));
     for (const entry of entries) {
       const relative = relativeRoot ? `${relativeRoot}/${entry.name}` : entry.name;
       hash.update(relative).update("\0");
@@ -496,6 +874,36 @@ async function treeHash(root: string): Promise<string> {
   await visit(root, "");
   return hash.digest("hex");
 }
+
+test("suite preflights every driver before starting any row", async () => {
+  const outputDir = await mkdtemp(path.join(tmpdir(), "h6-suite-preflight-"));
+  let preflightCalls = 0;
+  let rowStarts = 0;
+  const driver: RepeatedFailureEpisodeDriver = {
+    driverKind: "deterministic-fake",
+    modelProfileId: "failed-preflight-profile",
+    modelProfileHash: PROFILE_HASH,
+    modelDigest: PROFILE_HASH,
+    developerInstructions: "instructions",
+    tokenizer: { identity: "tokenizer", implementation: "nfkc-whitespace-v1" },
+    async preflight() {
+      preflightCalls += 1;
+      throw new Error("model digest mismatch");
+    },
+    async runEpisode() {
+      rowStarts += 1;
+      return invalidHostFault(1);
+    },
+  };
+
+  try {
+    await assert.rejects(() => runFake(outputDir, [driver]), /model digest mismatch/);
+    assert.equal(preflightCalls, 1);
+    assert.equal(rowStarts, 0);
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
 
 test("deterministic fake runs preserve row order, hashes, isolation, arms, and no-trap audit", async () => {
   const first = await mkdtemp(path.join(tmpdir(), "h6-suite-first-"));
@@ -656,9 +1064,11 @@ test("only host faults retry while a terminal task result is never rerun", async
   }
 });
 
-test("third host fault remains auditable before terminal retry exhaustion", async () => {
+test("host faults short of exhaustion are auditable and the row recovers", async () => {
   const outputDir = await mkdtemp(path.join(tmpdir(), "h6-suite-exhausted-"));
   try {
+    // Three faults against the frozen six-attempt budget: the row must record
+    // every fault with verifiable trace evidence and then complete normally.
     await runFake(outputDir, [
       new DeterministicDriver("exhausted-profile", "6".repeat(64), 3),
     ]);
@@ -670,47 +1080,79 @@ test("third host fault remains auditable before terminal retry exhaustion", asyn
       );
       assertRecord(checkpoint, "exhausted checkpoint");
       assert.ok(Array.isArray(checkpoint.tries));
-      assert.equal(checkpoint.tries.length, 3);
+      assert.equal(checkpoint.tries.length, 4);
       for (const [index, entry] of checkpoint.tries.entries()) {
         assertRecord(entry, "checkpoint try");
         assert.equal(entry.attempt, index + 1);
         assertRecord(entry.outcome, "checkpoint outcome");
-        assert.equal(entry.outcome.kind, "HOST_API_FAULT");
+        if (index < 3) {
+          assert.equal(entry.outcome.kind, "HOST_API_FAULT");
+          assert.equal(typeof entry.outcome.traceArtifactPath, "string");
+          assert.match(String(entry.outcome.traceArtifactHash), /^[a-f0-9]{64}$/);
+          const traceBytes = await readFile(
+            path.join(outputDir, entry.outcome.traceArtifactPath as string),
+          );
+          assert.equal(
+            createHash("sha256").update(traceBytes).digest("hex"),
+            entry.outcome.traceArtifactHash,
+          );
+          const trace = JSON.parse(traceBytes.toString("utf8")) as Record<string, unknown>;
+          assertRecord(trace.result, "fault trace result");
+          assert.ok(Array.isArray((trace.result as { responses?: unknown }).responses));
+          assert.ok(Array.isArray((trace.result as { tools?: unknown }).tools));
+          assert.ok(Array.isArray((trace.result as { gateEvents?: unknown }).gateEvents));
+          assertRecord(trace.finalRepoEvidence, "fault trace repository evidence");
+          continue;
+        }
+        assert.equal(entry.outcome.kind, "TASK_RESULT");
       }
+      // Recovery before the budget runs out must not invalidate the row.
       assertRecord(checkpoint.terminal, "checkpoint terminal");
-      assert.equal(checkpoint.terminal.invalidReason, "HOST_RETRIES_EXHAUSTED");
-      assertRecord(checkpoint.terminal.evidence, "exhausted terminal evidence");
-      assertRecord(checkpoint.terminal.isolation, "exhausted terminal isolation");
+      assert.notEqual(checkpoint.terminal.invalidReason, "HOST_RETRIES_EXHAUSTED");
     }
   } finally {
     await rm(outputDir, { recursive: true, force: true });
   }
 });
 
-test("a zero-retry audit terminalizes the first host fault with evidence", async () => {
+test("a zero-retry audit pauses the run and persists the exhausting fault", async () => {
   const outputDir = await mkdtemp(path.join(tmpdir(), "h6-suite-zero-retries-"));
   try {
-    await runRepeatedFailureSuite({
-      outputDir,
-      drivers: [new DeterministicDriver("zero-retry-profile", "7".repeat(64), 1)],
-      seeds: [7],
-      mode: "quick",
-      taskIds: [TASK_ID],
-      variantIds: [VARIANT_ID],
-      maxHostRetries: 0,
-      statisticsSeed: 9,
-      statisticsDraws: 10_000,
-      clock: FIXED_CLOCK,
-      now: FIXED_NOW,
-    });
-    const rows = await rowsFrom(outputDir);
-    assert.ok(rows.length > 0);
-    for (const row of rows) {
-      assert.equal(row.tryCount, 1);
-      assert.equal(row.status, "INVALID");
-      assert.equal(row.invalidReason, "HOST_RETRIES_EXHAUSTED");
-      assert.ok(row.evidence);
-      assert.ok(row.isolation);
+    // Decision rule v10: exhausting the retry budget pauses the suite instead
+    // of marking the row invalid, so a transient outage cannot void a run.
+    await assert.rejects(
+      runRepeatedFailureSuite({
+        outputDir,
+        drivers: [new DeterministicDriver("zero-retry-profile", "7".repeat(64), 1)],
+        seeds: [7],
+        mode: "quick",
+        taskIds: [TASK_ID],
+        variantIds: [VARIANT_ID],
+        maxHostRetries: 0,
+        statisticsSeed: 9,
+        statisticsDraws: 10_000,
+        clock: FIXED_CLOCK,
+        now: FIXED_NOW,
+      }),
+      /Host API fault retries exhausted/,
+    );
+    // The attempt that stopped the run is committed before the pause so a
+    // resumed run replays from the next attempt with a complete history.
+    const checkpointNames = await readdir(path.join(outputDir, "checkpoints"));
+    assert.ok(checkpointNames.length > 0);
+    for (const name of checkpointNames) {
+      const checkpoint: unknown = JSON.parse(
+        await readFile(path.join(outputDir, "checkpoints", name), "utf8"),
+      );
+      assertRecord(checkpoint, "paused checkpoint");
+      assert.ok(Array.isArray(checkpoint.tries));
+      assert.equal(checkpoint.tries.length, 1);
+      const [entry] = checkpoint.tries;
+      assertRecord(entry, "paused try");
+      assertRecord(entry.outcome, "paused outcome");
+      assert.equal(entry.outcome.kind, "HOST_API_FAULT");
+      assert.match(String(entry.outcome.traceArtifactHash), /^[a-f0-9]{64}$/);
+      assert.equal(checkpoint.terminal, undefined);
     }
   } finally {
     await rm(outputDir, { recursive: true, force: true });
@@ -750,7 +1192,7 @@ test("duration expiry is a single terminal cap result rather than a host retry",
 test("an expired gate wait invalidates the row as WAIT_RULE_FAULT", async () => {
   const outputDir = await mkdtemp(path.join(tmpdir(), "h6-suite-gate-wait-"));
   try {
-    await runFake(outputDir, [new GateWaitExpiredDriver()]);
+    await runFake(outputDir, [new GateFailOpenDriver("GATE_WAIT_EXPIRED")]);
     const rows = await rowsFrom(outputDir);
     const expired = rows.find(
       (row) => row.identity.variantId === VARIANT_ID && row.identity.arm === "PRE_ACTION_FAILURE",
@@ -758,6 +1200,22 @@ test("an expired gate wait invalidates the row as WAIT_RULE_FAULT", async () => 
     assert.ok(expired);
     assert.equal(expired.status, "INVALID");
     assert.equal(expired.invalidReason, "WAIT_RULE_FAULT");
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("any gate fail-open maps to a WAIT_RULE_FAULT invalid row", async () => {
+  const outputDir = await mkdtemp(path.join(tmpdir(), "h6-suite-gate-failure-"));
+  try {
+    await runFake(outputDir, [new GateFailOpenDriver("INVALID_EVALUATOR_RESULT")]);
+    const rows = await rowsFrom(outputDir);
+    const failed = rows.find(
+      (row) => row.identity.variantId === VARIANT_ID && row.identity.arm === "PRE_ACTION_FAILURE",
+    );
+    assert.ok(failed);
+    assert.equal(failed.status, "INVALID");
+    assert.equal(failed.invalidReason, "WAIT_RULE_FAULT");
   } finally {
     await rm(outputDir, { recursive: true, force: true });
   }
@@ -772,6 +1230,14 @@ test("resume preserves two stored host faults and executes only the third try", 
     const checkpointPath = path.join(outputDir, "checkpoints", `${row.rowKey}.json`);
     const checkpoint: unknown = JSON.parse(await readFile(checkpointPath, "utf8"));
     assertRecord(checkpoint, "row checkpoint");
+    const storedTrace = (attempt: 1 | 2) => {
+      const bytes = `${JSON.stringify({ schemaVersion: 1, attempt })}\n`;
+      return {
+        path: `traces/${row.rowKey}/attempt-${attempt}.json`,
+        bytes,
+        hash: createHash("sha256").update(bytes).digest("hex"),
+      };
+    };
     const storedHostFault = (attempt: 1 | 2) => ({
       attempt,
       durationMs: attempt,
@@ -787,8 +1253,16 @@ test("resume preserves two stored host faults and executes only the third try", 
         kind: "HOST_API_FAULT",
         code: "HTTP_503",
         messageHash: String(attempt + 5).repeat(64),
+        traceArtifactPath: storedTrace(attempt).path,
+        traceArtifactHash: storedTrace(attempt).hash,
       },
     });
+    await Promise.all(([1, 2] as const).map(async (attempt) => {
+      const trace = storedTrace(attempt);
+      const tracePath = path.join(outputDir, trace.path);
+      await mkdir(path.dirname(tracePath), { recursive: true });
+      await writeFile(tracePath, trace.bytes);
+    }));
     checkpoint.tries = [storedHostFault(1), storedHostFault(2)];
     const incompleteCheckpoint = Object.fromEntries(
       Object.entries(checkpoint).filter(([key]) => key !== "terminal"),
@@ -856,6 +1330,27 @@ test("resume completes an interrupted finalization after episodes are written", 
     await rm(outputDir, { recursive: true, force: true });
   }
 });
+test("resume rejects stale preregistration metadata before driver preflight", async () => {
+  const outputDir = await mkdtemp(path.join(tmpdir(), "h6-suite-prereg-resume-"));
+  try {
+    const run = await runFake(outputDir, [new DeterministicDriver()]);
+    await rm(path.join(outputDir, "MANIFEST.json"));
+    const metadata = JSON.parse(await readFile(run.runMetadataPath, "utf8")) as Record<string, unknown>;
+    metadata.preregistrationHash = "0".repeat(64);
+    await writeFile(run.runMetadataPath, `${JSON.stringify(metadata, null, 2)}\n`);
+
+    const resumeDriver = new PreflightTrackingDriver();
+    await assert.rejects(
+      () => runFake(outputDir, [resumeDriver], true),
+      /preregistrationHash|Invalid literal/,
+    );
+    assert.equal(resumeDriver.preflightCalls, 0);
+    assert.equal(resumeDriver.callsByRow.size, 0);
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
 test("resume fails closed on malformed checkpoints without rerunning the row", async () => {
   const outputDir = await mkdtemp(path.join(tmpdir(), "h6-suite-malformed-resume-"));
   try {
@@ -897,6 +1392,38 @@ test("resume fails closed without mutating a terminal row whose trace is missing
   }
 });
 
+test("resume rejects a missing trace from a nonterminal host-fault attempt", async () => {
+  const outputDir = await mkdtemp(path.join(tmpdir(), "h6-suite-missing-retry-trace-"));
+  try {
+    const profileId = "retry-resume-profile";
+    const profileHash = "9".repeat(64);
+    await runFake(outputDir, [new DeterministicDriver(profileId, profileHash, 2)]);
+    await rm(path.join(outputDir, "MANIFEST.json"));
+    const row = (await rowsFrom(outputDir))[0];
+    const checkpointPath = path.join(outputDir, "checkpoints", `${row.rowKey}.json`);
+    const checkpoint = JSON.parse(await readFile(checkpointPath, "utf8"));
+    assert.ok(Array.isArray(checkpoint.tries));
+    const firstTry = checkpoint.tries[0];
+    assertRecord(firstTry, "first retry try");
+    assertRecord(firstTry.outcome, "first retry outcome");
+    assert.equal(firstTry.outcome.kind, "HOST_API_FAULT");
+    assert.equal(typeof firstTry.outcome.traceArtifactPath, "string");
+    checkpoint.tries = [firstTry];
+    delete checkpoint.terminal;
+    await writeFile(checkpointPath, `${JSON.stringify(checkpoint, null, 2)}\n`);
+    await rm(path.join(outputDir, firstTry.outcome.traceArtifactPath as string));
+
+    const resumeDriver = new DeterministicDriver(profileId, profileHash, 2);
+    await assert.rejects(
+      () => runFake(outputDir, [resumeDriver], true),
+      /attempt trace artifact is missing or drifted/,
+    );
+    assert.equal(resumeDriver.callsByRow.size, 0);
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
 test("episode row schema rejects incomplete and wrong-version terminal rows", async () => {
   const outputDir = await mkdtemp(path.join(tmpdir(), "h6-suite-row-schema-"));
   try {
@@ -916,6 +1443,34 @@ test("episode row schema rejects incomplete and wrong-version terminal rows", as
       () => parseRepeatedFailureEpisodeRow({ ...complete, schemaVersion: 2 }),
       /Invalid input|schemaVersion/,
     );
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("manifest verification rejects a changed nonterminal host-fault trace", async () => {
+  const outputDir = await mkdtemp(path.join(tmpdir(), "h6-suite-retry-trace-manifest-"));
+  try {
+    await runFake(outputDir, [
+      new DeterministicDriver("retry-manifest-profile", "b".repeat(64), 2),
+    ]);
+    const row = (await rowsFrom(outputDir))[0];
+    const checkpoint = JSON.parse(
+      await readFile(path.join(outputDir, "checkpoints", `${row.rowKey}.json`), "utf8"),
+    );
+    assert.ok(Array.isArray(checkpoint.tries));
+    const firstTry = checkpoint.tries[0];
+    assertRecord(firstTry, "manifest retry try");
+    assertRecord(firstTry.outcome, "manifest retry outcome");
+    assert.equal(firstTry.outcome.kind, "HOST_API_FAULT");
+    assert.equal(typeof firstTry.outcome.traceArtifactPath, "string");
+    await writeFile(
+      path.join(outputDir, firstTry.outcome.traceArtifactPath as string),
+      '{"tampered":true}\n',
+    );
+
+    const replay = await replayRepeatedFailureStatistics({ runDir: outputDir });
+    assert.equal(replay.exitCode, 1);
   } finally {
     await rm(outputDir, { recursive: true, force: true });
   }
@@ -943,7 +1498,7 @@ test("primary cuts publish a complete NOT_ESTIMABLE artifact set", async () => {
   const outputDir = await mkdtemp(path.join(tmpdir(), "h6-suite-primary-cut-"));
   try {
     const run = await runFake(outputDir, [
-      new GateWaitExpiredDriver("primary-cut-profile", "9".repeat(64)),
+      new GateFailOpenDriver("GATE_WAIT_EXPIRED", "primary-cut-profile", "9".repeat(64)),
     ]);
     const statistics = JSON.parse(await readFile(run.statisticsPath, "utf8")) as Record<string, unknown>;
     assertRecord(statistics.decisions, "statistics decisions");
@@ -987,19 +1542,32 @@ test("run metadata freezes revisions, caps, locks, sandbox, retry, order, and an
     assert.equal(typeof metadata.harnessSourceHash, "string");
     assert.equal(typeof metadata.decisionRuleHash, "string");
     assert.equal(typeof metadata.provenanceHash, "string");
+    assert.equal(metadata.datasetInventoryHash, H6_FROZEN_INVENTORY_HASH);
+    assert.equal(metadata.preregistrationPath, H6_DECISION_RULE.preregistration.path);
+    assert.equal(metadata.preregistrationHash, H6_DECISION_RULE.preregistration.sha256);
+    const parsed = parseRunMetadata(metadata);
+    assert.equal(parsed.preregistrationPath, H6_DECISION_RULE.preregistration.path);
+    assert.deepEqual(metadata.modelDigests, [PROFILE_HASH]);
+    const missingBinding = { ...metadata };
+    delete missingBinding.preregistrationPath;
+    assert.throws(() => parseRunMetadata(missingBinding), /preregistrationPath/);
+    assert.throws(
+      () => parseRunMetadata({ ...metadata, preregistrationHash: "0".repeat(64) }),
+      /preregistrationHash|Invalid literal/,
+    );
     assert.ok(Array.isArray(metadata.taskRevisions) && metadata.taskRevisions.length === 1);
     assert.deepEqual(metadata.caps, {
       maxTurns: 12,
       maxToolCalls: 8,
       maxTotalTokens: 16_384,
-      maxDurationMs: 120_000,
-      requestTimeoutMs: 60_000,
+      maxDurationMs: 600_000,
+      requestTimeoutMs: 180_000,
       maxToolOutputChars: 16_384,
     });
     assertRecord(metadata.toolLocks, "tool locks");
     assertRecord(metadata.sandboxFlags, "sandbox flags");
     assert.deepEqual(metadata.retryRule, {
-      hostApiFaultRetriesAfterFirstTry: 2,
+      hostApiFaultRetriesAfterFirstTry: 5,
       rerunTaskResults: false,
       retainAllTries: true,
     });
@@ -1031,15 +1599,30 @@ test("main phase rejects reduced frozen inputs and cannot start without verified
       runRepeatedFailureSuite({ ...base, outputDir: path.join(root, "reduced-seeds"), seeds: [1, 2, 3, 4] }),
       /exact frozen seeds/,
     );
-    const firstDriver = drivers[0];
-    assert.ok(firstDriver);
+    // Three DISTINCT profiles: reusing one instance trips the earlier
+    // duplicate-identity guard and never reaches the count rule.
     await assert.rejects(
       runRepeatedFailureSuite({
         ...base,
-        outputDir: path.join(root, "reduced-profiles"),
-        drivers: [firstDriver],
+        outputDir: path.join(root, "excess-profiles"),
+        drivers: [
+          new DeterministicDriver("excess-profile-a", "a".repeat(64)),
+          new DeterministicDriver("excess-profile-b", "b".repeat(64)),
+          new DeterministicDriver("excess-profile-c", "c".repeat(64)),
+        ],
       }),
-      /exactly two immutable model profiles/,
+      /one or two immutable model profiles/,
+    );
+    await assert.rejects(
+      runRepeatedFailureSuite({
+        ...base,
+        outputDir: path.join(root, "duplicate-model-digests"),
+        drivers: [
+          new DeterministicDriver("main-profile-a", "a".repeat(64), 0, false, "c".repeat(64)),
+          new DeterministicDriver("main-profile-b", "b".repeat(64), 0, false, "c".repeat(64)),
+        ],
+      }),
+      /distinct served model digests/,
     );
     await assert.rejects(
       runRepeatedFailureSuite({ ...base, outputDir: path.join(root, "reduced-draws"), statisticsDraws: 9_999 }),

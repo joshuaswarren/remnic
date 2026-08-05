@@ -1,11 +1,10 @@
 {
   "id": "candidate-beta",
-  "description": "Write the requested value to the default configuration file.",
+  "description": "Candidate beta.",
   "files": [
     {
       "path": "config/default.json",
       "content": "{\n  \"timeoutMs\": 7000,\n  \"retries\": 3\n}\n"
     }
-  ],
-  "isGood": false
+  ]
 }

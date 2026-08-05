@@ -84,3 +84,4 @@ export * from "./repeated-failure-store.js";
 export * from "./repeated-failure-stats.js";
 export * from "./repeated-failure-suite.js";
 export * from "./repeated-failure-trap-audit.js";
+export * from "./repeated-failure-report.js";

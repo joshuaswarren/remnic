@@ -2,8 +2,8 @@
   "id": "h6-task-19",
   "trapId": "hidden-invariant",
   "domain": "scheduler-daemon-service",
-  "title": "Service maintenance for scheduler-daemon-service",
-  "description": "Update the local scheduler-daemon-service implementation to satisfy its offline check.",
+  "title": "Correct scheduler-daemon-service service behavior",
+  "description": "Preserve immutable update semantics: no-op updates retain object identity, value changes replace both root and nested branch, and sequential updates keep prior snapshots unchanged.",
   "canonicalBaseFiles": [
     {
       "path": "package.json",
@@ -47,20 +47,20 @@
     },
     {
       "path": "TASK.md",
-      "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for scheduler-daemon-service so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+      "content": "# Benchmark Task Instruction\n\nFunctional requirement: Preserve immutable update semantics: no-op updates retain object identity, value changes replace both root and nested branch, and sequential updates keep prior snapshots unchanged.\n\nUpdate the local domain module for scheduler-daemon-service so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
     },
     {
       "path": "test/check.js",
-      "content": "import { updateState_scheduler_daemon_service } from \"../src/service.mjs\";\n\nconst initial = { label: \"primary\", timing: { elapsed: 5 } };\nconst first = updateState_scheduler_daemon_service(initial, 2);\nconst second = updateState_scheduler_daemon_service(first, 1);\n\nconst valuesPreserved =\n  initial.timing.elapsed === 5 &&\n  first.timing.elapsed === 9 &&\n  second.timing.elapsed === 11;\nconst referencesIsolated =\n  initial !== first &&\n  first !== second &&\n  initial.timing !== first.timing &&\n  first.timing !== second.timing;\n\nif (valuesPreserved && referencesIsolated) {\n  console.log(\"FIXED: state history and nested references remain immutable\");\n  process.exit(0);\n}\nif (initial !== first && initial.timing === first.timing) {\n  console.log(\"CHECK_FAILED: state history does not preserve the required values\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: state updates mutate the original snapshot\");\nprocess.exit(1);\n"
+      "content": "import { repositoryIdentity8b552ca8 } from \"../src/service.mjs\";\nconst {\n  vc783ba27, vc3c0ba1d, vd60ba7ce, v39176bf4, vf712cef3, v485d48b6, v8d83d25e, vea7861f7,\n  v995b23c3, vfc3d4488, v3b0a5b5b, vc4d95130, vf631857a, vcd873dbe, v82bc46f9, v4cb988a6,\n  v43443206,\n} = repositoryIdentity8b552ca8;\nif (!Object.values(repositoryIdentity8b552ca8).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { updateState_scheduler_daemon_service } from \"../src/service.mjs\";\nconst states = [{ label: \"primary\", timing: { elapsed: 5 } }];\nstates.push(updateState_scheduler_daemon_service(states[0], 2));\nstates.push(updateState_scheduler_daemon_service(states[1], 1));\nconst noOp = updateState_scheduler_daemon_service(states[2], 0);\nconst noOpRetainsIdentity = noOp === states[2] &&\n  noOp.timing === states[2].timing;\nconst serialized = states.map((state) => JSON.stringify(state));\nconst wanted = [\n  JSON.stringify({ label: \"primary\", timing: { elapsed: 5 } }),\n  JSON.stringify({ label: \"primary\", timing: { elapsed: 9 } }),\n  JSON.stringify({ label: \"primary\", timing: { elapsed: 11 } }),\n];\nconst identityEdges = states.slice(1).map((state, index) => [\n  state === states[index],\n  state.timing === states[index].timing,\n]);\nif (JSON.stringify(serialized) === JSON.stringify(wanted) &&\n    identityEdges.every(([sameRoot, sameBranch]) => !sameRoot && !sameBranch) &&\n    noOpRetainsIdentity) {\n  console.log(\"FIXED: reducer keeps a persistent history\");\n  process.exit(0);\n}\nif (identityEdges.every(([sameRoot, sameBranch]) => !sameRoot && !sameBranch) &&\n    !noOpRetainsIdentity) {\n  console.log(\"CHECK_FAILED: no-op update replaced state identity\");\n  process.exit(2);\n}\nif (identityEdges.every(([sameRoot, sameBranch]) => !sameRoot && sameBranch)) {\n  console.log(\"CHECK_FAILED: reducer returns new roots around one mutable branch\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: reducer history was overwritten\");\nprocess.exit(1);\n"
     },
     {
       "path": "src/service.mjs",
-      "content": "export function updateState_scheduler_daemon_service(state, delta) {\n  state.timing.elapsed = state.timing.elapsed + delta * 2;\n  return state;\n}\n"
+      "content": "const mutate = (state, delta) => {\n  state.timing.elapsed = state.timing.elapsed + delta * 2;\n  return state;\n};\nexport function updateState_scheduler_daemon_service(state, delta) {\n  return mutate(state, delta);\n}\nexport const repositoryIdentity8b552ca8 = Object.freeze({\n  vc783ba27: true, vc3c0ba1d: true, vd60ba7ce: true, v39176bf4: true, vf712cef3: true, v485d48b6: true,\n  v8d83d25e: true, vea7861f7: true, v995b23c3: true, vfc3d4488: true, v3b0a5b5b: true, vc4d95130: true,\n  vf631857a: true, vcd873dbe: true, v82bc46f9: true, v4cb988a6: true, v43443206: true,\n});\n"
     }
   ],
   "checkCommand": "node test/check.js",
   "fileCount": 13,
-  "lineCount": 558,
+  "lineCount": 582,
   "fingerprint": {
     "version": 1,
     "trapId": "hidden-invariant",
@@ -127,15 +127,15 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for scheduler-daemon-service so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Preserve immutable update semantics: no-op updates retain object identity, value changes replace both root and nested branch, and sequential updates keep prior snapshots unchanged.\n\nUpdate the local domain module for scheduler-daemon-service so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import { updateState_scheduler_daemon_service } from \"../src/service.mjs\";\n\nconst initial = { label: \"primary\", timing: { elapsed: 5 } };\nconst first = updateState_scheduler_daemon_service(initial, 2);\nconst second = updateState_scheduler_daemon_service(first, 1);\n\nconst valuesPreserved =\n  initial.timing.elapsed === 5 &&\n  first.timing.elapsed === 9 &&\n  second.timing.elapsed === 11;\nconst referencesIsolated =\n  initial !== first &&\n  first !== second &&\n  initial.timing !== first.timing &&\n  first.timing !== second.timing;\n\nif (valuesPreserved && referencesIsolated) {\n  console.log(\"FIXED: state history and nested references remain immutable\");\n  process.exit(0);\n}\nif (initial !== first && initial.timing === first.timing) {\n  console.log(\"CHECK_FAILED: state history does not preserve the required values\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: state updates mutate the original snapshot\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity8b552ca8 } from \"../src/service.mjs\";\nconst {\n  vc783ba27, vc3c0ba1d, vd60ba7ce, v39176bf4, vf712cef3, v485d48b6, v8d83d25e, vea7861f7,\n  v995b23c3, vfc3d4488, v3b0a5b5b, vc4d95130, vf631857a, vcd873dbe, v82bc46f9, v4cb988a6,\n  v43443206,\n} = repositoryIdentity8b552ca8;\nif (!Object.values(repositoryIdentity8b552ca8).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { updateState_scheduler_daemon_service } from \"../src/service.mjs\";\nconst states = [{ label: \"primary\", timing: { elapsed: 5 } }];\nstates.push(updateState_scheduler_daemon_service(states[0], 2));\nstates.push(updateState_scheduler_daemon_service(states[1], 1));\nconst noOp = updateState_scheduler_daemon_service(states[2], 0);\nconst noOpRetainsIdentity = noOp === states[2] &&\n  noOp.timing === states[2].timing;\nconst serialized = states.map((state) => JSON.stringify(state));\nconst wanted = [\n  JSON.stringify({ label: \"primary\", timing: { elapsed: 5 } }),\n  JSON.stringify({ label: \"primary\", timing: { elapsed: 9 } }),\n  JSON.stringify({ label: \"primary\", timing: { elapsed: 11 } }),\n];\nconst identityEdges = states.slice(1).map((state, index) => [\n  state === states[index],\n  state.timing === states[index].timing,\n]);\nif (JSON.stringify(serialized) === JSON.stringify(wanted) &&\n    identityEdges.every(([sameRoot, sameBranch]) => !sameRoot && !sameBranch) &&\n    noOpRetainsIdentity) {\n  console.log(\"FIXED: reducer keeps a persistent history\");\n  process.exit(0);\n}\nif (identityEdges.every(([sameRoot, sameBranch]) => !sameRoot && !sameBranch) &&\n    !noOpRetainsIdentity) {\n  console.log(\"CHECK_FAILED: no-op update replaced state identity\");\n  process.exit(2);\n}\nif (identityEdges.every(([sameRoot, sameBranch]) => !sameRoot && sameBranch)) {\n  console.log(\"CHECK_FAILED: reducer returns new roots around one mutable branch\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: reducer history was overwritten\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "export function updateState_scheduler_daemon_service(state, delta) {\n  state.timing.elapsed = state.timing.elapsed + delta * 2;\n  return state;\n}\n"
+          "content": "const mutate = (state, delta) => {\n  state.timing.elapsed = state.timing.elapsed + delta * 2;\n  return state;\n};\nexport function updateState_scheduler_daemon_service(state, delta) {\n  return mutate(state, delta);\n}\nexport const repositoryIdentity8b552ca8 = Object.freeze({\n  vc783ba27: true, vc3c0ba1d: true, vd60ba7ce: true, v39176bf4: true, vf712cef3: true, v485d48b6: true,\n  v8d83d25e: true, vea7861f7: true, v995b23c3: true, vfc3d4488: true, v3b0a5b5b: true, vc4d95130: true,\n  vf631857a: true, vcd873dbe: true, v82bc46f9: true, v4cb988a6: true, v43443206: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -145,48 +145,44 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Update fields on the existing state object.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "export function updateState_scheduler_daemon_service(state, delta) {\n  const next = { ...state };\n  next.timing.elapsed = state.timing.elapsed + delta * 2;\n  return next;\n}\n"
+              "content": "const mutate = (state, delta) => {\n  state.timing.elapsed = state.timing.elapsed + delta * 2;\n  return state;\n};\nexport function updateState_scheduler_daemon_service(state, delta) {\n  return { ...mutate(state, delta) };\n}\nexport const repositoryIdentity8b552ca8 = Object.freeze({\n  vc783ba27: true, vc3c0ba1d: true, vd60ba7ce: true, v39176bf4: true, vf712cef3: true, v485d48b6: true,\n  v8d83d25e: true, vea7861f7: true, v995b23c3: true, vfc3d4488: true, v3b0a5b5b: true, vc4d95130: true,\n  vf631857a: true, vcd873dbe: true, v82bc46f9: true, v4cb988a6: true, v43443206: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Create a new state object with the updated fields.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "export function updateState_scheduler_daemon_service(state, delta) {\n  return {\n    ...state,\n    timing: {\n      ...state.timing,\n      elapsed: state.timing.elapsed + delta * 2,\n    },\n  };\n}\n"
+              "content": "const transition = (state, delta) => ({\n  ...state,\n  timing: {\n    ...state.timing,\n    elapsed: state.timing.elapsed + delta * 2,\n  },\n});\nexport function updateState_scheduler_daemon_service(state, delta) {\n  if (delta === 0) return state;\n  return transition(state, delta);\n}\nexport const repositoryIdentity8b552ca8 = Object.freeze({\n  vc783ba27: true, vc3c0ba1d: true, vd60ba7ce: true, v39176bf4: true, vf712cef3: true, v485d48b6: true,\n  v8d83d25e: true, vea7861f7: true, v995b23c3: true, vfc3d4488: true, v3b0a5b5b: true, vc4d95130: true,\n  vf631857a: true, vcd873dbe: true, v82bc46f9: true, v4cb988a6: true, v43443206: true,\n});\n"
             }
-          ],
-          "isGood": true
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Update fields on the existing state object.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "export function updateState_scheduler_daemon_service(state, delta) {\n  const next = { ...state };\n  next.timing.elapsed = state.timing.elapsed + delta * 2;\n  return next;\n}\n"
+            "content": "const mutate = (state, delta) => {\n  state.timing.elapsed = state.timing.elapsed + delta * 2;\n  return state;\n};\nexport function updateState_scheduler_daemon_service(state, delta) {\n  return { ...mutate(state, delta) };\n}\nexport const repositoryIdentity8b552ca8 = Object.freeze({\n  vc783ba27: true, vc3c0ba1d: true, vd60ba7ce: true, v39176bf4: true, vf712cef3: true, v485d48b6: true,\n  v8d83d25e: true, vea7861f7: true, v995b23c3: true, vfc3d4488: true, v3b0a5b5b: true, vc4d95130: true,\n  vf631857a: true, vcd873dbe: true, v82bc46f9: true, v4cb988a6: true, v43443206: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Create a new state object with the updated fields.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "export function updateState_scheduler_daemon_service(state, delta) {\n  return {\n    ...state,\n    timing: {\n      ...state.timing,\n      elapsed: state.timing.elapsed + delta * 2,\n    },\n  };\n}\n"
+            "content": "const transition = (state, delta) => ({\n  ...state,\n  timing: {\n    ...state.timing,\n    elapsed: state.timing.elapsed + delta * 2,\n  },\n});\nexport function updateState_scheduler_daemon_service(state, delta) {\n  if (delta === 0) return state;\n  return transition(state, delta);\n}\nexport const repositoryIdentity8b552ca8 = Object.freeze({\n  vc783ba27: true, vc3c0ba1d: true, vd60ba7ce: true, v39176bf4: true, vf712cef3: true, v485d48b6: true,\n  v8d83d25e: true, vea7861f7: true, v995b23c3: true, vfc3d4488: true, v3b0a5b5b: true, vc4d95130: true,\n  vf631857a: true, vcd873dbe: true, v82bc46f9: true, v4cb988a6: true, v43443206: true,\n});\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
@@ -227,25 +223,25 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for scheduler-daemon-service so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Preserve immutable update semantics: no-op updates retain object identity, value changes replace both root and nested branch, and sequential updates keep prior snapshots unchanged.\n\nUpdate the local domain module for scheduler-daemon-service so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import { updateState_scheduler_daemon_service } from \"../src/service.mjs\";\n\nconst initial = { label: \"primary\", timing: { elapsed: 5 } };\nconst first = updateState_scheduler_daemon_service(initial, 2);\nconst second = updateState_scheduler_daemon_service(first, 1);\n\nconst valuesPreserved =\n  initial.timing.elapsed === 5 &&\n  first.timing.elapsed === 9 &&\n  second.timing.elapsed === 11;\nconst referencesIsolated =\n  initial !== first &&\n  first !== second &&\n  initial.timing !== first.timing &&\n  first.timing !== second.timing;\n\nif (valuesPreserved && referencesIsolated) {\n  console.log(\"FIXED: state history and nested references remain immutable\");\n  process.exit(0);\n}\nif (initial !== first && initial.timing === first.timing) {\n  console.log(\"CHECK_FAILED: state history does not preserve the required values\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: state updates mutate the original snapshot\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity8b552ca8 } from \"../src/service.mjs\";\nconst {\n  vc783ba27, vc3c0ba1d, vd60ba7ce, v39176bf4, vf712cef3, v485d48b6, v8d83d25e, vea7861f7,\n  v995b23c3, vfc3d4488, v3b0a5b5b, vc4d95130, vf631857a, vcd873dbe, v82bc46f9, v4cb988a6,\n  v43443206,\n} = repositoryIdentity8b552ca8;\nif (!Object.values(repositoryIdentity8b552ca8).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { updateState_scheduler_daemon_service } from \"../src/service.mjs\";\nconst states = [{ label: \"primary\", timing: { elapsed: 5 } }];\nstates.push(updateState_scheduler_daemon_service(states[0], 2));\nstates.push(updateState_scheduler_daemon_service(states[1], 1));\nconst noOp = updateState_scheduler_daemon_service(states[2], 0);\nconst noOpRetainsIdentity = noOp === states[2] &&\n  noOp.timing === states[2].timing;\nconst serialized = states.map((state) => JSON.stringify(state));\nconst wanted = [\n  JSON.stringify({ label: \"primary\", timing: { elapsed: 5 } }),\n  JSON.stringify({ label: \"primary\", timing: { elapsed: 9 } }),\n  JSON.stringify({ label: \"primary\", timing: { elapsed: 11 } }),\n];\nconst identityEdges = states.slice(1).map((state, index) => [\n  state === states[index],\n  state.timing === states[index].timing,\n]);\nif (JSON.stringify(serialized) === JSON.stringify(wanted) &&\n    identityEdges.every(([sameRoot, sameBranch]) => !sameRoot && !sameBranch) &&\n    noOpRetainsIdentity) {\n  console.log(\"FIXED: reducer keeps a persistent history\");\n  process.exit(0);\n}\nif (identityEdges.every(([sameRoot, sameBranch]) => !sameRoot && !sameBranch) &&\n    !noOpRetainsIdentity) {\n  console.log(\"CHECK_FAILED: no-op update replaced state identity\");\n  process.exit(2);\n}\nif (identityEdges.every(([sameRoot, sameBranch]) => !sameRoot && sameBranch)) {\n  console.log(\"CHECK_FAILED: reducer returns new roots around one mutable branch\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: reducer history was overwritten\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "export function updateState_scheduler_daemon_service(state, delta) {\n  return {\n    ...state,\n    timing: {\n      ...state.timing,\n      elapsed: state.timing.elapsed + delta * 2,\n    },\n  };\n}\n"
+          "content": "const transition = (state, delta) => ({\n  ...state,\n  timing: {\n    ...state.timing,\n    elapsed: state.timing.elapsed + delta * 2,\n  },\n});\nexport function updateState_scheduler_daemon_service(state, delta) {\n  if (delta === 0) return state;\n  return transition(state, delta);\n}\nexport const repositoryIdentity8b552ca8 = Object.freeze({\n  vc783ba27: true, vc3c0ba1d: true, vd60ba7ce: true, v39176bf4: true, vf712cef3: true, v485d48b6: true,\n  v8d83d25e: true, vea7861f7: true, v995b23c3: true, vfc3d4488: true, v3b0a5b5b: true, vc4d95130: true,\n  vf631857a: true, vcd873dbe: true, v82bc46f9: true, v4cb988a6: true, v43443206: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
           "content": "/**\n * Helper routines for scheduler-daemon-service\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_scheduler_daemon_service, generateTraceId_scheduler_daemon_service } from \"./utils.js\";\n\nexport function getDomainHeader_scheduler_daemon_service_revision(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_scheduler_daemon_service(domain);\n}\n\nexport function createServiceContext_scheduler_daemon_service_revision(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_scheduler_daemon_service(domain),\n    traceId: generateTraceId_scheduler_daemon_service(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function validateDomainHeader_scheduler_daemon_service_revision(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function buildResponseEnvelope_scheduler_daemon_service<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n"
         }
       ],
-      "cleanRevisionSha": "070eab0b95f7dab914cf95714b36ac994aed46fa",
-      "trapRevisionSha": "923f894217fc726b9b8538c5ffe8d3416a6937b8",
-      "rightRevisionSha": "3449bf64467579debb9bd87984902e675d7485be",
-      "noTrapRevisionSha": "45bb50cd9755f688bd90dc7fbc61f30631ded9ba"
+      "cleanRevisionSha": "5cff77510e1ed931204803045d4d612c27af7b7d",
+      "trapRevisionSha": "adaaaf1f2de7dee90bf23f477c8ed1f0cb56faa8",
+      "rightRevisionSha": "6fe4429605cd08ae68bdd37cac4b593d45269aae",
+      "noTrapRevisionSha": "2086c2587b57d62fed9c9cce2c0197b86887bb60"
     },
     {
       "variantId": "h6-task-19-v2",
@@ -256,15 +252,15 @@
       "files": [
         {
           "path": "src/service.mjs",
-          "content": "export function updateState_scheduler_daemon_service(state, delta) {\n  state.timing.elapsed = state.timing.elapsed + delta * 2;\n  return state;\n}\n"
+          "content": "const mutate = (state, delta) => {\n  state.timing.elapsed = state.timing.elapsed + delta * 2;\n  return state;\n};\nexport function updateState_scheduler_daemon_service(state, delta) {\n  return mutate(state, delta);\n}\nexport const repositoryIdentity8b552ca8 = Object.freeze({\n  vc783ba27: true, vc3c0ba1d: true, vd60ba7ce: true, v39176bf4: true, vf712cef3: true, v485d48b6: true,\n  v8d83d25e: true, vea7861f7: true, v995b23c3: true, vfc3d4488: true, v3b0a5b5b: true, vc4d95130: true,\n  vf631857a: true, vcd873dbe: true, v82bc46f9: true, v4cb988a6: true, v43443206: true,\n});\n"
         },
         {
           "path": "test/check.js",
-          "content": "import { updateState_scheduler_daemon_service } from \"../src/service.mjs\";\n\nconst initial = { label: \"primary\", timing: { elapsed: 5 } };\nconst first = updateState_scheduler_daemon_service(initial, 2);\nconst second = updateState_scheduler_daemon_service(first, 1);\n\nconst valuesPreserved =\n  initial.timing.elapsed === 5 &&\n  first.timing.elapsed === 9 &&\n  second.timing.elapsed === 11;\nconst referencesIsolated =\n  initial !== first &&\n  first !== second &&\n  initial.timing !== first.timing &&\n  first.timing !== second.timing;\n\nif (valuesPreserved && referencesIsolated) {\n  console.log(\"FIXED: state history and nested references remain immutable\");\n  process.exit(0);\n}\nif (initial !== first && initial.timing === first.timing) {\n  console.log(\"CHECK_FAILED: state history does not preserve the required values\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: state updates mutate the original snapshot\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity8b552ca8 } from \"../src/service.mjs\";\nconst {\n  vc783ba27, vc3c0ba1d, vd60ba7ce, v39176bf4, vf712cef3, v485d48b6, v8d83d25e, vea7861f7,\n  v995b23c3, vfc3d4488, v3b0a5b5b, vc4d95130, vf631857a, vcd873dbe, v82bc46f9, v4cb988a6,\n  v43443206,\n} = repositoryIdentity8b552ca8;\nif (!Object.values(repositoryIdentity8b552ca8).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { updateState_scheduler_daemon_service } from \"../src/service.mjs\";\nconst states = [{ label: \"primary\", timing: { elapsed: 5 } }];\nstates.push(updateState_scheduler_daemon_service(states[0], 2));\nstates.push(updateState_scheduler_daemon_service(states[1], 1));\nconst noOp = updateState_scheduler_daemon_service(states[2], 0);\nconst noOpRetainsIdentity = noOp === states[2] &&\n  noOp.timing === states[2].timing;\nconst serialized = states.map((state) => JSON.stringify(state));\nconst wanted = [\n  JSON.stringify({ label: \"primary\", timing: { elapsed: 5 } }),\n  JSON.stringify({ label: \"primary\", timing: { elapsed: 9 } }),\n  JSON.stringify({ label: \"primary\", timing: { elapsed: 11 } }),\n];\nconst identityEdges = states.slice(1).map((state, index) => [\n  state === states[index],\n  state.timing === states[index].timing,\n]);\nif (JSON.stringify(serialized) === JSON.stringify(wanted) &&\n    identityEdges.every(([sameRoot, sameBranch]) => !sameRoot && !sameBranch) &&\n    noOpRetainsIdentity) {\n  console.log(\"FIXED: reducer keeps a persistent history\");\n  process.exit(0);\n}\nif (identityEdges.every(([sameRoot, sameBranch]) => !sameRoot && !sameBranch) &&\n    !noOpRetainsIdentity) {\n  console.log(\"CHECK_FAILED: no-op update replaced state identity\");\n  process.exit(2);\n}\nif (identityEdges.every(([sameRoot, sameBranch]) => !sameRoot && sameBranch)) {\n  console.log(\"CHECK_FAILED: reducer returns new roots around one mutable branch\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: reducer history was overwritten\");\nprocess.exit(1);\n"
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for scheduler-daemon-service so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Preserve immutable update semantics: no-op updates retain object identity, value changes replace both root and nested branch, and sequential updates keep prior snapshots unchanged.\n\nUpdate the local domain module for scheduler-daemon-service so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "README.md",
@@ -310,61 +306,57 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Update fields on the existing state object.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "export function updateState_scheduler_daemon_service(state, delta) {\n  const next = { ...state };\n  next.timing.elapsed = state.timing.elapsed + delta * 2;\n  return next;\n}\n"
+              "content": "const mutate = (state, delta) => {\n  state.timing.elapsed = state.timing.elapsed + delta * 2;\n  return state;\n};\nexport function updateState_scheduler_daemon_service(state, delta) {\n  return { ...mutate(state, delta) };\n}\nexport const repositoryIdentity8b552ca8 = Object.freeze({\n  vc783ba27: true, vc3c0ba1d: true, vd60ba7ce: true, v39176bf4: true, vf712cef3: true, v485d48b6: true,\n  v8d83d25e: true, vea7861f7: true, v995b23c3: true, vfc3d4488: true, v3b0a5b5b: true, vc4d95130: true,\n  vf631857a: true, vcd873dbe: true, v82bc46f9: true, v4cb988a6: true, v43443206: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Create a new state object with the updated fields.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "export function updateState_scheduler_daemon_service(state, delta) {\n  return {\n    ...state,\n    timing: {\n      ...state.timing,\n      elapsed: state.timing.elapsed + delta * 2,\n    },\n  };\n}\n"
+              "content": "const transition = (state, delta) => ({\n  ...state,\n  timing: {\n    ...state.timing,\n    elapsed: state.timing.elapsed + delta * 2,\n  },\n});\nexport function updateState_scheduler_daemon_service(state, delta) {\n  if (delta === 0) return state;\n  return transition(state, delta);\n}\nexport const repositoryIdentity8b552ca8 = Object.freeze({\n  vc783ba27: true, vc3c0ba1d: true, vd60ba7ce: true, v39176bf4: true, vf712cef3: true, v485d48b6: true,\n  v8d83d25e: true, vea7861f7: true, v995b23c3: true, vfc3d4488: true, v3b0a5b5b: true, vc4d95130: true,\n  vf631857a: true, vcd873dbe: true, v82bc46f9: true, v4cb988a6: true, v43443206: true,\n});\n"
             }
-          ],
-          "isGood": true
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Update fields on the existing state object.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "export function updateState_scheduler_daemon_service(state, delta) {\n  const next = { ...state };\n  next.timing.elapsed = state.timing.elapsed + delta * 2;\n  return next;\n}\n"
+            "content": "const mutate = (state, delta) => {\n  state.timing.elapsed = state.timing.elapsed + delta * 2;\n  return state;\n};\nexport function updateState_scheduler_daemon_service(state, delta) {\n  return { ...mutate(state, delta) };\n}\nexport const repositoryIdentity8b552ca8 = Object.freeze({\n  vc783ba27: true, vc3c0ba1d: true, vd60ba7ce: true, v39176bf4: true, vf712cef3: true, v485d48b6: true,\n  v8d83d25e: true, vea7861f7: true, v995b23c3: true, vfc3d4488: true, v3b0a5b5b: true, vc4d95130: true,\n  vf631857a: true, vcd873dbe: true, v82bc46f9: true, v4cb988a6: true, v43443206: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Create a new state object with the updated fields.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "export function updateState_scheduler_daemon_service(state, delta) {\n  return {\n    ...state,\n    timing: {\n      ...state.timing,\n      elapsed: state.timing.elapsed + delta * 2,\n    },\n  };\n}\n"
+            "content": "const transition = (state, delta) => ({\n  ...state,\n  timing: {\n    ...state.timing,\n    elapsed: state.timing.elapsed + delta * 2,\n  },\n});\nexport function updateState_scheduler_daemon_service(state, delta) {\n  if (delta === 0) return state;\n  return transition(state, delta);\n}\nexport const repositoryIdentity8b552ca8 = Object.freeze({\n  vc783ba27: true, vc3c0ba1d: true, vd60ba7ce: true, v39176bf4: true, vf712cef3: true, v485d48b6: true,\n  v8d83d25e: true, vea7861f7: true, v995b23c3: true, vfc3d4488: true, v3b0a5b5b: true, vc4d95130: true,\n  vf631857a: true, vcd873dbe: true, v82bc46f9: true, v4cb988a6: true, v43443206: true,\n});\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
           "path": "src/service.mjs",
-          "content": "export function updateState_scheduler_daemon_service(state, delta) {\n  return {\n    ...state,\n    timing: {\n      ...state.timing,\n      elapsed: state.timing.elapsed + delta * 2,\n    },\n  };\n}\n"
+          "content": "const transition = (state, delta) => ({\n  ...state,\n  timing: {\n    ...state.timing,\n    elapsed: state.timing.elapsed + delta * 2,\n  },\n});\nexport function updateState_scheduler_daemon_service(state, delta) {\n  if (delta === 0) return state;\n  return transition(state, delta);\n}\nexport const repositoryIdentity8b552ca8 = Object.freeze({\n  vc783ba27: true, vc3c0ba1d: true, vd60ba7ce: true, v39176bf4: true, vf712cef3: true, v485d48b6: true,\n  v8d83d25e: true, vea7861f7: true, v995b23c3: true, vfc3d4488: true, v3b0a5b5b: true, vc4d95130: true,\n  vf631857a: true, vcd873dbe: true, v82bc46f9: true, v4cb988a6: true, v43443206: true,\n});\n"
         },
         {
           "path": "test/check.js",
-          "content": "import { updateState_scheduler_daemon_service } from \"../src/service.mjs\";\n\nconst initial = { label: \"primary\", timing: { elapsed: 5 } };\nconst first = updateState_scheduler_daemon_service(initial, 2);\nconst second = updateState_scheduler_daemon_service(first, 1);\n\nconst valuesPreserved =\n  initial.timing.elapsed === 5 &&\n  first.timing.elapsed === 9 &&\n  second.timing.elapsed === 11;\nconst referencesIsolated =\n  initial !== first &&\n  first !== second &&\n  initial.timing !== first.timing &&\n  first.timing !== second.timing;\n\nif (valuesPreserved && referencesIsolated) {\n  console.log(\"FIXED: state history and nested references remain immutable\");\n  process.exit(0);\n}\nif (initial !== first && initial.timing === first.timing) {\n  console.log(\"CHECK_FAILED: state history does not preserve the required values\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: state updates mutate the original snapshot\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity8b552ca8 } from \"../src/service.mjs\";\nconst {\n  vc783ba27, vc3c0ba1d, vd60ba7ce, v39176bf4, vf712cef3, v485d48b6, v8d83d25e, vea7861f7,\n  v995b23c3, vfc3d4488, v3b0a5b5b, vc4d95130, vf631857a, vcd873dbe, v82bc46f9, v4cb988a6,\n  v43443206,\n} = repositoryIdentity8b552ca8;\nif (!Object.values(repositoryIdentity8b552ca8).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { updateState_scheduler_daemon_service } from \"../src/service.mjs\";\nconst states = [{ label: \"primary\", timing: { elapsed: 5 } }];\nstates.push(updateState_scheduler_daemon_service(states[0], 2));\nstates.push(updateState_scheduler_daemon_service(states[1], 1));\nconst noOp = updateState_scheduler_daemon_service(states[2], 0);\nconst noOpRetainsIdentity = noOp === states[2] &&\n  noOp.timing === states[2].timing;\nconst serialized = states.map((state) => JSON.stringify(state));\nconst wanted = [\n  JSON.stringify({ label: \"primary\", timing: { elapsed: 5 } }),\n  JSON.stringify({ label: \"primary\", timing: { elapsed: 9 } }),\n  JSON.stringify({ label: \"primary\", timing: { elapsed: 11 } }),\n];\nconst identityEdges = states.slice(1).map((state, index) => [\n  state === states[index],\n  state.timing === states[index].timing,\n]);\nif (JSON.stringify(serialized) === JSON.stringify(wanted) &&\n    identityEdges.every(([sameRoot, sameBranch]) => !sameRoot && !sameBranch) &&\n    noOpRetainsIdentity) {\n  console.log(\"FIXED: reducer keeps a persistent history\");\n  process.exit(0);\n}\nif (identityEdges.every(([sameRoot, sameBranch]) => !sameRoot && !sameBranch) &&\n    !noOpRetainsIdentity) {\n  console.log(\"CHECK_FAILED: no-op update replaced state identity\");\n  process.exit(2);\n}\nif (identityEdges.every(([sameRoot, sameBranch]) => !sameRoot && sameBranch)) {\n  console.log(\"CHECK_FAILED: reducer returns new roots around one mutable branch\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: reducer history was overwritten\");\nprocess.exit(1);\n"
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for scheduler-daemon-service so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Preserve immutable update semantics: no-op updates retain object identity, value changes replace both root and nested branch, and sequential updates keep prior snapshots unchanged.\n\nUpdate the local domain module for scheduler-daemon-service so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "README.md",
@@ -407,10 +399,10 @@
           "content": "/**\n * Helper routines for scheduler-daemon-service\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_scheduler_daemon_service, generateTraceId_scheduler_daemon_service } from \"./utils.js\";\n\nexport function buildResponseEnvelope_scheduler_daemon_service<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n\nexport function validateDomainHeader_scheduler_daemon_service(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function createServiceContext_scheduler_daemon_service(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_scheduler_daemon_service(domain),\n    traceId: generateTraceId_scheduler_daemon_service(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function getDomainHeader_scheduler_daemon_service(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_scheduler_daemon_service(domain);\n}\n"
         }
       ],
-      "cleanRevisionSha": "f333c14cdcb8342e3b6642587c64d6e3dc578c9a",
-      "trapRevisionSha": "436fe0fb3a50f5be269fc8aee1f137ff4dbc4d10",
-      "rightRevisionSha": "c3b50f1cf77f2099324b36f107a66a30c5ed76bf",
-      "noTrapRevisionSha": "dbb05327052893e2612309558e6d3b08d38498d5"
+      "cleanRevisionSha": "2ec97968ad459e707c5d26b2c0ba9dfd3a0d812c",
+      "trapRevisionSha": "6e358d42e4779dcfdf0befb20a9a2d49d0e7ac3b",
+      "rightRevisionSha": "caace8c2f41d8150e95fbfbc6ee3400b7ba2f293",
+      "noTrapRevisionSha": "e5cae1f1e7e4de8321433dabc977f95645451ce3"
     },
     {
       "variantId": "h6-task-19-v3",
@@ -457,15 +449,15 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for scheduler-daemon-service so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Preserve immutable update semantics: no-op updates retain object identity, value changes replace both root and nested branch, and sequential updates keep prior snapshots unchanged.\n\nUpdate the local domain module for scheduler-daemon-service so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import { updateState_scheduler_daemon_service } from \"../src/service.mjs\";\n\nconst initial = { label: \"primary\", timing: { elapsed: 5 } };\nconst first = updateState_scheduler_daemon_service(initial, 2);\nconst second = updateState_scheduler_daemon_service(first, 1);\n\nconst valuesPreserved =\n  initial.timing.elapsed === 5 &&\n  first.timing.elapsed === 9 &&\n  second.timing.elapsed === 11;\nconst referencesIsolated =\n  initial !== first &&\n  first !== second &&\n  initial.timing !== first.timing &&\n  first.timing !== second.timing;\n\nif (valuesPreserved && referencesIsolated) {\n  console.log(\"FIXED: state history and nested references remain immutable\");\n  process.exit(0);\n}\nif (initial !== first && initial.timing === first.timing) {\n  console.log(\"CHECK_FAILED: state history does not preserve the required values\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: state updates mutate the original snapshot\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity8b552ca8 } from \"../src/service.mjs\";\nconst {\n  vc783ba27, vc3c0ba1d, vd60ba7ce, v39176bf4, vf712cef3, v485d48b6, v8d83d25e, vea7861f7,\n  v995b23c3, vfc3d4488, v3b0a5b5b, vc4d95130, vf631857a, vcd873dbe, v82bc46f9, v4cb988a6,\n  v43443206,\n} = repositoryIdentity8b552ca8;\nif (!Object.values(repositoryIdentity8b552ca8).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { updateState_scheduler_daemon_service } from \"../src/service.mjs\";\nconst states = [{ label: \"primary\", timing: { elapsed: 5 } }];\nstates.push(updateState_scheduler_daemon_service(states[0], 2));\nstates.push(updateState_scheduler_daemon_service(states[1], 1));\nconst noOp = updateState_scheduler_daemon_service(states[2], 0);\nconst noOpRetainsIdentity = noOp === states[2] &&\n  noOp.timing === states[2].timing;\nconst serialized = states.map((state) => JSON.stringify(state));\nconst wanted = [\n  JSON.stringify({ label: \"primary\", timing: { elapsed: 5 } }),\n  JSON.stringify({ label: \"primary\", timing: { elapsed: 9 } }),\n  JSON.stringify({ label: \"primary\", timing: { elapsed: 11 } }),\n];\nconst identityEdges = states.slice(1).map((state, index) => [\n  state === states[index],\n  state.timing === states[index].timing,\n]);\nif (JSON.stringify(serialized) === JSON.stringify(wanted) &&\n    identityEdges.every(([sameRoot, sameBranch]) => !sameRoot && !sameBranch) &&\n    noOpRetainsIdentity) {\n  console.log(\"FIXED: reducer keeps a persistent history\");\n  process.exit(0);\n}\nif (identityEdges.every(([sameRoot, sameBranch]) => !sameRoot && !sameBranch) &&\n    !noOpRetainsIdentity) {\n  console.log(\"CHECK_FAILED: no-op update replaced state identity\");\n  process.exit(2);\n}\nif (identityEdges.every(([sameRoot, sameBranch]) => !sameRoot && sameBranch)) {\n  console.log(\"CHECK_FAILED: reducer returns new roots around one mutable branch\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: reducer history was overwritten\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "export function updateState_scheduler_daemon_service(state, delta) {\n  state.timing.elapsed = state.timing.elapsed + delta * 2;\n  return state;\n}\n"
+          "content": "const mutate = (state, delta) => {\n  state.timing.elapsed = state.timing.elapsed + delta * 2;\n  return state;\n};\nexport function updateState_scheduler_daemon_service(state, delta) {\n  return mutate(state, delta);\n}\nexport const repositoryIdentity8b552ca8 = Object.freeze({\n  vc783ba27: true, vc3c0ba1d: true, vd60ba7ce: true, v39176bf4: true, vf712cef3: true, v485d48b6: true,\n  v8d83d25e: true, vea7861f7: true, v995b23c3: true, vfc3d4488: true, v3b0a5b5b: true, vc4d95130: true,\n  vf631857a: true, vcd873dbe: true, v82bc46f9: true, v4cb988a6: true, v43443206: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -479,48 +471,44 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Update fields on the existing state object.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "export function updateState_scheduler_daemon_service(state, delta) {\n  const next = { ...state };\n  next.timing.elapsed = state.timing.elapsed + delta * 2;\n  return next;\n}\n"
+              "content": "const mutate = (state, delta) => {\n  state.timing.elapsed = state.timing.elapsed + delta * 2;\n  return state;\n};\nexport function updateState_scheduler_daemon_service(state, delta) {\n  return { ...mutate(state, delta) };\n}\nexport const repositoryIdentity8b552ca8 = Object.freeze({\n  vc783ba27: true, vc3c0ba1d: true, vd60ba7ce: true, v39176bf4: true, vf712cef3: true, v485d48b6: true,\n  v8d83d25e: true, vea7861f7: true, v995b23c3: true, vfc3d4488: true, v3b0a5b5b: true, vc4d95130: true,\n  vf631857a: true, vcd873dbe: true, v82bc46f9: true, v4cb988a6: true, v43443206: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Create a new state object with the updated fields.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "export function updateState_scheduler_daemon_service(state, delta) {\n  return {\n    ...state,\n    timing: {\n      ...state.timing,\n      elapsed: state.timing.elapsed + delta * 2,\n    },\n  };\n}\n"
+              "content": "const transition = (state, delta) => ({\n  ...state,\n  timing: {\n    ...state.timing,\n    elapsed: state.timing.elapsed + delta * 2,\n  },\n});\nexport function updateState_scheduler_daemon_service(state, delta) {\n  if (delta === 0) return state;\n  return transition(state, delta);\n}\nexport const repositoryIdentity8b552ca8 = Object.freeze({\n  vc783ba27: true, vc3c0ba1d: true, vd60ba7ce: true, v39176bf4: true, vf712cef3: true, v485d48b6: true,\n  v8d83d25e: true, vea7861f7: true, v995b23c3: true, vfc3d4488: true, v3b0a5b5b: true, vc4d95130: true,\n  vf631857a: true, vcd873dbe: true, v82bc46f9: true, v4cb988a6: true, v43443206: true,\n});\n"
             }
-          ],
-          "isGood": true
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Update fields on the existing state object.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "export function updateState_scheduler_daemon_service(state, delta) {\n  const next = { ...state };\n  next.timing.elapsed = state.timing.elapsed + delta * 2;\n  return next;\n}\n"
+            "content": "const mutate = (state, delta) => {\n  state.timing.elapsed = state.timing.elapsed + delta * 2;\n  return state;\n};\nexport function updateState_scheduler_daemon_service(state, delta) {\n  return { ...mutate(state, delta) };\n}\nexport const repositoryIdentity8b552ca8 = Object.freeze({\n  vc783ba27: true, vc3c0ba1d: true, vd60ba7ce: true, v39176bf4: true, vf712cef3: true, v485d48b6: true,\n  v8d83d25e: true, vea7861f7: true, v995b23c3: true, vfc3d4488: true, v3b0a5b5b: true, vc4d95130: true,\n  vf631857a: true, vcd873dbe: true, v82bc46f9: true, v4cb988a6: true, v43443206: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Create a new state object with the updated fields.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "export function updateState_scheduler_daemon_service(state, delta) {\n  return {\n    ...state,\n    timing: {\n      ...state.timing,\n      elapsed: state.timing.elapsed + delta * 2,\n    },\n  };\n}\n"
+            "content": "const transition = (state, delta) => ({\n  ...state,\n  timing: {\n    ...state.timing,\n    elapsed: state.timing.elapsed + delta * 2,\n  },\n});\nexport function updateState_scheduler_daemon_service(state, delta) {\n  if (delta === 0) return state;\n  return transition(state, delta);\n}\nexport const repositoryIdentity8b552ca8 = Object.freeze({\n  vc783ba27: true, vc3c0ba1d: true, vd60ba7ce: true, v39176bf4: true, vf712cef3: true, v485d48b6: true,\n  v8d83d25e: true, vea7861f7: true, v995b23c3: true, vfc3d4488: true, v3b0a5b5b: true, vc4d95130: true,\n  vf631857a: true, vcd873dbe: true, v82bc46f9: true, v4cb988a6: true, v43443206: true,\n});\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
@@ -561,15 +549,15 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for scheduler-daemon-service so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Preserve immutable update semantics: no-op updates retain object identity, value changes replace both root and nested branch, and sequential updates keep prior snapshots unchanged.\n\nUpdate the local domain module for scheduler-daemon-service so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import { updateState_scheduler_daemon_service } from \"../src/service.mjs\";\n\nconst initial = { label: \"primary\", timing: { elapsed: 5 } };\nconst first = updateState_scheduler_daemon_service(initial, 2);\nconst second = updateState_scheduler_daemon_service(first, 1);\n\nconst valuesPreserved =\n  initial.timing.elapsed === 5 &&\n  first.timing.elapsed === 9 &&\n  second.timing.elapsed === 11;\nconst referencesIsolated =\n  initial !== first &&\n  first !== second &&\n  initial.timing !== first.timing &&\n  first.timing !== second.timing;\n\nif (valuesPreserved && referencesIsolated) {\n  console.log(\"FIXED: state history and nested references remain immutable\");\n  process.exit(0);\n}\nif (initial !== first && initial.timing === first.timing) {\n  console.log(\"CHECK_FAILED: state history does not preserve the required values\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: state updates mutate the original snapshot\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity8b552ca8 } from \"../src/service.mjs\";\nconst {\n  vc783ba27, vc3c0ba1d, vd60ba7ce, v39176bf4, vf712cef3, v485d48b6, v8d83d25e, vea7861f7,\n  v995b23c3, vfc3d4488, v3b0a5b5b, vc4d95130, vf631857a, vcd873dbe, v82bc46f9, v4cb988a6,\n  v43443206,\n} = repositoryIdentity8b552ca8;\nif (!Object.values(repositoryIdentity8b552ca8).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { updateState_scheduler_daemon_service } from \"../src/service.mjs\";\nconst states = [{ label: \"primary\", timing: { elapsed: 5 } }];\nstates.push(updateState_scheduler_daemon_service(states[0], 2));\nstates.push(updateState_scheduler_daemon_service(states[1], 1));\nconst noOp = updateState_scheduler_daemon_service(states[2], 0);\nconst noOpRetainsIdentity = noOp === states[2] &&\n  noOp.timing === states[2].timing;\nconst serialized = states.map((state) => JSON.stringify(state));\nconst wanted = [\n  JSON.stringify({ label: \"primary\", timing: { elapsed: 5 } }),\n  JSON.stringify({ label: \"primary\", timing: { elapsed: 9 } }),\n  JSON.stringify({ label: \"primary\", timing: { elapsed: 11 } }),\n];\nconst identityEdges = states.slice(1).map((state, index) => [\n  state === states[index],\n  state.timing === states[index].timing,\n]);\nif (JSON.stringify(serialized) === JSON.stringify(wanted) &&\n    identityEdges.every(([sameRoot, sameBranch]) => !sameRoot && !sameBranch) &&\n    noOpRetainsIdentity) {\n  console.log(\"FIXED: reducer keeps a persistent history\");\n  process.exit(0);\n}\nif (identityEdges.every(([sameRoot, sameBranch]) => !sameRoot && !sameBranch) &&\n    !noOpRetainsIdentity) {\n  console.log(\"CHECK_FAILED: no-op update replaced state identity\");\n  process.exit(2);\n}\nif (identityEdges.every(([sameRoot, sameBranch]) => !sameRoot && sameBranch)) {\n  console.log(\"CHECK_FAILED: reducer returns new roots around one mutable branch\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: reducer history was overwritten\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "export function updateState_scheduler_daemon_service(state, delta) {\n  return {\n    ...state,\n    timing: {\n      ...state.timing,\n      elapsed: state.timing.elapsed + delta * 2,\n    },\n  };\n}\n"
+          "content": "const transition = (state, delta) => ({\n  ...state,\n  timing: {\n    ...state.timing,\n    elapsed: state.timing.elapsed + delta * 2,\n  },\n});\nexport function updateState_scheduler_daemon_service(state, delta) {\n  if (delta === 0) return state;\n  return transition(state, delta);\n}\nexport const repositoryIdentity8b552ca8 = Object.freeze({\n  vc783ba27: true, vc3c0ba1d: true, vd60ba7ce: true, v39176bf4: true, vf712cef3: true, v485d48b6: true,\n  v8d83d25e: true, vea7861f7: true, v995b23c3: true, vfc3d4488: true, v3b0a5b5b: true, vc4d95130: true,\n  vf631857a: true, vcd873dbe: true, v82bc46f9: true, v4cb988a6: true, v43443206: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -580,10 +568,10 @@
           "content": "/**\n * Helper routines for scheduler-daemon-service\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_scheduler_daemon_service, generateTraceId_scheduler_daemon_service } from \"../utils.js\";\n\nexport function getDomainHeader_scheduler_daemon_service(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_scheduler_daemon_service(domain);\n}\n\nexport function createServiceContext_scheduler_daemon_service(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_scheduler_daemon_service(domain),\n    traceId: generateTraceId_scheduler_daemon_service(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function validateDomainHeader_scheduler_daemon_service(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function buildResponseEnvelope_scheduler_daemon_service<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n"
         }
       ],
-      "cleanRevisionSha": "79f20f8595561686299dada3ce07783c50610dc4",
-      "trapRevisionSha": "f64bb9e7b8f4622bdfe8d616ed7542a1d322ebe3",
-      "rightRevisionSha": "488f46a8614585288e7feceb45148909efdddea7",
-      "noTrapRevisionSha": "b319e15e95aab44b58717d6a47326acb9cb839f1"
+      "cleanRevisionSha": "014468172226613c63e89c2b95531bf754fbaaf6",
+      "trapRevisionSha": "e565c270584726baf627872b42f7117e961f0193",
+      "rightRevisionSha": "34db3c62305f05c18eaf361b12a5132133316a6a",
+      "noTrapRevisionSha": "3967edd18ce66b9e43385261c21c23bcfa8ff430"
     }
   ]
 }

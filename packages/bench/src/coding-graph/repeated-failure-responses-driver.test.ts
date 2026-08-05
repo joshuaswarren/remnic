@@ -9,8 +9,13 @@ import {
   type ResponsesApiRequest,
   type ResponsesApiResponse,
 } from "./repeated-failure-responses-driver.js";
+import {
+  firstRetryableHostFault,
+  serializeBoundedToolOutput,
+} from "./repeated-failure-driver-utils.js";
 
 const MODEL = "test-profile-model";
+const MODEL_DIGEST = "d".repeat(64);
 
 const TOOL: ControlledResponsesToolDefinition = {
   name: "run_command",
@@ -336,6 +341,7 @@ test("agent-driver factory validates profile identity and forwards run controls"
         model: MODEL,
         modelProfileId: "",
         modelProfileHash: "a".repeat(64),
+        modelDigest: MODEL_DIGEST,
         transport: fakeTransport([]).transport,
       }),
     /modelProfileId/i,
@@ -349,6 +355,7 @@ test("agent-driver factory validates profile identity and forwards run controls"
     model: MODEL,
     modelProfileId: "profile-a",
     modelProfileHash: "a".repeat(64),
+    modelDigest: MODEL_DIGEST,
     seedCapability: { kind: "request_parameter", requestField: "seed" },
     baseUrl: "http://localhost:11434/v1",
     maxOutputTokens: 64,
@@ -375,6 +382,7 @@ test("agent-driver factory validates profile identity and forwards run controls"
 
   assert.equal(driver.modelProfileId, "profile-a");
   assert.equal(driver.modelProfileHash, "a".repeat(64));
+  assert.equal(driver.modelDigest, MODEL_DIGEST);
   assert.equal(result.status, "COMPLETED");
   assert.equal(fake.options[0]?.timeoutMs, 17);
   assert.equal(fake.requests[0]?.max_output_tokens, 64);
@@ -395,12 +403,14 @@ test("agent-driver factory validates profile identity and forwards run controls"
   assert.equal(aborted.invalidReason, "ABORTED");
 });
 
+
 test("agent-driver factory refuses profiles without registered seed capability", () => {
   assert.throws(
     () => createControlledResponsesAgentDriver({
       model: MODEL,
       modelProfileId: "unseeded-profile",
       modelProfileHash: "b".repeat(64),
+      modelDigest: MODEL_DIGEST,
       transport: fakeTransport([]).transport,
     }),
     /requires registered seed capability/i,
@@ -413,6 +423,7 @@ test("official Responses endpoint cannot claim unsupported seed control", () => 
       model: MODEL,
       modelProfileId: "official-profile",
       modelProfileHash: "c".repeat(64),
+      modelDigest: MODEL_DIGEST,
       seedCapability: { kind: "request_parameter", requestField: "seed" },
       transport: fakeTransport([]).transport,
     }),
@@ -491,6 +502,22 @@ test("gate wait expiry is exposed even though evaluation fails open and executio
   assert.equal(result.status, "COMPLETED");
   assert.equal(result.gate?.status, "ERROR_FAIL_OPEN");
   assert.equal(result.gate?.faultCode, "GATE_WAIT_EXPIRED");
+});
+
+test("serialized tool output respects the final byte cap after envelope encoding", () => {
+  const serialized = serializeBoundedToolOutput({
+    status: "completed",
+    output: { text: `${"🙂\\\"".repeat(10_000)}sk-secret-token-value` },
+  });
+  assert.ok(Buffer.byteLength(serialized, "utf8") <= 16_384);
+  const parsed = JSON.parse(serialized) as {
+    truncated: boolean;
+    preview: string;
+    outputHash: string;
+  };
+  assert.equal(parsed.truncated, true);
+  assert.match(parsed.outputHash, /^[a-f0-9]{64}$/);
+  assert.doesNotMatch(serialized, /sk-secret-token-value/);
 });
 
 test("production gate advisory timeout is normalized as wait expiry", async () => {
@@ -962,6 +989,87 @@ test("request timeout aborts a hanging injected transport without retry", async 
   assert.equal(result.status, "INVALID");
   assert.equal(result.invalidReason, "FAULT");
   assert.equal(result.faults[0]?.code, "REQUEST_TIMEOUT");
+});
+
+test("request timeout covers a stalled response body", async () => {
+  const transport: ControlledResponsesTransport = async () =>
+    new Response(new ReadableStream<Uint8Array>({ start() {} }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  const driver = new ControlledResponsesDriver({
+    model: MODEL,
+    transport,
+    toolHost: host([]),
+    evaluator: { evaluate: async () => ({ status: "NO_MATCH", fingerprintHash: "x" }) },
+  });
+
+  const result = await driver.runEpisode({
+    ...BASE_RUN,
+    caps: { ...BASE_RUN.caps, requestTimeoutMs: 10 },
+  });
+
+  assert.equal(result.status, "INVALID");
+  assert.equal(result.invalidReason, "FAULT");
+  assert.equal(result.faults[0]?.code, "REQUEST_TIMEOUT");
+});
+
+test("episode abort interrupts a response body read", async () => {
+  const { promise: bodyStarted, resolve: markBodyStarted } = Promise.withResolvers<void>();
+  const transport: ControlledResponsesTransport = async () =>
+    new Response(new ReadableStream<Uint8Array>({
+      pull() {
+        markBodyStarted();
+      },
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  const driver = new ControlledResponsesDriver({
+    model: MODEL,
+    transport,
+    toolHost: host([]),
+    evaluator: { evaluate: async () => ({ status: "NO_MATCH", fingerprintHash: "x" }) },
+  });
+  const controller = new AbortController();
+  const pending = driver.runEpisode({ ...BASE_RUN, signal: controller.signal });
+  await bodyStarted;
+  controller.abort();
+
+  const result = await pending;
+
+  assert.equal(result.status, "INVALID");
+  assert.equal(result.invalidReason, "ABORTED");
+  assert.equal(result.faults[0]?.code, "ABORTED");
+});
+
+test("Responses payloads must identify the requested model", async () => {
+  for (const servedModel of [undefined, "different-model"]) {
+    const payload = response("resp-1", [message("done")]) as ResponsesApiResponse & {
+      model?: string;
+    };
+    payload.model = servedModel;
+    const setup = createDriver([payload], "NO_MATCH");
+
+    const result = await setup.driver.runEpisode(BASE_RUN);
+
+    assert.equal(result.status, "INVALID");
+    assert.equal(result.faults[0]?.code, "MODEL_IDENTITY_MISMATCH");
+  }
+});
+
+test("permanent HTTP 4xx faults do not retry while 408 and 429 remain transient", () => {
+  const hostFault = (code: string) => ({
+    status: "INVALID" as const,
+    faults: [{ code, stage: "transport" as const, messageHash: "a".repeat(64) }],
+  });
+
+  for (const code of ["HTTP_400", "HTTP_401", "HTTP_403", "HTTP_404", "HTTP_422"]) {
+    assert.equal(firstRetryableHostFault(hostFault(code)), undefined);
+  }
+  for (const code of ["HTTP_408", "HTTP_429", "HTTP_500", "REQUEST_TIMEOUT"]) {
+    assert.equal(firstRetryableHostFault(hostFault(code))?.code, code);
+  }
 });
 
 test("absolute final evidence paths are rejected and raw tool logs are not returned", async () => {

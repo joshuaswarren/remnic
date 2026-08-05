@@ -321,20 +321,25 @@ test("Holm adjustment is stable, monotone, clamped, tied by id, and returned in 
   assert.deepEqual(holmAdjust([{ id: "TIMING", p: 0.8 }, { id: "CONTENT", p: 0.9 }]).map((entry) => entry.adjustedP), [1, 1]);
 });
 
-test("timing support uses inclusive .30 RRR but strict interval and p boundaries", () => {
-  assert.equal(decideRepeatedFailureTiming(effect(), 0.049, 0.3, 0.05), "SUPPORTED");
-  assert.equal(decideRepeatedFailureTiming(effect({ relativeRiskReduction: 0.2999 }), 0.049, 0.3, 0.05), "REJECTED");
-  assert.equal(decideRepeatedFailureTiming(effect({ repeatedFailureBenefitInterval: { lower: 0, upper: 0.2, level: 0.95 } }), 0.049, 0.3, 0.05), "REJECTED");
-  assert.equal(decideRepeatedFailureTiming(effect(), 0.05, 0.3, 0.05), "REJECTED");
-  assert.equal(decideRepeatedFailureTiming(effect({ relativeRiskReduction: null }), 0.01, 0.3, 0.05), "NOT_ESTIMABLE");
+test("timing support requires absolute and relative effect floors plus strict interval and p boundaries", () => {
+  assert.equal(decideRepeatedFailureTiming(effect(), 0.049, 0.3, 0.05, 0, 0.05), "SUPPORTED");
+  assert.equal(
+    decideRepeatedFailureTiming(effect({ repeatedFailureBenefit: 0.0499 }), 0.049, 0.3, 0.05, 0, 0.05),
+    "REJECTED",
+  );
+  assert.equal(decideRepeatedFailureTiming(effect({ relativeRiskReduction: 0.2999 }), 0.049, 0.3, 0.05, 0, 0.05), "REJECTED");
+  assert.equal(decideRepeatedFailureTiming(effect({ repeatedFailureBenefitInterval: { lower: 0, upper: 0.2, level: 0.95 } }), 0.049, 0.3, 0.05, 0, 0.05), "REJECTED");
+  assert.equal(decideRepeatedFailureTiming(effect(), 0.05, 0.3, 0.05, 0, 0.05), "REJECTED");
+  assert.equal(decideRepeatedFailureTiming(effect({ repeatedFailureBenefitInterval: { lower: 0.01, upper: 0.2, level: 0.95 } }), 0.049, 0.3, 0.05, 0.01, 0.05), "REJECTED");
+  assert.equal(decideRepeatedFailureTiming(effect({ relativeRiskReduction: null }), 0.01, 0.3, 0.05, 0, 0.05), "NOT_ESTIMABLE");
 });
 
 test("content support requires both positive endpoints and a strict adjusted p", () => {
-  assert.equal(decideRepeatedFailureContent(effect(), 0.01, 0.049, 0.05), "SUPPORTED");
-  assert.equal(decideRepeatedFailureContent(effect({ taskPassBenefitInterval: { lower: 0, upper: 0.2, level: 0.95 } }), 0.01, 0.049, 0.05), "REJECTED");
-  assert.equal(decideRepeatedFailureContent(effect({ repeatedFailureBenefitInterval: { lower: -0.01, upper: 0.2, level: 0.95 } }), 0.01, 0.049, 0.05), "REJECTED");
-  assert.equal(decideRepeatedFailureContent(effect(), 0.05, 0.05, 0.05), "REJECTED");
-  assert.equal(decideRepeatedFailureContent(effect({ taskPassBenefitInterval: null }), null, undefined, 0.05), "NOT_ESTIMABLE");
+  assert.equal(decideRepeatedFailureContent(effect(), 0.01, 0.049, 0, 0, 0.05), "SUPPORTED");
+  assert.equal(decideRepeatedFailureContent(effect({ taskPassBenefitInterval: { lower: 0, upper: 0.2, level: 0.95 } }), 0.01, 0.049, 0, 0, 0.05), "REJECTED");
+  assert.equal(decideRepeatedFailureContent(effect({ repeatedFailureBenefitInterval: { lower: -0.01, upper: 0.2, level: 0.95 } }), 0.01, 0.049, 0, 0, 0.05), "REJECTED");
+  assert.equal(decideRepeatedFailureContent(effect(), 0.05, 0.05, 0, 0, 0.05), "REJECTED");
+  assert.equal(decideRepeatedFailureContent(effect({ taskPassBenefitInterval: null }), null, undefined, 0, 0, 0.05), "NOT_ESTIMABLE");
 });
 
 test("study decision maps the two preregistered primary decisions", () => {
@@ -373,6 +378,32 @@ test("no-trap analysis reports separate timidity equivalence without Holm inclus
   assert.equal(analysis.timidity.equivalent, true);
   assert.equal(analysis.timidity.intervalLevel, 0.9);
   assert.equal(analysis.holm.length, 0);
+});
+
+test("timidity decision is not estimable when any registered task is cut", () => {
+  const rows = [
+    row("complete", "NO_MEMORY", { repeatedFailure: false, taskPassed: true }),
+    row("complete", "PRE_ACTION_FAILURE", { repeatedFailure: false, taskPassed: true }),
+    row("missing", "NO_MEMORY", { repeatedFailure: false, taskPassed: true }),
+  ];
+  const analysis = analyzeRepeatedFailureRows(rows, {
+    expectedDesign: { rows: [] },
+    timidityDesign: {
+      rows: [
+        identity("complete", "NO_MEMORY"),
+        identity("complete", "PRE_ACTION_FAILURE"),
+        identity("missing", "NO_MEMORY"),
+        identity("missing", "PRE_ACTION_FAILURE"),
+      ],
+    },
+    seed: 55,
+    draws: 20,
+  });
+  assert.ok(analysis.cuts.some(
+    (cut) => cut.hypothesis === "TIMIDITY" && cut.taskId === "missing",
+  ));
+  assert.equal(analysis.timidity.taskCount, 1);
+  assert.equal(analysis.timidity.equivalent, null);
 });
 
 test("timidity is opt-in and fails closed without an exact no-trap design", () => {

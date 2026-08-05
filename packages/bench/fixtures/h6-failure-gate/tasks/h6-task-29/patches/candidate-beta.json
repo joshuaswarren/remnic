@@ -1,15 +1,14 @@
 {
   "id": "candidate-beta",
-  "description": "Route configuration reads through the canonical active source and update that source.",
+  "description": "Candidate beta.",
   "files": [
     {
       "path": "src/service.mjs",
-      "content": "import fs from \"node:fs\";\n\nexport function readConfig_schema_registry_store() {\n  return JSON.parse(fs.readFileSync(\"./config/default.json\", \"utf8\"));\n}\n"
+      "content": "import fs from \"node:fs\";\nconst decode = (path) => JSON.parse(fs.readFileSync(path, \"utf8\"));\nexport function readConfig_schema_registry_store() {\n  return decode(\"./config/default.json\");\n}\nexport const repositoryIdentity27f608a3 = Object.freeze({\n  vbbea9f73: true, vb8f79bc0: true, v10848e26: true, vf2b4b981: true, v018a7643: true, v0c330aef: true,\n  va5fee7e3: true, v69c2ebb0: true, v926d3cab: true, vb785d7da: true, v8f6083eb: true, vc16aa08c: true,\n  v77d691dc: true, v2ecc410d: true, v013f1d36: true, v1c7bdbb8: true, v42d382f1: true,\n});\n"
     },
     {
       "path": "config/default.json",
       "content": "{\n  \"pageLimit\": 60,\n  \"prefetch\": 2\n}\n"
     }
-  ],
-  "isGood": true
+  ]
 }

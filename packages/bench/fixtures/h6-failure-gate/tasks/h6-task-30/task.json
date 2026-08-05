@@ -2,8 +2,8 @@
   "id": "h6-task-30",
   "trapId": "config-shadowing",
   "domain": "secret-manager-vault",
-  "title": "Service maintenance for secret-manager-vault",
-  "description": "Update the local secret-manager-vault implementation to satisfy its offline check.",
+  "title": "Correct secret-manager-vault service behavior",
+  "description": "Revise the canonical default configuration so runtime loads the new values from that source; do not edit an unused shadow copy.",
   "canonicalBaseFiles": [
     {
       "path": "package.json",
@@ -47,11 +47,11 @@
     },
     {
       "path": "TASK.md",
-      "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for secret-manager-vault so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+      "content": "# Benchmark Task Instruction\n\nFunctional requirement: Revise the canonical default configuration so runtime loads the new values from that source; do not edit an unused shadow copy.\n\nUpdate the local domain module for secret-manager-vault so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
     },
     {
       "path": "test/check.js",
-      "content": "import fs from \"node:fs\";\nimport { readConfig_secret_manager_vault } from \"../src/service.mjs\";\n\nconst runtime = readConfig_secret_manager_vault();\nconst canonical = JSON.parse(fs.readFileSync(\"config/default.json\", \"utf8\"));\nconst runtimeCorrect = runtime[\"retentionDays\"] === 30 && runtime[\"archives\"] === 3;\nconst canonicalEdited = canonical[\"retentionDays\"] === 30 && canonical[\"archives\"] === 3;\n\nif (runtimeCorrect && canonicalEdited) {\n  console.log(\"FIXED: runtime consumes the revised canonical configuration\");\n  process.exit(0);\n}\nif (canonicalEdited && runtime[\"retentionDays\"] !== canonical[\"retentionDays\"]) {\n  console.log(\"CHECK_FAILED: runtime configuration does not match the requested values\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: runtime timeout and retry policy do not match the required configuration\");\nprocess.exit(1);\n"
+      "content": "import { repositoryIdentity912cdfec } from \"../src/service.mjs\";\nconst {\n  v6db441b1, v9dfcb66f, ve1789797, v4e18b5d6, va6685c23, va6a5b342, v89d8e694, v61d98167,\n  va31cfad6, v1899a993, v46d47785, v7c16e1bd, v6c92de22, vad94c00d, v870526ca, v19958c56,\n  v817e224a,\n} = repositoryIdentity912cdfec;\nif (!Object.values(repositoryIdentity912cdfec).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport fs from \"node:fs\";\nimport { readConfig_secret_manager_vault } from \"../src/service.mjs\";\nconst probes = new Map([\n  [\"runtime\", readConfig_secret_manager_vault()],\n  [\"canonical\", JSON.parse(fs.readFileSync(\"config/default.json\", \"utf8\"))],\n]);\nconst verdicts = [...probes].map(([source, value]) => ({\n  source,\n  primary: value.retentionDays === 30,\n  secondary: value.archives === 3,\n}));\nif (verdicts.every(({ primary, secondary }) => primary && secondary)) {\n  console.log(\"FIXED: source dispatch uses the canonical policy\");\n  process.exit(0);\n}\nif (verdicts.find(({ source }) => source === \"canonical\").primary &&\n    !verdicts.find(({ source }) => source === \"runtime\").primary) {\n  console.log(\"CHECK_FAILED: dispatch table gives the override precedence\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: source policy remains at its prior values\");\nprocess.exit(1);\n"
     },
     {
       "path": "config/default.json",
@@ -63,12 +63,12 @@
     },
     {
       "path": "src/service.mjs",
-      "content": "import fs from \"node:fs\";\n\nexport function readConfig_secret_manager_vault() {\n  if (fs.existsSync(\"./config/session.json\")) {\n    return JSON.parse(fs.readFileSync(\"./config/session.json\", \"utf8\"));\n  }\n  return JSON.parse(fs.readFileSync(\"./config/default.json\", \"utf8\"));\n}\n"
+      "content": "import fs from \"node:fs\";\nconst sources = {\n  override: () => fs.readFileSync(\"./config/session.json\", \"utf8\"),\n  canonical: () => fs.readFileSync(\"./config/default.json\", \"utf8\"),\n};\nexport function readConfig_secret_manager_vault() {\n  for (const source of [\"override\", \"canonical\"]) {\n    try { return JSON.parse(sources[source]()); }\n    catch (error) {\n      if (error.code !== \"ENOENT\") throw error;\n    }\n  }\n  throw new Error(\"configuration unavailable\");\n}\nexport const repositoryIdentity912cdfec = Object.freeze({\n  v6db441b1: true, v9dfcb66f: true, ve1789797: true, v4e18b5d6: true, va6685c23: true, va6a5b342: true,\n  v89d8e694: true, v61d98167: true, va31cfad6: true, v1899a993: true, v46d47785: true, v7c16e1bd: true,\n  v6c92de22: true, vad94c00d: true, v870526ca: true, v19958c56: true, v817e224a: true,\n});\n"
     }
   ],
   "checkCommand": "node test/check.js",
   "fileCount": 15,
-  "lineCount": 564,
+  "lineCount": 587,
   "fingerprint": {
     "version": 1,
     "trapId": "config-shadowing",
@@ -81,8 +81,8 @@
     "version": 1,
     "actionType": "service_maintenance",
     "targetSymbol": "service_secret_manager_vault",
-    "filePath": "src/service.mjs",
-    "contextHash": "0f9df7d693dc34719c2456445a93a0120cd9f1a4ad3dd0caa468cabb92d64315"
+    "filePath": "config/default.json",
+    "contextHash": "a9504167d73e42441baabf97abe21b4b8355d1e2bf545182b8ffb117cb444a27"
   },
   "offlineCheckMark": "f5904f92b0654ffcdc52dd1e38aca32cbcd165f17c0d516c9b2761fe1a117e57",
   "offlineFailureMark": "4352900cf50d42c6e93516d93aa0ab7f1db74c2696c0b8f5ceb3a4cebb5e346e",
@@ -135,11 +135,11 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for secret-manager-vault so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Revise the canonical default configuration so runtime loads the new values from that source; do not edit an unused shadow copy.\n\nUpdate the local domain module for secret-manager-vault so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import fs from \"node:fs\";\nimport { readConfig_secret_manager_vault } from \"../src/service.mjs\";\n\nconst runtime = readConfig_secret_manager_vault();\nconst canonical = JSON.parse(fs.readFileSync(\"config/default.json\", \"utf8\"));\nconst runtimeCorrect = runtime[\"retentionDays\"] === 30 && runtime[\"archives\"] === 3;\nconst canonicalEdited = canonical[\"retentionDays\"] === 30 && canonical[\"archives\"] === 3;\n\nif (runtimeCorrect && canonicalEdited) {\n  console.log(\"FIXED: runtime consumes the revised canonical configuration\");\n  process.exit(0);\n}\nif (canonicalEdited && runtime[\"retentionDays\"] !== canonical[\"retentionDays\"]) {\n  console.log(\"CHECK_FAILED: runtime configuration does not match the requested values\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: runtime timeout and retry policy do not match the required configuration\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity912cdfec } from \"../src/service.mjs\";\nconst {\n  v6db441b1, v9dfcb66f, ve1789797, v4e18b5d6, va6685c23, va6a5b342, v89d8e694, v61d98167,\n  va31cfad6, v1899a993, v46d47785, v7c16e1bd, v6c92de22, vad94c00d, v870526ca, v19958c56,\n  v817e224a,\n} = repositoryIdentity912cdfec;\nif (!Object.values(repositoryIdentity912cdfec).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport fs from \"node:fs\";\nimport { readConfig_secret_manager_vault } from \"../src/service.mjs\";\nconst probes = new Map([\n  [\"runtime\", readConfig_secret_manager_vault()],\n  [\"canonical\", JSON.parse(fs.readFileSync(\"config/default.json\", \"utf8\"))],\n]);\nconst verdicts = [...probes].map(([source, value]) => ({\n  source,\n  primary: value.retentionDays === 30,\n  secondary: value.archives === 3,\n}));\nif (verdicts.every(({ primary, secondary }) => primary && secondary)) {\n  console.log(\"FIXED: source dispatch uses the canonical policy\");\n  process.exit(0);\n}\nif (verdicts.find(({ source }) => source === \"canonical\").primary &&\n    !verdicts.find(({ source }) => source === \"runtime\").primary) {\n  console.log(\"CHECK_FAILED: dispatch table gives the override precedence\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: source policy remains at its prior values\");\nprocess.exit(1);\n"
         },
         {
           "path": "config/default.json",
@@ -151,7 +151,7 @@
         },
         {
           "path": "src/service.mjs",
-          "content": "import fs from \"node:fs\";\n\nexport function readConfig_secret_manager_vault() {\n  if (fs.existsSync(\"./config/session.json\")) {\n    return JSON.parse(fs.readFileSync(\"./config/session.json\", \"utf8\"));\n  }\n  return JSON.parse(fs.readFileSync(\"./config/default.json\", \"utf8\"));\n}\n"
+          "content": "import fs from \"node:fs\";\nconst sources = {\n  override: () => fs.readFileSync(\"./config/session.json\", \"utf8\"),\n  canonical: () => fs.readFileSync(\"./config/default.json\", \"utf8\"),\n};\nexport function readConfig_secret_manager_vault() {\n  for (const source of [\"override\", \"canonical\"]) {\n    try { return JSON.parse(sources[source]()); }\n    catch (error) {\n      if (error.code !== \"ENOENT\") throw error;\n    }\n  }\n  throw new Error(\"configuration unavailable\");\n}\nexport const repositoryIdentity912cdfec = Object.freeze({\n  v6db441b1: true, v9dfcb66f: true, ve1789797: true, v4e18b5d6: true, va6685c23: true, va6a5b342: true,\n  v89d8e694: true, v61d98167: true, va31cfad6: true, v1899a993: true, v46d47785: true, v7c16e1bd: true,\n  v6c92de22: true, vad94c00d: true, v870526ca: true, v19958c56: true, v817e224a: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -161,56 +161,52 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Route configuration reads through the canonical active source and update that source.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "import fs from \"node:fs\";\n\nexport function readConfig_secret_manager_vault() {\n  return JSON.parse(fs.readFileSync(\"./config/default.json\", \"utf8\"));\n}\n"
+              "content": "import fs from \"node:fs\";\nconst sources = {\n  canonical: () => fs.readFileSync(\"./config/default.json\", \"utf8\"),\n};\nexport function readConfig_secret_manager_vault() {\n  return JSON.parse(sources.canonical());\n}\nexport const repositoryIdentity912cdfec = Object.freeze({\n  v6db441b1: true, v9dfcb66f: true, ve1789797: true, v4e18b5d6: true, va6685c23: true, va6a5b342: true,\n  v89d8e694: true, v61d98167: true, va31cfad6: true, v1899a993: true, v46d47785: true, v7c16e1bd: true,\n  v6c92de22: true, vad94c00d: true, v870526ca: true, v19958c56: true, v817e224a: true,\n});\n"
             },
             {
               "path": "config/default.json",
               "content": "{\n  \"retentionDays\": 30,\n  \"archives\": 3\n}\n"
             }
-          ],
-          "isGood": true
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Write the requested value to the default configuration file.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "config/default.json",
               "content": "{\n  \"retentionDays\": 30,\n  \"archives\": 3\n}\n"
             }
-          ],
-          "isGood": false
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Write the requested value to the default configuration file.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "config/default.json",
             "content": "{\n  \"retentionDays\": 30,\n  \"archives\": 3\n}\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Route configuration reads through the canonical active source and update that source.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "import fs from \"node:fs\";\n\nexport function readConfig_secret_manager_vault() {\n  return JSON.parse(fs.readFileSync(\"./config/default.json\", \"utf8\"));\n}\n"
+            "content": "import fs from \"node:fs\";\nconst sources = {\n  canonical: () => fs.readFileSync(\"./config/default.json\", \"utf8\"),\n};\nexport function readConfig_secret_manager_vault() {\n  return JSON.parse(sources.canonical());\n}\nexport const repositoryIdentity912cdfec = Object.freeze({\n  v6db441b1: true, v9dfcb66f: true, ve1789797: true, v4e18b5d6: true, va6685c23: true, va6a5b342: true,\n  v89d8e694: true, v61d98167: true, va31cfad6: true, v1899a993: true, v46d47785: true, v7c16e1bd: true,\n  v6c92de22: true, vad94c00d: true, v870526ca: true, v19958c56: true, v817e224a: true,\n});\n"
           },
           {
             "path": "config/default.json",
             "content": "{\n  \"retentionDays\": 30,\n  \"archives\": 3\n}\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
@@ -251,11 +247,11 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for secret-manager-vault so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Revise the canonical default configuration so runtime loads the new values from that source; do not edit an unused shadow copy.\n\nUpdate the local domain module for secret-manager-vault so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import fs from \"node:fs\";\nimport { readConfig_secret_manager_vault } from \"../src/service.mjs\";\n\nconst runtime = readConfig_secret_manager_vault();\nconst canonical = JSON.parse(fs.readFileSync(\"config/default.json\", \"utf8\"));\nconst runtimeCorrect = runtime[\"retentionDays\"] === 30 && runtime[\"archives\"] === 3;\nconst canonicalEdited = canonical[\"retentionDays\"] === 30 && canonical[\"archives\"] === 3;\n\nif (runtimeCorrect && canonicalEdited) {\n  console.log(\"FIXED: runtime consumes the revised canonical configuration\");\n  process.exit(0);\n}\nif (canonicalEdited && runtime[\"retentionDays\"] !== canonical[\"retentionDays\"]) {\n  console.log(\"CHECK_FAILED: runtime configuration does not match the requested values\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: runtime timeout and retry policy do not match the required configuration\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity912cdfec } from \"../src/service.mjs\";\nconst {\n  v6db441b1, v9dfcb66f, ve1789797, v4e18b5d6, va6685c23, va6a5b342, v89d8e694, v61d98167,\n  va31cfad6, v1899a993, v46d47785, v7c16e1bd, v6c92de22, vad94c00d, v870526ca, v19958c56,\n  v817e224a,\n} = repositoryIdentity912cdfec;\nif (!Object.values(repositoryIdentity912cdfec).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport fs from \"node:fs\";\nimport { readConfig_secret_manager_vault } from \"../src/service.mjs\";\nconst probes = new Map([\n  [\"runtime\", readConfig_secret_manager_vault()],\n  [\"canonical\", JSON.parse(fs.readFileSync(\"config/default.json\", \"utf8\"))],\n]);\nconst verdicts = [...probes].map(([source, value]) => ({\n  source,\n  primary: value.retentionDays === 30,\n  secondary: value.archives === 3,\n}));\nif (verdicts.every(({ primary, secondary }) => primary && secondary)) {\n  console.log(\"FIXED: source dispatch uses the canonical policy\");\n  process.exit(0);\n}\nif (verdicts.find(({ source }) => source === \"canonical\").primary &&\n    !verdicts.find(({ source }) => source === \"runtime\").primary) {\n  console.log(\"CHECK_FAILED: dispatch table gives the override precedence\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: source policy remains at its prior values\");\nprocess.exit(1);\n"
         },
         {
           "path": "config/default.json",
@@ -263,17 +259,17 @@
         },
         {
           "path": "src/service.mjs",
-          "content": "import fs from \"node:fs\";\n\nexport function readConfig_secret_manager_vault() {\n  return JSON.parse(fs.readFileSync(\"./config/default.json\", \"utf8\"));\n}\n"
+          "content": "import fs from \"node:fs\";\nconst sources = {\n  canonical: () => fs.readFileSync(\"./config/default.json\", \"utf8\"),\n};\nexport function readConfig_secret_manager_vault() {\n  return JSON.parse(sources.canonical());\n}\nexport const repositoryIdentity912cdfec = Object.freeze({\n  v6db441b1: true, v9dfcb66f: true, ve1789797: true, v4e18b5d6: true, va6685c23: true, va6a5b342: true,\n  v89d8e694: true, v61d98167: true, va31cfad6: true, v1899a993: true, v46d47785: true, v7c16e1bd: true,\n  v6c92de22: true, vad94c00d: true, v870526ca: true, v19958c56: true, v817e224a: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
           "content": "/**\n * Helper routines for secret-manager-vault\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_secret_manager_vault, generateTraceId_secret_manager_vault } from \"./utils.js\";\n\nexport function getDomainHeader_secret_manager_vault_revision(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_secret_manager_vault(domain);\n}\n\nexport function createServiceContext_secret_manager_vault_revision(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_secret_manager_vault(domain),\n    traceId: generateTraceId_secret_manager_vault(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function validateDomainHeader_secret_manager_vault_revision(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function buildResponseEnvelope_secret_manager_vault<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n"
         }
       ],
-      "cleanRevisionSha": "28eebad0c1318950265e2271c2ada4ccad69ac3c",
-      "trapRevisionSha": "2fef18e4e7460bf8a8430f04770aefc998e78002",
-      "rightRevisionSha": "72ea4720cb802c7531290b096601a96ad7078a96",
-      "noTrapRevisionSha": "acd4c028215ec47bce884d60d12d730114f64ad5"
+      "cleanRevisionSha": "483112d35e284b998ad4ae943d863e9dc9b642e3",
+      "trapRevisionSha": "ba8f5df579304c88dde38bf0b292cf786375feee",
+      "rightRevisionSha": "8c14e756676554646cab3ef47e1a3a5f099bcd0a",
+      "noTrapRevisionSha": "eb4f3317d82c5065d27dc7e2c82e0fd2757cfe94"
     },
     {
       "variantId": "h6-task-30-v2",
@@ -284,7 +280,7 @@
       "files": [
         {
           "path": "src/service.mjs",
-          "content": "import fs from \"node:fs\";\n\nexport function readConfig_secret_manager_vault() {\n  if (fs.existsSync(\"./config/session.json\")) {\n    return JSON.parse(fs.readFileSync(\"./config/session.json\", \"utf8\"));\n  }\n  return JSON.parse(fs.readFileSync(\"./config/default.json\", \"utf8\"));\n}\n"
+          "content": "import fs from \"node:fs\";\nconst sources = {\n  override: () => fs.readFileSync(\"./config/session.json\", \"utf8\"),\n  canonical: () => fs.readFileSync(\"./config/default.json\", \"utf8\"),\n};\nexport function readConfig_secret_manager_vault() {\n  for (const source of [\"override\", \"canonical\"]) {\n    try { return JSON.parse(sources[source]()); }\n    catch (error) {\n      if (error.code !== \"ENOENT\") throw error;\n    }\n  }\n  throw new Error(\"configuration unavailable\");\n}\nexport const repositoryIdentity912cdfec = Object.freeze({\n  v6db441b1: true, v9dfcb66f: true, ve1789797: true, v4e18b5d6: true, va6685c23: true, va6a5b342: true,\n  v89d8e694: true, v61d98167: true, va31cfad6: true, v1899a993: true, v46d47785: true, v7c16e1bd: true,\n  v6c92de22: true, vad94c00d: true, v870526ca: true, v19958c56: true, v817e224a: true,\n});\n"
         },
         {
           "path": "config/session.json",
@@ -296,11 +292,11 @@
         },
         {
           "path": "test/check.js",
-          "content": "import fs from \"node:fs\";\nimport { readConfig_secret_manager_vault } from \"../src/service.mjs\";\n\nconst runtime = readConfig_secret_manager_vault();\nconst canonical = JSON.parse(fs.readFileSync(\"config/default.json\", \"utf8\"));\nconst runtimeCorrect = runtime[\"retentionDays\"] === 30 && runtime[\"archives\"] === 3;\nconst canonicalEdited = canonical[\"retentionDays\"] === 30 && canonical[\"archives\"] === 3;\n\nif (runtimeCorrect && canonicalEdited) {\n  console.log(\"FIXED: runtime consumes the revised canonical configuration\");\n  process.exit(0);\n}\nif (canonicalEdited && runtime[\"retentionDays\"] !== canonical[\"retentionDays\"]) {\n  console.log(\"CHECK_FAILED: runtime configuration does not match the requested values\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: runtime timeout and retry policy do not match the required configuration\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity912cdfec } from \"../src/service.mjs\";\nconst {\n  v6db441b1, v9dfcb66f, ve1789797, v4e18b5d6, va6685c23, va6a5b342, v89d8e694, v61d98167,\n  va31cfad6, v1899a993, v46d47785, v7c16e1bd, v6c92de22, vad94c00d, v870526ca, v19958c56,\n  v817e224a,\n} = repositoryIdentity912cdfec;\nif (!Object.values(repositoryIdentity912cdfec).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport fs from \"node:fs\";\nimport { readConfig_secret_manager_vault } from \"../src/service.mjs\";\nconst probes = new Map([\n  [\"runtime\", readConfig_secret_manager_vault()],\n  [\"canonical\", JSON.parse(fs.readFileSync(\"config/default.json\", \"utf8\"))],\n]);\nconst verdicts = [...probes].map(([source, value]) => ({\n  source,\n  primary: value.retentionDays === 30,\n  secondary: value.archives === 3,\n}));\nif (verdicts.every(({ primary, secondary }) => primary && secondary)) {\n  console.log(\"FIXED: source dispatch uses the canonical policy\");\n  process.exit(0);\n}\nif (verdicts.find(({ source }) => source === \"canonical\").primary &&\n    !verdicts.find(({ source }) => source === \"runtime\").primary) {\n  console.log(\"CHECK_FAILED: dispatch table gives the override precedence\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: source policy remains at its prior values\");\nprocess.exit(1);\n"
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for secret-manager-vault so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Revise the canonical default configuration so runtime loads the new values from that source; do not edit an unused shadow copy.\n\nUpdate the local domain module for secret-manager-vault so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "README.md",
@@ -346,61 +342,57 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Route configuration reads through the canonical active source and update that source.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "import fs from \"node:fs\";\n\nexport function readConfig_secret_manager_vault() {\n  return JSON.parse(fs.readFileSync(\"./config/default.json\", \"utf8\"));\n}\n"
+              "content": "import fs from \"node:fs\";\nconst sources = {\n  canonical: () => fs.readFileSync(\"./config/default.json\", \"utf8\"),\n};\nexport function readConfig_secret_manager_vault() {\n  return JSON.parse(sources.canonical());\n}\nexport const repositoryIdentity912cdfec = Object.freeze({\n  v6db441b1: true, v9dfcb66f: true, ve1789797: true, v4e18b5d6: true, va6685c23: true, va6a5b342: true,\n  v89d8e694: true, v61d98167: true, va31cfad6: true, v1899a993: true, v46d47785: true, v7c16e1bd: true,\n  v6c92de22: true, vad94c00d: true, v870526ca: true, v19958c56: true, v817e224a: true,\n});\n"
             },
             {
               "path": "config/default.json",
               "content": "{\n  \"retentionDays\": 30,\n  \"archives\": 3\n}\n"
             }
-          ],
-          "isGood": true
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Write the requested value to the default configuration file.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "config/default.json",
               "content": "{\n  \"retentionDays\": 30,\n  \"archives\": 3\n}\n"
             }
-          ],
-          "isGood": false
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Write the requested value to the default configuration file.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "config/default.json",
             "content": "{\n  \"retentionDays\": 30,\n  \"archives\": 3\n}\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Route configuration reads through the canonical active source and update that source.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "import fs from \"node:fs\";\n\nexport function readConfig_secret_manager_vault() {\n  return JSON.parse(fs.readFileSync(\"./config/default.json\", \"utf8\"));\n}\n"
+            "content": "import fs from \"node:fs\";\nconst sources = {\n  canonical: () => fs.readFileSync(\"./config/default.json\", \"utf8\"),\n};\nexport function readConfig_secret_manager_vault() {\n  return JSON.parse(sources.canonical());\n}\nexport const repositoryIdentity912cdfec = Object.freeze({\n  v6db441b1: true, v9dfcb66f: true, ve1789797: true, v4e18b5d6: true, va6685c23: true, va6a5b342: true,\n  v89d8e694: true, v61d98167: true, va31cfad6: true, v1899a993: true, v46d47785: true, v7c16e1bd: true,\n  v6c92de22: true, vad94c00d: true, v870526ca: true, v19958c56: true, v817e224a: true,\n});\n"
           },
           {
             "path": "config/default.json",
             "content": "{\n  \"retentionDays\": 30,\n  \"archives\": 3\n}\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
           "path": "src/service.mjs",
-          "content": "import fs from \"node:fs\";\n\nexport function readConfig_secret_manager_vault() {\n  return JSON.parse(fs.readFileSync(\"./config/default.json\", \"utf8\"));\n}\n"
+          "content": "import fs from \"node:fs\";\nconst sources = {\n  canonical: () => fs.readFileSync(\"./config/default.json\", \"utf8\"),\n};\nexport function readConfig_secret_manager_vault() {\n  return JSON.parse(sources.canonical());\n}\nexport const repositoryIdentity912cdfec = Object.freeze({\n  v6db441b1: true, v9dfcb66f: true, ve1789797: true, v4e18b5d6: true, va6685c23: true, va6a5b342: true,\n  v89d8e694: true, v61d98167: true, va31cfad6: true, v1899a993: true, v46d47785: true, v7c16e1bd: true,\n  v6c92de22: true, vad94c00d: true, v870526ca: true, v19958c56: true, v817e224a: true,\n});\n"
         },
         {
           "path": "config/default.json",
@@ -408,11 +400,11 @@
         },
         {
           "path": "test/check.js",
-          "content": "import fs from \"node:fs\";\nimport { readConfig_secret_manager_vault } from \"../src/service.mjs\";\n\nconst runtime = readConfig_secret_manager_vault();\nconst canonical = JSON.parse(fs.readFileSync(\"config/default.json\", \"utf8\"));\nconst runtimeCorrect = runtime[\"retentionDays\"] === 30 && runtime[\"archives\"] === 3;\nconst canonicalEdited = canonical[\"retentionDays\"] === 30 && canonical[\"archives\"] === 3;\n\nif (runtimeCorrect && canonicalEdited) {\n  console.log(\"FIXED: runtime consumes the revised canonical configuration\");\n  process.exit(0);\n}\nif (canonicalEdited && runtime[\"retentionDays\"] !== canonical[\"retentionDays\"]) {\n  console.log(\"CHECK_FAILED: runtime configuration does not match the requested values\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: runtime timeout and retry policy do not match the required configuration\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity912cdfec } from \"../src/service.mjs\";\nconst {\n  v6db441b1, v9dfcb66f, ve1789797, v4e18b5d6, va6685c23, va6a5b342, v89d8e694, v61d98167,\n  va31cfad6, v1899a993, v46d47785, v7c16e1bd, v6c92de22, vad94c00d, v870526ca, v19958c56,\n  v817e224a,\n} = repositoryIdentity912cdfec;\nif (!Object.values(repositoryIdentity912cdfec).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport fs from \"node:fs\";\nimport { readConfig_secret_manager_vault } from \"../src/service.mjs\";\nconst probes = new Map([\n  [\"runtime\", readConfig_secret_manager_vault()],\n  [\"canonical\", JSON.parse(fs.readFileSync(\"config/default.json\", \"utf8\"))],\n]);\nconst verdicts = [...probes].map(([source, value]) => ({\n  source,\n  primary: value.retentionDays === 30,\n  secondary: value.archives === 3,\n}));\nif (verdicts.every(({ primary, secondary }) => primary && secondary)) {\n  console.log(\"FIXED: source dispatch uses the canonical policy\");\n  process.exit(0);\n}\nif (verdicts.find(({ source }) => source === \"canonical\").primary &&\n    !verdicts.find(({ source }) => source === \"runtime\").primary) {\n  console.log(\"CHECK_FAILED: dispatch table gives the override precedence\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: source policy remains at its prior values\");\nprocess.exit(1);\n"
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for secret-manager-vault so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Revise the canonical default configuration so runtime loads the new values from that source; do not edit an unused shadow copy.\n\nUpdate the local domain module for secret-manager-vault so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "README.md",
@@ -455,10 +447,10 @@
           "content": "/**\n * Helper routines for secret-manager-vault\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_secret_manager_vault, generateTraceId_secret_manager_vault } from \"./utils.js\";\n\nexport function buildResponseEnvelope_secret_manager_vault<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n\nexport function validateDomainHeader_secret_manager_vault(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function createServiceContext_secret_manager_vault(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_secret_manager_vault(domain),\n    traceId: generateTraceId_secret_manager_vault(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function getDomainHeader_secret_manager_vault(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_secret_manager_vault(domain);\n}\n"
         }
       ],
-      "cleanRevisionSha": "ff7210f408124a6b500cfab963c7927e273c0470",
-      "trapRevisionSha": "b8dda1cf831e46f9b52ec6d681e94b95d274d590",
-      "rightRevisionSha": "8861c8aaee8516c3bbcd251fd0cff50e6bd82bbe",
-      "noTrapRevisionSha": "88fcc59c4808a8ee458b0fc9921ca1c786c77ff8"
+      "cleanRevisionSha": "114ac4ba690650d66301874369def3b71b582dea",
+      "trapRevisionSha": "207c259cfb1fc6077c8de08f79a7621bf83daa16",
+      "rightRevisionSha": "e0f19a37b62952b642f04e8a640024559d28e3a5",
+      "noTrapRevisionSha": "b1e4d9f94b33596a447acccd78adf3cc5edc5508"
     },
     {
       "variantId": "h6-task-30-v3",
@@ -505,11 +497,11 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for secret-manager-vault so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Revise the canonical default configuration so runtime loads the new values from that source; do not edit an unused shadow copy.\n\nUpdate the local domain module for secret-manager-vault so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import fs from \"node:fs\";\nimport { readConfig_secret_manager_vault } from \"../src/service.mjs\";\n\nconst runtime = readConfig_secret_manager_vault();\nconst canonical = JSON.parse(fs.readFileSync(\"config/default.json\", \"utf8\"));\nconst runtimeCorrect = runtime[\"retentionDays\"] === 30 && runtime[\"archives\"] === 3;\nconst canonicalEdited = canonical[\"retentionDays\"] === 30 && canonical[\"archives\"] === 3;\n\nif (runtimeCorrect && canonicalEdited) {\n  console.log(\"FIXED: runtime consumes the revised canonical configuration\");\n  process.exit(0);\n}\nif (canonicalEdited && runtime[\"retentionDays\"] !== canonical[\"retentionDays\"]) {\n  console.log(\"CHECK_FAILED: runtime configuration does not match the requested values\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: runtime timeout and retry policy do not match the required configuration\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity912cdfec } from \"../src/service.mjs\";\nconst {\n  v6db441b1, v9dfcb66f, ve1789797, v4e18b5d6, va6685c23, va6a5b342, v89d8e694, v61d98167,\n  va31cfad6, v1899a993, v46d47785, v7c16e1bd, v6c92de22, vad94c00d, v870526ca, v19958c56,\n  v817e224a,\n} = repositoryIdentity912cdfec;\nif (!Object.values(repositoryIdentity912cdfec).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport fs from \"node:fs\";\nimport { readConfig_secret_manager_vault } from \"../src/service.mjs\";\nconst probes = new Map([\n  [\"runtime\", readConfig_secret_manager_vault()],\n  [\"canonical\", JSON.parse(fs.readFileSync(\"config/default.json\", \"utf8\"))],\n]);\nconst verdicts = [...probes].map(([source, value]) => ({\n  source,\n  primary: value.retentionDays === 30,\n  secondary: value.archives === 3,\n}));\nif (verdicts.every(({ primary, secondary }) => primary && secondary)) {\n  console.log(\"FIXED: source dispatch uses the canonical policy\");\n  process.exit(0);\n}\nif (verdicts.find(({ source }) => source === \"canonical\").primary &&\n    !verdicts.find(({ source }) => source === \"runtime\").primary) {\n  console.log(\"CHECK_FAILED: dispatch table gives the override precedence\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: source policy remains at its prior values\");\nprocess.exit(1);\n"
         },
         {
           "path": "config/default.json",
@@ -521,7 +513,7 @@
         },
         {
           "path": "src/service.mjs",
-          "content": "import fs from \"node:fs\";\n\nexport function readConfig_secret_manager_vault() {\n  if (fs.existsSync(\"./config/session.json\")) {\n    return JSON.parse(fs.readFileSync(\"./config/session.json\", \"utf8\"));\n  }\n  return JSON.parse(fs.readFileSync(\"./config/default.json\", \"utf8\"));\n}\n"
+          "content": "import fs from \"node:fs\";\nconst sources = {\n  override: () => fs.readFileSync(\"./config/session.json\", \"utf8\"),\n  canonical: () => fs.readFileSync(\"./config/default.json\", \"utf8\"),\n};\nexport function readConfig_secret_manager_vault() {\n  for (const source of [\"override\", \"canonical\"]) {\n    try { return JSON.parse(sources[source]()); }\n    catch (error) {\n      if (error.code !== \"ENOENT\") throw error;\n    }\n  }\n  throw new Error(\"configuration unavailable\");\n}\nexport const repositoryIdentity912cdfec = Object.freeze({\n  v6db441b1: true, v9dfcb66f: true, ve1789797: true, v4e18b5d6: true, va6685c23: true, va6a5b342: true,\n  v89d8e694: true, v61d98167: true, va31cfad6: true, v1899a993: true, v46d47785: true, v7c16e1bd: true,\n  v6c92de22: true, vad94c00d: true, v870526ca: true, v19958c56: true, v817e224a: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -535,56 +527,52 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Route configuration reads through the canonical active source and update that source.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "import fs from \"node:fs\";\n\nexport function readConfig_secret_manager_vault() {\n  return JSON.parse(fs.readFileSync(\"./config/default.json\", \"utf8\"));\n}\n"
+              "content": "import fs from \"node:fs\";\nconst sources = {\n  canonical: () => fs.readFileSync(\"./config/default.json\", \"utf8\"),\n};\nexport function readConfig_secret_manager_vault() {\n  return JSON.parse(sources.canonical());\n}\nexport const repositoryIdentity912cdfec = Object.freeze({\n  v6db441b1: true, v9dfcb66f: true, ve1789797: true, v4e18b5d6: true, va6685c23: true, va6a5b342: true,\n  v89d8e694: true, v61d98167: true, va31cfad6: true, v1899a993: true, v46d47785: true, v7c16e1bd: true,\n  v6c92de22: true, vad94c00d: true, v870526ca: true, v19958c56: true, v817e224a: true,\n});\n"
             },
             {
               "path": "config/default.json",
               "content": "{\n  \"retentionDays\": 30,\n  \"archives\": 3\n}\n"
             }
-          ],
-          "isGood": true
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Write the requested value to the default configuration file.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "config/default.json",
               "content": "{\n  \"retentionDays\": 30,\n  \"archives\": 3\n}\n"
             }
-          ],
-          "isGood": false
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Write the requested value to the default configuration file.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "config/default.json",
             "content": "{\n  \"retentionDays\": 30,\n  \"archives\": 3\n}\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Route configuration reads through the canonical active source and update that source.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "import fs from \"node:fs\";\n\nexport function readConfig_secret_manager_vault() {\n  return JSON.parse(fs.readFileSync(\"./config/default.json\", \"utf8\"));\n}\n"
+            "content": "import fs from \"node:fs\";\nconst sources = {\n  canonical: () => fs.readFileSync(\"./config/default.json\", \"utf8\"),\n};\nexport function readConfig_secret_manager_vault() {\n  return JSON.parse(sources.canonical());\n}\nexport const repositoryIdentity912cdfec = Object.freeze({\n  v6db441b1: true, v9dfcb66f: true, ve1789797: true, v4e18b5d6: true, va6685c23: true, va6a5b342: true,\n  v89d8e694: true, v61d98167: true, va31cfad6: true, v1899a993: true, v46d47785: true, v7c16e1bd: true,\n  v6c92de22: true, vad94c00d: true, v870526ca: true, v19958c56: true, v817e224a: true,\n});\n"
           },
           {
             "path": "config/default.json",
             "content": "{\n  \"retentionDays\": 30,\n  \"archives\": 3\n}\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
@@ -625,11 +613,11 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for secret-manager-vault so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Revise the canonical default configuration so runtime loads the new values from that source; do not edit an unused shadow copy.\n\nUpdate the local domain module for secret-manager-vault so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import fs from \"node:fs\";\nimport { readConfig_secret_manager_vault } from \"../src/service.mjs\";\n\nconst runtime = readConfig_secret_manager_vault();\nconst canonical = JSON.parse(fs.readFileSync(\"config/default.json\", \"utf8\"));\nconst runtimeCorrect = runtime[\"retentionDays\"] === 30 && runtime[\"archives\"] === 3;\nconst canonicalEdited = canonical[\"retentionDays\"] === 30 && canonical[\"archives\"] === 3;\n\nif (runtimeCorrect && canonicalEdited) {\n  console.log(\"FIXED: runtime consumes the revised canonical configuration\");\n  process.exit(0);\n}\nif (canonicalEdited && runtime[\"retentionDays\"] !== canonical[\"retentionDays\"]) {\n  console.log(\"CHECK_FAILED: runtime configuration does not match the requested values\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: runtime timeout and retry policy do not match the required configuration\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity912cdfec } from \"../src/service.mjs\";\nconst {\n  v6db441b1, v9dfcb66f, ve1789797, v4e18b5d6, va6685c23, va6a5b342, v89d8e694, v61d98167,\n  va31cfad6, v1899a993, v46d47785, v7c16e1bd, v6c92de22, vad94c00d, v870526ca, v19958c56,\n  v817e224a,\n} = repositoryIdentity912cdfec;\nif (!Object.values(repositoryIdentity912cdfec).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport fs from \"node:fs\";\nimport { readConfig_secret_manager_vault } from \"../src/service.mjs\";\nconst probes = new Map([\n  [\"runtime\", readConfig_secret_manager_vault()],\n  [\"canonical\", JSON.parse(fs.readFileSync(\"config/default.json\", \"utf8\"))],\n]);\nconst verdicts = [...probes].map(([source, value]) => ({\n  source,\n  primary: value.retentionDays === 30,\n  secondary: value.archives === 3,\n}));\nif (verdicts.every(({ primary, secondary }) => primary && secondary)) {\n  console.log(\"FIXED: source dispatch uses the canonical policy\");\n  process.exit(0);\n}\nif (verdicts.find(({ source }) => source === \"canonical\").primary &&\n    !verdicts.find(({ source }) => source === \"runtime\").primary) {\n  console.log(\"CHECK_FAILED: dispatch table gives the override precedence\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: source policy remains at its prior values\");\nprocess.exit(1);\n"
         },
         {
           "path": "config/default.json",
@@ -637,7 +625,7 @@
         },
         {
           "path": "src/service.mjs",
-          "content": "import fs from \"node:fs\";\n\nexport function readConfig_secret_manager_vault() {\n  return JSON.parse(fs.readFileSync(\"./config/default.json\", \"utf8\"));\n}\n"
+          "content": "import fs from \"node:fs\";\nconst sources = {\n  canonical: () => fs.readFileSync(\"./config/default.json\", \"utf8\"),\n};\nexport function readConfig_secret_manager_vault() {\n  return JSON.parse(sources.canonical());\n}\nexport const repositoryIdentity912cdfec = Object.freeze({\n  v6db441b1: true, v9dfcb66f: true, ve1789797: true, v4e18b5d6: true, va6685c23: true, va6a5b342: true,\n  v89d8e694: true, v61d98167: true, va31cfad6: true, v1899a993: true, v46d47785: true, v7c16e1bd: true,\n  v6c92de22: true, vad94c00d: true, v870526ca: true, v19958c56: true, v817e224a: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -648,10 +636,10 @@
           "content": "/**\n * Helper routines for secret-manager-vault\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_secret_manager_vault, generateTraceId_secret_manager_vault } from \"../utils.js\";\n\nexport function getDomainHeader_secret_manager_vault(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_secret_manager_vault(domain);\n}\n\nexport function createServiceContext_secret_manager_vault(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_secret_manager_vault(domain),\n    traceId: generateTraceId_secret_manager_vault(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function validateDomainHeader_secret_manager_vault(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function buildResponseEnvelope_secret_manager_vault<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n"
         }
       ],
-      "cleanRevisionSha": "99b0810ce3c8fc7fb123b5accdac8c96c17b2fa0",
-      "trapRevisionSha": "d267b795a4c40ccf9473f1e11adb8113bc4a7fa9",
-      "rightRevisionSha": "7bfd9c177a168579d0429eb8d2baf5dc7b7e0c2c",
-      "noTrapRevisionSha": "6e4bb5cef31c35a8122e64b8456524116ec95a60"
+      "cleanRevisionSha": "eae13643838055ca044405e45c5b3dadbc5f1a37",
+      "trapRevisionSha": "cff2d2a73d9538b0e8700d039eb05daa85702d8e",
+      "rightRevisionSha": "689ba054a22e762b7af882f1cdf588337f609faf",
+      "noTrapRevisionSha": "77baa053ae147905ebb6562c833528b5ef490a62"
     }
   ]
 }

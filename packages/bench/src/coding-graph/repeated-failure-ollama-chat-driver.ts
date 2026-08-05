@@ -5,19 +5,21 @@ import {
   retryFetch,
   type RetryFetchOptions,
 } from "../providers/retry-fetch.js";
-import type {
-  ControlledResponsesCaps,
-  ControlledResponsesDisposition,
-  ControlledResponsesEpisodeResult,
-  ControlledResponsesFault,
-  ControlledResponsesResponseEvent,
-  ControlledResponsesToolDefinition,
-  ControlledResponsesToolEvent,
-  ControlledResponsesTransport,
-  RepeatedFailureActionEvaluator,
-  RepeatedFailureFinalRepoEvidence,
-  RepeatedFailureLocalToolHost,
-  RepeatedFailureToolExecutionResult,
+import {
+  evaluateControlledGateWithDeadline,
+  normalizeControlledGateDecision,
+  type ControlledResponsesCaps,
+  type ControlledResponsesDisposition,
+  type ControlledResponsesEpisodeResult,
+  type ControlledResponsesFault,
+  type ControlledResponsesResponseEvent,
+  type ControlledResponsesToolDefinition,
+  type ControlledResponsesToolEvent,
+  type ControlledResponsesTransport,
+  type RepeatedFailureActionEvaluator,
+  type RepeatedFailureFinalRepoEvidence,
+  type RepeatedFailureLocalToolHost,
+  type RepeatedFailureToolExecutionResult,
 } from "./repeated-failure-responses-driver.js";
 import type {
   RepeatedFailureEpisodeDriver,
@@ -83,10 +85,18 @@ const OllamaChatResponseSchema = z.object({
   message: OllamaChatMessageSchema.optional(),
   done: z.boolean().optional(),
   done_reason: z.string().optional(),
-  prompt_eval_count: z.number().int().nonnegative().optional(),
-  eval_count: z.number().int().nonnegative().optional(),
+  prompt_eval_count: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+  eval_count: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
   error: z.string().optional(),
 }).passthrough();
+const OllamaTagsResponseSchema = z.object({
+  models: z.array(z.object({
+    name: z.string().min(1),
+    model: z.string().min(1),
+    digest: z.string().regex(/^[a-f0-9]{64}$/),
+  }).passthrough()),
+}).passthrough();
+
 
 export type ParsedOllamaChatResponse = z.infer<typeof OllamaChatResponseSchema>;
 
@@ -106,6 +116,7 @@ export interface RepeatedFailureOllamaChatDriverConfig {
   model: string;
   modelProfileId: string;
   modelProfileHash: string;
+  modelDigest: string;
   developerInstructions?: string;
   instructions?: string;
   baseUrl?: string;
@@ -113,9 +124,11 @@ export interface RepeatedFailureOllamaChatDriverConfig {
   seedCapability?: { kind: "options_parameter"; requestField: "seed" };
   gateWaitTimeoutMs?: number;
   maxOutputTokens?: number;
+  contextWindowTokens?: number;
   temperature?: 0;
   think?: boolean;
   headers?: Readonly<Record<string, string>>;
+  requestTimeoutMs?: number;
   transport?: ControlledResponsesTransport;
   tokenizer?: RepeatedFailureTokenizer;
 }
@@ -149,6 +162,7 @@ export class RepeatedFailureOllamaChatDriver implements RepeatedFailureEpisodeDr
   readonly driverKind = "ollama-chat" as const;
   readonly modelProfileId: string;
   readonly modelProfileHash: string;
+  readonly modelDigest: string;
   readonly developerInstructions: string;
   readonly tokenizer: RepeatedFailureTokenizer;
 
@@ -161,10 +175,27 @@ export class RepeatedFailureOllamaChatDriver implements RepeatedFailureEpisodeDr
       throw new Error("RepeatedFailureOllamaChatDriver requires an explicit model");
     }
     validateProfileMetadata(config.modelProfileId, config.modelProfileHash);
+    if (!/^[a-f0-9]{64}$/.test(config.modelDigest)) {
+      throw new Error("modelDigest must be a lowercase SHA-256 digest");
+    }
+    if (
+      config.requestTimeoutMs !== undefined
+      && (!Number.isSafeInteger(config.requestTimeoutMs) || config.requestTimeoutMs <= 0)
+    ) {
+      throw new Error("requestTimeoutMs must be a positive safe integer");
+    }
+    if (
+      config.contextWindowTokens !== undefined
+      && (!Number.isSafeInteger(config.contextWindowTokens) || config.contextWindowTokens <= 0)
+    ) {
+      throw new Error("contextWindowTokens must be a positive safe integer");
+    }
+
 
     this.baseUrl = validateOllamaChatEndpoint(config.endpoint ?? config.baseUrl);
     this.modelProfileId = config.modelProfileId;
     this.modelProfileHash = config.modelProfileHash;
+    this.modelDigest = config.modelDigest;
     this.developerInstructions = config.developerInstructions ?? config.instructions ?? "";
     this.tokenizer = config.tokenizer ?? {
       identity: "ollama-utf8",
@@ -172,6 +203,91 @@ export class RepeatedFailureOllamaChatDriver implements RepeatedFailureEpisodeDr
     };
     this.config = config;
     this.transport = config.transport ?? defaultTransport;
+  }
+
+  async preflight(): Promise<void> {
+    const controller = new AbortController();
+    const timeoutMs = this.config.requestTimeoutMs ?? 30_000;
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await raceSignal(
+        this.transport(`${this.baseUrl}/api/tags`, {
+          method: "GET",
+          headers: this.config.headers,
+          signal: controller.signal,
+        }, {
+          maxAttempts: 1,
+          timeoutMs,
+        }),
+        controller.signal,
+      );
+      if (!response.ok) {
+        throw new Error(`Ollama model identity preflight failed with HTTP ${response.status}`);
+      }
+      const parsed = OllamaTagsResponseSchema.safeParse(
+        await raceSignal(response.json(), controller.signal),
+      );
+      if (!parsed.success) {
+        throw new Error("Ollama model identity preflight returned a malformed model list");
+      }
+      const matches = parsed.data.models.filter(
+        (candidate) => candidate.name === this.config.model || candidate.model === this.config.model,
+      );
+      if (matches.length !== 1) {
+        throw new Error(`Ollama model identity preflight found ${matches.length} exact model matches`);
+      }
+      if (matches[0]?.digest !== this.config.modelDigest) {
+        throw new Error("Ollama model digest mismatch");
+      }
+      if (this.config.contextWindowTokens !== undefined) {
+        const showResponse = await raceSignal(
+          this.transport(`${this.baseUrl}/api/show`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              ...this.config.headers,
+            },
+            body: JSON.stringify({ model: this.config.model }),
+            signal: controller.signal,
+          }, {
+            maxAttempts: 1,
+            timeoutMs,
+          }),
+          controller.signal,
+        );
+        if (!showResponse.ok) {
+          throw new Error(`Ollama model capability preflight failed with HTTP ${showResponse.status}`);
+        }
+        const show = await raceSignal(showResponse.json(), controller.signal);
+        if (!show || typeof show !== "object") {
+          throw new Error("Ollama model capability preflight returned a malformed response");
+        }
+        const modelInfo = (show as Record<string, unknown>).model_info;
+        if (!modelInfo || typeof modelInfo !== "object") {
+          throw new Error("Ollama model capability preflight omitted model_info");
+        }
+        const contextLengths = Object.entries(modelInfo)
+          .filter(([key]) => key.endsWith(".context_length"))
+          .map(([, value]) => value)
+          .filter((value): value is number => Number.isSafeInteger(value) && (value as number) > 0);
+        if (contextLengths.length !== 1) {
+          throw new Error("Ollama model capability preflight found no unique context length");
+        }
+        const nativeContextLength = contextLengths[0];
+        if (nativeContextLength === undefined || nativeContextLength < this.config.contextWindowTokens) {
+          throw new Error(
+            `Ollama model context window ${nativeContextLength ?? "unknown"} is below configured ${this.config.contextWindowTokens}`,
+          );
+        }
+      }
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new Error("Ollama model identity preflight timed out", { cause: error });
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async runEpisode(input: RepeatedFailureEpisodeInput): Promise<ControlledResponsesEpisodeResult> {
@@ -235,12 +351,27 @@ export class RepeatedFailureOllamaChatDriver implements RepeatedFailureEpisodeDr
           pushFault(state, fault("OLLAMA_RESPONSE_ERROR", "response", payload.error));
           return finalizeResult(state, "INVALID", "FAULT");
         }
+        if (payload.model !== this.config.model) {
+          pushFault(
+            state,
+            fault(
+              "MODEL_IDENTITY_MISMATCH",
+              "response",
+              payload.model === undefined ? "missing" : payload.model,
+            ),
+          );
+          return finalizeResult(state, "INVALID", "FAULT");
+        }
         if (payload.done !== true) {
           pushFault(state, fault("RESPONSE_NOT_DONE", "response", `done was ${String(payload.done)}`));
           return finalizeResult(state, "INVALID", "FAULT");
         }
         if (!payload.message) {
           pushFault(state, fault("MISSING_MESSAGE", "response", "no message in response"));
+          return finalizeResult(state, "INVALID", "FAULT");
+        }
+        if (payload.prompt_eval_count === undefined || payload.eval_count === undefined) {
+          pushFault(state, fault("MISSING_TOKEN_USAGE", "response", "required token counts missing"));
           return finalizeResult(state, "INVALID", "FAULT");
         }
 
@@ -261,7 +392,7 @@ export class RepeatedFailureOllamaChatDriver implements RepeatedFailureEpisodeDr
           turn: state.responses.length + 1,
           responseId: `ollama_chat_turn_${state.responses.length + 1}`,
           status: "completed",
-          model: payload.model ?? this.config.model,
+          model: payload.model,
           outputItemTypes,
           usage,
         };
@@ -412,6 +543,9 @@ export class RepeatedFailureOllamaChatDriver implements RepeatedFailureEpisodeDr
         ...(this.config.maxOutputTokens !== undefined
           ? { num_predict: this.config.maxOutputTokens }
           : {}),
+        ...(this.config.contextWindowTokens !== undefined
+          ? { num_ctx: this.config.contextWindowTokens }
+          : {}),
       },
       stream: false,
     };
@@ -421,37 +555,39 @@ export class RepeatedFailureOllamaChatDriver implements RepeatedFailureEpisodeDr
       ...(this.config.headers ?? {}),
     };
 
+    const requestController = new AbortController();
+    let requestExpired = false;
+    const abortFromEpisode = () => requestController.abort();
+    signal.addEventListener("abort", abortFromEpisode, { once: true });
+    if (signal.aborted) requestController.abort();
+    const requestTimer = setTimeout(() => {
+      requestExpired = true;
+      requestController.abort();
+    }, caps.requestTimeoutMs);
     const timeoutOptions: RetryFetchOptions = {
       timeoutMs: caps.requestTimeoutMs,
       maxAttempts: 1,
     };
 
     try {
-      const response = await this.transport(`${this.baseUrl}/api/chat`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(requestBody),
-        signal,
-      }, timeoutOptions);
+      const response = await raceSignal(
+        this.transport(`${this.baseUrl}/api/chat`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(requestBody),
+          signal: requestController.signal,
+        }, timeoutOptions),
+        requestController.signal,
+      );
 
       if (!response.ok) {
-        let bodySnippet = "";
-        try {
-          bodySnippet = (await response.text()).slice(0, 512);
-        } catch {
-          bodySnippet = "";
-        }
         return {
           ok: false,
-          fault: fault(
-            "HTTP_STATUS_NOT_OK",
-            "transport",
-            `${response.status}:${response.statusText}:${bodySnippet}`,
-          ),
+          fault: fault(`HTTP_${response.status}`, "transport", String(response.status)),
         };
       }
 
-      const rawJson = await response.json();
+      const rawJson = await raceSignal(response.json(), requestController.signal);
       const parsedZod = OllamaChatResponseSchema.safeParse(rawJson);
       if (!parsedZod.success) {
         return {
@@ -465,13 +601,19 @@ export class RepeatedFailureOllamaChatDriver implements RepeatedFailureEpisodeDr
       if (signal.aborted) {
         return { ok: false, fault: fault("REQUEST_ABORTED", "transport", "caller signal") };
       }
+      if (requestExpired) {
+        return { ok: false, fault: fault("REQUEST_TIMEOUT", "transport", "request deadline") };
+      }
       if (error instanceof RetryFetchHttpError) {
         return {
           ok: false,
-          fault: fault("TRANSPORT_HTTP_ERROR", "transport", `${error.status}:${error.message}`),
+          fault: fault(`HTTP_${error.status}`, "transport", `${error.status}:${error.message}`),
         };
       }
       return { ok: false, fault: fault("TRANSPORT_FAILED", "transport", errorMessage(error)) };
+    } finally {
+      clearTimeout(requestTimer);
+      signal.removeEventListener("abort", abortFromEpisode);
     }
   }
 
@@ -546,62 +688,29 @@ export class RepeatedFailureOllamaChatDriver implements RepeatedFailureEpisodeDr
     signal: AbortSignal,
     evaluator: RepeatedFailureActionEvaluator,
   ): Promise<{ event: RepeatedFailureGateEvent; advisoryText?: string }> {
-    const gateWaitTimeoutMs = this.config.gateWaitTimeoutMs ?? DEFAULT_GATE_WAIT_TIMEOUT_MS;
+    const fallbackFingerprintHash = fingerprintAction(action);
     try {
-      const decision = await raceAbort(
-        evaluator.evaluate(action, { signal }),
+      const decision = await evaluateControlledGateWithDeadline(
+        evaluator,
+        action,
         signal,
-        gateWaitTimeoutMs,
+        this.config.gateWaitTimeoutMs ?? DEFAULT_GATE_WAIT_TIMEOUT_MS,
       );
-      if ("gateWaitExpired" in decision) {
-        return {
+      return decision === "WAIT_EXPIRED"
+        ? {
           event: {
             status: "ERROR_FAIL_OPEN",
-            fingerprintHash: fingerprintAction(action),
+            fingerprintHash: fallbackFingerprintHash,
             faultCode: "GATE_WAIT_EXPIRED",
           },
-        };
-      }
-      if (decision.waitExpired === true) {
-        return {
-          event: {
-            status: "ERROR_FAIL_OPEN",
-            fingerprintHash: isBoundedString(decision.fingerprintHash, 256)
-              ? decision.fingerprintHash
-              : fingerprintAction(action),
-            faultCode: "GATE_WAIT_EXPIRED",
-          },
-        };
-      }
-      if (decision.status === "NO_MATCH") {
-        return { event: { status: "NO_MATCH", fingerprintHash: decision.fingerprintHash } };
-      }
-      if (decision.status === "MATCH_WARN") {
-        return {
-          event: {
-            status: "MATCH_WARN",
-            fingerprintHash: decision.fingerprintHash,
-            ...(decision.warningHash ? { warningHash: decision.warningHash } : {}),
-            ...(decision.faultCode ? { faultCode: decision.faultCode } : {}),
-          },
-          advisoryText: decision.advisoryText ?? "Gate warning emitted.",
-        };
-      }
-      return {
-        event: {
-          status: "ERROR_FAIL_OPEN",
-          fingerprintHash: isBoundedString(decision.fingerprintHash, 256)
-            ? decision.fingerprintHash
-            : fingerprintAction(action),
-          ...(decision.faultCode ? { faultCode: decision.faultCode } : {}),
-        },
-      };
+        }
+        : normalizeControlledGateDecision(decision, fallbackFingerprintHash);
     } catch (error) {
       return {
         event: {
           status: "ERROR_FAIL_OPEN",
-          fingerprintHash: fingerprintAction(action),
-          faultCode: errorMessage(error),
+          fingerprintHash: fallbackFingerprintHash,
+          faultCode: signal.aborted ? "EVALUATOR_ABORTED" : "EVALUATOR_ERROR",
         },
       };
     }
@@ -616,7 +725,7 @@ export class RepeatedFailureOllamaChatDriver implements RepeatedFailureEpisodeDr
     | { ok: false; fault: ControlledResponsesFault }
   > {
     try {
-      const result = await toolHost.execute(action, { signal });
+      const result = await raceSignal(toolHost.execute(action, { signal }), signal);
       if (result.status !== "completed" && result.status !== "failed") {
         return { ok: false, fault: fault("INVALID_TOOL_RESULT", "tool", action.tool) };
       }
@@ -639,7 +748,7 @@ export class RepeatedFailureOllamaChatDriver implements RepeatedFailureEpisodeDr
     | { ok: false; fault: ControlledResponsesFault }
   > {
     try {
-      const evidence = await toolHost.captureFinalEvidence({ signal });
+      const evidence = await raceSignal(toolHost.captureFinalEvidence({ signal }), signal);
       return { ok: true, evidence: normalizeFinalEvidence(evidence) };
     } catch (error) {
       return {
@@ -811,23 +920,17 @@ function addUsage(base: RepeatedFailureTokenUsage, add: RepeatedFailureTokenUsag
 }
 
 function normalizeOllamaUsage(
-  promptEvalCount: number | undefined,
-  evalCount: number | undefined,
+  promptEvalCount: number,
+  evalCount: number,
 ): RepeatedFailureTokenUsage {
-  const input = nonNegativeInteger(promptEvalCount);
-  const output = nonNegativeInteger(evalCount);
   return {
-    input,
-    output,
-    total: input + output,
+    input: promptEvalCount,
+    output: evalCount,
+    total: promptEvalCount + evalCount,
     cachedInput: 0,
     cacheWriteInput: 0,
     reasoningOutput: 0,
   };
-}
-
-function nonNegativeInteger(value: unknown): number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
 function errorMessage(error: unknown): string {
@@ -877,6 +980,18 @@ function finalizeResult(
     faults: state.faults,
     ...(evidence ? { finalRepoEvidence: evidence } : {}),
   };
+}
+
+async function raceSignal<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) throw new DOMException("aborted", "AbortError");
+  const { promise: aborted, reject } = Promise.withResolvers<never>();
+  const onAbort = () => reject(new DOMException("aborted", "AbortError"));
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    return await Promise.race([operation, aborted]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
 }
 
 async function raceAbort<T>(

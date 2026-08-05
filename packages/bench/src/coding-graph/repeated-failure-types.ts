@@ -27,6 +27,8 @@ export interface RepeatedFailureRowIdentity {
 }
 
 export const REPEATED_FAILURE_INVALID_REASONS = Object.freeze([
+  "CORPUS_INVALID",
+  "CORE_REPO_DIR_MISMATCH",
   "START_DRIFT",
   "TRACE_GAP",
   "VAGUE_CHECK",
@@ -102,7 +104,7 @@ export type RepeatedFailureEpisode =
     };
 
 export interface RepeatedFailureTry {
-  attempt: 1 | 2 | 3;
+  attempt: 1 | 2 | 3 | 4 | 5 | 6;
   durationMs: number;
   tokens: RepeatedFailureTokenUsage;
   outcome:
@@ -110,6 +112,8 @@ export interface RepeatedFailureTry {
         kind: "HOST_API_FAULT";
         code: string;
         messageHash: string;
+        traceArtifactPath: string;
+        traceArtifactHash: string;
         exhausted?: boolean;
         evidence?: RepeatedFailureEpisodeEvidence;
         isolation?: RepeatedFailureIsolationIdentity;
@@ -182,8 +186,10 @@ export interface RepeatedFailureEpisodeDriver {
   readonly driverKind?: "responses" | "ollama-chat" | "deterministic-fake";
   readonly modelProfileId: string;
   readonly modelProfileHash: string;
+  readonly modelDigest: string;
   readonly developerInstructions: string;
   readonly tokenizer: RepeatedFailureTokenizer;
+  preflight?(): Promise<void>;
   runEpisode(request: RepeatedFailureEpisodeInput): Promise<ControlledResponsesEpisodeResult>;
 }
 
@@ -208,7 +214,7 @@ export interface RunRepeatedFailureSuiteOptions {
   taskIds?: readonly string[];
   variantIds?: readonly string[];
   resume?: boolean;
-  maxHostRetries?: 0 | 1 | 2;
+  maxHostRetries?: 0 | 1 | 2 | 3 | 4 | 5;
   statisticsSeed?: number;
   statisticsDraws?: number;
   caps?: Partial<ControlledResponsesCaps>;
@@ -225,6 +231,8 @@ export interface RepeatedFailureRunMetadata {
   resumeContractHash: string;
   expectedDesignHash: string;
   decisionRuleHash: string;
+  preregistrationPath: string;
+  preregistrationHash: string;
   analysisVersion: string;
   harnessVersion: string;
   harnessSourceHash: string;
@@ -242,6 +250,19 @@ export interface RepeatedFailureRunMetadata {
   arms: readonly RepeatedFailureArm[];
   modelProfileIds: readonly string[];
   modelProfileHashes: readonly string[];
+  modelDigests: readonly string[];
+  modelDriverKinds: readonly ("responses" | "ollama-chat" | "deterministic-fake" | "unknown")[];
+  modelTokenizerIdentities: readonly string[];
+  modelTokenizerImplementations: readonly "nfkc-whitespace-v1"[];
+  trapAuditReceipts: readonly {
+    path: string;
+    artifactHash: string;
+    modelProfileId: string;
+    modelProfileHash: string;
+    modelDigest: string;
+    tokenizerIdentity: string;
+    tokenizerImplementation: "nfkc-whitespace-v1";
+  }[];
   seeds: readonly number[];
   splitTaskIds: readonly string[];
   taskRevisions: readonly {
@@ -269,7 +290,7 @@ export interface RepeatedFailureRunMetadata {
     rejectSymlinks: true;
   };
   retryRule: {
-    hostApiFaultRetriesAfterFirstTry: 0 | 1 | 2;
+    hostApiFaultRetriesAfterFirstTry: 0 | 1 | 2 | 3 | 4 | 5;
     rerunTaskResults: false;
     retainAllTries: true;
   };
@@ -312,6 +333,8 @@ export interface RunRepeatedFailureCliCommandInput {
   maxSteps?: number;
   maxToolCalls?: number;
   maxOutputChars?: number;
+  maxDurationMs?: number;
+  requestTimeoutMs?: number;
   statisticsDraws?: number;
   statisticsSeed?: number;
 }

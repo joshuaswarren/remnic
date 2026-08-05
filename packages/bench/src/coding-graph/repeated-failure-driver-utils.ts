@@ -28,13 +28,29 @@ export function serializeBoundedToolOutput(result: RepeatedFailureToolExecutionR
     .replace(/(?:sk|rk|pk)-[A-Za-z0-9_-]{12,}/g, "[REDACTED]")
     .replace(/(?:\/home\/[^\s/\"]+|\/Users\/[^\s/\"]+|[A-Za-z]:\\Users\\[^\s\\\"]+)/g, "$HOME");
   if (Buffer.byteLength(sanitized, "utf8") <= MAX_TOOL_OUTPUT_BYTES) return sanitized;
-  const preview = Buffer.from(sanitized, "utf8").subarray(0, MAX_TOOL_OUTPUT_BYTES).toString("utf8");
-  return JSON.stringify({
+  const bytes = Buffer.from(sanitized, "utf8");
+  const base = {
     status: result.status,
     truncated: true,
     outputHash: sha256(sanitized),
-    preview,
-  });
+  };
+  let lower = 0;
+  let upper = Math.min(bytes.length, MAX_TOOL_OUTPUT_BYTES);
+  let bounded = JSON.stringify({ ...base, preview: "" });
+  while (lower <= upper) {
+    const midpoint = Math.floor((lower + upper) / 2);
+    const candidate = JSON.stringify({
+      ...base,
+      preview: bytes.subarray(0, midpoint).toString("utf8"),
+    });
+    if (Buffer.byteLength(candidate, "utf8") <= MAX_TOOL_OUTPUT_BYTES) {
+      bounded = candidate;
+      lower = midpoint + 1;
+    } else {
+      upper = midpoint - 1;
+    }
+  }
+  return bounded;
 }
 
 export function normalizeFinalEvidence(
@@ -78,6 +94,17 @@ export function firstRetryableHostFault(
 ): ControlledResponsesFault | undefined {
   const [fault] = result.faults;
   if (result.status !== "INVALID" || !fault) return undefined;
+  const statusMatch = /^HTTP_(\d{3})$/.exec(fault.code);
+  const httpStatus = statusMatch ? Number(statusMatch[1]) : undefined;
+  if (
+    httpStatus !== undefined
+    && httpStatus >= 400
+    && httpStatus < 500
+    && httpStatus !== 408
+    && httpStatus !== 429
+  ) {
+    return undefined;
+  }
   const onlyHostSurfaces = result.faults.every(
     (entry) => entry.stage === "transport" || entry.stage === "response",
   );

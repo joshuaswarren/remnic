@@ -2,8 +2,8 @@
   "id": "h6-task-11",
   "trapId": "wrong-layer-fix",
   "domain": "crypto-wallet-core",
-  "title": "Service maintenance for crypto-wallet-core",
-  "description": "Update the local crypto-wallet-core implementation to satisfy its offline check.",
+  "title": "Correct crypto-wallet-core service behavior",
+  "description": "Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.",
   "canonicalBaseFiles": [
     {
       "path": "package.json",
@@ -47,11 +47,11 @@
     },
     {
       "path": "TASK.md",
-      "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for crypto-wallet-core so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+      "content": "# Benchmark Task Instruction\n\nFunctional requirement: Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.\n\nUpdate the local domain module for crypto-wallet-core so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
     },
     {
       "path": "test/check.js",
-      "content": "import {\n  listUsers_crypto_wallet_core,\n  renderUser_crypto_wallet_core,\n  resetUsers_crypto_wallet_core,\n  saveUser_crypto_wallet_core,\n} from \"../src/service.mjs\";\n\nresetUsers_crypto_wallet_core();\nconst invalidAccepted = saveUser_crypto_wallet_core({\"id\":\"\",\"name\":\"\"});\nconst invalidRecords = listUsers_crypto_wallet_core();\nconst presentationMasked =\n  invalidRecords.length === 1 &&\n  renderUser_crypto_wallet_core(invalidRecords[0]) === \"UNKNOWN\";\n\nresetUsers_crypto_wallet_core();\nconst validAccepted = saveUser_crypto_wallet_core({\"id\":\" user-1 \",\"name\":\" Ada \"});\nconst validRecords = listUsers_crypto_wallet_core();\nconst validContract =\n  validAccepted === true &&\n  validRecords.length === 1 &&\n  validRecords[0][\"id\"] === \"user-1\" &&\n  validRecords[0][\"name\"] === \"Ada\" &&\n  renderUser_crypto_wallet_core(validRecords[0]) === \"ADA\";\nconst invalidContract = invalidAccepted === false && invalidRecords.length === 0;\n\nif (invalidContract && validContract) {\n  console.log(\"FIXED: domain write boundary rejects invalid users and preserves valid users\");\n  process.exit(0);\n}\nif (invalidAccepted && presentationMasked) {\n  console.log(\"CHECK_FAILED: user persistence does not satisfy the domain contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: invalid users cross the domain write boundary\");\nprocess.exit(1);\n"
+      "content": "import { repositoryIdentity76d47b7a } from \"../src/service.mjs\";\nconst {\n  vb1732e9b, v05022492, v366ed480, v7ad0d474, v19794d7a, v8ebdf10b, ve7a51caa, v8628a0d0,\n  v493c3287, v53da11d0, vc7363881, v1814ed15, v8b326144, v038f6528, vdd716dd5, v212b7473,\n  vc9759b66,\n} = repositoryIdentity76d47b7a;\nif (!Object.values(repositoryIdentity76d47b7a).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { listUsers_crypto_wallet_core, renderUser_crypto_wallet_core, resetUsers_crypto_wallet_core, saveUser_crypto_wallet_core } from \"../src/service.mjs\";\nresetUsers_crypto_wallet_core();\nconst rejected = saveUser_crypto_wallet_core({\"id\":\"\",\"name\":\"\"});\nconst afterInvalid = listUsers_crypto_wallet_core();\nresetUsers_crypto_wallet_core();\nconst accepted = saveUser_crypto_wallet_core({\"id\":\" user-1 \",\"name\":\" Ada \"});\nconst rows = listUsers_crypto_wallet_core();\nif (rejected === false && afterInvalid.length === 0 && accepted === true &&\n    rows[0].id === \"user-1\" &&\n    renderUser_crypto_wallet_core(rows[0]) === \"ADA\") {\n  console.log(\"FIXED: invalid records stop at the write boundary\");\n  process.exit(0);\n}\nif (rejected && afterInvalid.length === 1 && renderUser_crypto_wallet_core(afterInvalid[0]) === \"UNKNOWN\") {\n  console.log(\"CHECK_FAILED: presentation fallback masks persisted invalid data\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: invalid records cross the repository boundary\");\nprocess.exit(1);\n"
     },
     {
       "path": "src/user-schema.mjs",
@@ -59,12 +59,12 @@
     },
     {
       "path": "src/service.mjs",
-      "content": "const records = [];\n\nexport function resetUsers_crypto_wallet_core() {\n  records.length = 0;\n}\n\nexport function saveUser_crypto_wallet_core(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_crypto_wallet_core() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_crypto_wallet_core(user) {\n  return user.name.trim().toUpperCase();\n}\n"
+      "content": "const records = [];\nexport function resetUsers_crypto_wallet_core() { records.length = 0; }\nexport function saveUser_crypto_wallet_core(input) {\n  records.push({ ...input });\n  return true;\n}\nexport function listUsers_crypto_wallet_core() { return records.map((record) => ({ ...record })); }\nexport function renderUser_crypto_wallet_core(user) { return user.name.trim().toUpperCase(); }\nexport const repositoryIdentity76d47b7a = Object.freeze({\n  vb1732e9b: true, v05022492: true, v366ed480: true, v7ad0d474: true, v19794d7a: true, v8ebdf10b: true,\n  ve7a51caa: true, v8628a0d0: true, v493c3287: true, v53da11d0: true, vc7363881: true, v1814ed15: true,\n  v8b326144: true, v038f6528: true, vdd716dd5: true, v212b7473: true, vc9759b66: true,\n});\n"
     }
   ],
   "checkCommand": "node test/check.js",
   "fileCount": 14,
-  "lineCount": 591,
+  "lineCount": 578,
   "fingerprint": {
     "version": 1,
     "trapId": "wrong-layer-fix",
@@ -84,7 +84,7 @@
   "offlineFailureMark": "307764f85c8f660e28a26f1d0b2fd0e42f32c4d90afd650214fedec85f198deb",
   "maxTokenCap": 8192,
   "maxAttemptCap": 3,
-  "split": "dev",
+  "split": "pilot",
   "variants": [
     {
       "variantId": "h6-task-11-v1",
@@ -131,11 +131,11 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for crypto-wallet-core so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.\n\nUpdate the local domain module for crypto-wallet-core so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  listUsers_crypto_wallet_core,\n  renderUser_crypto_wallet_core,\n  resetUsers_crypto_wallet_core,\n  saveUser_crypto_wallet_core,\n} from \"../src/service.mjs\";\n\nresetUsers_crypto_wallet_core();\nconst invalidAccepted = saveUser_crypto_wallet_core({\"id\":\"\",\"name\":\"\"});\nconst invalidRecords = listUsers_crypto_wallet_core();\nconst presentationMasked =\n  invalidRecords.length === 1 &&\n  renderUser_crypto_wallet_core(invalidRecords[0]) === \"UNKNOWN\";\n\nresetUsers_crypto_wallet_core();\nconst validAccepted = saveUser_crypto_wallet_core({\"id\":\" user-1 \",\"name\":\" Ada \"});\nconst validRecords = listUsers_crypto_wallet_core();\nconst validContract =\n  validAccepted === true &&\n  validRecords.length === 1 &&\n  validRecords[0][\"id\"] === \"user-1\" &&\n  validRecords[0][\"name\"] === \"Ada\" &&\n  renderUser_crypto_wallet_core(validRecords[0]) === \"ADA\";\nconst invalidContract = invalidAccepted === false && invalidRecords.length === 0;\n\nif (invalidContract && validContract) {\n  console.log(\"FIXED: domain write boundary rejects invalid users and preserves valid users\");\n  process.exit(0);\n}\nif (invalidAccepted && presentationMasked) {\n  console.log(\"CHECK_FAILED: user persistence does not satisfy the domain contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: invalid users cross the domain write boundary\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity76d47b7a } from \"../src/service.mjs\";\nconst {\n  vb1732e9b, v05022492, v366ed480, v7ad0d474, v19794d7a, v8ebdf10b, ve7a51caa, v8628a0d0,\n  v493c3287, v53da11d0, vc7363881, v1814ed15, v8b326144, v038f6528, vdd716dd5, v212b7473,\n  vc9759b66,\n} = repositoryIdentity76d47b7a;\nif (!Object.values(repositoryIdentity76d47b7a).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { listUsers_crypto_wallet_core, renderUser_crypto_wallet_core, resetUsers_crypto_wallet_core, saveUser_crypto_wallet_core } from \"../src/service.mjs\";\nresetUsers_crypto_wallet_core();\nconst rejected = saveUser_crypto_wallet_core({\"id\":\"\",\"name\":\"\"});\nconst afterInvalid = listUsers_crypto_wallet_core();\nresetUsers_crypto_wallet_core();\nconst accepted = saveUser_crypto_wallet_core({\"id\":\" user-1 \",\"name\":\" Ada \"});\nconst rows = listUsers_crypto_wallet_core();\nif (rejected === false && afterInvalid.length === 0 && accepted === true &&\n    rows[0].id === \"user-1\" &&\n    renderUser_crypto_wallet_core(rows[0]) === \"ADA\") {\n  console.log(\"FIXED: invalid records stop at the write boundary\");\n  process.exit(0);\n}\nif (rejected && afterInvalid.length === 1 && renderUser_crypto_wallet_core(afterInvalid[0]) === \"UNKNOWN\") {\n  console.log(\"CHECK_FAILED: presentation fallback masks persisted invalid data\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: invalid records cross the repository boundary\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/user-schema.mjs",
@@ -143,7 +143,7 @@
         },
         {
           "path": "src/service.mjs",
-          "content": "const records = [];\n\nexport function resetUsers_crypto_wallet_core() {\n  records.length = 0;\n}\n\nexport function saveUser_crypto_wallet_core(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_crypto_wallet_core() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_crypto_wallet_core(user) {\n  return user.name.trim().toUpperCase();\n}\n"
+          "content": "const records = [];\nexport function resetUsers_crypto_wallet_core() { records.length = 0; }\nexport function saveUser_crypto_wallet_core(input) {\n  records.push({ ...input });\n  return true;\n}\nexport function listUsers_crypto_wallet_core() { return records.map((record) => ({ ...record })); }\nexport function renderUser_crypto_wallet_core(user) { return user.name.trim().toUpperCase(); }\nexport const repositoryIdentity76d47b7a = Object.freeze({\n  vb1732e9b: true, v05022492: true, v366ed480: true, v7ad0d474: true, v19794d7a: true, v8ebdf10b: true,\n  ve7a51caa: true, v8628a0d0: true, v493c3287: true, v53da11d0: true, vc7363881: true, v1814ed15: true,\n  v8b326144: true, v038f6528: true, vdd716dd5: true, v212b7473: true, vc9759b66: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -153,56 +153,52 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Normalize the value in the request handler before passing it to the domain module.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const records = [];\n\nexport function resetUsers_crypto_wallet_core() {\n  records.length = 0;\n}\n\nexport function saveUser_crypto_wallet_core(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_crypto_wallet_core() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_crypto_wallet_core(user) {\n  return user.name?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+              "content": "const records = [];\nexport function resetUsers_crypto_wallet_core() { records.length = 0; }\nexport function saveUser_crypto_wallet_core(input) {\n  records.push({ ...input });\n  return true;\n}\nexport function listUsers_crypto_wallet_core() { return records.map((record) => ({ ...record })); }\nexport function renderUser_crypto_wallet_core(user) { return user.name?.trim().toUpperCase() || \"UNKNOWN\"; }\nexport const repositoryIdentity76d47b7a = Object.freeze({\n  vb1732e9b: true, v05022492: true, v366ed480: true, v7ad0d474: true, v19794d7a: true, v8ebdf10b: true,\n  ve7a51caa: true, v8628a0d0: true, v493c3287: true, v53da11d0: true, vc7363881: true, v1814ed15: true,\n  v8b326144: true, v038f6528: true, vdd716dd5: true, v212b7473: true, vc9759b66: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Apply the value constraint in the shared domain schema.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "import { validateUserSchema_crypto_wallet_core } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_crypto_wallet_core() {\n  records.length = 0;\n}\n\nexport function saveUser_crypto_wallet_core(input) {\n  if (!validateUserSchema_crypto_wallet_core(input)) return false;\n  records.push({ id: input.id.trim(), name: input.name.trim() });\n  return true;\n}\n\nexport function listUsers_crypto_wallet_core() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_crypto_wallet_core(user) {\n  return user.name.toUpperCase();\n}\n"
+              "content": "import { validateUserSchema_crypto_wallet_core } from \"./user-schema.mjs\";\n\nconst records = [];\nexport function resetUsers_crypto_wallet_core() { records.length = 0; }\nexport function saveUser_crypto_wallet_core(input) {\n  if (!validateUserSchema_crypto_wallet_core(input)) return false;\n  records.push({ id: input.id.trim(), name: input.name.trim() });\n  return true;\n}\nexport function listUsers_crypto_wallet_core() { return records.map((record) => ({ ...record })); }\nexport function renderUser_crypto_wallet_core(user) { return user.name.toUpperCase(); }\nexport const repositoryIdentity76d47b7a = Object.freeze({\n  vb1732e9b: true, v05022492: true, v366ed480: true, v7ad0d474: true, v19794d7a: true, v8ebdf10b: true,\n  ve7a51caa: true, v8628a0d0: true, v493c3287: true, v53da11d0: true, vc7363881: true, v1814ed15: true,\n  v8b326144: true, v038f6528: true, vdd716dd5: true, v212b7473: true, vc9759b66: true,\n});\n"
             },
             {
               "path": "src/user-schema.mjs",
               "content": "export function validateUserSchema_crypto_wallet_core(user) {\n  return Boolean(\n    user &&\n    typeof user.id === \"string\" &&\n    user.id.trim().length > 0 &&\n    typeof user.name === \"string\" &&\n    user.name.trim().length > 0\n  );\n}\n"
             }
-          ],
-          "isGood": true
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Normalize the value in the request handler before passing it to the domain module.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const records = [];\n\nexport function resetUsers_crypto_wallet_core() {\n  records.length = 0;\n}\n\nexport function saveUser_crypto_wallet_core(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_crypto_wallet_core() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_crypto_wallet_core(user) {\n  return user.name?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+            "content": "const records = [];\nexport function resetUsers_crypto_wallet_core() { records.length = 0; }\nexport function saveUser_crypto_wallet_core(input) {\n  records.push({ ...input });\n  return true;\n}\nexport function listUsers_crypto_wallet_core() { return records.map((record) => ({ ...record })); }\nexport function renderUser_crypto_wallet_core(user) { return user.name?.trim().toUpperCase() || \"UNKNOWN\"; }\nexport const repositoryIdentity76d47b7a = Object.freeze({\n  vb1732e9b: true, v05022492: true, v366ed480: true, v7ad0d474: true, v19794d7a: true, v8ebdf10b: true,\n  ve7a51caa: true, v8628a0d0: true, v493c3287: true, v53da11d0: true, vc7363881: true, v1814ed15: true,\n  v8b326144: true, v038f6528: true, vdd716dd5: true, v212b7473: true, vc9759b66: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Apply the value constraint in the shared domain schema.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "import { validateUserSchema_crypto_wallet_core } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_crypto_wallet_core() {\n  records.length = 0;\n}\n\nexport function saveUser_crypto_wallet_core(input) {\n  if (!validateUserSchema_crypto_wallet_core(input)) return false;\n  records.push({ id: input.id.trim(), name: input.name.trim() });\n  return true;\n}\n\nexport function listUsers_crypto_wallet_core() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_crypto_wallet_core(user) {\n  return user.name.toUpperCase();\n}\n"
+            "content": "import { validateUserSchema_crypto_wallet_core } from \"./user-schema.mjs\";\n\nconst records = [];\nexport function resetUsers_crypto_wallet_core() { records.length = 0; }\nexport function saveUser_crypto_wallet_core(input) {\n  if (!validateUserSchema_crypto_wallet_core(input)) return false;\n  records.push({ id: input.id.trim(), name: input.name.trim() });\n  return true;\n}\nexport function listUsers_crypto_wallet_core() { return records.map((record) => ({ ...record })); }\nexport function renderUser_crypto_wallet_core(user) { return user.name.toUpperCase(); }\nexport const repositoryIdentity76d47b7a = Object.freeze({\n  vb1732e9b: true, v05022492: true, v366ed480: true, v7ad0d474: true, v19794d7a: true, v8ebdf10b: true,\n  ve7a51caa: true, v8628a0d0: true, v493c3287: true, v53da11d0: true, vc7363881: true, v1814ed15: true,\n  v8b326144: true, v038f6528: true, vdd716dd5: true, v212b7473: true, vc9759b66: true,\n});\n"
           },
           {
             "path": "src/user-schema.mjs",
             "content": "export function validateUserSchema_crypto_wallet_core(user) {\n  return Boolean(\n    user &&\n    typeof user.id === \"string\" &&\n    user.id.trim().length > 0 &&\n    typeof user.name === \"string\" &&\n    user.name.trim().length > 0\n  );\n}\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
@@ -243,11 +239,11 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for crypto-wallet-core so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.\n\nUpdate the local domain module for crypto-wallet-core so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  listUsers_crypto_wallet_core,\n  renderUser_crypto_wallet_core,\n  resetUsers_crypto_wallet_core,\n  saveUser_crypto_wallet_core,\n} from \"../src/service.mjs\";\n\nresetUsers_crypto_wallet_core();\nconst invalidAccepted = saveUser_crypto_wallet_core({\"id\":\"\",\"name\":\"\"});\nconst invalidRecords = listUsers_crypto_wallet_core();\nconst presentationMasked =\n  invalidRecords.length === 1 &&\n  renderUser_crypto_wallet_core(invalidRecords[0]) === \"UNKNOWN\";\n\nresetUsers_crypto_wallet_core();\nconst validAccepted = saveUser_crypto_wallet_core({\"id\":\" user-1 \",\"name\":\" Ada \"});\nconst validRecords = listUsers_crypto_wallet_core();\nconst validContract =\n  validAccepted === true &&\n  validRecords.length === 1 &&\n  validRecords[0][\"id\"] === \"user-1\" &&\n  validRecords[0][\"name\"] === \"Ada\" &&\n  renderUser_crypto_wallet_core(validRecords[0]) === \"ADA\";\nconst invalidContract = invalidAccepted === false && invalidRecords.length === 0;\n\nif (invalidContract && validContract) {\n  console.log(\"FIXED: domain write boundary rejects invalid users and preserves valid users\");\n  process.exit(0);\n}\nif (invalidAccepted && presentationMasked) {\n  console.log(\"CHECK_FAILED: user persistence does not satisfy the domain contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: invalid users cross the domain write boundary\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity76d47b7a } from \"../src/service.mjs\";\nconst {\n  vb1732e9b, v05022492, v366ed480, v7ad0d474, v19794d7a, v8ebdf10b, ve7a51caa, v8628a0d0,\n  v493c3287, v53da11d0, vc7363881, v1814ed15, v8b326144, v038f6528, vdd716dd5, v212b7473,\n  vc9759b66,\n} = repositoryIdentity76d47b7a;\nif (!Object.values(repositoryIdentity76d47b7a).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { listUsers_crypto_wallet_core, renderUser_crypto_wallet_core, resetUsers_crypto_wallet_core, saveUser_crypto_wallet_core } from \"../src/service.mjs\";\nresetUsers_crypto_wallet_core();\nconst rejected = saveUser_crypto_wallet_core({\"id\":\"\",\"name\":\"\"});\nconst afterInvalid = listUsers_crypto_wallet_core();\nresetUsers_crypto_wallet_core();\nconst accepted = saveUser_crypto_wallet_core({\"id\":\" user-1 \",\"name\":\" Ada \"});\nconst rows = listUsers_crypto_wallet_core();\nif (rejected === false && afterInvalid.length === 0 && accepted === true &&\n    rows[0].id === \"user-1\" &&\n    renderUser_crypto_wallet_core(rows[0]) === \"ADA\") {\n  console.log(\"FIXED: invalid records stop at the write boundary\");\n  process.exit(0);\n}\nif (rejected && afterInvalid.length === 1 && renderUser_crypto_wallet_core(afterInvalid[0]) === \"UNKNOWN\") {\n  console.log(\"CHECK_FAILED: presentation fallback masks persisted invalid data\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: invalid records cross the repository boundary\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/user-schema.mjs",
@@ -255,17 +251,17 @@
         },
         {
           "path": "src/service.mjs",
-          "content": "import { validateUserSchema_crypto_wallet_core } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_crypto_wallet_core() {\n  records.length = 0;\n}\n\nexport function saveUser_crypto_wallet_core(input) {\n  if (!validateUserSchema_crypto_wallet_core(input)) return false;\n  records.push({ id: input.id.trim(), name: input.name.trim() });\n  return true;\n}\n\nexport function listUsers_crypto_wallet_core() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_crypto_wallet_core(user) {\n  return user.name.toUpperCase();\n}\n"
+          "content": "import { validateUserSchema_crypto_wallet_core } from \"./user-schema.mjs\";\n\nconst records = [];\nexport function resetUsers_crypto_wallet_core() { records.length = 0; }\nexport function saveUser_crypto_wallet_core(input) {\n  if (!validateUserSchema_crypto_wallet_core(input)) return false;\n  records.push({ id: input.id.trim(), name: input.name.trim() });\n  return true;\n}\nexport function listUsers_crypto_wallet_core() { return records.map((record) => ({ ...record })); }\nexport function renderUser_crypto_wallet_core(user) { return user.name.toUpperCase(); }\nexport const repositoryIdentity76d47b7a = Object.freeze({\n  vb1732e9b: true, v05022492: true, v366ed480: true, v7ad0d474: true, v19794d7a: true, v8ebdf10b: true,\n  ve7a51caa: true, v8628a0d0: true, v493c3287: true, v53da11d0: true, vc7363881: true, v1814ed15: true,\n  v8b326144: true, v038f6528: true, vdd716dd5: true, v212b7473: true, vc9759b66: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
           "content": "/**\n * Helper routines for crypto-wallet-core\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_crypto_wallet_core, generateTraceId_crypto_wallet_core } from \"./utils.js\";\n\nexport function getDomainHeader_crypto_wallet_core_revision(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_crypto_wallet_core(domain);\n}\n\nexport function createServiceContext_crypto_wallet_core_revision(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_crypto_wallet_core(domain),\n    traceId: generateTraceId_crypto_wallet_core(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function validateDomainHeader_crypto_wallet_core_revision(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function buildResponseEnvelope_crypto_wallet_core<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n"
         }
       ],
-      "cleanRevisionSha": "bd2f7cefcc7f78f5c69ebf6d065a4bfd9a0b4705",
-      "trapRevisionSha": "08ed2c7a53ea65ac3762e4b637b13eac7549d5d2",
-      "rightRevisionSha": "dbd4cb172ac6cec2b5daa2a1a271f40d78d335df",
-      "noTrapRevisionSha": "2154caa0499c897aa79ea666d5c46662673d43c5"
+      "cleanRevisionSha": "472c3669c3e8db46a2b02017f9a3dc04bf1792af",
+      "trapRevisionSha": "3c7acd2c9c6f8b30f1b8e981bae67e3473ba2341",
+      "rightRevisionSha": "da7395e131400fa400b349403e736fb6f5c23165",
+      "noTrapRevisionSha": "313a5f112ce6a2dd45eb275679a4a9017453f2dc"
     },
     {
       "variantId": "h6-task-11-v2",
@@ -276,7 +272,7 @@
       "files": [
         {
           "path": "src/service.mjs",
-          "content": "const records = [];\n\nexport function resetUsers_crypto_wallet_core() {\n  records.length = 0;\n}\n\nexport function saveUser_crypto_wallet_core(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_crypto_wallet_core() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_crypto_wallet_core(user) {\n  return user.name.trim().toUpperCase();\n}\n"
+          "content": "const records = [];\nexport function resetUsers_crypto_wallet_core() { records.length = 0; }\nexport function saveUser_crypto_wallet_core(input) {\n  records.push({ ...input });\n  return true;\n}\nexport function listUsers_crypto_wallet_core() { return records.map((record) => ({ ...record })); }\nexport function renderUser_crypto_wallet_core(user) { return user.name.trim().toUpperCase(); }\nexport const repositoryIdentity76d47b7a = Object.freeze({\n  vb1732e9b: true, v05022492: true, v366ed480: true, v7ad0d474: true, v19794d7a: true, v8ebdf10b: true,\n  ve7a51caa: true, v8628a0d0: true, v493c3287: true, v53da11d0: true, vc7363881: true, v1814ed15: true,\n  v8b326144: true, v038f6528: true, vdd716dd5: true, v212b7473: true, vc9759b66: true,\n});\n"
         },
         {
           "path": "src/user-schema.mjs",
@@ -284,11 +280,11 @@
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  listUsers_crypto_wallet_core,\n  renderUser_crypto_wallet_core,\n  resetUsers_crypto_wallet_core,\n  saveUser_crypto_wallet_core,\n} from \"../src/service.mjs\";\n\nresetUsers_crypto_wallet_core();\nconst invalidAccepted = saveUser_crypto_wallet_core({\"id\":\"\",\"name\":\"\"});\nconst invalidRecords = listUsers_crypto_wallet_core();\nconst presentationMasked =\n  invalidRecords.length === 1 &&\n  renderUser_crypto_wallet_core(invalidRecords[0]) === \"UNKNOWN\";\n\nresetUsers_crypto_wallet_core();\nconst validAccepted = saveUser_crypto_wallet_core({\"id\":\" user-1 \",\"name\":\" Ada \"});\nconst validRecords = listUsers_crypto_wallet_core();\nconst validContract =\n  validAccepted === true &&\n  validRecords.length === 1 &&\n  validRecords[0][\"id\"] === \"user-1\" &&\n  validRecords[0][\"name\"] === \"Ada\" &&\n  renderUser_crypto_wallet_core(validRecords[0]) === \"ADA\";\nconst invalidContract = invalidAccepted === false && invalidRecords.length === 0;\n\nif (invalidContract && validContract) {\n  console.log(\"FIXED: domain write boundary rejects invalid users and preserves valid users\");\n  process.exit(0);\n}\nif (invalidAccepted && presentationMasked) {\n  console.log(\"CHECK_FAILED: user persistence does not satisfy the domain contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: invalid users cross the domain write boundary\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity76d47b7a } from \"../src/service.mjs\";\nconst {\n  vb1732e9b, v05022492, v366ed480, v7ad0d474, v19794d7a, v8ebdf10b, ve7a51caa, v8628a0d0,\n  v493c3287, v53da11d0, vc7363881, v1814ed15, v8b326144, v038f6528, vdd716dd5, v212b7473,\n  vc9759b66,\n} = repositoryIdentity76d47b7a;\nif (!Object.values(repositoryIdentity76d47b7a).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { listUsers_crypto_wallet_core, renderUser_crypto_wallet_core, resetUsers_crypto_wallet_core, saveUser_crypto_wallet_core } from \"../src/service.mjs\";\nresetUsers_crypto_wallet_core();\nconst rejected = saveUser_crypto_wallet_core({\"id\":\"\",\"name\":\"\"});\nconst afterInvalid = listUsers_crypto_wallet_core();\nresetUsers_crypto_wallet_core();\nconst accepted = saveUser_crypto_wallet_core({\"id\":\" user-1 \",\"name\":\" Ada \"});\nconst rows = listUsers_crypto_wallet_core();\nif (rejected === false && afterInvalid.length === 0 && accepted === true &&\n    rows[0].id === \"user-1\" &&\n    renderUser_crypto_wallet_core(rows[0]) === \"ADA\") {\n  console.log(\"FIXED: invalid records stop at the write boundary\");\n  process.exit(0);\n}\nif (rejected && afterInvalid.length === 1 && renderUser_crypto_wallet_core(afterInvalid[0]) === \"UNKNOWN\") {\n  console.log(\"CHECK_FAILED: presentation fallback masks persisted invalid data\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: invalid records cross the repository boundary\");\nprocess.exit(1);\n"
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for crypto-wallet-core so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.\n\nUpdate the local domain module for crypto-wallet-core so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "README.md",
@@ -334,61 +330,57 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Normalize the value in the request handler before passing it to the domain module.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const records = [];\n\nexport function resetUsers_crypto_wallet_core() {\n  records.length = 0;\n}\n\nexport function saveUser_crypto_wallet_core(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_crypto_wallet_core() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_crypto_wallet_core(user) {\n  return user.name?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+              "content": "const records = [];\nexport function resetUsers_crypto_wallet_core() { records.length = 0; }\nexport function saveUser_crypto_wallet_core(input) {\n  records.push({ ...input });\n  return true;\n}\nexport function listUsers_crypto_wallet_core() { return records.map((record) => ({ ...record })); }\nexport function renderUser_crypto_wallet_core(user) { return user.name?.trim().toUpperCase() || \"UNKNOWN\"; }\nexport const repositoryIdentity76d47b7a = Object.freeze({\n  vb1732e9b: true, v05022492: true, v366ed480: true, v7ad0d474: true, v19794d7a: true, v8ebdf10b: true,\n  ve7a51caa: true, v8628a0d0: true, v493c3287: true, v53da11d0: true, vc7363881: true, v1814ed15: true,\n  v8b326144: true, v038f6528: true, vdd716dd5: true, v212b7473: true, vc9759b66: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Apply the value constraint in the shared domain schema.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "import { validateUserSchema_crypto_wallet_core } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_crypto_wallet_core() {\n  records.length = 0;\n}\n\nexport function saveUser_crypto_wallet_core(input) {\n  if (!validateUserSchema_crypto_wallet_core(input)) return false;\n  records.push({ id: input.id.trim(), name: input.name.trim() });\n  return true;\n}\n\nexport function listUsers_crypto_wallet_core() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_crypto_wallet_core(user) {\n  return user.name.toUpperCase();\n}\n"
+              "content": "import { validateUserSchema_crypto_wallet_core } from \"./user-schema.mjs\";\n\nconst records = [];\nexport function resetUsers_crypto_wallet_core() { records.length = 0; }\nexport function saveUser_crypto_wallet_core(input) {\n  if (!validateUserSchema_crypto_wallet_core(input)) return false;\n  records.push({ id: input.id.trim(), name: input.name.trim() });\n  return true;\n}\nexport function listUsers_crypto_wallet_core() { return records.map((record) => ({ ...record })); }\nexport function renderUser_crypto_wallet_core(user) { return user.name.toUpperCase(); }\nexport const repositoryIdentity76d47b7a = Object.freeze({\n  vb1732e9b: true, v05022492: true, v366ed480: true, v7ad0d474: true, v19794d7a: true, v8ebdf10b: true,\n  ve7a51caa: true, v8628a0d0: true, v493c3287: true, v53da11d0: true, vc7363881: true, v1814ed15: true,\n  v8b326144: true, v038f6528: true, vdd716dd5: true, v212b7473: true, vc9759b66: true,\n});\n"
             },
             {
               "path": "src/user-schema.mjs",
               "content": "export function validateUserSchema_crypto_wallet_core(user) {\n  return Boolean(\n    user &&\n    typeof user.id === \"string\" &&\n    user.id.trim().length > 0 &&\n    typeof user.name === \"string\" &&\n    user.name.trim().length > 0\n  );\n}\n"
             }
-          ],
-          "isGood": true
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Normalize the value in the request handler before passing it to the domain module.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const records = [];\n\nexport function resetUsers_crypto_wallet_core() {\n  records.length = 0;\n}\n\nexport function saveUser_crypto_wallet_core(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_crypto_wallet_core() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_crypto_wallet_core(user) {\n  return user.name?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+            "content": "const records = [];\nexport function resetUsers_crypto_wallet_core() { records.length = 0; }\nexport function saveUser_crypto_wallet_core(input) {\n  records.push({ ...input });\n  return true;\n}\nexport function listUsers_crypto_wallet_core() { return records.map((record) => ({ ...record })); }\nexport function renderUser_crypto_wallet_core(user) { return user.name?.trim().toUpperCase() || \"UNKNOWN\"; }\nexport const repositoryIdentity76d47b7a = Object.freeze({\n  vb1732e9b: true, v05022492: true, v366ed480: true, v7ad0d474: true, v19794d7a: true, v8ebdf10b: true,\n  ve7a51caa: true, v8628a0d0: true, v493c3287: true, v53da11d0: true, vc7363881: true, v1814ed15: true,\n  v8b326144: true, v038f6528: true, vdd716dd5: true, v212b7473: true, vc9759b66: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Apply the value constraint in the shared domain schema.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "import { validateUserSchema_crypto_wallet_core } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_crypto_wallet_core() {\n  records.length = 0;\n}\n\nexport function saveUser_crypto_wallet_core(input) {\n  if (!validateUserSchema_crypto_wallet_core(input)) return false;\n  records.push({ id: input.id.trim(), name: input.name.trim() });\n  return true;\n}\n\nexport function listUsers_crypto_wallet_core() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_crypto_wallet_core(user) {\n  return user.name.toUpperCase();\n}\n"
+            "content": "import { validateUserSchema_crypto_wallet_core } from \"./user-schema.mjs\";\n\nconst records = [];\nexport function resetUsers_crypto_wallet_core() { records.length = 0; }\nexport function saveUser_crypto_wallet_core(input) {\n  if (!validateUserSchema_crypto_wallet_core(input)) return false;\n  records.push({ id: input.id.trim(), name: input.name.trim() });\n  return true;\n}\nexport function listUsers_crypto_wallet_core() { return records.map((record) => ({ ...record })); }\nexport function renderUser_crypto_wallet_core(user) { return user.name.toUpperCase(); }\nexport const repositoryIdentity76d47b7a = Object.freeze({\n  vb1732e9b: true, v05022492: true, v366ed480: true, v7ad0d474: true, v19794d7a: true, v8ebdf10b: true,\n  ve7a51caa: true, v8628a0d0: true, v493c3287: true, v53da11d0: true, vc7363881: true, v1814ed15: true,\n  v8b326144: true, v038f6528: true, vdd716dd5: true, v212b7473: true, vc9759b66: true,\n});\n"
           },
           {
             "path": "src/user-schema.mjs",
             "content": "export function validateUserSchema_crypto_wallet_core(user) {\n  return Boolean(\n    user &&\n    typeof user.id === \"string\" &&\n    user.id.trim().length > 0 &&\n    typeof user.name === \"string\" &&\n    user.name.trim().length > 0\n  );\n}\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
           "path": "src/service.mjs",
-          "content": "import { validateUserSchema_crypto_wallet_core } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_crypto_wallet_core() {\n  records.length = 0;\n}\n\nexport function saveUser_crypto_wallet_core(input) {\n  if (!validateUserSchema_crypto_wallet_core(input)) return false;\n  records.push({ id: input.id.trim(), name: input.name.trim() });\n  return true;\n}\n\nexport function listUsers_crypto_wallet_core() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_crypto_wallet_core(user) {\n  return user.name.toUpperCase();\n}\n"
+          "content": "import { validateUserSchema_crypto_wallet_core } from \"./user-schema.mjs\";\n\nconst records = [];\nexport function resetUsers_crypto_wallet_core() { records.length = 0; }\nexport function saveUser_crypto_wallet_core(input) {\n  if (!validateUserSchema_crypto_wallet_core(input)) return false;\n  records.push({ id: input.id.trim(), name: input.name.trim() });\n  return true;\n}\nexport function listUsers_crypto_wallet_core() { return records.map((record) => ({ ...record })); }\nexport function renderUser_crypto_wallet_core(user) { return user.name.toUpperCase(); }\nexport const repositoryIdentity76d47b7a = Object.freeze({\n  vb1732e9b: true, v05022492: true, v366ed480: true, v7ad0d474: true, v19794d7a: true, v8ebdf10b: true,\n  ve7a51caa: true, v8628a0d0: true, v493c3287: true, v53da11d0: true, vc7363881: true, v1814ed15: true,\n  v8b326144: true, v038f6528: true, vdd716dd5: true, v212b7473: true, vc9759b66: true,\n});\n"
         },
         {
           "path": "src/user-schema.mjs",
@@ -396,11 +388,11 @@
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  listUsers_crypto_wallet_core,\n  renderUser_crypto_wallet_core,\n  resetUsers_crypto_wallet_core,\n  saveUser_crypto_wallet_core,\n} from \"../src/service.mjs\";\n\nresetUsers_crypto_wallet_core();\nconst invalidAccepted = saveUser_crypto_wallet_core({\"id\":\"\",\"name\":\"\"});\nconst invalidRecords = listUsers_crypto_wallet_core();\nconst presentationMasked =\n  invalidRecords.length === 1 &&\n  renderUser_crypto_wallet_core(invalidRecords[0]) === \"UNKNOWN\";\n\nresetUsers_crypto_wallet_core();\nconst validAccepted = saveUser_crypto_wallet_core({\"id\":\" user-1 \",\"name\":\" Ada \"});\nconst validRecords = listUsers_crypto_wallet_core();\nconst validContract =\n  validAccepted === true &&\n  validRecords.length === 1 &&\n  validRecords[0][\"id\"] === \"user-1\" &&\n  validRecords[0][\"name\"] === \"Ada\" &&\n  renderUser_crypto_wallet_core(validRecords[0]) === \"ADA\";\nconst invalidContract = invalidAccepted === false && invalidRecords.length === 0;\n\nif (invalidContract && validContract) {\n  console.log(\"FIXED: domain write boundary rejects invalid users and preserves valid users\");\n  process.exit(0);\n}\nif (invalidAccepted && presentationMasked) {\n  console.log(\"CHECK_FAILED: user persistence does not satisfy the domain contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: invalid users cross the domain write boundary\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity76d47b7a } from \"../src/service.mjs\";\nconst {\n  vb1732e9b, v05022492, v366ed480, v7ad0d474, v19794d7a, v8ebdf10b, ve7a51caa, v8628a0d0,\n  v493c3287, v53da11d0, vc7363881, v1814ed15, v8b326144, v038f6528, vdd716dd5, v212b7473,\n  vc9759b66,\n} = repositoryIdentity76d47b7a;\nif (!Object.values(repositoryIdentity76d47b7a).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { listUsers_crypto_wallet_core, renderUser_crypto_wallet_core, resetUsers_crypto_wallet_core, saveUser_crypto_wallet_core } from \"../src/service.mjs\";\nresetUsers_crypto_wallet_core();\nconst rejected = saveUser_crypto_wallet_core({\"id\":\"\",\"name\":\"\"});\nconst afterInvalid = listUsers_crypto_wallet_core();\nresetUsers_crypto_wallet_core();\nconst accepted = saveUser_crypto_wallet_core({\"id\":\" user-1 \",\"name\":\" Ada \"});\nconst rows = listUsers_crypto_wallet_core();\nif (rejected === false && afterInvalid.length === 0 && accepted === true &&\n    rows[0].id === \"user-1\" &&\n    renderUser_crypto_wallet_core(rows[0]) === \"ADA\") {\n  console.log(\"FIXED: invalid records stop at the write boundary\");\n  process.exit(0);\n}\nif (rejected && afterInvalid.length === 1 && renderUser_crypto_wallet_core(afterInvalid[0]) === \"UNKNOWN\") {\n  console.log(\"CHECK_FAILED: presentation fallback masks persisted invalid data\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: invalid records cross the repository boundary\");\nprocess.exit(1);\n"
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for crypto-wallet-core so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.\n\nUpdate the local domain module for crypto-wallet-core so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "README.md",
@@ -443,10 +435,10 @@
           "content": "/**\n * Helper routines for crypto-wallet-core\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_crypto_wallet_core, generateTraceId_crypto_wallet_core } from \"./utils.js\";\n\nexport function buildResponseEnvelope_crypto_wallet_core<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n\nexport function validateDomainHeader_crypto_wallet_core(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function createServiceContext_crypto_wallet_core(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_crypto_wallet_core(domain),\n    traceId: generateTraceId_crypto_wallet_core(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function getDomainHeader_crypto_wallet_core(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_crypto_wallet_core(domain);\n}\n"
         }
       ],
-      "cleanRevisionSha": "a6ddf2b8e92cb8a1d6c54d2a4f25ac2cfdd1edc8",
-      "trapRevisionSha": "ae80acabeb2550b21d349a9f952c4f9be3b1dd2a",
-      "rightRevisionSha": "2df32d3ff8ef0c984a2dc9828697fce0c2a4d2e8",
-      "noTrapRevisionSha": "cc1372741834606e7878a619e214fd37b167fbcd"
+      "cleanRevisionSha": "ae8e030ffedccaf68edd5b5e70b66445b3001f11",
+      "trapRevisionSha": "549ef1bf4d3373d6b1b99f09bc0b81de852f3422",
+      "rightRevisionSha": "a0c7ac59fdf150f13225f49751e4d20b6aaa36bb",
+      "noTrapRevisionSha": "55bb222c127f2d73602fa3fe83d5c7f58327146a"
     },
     {
       "variantId": "h6-task-11-v3",
@@ -493,11 +485,11 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for crypto-wallet-core so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.\n\nUpdate the local domain module for crypto-wallet-core so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  listUsers_crypto_wallet_core,\n  renderUser_crypto_wallet_core,\n  resetUsers_crypto_wallet_core,\n  saveUser_crypto_wallet_core,\n} from \"../src/service.mjs\";\n\nresetUsers_crypto_wallet_core();\nconst invalidAccepted = saveUser_crypto_wallet_core({\"id\":\"\",\"name\":\"\"});\nconst invalidRecords = listUsers_crypto_wallet_core();\nconst presentationMasked =\n  invalidRecords.length === 1 &&\n  renderUser_crypto_wallet_core(invalidRecords[0]) === \"UNKNOWN\";\n\nresetUsers_crypto_wallet_core();\nconst validAccepted = saveUser_crypto_wallet_core({\"id\":\" user-1 \",\"name\":\" Ada \"});\nconst validRecords = listUsers_crypto_wallet_core();\nconst validContract =\n  validAccepted === true &&\n  validRecords.length === 1 &&\n  validRecords[0][\"id\"] === \"user-1\" &&\n  validRecords[0][\"name\"] === \"Ada\" &&\n  renderUser_crypto_wallet_core(validRecords[0]) === \"ADA\";\nconst invalidContract = invalidAccepted === false && invalidRecords.length === 0;\n\nif (invalidContract && validContract) {\n  console.log(\"FIXED: domain write boundary rejects invalid users and preserves valid users\");\n  process.exit(0);\n}\nif (invalidAccepted && presentationMasked) {\n  console.log(\"CHECK_FAILED: user persistence does not satisfy the domain contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: invalid users cross the domain write boundary\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity76d47b7a } from \"../src/service.mjs\";\nconst {\n  vb1732e9b, v05022492, v366ed480, v7ad0d474, v19794d7a, v8ebdf10b, ve7a51caa, v8628a0d0,\n  v493c3287, v53da11d0, vc7363881, v1814ed15, v8b326144, v038f6528, vdd716dd5, v212b7473,\n  vc9759b66,\n} = repositoryIdentity76d47b7a;\nif (!Object.values(repositoryIdentity76d47b7a).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { listUsers_crypto_wallet_core, renderUser_crypto_wallet_core, resetUsers_crypto_wallet_core, saveUser_crypto_wallet_core } from \"../src/service.mjs\";\nresetUsers_crypto_wallet_core();\nconst rejected = saveUser_crypto_wallet_core({\"id\":\"\",\"name\":\"\"});\nconst afterInvalid = listUsers_crypto_wallet_core();\nresetUsers_crypto_wallet_core();\nconst accepted = saveUser_crypto_wallet_core({\"id\":\" user-1 \",\"name\":\" Ada \"});\nconst rows = listUsers_crypto_wallet_core();\nif (rejected === false && afterInvalid.length === 0 && accepted === true &&\n    rows[0].id === \"user-1\" &&\n    renderUser_crypto_wallet_core(rows[0]) === \"ADA\") {\n  console.log(\"FIXED: invalid records stop at the write boundary\");\n  process.exit(0);\n}\nif (rejected && afterInvalid.length === 1 && renderUser_crypto_wallet_core(afterInvalid[0]) === \"UNKNOWN\") {\n  console.log(\"CHECK_FAILED: presentation fallback masks persisted invalid data\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: invalid records cross the repository boundary\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/user-schema.mjs",
@@ -505,7 +497,7 @@
         },
         {
           "path": "src/service.mjs",
-          "content": "const records = [];\n\nexport function resetUsers_crypto_wallet_core() {\n  records.length = 0;\n}\n\nexport function saveUser_crypto_wallet_core(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_crypto_wallet_core() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_crypto_wallet_core(user) {\n  return user.name.trim().toUpperCase();\n}\n"
+          "content": "const records = [];\nexport function resetUsers_crypto_wallet_core() { records.length = 0; }\nexport function saveUser_crypto_wallet_core(input) {\n  records.push({ ...input });\n  return true;\n}\nexport function listUsers_crypto_wallet_core() { return records.map((record) => ({ ...record })); }\nexport function renderUser_crypto_wallet_core(user) { return user.name.trim().toUpperCase(); }\nexport const repositoryIdentity76d47b7a = Object.freeze({\n  vb1732e9b: true, v05022492: true, v366ed480: true, v7ad0d474: true, v19794d7a: true, v8ebdf10b: true,\n  ve7a51caa: true, v8628a0d0: true, v493c3287: true, v53da11d0: true, vc7363881: true, v1814ed15: true,\n  v8b326144: true, v038f6528: true, vdd716dd5: true, v212b7473: true, vc9759b66: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -519,56 +511,52 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Normalize the value in the request handler before passing it to the domain module.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const records = [];\n\nexport function resetUsers_crypto_wallet_core() {\n  records.length = 0;\n}\n\nexport function saveUser_crypto_wallet_core(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_crypto_wallet_core() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_crypto_wallet_core(user) {\n  return user.name?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+              "content": "const records = [];\nexport function resetUsers_crypto_wallet_core() { records.length = 0; }\nexport function saveUser_crypto_wallet_core(input) {\n  records.push({ ...input });\n  return true;\n}\nexport function listUsers_crypto_wallet_core() { return records.map((record) => ({ ...record })); }\nexport function renderUser_crypto_wallet_core(user) { return user.name?.trim().toUpperCase() || \"UNKNOWN\"; }\nexport const repositoryIdentity76d47b7a = Object.freeze({\n  vb1732e9b: true, v05022492: true, v366ed480: true, v7ad0d474: true, v19794d7a: true, v8ebdf10b: true,\n  ve7a51caa: true, v8628a0d0: true, v493c3287: true, v53da11d0: true, vc7363881: true, v1814ed15: true,\n  v8b326144: true, v038f6528: true, vdd716dd5: true, v212b7473: true, vc9759b66: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Apply the value constraint in the shared domain schema.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "import { validateUserSchema_crypto_wallet_core } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_crypto_wallet_core() {\n  records.length = 0;\n}\n\nexport function saveUser_crypto_wallet_core(input) {\n  if (!validateUserSchema_crypto_wallet_core(input)) return false;\n  records.push({ id: input.id.trim(), name: input.name.trim() });\n  return true;\n}\n\nexport function listUsers_crypto_wallet_core() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_crypto_wallet_core(user) {\n  return user.name.toUpperCase();\n}\n"
+              "content": "import { validateUserSchema_crypto_wallet_core } from \"./user-schema.mjs\";\n\nconst records = [];\nexport function resetUsers_crypto_wallet_core() { records.length = 0; }\nexport function saveUser_crypto_wallet_core(input) {\n  if (!validateUserSchema_crypto_wallet_core(input)) return false;\n  records.push({ id: input.id.trim(), name: input.name.trim() });\n  return true;\n}\nexport function listUsers_crypto_wallet_core() { return records.map((record) => ({ ...record })); }\nexport function renderUser_crypto_wallet_core(user) { return user.name.toUpperCase(); }\nexport const repositoryIdentity76d47b7a = Object.freeze({\n  vb1732e9b: true, v05022492: true, v366ed480: true, v7ad0d474: true, v19794d7a: true, v8ebdf10b: true,\n  ve7a51caa: true, v8628a0d0: true, v493c3287: true, v53da11d0: true, vc7363881: true, v1814ed15: true,\n  v8b326144: true, v038f6528: true, vdd716dd5: true, v212b7473: true, vc9759b66: true,\n});\n"
             },
             {
               "path": "src/user-schema.mjs",
               "content": "export function validateUserSchema_crypto_wallet_core(user) {\n  return Boolean(\n    user &&\n    typeof user.id === \"string\" &&\n    user.id.trim().length > 0 &&\n    typeof user.name === \"string\" &&\n    user.name.trim().length > 0\n  );\n}\n"
             }
-          ],
-          "isGood": true
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Normalize the value in the request handler before passing it to the domain module.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const records = [];\n\nexport function resetUsers_crypto_wallet_core() {\n  records.length = 0;\n}\n\nexport function saveUser_crypto_wallet_core(input) {\n  records.push({ ...input });\n  return true;\n}\n\nexport function listUsers_crypto_wallet_core() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_crypto_wallet_core(user) {\n  return user.name?.trim().toUpperCase() || \"UNKNOWN\";\n}\n"
+            "content": "const records = [];\nexport function resetUsers_crypto_wallet_core() { records.length = 0; }\nexport function saveUser_crypto_wallet_core(input) {\n  records.push({ ...input });\n  return true;\n}\nexport function listUsers_crypto_wallet_core() { return records.map((record) => ({ ...record })); }\nexport function renderUser_crypto_wallet_core(user) { return user.name?.trim().toUpperCase() || \"UNKNOWN\"; }\nexport const repositoryIdentity76d47b7a = Object.freeze({\n  vb1732e9b: true, v05022492: true, v366ed480: true, v7ad0d474: true, v19794d7a: true, v8ebdf10b: true,\n  ve7a51caa: true, v8628a0d0: true, v493c3287: true, v53da11d0: true, vc7363881: true, v1814ed15: true,\n  v8b326144: true, v038f6528: true, vdd716dd5: true, v212b7473: true, vc9759b66: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Apply the value constraint in the shared domain schema.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "import { validateUserSchema_crypto_wallet_core } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_crypto_wallet_core() {\n  records.length = 0;\n}\n\nexport function saveUser_crypto_wallet_core(input) {\n  if (!validateUserSchema_crypto_wallet_core(input)) return false;\n  records.push({ id: input.id.trim(), name: input.name.trim() });\n  return true;\n}\n\nexport function listUsers_crypto_wallet_core() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_crypto_wallet_core(user) {\n  return user.name.toUpperCase();\n}\n"
+            "content": "import { validateUserSchema_crypto_wallet_core } from \"./user-schema.mjs\";\n\nconst records = [];\nexport function resetUsers_crypto_wallet_core() { records.length = 0; }\nexport function saveUser_crypto_wallet_core(input) {\n  if (!validateUserSchema_crypto_wallet_core(input)) return false;\n  records.push({ id: input.id.trim(), name: input.name.trim() });\n  return true;\n}\nexport function listUsers_crypto_wallet_core() { return records.map((record) => ({ ...record })); }\nexport function renderUser_crypto_wallet_core(user) { return user.name.toUpperCase(); }\nexport const repositoryIdentity76d47b7a = Object.freeze({\n  vb1732e9b: true, v05022492: true, v366ed480: true, v7ad0d474: true, v19794d7a: true, v8ebdf10b: true,\n  ve7a51caa: true, v8628a0d0: true, v493c3287: true, v53da11d0: true, vc7363881: true, v1814ed15: true,\n  v8b326144: true, v038f6528: true, vdd716dd5: true, v212b7473: true, vc9759b66: true,\n});\n"
           },
           {
             "path": "src/user-schema.mjs",
             "content": "export function validateUserSchema_crypto_wallet_core(user) {\n  return Boolean(\n    user &&\n    typeof user.id === \"string\" &&\n    user.id.trim().length > 0 &&\n    typeof user.name === \"string\" &&\n    user.name.trim().length > 0\n  );\n}\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
@@ -609,11 +597,11 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for crypto-wallet-core so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Enforce normalization and validation inside the service boundary: reject invalid raw records without state changes and accept valid records consistently for every caller.\n\nUpdate the local domain module for crypto-wallet-core so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  listUsers_crypto_wallet_core,\n  renderUser_crypto_wallet_core,\n  resetUsers_crypto_wallet_core,\n  saveUser_crypto_wallet_core,\n} from \"../src/service.mjs\";\n\nresetUsers_crypto_wallet_core();\nconst invalidAccepted = saveUser_crypto_wallet_core({\"id\":\"\",\"name\":\"\"});\nconst invalidRecords = listUsers_crypto_wallet_core();\nconst presentationMasked =\n  invalidRecords.length === 1 &&\n  renderUser_crypto_wallet_core(invalidRecords[0]) === \"UNKNOWN\";\n\nresetUsers_crypto_wallet_core();\nconst validAccepted = saveUser_crypto_wallet_core({\"id\":\" user-1 \",\"name\":\" Ada \"});\nconst validRecords = listUsers_crypto_wallet_core();\nconst validContract =\n  validAccepted === true &&\n  validRecords.length === 1 &&\n  validRecords[0][\"id\"] === \"user-1\" &&\n  validRecords[0][\"name\"] === \"Ada\" &&\n  renderUser_crypto_wallet_core(validRecords[0]) === \"ADA\";\nconst invalidContract = invalidAccepted === false && invalidRecords.length === 0;\n\nif (invalidContract && validContract) {\n  console.log(\"FIXED: domain write boundary rejects invalid users and preserves valid users\");\n  process.exit(0);\n}\nif (invalidAccepted && presentationMasked) {\n  console.log(\"CHECK_FAILED: user persistence does not satisfy the domain contract\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: invalid users cross the domain write boundary\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity76d47b7a } from \"../src/service.mjs\";\nconst {\n  vb1732e9b, v05022492, v366ed480, v7ad0d474, v19794d7a, v8ebdf10b, ve7a51caa, v8628a0d0,\n  v493c3287, v53da11d0, vc7363881, v1814ed15, v8b326144, v038f6528, vdd716dd5, v212b7473,\n  vc9759b66,\n} = repositoryIdentity76d47b7a;\nif (!Object.values(repositoryIdentity76d47b7a).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { listUsers_crypto_wallet_core, renderUser_crypto_wallet_core, resetUsers_crypto_wallet_core, saveUser_crypto_wallet_core } from \"../src/service.mjs\";\nresetUsers_crypto_wallet_core();\nconst rejected = saveUser_crypto_wallet_core({\"id\":\"\",\"name\":\"\"});\nconst afterInvalid = listUsers_crypto_wallet_core();\nresetUsers_crypto_wallet_core();\nconst accepted = saveUser_crypto_wallet_core({\"id\":\" user-1 \",\"name\":\" Ada \"});\nconst rows = listUsers_crypto_wallet_core();\nif (rejected === false && afterInvalid.length === 0 && accepted === true &&\n    rows[0].id === \"user-1\" &&\n    renderUser_crypto_wallet_core(rows[0]) === \"ADA\") {\n  console.log(\"FIXED: invalid records stop at the write boundary\");\n  process.exit(0);\n}\nif (rejected && afterInvalid.length === 1 && renderUser_crypto_wallet_core(afterInvalid[0]) === \"UNKNOWN\") {\n  console.log(\"CHECK_FAILED: presentation fallback masks persisted invalid data\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: invalid records cross the repository boundary\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/user-schema.mjs",
@@ -621,7 +609,7 @@
         },
         {
           "path": "src/service.mjs",
-          "content": "import { validateUserSchema_crypto_wallet_core } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_crypto_wallet_core() {\n  records.length = 0;\n}\n\nexport function saveUser_crypto_wallet_core(input) {\n  if (!validateUserSchema_crypto_wallet_core(input)) return false;\n  records.push({ id: input.id.trim(), name: input.name.trim() });\n  return true;\n}\n\nexport function listUsers_crypto_wallet_core() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_crypto_wallet_core(user) {\n  return user.name.toUpperCase();\n}\n"
+          "content": "import { validateUserSchema_crypto_wallet_core } from \"./user-schema.mjs\";\n\nconst records = [];\nexport function resetUsers_crypto_wallet_core() { records.length = 0; }\nexport function saveUser_crypto_wallet_core(input) {\n  if (!validateUserSchema_crypto_wallet_core(input)) return false;\n  records.push({ id: input.id.trim(), name: input.name.trim() });\n  return true;\n}\nexport function listUsers_crypto_wallet_core() { return records.map((record) => ({ ...record })); }\nexport function renderUser_crypto_wallet_core(user) { return user.name.toUpperCase(); }\nexport const repositoryIdentity76d47b7a = Object.freeze({\n  vb1732e9b: true, v05022492: true, v366ed480: true, v7ad0d474: true, v19794d7a: true, v8ebdf10b: true,\n  ve7a51caa: true, v8628a0d0: true, v493c3287: true, v53da11d0: true, vc7363881: true, v1814ed15: true,\n  v8b326144: true, v038f6528: true, vdd716dd5: true, v212b7473: true, vc9759b66: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -632,10 +620,10 @@
           "content": "/**\n * Helper routines for crypto-wallet-core\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_crypto_wallet_core, generateTraceId_crypto_wallet_core } from \"../utils.js\";\n\nexport function getDomainHeader_crypto_wallet_core(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_crypto_wallet_core(domain);\n}\n\nexport function createServiceContext_crypto_wallet_core(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_crypto_wallet_core(domain),\n    traceId: generateTraceId_crypto_wallet_core(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function validateDomainHeader_crypto_wallet_core(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function buildResponseEnvelope_crypto_wallet_core<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n"
         }
       ],
-      "cleanRevisionSha": "2f5ab196a19cf4e0ae24f511649326e4c7418cba",
-      "trapRevisionSha": "4c29561f32470423b49f221b5dc46552c3a51bd2",
-      "rightRevisionSha": "228c7af68df02f6b890e11e5e845e289766cac28",
-      "noTrapRevisionSha": "a6b8ff9b07ff6ef80e79302b447b9afad9fde9c2"
+      "cleanRevisionSha": "edd53eeb67935450e190a7bde22d3eef9ac896d4",
+      "trapRevisionSha": "c39d6897a56dcace22148f521c15620ac1345cf7",
+      "rightRevisionSha": "33c3b5a63152186e257ab2453acc2e26c3ade752",
+      "noTrapRevisionSha": "6737b97029aae60670fcb94c43141f5c80582095"
     }
   ]
 }

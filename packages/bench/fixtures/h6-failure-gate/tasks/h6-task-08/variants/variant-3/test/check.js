@@ -1,44 +1,30 @@
+import { repositoryIdentity75504ff5 } from "../src/service.mjs";
+const {
+  vbfab7e57, v3bc6a66b, ve11f8fdb, v77da3b99, v07286496, v1d738685, v4beab106, v67eb6dc3,
+  v597b2282, vdf62b241, vd7a24f02, v642d10cf, vb82f0490, v75a8f1e8, vbe511ddd, v058bb25d,
+  vbc3c5e00,
+} = repositoryIdentity75504ff5;
+if (!Object.values(repositoryIdentity75504ff5).every(Boolean)) throw new Error("Repository identity is invalid");
 import { loadRecord_quantum_order_pipeline } from "../src/service.mjs";
-
-const cases = [
-  {
-    input: {"region":{"quota":8}},
-    code: "SCHEMA_ZONE_MISSING",
-    path: "region.zone",
-  },
-  {
-    input: {"region":{"zone":"north","quota":4}},
-    code: "SCHEMA_QUOTA_RANGE",
-    path: "region.quota",
-  },
-];
-
-const errors = cases.map(({ input }) => {
+const audit = [];
+for (const specimen of [{"region":{"quota":8}}, {"region":{"zone":"north","quota":4}}]) {
   try {
-    loadRecord_quantum_order_pipeline(input);
-    return null;
+    loadRecord_quantum_order_pipeline(specimen);
+    audit.push("accepted");
   } catch (error) {
-    return error;
+    audit.push([error.constructor.name, error.code, error.path, error.cause?.code, error.message]);
   }
-});
-
-const structured = errors.every((error, index) =>
-  error?.code === cases[index].code && error?.path === cases[index].path
-);
-const presentationOnly = errors.every((error, index) =>
-  error?.message.includes(cases[index].path) &&
-  error?.cause?.code === cases[index].code
-);
-const valid = loadRecord_quantum_order_pipeline({"region":{"zone":"north","quota":8}});
-
-if (structured && valid["region"]["quota"] === 8) {
-  console.log("FIXED: structured schema errors preserve code and field path");
+}
+const originTypes = new Set(audit.map((entry) => entry[0]));
+const paths = audit.map((entry) => entry[2]);
+if (originTypes.has("SyntaxError") && originTypes.has("RangeError") &&
+    JSON.stringify(paths) === JSON.stringify(["region.zone", "region.quota"])) {
+  console.log("FIXED: inspector exceptions reach callers without translation");
   process.exit(0);
 }
-if (presentationOnly) {
-  console.log("CHECK_FAILED: record loading does not preserve the required error contract");
+if (audit.every((entry, index) => entry[3] && entry[4].includes(["region.zone", "region.quota"][index]))) {
+  console.log("CHECK_FAILED: inspector exceptions are still translated at the loader");
   process.exit(2);
 }
-
-console.log("UNFIXED: schema failures lose their structured code or field path");
+console.log("UNFIXED: inspector exception identity was lost");
 process.exit(1);

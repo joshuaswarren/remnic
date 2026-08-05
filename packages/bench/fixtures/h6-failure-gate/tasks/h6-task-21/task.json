@@ -2,8 +2,8 @@
   "id": "h6-task-21",
   "trapId": "stale-cache-illusion",
   "domain": "feature-flag-service",
-  "title": "Service maintenance for feature-flag-service",
-  "description": "Update the local feature-flag-service implementation to satisfy its offline check.",
+  "title": "Correct feature-flag-service service behavior",
+  "description": "Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.",
   "canonicalBaseFiles": [
     {
       "path": "package.json",
@@ -47,20 +47,20 @@
     },
     {
       "path": "TASK.md",
-      "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for feature-flag-service so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+      "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for feature-flag-service so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
     },
     {
       "path": "test/check.js",
-      "content": "import {\n  calculate_feature_flag_service,\n  resetCache_feature_flag_service,\n} from \"../src/service.mjs\";\n\nresetCache_feature_flag_service();\nconst values = [2,3,-1].map((value) => calculate_feature_flag_service(value));\nconst expected = [7,10,-2];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_feature_flag_service(2) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+      "content": "import { repositoryIdentity0d9d1564 } from \"../src/service.mjs\";\nconst {\n  v0abeb102, v8893624a, vf64bdf33, v96251c92, v2bb0fbd9, vd9b6d6ff, vcc7685f9, v49c5d1e9,\n  v08d1cd23, v8dfdd2ef, vc895b829, v75c696f7, v5ab8a88e, v476c9589, vd2ecbcf6, va1462432,\n  v580cbdd6,\n} = repositoryIdentity0d9d1564;\nif (!Object.values(repositoryIdentity0d9d1564).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_feature_flag_service, resetCache_feature_flag_service } from \"../src/service.mjs\";\nresetCache_feature_flag_service();\nconst inputs = [2,3,-1];\nconst expected = [7,10,-2];\nconst actual = inputs.map((value) => calculate_feature_flag_service(value));\nconst repeated = calculate_feature_flag_service(inputs[0]);\nif (actual.every((value, index) => value === expected[index]) && repeated === expected[0]) {\n  console.log(\"FIXED: map cache keys include calculation input\");\n  process.exit(0);\n}\nif (actual[0] === expected[0] && actual.slice(1).every((value) => value === actual[0])) {\n  console.log(\"CHECK_FAILED: formula changed without changing map identity\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: formula or cache behavior is stale\");\nprocess.exit(1);\n"
     },
     {
       "path": "src/service.mjs",
-      "content": "const cache_feature_flag_service = new Map();\n\nexport function resetCache_feature_flag_service() {\n  cache_feature_flag_service.clear();\n}\n\nexport function calculate_feature_flag_service(value) {\n  const key = \"calculation\";\n  if (cache_feature_flag_service.has(key)) return cache_feature_flag_service.get(key);\n  const result = value * 2;\n  cache_feature_flag_service.set(key, result);\n  return result;\n}\n"
+      "content": "const cache = new Map();\nexport function resetCache_feature_flag_service() { cache.clear(); }\nexport function calculate_feature_flag_service(value) {\n  const key = \"calculation\";\n  if (cache.has(key)) return cache.get(key);\n  const result = value * 2;\n  cache.set(key, result);\n  return result;\n}\nexport const repositoryIdentity0d9d1564 = Object.freeze({\n  v0abeb102: true, v8893624a: true, vf64bdf33: true, v96251c92: true, v2bb0fbd9: true, vd9b6d6ff: true,\n  vcc7685f9: true, v49c5d1e9: true, v08d1cd23: true, v8dfdd2ef: true, vc895b829: true, v75c696f7: true,\n  v5ab8a88e: true, v476c9589: true, vd2ecbcf6: true, va1462432: true, v580cbdd6: true,\n});\n"
     }
   ],
   "checkCommand": "node test/check.js",
   "fileCount": 13,
-  "lineCount": 563,
+  "lineCount": 566,
   "fingerprint": {
     "version": 1,
     "trapId": "stale-cache-illusion",
@@ -80,7 +80,7 @@
   "offlineFailureMark": "3f30bd82e9780859f89cea4653e724932ef32c7d710417891cdaf616708ae17c",
   "maxTokenCap": 8192,
   "maxAttemptCap": 3,
-  "split": "dev",
+  "split": "pilot",
   "variants": [
     {
       "variantId": "h6-task-21-v1",
@@ -127,15 +127,15 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for feature-flag-service so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for feature-flag-service so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_feature_flag_service,\n  resetCache_feature_flag_service,\n} from \"../src/service.mjs\";\n\nresetCache_feature_flag_service();\nconst values = [2,3,-1].map((value) => calculate_feature_flag_service(value));\nconst expected = [7,10,-2];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_feature_flag_service(2) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity0d9d1564 } from \"../src/service.mjs\";\nconst {\n  v0abeb102, v8893624a, vf64bdf33, v96251c92, v2bb0fbd9, vd9b6d6ff, vcc7685f9, v49c5d1e9,\n  v08d1cd23, v8dfdd2ef, vc895b829, v75c696f7, v5ab8a88e, v476c9589, vd2ecbcf6, va1462432,\n  v580cbdd6,\n} = repositoryIdentity0d9d1564;\nif (!Object.values(repositoryIdentity0d9d1564).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_feature_flag_service, resetCache_feature_flag_service } from \"../src/service.mjs\";\nresetCache_feature_flag_service();\nconst inputs = [2,3,-1];\nconst expected = [7,10,-2];\nconst actual = inputs.map((value) => calculate_feature_flag_service(value));\nconst repeated = calculate_feature_flag_service(inputs[0]);\nif (actual.every((value, index) => value === expected[index]) && repeated === expected[0]) {\n  console.log(\"FIXED: map cache keys include calculation input\");\n  process.exit(0);\n}\nif (actual[0] === expected[0] && actual.slice(1).every((value) => value === actual[0])) {\n  console.log(\"CHECK_FAILED: formula changed without changing map identity\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: formula or cache behavior is stale\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "const cache_feature_flag_service = new Map();\n\nexport function resetCache_feature_flag_service() {\n  cache_feature_flag_service.clear();\n}\n\nexport function calculate_feature_flag_service(value) {\n  const key = \"calculation\";\n  if (cache_feature_flag_service.has(key)) return cache_feature_flag_service.get(key);\n  const result = value * 2;\n  cache_feature_flag_service.set(key, result);\n  return result;\n}\n"
+          "content": "const cache = new Map();\nexport function resetCache_feature_flag_service() { cache.clear(); }\nexport function calculate_feature_flag_service(value) {\n  const key = \"calculation\";\n  if (cache.has(key)) return cache.get(key);\n  const result = value * 2;\n  cache.set(key, result);\n  return result;\n}\nexport const repositoryIdentity0d9d1564 = Object.freeze({\n  v0abeb102: true, v8893624a: true, vf64bdf33: true, v96251c92: true, v2bb0fbd9: true, vd9b6d6ff: true,\n  vcc7685f9: true, v49c5d1e9: true, v08d1cd23: true, v8dfdd2ef: true, vc895b829: true, v75c696f7: true,\n  v5ab8a88e: true, v476c9589: true, vd2ecbcf6: true, va1462432: true, v580cbdd6: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -145,48 +145,44 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Change the calculation formula while retaining the current cache-key fields.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_feature_flag_service = new Map();\n\nexport function resetCache_feature_flag_service() {\n  cache_feature_flag_service.clear();\n}\n\nexport function calculate_feature_flag_service(value) {\n  const key = \"calculation\";\n  if (cache_feature_flag_service.has(key)) return cache_feature_flag_service.get(key);\n  const result = value * 3 + 1;\n  cache_feature_flag_service.set(key, result);\n  return result;\n}\n"
+              "content": "const cache = new Map();\nexport function resetCache_feature_flag_service() { cache.clear(); }\nexport function calculate_feature_flag_service(value) {\n  const key = \"calculation\";\n  if (cache.has(key)) return cache.get(key);\n  const result = value * 3 + 1;\n  cache.set(key, result);\n  return result;\n}\nexport const repositoryIdentity0d9d1564 = Object.freeze({\n  v0abeb102: true, v8893624a: true, vf64bdf33: true, v96251c92: true, v2bb0fbd9: true, vd9b6d6ff: true,\n  vcc7685f9: true, v49c5d1e9: true, v08d1cd23: true, v8dfdd2ef: true, vc895b829: true, v75c696f7: true,\n  v5ab8a88e: true, v476c9589: true, vd2ecbcf6: true, va1462432: true, v580cbdd6: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Add the calculation parameters to the cache-key fields.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_feature_flag_service = new Map();\n\nexport function resetCache_feature_flag_service() {\n  cache_feature_flag_service.clear();\n}\n\nexport function calculate_feature_flag_service(value) {\n  const key = `calculation:${value}`;\n  if (cache_feature_flag_service.has(key)) return cache_feature_flag_service.get(key);\n  const result = value * 3 + 1;\n  cache_feature_flag_service.set(key, result);\n  return result;\n}\n"
+              "content": "const cache = new Map();\nexport function resetCache_feature_flag_service() { cache.clear(); }\nexport function calculate_feature_flag_service(value) {\n  const key = `calculation:${value}`;\n  if (cache.has(key)) return cache.get(key);\n  const result = value * 3 + 1;\n  cache.set(key, result);\n  return result;\n}\nexport const repositoryIdentity0d9d1564 = Object.freeze({\n  v0abeb102: true, v8893624a: true, vf64bdf33: true, v96251c92: true, v2bb0fbd9: true, vd9b6d6ff: true,\n  vcc7685f9: true, v49c5d1e9: true, v08d1cd23: true, v8dfdd2ef: true, vc895b829: true, v75c696f7: true,\n  v5ab8a88e: true, v476c9589: true, vd2ecbcf6: true, va1462432: true, v580cbdd6: true,\n});\n"
             }
-          ],
-          "isGood": true
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Change the calculation formula while retaining the current cache-key fields.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_feature_flag_service = new Map();\n\nexport function resetCache_feature_flag_service() {\n  cache_feature_flag_service.clear();\n}\n\nexport function calculate_feature_flag_service(value) {\n  const key = \"calculation\";\n  if (cache_feature_flag_service.has(key)) return cache_feature_flag_service.get(key);\n  const result = value * 3 + 1;\n  cache_feature_flag_service.set(key, result);\n  return result;\n}\n"
+            "content": "const cache = new Map();\nexport function resetCache_feature_flag_service() { cache.clear(); }\nexport function calculate_feature_flag_service(value) {\n  const key = \"calculation\";\n  if (cache.has(key)) return cache.get(key);\n  const result = value * 3 + 1;\n  cache.set(key, result);\n  return result;\n}\nexport const repositoryIdentity0d9d1564 = Object.freeze({\n  v0abeb102: true, v8893624a: true, vf64bdf33: true, v96251c92: true, v2bb0fbd9: true, vd9b6d6ff: true,\n  vcc7685f9: true, v49c5d1e9: true, v08d1cd23: true, v8dfdd2ef: true, vc895b829: true, v75c696f7: true,\n  v5ab8a88e: true, v476c9589: true, vd2ecbcf6: true, va1462432: true, v580cbdd6: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Add the calculation parameters to the cache-key fields.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_feature_flag_service = new Map();\n\nexport function resetCache_feature_flag_service() {\n  cache_feature_flag_service.clear();\n}\n\nexport function calculate_feature_flag_service(value) {\n  const key = `calculation:${value}`;\n  if (cache_feature_flag_service.has(key)) return cache_feature_flag_service.get(key);\n  const result = value * 3 + 1;\n  cache_feature_flag_service.set(key, result);\n  return result;\n}\n"
+            "content": "const cache = new Map();\nexport function resetCache_feature_flag_service() { cache.clear(); }\nexport function calculate_feature_flag_service(value) {\n  const key = `calculation:${value}`;\n  if (cache.has(key)) return cache.get(key);\n  const result = value * 3 + 1;\n  cache.set(key, result);\n  return result;\n}\nexport const repositoryIdentity0d9d1564 = Object.freeze({\n  v0abeb102: true, v8893624a: true, vf64bdf33: true, v96251c92: true, v2bb0fbd9: true, vd9b6d6ff: true,\n  vcc7685f9: true, v49c5d1e9: true, v08d1cd23: true, v8dfdd2ef: true, vc895b829: true, v75c696f7: true,\n  v5ab8a88e: true, v476c9589: true, vd2ecbcf6: true, va1462432: true, v580cbdd6: true,\n});\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
@@ -227,25 +223,25 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for feature-flag-service so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for feature-flag-service so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_feature_flag_service,\n  resetCache_feature_flag_service,\n} from \"../src/service.mjs\";\n\nresetCache_feature_flag_service();\nconst values = [2,3,-1].map((value) => calculate_feature_flag_service(value));\nconst expected = [7,10,-2];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_feature_flag_service(2) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity0d9d1564 } from \"../src/service.mjs\";\nconst {\n  v0abeb102, v8893624a, vf64bdf33, v96251c92, v2bb0fbd9, vd9b6d6ff, vcc7685f9, v49c5d1e9,\n  v08d1cd23, v8dfdd2ef, vc895b829, v75c696f7, v5ab8a88e, v476c9589, vd2ecbcf6, va1462432,\n  v580cbdd6,\n} = repositoryIdentity0d9d1564;\nif (!Object.values(repositoryIdentity0d9d1564).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_feature_flag_service, resetCache_feature_flag_service } from \"../src/service.mjs\";\nresetCache_feature_flag_service();\nconst inputs = [2,3,-1];\nconst expected = [7,10,-2];\nconst actual = inputs.map((value) => calculate_feature_flag_service(value));\nconst repeated = calculate_feature_flag_service(inputs[0]);\nif (actual.every((value, index) => value === expected[index]) && repeated === expected[0]) {\n  console.log(\"FIXED: map cache keys include calculation input\");\n  process.exit(0);\n}\nif (actual[0] === expected[0] && actual.slice(1).every((value) => value === actual[0])) {\n  console.log(\"CHECK_FAILED: formula changed without changing map identity\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: formula or cache behavior is stale\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "const cache_feature_flag_service = new Map();\n\nexport function resetCache_feature_flag_service() {\n  cache_feature_flag_service.clear();\n}\n\nexport function calculate_feature_flag_service(value) {\n  const key = `calculation:${value}`;\n  if (cache_feature_flag_service.has(key)) return cache_feature_flag_service.get(key);\n  const result = value * 3 + 1;\n  cache_feature_flag_service.set(key, result);\n  return result;\n}\n"
+          "content": "const cache = new Map();\nexport function resetCache_feature_flag_service() { cache.clear(); }\nexport function calculate_feature_flag_service(value) {\n  const key = `calculation:${value}`;\n  if (cache.has(key)) return cache.get(key);\n  const result = value * 3 + 1;\n  cache.set(key, result);\n  return result;\n}\nexport const repositoryIdentity0d9d1564 = Object.freeze({\n  v0abeb102: true, v8893624a: true, vf64bdf33: true, v96251c92: true, v2bb0fbd9: true, vd9b6d6ff: true,\n  vcc7685f9: true, v49c5d1e9: true, v08d1cd23: true, v8dfdd2ef: true, vc895b829: true, v75c696f7: true,\n  v5ab8a88e: true, v476c9589: true, vd2ecbcf6: true, va1462432: true, v580cbdd6: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
           "content": "/**\n * Helper routines for feature-flag-service\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_feature_flag_service, generateTraceId_feature_flag_service } from \"./utils.js\";\n\nexport function getDomainHeader_feature_flag_service_revision(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_feature_flag_service(domain);\n}\n\nexport function createServiceContext_feature_flag_service_revision(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_feature_flag_service(domain),\n    traceId: generateTraceId_feature_flag_service(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function validateDomainHeader_feature_flag_service_revision(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function buildResponseEnvelope_feature_flag_service<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n"
         }
       ],
-      "cleanRevisionSha": "367c4845cb4c2bc69bf349841b9c29d56bf0848c",
-      "trapRevisionSha": "f22d06c76f6a911ff6d02fc3707a365e876f8f1c",
-      "rightRevisionSha": "1cc8aac482b7b44eac91199d0c274ec52b73d106",
-      "noTrapRevisionSha": "05be9d05af46c7561e4d680814f055c5ceddd079"
+      "cleanRevisionSha": "e432222a83498e8e819d4b045a812cd030de5e91",
+      "trapRevisionSha": "912e8a76872e2e4a4b9c05b0ccbad614ae3a79d6",
+      "rightRevisionSha": "9ad29e5abb8f894f08f277f5c06e4ba9f7548531",
+      "noTrapRevisionSha": "315c0b2e6d07df6231041fe1828852b0a55d4de9"
     },
     {
       "variantId": "h6-task-21-v2",
@@ -256,15 +252,15 @@
       "files": [
         {
           "path": "src/service.mjs",
-          "content": "const cache_feature_flag_service = new Map();\n\nexport function resetCache_feature_flag_service() {\n  cache_feature_flag_service.clear();\n}\n\nexport function calculate_feature_flag_service(value) {\n  const key = \"calculation\";\n  if (cache_feature_flag_service.has(key)) return cache_feature_flag_service.get(key);\n  const result = value * 2;\n  cache_feature_flag_service.set(key, result);\n  return result;\n}\n"
+          "content": "const cache = new Map();\nexport function resetCache_feature_flag_service() { cache.clear(); }\nexport function calculate_feature_flag_service(value) {\n  const key = \"calculation\";\n  if (cache.has(key)) return cache.get(key);\n  const result = value * 2;\n  cache.set(key, result);\n  return result;\n}\nexport const repositoryIdentity0d9d1564 = Object.freeze({\n  v0abeb102: true, v8893624a: true, vf64bdf33: true, v96251c92: true, v2bb0fbd9: true, vd9b6d6ff: true,\n  vcc7685f9: true, v49c5d1e9: true, v08d1cd23: true, v8dfdd2ef: true, vc895b829: true, v75c696f7: true,\n  v5ab8a88e: true, v476c9589: true, vd2ecbcf6: true, va1462432: true, v580cbdd6: true,\n});\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_feature_flag_service,\n  resetCache_feature_flag_service,\n} from \"../src/service.mjs\";\n\nresetCache_feature_flag_service();\nconst values = [2,3,-1].map((value) => calculate_feature_flag_service(value));\nconst expected = [7,10,-2];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_feature_flag_service(2) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity0d9d1564 } from \"../src/service.mjs\";\nconst {\n  v0abeb102, v8893624a, vf64bdf33, v96251c92, v2bb0fbd9, vd9b6d6ff, vcc7685f9, v49c5d1e9,\n  v08d1cd23, v8dfdd2ef, vc895b829, v75c696f7, v5ab8a88e, v476c9589, vd2ecbcf6, va1462432,\n  v580cbdd6,\n} = repositoryIdentity0d9d1564;\nif (!Object.values(repositoryIdentity0d9d1564).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_feature_flag_service, resetCache_feature_flag_service } from \"../src/service.mjs\";\nresetCache_feature_flag_service();\nconst inputs = [2,3,-1];\nconst expected = [7,10,-2];\nconst actual = inputs.map((value) => calculate_feature_flag_service(value));\nconst repeated = calculate_feature_flag_service(inputs[0]);\nif (actual.every((value, index) => value === expected[index]) && repeated === expected[0]) {\n  console.log(\"FIXED: map cache keys include calculation input\");\n  process.exit(0);\n}\nif (actual[0] === expected[0] && actual.slice(1).every((value) => value === actual[0])) {\n  console.log(\"CHECK_FAILED: formula changed without changing map identity\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: formula or cache behavior is stale\");\nprocess.exit(1);\n"
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for feature-flag-service so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for feature-flag-service so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "README.md",
@@ -310,61 +306,57 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Change the calculation formula while retaining the current cache-key fields.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_feature_flag_service = new Map();\n\nexport function resetCache_feature_flag_service() {\n  cache_feature_flag_service.clear();\n}\n\nexport function calculate_feature_flag_service(value) {\n  const key = \"calculation\";\n  if (cache_feature_flag_service.has(key)) return cache_feature_flag_service.get(key);\n  const result = value * 3 + 1;\n  cache_feature_flag_service.set(key, result);\n  return result;\n}\n"
+              "content": "const cache = new Map();\nexport function resetCache_feature_flag_service() { cache.clear(); }\nexport function calculate_feature_flag_service(value) {\n  const key = \"calculation\";\n  if (cache.has(key)) return cache.get(key);\n  const result = value * 3 + 1;\n  cache.set(key, result);\n  return result;\n}\nexport const repositoryIdentity0d9d1564 = Object.freeze({\n  v0abeb102: true, v8893624a: true, vf64bdf33: true, v96251c92: true, v2bb0fbd9: true, vd9b6d6ff: true,\n  vcc7685f9: true, v49c5d1e9: true, v08d1cd23: true, v8dfdd2ef: true, vc895b829: true, v75c696f7: true,\n  v5ab8a88e: true, v476c9589: true, vd2ecbcf6: true, va1462432: true, v580cbdd6: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Add the calculation parameters to the cache-key fields.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_feature_flag_service = new Map();\n\nexport function resetCache_feature_flag_service() {\n  cache_feature_flag_service.clear();\n}\n\nexport function calculate_feature_flag_service(value) {\n  const key = `calculation:${value}`;\n  if (cache_feature_flag_service.has(key)) return cache_feature_flag_service.get(key);\n  const result = value * 3 + 1;\n  cache_feature_flag_service.set(key, result);\n  return result;\n}\n"
+              "content": "const cache = new Map();\nexport function resetCache_feature_flag_service() { cache.clear(); }\nexport function calculate_feature_flag_service(value) {\n  const key = `calculation:${value}`;\n  if (cache.has(key)) return cache.get(key);\n  const result = value * 3 + 1;\n  cache.set(key, result);\n  return result;\n}\nexport const repositoryIdentity0d9d1564 = Object.freeze({\n  v0abeb102: true, v8893624a: true, vf64bdf33: true, v96251c92: true, v2bb0fbd9: true, vd9b6d6ff: true,\n  vcc7685f9: true, v49c5d1e9: true, v08d1cd23: true, v8dfdd2ef: true, vc895b829: true, v75c696f7: true,\n  v5ab8a88e: true, v476c9589: true, vd2ecbcf6: true, va1462432: true, v580cbdd6: true,\n});\n"
             }
-          ],
-          "isGood": true
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Change the calculation formula while retaining the current cache-key fields.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_feature_flag_service = new Map();\n\nexport function resetCache_feature_flag_service() {\n  cache_feature_flag_service.clear();\n}\n\nexport function calculate_feature_flag_service(value) {\n  const key = \"calculation\";\n  if (cache_feature_flag_service.has(key)) return cache_feature_flag_service.get(key);\n  const result = value * 3 + 1;\n  cache_feature_flag_service.set(key, result);\n  return result;\n}\n"
+            "content": "const cache = new Map();\nexport function resetCache_feature_flag_service() { cache.clear(); }\nexport function calculate_feature_flag_service(value) {\n  const key = \"calculation\";\n  if (cache.has(key)) return cache.get(key);\n  const result = value * 3 + 1;\n  cache.set(key, result);\n  return result;\n}\nexport const repositoryIdentity0d9d1564 = Object.freeze({\n  v0abeb102: true, v8893624a: true, vf64bdf33: true, v96251c92: true, v2bb0fbd9: true, vd9b6d6ff: true,\n  vcc7685f9: true, v49c5d1e9: true, v08d1cd23: true, v8dfdd2ef: true, vc895b829: true, v75c696f7: true,\n  v5ab8a88e: true, v476c9589: true, vd2ecbcf6: true, va1462432: true, v580cbdd6: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Add the calculation parameters to the cache-key fields.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_feature_flag_service = new Map();\n\nexport function resetCache_feature_flag_service() {\n  cache_feature_flag_service.clear();\n}\n\nexport function calculate_feature_flag_service(value) {\n  const key = `calculation:${value}`;\n  if (cache_feature_flag_service.has(key)) return cache_feature_flag_service.get(key);\n  const result = value * 3 + 1;\n  cache_feature_flag_service.set(key, result);\n  return result;\n}\n"
+            "content": "const cache = new Map();\nexport function resetCache_feature_flag_service() { cache.clear(); }\nexport function calculate_feature_flag_service(value) {\n  const key = `calculation:${value}`;\n  if (cache.has(key)) return cache.get(key);\n  const result = value * 3 + 1;\n  cache.set(key, result);\n  return result;\n}\nexport const repositoryIdentity0d9d1564 = Object.freeze({\n  v0abeb102: true, v8893624a: true, vf64bdf33: true, v96251c92: true, v2bb0fbd9: true, vd9b6d6ff: true,\n  vcc7685f9: true, v49c5d1e9: true, v08d1cd23: true, v8dfdd2ef: true, vc895b829: true, v75c696f7: true,\n  v5ab8a88e: true, v476c9589: true, vd2ecbcf6: true, va1462432: true, v580cbdd6: true,\n});\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
           "path": "src/service.mjs",
-          "content": "const cache_feature_flag_service = new Map();\n\nexport function resetCache_feature_flag_service() {\n  cache_feature_flag_service.clear();\n}\n\nexport function calculate_feature_flag_service(value) {\n  const key = `calculation:${value}`;\n  if (cache_feature_flag_service.has(key)) return cache_feature_flag_service.get(key);\n  const result = value * 3 + 1;\n  cache_feature_flag_service.set(key, result);\n  return result;\n}\n"
+          "content": "const cache = new Map();\nexport function resetCache_feature_flag_service() { cache.clear(); }\nexport function calculate_feature_flag_service(value) {\n  const key = `calculation:${value}`;\n  if (cache.has(key)) return cache.get(key);\n  const result = value * 3 + 1;\n  cache.set(key, result);\n  return result;\n}\nexport const repositoryIdentity0d9d1564 = Object.freeze({\n  v0abeb102: true, v8893624a: true, vf64bdf33: true, v96251c92: true, v2bb0fbd9: true, vd9b6d6ff: true,\n  vcc7685f9: true, v49c5d1e9: true, v08d1cd23: true, v8dfdd2ef: true, vc895b829: true, v75c696f7: true,\n  v5ab8a88e: true, v476c9589: true, vd2ecbcf6: true, va1462432: true, v580cbdd6: true,\n});\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_feature_flag_service,\n  resetCache_feature_flag_service,\n} from \"../src/service.mjs\";\n\nresetCache_feature_flag_service();\nconst values = [2,3,-1].map((value) => calculate_feature_flag_service(value));\nconst expected = [7,10,-2];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_feature_flag_service(2) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity0d9d1564 } from \"../src/service.mjs\";\nconst {\n  v0abeb102, v8893624a, vf64bdf33, v96251c92, v2bb0fbd9, vd9b6d6ff, vcc7685f9, v49c5d1e9,\n  v08d1cd23, v8dfdd2ef, vc895b829, v75c696f7, v5ab8a88e, v476c9589, vd2ecbcf6, va1462432,\n  v580cbdd6,\n} = repositoryIdentity0d9d1564;\nif (!Object.values(repositoryIdentity0d9d1564).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_feature_flag_service, resetCache_feature_flag_service } from \"../src/service.mjs\";\nresetCache_feature_flag_service();\nconst inputs = [2,3,-1];\nconst expected = [7,10,-2];\nconst actual = inputs.map((value) => calculate_feature_flag_service(value));\nconst repeated = calculate_feature_flag_service(inputs[0]);\nif (actual.every((value, index) => value === expected[index]) && repeated === expected[0]) {\n  console.log(\"FIXED: map cache keys include calculation input\");\n  process.exit(0);\n}\nif (actual[0] === expected[0] && actual.slice(1).every((value) => value === actual[0])) {\n  console.log(\"CHECK_FAILED: formula changed without changing map identity\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: formula or cache behavior is stale\");\nprocess.exit(1);\n"
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for feature-flag-service so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for feature-flag-service so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "README.md",
@@ -407,10 +399,10 @@
           "content": "/**\n * Helper routines for feature-flag-service\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_feature_flag_service, generateTraceId_feature_flag_service } from \"./utils.js\";\n\nexport function buildResponseEnvelope_feature_flag_service<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n\nexport function validateDomainHeader_feature_flag_service(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function createServiceContext_feature_flag_service(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_feature_flag_service(domain),\n    traceId: generateTraceId_feature_flag_service(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function getDomainHeader_feature_flag_service(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_feature_flag_service(domain);\n}\n"
         }
       ],
-      "cleanRevisionSha": "f21a7e7aefee5a5bc68c7ae4c334e09ae12f673c",
-      "trapRevisionSha": "2830ff3da6f6cde2f43473649df6f9d4de510bcd",
-      "rightRevisionSha": "816389c5d48086ccb57bf4076cef88099117ac8c",
-      "noTrapRevisionSha": "26a4df5901f5c022d361f9dd59ec4732cacf6154"
+      "cleanRevisionSha": "25ef3640c9cd4e40e8521e49a641c5257b997176",
+      "trapRevisionSha": "43b442656f6c13508fe67af7180ce4d9cf83df32",
+      "rightRevisionSha": "646788a833018779db44769cacbd42b3212911c8",
+      "noTrapRevisionSha": "e671c77f2bcd1a48c8dc59fd04ae3c348ac0672e"
     },
     {
       "variantId": "h6-task-21-v3",
@@ -457,15 +449,15 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for feature-flag-service so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for feature-flag-service so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_feature_flag_service,\n  resetCache_feature_flag_service,\n} from \"../src/service.mjs\";\n\nresetCache_feature_flag_service();\nconst values = [2,3,-1].map((value) => calculate_feature_flag_service(value));\nconst expected = [7,10,-2];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_feature_flag_service(2) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity0d9d1564 } from \"../src/service.mjs\";\nconst {\n  v0abeb102, v8893624a, vf64bdf33, v96251c92, v2bb0fbd9, vd9b6d6ff, vcc7685f9, v49c5d1e9,\n  v08d1cd23, v8dfdd2ef, vc895b829, v75c696f7, v5ab8a88e, v476c9589, vd2ecbcf6, va1462432,\n  v580cbdd6,\n} = repositoryIdentity0d9d1564;\nif (!Object.values(repositoryIdentity0d9d1564).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_feature_flag_service, resetCache_feature_flag_service } from \"../src/service.mjs\";\nresetCache_feature_flag_service();\nconst inputs = [2,3,-1];\nconst expected = [7,10,-2];\nconst actual = inputs.map((value) => calculate_feature_flag_service(value));\nconst repeated = calculate_feature_flag_service(inputs[0]);\nif (actual.every((value, index) => value === expected[index]) && repeated === expected[0]) {\n  console.log(\"FIXED: map cache keys include calculation input\");\n  process.exit(0);\n}\nif (actual[0] === expected[0] && actual.slice(1).every((value) => value === actual[0])) {\n  console.log(\"CHECK_FAILED: formula changed without changing map identity\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: formula or cache behavior is stale\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "const cache_feature_flag_service = new Map();\n\nexport function resetCache_feature_flag_service() {\n  cache_feature_flag_service.clear();\n}\n\nexport function calculate_feature_flag_service(value) {\n  const key = \"calculation\";\n  if (cache_feature_flag_service.has(key)) return cache_feature_flag_service.get(key);\n  const result = value * 2;\n  cache_feature_flag_service.set(key, result);\n  return result;\n}\n"
+          "content": "const cache = new Map();\nexport function resetCache_feature_flag_service() { cache.clear(); }\nexport function calculate_feature_flag_service(value) {\n  const key = \"calculation\";\n  if (cache.has(key)) return cache.get(key);\n  const result = value * 2;\n  cache.set(key, result);\n  return result;\n}\nexport const repositoryIdentity0d9d1564 = Object.freeze({\n  v0abeb102: true, v8893624a: true, vf64bdf33: true, v96251c92: true, v2bb0fbd9: true, vd9b6d6ff: true,\n  vcc7685f9: true, v49c5d1e9: true, v08d1cd23: true, v8dfdd2ef: true, vc895b829: true, v75c696f7: true,\n  v5ab8a88e: true, v476c9589: true, vd2ecbcf6: true, va1462432: true, v580cbdd6: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -479,48 +471,44 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Change the calculation formula while retaining the current cache-key fields.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_feature_flag_service = new Map();\n\nexport function resetCache_feature_flag_service() {\n  cache_feature_flag_service.clear();\n}\n\nexport function calculate_feature_flag_service(value) {\n  const key = \"calculation\";\n  if (cache_feature_flag_service.has(key)) return cache_feature_flag_service.get(key);\n  const result = value * 3 + 1;\n  cache_feature_flag_service.set(key, result);\n  return result;\n}\n"
+              "content": "const cache = new Map();\nexport function resetCache_feature_flag_service() { cache.clear(); }\nexport function calculate_feature_flag_service(value) {\n  const key = \"calculation\";\n  if (cache.has(key)) return cache.get(key);\n  const result = value * 3 + 1;\n  cache.set(key, result);\n  return result;\n}\nexport const repositoryIdentity0d9d1564 = Object.freeze({\n  v0abeb102: true, v8893624a: true, vf64bdf33: true, v96251c92: true, v2bb0fbd9: true, vd9b6d6ff: true,\n  vcc7685f9: true, v49c5d1e9: true, v08d1cd23: true, v8dfdd2ef: true, vc895b829: true, v75c696f7: true,\n  v5ab8a88e: true, v476c9589: true, vd2ecbcf6: true, va1462432: true, v580cbdd6: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Add the calculation parameters to the cache-key fields.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_feature_flag_service = new Map();\n\nexport function resetCache_feature_flag_service() {\n  cache_feature_flag_service.clear();\n}\n\nexport function calculate_feature_flag_service(value) {\n  const key = `calculation:${value}`;\n  if (cache_feature_flag_service.has(key)) return cache_feature_flag_service.get(key);\n  const result = value * 3 + 1;\n  cache_feature_flag_service.set(key, result);\n  return result;\n}\n"
+              "content": "const cache = new Map();\nexport function resetCache_feature_flag_service() { cache.clear(); }\nexport function calculate_feature_flag_service(value) {\n  const key = `calculation:${value}`;\n  if (cache.has(key)) return cache.get(key);\n  const result = value * 3 + 1;\n  cache.set(key, result);\n  return result;\n}\nexport const repositoryIdentity0d9d1564 = Object.freeze({\n  v0abeb102: true, v8893624a: true, vf64bdf33: true, v96251c92: true, v2bb0fbd9: true, vd9b6d6ff: true,\n  vcc7685f9: true, v49c5d1e9: true, v08d1cd23: true, v8dfdd2ef: true, vc895b829: true, v75c696f7: true,\n  v5ab8a88e: true, v476c9589: true, vd2ecbcf6: true, va1462432: true, v580cbdd6: true,\n});\n"
             }
-          ],
-          "isGood": true
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Change the calculation formula while retaining the current cache-key fields.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_feature_flag_service = new Map();\n\nexport function resetCache_feature_flag_service() {\n  cache_feature_flag_service.clear();\n}\n\nexport function calculate_feature_flag_service(value) {\n  const key = \"calculation\";\n  if (cache_feature_flag_service.has(key)) return cache_feature_flag_service.get(key);\n  const result = value * 3 + 1;\n  cache_feature_flag_service.set(key, result);\n  return result;\n}\n"
+            "content": "const cache = new Map();\nexport function resetCache_feature_flag_service() { cache.clear(); }\nexport function calculate_feature_flag_service(value) {\n  const key = \"calculation\";\n  if (cache.has(key)) return cache.get(key);\n  const result = value * 3 + 1;\n  cache.set(key, result);\n  return result;\n}\nexport const repositoryIdentity0d9d1564 = Object.freeze({\n  v0abeb102: true, v8893624a: true, vf64bdf33: true, v96251c92: true, v2bb0fbd9: true, vd9b6d6ff: true,\n  vcc7685f9: true, v49c5d1e9: true, v08d1cd23: true, v8dfdd2ef: true, vc895b829: true, v75c696f7: true,\n  v5ab8a88e: true, v476c9589: true, vd2ecbcf6: true, va1462432: true, v580cbdd6: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Add the calculation parameters to the cache-key fields.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_feature_flag_service = new Map();\n\nexport function resetCache_feature_flag_service() {\n  cache_feature_flag_service.clear();\n}\n\nexport function calculate_feature_flag_service(value) {\n  const key = `calculation:${value}`;\n  if (cache_feature_flag_service.has(key)) return cache_feature_flag_service.get(key);\n  const result = value * 3 + 1;\n  cache_feature_flag_service.set(key, result);\n  return result;\n}\n"
+            "content": "const cache = new Map();\nexport function resetCache_feature_flag_service() { cache.clear(); }\nexport function calculate_feature_flag_service(value) {\n  const key = `calculation:${value}`;\n  if (cache.has(key)) return cache.get(key);\n  const result = value * 3 + 1;\n  cache.set(key, result);\n  return result;\n}\nexport const repositoryIdentity0d9d1564 = Object.freeze({\n  v0abeb102: true, v8893624a: true, vf64bdf33: true, v96251c92: true, v2bb0fbd9: true, vd9b6d6ff: true,\n  vcc7685f9: true, v49c5d1e9: true, v08d1cd23: true, v8dfdd2ef: true, vc895b829: true, v75c696f7: true,\n  v5ab8a88e: true, v476c9589: true, vd2ecbcf6: true, va1462432: true, v580cbdd6: true,\n});\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
@@ -561,15 +549,15 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for feature-flag-service so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for feature-flag-service so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_feature_flag_service,\n  resetCache_feature_flag_service,\n} from \"../src/service.mjs\";\n\nresetCache_feature_flag_service();\nconst values = [2,3,-1].map((value) => calculate_feature_flag_service(value));\nconst expected = [7,10,-2];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_feature_flag_service(2) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity0d9d1564 } from \"../src/service.mjs\";\nconst {\n  v0abeb102, v8893624a, vf64bdf33, v96251c92, v2bb0fbd9, vd9b6d6ff, vcc7685f9, v49c5d1e9,\n  v08d1cd23, v8dfdd2ef, vc895b829, v75c696f7, v5ab8a88e, v476c9589, vd2ecbcf6, va1462432,\n  v580cbdd6,\n} = repositoryIdentity0d9d1564;\nif (!Object.values(repositoryIdentity0d9d1564).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_feature_flag_service, resetCache_feature_flag_service } from \"../src/service.mjs\";\nresetCache_feature_flag_service();\nconst inputs = [2,3,-1];\nconst expected = [7,10,-2];\nconst actual = inputs.map((value) => calculate_feature_flag_service(value));\nconst repeated = calculate_feature_flag_service(inputs[0]);\nif (actual.every((value, index) => value === expected[index]) && repeated === expected[0]) {\n  console.log(\"FIXED: map cache keys include calculation input\");\n  process.exit(0);\n}\nif (actual[0] === expected[0] && actual.slice(1).every((value) => value === actual[0])) {\n  console.log(\"CHECK_FAILED: formula changed without changing map identity\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: formula or cache behavior is stale\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "const cache_feature_flag_service = new Map();\n\nexport function resetCache_feature_flag_service() {\n  cache_feature_flag_service.clear();\n}\n\nexport function calculate_feature_flag_service(value) {\n  const key = `calculation:${value}`;\n  if (cache_feature_flag_service.has(key)) return cache_feature_flag_service.get(key);\n  const result = value * 3 + 1;\n  cache_feature_flag_service.set(key, result);\n  return result;\n}\n"
+          "content": "const cache = new Map();\nexport function resetCache_feature_flag_service() { cache.clear(); }\nexport function calculate_feature_flag_service(value) {\n  const key = `calculation:${value}`;\n  if (cache.has(key)) return cache.get(key);\n  const result = value * 3 + 1;\n  cache.set(key, result);\n  return result;\n}\nexport const repositoryIdentity0d9d1564 = Object.freeze({\n  v0abeb102: true, v8893624a: true, vf64bdf33: true, v96251c92: true, v2bb0fbd9: true, vd9b6d6ff: true,\n  vcc7685f9: true, v49c5d1e9: true, v08d1cd23: true, v8dfdd2ef: true, vc895b829: true, v75c696f7: true,\n  v5ab8a88e: true, v476c9589: true, vd2ecbcf6: true, va1462432: true, v580cbdd6: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -580,10 +568,10 @@
           "content": "/**\n * Helper routines for feature-flag-service\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_feature_flag_service, generateTraceId_feature_flag_service } from \"../utils.js\";\n\nexport function getDomainHeader_feature_flag_service(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_feature_flag_service(domain);\n}\n\nexport function createServiceContext_feature_flag_service(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_feature_flag_service(domain),\n    traceId: generateTraceId_feature_flag_service(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function validateDomainHeader_feature_flag_service(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function buildResponseEnvelope_feature_flag_service<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n"
         }
       ],
-      "cleanRevisionSha": "9e1f4feb36723b85892d9074f66f09f580efc861",
-      "trapRevisionSha": "3db826260793c0b4e50a96cf327e89d3821baa5f",
-      "rightRevisionSha": "feb6984f94f8af6ce255a98644b00f8af0530c2c",
-      "noTrapRevisionSha": "2d83304e654c689207552d2e0ed668383663e4d6"
+      "cleanRevisionSha": "3d23a62750380e61af0c7b9556e2370f00ded77c",
+      "trapRevisionSha": "4ca302a838625283363ed90f085dcf78020635f0",
+      "rightRevisionSha": "8779eca4755f5e4328b05ffc12d1142b976e182e",
+      "noTrapRevisionSha": "ad5ca5eb92b9aa17cf9a16562a18e29b885a7f4f"
     }
   ]
 }

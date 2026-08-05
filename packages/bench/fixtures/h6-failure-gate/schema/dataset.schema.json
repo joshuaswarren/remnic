@@ -35,7 +35,6 @@
       "additionalProperties": false,
       "required": [
         "trap-taxonomy.json",
-        "decision-rule.json",
         "arms/arms.json",
         "schema/action-intent.schema.json",
         "schema/dataset.schema.json",
@@ -44,10 +43,6 @@
       ],
       "properties": {
         "trap-taxonomy.json": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        },
-        "decision-rule.json": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
         },
@@ -86,8 +81,6 @@
           "description",
           "trapMechanism",
           "correctFix",
-          "goodStrategyId",
-          "badStrategyId",
           "inspiredBy"
         ],
         "properties": {
@@ -117,14 +110,6 @@
             "type": "string",
             "minLength": 1
           },
-          "goodStrategyId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "badStrategyId": {
-            "type": "string",
-            "minLength": 1
-          },
           "inspiredBy": {
             "type": "string",
             "minLength": 1
@@ -142,7 +127,6 @@
     },
     "splits": {
       "type": "object",
-      "additionalProperties": false,
       "required": [
         "dev",
         "pilot",
@@ -151,8 +135,8 @@
       "properties": {
         "dev": {
           "type": "array",
-          "minItems": 6,
-          "maxItems": 6,
+          "minItems": 0,
+          "maxItems": 0,
           "items": {
             "type": "string",
             "minLength": 1
@@ -160,8 +144,8 @@
         },
         "pilot": {
           "type": "array",
-          "minItems": 6,
-          "maxItems": 6,
+          "minItems": 12,
+          "maxItems": 12,
           "items": {
             "type": "string",
             "minLength": 1

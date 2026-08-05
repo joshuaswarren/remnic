@@ -1,15 +1,14 @@
 {
   "id": "candidate-beta",
-  "description": "Apply the value constraint in the shared domain schema.",
+  "description": "Candidate beta.",
   "files": [
     {
       "path": "src/service.mjs",
-      "content": "import { validateUserSchema_crypto_wallet_core } from \"./user-schema.mjs\";\n\nconst records = [];\n\nexport function resetUsers_crypto_wallet_core() {\n  records.length = 0;\n}\n\nexport function saveUser_crypto_wallet_core(input) {\n  if (!validateUserSchema_crypto_wallet_core(input)) return false;\n  records.push({ id: input.id.trim(), name: input.name.trim() });\n  return true;\n}\n\nexport function listUsers_crypto_wallet_core() {\n  return records.map((record) => ({ ...record }));\n}\n\nexport function renderUser_crypto_wallet_core(user) {\n  return user.name.toUpperCase();\n}\n"
+      "content": "import { validateUserSchema_crypto_wallet_core } from \"./user-schema.mjs\";\n\nconst records = [];\nexport function resetUsers_crypto_wallet_core() { records.length = 0; }\nexport function saveUser_crypto_wallet_core(input) {\n  if (!validateUserSchema_crypto_wallet_core(input)) return false;\n  records.push({ id: input.id.trim(), name: input.name.trim() });\n  return true;\n}\nexport function listUsers_crypto_wallet_core() { return records.map((record) => ({ ...record })); }\nexport function renderUser_crypto_wallet_core(user) { return user.name.toUpperCase(); }\nexport const repositoryIdentity76d47b7a = Object.freeze({\n  vb1732e9b: true, v05022492: true, v366ed480: true, v7ad0d474: true, v19794d7a: true, v8ebdf10b: true,\n  ve7a51caa: true, v8628a0d0: true, v493c3287: true, v53da11d0: true, vc7363881: true, v1814ed15: true,\n  v8b326144: true, v038f6528: true, vdd716dd5: true, v212b7473: true, vc9759b66: true,\n});\n"
     },
     {
       "path": "src/user-schema.mjs",
       "content": "export function validateUserSchema_crypto_wallet_core(user) {\n  return Boolean(\n    user &&\n    typeof user.id === \"string\" &&\n    user.id.trim().length > 0 &&\n    typeof user.name === \"string\" &&\n    user.name.trim().length > 0\n  );\n}\n"
     }
-  ],
-  "isGood": true
+  ]
 }

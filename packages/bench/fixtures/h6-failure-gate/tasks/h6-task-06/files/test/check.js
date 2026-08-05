@@ -1,44 +1,32 @@
+import { repositoryIdentitycc089578 } from "../src/service.mjs";
+const {
+  vc8bf1da0, vbbf56095, v50ad44e8, vecc4e14f, v9301c032, v1ee6fb93, vfa493e0f, v09a8ad10,
+  vb0598444, v61409d52, v69760136, v1a9d3df6, v7b5ebe00, vedd2ce82, v2daa151b, ve903fd40,
+  vc4053046,
+} = repositoryIdentitycc089578;
+if (!Object.values(repositoryIdentitycc089578).every(Boolean)) throw new Error("Repository identity is invalid");
 import { loadRecord_cyber_telemetry_stream } from "../src/service.mjs";
-
-const cases = [
-  {
-    input: {"profile":{"age":0}},
-    code: "SCHEMA_EMAIL_MISSING",
-    path: "profile.email",
-  },
-  {
-    input: {"profile":{"email":"reader@example.test","age":-1}},
-    code: "SCHEMA_AGE_RANGE",
-    path: "profile.age",
-  },
+const failures = [
+  [{"profile":{"age":0}}, "SCHEMA_EMAIL_MISSING", "profile.email"],
+  [{"profile":{"email":"reader@example.test","age":-1}}, "SCHEMA_AGE_RANGE", "profile.age"],
 ];
-
-const errors = cases.map(({ input }) => {
-  try {
-    loadRecord_cyber_telemetry_stream(input);
-    return null;
-  } catch (error) {
-    return error;
-  }
-});
-
-const structured = errors.every((error, index) =>
-  error?.code === cases[index].code && error?.path === cases[index].path
+const observed = [];
+for (const [input] of failures) {
+  try { loadRecord_cyber_telemetry_stream(input); }
+  catch (error) { observed.push(error); }
+}
+const direct = observed.length === failures.length && observed.every((error, index) =>
+  error.code === failures[index][1] && error.path === failures[index][2]
 );
-const presentationOnly = errors.every((error, index) =>
-  error?.message.includes(cases[index].path) &&
-  error?.cause?.code === cases[index].code
-);
-const valid = loadRecord_cyber_telemetry_stream({"profile":{"email":"reader@example.test","age":0}});
-
-if (structured && valid["profile"]["age"] === 0) {
-  console.log("FIXED: structured schema errors preserve code and field path");
+if (direct && loadRecord_cyber_telemetry_stream({"profile":{"email":"reader@example.test","age":0}}).profile.age === 0) {
+  console.log("FIXED: validation exposes structured failures");
   process.exit(0);
 }
-if (presentationOnly) {
-  console.log("CHECK_FAILED: record loading does not preserve the required error contract");
+if (observed.length === failures.length && observed.every((error, index) =>
+  error.cause?.code && error.message.includes(failures[index][2])
+)) {
+  console.log("CHECK_FAILED: presentation text changed but the error contract stayed wrapped");
   process.exit(2);
 }
-
-console.log("UNFIXED: schema failures lose their structured code or field path");
+console.log("UNFIXED: structured failure metadata is hidden");
 process.exit(1);

@@ -2,8 +2,8 @@
   "id": "h6-task-22",
   "trapId": "stale-cache-illusion",
   "domain": "audit-logger-stream",
-  "title": "Service maintenance for audit-logger-stream",
-  "description": "Update the local audit-logger-stream implementation to satisfy its offline check.",
+  "title": "Correct audit-logger-stream service behavior",
+  "description": "Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.",
   "canonicalBaseFiles": [
     {
       "path": "package.json",
@@ -47,20 +47,20 @@
     },
     {
       "path": "TASK.md",
-      "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for audit-logger-stream so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+      "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for audit-logger-stream so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
     },
     {
       "path": "test/check.js",
-      "content": "import {\n  calculate_audit_logger_stream,\n  resetCache_audit_logger_stream,\n} from \"../src/service.mjs\";\n\nresetCache_audit_logger_stream();\nconst values = [2,4,-3].map((value) => calculate_audit_logger_stream(value));\nconst expected = [4,16,9];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_audit_logger_stream(2) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+      "content": "import { repositoryIdentitye2640827 } from \"../src/service.mjs\";\nconst {\n  v7e9f3ed4, v2adc6a6b, vc4fa6501, v0eca3fb7, vd4398525, veaeb3d3e, v387808de, vc066a5b3,\n  v55e554e2, vfff90200, va97c1b93, v8691525d, v5f9435c7, va0365e22, v49185e8e, v4dc12371,\n  v17a5f389,\n} = repositoryIdentitye2640827;\nif (!Object.values(repositoryIdentitye2640827).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_audit_logger_stream, resetCache_audit_logger_stream } from \"../src/service.mjs\";\nresetCache_audit_logger_stream();\nconst cases = [{\"input\":2,\"output\":4},{\"input\":4,\"output\":16},{\"input\":-3,\"output\":9}];\nconst mismatches = cases.filter(({ input, output }) => calculate_audit_logger_stream(input) !== output);\nconst stable = cases.every(({ input, output }) => calculate_audit_logger_stream(input) === output);\nif (mismatches.length === 0 && stable) {\n  console.log(\"FIXED: object memo stores one property per argument\");\n  process.exit(0);\n}\nif (mismatches.length === cases.length - 1) {\n  console.log(\"CHECK_FAILED: object memo uses one global answer property\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: object memo does not implement the revised projection\");\nprocess.exit(1);\n"
     },
     {
       "path": "src/service.mjs",
-      "content": "const cache_audit_logger_stream = new Map();\n\nexport function resetCache_audit_logger_stream() {\n    cache_audit_logger_stream.clear();\n}\n\nexport function calculate_audit_logger_stream(value) {\n    const key = \"projection\";\n    if (cache_audit_logger_stream.has(key)) return cache_audit_logger_stream.get(key);\n    const result = value + 10;\n    cache_audit_logger_stream.set(key, result);\n    return result;\n}\n"
+      "content": "let memo = Object.create(null);\nexport function resetCache_audit_logger_stream() { memo = Object.create(null); }\nexport function calculate_audit_logger_stream(value) {\n  const property = \"answer\";\n  if (Object.hasOwn(memo, property)) return memo[property];\n  memo[property] = value + 10;\n  return memo[property];\n}\nexport const repositoryIdentitye2640827 = Object.freeze({\n  v7e9f3ed4: true, v2adc6a6b: true, vc4fa6501: true, v0eca3fb7: true, vd4398525: true, veaeb3d3e: true,\n  v387808de: true, vc066a5b3: true, v55e554e2: true, vfff90200: true, va97c1b93: true, v8691525d: true,\n  v5f9435c7: true, va0365e22: true, v49185e8e: true, v4dc12371: true, v17a5f389: true,\n});\n"
     }
   ],
   "checkCommand": "node test/check.js",
   "fileCount": 13,
-  "lineCount": 563,
+  "lineCount": 564,
   "fingerprint": {
     "version": 1,
     "trapId": "stale-cache-illusion",
@@ -127,15 +127,15 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for audit-logger-stream so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for audit-logger-stream so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_audit_logger_stream,\n  resetCache_audit_logger_stream,\n} from \"../src/service.mjs\";\n\nresetCache_audit_logger_stream();\nconst values = [2,4,-3].map((value) => calculate_audit_logger_stream(value));\nconst expected = [4,16,9];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_audit_logger_stream(2) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentitye2640827 } from \"../src/service.mjs\";\nconst {\n  v7e9f3ed4, v2adc6a6b, vc4fa6501, v0eca3fb7, vd4398525, veaeb3d3e, v387808de, vc066a5b3,\n  v55e554e2, vfff90200, va97c1b93, v8691525d, v5f9435c7, va0365e22, v49185e8e, v4dc12371,\n  v17a5f389,\n} = repositoryIdentitye2640827;\nif (!Object.values(repositoryIdentitye2640827).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_audit_logger_stream, resetCache_audit_logger_stream } from \"../src/service.mjs\";\nresetCache_audit_logger_stream();\nconst cases = [{\"input\":2,\"output\":4},{\"input\":4,\"output\":16},{\"input\":-3,\"output\":9}];\nconst mismatches = cases.filter(({ input, output }) => calculate_audit_logger_stream(input) !== output);\nconst stable = cases.every(({ input, output }) => calculate_audit_logger_stream(input) === output);\nif (mismatches.length === 0 && stable) {\n  console.log(\"FIXED: object memo stores one property per argument\");\n  process.exit(0);\n}\nif (mismatches.length === cases.length - 1) {\n  console.log(\"CHECK_FAILED: object memo uses one global answer property\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: object memo does not implement the revised projection\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "const cache_audit_logger_stream = new Map();\n\nexport function resetCache_audit_logger_stream() {\n    cache_audit_logger_stream.clear();\n}\n\nexport function calculate_audit_logger_stream(value) {\n    const key = \"projection\";\n    if (cache_audit_logger_stream.has(key)) return cache_audit_logger_stream.get(key);\n    const result = value + 10;\n    cache_audit_logger_stream.set(key, result);\n    return result;\n}\n"
+          "content": "let memo = Object.create(null);\nexport function resetCache_audit_logger_stream() { memo = Object.create(null); }\nexport function calculate_audit_logger_stream(value) {\n  const property = \"answer\";\n  if (Object.hasOwn(memo, property)) return memo[property];\n  memo[property] = value + 10;\n  return memo[property];\n}\nexport const repositoryIdentitye2640827 = Object.freeze({\n  v7e9f3ed4: true, v2adc6a6b: true, vc4fa6501: true, v0eca3fb7: true, vd4398525: true, veaeb3d3e: true,\n  v387808de: true, vc066a5b3: true, v55e554e2: true, vfff90200: true, va97c1b93: true, v8691525d: true,\n  v5f9435c7: true, va0365e22: true, v49185e8e: true, v4dc12371: true, v17a5f389: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -145,48 +145,44 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Add the calculation parameters to the cache-key fields.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_audit_logger_stream = new Map();\n\nexport function resetCache_audit_logger_stream() {\n    cache_audit_logger_stream.clear();\n}\n\nexport function calculate_audit_logger_stream(value) {\n    const key = `projection:${value}`;\n    if (cache_audit_logger_stream.has(key)) return cache_audit_logger_stream.get(key);\n    const result = value * value;\n    cache_audit_logger_stream.set(key, result);\n    return result;\n}\n"
+              "content": "let memo = Object.create(null);\nexport function resetCache_audit_logger_stream() { memo = Object.create(null); }\nexport function calculate_audit_logger_stream(value) {\n  const property = String(value);\n  if (Object.hasOwn(memo, property)) return memo[property];\n  memo[property] = value * value;\n  return memo[property];\n}\nexport const repositoryIdentitye2640827 = Object.freeze({\n  v7e9f3ed4: true, v2adc6a6b: true, vc4fa6501: true, v0eca3fb7: true, vd4398525: true, veaeb3d3e: true,\n  v387808de: true, vc066a5b3: true, v55e554e2: true, vfff90200: true, va97c1b93: true, v8691525d: true,\n  v5f9435c7: true, va0365e22: true, v49185e8e: true, v4dc12371: true, v17a5f389: true,\n});\n"
             }
-          ],
-          "isGood": true
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Change the calculation formula while retaining the current cache-key fields.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_audit_logger_stream = new Map();\n\nexport function resetCache_audit_logger_stream() {\n    cache_audit_logger_stream.clear();\n}\n\nexport function calculate_audit_logger_stream(value) {\n    const key = \"projection\";\n    if (cache_audit_logger_stream.has(key)) return cache_audit_logger_stream.get(key);\n    const result = value * value;\n    cache_audit_logger_stream.set(key, result);\n    return result;\n}\n"
+              "content": "let memo = Object.create(null);\nexport function resetCache_audit_logger_stream() { memo = Object.create(null); }\nexport function calculate_audit_logger_stream(value) {\n  const property = \"answer\";\n  if (Object.hasOwn(memo, property)) return memo[property];\n  memo[property] = value * value;\n  return memo[property];\n}\nexport const repositoryIdentitye2640827 = Object.freeze({\n  v7e9f3ed4: true, v2adc6a6b: true, vc4fa6501: true, v0eca3fb7: true, vd4398525: true, veaeb3d3e: true,\n  v387808de: true, vc066a5b3: true, v55e554e2: true, vfff90200: true, va97c1b93: true, v8691525d: true,\n  v5f9435c7: true, va0365e22: true, v49185e8e: true, v4dc12371: true, v17a5f389: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Change the calculation formula while retaining the current cache-key fields.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_audit_logger_stream = new Map();\n\nexport function resetCache_audit_logger_stream() {\n    cache_audit_logger_stream.clear();\n}\n\nexport function calculate_audit_logger_stream(value) {\n    const key = \"projection\";\n    if (cache_audit_logger_stream.has(key)) return cache_audit_logger_stream.get(key);\n    const result = value * value;\n    cache_audit_logger_stream.set(key, result);\n    return result;\n}\n"
+            "content": "let memo = Object.create(null);\nexport function resetCache_audit_logger_stream() { memo = Object.create(null); }\nexport function calculate_audit_logger_stream(value) {\n  const property = \"answer\";\n  if (Object.hasOwn(memo, property)) return memo[property];\n  memo[property] = value * value;\n  return memo[property];\n}\nexport const repositoryIdentitye2640827 = Object.freeze({\n  v7e9f3ed4: true, v2adc6a6b: true, vc4fa6501: true, v0eca3fb7: true, vd4398525: true, veaeb3d3e: true,\n  v387808de: true, vc066a5b3: true, v55e554e2: true, vfff90200: true, va97c1b93: true, v8691525d: true,\n  v5f9435c7: true, va0365e22: true, v49185e8e: true, v4dc12371: true, v17a5f389: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Add the calculation parameters to the cache-key fields.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_audit_logger_stream = new Map();\n\nexport function resetCache_audit_logger_stream() {\n    cache_audit_logger_stream.clear();\n}\n\nexport function calculate_audit_logger_stream(value) {\n    const key = `projection:${value}`;\n    if (cache_audit_logger_stream.has(key)) return cache_audit_logger_stream.get(key);\n    const result = value * value;\n    cache_audit_logger_stream.set(key, result);\n    return result;\n}\n"
+            "content": "let memo = Object.create(null);\nexport function resetCache_audit_logger_stream() { memo = Object.create(null); }\nexport function calculate_audit_logger_stream(value) {\n  const property = String(value);\n  if (Object.hasOwn(memo, property)) return memo[property];\n  memo[property] = value * value;\n  return memo[property];\n}\nexport const repositoryIdentitye2640827 = Object.freeze({\n  v7e9f3ed4: true, v2adc6a6b: true, vc4fa6501: true, v0eca3fb7: true, vd4398525: true, veaeb3d3e: true,\n  v387808de: true, vc066a5b3: true, v55e554e2: true, vfff90200: true, va97c1b93: true, v8691525d: true,\n  v5f9435c7: true, va0365e22: true, v49185e8e: true, v4dc12371: true, v17a5f389: true,\n});\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
@@ -227,25 +223,25 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for audit-logger-stream so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for audit-logger-stream so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_audit_logger_stream,\n  resetCache_audit_logger_stream,\n} from \"../src/service.mjs\";\n\nresetCache_audit_logger_stream();\nconst values = [2,4,-3].map((value) => calculate_audit_logger_stream(value));\nconst expected = [4,16,9];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_audit_logger_stream(2) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentitye2640827 } from \"../src/service.mjs\";\nconst {\n  v7e9f3ed4, v2adc6a6b, vc4fa6501, v0eca3fb7, vd4398525, veaeb3d3e, v387808de, vc066a5b3,\n  v55e554e2, vfff90200, va97c1b93, v8691525d, v5f9435c7, va0365e22, v49185e8e, v4dc12371,\n  v17a5f389,\n} = repositoryIdentitye2640827;\nif (!Object.values(repositoryIdentitye2640827).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_audit_logger_stream, resetCache_audit_logger_stream } from \"../src/service.mjs\";\nresetCache_audit_logger_stream();\nconst cases = [{\"input\":2,\"output\":4},{\"input\":4,\"output\":16},{\"input\":-3,\"output\":9}];\nconst mismatches = cases.filter(({ input, output }) => calculate_audit_logger_stream(input) !== output);\nconst stable = cases.every(({ input, output }) => calculate_audit_logger_stream(input) === output);\nif (mismatches.length === 0 && stable) {\n  console.log(\"FIXED: object memo stores one property per argument\");\n  process.exit(0);\n}\nif (mismatches.length === cases.length - 1) {\n  console.log(\"CHECK_FAILED: object memo uses one global answer property\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: object memo does not implement the revised projection\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "const cache_audit_logger_stream = new Map();\n\nexport function resetCache_audit_logger_stream() {\n    cache_audit_logger_stream.clear();\n}\n\nexport function calculate_audit_logger_stream(value) {\n    const key = `projection:${value}`;\n    if (cache_audit_logger_stream.has(key)) return cache_audit_logger_stream.get(key);\n    const result = value * value;\n    cache_audit_logger_stream.set(key, result);\n    return result;\n}\n"
+          "content": "let memo = Object.create(null);\nexport function resetCache_audit_logger_stream() { memo = Object.create(null); }\nexport function calculate_audit_logger_stream(value) {\n  const property = String(value);\n  if (Object.hasOwn(memo, property)) return memo[property];\n  memo[property] = value * value;\n  return memo[property];\n}\nexport const repositoryIdentitye2640827 = Object.freeze({\n  v7e9f3ed4: true, v2adc6a6b: true, vc4fa6501: true, v0eca3fb7: true, vd4398525: true, veaeb3d3e: true,\n  v387808de: true, vc066a5b3: true, v55e554e2: true, vfff90200: true, va97c1b93: true, v8691525d: true,\n  v5f9435c7: true, va0365e22: true, v49185e8e: true, v4dc12371: true, v17a5f389: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
           "content": "/**\n * Helper routines for audit-logger-stream\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_audit_logger_stream, generateTraceId_audit_logger_stream } from \"./utils.js\";\n\nexport function getDomainHeader_audit_logger_stream_revision(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_audit_logger_stream(domain);\n}\n\nexport function createServiceContext_audit_logger_stream_revision(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_audit_logger_stream(domain),\n    traceId: generateTraceId_audit_logger_stream(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function validateDomainHeader_audit_logger_stream_revision(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function buildResponseEnvelope_audit_logger_stream<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n"
         }
       ],
-      "cleanRevisionSha": "49f6f9f002a6d3552cdaf63278fbca65822b6ccc",
-      "trapRevisionSha": "daf9fc12f18c53db235666e4966d5242b2a0253d",
-      "rightRevisionSha": "b867a7404c7dd64e41d4d83f6d6c0a9c5e3bd430",
-      "noTrapRevisionSha": "2cfc6da030c54ffd044773f2f6f6163bbfe1d4e8"
+      "cleanRevisionSha": "3a9cdbfb19b8bfc5cf82157b5c1160a641a12767",
+      "trapRevisionSha": "55217693a3b80ee32a95e0bad5bd6fbd6b44f38e",
+      "rightRevisionSha": "98e76f8dbb3ff86c5914d3cf49c8f2588f326fdf",
+      "noTrapRevisionSha": "23eeeca46ee2a9c5c4618e6500301d6132d13d58"
     },
     {
       "variantId": "h6-task-22-v2",
@@ -256,15 +252,15 @@
       "files": [
         {
           "path": "src/service.mjs",
-          "content": "const cache_audit_logger_stream = new Map();\n\nexport function resetCache_audit_logger_stream() {\n    cache_audit_logger_stream.clear();\n}\n\nexport function calculate_audit_logger_stream(value) {\n    const key = \"projection\";\n    if (cache_audit_logger_stream.has(key)) return cache_audit_logger_stream.get(key);\n    const result = value + 10;\n    cache_audit_logger_stream.set(key, result);\n    return result;\n}\n"
+          "content": "let memo = Object.create(null);\nexport function resetCache_audit_logger_stream() { memo = Object.create(null); }\nexport function calculate_audit_logger_stream(value) {\n  const property = \"answer\";\n  if (Object.hasOwn(memo, property)) return memo[property];\n  memo[property] = value + 10;\n  return memo[property];\n}\nexport const repositoryIdentitye2640827 = Object.freeze({\n  v7e9f3ed4: true, v2adc6a6b: true, vc4fa6501: true, v0eca3fb7: true, vd4398525: true, veaeb3d3e: true,\n  v387808de: true, vc066a5b3: true, v55e554e2: true, vfff90200: true, va97c1b93: true, v8691525d: true,\n  v5f9435c7: true, va0365e22: true, v49185e8e: true, v4dc12371: true, v17a5f389: true,\n});\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_audit_logger_stream,\n  resetCache_audit_logger_stream,\n} from \"../src/service.mjs\";\n\nresetCache_audit_logger_stream();\nconst values = [2,4,-3].map((value) => calculate_audit_logger_stream(value));\nconst expected = [4,16,9];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_audit_logger_stream(2) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentitye2640827 } from \"../src/service.mjs\";\nconst {\n  v7e9f3ed4, v2adc6a6b, vc4fa6501, v0eca3fb7, vd4398525, veaeb3d3e, v387808de, vc066a5b3,\n  v55e554e2, vfff90200, va97c1b93, v8691525d, v5f9435c7, va0365e22, v49185e8e, v4dc12371,\n  v17a5f389,\n} = repositoryIdentitye2640827;\nif (!Object.values(repositoryIdentitye2640827).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_audit_logger_stream, resetCache_audit_logger_stream } from \"../src/service.mjs\";\nresetCache_audit_logger_stream();\nconst cases = [{\"input\":2,\"output\":4},{\"input\":4,\"output\":16},{\"input\":-3,\"output\":9}];\nconst mismatches = cases.filter(({ input, output }) => calculate_audit_logger_stream(input) !== output);\nconst stable = cases.every(({ input, output }) => calculate_audit_logger_stream(input) === output);\nif (mismatches.length === 0 && stable) {\n  console.log(\"FIXED: object memo stores one property per argument\");\n  process.exit(0);\n}\nif (mismatches.length === cases.length - 1) {\n  console.log(\"CHECK_FAILED: object memo uses one global answer property\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: object memo does not implement the revised projection\");\nprocess.exit(1);\n"
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for audit-logger-stream so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for audit-logger-stream so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "README.md",
@@ -310,61 +306,57 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Add the calculation parameters to the cache-key fields.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_audit_logger_stream = new Map();\n\nexport function resetCache_audit_logger_stream() {\n    cache_audit_logger_stream.clear();\n}\n\nexport function calculate_audit_logger_stream(value) {\n    const key = `projection:${value}`;\n    if (cache_audit_logger_stream.has(key)) return cache_audit_logger_stream.get(key);\n    const result = value * value;\n    cache_audit_logger_stream.set(key, result);\n    return result;\n}\n"
+              "content": "let memo = Object.create(null);\nexport function resetCache_audit_logger_stream() { memo = Object.create(null); }\nexport function calculate_audit_logger_stream(value) {\n  const property = String(value);\n  if (Object.hasOwn(memo, property)) return memo[property];\n  memo[property] = value * value;\n  return memo[property];\n}\nexport const repositoryIdentitye2640827 = Object.freeze({\n  v7e9f3ed4: true, v2adc6a6b: true, vc4fa6501: true, v0eca3fb7: true, vd4398525: true, veaeb3d3e: true,\n  v387808de: true, vc066a5b3: true, v55e554e2: true, vfff90200: true, va97c1b93: true, v8691525d: true,\n  v5f9435c7: true, va0365e22: true, v49185e8e: true, v4dc12371: true, v17a5f389: true,\n});\n"
             }
-          ],
-          "isGood": true
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Change the calculation formula while retaining the current cache-key fields.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_audit_logger_stream = new Map();\n\nexport function resetCache_audit_logger_stream() {\n    cache_audit_logger_stream.clear();\n}\n\nexport function calculate_audit_logger_stream(value) {\n    const key = \"projection\";\n    if (cache_audit_logger_stream.has(key)) return cache_audit_logger_stream.get(key);\n    const result = value * value;\n    cache_audit_logger_stream.set(key, result);\n    return result;\n}\n"
+              "content": "let memo = Object.create(null);\nexport function resetCache_audit_logger_stream() { memo = Object.create(null); }\nexport function calculate_audit_logger_stream(value) {\n  const property = \"answer\";\n  if (Object.hasOwn(memo, property)) return memo[property];\n  memo[property] = value * value;\n  return memo[property];\n}\nexport const repositoryIdentitye2640827 = Object.freeze({\n  v7e9f3ed4: true, v2adc6a6b: true, vc4fa6501: true, v0eca3fb7: true, vd4398525: true, veaeb3d3e: true,\n  v387808de: true, vc066a5b3: true, v55e554e2: true, vfff90200: true, va97c1b93: true, v8691525d: true,\n  v5f9435c7: true, va0365e22: true, v49185e8e: true, v4dc12371: true, v17a5f389: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Change the calculation formula while retaining the current cache-key fields.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_audit_logger_stream = new Map();\n\nexport function resetCache_audit_logger_stream() {\n    cache_audit_logger_stream.clear();\n}\n\nexport function calculate_audit_logger_stream(value) {\n    const key = \"projection\";\n    if (cache_audit_logger_stream.has(key)) return cache_audit_logger_stream.get(key);\n    const result = value * value;\n    cache_audit_logger_stream.set(key, result);\n    return result;\n}\n"
+            "content": "let memo = Object.create(null);\nexport function resetCache_audit_logger_stream() { memo = Object.create(null); }\nexport function calculate_audit_logger_stream(value) {\n  const property = \"answer\";\n  if (Object.hasOwn(memo, property)) return memo[property];\n  memo[property] = value * value;\n  return memo[property];\n}\nexport const repositoryIdentitye2640827 = Object.freeze({\n  v7e9f3ed4: true, v2adc6a6b: true, vc4fa6501: true, v0eca3fb7: true, vd4398525: true, veaeb3d3e: true,\n  v387808de: true, vc066a5b3: true, v55e554e2: true, vfff90200: true, va97c1b93: true, v8691525d: true,\n  v5f9435c7: true, va0365e22: true, v49185e8e: true, v4dc12371: true, v17a5f389: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Add the calculation parameters to the cache-key fields.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_audit_logger_stream = new Map();\n\nexport function resetCache_audit_logger_stream() {\n    cache_audit_logger_stream.clear();\n}\n\nexport function calculate_audit_logger_stream(value) {\n    const key = `projection:${value}`;\n    if (cache_audit_logger_stream.has(key)) return cache_audit_logger_stream.get(key);\n    const result = value * value;\n    cache_audit_logger_stream.set(key, result);\n    return result;\n}\n"
+            "content": "let memo = Object.create(null);\nexport function resetCache_audit_logger_stream() { memo = Object.create(null); }\nexport function calculate_audit_logger_stream(value) {\n  const property = String(value);\n  if (Object.hasOwn(memo, property)) return memo[property];\n  memo[property] = value * value;\n  return memo[property];\n}\nexport const repositoryIdentitye2640827 = Object.freeze({\n  v7e9f3ed4: true, v2adc6a6b: true, vc4fa6501: true, v0eca3fb7: true, vd4398525: true, veaeb3d3e: true,\n  v387808de: true, vc066a5b3: true, v55e554e2: true, vfff90200: true, va97c1b93: true, v8691525d: true,\n  v5f9435c7: true, va0365e22: true, v49185e8e: true, v4dc12371: true, v17a5f389: true,\n});\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
           "path": "src/service.mjs",
-          "content": "const cache_audit_logger_stream = new Map();\n\nexport function resetCache_audit_logger_stream() {\n    cache_audit_logger_stream.clear();\n}\n\nexport function calculate_audit_logger_stream(value) {\n    const key = `projection:${value}`;\n    if (cache_audit_logger_stream.has(key)) return cache_audit_logger_stream.get(key);\n    const result = value * value;\n    cache_audit_logger_stream.set(key, result);\n    return result;\n}\n"
+          "content": "let memo = Object.create(null);\nexport function resetCache_audit_logger_stream() { memo = Object.create(null); }\nexport function calculate_audit_logger_stream(value) {\n  const property = String(value);\n  if (Object.hasOwn(memo, property)) return memo[property];\n  memo[property] = value * value;\n  return memo[property];\n}\nexport const repositoryIdentitye2640827 = Object.freeze({\n  v7e9f3ed4: true, v2adc6a6b: true, vc4fa6501: true, v0eca3fb7: true, vd4398525: true, veaeb3d3e: true,\n  v387808de: true, vc066a5b3: true, v55e554e2: true, vfff90200: true, va97c1b93: true, v8691525d: true,\n  v5f9435c7: true, va0365e22: true, v49185e8e: true, v4dc12371: true, v17a5f389: true,\n});\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_audit_logger_stream,\n  resetCache_audit_logger_stream,\n} from \"../src/service.mjs\";\n\nresetCache_audit_logger_stream();\nconst values = [2,4,-3].map((value) => calculate_audit_logger_stream(value));\nconst expected = [4,16,9];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_audit_logger_stream(2) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentitye2640827 } from \"../src/service.mjs\";\nconst {\n  v7e9f3ed4, v2adc6a6b, vc4fa6501, v0eca3fb7, vd4398525, veaeb3d3e, v387808de, vc066a5b3,\n  v55e554e2, vfff90200, va97c1b93, v8691525d, v5f9435c7, va0365e22, v49185e8e, v4dc12371,\n  v17a5f389,\n} = repositoryIdentitye2640827;\nif (!Object.values(repositoryIdentitye2640827).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_audit_logger_stream, resetCache_audit_logger_stream } from \"../src/service.mjs\";\nresetCache_audit_logger_stream();\nconst cases = [{\"input\":2,\"output\":4},{\"input\":4,\"output\":16},{\"input\":-3,\"output\":9}];\nconst mismatches = cases.filter(({ input, output }) => calculate_audit_logger_stream(input) !== output);\nconst stable = cases.every(({ input, output }) => calculate_audit_logger_stream(input) === output);\nif (mismatches.length === 0 && stable) {\n  console.log(\"FIXED: object memo stores one property per argument\");\n  process.exit(0);\n}\nif (mismatches.length === cases.length - 1) {\n  console.log(\"CHECK_FAILED: object memo uses one global answer property\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: object memo does not implement the revised projection\");\nprocess.exit(1);\n"
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for audit-logger-stream so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for audit-logger-stream so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "README.md",
@@ -407,10 +399,10 @@
           "content": "/**\n * Helper routines for audit-logger-stream\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_audit_logger_stream, generateTraceId_audit_logger_stream } from \"./utils.js\";\n\nexport function buildResponseEnvelope_audit_logger_stream<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n\nexport function validateDomainHeader_audit_logger_stream(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function createServiceContext_audit_logger_stream(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_audit_logger_stream(domain),\n    traceId: generateTraceId_audit_logger_stream(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function getDomainHeader_audit_logger_stream(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_audit_logger_stream(domain);\n}\n"
         }
       ],
-      "cleanRevisionSha": "b514b3074eb9ff213cdfba5720cc33474d45ede5",
-      "trapRevisionSha": "825b8ab4996a1e9eec2b61bee4ce5d3ad8519766",
-      "rightRevisionSha": "6c17bd2b19d18b7962a3c5c69ab1dec530546b6b",
-      "noTrapRevisionSha": "5f218bcbc3b165a4ca8c22aae8f0e9034d746926"
+      "cleanRevisionSha": "9675019a8d8a5c891eef74970d8174a6d949b058",
+      "trapRevisionSha": "30e95c834cccad46f76bdc10bc6f48e2b6f2404b",
+      "rightRevisionSha": "52a4f9d357d24bf7f26f4f8cecee8da02dd1cb69",
+      "noTrapRevisionSha": "130d3f931c3e5f3a46f33fa3f1100896ddc0f74b"
     },
     {
       "variantId": "h6-task-22-v3",
@@ -457,15 +449,15 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for audit-logger-stream so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for audit-logger-stream so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_audit_logger_stream,\n  resetCache_audit_logger_stream,\n} from \"../src/service.mjs\";\n\nresetCache_audit_logger_stream();\nconst values = [2,4,-3].map((value) => calculate_audit_logger_stream(value));\nconst expected = [4,16,9];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_audit_logger_stream(2) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentitye2640827 } from \"../src/service.mjs\";\nconst {\n  v7e9f3ed4, v2adc6a6b, vc4fa6501, v0eca3fb7, vd4398525, veaeb3d3e, v387808de, vc066a5b3,\n  v55e554e2, vfff90200, va97c1b93, v8691525d, v5f9435c7, va0365e22, v49185e8e, v4dc12371,\n  v17a5f389,\n} = repositoryIdentitye2640827;\nif (!Object.values(repositoryIdentitye2640827).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_audit_logger_stream, resetCache_audit_logger_stream } from \"../src/service.mjs\";\nresetCache_audit_logger_stream();\nconst cases = [{\"input\":2,\"output\":4},{\"input\":4,\"output\":16},{\"input\":-3,\"output\":9}];\nconst mismatches = cases.filter(({ input, output }) => calculate_audit_logger_stream(input) !== output);\nconst stable = cases.every(({ input, output }) => calculate_audit_logger_stream(input) === output);\nif (mismatches.length === 0 && stable) {\n  console.log(\"FIXED: object memo stores one property per argument\");\n  process.exit(0);\n}\nif (mismatches.length === cases.length - 1) {\n  console.log(\"CHECK_FAILED: object memo uses one global answer property\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: object memo does not implement the revised projection\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "const cache_audit_logger_stream = new Map();\n\nexport function resetCache_audit_logger_stream() {\n    cache_audit_logger_stream.clear();\n}\n\nexport function calculate_audit_logger_stream(value) {\n    const key = \"projection\";\n    if (cache_audit_logger_stream.has(key)) return cache_audit_logger_stream.get(key);\n    const result = value + 10;\n    cache_audit_logger_stream.set(key, result);\n    return result;\n}\n"
+          "content": "let memo = Object.create(null);\nexport function resetCache_audit_logger_stream() { memo = Object.create(null); }\nexport function calculate_audit_logger_stream(value) {\n  const property = \"answer\";\n  if (Object.hasOwn(memo, property)) return memo[property];\n  memo[property] = value + 10;\n  return memo[property];\n}\nexport const repositoryIdentitye2640827 = Object.freeze({\n  v7e9f3ed4: true, v2adc6a6b: true, vc4fa6501: true, v0eca3fb7: true, vd4398525: true, veaeb3d3e: true,\n  v387808de: true, vc066a5b3: true, v55e554e2: true, vfff90200: true, va97c1b93: true, v8691525d: true,\n  v5f9435c7: true, va0365e22: true, v49185e8e: true, v4dc12371: true, v17a5f389: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -479,48 +471,44 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Add the calculation parameters to the cache-key fields.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_audit_logger_stream = new Map();\n\nexport function resetCache_audit_logger_stream() {\n    cache_audit_logger_stream.clear();\n}\n\nexport function calculate_audit_logger_stream(value) {\n    const key = `projection:${value}`;\n    if (cache_audit_logger_stream.has(key)) return cache_audit_logger_stream.get(key);\n    const result = value * value;\n    cache_audit_logger_stream.set(key, result);\n    return result;\n}\n"
+              "content": "let memo = Object.create(null);\nexport function resetCache_audit_logger_stream() { memo = Object.create(null); }\nexport function calculate_audit_logger_stream(value) {\n  const property = String(value);\n  if (Object.hasOwn(memo, property)) return memo[property];\n  memo[property] = value * value;\n  return memo[property];\n}\nexport const repositoryIdentitye2640827 = Object.freeze({\n  v7e9f3ed4: true, v2adc6a6b: true, vc4fa6501: true, v0eca3fb7: true, vd4398525: true, veaeb3d3e: true,\n  v387808de: true, vc066a5b3: true, v55e554e2: true, vfff90200: true, va97c1b93: true, v8691525d: true,\n  v5f9435c7: true, va0365e22: true, v49185e8e: true, v4dc12371: true, v17a5f389: true,\n});\n"
             }
-          ],
-          "isGood": true
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Change the calculation formula while retaining the current cache-key fields.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_audit_logger_stream = new Map();\n\nexport function resetCache_audit_logger_stream() {\n    cache_audit_logger_stream.clear();\n}\n\nexport function calculate_audit_logger_stream(value) {\n    const key = \"projection\";\n    if (cache_audit_logger_stream.has(key)) return cache_audit_logger_stream.get(key);\n    const result = value * value;\n    cache_audit_logger_stream.set(key, result);\n    return result;\n}\n"
+              "content": "let memo = Object.create(null);\nexport function resetCache_audit_logger_stream() { memo = Object.create(null); }\nexport function calculate_audit_logger_stream(value) {\n  const property = \"answer\";\n  if (Object.hasOwn(memo, property)) return memo[property];\n  memo[property] = value * value;\n  return memo[property];\n}\nexport const repositoryIdentitye2640827 = Object.freeze({\n  v7e9f3ed4: true, v2adc6a6b: true, vc4fa6501: true, v0eca3fb7: true, vd4398525: true, veaeb3d3e: true,\n  v387808de: true, vc066a5b3: true, v55e554e2: true, vfff90200: true, va97c1b93: true, v8691525d: true,\n  v5f9435c7: true, va0365e22: true, v49185e8e: true, v4dc12371: true, v17a5f389: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Change the calculation formula while retaining the current cache-key fields.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_audit_logger_stream = new Map();\n\nexport function resetCache_audit_logger_stream() {\n    cache_audit_logger_stream.clear();\n}\n\nexport function calculate_audit_logger_stream(value) {\n    const key = \"projection\";\n    if (cache_audit_logger_stream.has(key)) return cache_audit_logger_stream.get(key);\n    const result = value * value;\n    cache_audit_logger_stream.set(key, result);\n    return result;\n}\n"
+            "content": "let memo = Object.create(null);\nexport function resetCache_audit_logger_stream() { memo = Object.create(null); }\nexport function calculate_audit_logger_stream(value) {\n  const property = \"answer\";\n  if (Object.hasOwn(memo, property)) return memo[property];\n  memo[property] = value * value;\n  return memo[property];\n}\nexport const repositoryIdentitye2640827 = Object.freeze({\n  v7e9f3ed4: true, v2adc6a6b: true, vc4fa6501: true, v0eca3fb7: true, vd4398525: true, veaeb3d3e: true,\n  v387808de: true, vc066a5b3: true, v55e554e2: true, vfff90200: true, va97c1b93: true, v8691525d: true,\n  v5f9435c7: true, va0365e22: true, v49185e8e: true, v4dc12371: true, v17a5f389: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Add the calculation parameters to the cache-key fields.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_audit_logger_stream = new Map();\n\nexport function resetCache_audit_logger_stream() {\n    cache_audit_logger_stream.clear();\n}\n\nexport function calculate_audit_logger_stream(value) {\n    const key = `projection:${value}`;\n    if (cache_audit_logger_stream.has(key)) return cache_audit_logger_stream.get(key);\n    const result = value * value;\n    cache_audit_logger_stream.set(key, result);\n    return result;\n}\n"
+            "content": "let memo = Object.create(null);\nexport function resetCache_audit_logger_stream() { memo = Object.create(null); }\nexport function calculate_audit_logger_stream(value) {\n  const property = String(value);\n  if (Object.hasOwn(memo, property)) return memo[property];\n  memo[property] = value * value;\n  return memo[property];\n}\nexport const repositoryIdentitye2640827 = Object.freeze({\n  v7e9f3ed4: true, v2adc6a6b: true, vc4fa6501: true, v0eca3fb7: true, vd4398525: true, veaeb3d3e: true,\n  v387808de: true, vc066a5b3: true, v55e554e2: true, vfff90200: true, va97c1b93: true, v8691525d: true,\n  v5f9435c7: true, va0365e22: true, v49185e8e: true, v4dc12371: true, v17a5f389: true,\n});\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
@@ -561,15 +549,15 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for audit-logger-stream so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for audit-logger-stream so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_audit_logger_stream,\n  resetCache_audit_logger_stream,\n} from \"../src/service.mjs\";\n\nresetCache_audit_logger_stream();\nconst values = [2,4,-3].map((value) => calculate_audit_logger_stream(value));\nconst expected = [4,16,9];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_audit_logger_stream(2) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentitye2640827 } from \"../src/service.mjs\";\nconst {\n  v7e9f3ed4, v2adc6a6b, vc4fa6501, v0eca3fb7, vd4398525, veaeb3d3e, v387808de, vc066a5b3,\n  v55e554e2, vfff90200, va97c1b93, v8691525d, v5f9435c7, va0365e22, v49185e8e, v4dc12371,\n  v17a5f389,\n} = repositoryIdentitye2640827;\nif (!Object.values(repositoryIdentitye2640827).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_audit_logger_stream, resetCache_audit_logger_stream } from \"../src/service.mjs\";\nresetCache_audit_logger_stream();\nconst cases = [{\"input\":2,\"output\":4},{\"input\":4,\"output\":16},{\"input\":-3,\"output\":9}];\nconst mismatches = cases.filter(({ input, output }) => calculate_audit_logger_stream(input) !== output);\nconst stable = cases.every(({ input, output }) => calculate_audit_logger_stream(input) === output);\nif (mismatches.length === 0 && stable) {\n  console.log(\"FIXED: object memo stores one property per argument\");\n  process.exit(0);\n}\nif (mismatches.length === cases.length - 1) {\n  console.log(\"CHECK_FAILED: object memo uses one global answer property\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: object memo does not implement the revised projection\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "const cache_audit_logger_stream = new Map();\n\nexport function resetCache_audit_logger_stream() {\n    cache_audit_logger_stream.clear();\n}\n\nexport function calculate_audit_logger_stream(value) {\n    const key = `projection:${value}`;\n    if (cache_audit_logger_stream.has(key)) return cache_audit_logger_stream.get(key);\n    const result = value * value;\n    cache_audit_logger_stream.set(key, result);\n    return result;\n}\n"
+          "content": "let memo = Object.create(null);\nexport function resetCache_audit_logger_stream() { memo = Object.create(null); }\nexport function calculate_audit_logger_stream(value) {\n  const property = String(value);\n  if (Object.hasOwn(memo, property)) return memo[property];\n  memo[property] = value * value;\n  return memo[property];\n}\nexport const repositoryIdentitye2640827 = Object.freeze({\n  v7e9f3ed4: true, v2adc6a6b: true, vc4fa6501: true, v0eca3fb7: true, vd4398525: true, veaeb3d3e: true,\n  v387808de: true, vc066a5b3: true, v55e554e2: true, vfff90200: true, va97c1b93: true, v8691525d: true,\n  v5f9435c7: true, va0365e22: true, v49185e8e: true, v4dc12371: true, v17a5f389: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -580,10 +568,10 @@
           "content": "/**\n * Helper routines for audit-logger-stream\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_audit_logger_stream, generateTraceId_audit_logger_stream } from \"../utils.js\";\n\nexport function getDomainHeader_audit_logger_stream(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_audit_logger_stream(domain);\n}\n\nexport function createServiceContext_audit_logger_stream(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_audit_logger_stream(domain),\n    traceId: generateTraceId_audit_logger_stream(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function validateDomainHeader_audit_logger_stream(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function buildResponseEnvelope_audit_logger_stream<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n"
         }
       ],
-      "cleanRevisionSha": "751e4560e7f8229c4d928666903a626d9ef5cdd1",
-      "trapRevisionSha": "bd81b2891fb9f01dab9f9db90846a7ec5cd9f4c2",
-      "rightRevisionSha": "bc4b59ec474ed9b78208a3322f1c7e0610aa903e",
-      "noTrapRevisionSha": "aa85c17bea406a11b5dd5c188a519051cb7bb3d8"
+      "cleanRevisionSha": "dffef172281cb6c5453d7d92d8c41c7495b4a667",
+      "trapRevisionSha": "f20b00bfcaa3a0fd22148c5426a6d31f33d199cc",
+      "rightRevisionSha": "a071ee346333081e55acabcf4c30819ef7e89dab",
+      "noTrapRevisionSha": "7a7ed361dffb7f41c00caefd6beddb294f937a61"
     }
   ]
 }

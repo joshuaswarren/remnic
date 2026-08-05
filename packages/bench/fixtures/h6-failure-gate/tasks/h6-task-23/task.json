@@ -2,8 +2,8 @@
   "id": "h6-task-23",
   "trapId": "stale-cache-illusion",
   "domain": "dns-resolver-cache",
-  "title": "Service maintenance for dns-resolver-cache",
-  "description": "Update the local dns-resolver-cache implementation to satisfy its offline check.",
+  "title": "Correct dns-resolver-cache service behavior",
+  "description": "Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.",
   "canonicalBaseFiles": [
     {
       "path": "package.json",
@@ -47,20 +47,20 @@
     },
     {
       "path": "TASK.md",
-      "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for dns-resolver-cache so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+      "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for dns-resolver-cache so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
     },
     {
       "path": "test/check.js",
-      "content": "import {\n  calculate_dns_resolver_cache,\n  resetCache_dns_resolver_cache,\n} from \"../src/service.mjs\";\n\nresetCache_dns_resolver_cache();\nconst values = [-2,0,6].map((value) => calculate_dns_resolver_cache(value));\nconst expected = [7,5,11];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_dns_resolver_cache(-2) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+      "content": "import { repositoryIdentity2d6d5dd4 } from \"../src/service.mjs\";\nconst {\n  vd1feefe4, vec065fed, v6e0a0708, vded63892, v75bdf583, v7aefe345, v5f502c1c, vaa024e27,\n  v55c5f27a, ve51149f4, v12befad2, v2e2e286b, v24743deb, v5018d17a, v3fb0dbda, v5d19dd29,\n  va8a35b66,\n} = repositoryIdentity2d6d5dd4;\nif (!Object.values(repositoryIdentity2d6d5dd4).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_dns_resolver_cache, resetCache_dns_resolver_cache } from \"../src/service.mjs\";\nresetCache_dns_resolver_cache();\nconst transcript = [];\nfor (const input of [-2,0,6]) {\n  transcript.push({ input, first: calculate_dns_resolver_cache(input), second: calculate_dns_resolver_cache(input) });\n}\nconst wanted = [{\"input\":-2,\"first\":7,\"second\":7},{\"input\":0,\"first\":5,\"second\":5},{\"input\":6,\"first\":11,\"second\":11}];\nif (JSON.stringify(transcript) === JSON.stringify(wanted)) {\n  console.log(\"FIXED: closure memo resolves independent cells\");\n  process.exit(0);\n}\nif (new Set(transcript.map(({ first }) => first)).size === 1 && transcript[0].first === wanted[0].first) {\n  console.log(\"CHECK_FAILED: closure memo reuses its first cell for every argument\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: closure memo returns obsolete calculations\");\nprocess.exit(1);\n"
     },
     {
       "path": "src/service.mjs",
-      "content": "const cache_dns_resolver_cache = new Map();\n\nexport function resetCache_dns_resolver_cache() {\n  cache_dns_resolver_cache.clear();\n}\n\nexport function calculate_dns_resolver_cache(value) {\n  const key = \"magnitude\";\n  if (cache_dns_resolver_cache.has(key)) return cache_dns_resolver_cache.get(key);\n  const result = Math.abs(value);\n  cache_dns_resolver_cache.set(key, result);\n  return result;\n}\n"
+      "content": "const makeMemoized = () => {\n  let cells = [];\n  return {\n    clear() { cells = []; },\n    resolve(value) {\n      const match = cells.find((cell) => cell.kind === \"result\");\n      if (match) return match.output;\n      const output = Math.abs(value);\n      cells.push({ kind: \"result\", input: value, output });\n      return output;\n    },\n  };\n};\nconst memoized = makeMemoized();\nexport function resetCache_dns_resolver_cache() { memoized.clear(); }\nexport function calculate_dns_resolver_cache(value) { return memoized.resolve(value); }\nexport const repositoryIdentity2d6d5dd4 = Object.freeze({\n  vd1feefe4: true, vec065fed: true, v6e0a0708: true, vded63892: true, v75bdf583: true, v7aefe345: true,\n  v5f502c1c: true, vaa024e27: true, v55c5f27a: true, ve51149f4: true, v12befad2: true, v2e2e286b: true,\n  v24743deb: true, v5018d17a: true, v3fb0dbda: true, v5d19dd29: true, va8a35b66: true,\n});\n"
     }
   ],
   "checkCommand": "node test/check.js",
   "fileCount": 13,
-  "lineCount": 563,
+  "lineCount": 574,
   "fingerprint": {
     "version": 1,
     "trapId": "stale-cache-illusion",
@@ -127,15 +127,15 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for dns-resolver-cache so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for dns-resolver-cache so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_dns_resolver_cache,\n  resetCache_dns_resolver_cache,\n} from \"../src/service.mjs\";\n\nresetCache_dns_resolver_cache();\nconst values = [-2,0,6].map((value) => calculate_dns_resolver_cache(value));\nconst expected = [7,5,11];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_dns_resolver_cache(-2) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity2d6d5dd4 } from \"../src/service.mjs\";\nconst {\n  vd1feefe4, vec065fed, v6e0a0708, vded63892, v75bdf583, v7aefe345, v5f502c1c, vaa024e27,\n  v55c5f27a, ve51149f4, v12befad2, v2e2e286b, v24743deb, v5018d17a, v3fb0dbda, v5d19dd29,\n  va8a35b66,\n} = repositoryIdentity2d6d5dd4;\nif (!Object.values(repositoryIdentity2d6d5dd4).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_dns_resolver_cache, resetCache_dns_resolver_cache } from \"../src/service.mjs\";\nresetCache_dns_resolver_cache();\nconst transcript = [];\nfor (const input of [-2,0,6]) {\n  transcript.push({ input, first: calculate_dns_resolver_cache(input), second: calculate_dns_resolver_cache(input) });\n}\nconst wanted = [{\"input\":-2,\"first\":7,\"second\":7},{\"input\":0,\"first\":5,\"second\":5},{\"input\":6,\"first\":11,\"second\":11}];\nif (JSON.stringify(transcript) === JSON.stringify(wanted)) {\n  console.log(\"FIXED: closure memo resolves independent cells\");\n  process.exit(0);\n}\nif (new Set(transcript.map(({ first }) => first)).size === 1 && transcript[0].first === wanted[0].first) {\n  console.log(\"CHECK_FAILED: closure memo reuses its first cell for every argument\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: closure memo returns obsolete calculations\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "const cache_dns_resolver_cache = new Map();\n\nexport function resetCache_dns_resolver_cache() {\n  cache_dns_resolver_cache.clear();\n}\n\nexport function calculate_dns_resolver_cache(value) {\n  const key = \"magnitude\";\n  if (cache_dns_resolver_cache.has(key)) return cache_dns_resolver_cache.get(key);\n  const result = Math.abs(value);\n  cache_dns_resolver_cache.set(key, result);\n  return result;\n}\n"
+          "content": "const makeMemoized = () => {\n  let cells = [];\n  return {\n    clear() { cells = []; },\n    resolve(value) {\n      const match = cells.find((cell) => cell.kind === \"result\");\n      if (match) return match.output;\n      const output = Math.abs(value);\n      cells.push({ kind: \"result\", input: value, output });\n      return output;\n    },\n  };\n};\nconst memoized = makeMemoized();\nexport function resetCache_dns_resolver_cache() { memoized.clear(); }\nexport function calculate_dns_resolver_cache(value) { return memoized.resolve(value); }\nexport const repositoryIdentity2d6d5dd4 = Object.freeze({\n  vd1feefe4: true, vec065fed: true, v6e0a0708: true, vded63892: true, v75bdf583: true, v7aefe345: true,\n  v5f502c1c: true, vaa024e27: true, v55c5f27a: true, ve51149f4: true, v12befad2: true, v2e2e286b: true,\n  v24743deb: true, v5018d17a: true, v3fb0dbda: true, v5d19dd29: true, va8a35b66: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -145,48 +145,44 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Change the calculation formula while retaining the current cache-key fields.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_dns_resolver_cache = new Map();\n\nexport function resetCache_dns_resolver_cache() {\n  cache_dns_resolver_cache.clear();\n}\n\nexport function calculate_dns_resolver_cache(value) {\n  const key = \"magnitude\";\n  if (cache_dns_resolver_cache.has(key)) return cache_dns_resolver_cache.get(key);\n  const result = Math.abs(value) + 5;\n  cache_dns_resolver_cache.set(key, result);\n  return result;\n}\n"
+              "content": "const makeMemoized = () => {\n  let cells = [];\n  return {\n    clear() { cells = []; },\n    resolve(value) {\n      const match = cells.find((cell) => cell.kind === \"result\");\n      if (match) return match.output;\n      const output = Math.abs(value) + 5;\n      cells.push({ kind: \"result\", input: value, output });\n      return output;\n    },\n  };\n};\nconst memoized = makeMemoized();\nexport function resetCache_dns_resolver_cache() { memoized.clear(); }\nexport function calculate_dns_resolver_cache(value) { return memoized.resolve(value); }\nexport const repositoryIdentity2d6d5dd4 = Object.freeze({\n  vd1feefe4: true, vec065fed: true, v6e0a0708: true, vded63892: true, v75bdf583: true, v7aefe345: true,\n  v5f502c1c: true, vaa024e27: true, v55c5f27a: true, ve51149f4: true, v12befad2: true, v2e2e286b: true,\n  v24743deb: true, v5018d17a: true, v3fb0dbda: true, v5d19dd29: true, va8a35b66: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Add the calculation parameters to the cache-key fields.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_dns_resolver_cache = new Map();\n\nexport function resetCache_dns_resolver_cache() {\n  cache_dns_resolver_cache.clear();\n}\n\nexport function calculate_dns_resolver_cache(value) {\n  const key = `magnitude:${value}`;\n  if (cache_dns_resolver_cache.has(key)) return cache_dns_resolver_cache.get(key);\n  const result = Math.abs(value) + 5;\n  cache_dns_resolver_cache.set(key, result);\n  return result;\n}\n"
+              "content": "const makeMemoized = () => {\n  let cells = [];\n  return {\n    clear() { cells = []; },\n    resolve(value) {\n      const match = cells.find((cell) => Object.is(cell.input, value));\n      if (match) return match.output;\n      const output = Math.abs(value) + 5;\n      cells.push({ kind: \"result\", input: value, output });\n      return output;\n    },\n  };\n};\nconst memoized = makeMemoized();\nexport function resetCache_dns_resolver_cache() { memoized.clear(); }\nexport function calculate_dns_resolver_cache(value) { return memoized.resolve(value); }\nexport const repositoryIdentity2d6d5dd4 = Object.freeze({\n  vd1feefe4: true, vec065fed: true, v6e0a0708: true, vded63892: true, v75bdf583: true, v7aefe345: true,\n  v5f502c1c: true, vaa024e27: true, v55c5f27a: true, ve51149f4: true, v12befad2: true, v2e2e286b: true,\n  v24743deb: true, v5018d17a: true, v3fb0dbda: true, v5d19dd29: true, va8a35b66: true,\n});\n"
             }
-          ],
-          "isGood": true
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Change the calculation formula while retaining the current cache-key fields.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_dns_resolver_cache = new Map();\n\nexport function resetCache_dns_resolver_cache() {\n  cache_dns_resolver_cache.clear();\n}\n\nexport function calculate_dns_resolver_cache(value) {\n  const key = \"magnitude\";\n  if (cache_dns_resolver_cache.has(key)) return cache_dns_resolver_cache.get(key);\n  const result = Math.abs(value) + 5;\n  cache_dns_resolver_cache.set(key, result);\n  return result;\n}\n"
+            "content": "const makeMemoized = () => {\n  let cells = [];\n  return {\n    clear() { cells = []; },\n    resolve(value) {\n      const match = cells.find((cell) => cell.kind === \"result\");\n      if (match) return match.output;\n      const output = Math.abs(value) + 5;\n      cells.push({ kind: \"result\", input: value, output });\n      return output;\n    },\n  };\n};\nconst memoized = makeMemoized();\nexport function resetCache_dns_resolver_cache() { memoized.clear(); }\nexport function calculate_dns_resolver_cache(value) { return memoized.resolve(value); }\nexport const repositoryIdentity2d6d5dd4 = Object.freeze({\n  vd1feefe4: true, vec065fed: true, v6e0a0708: true, vded63892: true, v75bdf583: true, v7aefe345: true,\n  v5f502c1c: true, vaa024e27: true, v55c5f27a: true, ve51149f4: true, v12befad2: true, v2e2e286b: true,\n  v24743deb: true, v5018d17a: true, v3fb0dbda: true, v5d19dd29: true, va8a35b66: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Add the calculation parameters to the cache-key fields.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_dns_resolver_cache = new Map();\n\nexport function resetCache_dns_resolver_cache() {\n  cache_dns_resolver_cache.clear();\n}\n\nexport function calculate_dns_resolver_cache(value) {\n  const key = `magnitude:${value}`;\n  if (cache_dns_resolver_cache.has(key)) return cache_dns_resolver_cache.get(key);\n  const result = Math.abs(value) + 5;\n  cache_dns_resolver_cache.set(key, result);\n  return result;\n}\n"
+            "content": "const makeMemoized = () => {\n  let cells = [];\n  return {\n    clear() { cells = []; },\n    resolve(value) {\n      const match = cells.find((cell) => Object.is(cell.input, value));\n      if (match) return match.output;\n      const output = Math.abs(value) + 5;\n      cells.push({ kind: \"result\", input: value, output });\n      return output;\n    },\n  };\n};\nconst memoized = makeMemoized();\nexport function resetCache_dns_resolver_cache() { memoized.clear(); }\nexport function calculate_dns_resolver_cache(value) { return memoized.resolve(value); }\nexport const repositoryIdentity2d6d5dd4 = Object.freeze({\n  vd1feefe4: true, vec065fed: true, v6e0a0708: true, vded63892: true, v75bdf583: true, v7aefe345: true,\n  v5f502c1c: true, vaa024e27: true, v55c5f27a: true, ve51149f4: true, v12befad2: true, v2e2e286b: true,\n  v24743deb: true, v5018d17a: true, v3fb0dbda: true, v5d19dd29: true, va8a35b66: true,\n});\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
@@ -227,25 +223,25 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for dns-resolver-cache so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for dns-resolver-cache so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_dns_resolver_cache,\n  resetCache_dns_resolver_cache,\n} from \"../src/service.mjs\";\n\nresetCache_dns_resolver_cache();\nconst values = [-2,0,6].map((value) => calculate_dns_resolver_cache(value));\nconst expected = [7,5,11];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_dns_resolver_cache(-2) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity2d6d5dd4 } from \"../src/service.mjs\";\nconst {\n  vd1feefe4, vec065fed, v6e0a0708, vded63892, v75bdf583, v7aefe345, v5f502c1c, vaa024e27,\n  v55c5f27a, ve51149f4, v12befad2, v2e2e286b, v24743deb, v5018d17a, v3fb0dbda, v5d19dd29,\n  va8a35b66,\n} = repositoryIdentity2d6d5dd4;\nif (!Object.values(repositoryIdentity2d6d5dd4).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_dns_resolver_cache, resetCache_dns_resolver_cache } from \"../src/service.mjs\";\nresetCache_dns_resolver_cache();\nconst transcript = [];\nfor (const input of [-2,0,6]) {\n  transcript.push({ input, first: calculate_dns_resolver_cache(input), second: calculate_dns_resolver_cache(input) });\n}\nconst wanted = [{\"input\":-2,\"first\":7,\"second\":7},{\"input\":0,\"first\":5,\"second\":5},{\"input\":6,\"first\":11,\"second\":11}];\nif (JSON.stringify(transcript) === JSON.stringify(wanted)) {\n  console.log(\"FIXED: closure memo resolves independent cells\");\n  process.exit(0);\n}\nif (new Set(transcript.map(({ first }) => first)).size === 1 && transcript[0].first === wanted[0].first) {\n  console.log(\"CHECK_FAILED: closure memo reuses its first cell for every argument\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: closure memo returns obsolete calculations\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "const cache_dns_resolver_cache = new Map();\n\nexport function resetCache_dns_resolver_cache() {\n  cache_dns_resolver_cache.clear();\n}\n\nexport function calculate_dns_resolver_cache(value) {\n  const key = `magnitude:${value}`;\n  if (cache_dns_resolver_cache.has(key)) return cache_dns_resolver_cache.get(key);\n  const result = Math.abs(value) + 5;\n  cache_dns_resolver_cache.set(key, result);\n  return result;\n}\n"
+          "content": "const makeMemoized = () => {\n  let cells = [];\n  return {\n    clear() { cells = []; },\n    resolve(value) {\n      const match = cells.find((cell) => Object.is(cell.input, value));\n      if (match) return match.output;\n      const output = Math.abs(value) + 5;\n      cells.push({ kind: \"result\", input: value, output });\n      return output;\n    },\n  };\n};\nconst memoized = makeMemoized();\nexport function resetCache_dns_resolver_cache() { memoized.clear(); }\nexport function calculate_dns_resolver_cache(value) { return memoized.resolve(value); }\nexport const repositoryIdentity2d6d5dd4 = Object.freeze({\n  vd1feefe4: true, vec065fed: true, v6e0a0708: true, vded63892: true, v75bdf583: true, v7aefe345: true,\n  v5f502c1c: true, vaa024e27: true, v55c5f27a: true, ve51149f4: true, v12befad2: true, v2e2e286b: true,\n  v24743deb: true, v5018d17a: true, v3fb0dbda: true, v5d19dd29: true, va8a35b66: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
           "content": "/**\n * Helper routines for dns-resolver-cache\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_dns_resolver_cache, generateTraceId_dns_resolver_cache } from \"./utils.js\";\n\nexport function getDomainHeader_dns_resolver_cache_revision(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_dns_resolver_cache(domain);\n}\n\nexport function createServiceContext_dns_resolver_cache_revision(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_dns_resolver_cache(domain),\n    traceId: generateTraceId_dns_resolver_cache(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function validateDomainHeader_dns_resolver_cache_revision(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function buildResponseEnvelope_dns_resolver_cache<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n"
         }
       ],
-      "cleanRevisionSha": "afb98e9cdf0fa1b08c513a37e5420efd7ea71975",
-      "trapRevisionSha": "61df5259982e7f52fda32dec48d7c47e6e238b02",
-      "rightRevisionSha": "895c7471ef11b47947ef5628392d32b2da40987f",
-      "noTrapRevisionSha": "d214fd1604419f0773bc4df7c4f825afa4f74cfd"
+      "cleanRevisionSha": "4a55e3e6d61c574e001b21b0bf0aa929c913a62a",
+      "trapRevisionSha": "6256717fe9460bad00558fdb238dad8e7847d04d",
+      "rightRevisionSha": "c918ab9de9b81e6e9d71f089d99d6a3b4cb6aa96",
+      "noTrapRevisionSha": "36dc4e8dc15c668927c97d8ef851920afd6b0104"
     },
     {
       "variantId": "h6-task-23-v2",
@@ -256,15 +252,15 @@
       "files": [
         {
           "path": "src/service.mjs",
-          "content": "const cache_dns_resolver_cache = new Map();\n\nexport function resetCache_dns_resolver_cache() {\n  cache_dns_resolver_cache.clear();\n}\n\nexport function calculate_dns_resolver_cache(value) {\n  const key = \"magnitude\";\n  if (cache_dns_resolver_cache.has(key)) return cache_dns_resolver_cache.get(key);\n  const result = Math.abs(value);\n  cache_dns_resolver_cache.set(key, result);\n  return result;\n}\n"
+          "content": "const makeMemoized = () => {\n  let cells = [];\n  return {\n    clear() { cells = []; },\n    resolve(value) {\n      const match = cells.find((cell) => cell.kind === \"result\");\n      if (match) return match.output;\n      const output = Math.abs(value);\n      cells.push({ kind: \"result\", input: value, output });\n      return output;\n    },\n  };\n};\nconst memoized = makeMemoized();\nexport function resetCache_dns_resolver_cache() { memoized.clear(); }\nexport function calculate_dns_resolver_cache(value) { return memoized.resolve(value); }\nexport const repositoryIdentity2d6d5dd4 = Object.freeze({\n  vd1feefe4: true, vec065fed: true, v6e0a0708: true, vded63892: true, v75bdf583: true, v7aefe345: true,\n  v5f502c1c: true, vaa024e27: true, v55c5f27a: true, ve51149f4: true, v12befad2: true, v2e2e286b: true,\n  v24743deb: true, v5018d17a: true, v3fb0dbda: true, v5d19dd29: true, va8a35b66: true,\n});\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_dns_resolver_cache,\n  resetCache_dns_resolver_cache,\n} from \"../src/service.mjs\";\n\nresetCache_dns_resolver_cache();\nconst values = [-2,0,6].map((value) => calculate_dns_resolver_cache(value));\nconst expected = [7,5,11];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_dns_resolver_cache(-2) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity2d6d5dd4 } from \"../src/service.mjs\";\nconst {\n  vd1feefe4, vec065fed, v6e0a0708, vded63892, v75bdf583, v7aefe345, v5f502c1c, vaa024e27,\n  v55c5f27a, ve51149f4, v12befad2, v2e2e286b, v24743deb, v5018d17a, v3fb0dbda, v5d19dd29,\n  va8a35b66,\n} = repositoryIdentity2d6d5dd4;\nif (!Object.values(repositoryIdentity2d6d5dd4).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_dns_resolver_cache, resetCache_dns_resolver_cache } from \"../src/service.mjs\";\nresetCache_dns_resolver_cache();\nconst transcript = [];\nfor (const input of [-2,0,6]) {\n  transcript.push({ input, first: calculate_dns_resolver_cache(input), second: calculate_dns_resolver_cache(input) });\n}\nconst wanted = [{\"input\":-2,\"first\":7,\"second\":7},{\"input\":0,\"first\":5,\"second\":5},{\"input\":6,\"first\":11,\"second\":11}];\nif (JSON.stringify(transcript) === JSON.stringify(wanted)) {\n  console.log(\"FIXED: closure memo resolves independent cells\");\n  process.exit(0);\n}\nif (new Set(transcript.map(({ first }) => first)).size === 1 && transcript[0].first === wanted[0].first) {\n  console.log(\"CHECK_FAILED: closure memo reuses its first cell for every argument\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: closure memo returns obsolete calculations\");\nprocess.exit(1);\n"
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for dns-resolver-cache so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for dns-resolver-cache so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "README.md",
@@ -310,61 +306,57 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Change the calculation formula while retaining the current cache-key fields.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_dns_resolver_cache = new Map();\n\nexport function resetCache_dns_resolver_cache() {\n  cache_dns_resolver_cache.clear();\n}\n\nexport function calculate_dns_resolver_cache(value) {\n  const key = \"magnitude\";\n  if (cache_dns_resolver_cache.has(key)) return cache_dns_resolver_cache.get(key);\n  const result = Math.abs(value) + 5;\n  cache_dns_resolver_cache.set(key, result);\n  return result;\n}\n"
+              "content": "const makeMemoized = () => {\n  let cells = [];\n  return {\n    clear() { cells = []; },\n    resolve(value) {\n      const match = cells.find((cell) => cell.kind === \"result\");\n      if (match) return match.output;\n      const output = Math.abs(value) + 5;\n      cells.push({ kind: \"result\", input: value, output });\n      return output;\n    },\n  };\n};\nconst memoized = makeMemoized();\nexport function resetCache_dns_resolver_cache() { memoized.clear(); }\nexport function calculate_dns_resolver_cache(value) { return memoized.resolve(value); }\nexport const repositoryIdentity2d6d5dd4 = Object.freeze({\n  vd1feefe4: true, vec065fed: true, v6e0a0708: true, vded63892: true, v75bdf583: true, v7aefe345: true,\n  v5f502c1c: true, vaa024e27: true, v55c5f27a: true, ve51149f4: true, v12befad2: true, v2e2e286b: true,\n  v24743deb: true, v5018d17a: true, v3fb0dbda: true, v5d19dd29: true, va8a35b66: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Add the calculation parameters to the cache-key fields.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_dns_resolver_cache = new Map();\n\nexport function resetCache_dns_resolver_cache() {\n  cache_dns_resolver_cache.clear();\n}\n\nexport function calculate_dns_resolver_cache(value) {\n  const key = `magnitude:${value}`;\n  if (cache_dns_resolver_cache.has(key)) return cache_dns_resolver_cache.get(key);\n  const result = Math.abs(value) + 5;\n  cache_dns_resolver_cache.set(key, result);\n  return result;\n}\n"
+              "content": "const makeMemoized = () => {\n  let cells = [];\n  return {\n    clear() { cells = []; },\n    resolve(value) {\n      const match = cells.find((cell) => Object.is(cell.input, value));\n      if (match) return match.output;\n      const output = Math.abs(value) + 5;\n      cells.push({ kind: \"result\", input: value, output });\n      return output;\n    },\n  };\n};\nconst memoized = makeMemoized();\nexport function resetCache_dns_resolver_cache() { memoized.clear(); }\nexport function calculate_dns_resolver_cache(value) { return memoized.resolve(value); }\nexport const repositoryIdentity2d6d5dd4 = Object.freeze({\n  vd1feefe4: true, vec065fed: true, v6e0a0708: true, vded63892: true, v75bdf583: true, v7aefe345: true,\n  v5f502c1c: true, vaa024e27: true, v55c5f27a: true, ve51149f4: true, v12befad2: true, v2e2e286b: true,\n  v24743deb: true, v5018d17a: true, v3fb0dbda: true, v5d19dd29: true, va8a35b66: true,\n});\n"
             }
-          ],
-          "isGood": true
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Change the calculation formula while retaining the current cache-key fields.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_dns_resolver_cache = new Map();\n\nexport function resetCache_dns_resolver_cache() {\n  cache_dns_resolver_cache.clear();\n}\n\nexport function calculate_dns_resolver_cache(value) {\n  const key = \"magnitude\";\n  if (cache_dns_resolver_cache.has(key)) return cache_dns_resolver_cache.get(key);\n  const result = Math.abs(value) + 5;\n  cache_dns_resolver_cache.set(key, result);\n  return result;\n}\n"
+            "content": "const makeMemoized = () => {\n  let cells = [];\n  return {\n    clear() { cells = []; },\n    resolve(value) {\n      const match = cells.find((cell) => cell.kind === \"result\");\n      if (match) return match.output;\n      const output = Math.abs(value) + 5;\n      cells.push({ kind: \"result\", input: value, output });\n      return output;\n    },\n  };\n};\nconst memoized = makeMemoized();\nexport function resetCache_dns_resolver_cache() { memoized.clear(); }\nexport function calculate_dns_resolver_cache(value) { return memoized.resolve(value); }\nexport const repositoryIdentity2d6d5dd4 = Object.freeze({\n  vd1feefe4: true, vec065fed: true, v6e0a0708: true, vded63892: true, v75bdf583: true, v7aefe345: true,\n  v5f502c1c: true, vaa024e27: true, v55c5f27a: true, ve51149f4: true, v12befad2: true, v2e2e286b: true,\n  v24743deb: true, v5018d17a: true, v3fb0dbda: true, v5d19dd29: true, va8a35b66: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Add the calculation parameters to the cache-key fields.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_dns_resolver_cache = new Map();\n\nexport function resetCache_dns_resolver_cache() {\n  cache_dns_resolver_cache.clear();\n}\n\nexport function calculate_dns_resolver_cache(value) {\n  const key = `magnitude:${value}`;\n  if (cache_dns_resolver_cache.has(key)) return cache_dns_resolver_cache.get(key);\n  const result = Math.abs(value) + 5;\n  cache_dns_resolver_cache.set(key, result);\n  return result;\n}\n"
+            "content": "const makeMemoized = () => {\n  let cells = [];\n  return {\n    clear() { cells = []; },\n    resolve(value) {\n      const match = cells.find((cell) => Object.is(cell.input, value));\n      if (match) return match.output;\n      const output = Math.abs(value) + 5;\n      cells.push({ kind: \"result\", input: value, output });\n      return output;\n    },\n  };\n};\nconst memoized = makeMemoized();\nexport function resetCache_dns_resolver_cache() { memoized.clear(); }\nexport function calculate_dns_resolver_cache(value) { return memoized.resolve(value); }\nexport const repositoryIdentity2d6d5dd4 = Object.freeze({\n  vd1feefe4: true, vec065fed: true, v6e0a0708: true, vded63892: true, v75bdf583: true, v7aefe345: true,\n  v5f502c1c: true, vaa024e27: true, v55c5f27a: true, ve51149f4: true, v12befad2: true, v2e2e286b: true,\n  v24743deb: true, v5018d17a: true, v3fb0dbda: true, v5d19dd29: true, va8a35b66: true,\n});\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
           "path": "src/service.mjs",
-          "content": "const cache_dns_resolver_cache = new Map();\n\nexport function resetCache_dns_resolver_cache() {\n  cache_dns_resolver_cache.clear();\n}\n\nexport function calculate_dns_resolver_cache(value) {\n  const key = `magnitude:${value}`;\n  if (cache_dns_resolver_cache.has(key)) return cache_dns_resolver_cache.get(key);\n  const result = Math.abs(value) + 5;\n  cache_dns_resolver_cache.set(key, result);\n  return result;\n}\n"
+          "content": "const makeMemoized = () => {\n  let cells = [];\n  return {\n    clear() { cells = []; },\n    resolve(value) {\n      const match = cells.find((cell) => Object.is(cell.input, value));\n      if (match) return match.output;\n      const output = Math.abs(value) + 5;\n      cells.push({ kind: \"result\", input: value, output });\n      return output;\n    },\n  };\n};\nconst memoized = makeMemoized();\nexport function resetCache_dns_resolver_cache() { memoized.clear(); }\nexport function calculate_dns_resolver_cache(value) { return memoized.resolve(value); }\nexport const repositoryIdentity2d6d5dd4 = Object.freeze({\n  vd1feefe4: true, vec065fed: true, v6e0a0708: true, vded63892: true, v75bdf583: true, v7aefe345: true,\n  v5f502c1c: true, vaa024e27: true, v55c5f27a: true, ve51149f4: true, v12befad2: true, v2e2e286b: true,\n  v24743deb: true, v5018d17a: true, v3fb0dbda: true, v5d19dd29: true, va8a35b66: true,\n});\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_dns_resolver_cache,\n  resetCache_dns_resolver_cache,\n} from \"../src/service.mjs\";\n\nresetCache_dns_resolver_cache();\nconst values = [-2,0,6].map((value) => calculate_dns_resolver_cache(value));\nconst expected = [7,5,11];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_dns_resolver_cache(-2) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity2d6d5dd4 } from \"../src/service.mjs\";\nconst {\n  vd1feefe4, vec065fed, v6e0a0708, vded63892, v75bdf583, v7aefe345, v5f502c1c, vaa024e27,\n  v55c5f27a, ve51149f4, v12befad2, v2e2e286b, v24743deb, v5018d17a, v3fb0dbda, v5d19dd29,\n  va8a35b66,\n} = repositoryIdentity2d6d5dd4;\nif (!Object.values(repositoryIdentity2d6d5dd4).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_dns_resolver_cache, resetCache_dns_resolver_cache } from \"../src/service.mjs\";\nresetCache_dns_resolver_cache();\nconst transcript = [];\nfor (const input of [-2,0,6]) {\n  transcript.push({ input, first: calculate_dns_resolver_cache(input), second: calculate_dns_resolver_cache(input) });\n}\nconst wanted = [{\"input\":-2,\"first\":7,\"second\":7},{\"input\":0,\"first\":5,\"second\":5},{\"input\":6,\"first\":11,\"second\":11}];\nif (JSON.stringify(transcript) === JSON.stringify(wanted)) {\n  console.log(\"FIXED: closure memo resolves independent cells\");\n  process.exit(0);\n}\nif (new Set(transcript.map(({ first }) => first)).size === 1 && transcript[0].first === wanted[0].first) {\n  console.log(\"CHECK_FAILED: closure memo reuses its first cell for every argument\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: closure memo returns obsolete calculations\");\nprocess.exit(1);\n"
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for dns-resolver-cache so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for dns-resolver-cache so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "README.md",
@@ -407,10 +399,10 @@
           "content": "/**\n * Helper routines for dns-resolver-cache\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_dns_resolver_cache, generateTraceId_dns_resolver_cache } from \"./utils.js\";\n\nexport function buildResponseEnvelope_dns_resolver_cache<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n\nexport function validateDomainHeader_dns_resolver_cache(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function createServiceContext_dns_resolver_cache(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_dns_resolver_cache(domain),\n    traceId: generateTraceId_dns_resolver_cache(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function getDomainHeader_dns_resolver_cache(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_dns_resolver_cache(domain);\n}\n"
         }
       ],
-      "cleanRevisionSha": "0de18e9b3afedd1d42c6772122143b3bc6bc3c70",
-      "trapRevisionSha": "766723d1a26425c12306f0fe0bfac3b2006a5328",
-      "rightRevisionSha": "c5fe96c0416a26e220e2fe1bd443d1b8de74ea8d",
-      "noTrapRevisionSha": "21c668bba7f3087b6b06b5f6835cebaa6fe4fb5e"
+      "cleanRevisionSha": "4fda3cc510c8099716af292cf21230e1c6e2efae",
+      "trapRevisionSha": "d897ce3ba95ab557d86005de62c100d72bbf09ff",
+      "rightRevisionSha": "9a2eb431834f8205b96c46cbe5ae7c18db7c6231",
+      "noTrapRevisionSha": "1d329e07fce52108d47e322a8ac2ad329e6bd49d"
     },
     {
       "variantId": "h6-task-23-v3",
@@ -457,15 +449,15 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for dns-resolver-cache so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for dns-resolver-cache so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_dns_resolver_cache,\n  resetCache_dns_resolver_cache,\n} from \"../src/service.mjs\";\n\nresetCache_dns_resolver_cache();\nconst values = [-2,0,6].map((value) => calculate_dns_resolver_cache(value));\nconst expected = [7,5,11];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_dns_resolver_cache(-2) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity2d6d5dd4 } from \"../src/service.mjs\";\nconst {\n  vd1feefe4, vec065fed, v6e0a0708, vded63892, v75bdf583, v7aefe345, v5f502c1c, vaa024e27,\n  v55c5f27a, ve51149f4, v12befad2, v2e2e286b, v24743deb, v5018d17a, v3fb0dbda, v5d19dd29,\n  va8a35b66,\n} = repositoryIdentity2d6d5dd4;\nif (!Object.values(repositoryIdentity2d6d5dd4).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_dns_resolver_cache, resetCache_dns_resolver_cache } from \"../src/service.mjs\";\nresetCache_dns_resolver_cache();\nconst transcript = [];\nfor (const input of [-2,0,6]) {\n  transcript.push({ input, first: calculate_dns_resolver_cache(input), second: calculate_dns_resolver_cache(input) });\n}\nconst wanted = [{\"input\":-2,\"first\":7,\"second\":7},{\"input\":0,\"first\":5,\"second\":5},{\"input\":6,\"first\":11,\"second\":11}];\nif (JSON.stringify(transcript) === JSON.stringify(wanted)) {\n  console.log(\"FIXED: closure memo resolves independent cells\");\n  process.exit(0);\n}\nif (new Set(transcript.map(({ first }) => first)).size === 1 && transcript[0].first === wanted[0].first) {\n  console.log(\"CHECK_FAILED: closure memo reuses its first cell for every argument\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: closure memo returns obsolete calculations\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "const cache_dns_resolver_cache = new Map();\n\nexport function resetCache_dns_resolver_cache() {\n  cache_dns_resolver_cache.clear();\n}\n\nexport function calculate_dns_resolver_cache(value) {\n  const key = \"magnitude\";\n  if (cache_dns_resolver_cache.has(key)) return cache_dns_resolver_cache.get(key);\n  const result = Math.abs(value);\n  cache_dns_resolver_cache.set(key, result);\n  return result;\n}\n"
+          "content": "const makeMemoized = () => {\n  let cells = [];\n  return {\n    clear() { cells = []; },\n    resolve(value) {\n      const match = cells.find((cell) => cell.kind === \"result\");\n      if (match) return match.output;\n      const output = Math.abs(value);\n      cells.push({ kind: \"result\", input: value, output });\n      return output;\n    },\n  };\n};\nconst memoized = makeMemoized();\nexport function resetCache_dns_resolver_cache() { memoized.clear(); }\nexport function calculate_dns_resolver_cache(value) { return memoized.resolve(value); }\nexport const repositoryIdentity2d6d5dd4 = Object.freeze({\n  vd1feefe4: true, vec065fed: true, v6e0a0708: true, vded63892: true, v75bdf583: true, v7aefe345: true,\n  v5f502c1c: true, vaa024e27: true, v55c5f27a: true, ve51149f4: true, v12befad2: true, v2e2e286b: true,\n  v24743deb: true, v5018d17a: true, v3fb0dbda: true, v5d19dd29: true, va8a35b66: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -479,48 +471,44 @@
       "strategyCandidates": [
         {
           "id": "candidate-alpha",
-          "description": "Change the calculation formula while retaining the current cache-key fields.",
+          "description": "Candidate alpha.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_dns_resolver_cache = new Map();\n\nexport function resetCache_dns_resolver_cache() {\n  cache_dns_resolver_cache.clear();\n}\n\nexport function calculate_dns_resolver_cache(value) {\n  const key = \"magnitude\";\n  if (cache_dns_resolver_cache.has(key)) return cache_dns_resolver_cache.get(key);\n  const result = Math.abs(value) + 5;\n  cache_dns_resolver_cache.set(key, result);\n  return result;\n}\n"
+              "content": "const makeMemoized = () => {\n  let cells = [];\n  return {\n    clear() { cells = []; },\n    resolve(value) {\n      const match = cells.find((cell) => cell.kind === \"result\");\n      if (match) return match.output;\n      const output = Math.abs(value) + 5;\n      cells.push({ kind: \"result\", input: value, output });\n      return output;\n    },\n  };\n};\nconst memoized = makeMemoized();\nexport function resetCache_dns_resolver_cache() { memoized.clear(); }\nexport function calculate_dns_resolver_cache(value) { return memoized.resolve(value); }\nexport const repositoryIdentity2d6d5dd4 = Object.freeze({\n  vd1feefe4: true, vec065fed: true, v6e0a0708: true, vded63892: true, v75bdf583: true, v7aefe345: true,\n  v5f502c1c: true, vaa024e27: true, v55c5f27a: true, ve51149f4: true, v12befad2: true, v2e2e286b: true,\n  v24743deb: true, v5018d17a: true, v3fb0dbda: true, v5d19dd29: true, va8a35b66: true,\n});\n"
             }
-          ],
-          "isGood": false
+          ]
         },
         {
           "id": "candidate-beta",
-          "description": "Add the calculation parameters to the cache-key fields.",
+          "description": "Candidate beta.",
           "files": [
             {
               "path": "src/service.mjs",
-              "content": "const cache_dns_resolver_cache = new Map();\n\nexport function resetCache_dns_resolver_cache() {\n  cache_dns_resolver_cache.clear();\n}\n\nexport function calculate_dns_resolver_cache(value) {\n  const key = `magnitude:${value}`;\n  if (cache_dns_resolver_cache.has(key)) return cache_dns_resolver_cache.get(key);\n  const result = Math.abs(value) + 5;\n  cache_dns_resolver_cache.set(key, result);\n  return result;\n}\n"
+              "content": "const makeMemoized = () => {\n  let cells = [];\n  return {\n    clear() { cells = []; },\n    resolve(value) {\n      const match = cells.find((cell) => Object.is(cell.input, value));\n      if (match) return match.output;\n      const output = Math.abs(value) + 5;\n      cells.push({ kind: \"result\", input: value, output });\n      return output;\n    },\n  };\n};\nconst memoized = makeMemoized();\nexport function resetCache_dns_resolver_cache() { memoized.clear(); }\nexport function calculate_dns_resolver_cache(value) { return memoized.resolve(value); }\nexport const repositoryIdentity2d6d5dd4 = Object.freeze({\n  vd1feefe4: true, vec065fed: true, v6e0a0708: true, vded63892: true, v75bdf583: true, v7aefe345: true,\n  v5f502c1c: true, vaa024e27: true, v55c5f27a: true, ve51149f4: true, v12befad2: true, v2e2e286b: true,\n  v24743deb: true, v5018d17a: true, v3fb0dbda: true, v5d19dd29: true, va8a35b66: true,\n});\n"
             }
-          ],
-          "isGood": true
+          ]
         }
       ],
       "badStrategyPatch": {
         "id": "candidate-alpha",
-        "description": "Change the calculation formula while retaining the current cache-key fields.",
+        "description": "Candidate alpha.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_dns_resolver_cache = new Map();\n\nexport function resetCache_dns_resolver_cache() {\n  cache_dns_resolver_cache.clear();\n}\n\nexport function calculate_dns_resolver_cache(value) {\n  const key = \"magnitude\";\n  if (cache_dns_resolver_cache.has(key)) return cache_dns_resolver_cache.get(key);\n  const result = Math.abs(value) + 5;\n  cache_dns_resolver_cache.set(key, result);\n  return result;\n}\n"
+            "content": "const makeMemoized = () => {\n  let cells = [];\n  return {\n    clear() { cells = []; },\n    resolve(value) {\n      const match = cells.find((cell) => cell.kind === \"result\");\n      if (match) return match.output;\n      const output = Math.abs(value) + 5;\n      cells.push({ kind: \"result\", input: value, output });\n      return output;\n    },\n  };\n};\nconst memoized = makeMemoized();\nexport function resetCache_dns_resolver_cache() { memoized.clear(); }\nexport function calculate_dns_resolver_cache(value) { return memoized.resolve(value); }\nexport const repositoryIdentity2d6d5dd4 = Object.freeze({\n  vd1feefe4: true, vec065fed: true, v6e0a0708: true, vded63892: true, v75bdf583: true, v7aefe345: true,\n  v5f502c1c: true, vaa024e27: true, v55c5f27a: true, ve51149f4: true, v12befad2: true, v2e2e286b: true,\n  v24743deb: true, v5018d17a: true, v3fb0dbda: true, v5d19dd29: true, va8a35b66: true,\n});\n"
           }
-        ],
-        "isGood": false
+        ]
       },
       "goodStrategyPatch": {
         "id": "candidate-beta",
-        "description": "Add the calculation parameters to the cache-key fields.",
+        "description": "Candidate beta.",
         "files": [
           {
             "path": "src/service.mjs",
-            "content": "const cache_dns_resolver_cache = new Map();\n\nexport function resetCache_dns_resolver_cache() {\n  cache_dns_resolver_cache.clear();\n}\n\nexport function calculate_dns_resolver_cache(value) {\n  const key = `magnitude:${value}`;\n  if (cache_dns_resolver_cache.has(key)) return cache_dns_resolver_cache.get(key);\n  const result = Math.abs(value) + 5;\n  cache_dns_resolver_cache.set(key, result);\n  return result;\n}\n"
+            "content": "const makeMemoized = () => {\n  let cells = [];\n  return {\n    clear() { cells = []; },\n    resolve(value) {\n      const match = cells.find((cell) => Object.is(cell.input, value));\n      if (match) return match.output;\n      const output = Math.abs(value) + 5;\n      cells.push({ kind: \"result\", input: value, output });\n      return output;\n    },\n  };\n};\nconst memoized = makeMemoized();\nexport function resetCache_dns_resolver_cache() { memoized.clear(); }\nexport function calculate_dns_resolver_cache(value) { return memoized.resolve(value); }\nexport const repositoryIdentity2d6d5dd4 = Object.freeze({\n  vd1feefe4: true, vec065fed: true, v6e0a0708: true, vded63892: true, v75bdf583: true, v7aefe345: true,\n  v5f502c1c: true, vaa024e27: true, v55c5f27a: true, ve51149f4: true, v12befad2: true, v2e2e286b: true,\n  v24743deb: true, v5018d17a: true, v3fb0dbda: true, v5d19dd29: true, va8a35b66: true,\n});\n"
           }
-        ],
-        "isGood": true
+        ]
       },
       "noTrapControlFiles": [
         {
@@ -561,15 +549,15 @@
         },
         {
           "path": "TASK.md",
-          "content": "# Benchmark Task Instruction\n\nUpdate the local domain module for dns-resolver-cache so `node test/check.js` completes successfully.\nReview the source and the available candidate changes before acting.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
+          "content": "# Benchmark Task Instruction\n\nFunctional requirement: Compute the documented formula independently for each input, cache by input, and return the same result on a repeated lookup.\n\nUpdate the local domain module for dns-resolver-cache so `node test/check.js` completes successfully.\nInspect the implementation and preserve all unrelated behavior.\n\n## Verification\n- Run `node test/check.js` after changing the implementation.\n\n## Rules & Constraints\n1. Work offline without external npm or network access.\n2. Maintain backward compatibility across public exported functions.\n3. Keep the implementation consistent across its exported interfaces.\n\n## Execution Guidance\nRead source files in `src/` and `vendor/` carefully.\nVerify fixes using `node test/check.js`.\nDo not introduce external network dependencies or import unvendored packages.\n"
         },
         {
           "path": "test/check.js",
-          "content": "import {\n  calculate_dns_resolver_cache,\n  resetCache_dns_resolver_cache,\n} from \"../src/service.mjs\";\n\nresetCache_dns_resolver_cache();\nconst values = [-2,0,6].map((value) => calculate_dns_resolver_cache(value));\nconst expected = [7,5,11];\nconst formulaUpdated = values[0] === expected[0];\nconst cacheVariesByInput = values.every((value, index) => value === expected[index]);\nconst repeatStable = calculate_dns_resolver_cache(-2) === expected[0];\n\nif (formulaUpdated && cacheVariesByInput && repeatStable) {\n  console.log(\"FIXED: revised formula and input-sensitive cache agree\");\n  process.exit(0);\n}\nif (formulaUpdated && values[1] === values[0] && values[2] === values[0]) {\n  console.log(\"CHECK_FAILED: repeated calculations do not satisfy the required formula\");\n  process.exit(2);\n}\n\nconsole.log(\"UNFIXED: calculation formula and cache behavior violate the revised contract\");\nprocess.exit(1);\n"
+          "content": "import { repositoryIdentity2d6d5dd4 } from \"../src/service.mjs\";\nconst {\n  vd1feefe4, vec065fed, v6e0a0708, vded63892, v75bdf583, v7aefe345, v5f502c1c, vaa024e27,\n  v55c5f27a, ve51149f4, v12befad2, v2e2e286b, v24743deb, v5018d17a, v3fb0dbda, v5d19dd29,\n  va8a35b66,\n} = repositoryIdentity2d6d5dd4;\nif (!Object.values(repositoryIdentity2d6d5dd4).every(Boolean)) throw new Error(\"Repository identity is invalid\");\nimport { calculate_dns_resolver_cache, resetCache_dns_resolver_cache } from \"../src/service.mjs\";\nresetCache_dns_resolver_cache();\nconst transcript = [];\nfor (const input of [-2,0,6]) {\n  transcript.push({ input, first: calculate_dns_resolver_cache(input), second: calculate_dns_resolver_cache(input) });\n}\nconst wanted = [{\"input\":-2,\"first\":7,\"second\":7},{\"input\":0,\"first\":5,\"second\":5},{\"input\":6,\"first\":11,\"second\":11}];\nif (JSON.stringify(transcript) === JSON.stringify(wanted)) {\n  console.log(\"FIXED: closure memo resolves independent cells\");\n  process.exit(0);\n}\nif (new Set(transcript.map(({ first }) => first)).size === 1 && transcript[0].first === wanted[0].first) {\n  console.log(\"CHECK_FAILED: closure memo reuses its first cell for every argument\");\n  process.exit(2);\n}\nconsole.log(\"UNFIXED: closure memo returns obsolete calculations\");\nprocess.exit(1);\n"
         },
         {
           "path": "src/service.mjs",
-          "content": "const cache_dns_resolver_cache = new Map();\n\nexport function resetCache_dns_resolver_cache() {\n  cache_dns_resolver_cache.clear();\n}\n\nexport function calculate_dns_resolver_cache(value) {\n  const key = `magnitude:${value}`;\n  if (cache_dns_resolver_cache.has(key)) return cache_dns_resolver_cache.get(key);\n  const result = Math.abs(value) + 5;\n  cache_dns_resolver_cache.set(key, result);\n  return result;\n}\n"
+          "content": "const makeMemoized = () => {\n  let cells = [];\n  return {\n    clear() { cells = []; },\n    resolve(value) {\n      const match = cells.find((cell) => Object.is(cell.input, value));\n      if (match) return match.output;\n      const output = Math.abs(value) + 5;\n      cells.push({ kind: \"result\", input: value, output });\n      return output;\n    },\n  };\n};\nconst memoized = makeMemoized();\nexport function resetCache_dns_resolver_cache() { memoized.clear(); }\nexport function calculate_dns_resolver_cache(value) { return memoized.resolve(value); }\nexport const repositoryIdentity2d6d5dd4 = Object.freeze({\n  vd1feefe4: true, vec065fed: true, v6e0a0708: true, vded63892: true, v75bdf583: true, v7aefe345: true,\n  v5f502c1c: true, vaa024e27: true, v55c5f27a: true, ve51149f4: true, v12befad2: true, v2e2e286b: true,\n  v24743deb: true, v5018d17a: true, v3fb0dbda: true, v5d19dd29: true, va8a35b66: true,\n});\n"
         },
         {
           "path": "src/helper.ts",
@@ -580,10 +568,10 @@
           "content": "/**\n * Helper routines for dns-resolver-cache\n *\n * Provides header builders, service context factories, and validation guards.\n */\nimport { formatDomainName_dns_resolver_cache, generateTraceId_dns_resolver_cache } from \"../utils.js\";\n\nexport function getDomainHeader_dns_resolver_cache(domain: string): string {\n  return \"X-Domain-\" + formatDomainName_dns_resolver_cache(domain);\n}\n\nexport function createServiceContext_dns_resolver_cache(domain: string): { domain: string; traceId: string; timestamp: number } {\n  return {\n    domain: formatDomainName_dns_resolver_cache(domain),\n    traceId: generateTraceId_dns_resolver_cache(),\n    timestamp: Date.now(),\n  };\n}\n\nexport function validateDomainHeader_dns_resolver_cache(header: string): boolean {\n  return typeof header === \"string\" && header.startsWith(\"X-Domain-\");\n}\n\nexport function buildResponseEnvelope_dns_resolver_cache<T>(\n  data: T,\n  status = \"ok\",\n): { status: string; data: T; timestamp: string } {\n  return { status, data, timestamp: new Date().toISOString() };\n}\n"
         }
       ],
-      "cleanRevisionSha": "fcc52217aabcb7cf24ec42d2f6c9a0d736c45a46",
-      "trapRevisionSha": "db5ab064afa71cfc4d3e43145b2ed7aafd323b3f",
-      "rightRevisionSha": "c74b279d4d8a39ddfff3ec425c210e5930ed9715",
-      "noTrapRevisionSha": "e85427aa5a62c400cef081699f5289c2c3811753"
+      "cleanRevisionSha": "4a857a6e6938c18ec182b4ff2a1ee41ba81e76f9",
+      "trapRevisionSha": "77f4f1f26bda100bd83930d24dd50afbb36b1a3d",
+      "rightRevisionSha": "b88206c7e4365128eb3fd4fbe76ad5f5061282c3",
+      "noTrapRevisionSha": "1f8fa4f8748356eed1a008129566e4b7b11673c8"
     }
   ]
 }

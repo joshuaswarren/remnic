@@ -3,6 +3,7 @@ import path from "node:path";
 import {
   readCausalTrajectoryRecordsStrict,
   readCausalTrajectoryRevisionToken,
+  resolveCausalTrajectoryStoreDir,
   type ActionIntent,
   type ActionStrategyId,
   type CausalTrajectoryRecord,
@@ -225,7 +226,6 @@ export class PreActionFailureGate {
       controller.abort();
       resolveTimeout({ status: "ERROR_FAIL_OPEN", reason: `PreActionFailureGate timed out after ${this.timeoutMs}ms` });
     }, this.timeoutMs);
-    timer.unref();
 
     try {
       return await Promise.race([
@@ -265,7 +265,7 @@ export class PreActionFailureGate {
     const preRevision = await this.getRevision(revisionOptions);
     const branch = request.codingContext.branch ?? "";
     const storeId = createHash("sha256")
-      .update(request.causalTrajectoryStoreDir ?? request.memoryDir)
+      .update(resolveCausalTrajectoryStoreDir(request.memoryDir, request.causalTrajectoryStoreDir))
       .digest("hex");
     const cacheKey = createHash("sha256").update(JSON.stringify([
       request.codingContext.projectId,

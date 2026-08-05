@@ -1,11 +1,10 @@
 {
   "id": "candidate-alpha",
-  "description": "Write the requested value to the default configuration file.",
+  "description": "Candidate alpha.",
   "files": [
     {
       "path": "config/default.json",
       "content": "{\n  \"pageLimit\": 60,\n  \"prefetch\": 2\n}\n"
     }
-  ],
-  "isGood": false
+  ]
 }

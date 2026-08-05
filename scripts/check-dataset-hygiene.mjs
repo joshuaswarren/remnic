@@ -9,6 +9,7 @@
  * - IPv4 addresses (outside loopback 127.0.0.0/8 and TEST-NET-1 192.0.2.0/24)
  * - URLs outside allowlist (example.com, json-schema.org, arxiv.org, github.com/joshuaswarren/remnic paths)
  * - Names listed in scripts/dataset-name-denylist.txt (case-insensitive whole-word match)
+ * - Absolute home-directory paths on Unix, macOS, and Windows
  *
  * Test seam / configuration:
  * - REMNIC_HYGIENE_ROOTS: colon-separated list of directories/files to scan (default: packages/bench/src/fixtures, packages/bench/fixtures, docs/research/data)
@@ -28,7 +29,9 @@ const ROOT = process.env.REMNIC_ROOT
 const ALLOWED_EXTENSIONS = new Set([
   ".json",
   ".jsonl",
+  ".js",
   ".md",
+  ".mjs",
   ".txt",
   ".ts",
   ".yaml",
@@ -36,7 +39,6 @@ const ALLOWED_EXTENSIONS = new Set([
   ".csv",
 ]);
 
-// URL host checking is restricted to data files (.json, .jsonl, .md, .txt, .yaml, .yml, .csv) and skips .ts source files to avoid false-positives on TypeScript import specifiers, mock servers, and internal test harness endpoints.
 const DATA_FILE_EXTENSIONS = new Set([
   ".json",
   ".jsonl",
@@ -54,6 +56,10 @@ const URL_REGEX = /\bhttps?:\/\/[^\s"'<>()]+/gi;
 const EMAIL_REGEX = /\b[\w.+-]+@[\w-]+\.[\w.]+\b/g;
 // Phone numbers: Conservative pattern requiring 3-3-4 digit grouping with optional leading plus and standard delimiters to avoid false-positives on timestamps, hashes, or numeric IDs.
 const PHONE_REGEX = /\b\+?\d{3}[-. ]\d{3}[-. ]\d{4}\b/;
+const HOME_PATH_REGEXES = [
+  /\/(?:home|Users)\/[^/\s"'`]+(?:\/[^\s"'`]*)?/g,
+  /\b[A-Za-z]:[\\/]Users[\\/][^\\/\s"'`]+(?:[\\/][^\s"'`]*)?/gi,
+];
 
 // API-key shapes
 const API_KEY_REGEXES = [
@@ -300,6 +306,18 @@ export function scanFile(filePath, denylist, rootDir = ROOT) {
         rule: "phone",
         message: `Phone number detected (${phoneVal.length} chars, redacted)`,
       });
+    }
+
+    for (const homePathRegex of HOME_PATH_REGEXES) {
+      homePathRegex.lastIndex = 0;
+      if (homePathRegex.test(line)) {
+        findings.push({
+          file: relPath,
+          line: lineNum,
+          rule: "home-path",
+          message: "Absolute home-directory path detected (redacted)",
+        });
+      }
     }
 
     const disallowedIPs = findDisallowedIPv4s(line);

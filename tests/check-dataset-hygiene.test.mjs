@@ -44,6 +44,22 @@ test("detects email address rule class in temp dir", () => {
   }
 });
 
+test("scans JavaScript fixture files for leaks", () => {
+  const tempDir = mkdtempSync(path.join(tmpdir(), "hygiene-javascript-"));
+  try {
+    writeFileSync(path.join(tempDir, "fixture.js"), `export const contact = "alice@realcompany.com";\n`);
+    writeFileSync(path.join(tempDir, "runner.mjs"), `export const contact = "bob@realcompany.com";\n`);
+
+    const res = runScript({ REMNIC_HYGIENE_ROOTS: tempDir });
+
+    assert.equal(res.status, 1);
+    assert.match(res.stderr, /^fixture\.js:1: \[email\]/m);
+    assert.match(res.stderr, /^runner\.mjs:1: \[email\]/m);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("synthetic emails (.example, .synthetic) pass without findings", () => {
   const tempDir = mkdtempSync(path.join(tmpdir(), "hygiene-synthetic-email-"));
   try {
@@ -128,6 +144,28 @@ test("detects IPv4 rule class outside loopback and TEST-NET-1", () => {
     assert.doesNotMatch(res.stderr, /203\.0\.113\.195/);
     assert.doesNotMatch(res.stderr, /127\.0\.0\.1/);
     assert.doesNotMatch(res.stderr, /192\.0\.2\.45/);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("detects Unix, macOS, and Windows home-directory paths without echoing them", () => {
+  const tempDir = mkdtempSync(path.join(tmpdir(), "hygiene-home-path-"));
+  const pathFragments = [
+    ["/", "home", "operator-name", "project"].join("/"),
+    ["/", "Users", "operator-name", "project"].join("/"),
+    ["C:", "Users", "operator-name", "project"].join("\\"),
+  ];
+  try {
+    writeFileSync(
+      path.join(tempDir, "paths.txt"),
+      `${pathFragments.join("\n")}\n`,
+    );
+    const res = runScript({ REMNIC_HYGIENE_ROOTS: tempDir });
+    assert.equal(res.status, 1);
+    assert.equal((res.stderr.match(/\[home-path\]/g) || []).length, 3);
+    assert.match(res.stderr, /Absolute home-directory path detected \(redacted\)/);
+    for (const homePath of pathFragments) assert.ok(!res.stderr.includes(homePath));
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
