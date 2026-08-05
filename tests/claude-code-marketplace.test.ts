@@ -33,7 +33,14 @@ test("claude-code marketplace manifest: plugin source resolves to a real plugin"
   const m = readJson(manifestPath);
   const plugin = m.plugins[0];
   assert.equal(typeof plugin.name, "string");
-  assert.equal(typeof plugin.source, "string");
+  // Pin the canonical source: the marketplace must point at this exact path.
+  // Any other value — even one that happens to resolve to a plugin with a
+  // matching name — is a contract change and must fail here.
+  assert.equal(
+    plugin.source,
+    "./packages/plugin-claude-code",
+    "marketplace plugin source must be the canonical ./packages/plugin-claude-code",
+  );
 
   // `source` is repo-relative; it must resolve to a real plugin directory that
   // carries its own Claude Code plugin manifest.
