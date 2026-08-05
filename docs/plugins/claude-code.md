@@ -19,11 +19,15 @@ The repo ships a Claude Code marketplace manifest (`.claude-plugin/marketplace.j
 ```bash
 claude plugin marketplace add joshuaswarren/remnic
 claude plugin install remnic@remnic
+# in an already-open Claude Code session, activate it without restarting:
+/reload-plugins
 ```
 
-This loads the hooks, skills, and the `memory-review` agent through Claude Code's own plugin system. The hooks resolve the daemon bearer token from the Remnic token store (`~/.remnic/tokens.json`) or the `REMNIC_AUTH_TOKEN` / `OPENCLAW_REMNIC_ACCESS_TOKEN` env vars, so auto-recall / auto-observe work against a local daemon out of the box.
+This loads the hooks, skills, and the `memory-review` agent through Claude Code's own plugin system. `claude plugin install` registers the plugin but does not activate it inside a session that is already open — run `/reload-plugins` (or start a new session) so the SessionStart / UserPromptSubmit / PostToolUse hooks are live before you rely on auto-recall / auto-observe. The hooks resolve the daemon bearer token from the Remnic token store (`~/.remnic/tokens.json`) or the `REMNIC_AUTH_TOKEN` / `OPENCLAW_REMNIC_ACCESS_TOKEN` env vars, so auto-recall / auto-observe work against a local daemon out of the box.
 
 What the marketplace install does **not** do: it does not fill in the MCP server credential. The bundled `.mcp.json` ships a `{{REMNIC_TOKEN}}` placeholder pointed at `http://localhost:4318/mcp`; you still complete the token (and, for a remote daemon, the URL) exactly as described in the package README's "MCP setup" section. In other words, the marketplace replaces the *plugin load* step — the token/MCP config step is unchanged.
+
+> **Security — use HTTPS for a remote daemon.** The MCP config sends `Authorization: Bearer <your token>` to whatever `url` you set. Plain `http://` is acceptable **only** for loopback endpoints (`http://localhost:4318/mcp`, `http://127.0.0.1:…`). For any non-loopback / remote daemon the URL **must** be `https://` so the bearer token is never transmitted in cleartext. (If you reach a remote daemon over an already-encrypted overlay such as a VPN/WireGuard tunnel, terminate TLS or keep the daemon bound to loopback on the far side rather than exposing plain HTTP.)
 
 ## Reality vs. older docs
 
