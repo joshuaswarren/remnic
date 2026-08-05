@@ -319,6 +319,60 @@ function isTrapAuditThresholds(value: unknown): value is RepeatedFailureTrapAudi
     thresholds.maximumInvalidRows === 0 &&
     thresholds.requireCompleteRows === true;
 }
+type ResumeTrace = z.infer<typeof ResumeTraceSchema>;
+
+function resumeTraceUsage(trace: ResumeTrace): RepeatedFailureTokenUsage | undefined {
+  const record = trace as Record<string, unknown>;
+  let candidate = record.usage;
+  if (candidate === undefined) {
+    const result = record.result;
+    if (result && typeof result === "object" && !Array.isArray(result)) {
+      candidate = (result as Record<string, unknown>).usage;
+    }
+  }
+  const parsed = ResumeTraceTokensSchema.safeParse(candidate);
+  return parsed.success ? parsed.data : undefined;
+}
+
+async function cumulativeTraceUsage(
+  outputRoot: string,
+  identity: RepeatedFailureRowIdentity,
+  rowKey: string,
+  tryCount: number,
+  terminalTrace: ResumeTrace,
+): Promise<RepeatedFailureTokenUsage | undefined> {
+  const total: RepeatedFailureTokenUsage = {
+    input: 0,
+    output: 0,
+    total: 0,
+    cachedInput: 0,
+    cacheWriteInput: 0,
+    reasoningOutput: 0,
+  };
+  for (let attempt = 1; attempt <= tryCount; attempt++) {
+    let trace = terminalTrace;
+    if (attempt !== tryCount) {
+      const tracePath = await containedRegularFile(
+        outputRoot,
+        `traces/${rowKey}/attempt-${attempt}.json`,
+      );
+      const parsed = ResumeTraceSchema.safeParse(JSON.parse(await readFile(tracePath, "utf8")));
+      if (!parsed.success) return undefined;
+      trace = parsed.data;
+    }
+    if (canonicalJson(trace.identity) !== canonicalJson(identity)) return undefined;
+    const usage = resumeTraceUsage(trace);
+    if (!usage) return undefined;
+    total.input += usage.input;
+    total.output += usage.output;
+    total.total += usage.total;
+    total.cachedInput += usage.cachedInput;
+    total.cacheWriteInput += usage.cacheWriteInput;
+    total.reasoningOutput += usage.reasoningOutput;
+  }
+  return total;
+}
+
 
 async function resumedTraceMatches(
   outputRoot: string,
@@ -345,6 +399,14 @@ async function resumedTraceMatches(
         row.finalState === "INVALID" &&
         row.invalidReason === trace.preflightInvalidReason;
     }
+    const cumulativeUsage = await cumulativeTraceUsage(
+      outputRoot,
+      identity,
+      rowKey,
+      row.tryCount,
+      trace,
+    );
+    if (!cumulativeUsage) return false;
     const traceCheckResult = trace.finalRepoEvidence.checkResult === "FIXED" ||
       trace.finalRepoEvidence.checkResult === "NO_TRAP"
       ? "PASS"
@@ -355,14 +417,14 @@ async function resumedTraceMatches(
       return row.status === "INVALID" &&
         row.finalState === "INVALID" &&
         row.invalidReason === "HOST_RETRIES_EXHAUSTED" &&
-        canonicalJson(trace.usage) === canonicalJson(row.tokens) &&
+        canonicalJson(cumulativeUsage) === canonicalJson(row.tokens) &&
         traceCheckResult === row.evidence.checkResult;
     }
     const finalStateMatches = row.status === "VALID"
       ? row.finalState === trace.finalRepoEvidence.checkResult
       : row.finalState === "INVALID";
     return finalStateMatches &&
-      canonicalJson(trace.result.usage) === canonicalJson(row.tokens) &&
+      canonicalJson(cumulativeUsage) === canonicalJson(row.tokens) &&
       traceCheckResult === row.evidence.checkResult &&
       row.evidence.repeatedFailure === (
         trace.finalRepoEvidence.checkResult === "TRAPPED" && trace.armAudit.badStrategyExecuted

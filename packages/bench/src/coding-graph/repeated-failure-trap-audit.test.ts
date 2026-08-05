@@ -188,6 +188,7 @@ async function seedTerminalAuditRows(
   outputDir: string,
   driver: RepeatedFailureEpisodeDriver,
   traceIdentity?: (identity: RepeatedFailureRowIdentity) => RepeatedFailureRowIdentity,
+  retryBeforeResult = false,
 ): Promise<number> {
   const bundle = await loadFixtureBundle();
   const store = new RepeatedFailureRowStore(outputDir);
@@ -213,7 +214,8 @@ async function seedTerminalAuditRows(
       cacheWriteInput: 0,
       reasoningOutput: 0,
     };
-    const traceArtifactPath = `traces/${rowKey}/attempt-1.json`;
+    const terminalAttempt = retryBeforeResult ? 2 : 1;
+    const traceArtifactPath = `traces/${rowKey}/attempt-${terminalAttempt}.json`;
     const traceBytes = `${JSON.stringify({
       schemaVersion: 1,
       identity: traceIdentity?.(identity) ?? identity,
@@ -225,10 +227,44 @@ async function seedTerminalAuditRows(
     await mkdir(path.dirname(tracePath), { recursive: true });
     await writeFile(tracePath, traceBytes);
     const traceArtifactHash = createHash("sha256").update(traceBytes).digest("hex");
+    if (retryBeforeResult) {
+      const retryTokens = {
+        input: 2,
+        output: 1,
+        total: 3,
+        cachedInput: 0,
+        cacheWriteInput: 0,
+        reasoningOutput: 0,
+      };
+      const retryTracePath = `traces/${rowKey}/attempt-1.json`;
+      const retryTraceBytes = `${JSON.stringify({
+        schemaVersion: 1,
+        identity,
+        hostFault: { code: "RATE_LIMIT" },
+        usage: retryTokens,
+        finalRepoEvidence: { checkResult: "FIXED" },
+      }, null, 2)}\n`;
+      await writeFile(path.join(outputDir, retryTracePath), retryTraceBytes);
+      const retryTraceHash = createHash("sha256").update(retryTraceBytes).digest("hex");
+      const claim = await store.claimRow(identity);
+      await store.commitTry(claim, {
+        attempt: 1,
+        durationMs: 1,
+        tokens: retryTokens,
+        outcome: {
+          kind: "HOST_API_FAULT",
+          code: "RATE_LIMIT",
+          messageHash: "a".repeat(64),
+          traceArtifactPath: retryTracePath,
+          traceArtifactHash: retryTraceHash,
+        },
+      });
+      await store.releaseClaim(claim);
+    }
     const claim = await store.claimRow(identity);
     try {
       await store.commitTry(claim, {
-        attempt: 1,
+        attempt: terminalAttempt,
         durationMs: 1,
         tokens,
         outcome: {
@@ -573,7 +609,7 @@ test("runTrapAudit reuses terminal checkpoints without driver calls or checkpoin
   const outputDir = await mkdtemp(path.join(tmpdir(), "h6-audit-resume-"));
   const driver = noCallDriver(TEST_PROFILE_ID);
   try {
-    const taskCount = await seedTerminalAuditRows(outputDir, driver);
+    const taskCount = await seedTerminalAuditRows(outputDir, driver, undefined, true);
     const checkpointDir = path.join(outputDir, "checkpoints");
     const checkpointNames = (await readdir(checkpointDir)).sort();
     const before = await Promise.all(

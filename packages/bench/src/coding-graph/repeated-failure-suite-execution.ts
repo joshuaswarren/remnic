@@ -5,6 +5,7 @@ import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } fro
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { expandTildePath } from "@remnic/core";
 import { writeFileAtomically } from "@remnic/core/maintenance/atomic-file";
 import {
   type ActionIdentity,
@@ -678,7 +679,7 @@ export async function assertSafeBenchmarkOutput(outputDir: string, resume: boole
     for (const variable of ["REMNIC_MEMORY_DIR", "ENGRAM_MEMORY_DIR"] as const) {
       const configured = process.env[variable]?.trim();
       if (!configured) continue;
-      const memoryRoot = await canonicalProspectivePath(path.resolve(configured));
+      const memoryRoot = await canonicalProspectivePath(path.resolve(expandTildePath(configured)));
       if (isSameOrDescendant(canonicalOutput, memoryRoot)) throw new Error(refusal);
     }
     let candidate = canonicalOutput;
