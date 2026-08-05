@@ -104,6 +104,7 @@ export type ParsedOllamaChatResponse = z.infer<typeof OllamaChatResponseSchema>;
 export interface OllamaChatMessage {
   role: "system" | "user" | "assistant" | "tool";
   content?: string;
+  tool_name?: string;
   thinking?: string;
   tool_calls?: Array<{
     function: {
@@ -462,6 +463,7 @@ export class RepeatedFailureOllamaChatDriver implements RepeatedFailureEpisodeDr
             state.disposition = "ABANDONED";
             state.history.push({
               role: "tool",
+              tool_name: action.tool,
               content: JSON.stringify({
                 status: "not_executed",
                 disposition: "advisory",
@@ -508,6 +510,7 @@ export class RepeatedFailureOllamaChatDriver implements RepeatedFailureEpisodeDr
 
         state.history.push({
           role: "tool",
+          tool_name: action.tool,
           content: toolResult.serializedOutput,
         });
       }

@@ -291,7 +291,9 @@ test("RepeatedFailureOllamaChatDriver formats tools array with nested function s
 
 test("RepeatedFailureOllamaChatDriver handles multi-turn tool calls and usage aggregation", async () => {
   let requestCount = 0;
-  const capturedBodies: Array<{ messages: Array<{ role: string; content?: string }> }> = [];
+  const capturedBodies: Array<{
+    messages: Array<{ role: string; content?: string; tool_name?: string }>;
+  }> = [];
 
   const mockTransport: ControlledResponsesTransport = async (_url, init) => {
     requestCount += 1;
@@ -377,15 +379,20 @@ test("RepeatedFailureOllamaChatDriver handles multi-turn tool calls and usage ag
   assert.deepEqual(secondMessages.map((message) => message.role), ["user", "assistant", "tool"]);
   const toolMsg = secondMessages.find((message) => message.role === "tool");
   assert.ok(toolMsg);
+  assert.equal(toolMsg.tool_name, "read_file");
   if (typeof toolMsg.content !== "string") throw new Error("tool message content must be a string");
   assert.match(toolMsg.content, /src\/bug\.ts/);
 });
 
 test("RepeatedFailureOllamaChatDriver handles gate warning replan flow", async () => {
   let requestCount = 0;
+  const capturedBodies: Array<{
+    messages: Array<{ role: string; content?: string; tool_name?: string }>;
+  }> = [];
 
-  const mockTransport: ControlledResponsesTransport = async () => {
+  const mockTransport: ControlledResponsesTransport = async (_url, init) => {
     requestCount += 1;
+    capturedBodies.push(JSON.parse(init.body as string));
     if (requestCount === 1) {
       return new Response(
         JSON.stringify({
@@ -452,6 +459,8 @@ test("RepeatedFailureOllamaChatDriver handles gate warning replan flow", async (
   assert.ok(result.replacementCallId);
   assert.notEqual(result.originalCallId, result.replacementCallId);
   assert.equal(result.gate?.status, "MATCH_WARN");
+  const advisoryMessage = capturedBodies[1]?.messages.find((message) => message.role === "tool");
+  assert.equal(advisoryMessage?.tool_name, "read_file");
 });
 
 test("RepeatedFailureOllamaChatDriver invalidates on malformed JSON tool arguments or non-done payload", async () => {
