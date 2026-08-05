@@ -277,6 +277,8 @@ function parseRepeatedRun(args: readonly string[]): BenchCodingCommand {
     "--out",
     "--run",
     "--fixture",
+    "--max-steps",
+    "--max-tool-calls",
     "--max-output-chars",
     "--max-duration-ms",
     "--request-timeout-ms",

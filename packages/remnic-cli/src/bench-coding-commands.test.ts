@@ -152,13 +152,29 @@ test("repeated-failure parser requires immutable profiles and exact registered d
   );
   assert.throws(
     () => parseBenchCodingArgs(["repeated-failure", "--seeds", "5"]),
-    /exactly two --profile files/,
+    /one or two --profile files/,
   );
   assert.throws(
     () => parseBenchCodingArgs(["repeated-failure", "--seeds", "5", "--profile"]),
     /missing value for --profile/,
   );
-
+  // A registered run compares at most two arms, so three profiles is rejected
+  // at the same boundary that accepts one (single-arm pilot) and two.
+  assert.throws(
+    () =>
+      parseBenchCodingArgs([
+        "repeated-failure",
+        "--seeds",
+        "5",
+        "--profile",
+        "./a.json",
+        "--profile",
+        "./b.json",
+        "--profile",
+        "./c.json",
+      ]),
+    /one or two --profile files/,
+  );
   assert.throws(
     () =>
       parseBenchCodingArgs([
@@ -170,7 +186,7 @@ test("repeated-failure parser requires immutable profiles and exact registered d
         "--profile",
         "./profile.json",
       ]),
-    /registered repeated-failure runs require exactly two --profile files/,
+    /--phase main requires --pilot-run DIR/,
   );
   assert.throws(
     () =>
