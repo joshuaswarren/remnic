@@ -631,6 +631,18 @@ export function countFactTokens(
     .length;
 }
 
+function nodePermissionFlag(): "--experimental-permission" | "--permission" {
+  const [majorText, minorText] = process.versions.node.split(".");
+  const major = Number(majorText);
+  const minor = Number(minorText);
+  if (!Number.isInteger(major) || !Number.isInteger(minor)) {
+    throw new Error(`unsupported Node version: ${process.versions.node}`);
+  }
+  return major > 22 || (major === 22 && minor >= 13)
+    ? "--permission"
+    : "--experimental-permission";
+}
+
 export async function runOfflineCheck(repoDir: string, task: BaseTask): Promise<CheckExecution> {
   if (task.checkCommand !== "node test/check.js") {
     throw new Error("task check command is not the frozen offline check");
@@ -645,7 +657,7 @@ export async function runOfflineCheck(repoDir: string, task: BaseTask): Promise<
       "--map-root-user",
       "--net",
       process.execPath,
-      "--experimental-permission",
+      nodePermissionFlag(),
       `--allow-fs-read=${repoDir}`,
       "test/check.js",
     ],
