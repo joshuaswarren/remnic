@@ -283,7 +283,8 @@ export function buildTimingEvidenceAudit(
     rows,
     injectedPairCount: rows.filter((row) => row.injected).length,
     uninjectedPairCount: rows.filter((row) => row.status === "UNINJECTED").length,
-    allMatched: rows.every((row) => row.status === "MATCHED"),
+    allMatched: rows.some((row) => row.status === "MATCHED")
+      && rows.every((row) => row.status !== "MISMATCH"),
   };
 }
 

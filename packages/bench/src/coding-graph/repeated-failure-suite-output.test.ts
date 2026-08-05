@@ -3,7 +3,10 @@ import test from "node:test";
 import type { RepeatedFailureEpisodeRow, RepeatedFailureArm } from "./repeated-failure-types.js";
 import type { FactPairAuditPair } from "./repeated-failure-suite-shared.js";
 import type { TimingPayload } from "./repeated-failure-suite-execution.js";
-import { buildTimingEvidenceAudit } from "./repeated-failure-suite-output.js";
+import {
+  buildTimingEvidenceAudit,
+  type TimingEvidenceSourceRow,
+} from "./repeated-failure-suite-output.js";
 
 const pair: FactPairAuditPair = {
   pairKey: "pair-1",
@@ -105,6 +108,29 @@ test("timing audit reports a non-warning pre-action row as uninjected", () => {
   assert.equal(audit.injectedPairCount, 0);
   assert.equal(audit.uninjectedPairCount, 1);
   assert.equal(audit.allMatched, false);
+});
+
+test("timing audit permits uninjected cells when another pair proves a matched injection", () => {
+  const secondPair = { ...pair, pairKey: "pair-2", taskId: "task-2" };
+  const forSecondTask = (source: TimingEvidenceSourceRow): TimingEvidenceSourceRow => ({
+    ...source,
+    row: {
+      ...source.row,
+      identity: { ...source.row.identity, taskId: secondPair.taskId },
+    },
+  });
+  const audit = buildTimingEvidenceAudit(
+    [pair, secondPair],
+    [
+      baseline,
+      preAction("MATCH_WARN"),
+      forSecondTask(baseline),
+      forSecondTask(preAction("NO_MATCH")),
+    ],
+  );
+  assert.equal(audit.injectedPairCount, 1);
+  assert.equal(audit.uninjectedPairCount, 1);
+  assert.equal(audit.allMatched, true);
 });
 
 test("timing audit keeps a missing turn-start payload as a mismatch", () => {
