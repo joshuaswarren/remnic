@@ -104,7 +104,7 @@ test("timing audit reports a non-warning pre-action row as uninjected", () => {
   assert.equal(audit.rows[0]?.matches, null);
   assert.equal(audit.injectedPairCount, 0);
   assert.equal(audit.uninjectedPairCount, 1);
-  assert.equal(audit.allMatched, true);
+  assert.equal(audit.allMatched, false);
 });
 
 test("timing audit keeps a missing turn-start payload as a mismatch", () => {

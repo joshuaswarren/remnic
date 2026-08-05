@@ -784,7 +784,7 @@ test("fixture validation never reads bundle artifacts for an invalid dataset", a
   try {
     const report = await validateH6FixtureBundle(directory);
     assert.equal(report.valid, false);
-    assert.ok(report.issues.some((issue) => issue.code === "PATH_CONTAINMENT_FAIL"));
+    assert.ok(report.issues.some((issue) => issue.code === "CANONICAL_BASE_FILES_INVALID"));
     assert.ok(!report.issues.some((issue) => issue.code === "FIXTURE_BUNDLE_MISMATCH"));
   } finally {
     await rm(directory, { recursive: true, force: true });
