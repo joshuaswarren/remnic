@@ -74,6 +74,7 @@ import {
 } from "./repeated-failure-stats.js";
 import {
   RepeatedFailureRowStore,
+  MAX_ROW_ATTEMPTS,
   buildRepeatedFailureRowKey,
   parseRepeatedFailureEpisodeRow,
   type RepeatedFailureRowClaim,
@@ -573,6 +574,14 @@ export async function runRepeatedFailureSuite(
   };
 }
 
+export function registeredModelDigestsMatch(
+  modelDigests: readonly string[],
+  expectedProfileCount: number,
+): boolean {
+  return modelDigests.length === expectedProfileCount
+    && new Set(modelDigests).size === expectedProfileCount;
+}
+
 export async function replayRepeatedFailureStatistics(
   options: ReplayRepeatedFailureStatisticsOptions,
 ): Promise<RepeatedFailureCliCommandResult> {
@@ -591,11 +600,19 @@ export async function replayRepeatedFailureStatistics(
       gitDirty: provenance.gitDirty,
       gitDirtyEntryCount: provenance.gitDirtyEntryCount,
     }));
+    const decisionRuleBytes = await readFile(path.join(runDir, "decision-rule.json"), "utf8");
+    if (sha256(decisionRuleBytes) !== metadata.decisionRuleHash) {
+      throw new Error("frozen decision-rule hash does not match run metadata");
+    }
+    const decisionRule = DecisionRuleSchema.parse(JSON.parse(decisionRuleBytes));
     if (
       metadata.phase !== "unspecified"
-      && (metadata.modelDigests.length !== 2 || new Set(metadata.modelDigests).size !== 2)
+      && !registeredModelDigestsMatch(
+        metadata.modelDigests,
+        decisionRule.analysisPopulation.modelProfileCount,
+      )
     ) {
-      throw new Error("registered H6 replay requires two distinct served model digests");
+      throw new Error("registered H6 replay model digests do not match the frozen profile count");
     }
     if (
       metadata.analysisVersion !== REPEATED_FAILURE_ANALYSIS_VERSION
@@ -605,11 +622,6 @@ export async function replayRepeatedFailureStatistics(
     ) {
       throw new Error("analysis or harness provenance drifted since execution");
     }
-    const decisionRuleBytes = await readFile(path.join(runDir, "decision-rule.json"), "utf8");
-    if (sha256(decisionRuleBytes) !== metadata.decisionRuleHash) {
-      throw new Error("frozen decision-rule hash does not match run metadata");
-    }
-    const decisionRule = DecisionRuleSchema.parse(JSON.parse(decisionRuleBytes));
     if (
       decisionRule.analysis.bootstrap.draws !== metadata.statisticsDraws
       || decisionRule.analysis.shuffle.draws !== metadata.statisticsDraws
@@ -754,16 +766,20 @@ async function executeClaimedPlannedRow(
   if (loaded.kind === "VALID") {
     await store.verifyAttemptTraceArtifacts(loaded.checkpoint);
   }
-  if (loaded.kind === "VALID" && loaded.checkpoint.terminal) {
-    throw new Error(`Repeated-failure row ${rowKey} is already terminal`);
-  }
   const firstAttemptIndex = loaded.kind === "VALID" ? loaded.checkpoint.tries.length : 0;
+  const lastAttemptIndex = firstAttemptIndex + configuration.maxHostRetries;
+  if (lastAttemptIndex + 1 > MAX_ROW_ATTEMPTS) {
+    throw new Error(
+      `Repeated-failure row ${rowKey} reached the ${MAX_ROW_ATTEMPTS}-attempt ceiling across resumes. `
+        + "The endpoint is not recovering; investigate before resuming again.",
+    );
+  }
   for (
     let attemptIndex = firstAttemptIndex;
-    attemptIndex <= configuration.maxHostRetries;
+    attemptIndex <= lastAttemptIndex;
     attemptIndex += 1
   ) {
-    const attempt = (attemptIndex + 1) as 1 | 2 | 3 | 4 | 5 | 6;
+    const attempt = attemptIndex + 1;
     const materialized = await materializeTaskRepo([...plan.files]);
     const memoryDir = await mkdtemp(path.join(tmpdir(), "h6-memory-"));
     try {
@@ -857,7 +873,7 @@ async function executeClaimedPlannedRow(
       const hostApiFault = firstRetryableHostFault(result);
       if (hostApiFault) {
         const fault = hostApiFault;
-        const retriesExhausted = attemptIndex >= configuration.maxHostRetries;
+        const retriesExhausted = attemptIndex - firstAttemptIndex >= configuration.maxHostRetries;
         const terminalRepoEvidence = await host.captureFinalEvidence();
         const trace = await writeTrace(configuration.outputDir, rowKey, attempt, {
           schemaVersion: 1,

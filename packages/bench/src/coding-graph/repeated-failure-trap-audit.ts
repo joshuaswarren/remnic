@@ -21,6 +21,7 @@ import type {
 import type { ControlledResponsesCaps } from "./repeated-failure-responses-driver.js";
 import {
   RepeatedFailureRowStore,
+  MAX_ROW_ATTEMPTS,
   buildRepeatedFailureRowKey,
 } from "./repeated-failure-store.js";
 import {
@@ -261,7 +262,7 @@ function isTrapAuditRow(value: unknown): value is RepeatedFailureTrapAuditRow {
     row.rowKey.length === 0 ||
     !isNonnegativeSafeInteger(row.tryCount) ||
     row.tryCount < 1 ||
-    row.tryCount > 6 ||
+    row.tryCount > MAX_ROW_ATTEMPTS ||
     typeof row.durationMs !== "number" ||
     !Number.isFinite(row.durationMs) ||
     row.durationMs < 0 ||

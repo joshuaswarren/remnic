@@ -29,6 +29,7 @@ import type {
   RepeatedFailureTry,
 } from "./repeated-failure-types.js";
 export {
+  MAX_ROW_ATTEMPTS,
   buildRepeatedFailureRowKey,
   parseRepeatedFailureEpisodeRow,
   writeRepeatedFailureRunMetadata,
@@ -848,7 +849,7 @@ export class RepeatedFailureRowStore {
     const episode =
       normalizedEntry.outcome.kind === "TASK_RESULT"
         ? normalizedEntry.outcome.episode
-        : normalizedEntry.outcome.exhausted || tries.length === 6
+        : normalizedEntry.outcome.exhausted
           ? exhaustedEpisode(normalizedEntry.outcome)
           : undefined;
     const checkpoint: RepeatedFailureRowCheckpoint = {

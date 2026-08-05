@@ -147,6 +147,7 @@ export const DecisionRuleSchema = z.object({
     datasetInventoryHash: z.literal(H6_FROZEN_INVENTORY_HASH),
     split: z.enum(["main", "pilot"]),
     pairingKey: z.array(z.string()).min(1),
+    modelProfileCount: z.union([z.literal(1), z.literal(2)]),
     maximumPrimaryTaskCuts: z.literal(0),
   }).passthrough(),
   analysis: z.object({

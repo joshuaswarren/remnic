@@ -27,6 +27,7 @@ import type { ModelProfileExecutionContract } from "./repeated-failure-suite-out
 import {
   resolvePackagedPreregistrationRoot,
   verifyPreregistrationBinding,
+  registeredModelDigestsMatch,
 } from "./repeated-failure-suite-runner.ts";
 import { REPEATED_FAILURE_ARMS } from "./repeated-failure-types.ts";
 import type {
@@ -41,6 +42,13 @@ const TASK_ID = "h6-task-01";
 const VARIANT_ID = "h6-task-01-v1";
 const PROFILE_HASH = "1".repeat(64);
 const FIXED_NOW = () => new Date("2026-01-02T00:00:00.000Z");
+
+test("registered replay accepts the frozen one-profile digest set", () => {
+  assert.equal(registeredModelDigestsMatch(["a".repeat(64)], 1), true);
+  assert.equal(registeredModelDigestsMatch(["a".repeat(64)], 2), false);
+  assert.equal(registeredModelDigestsMatch(["a".repeat(64), "a".repeat(64)], 2), false);
+  assert.equal(registeredModelDigestsMatch(["a".repeat(64), "b".repeat(64)], 2), true);
+});
 const FIXED_CLOCK = () => 100;
 const MAIN_TASK_IDS = Object.freeze([
   "h6-task-03", "h6-task-04", "h6-task-05", "h6-task-08", "h6-task-09", "h6-task-10",
@@ -1154,6 +1162,63 @@ test("a zero-retry audit pauses the run and persists the exhausting fault", asyn
       assert.match(String(entry.outcome.traceArtifactHash), /^[a-f0-9]{64}$/);
       assert.equal(checkpoint.terminal, undefined);
     }
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("resume receives a fresh host-retry budget after a paused session", async () => {
+  const outputDir = await mkdtemp(path.join(tmpdir(), "h6-suite-fresh-resume-budget-"));
+  const profileId = "fresh-budget-profile";
+  const profileHash = "8".repeat(64);
+  const options = {
+    outputDir,
+    seeds: [7],
+    mode: "quick" as const,
+    taskIds: [TASK_ID],
+    variantIds: [VARIANT_ID],
+    maxHostRetries: 1 as const,
+    statisticsSeed: 9,
+    statisticsDraws: 10_000,
+    clock: FIXED_CLOCK,
+    now: FIXED_NOW,
+  };
+  try {
+    await assert.rejects(
+      runRepeatedFailureSuite({
+        ...options,
+        drivers: [new DeterministicDriver(profileId, profileHash, 2)],
+      }),
+      /Host API fault retries exhausted/,
+    );
+
+    const resumed = await runRepeatedFailureSuite({
+      ...options,
+      drivers: [new DeterministicDriver(profileId, profileHash, 1)],
+      resume: true,
+    });
+    assert.ok(resumed.completed > 0);
+
+    const checkpointNames = await readdir(path.join(outputDir, "checkpoints"));
+    const checkpoints: unknown[] = await Promise.all(checkpointNames.map(async (name) =>
+      JSON.parse(await readFile(path.join(outputDir, "checkpoints", name), "utf8")) as unknown
+    ));
+    const resumedCheckpoint = checkpoints.find(
+      (candidate) => typeof candidate === "object"
+        && candidate !== null
+        && "tries" in candidate
+        && Array.isArray(candidate.tries)
+        && candidate.tries.length === 4,
+    );
+    assertRecord(resumedCheckpoint, "resumed checkpoint");
+    assert.ok(Array.isArray(resumedCheckpoint.tries));
+    assert.deepEqual(
+      resumedCheckpoint.tries.map((entry) => {
+        assertRecord(entry, "resumed try");
+        return entry.attempt;
+      }),
+      [1, 2, 3, 4],
+    );
   } finally {
     await rm(outputDir, { recursive: true, force: true });
   }

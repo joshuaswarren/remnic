@@ -100,8 +100,15 @@ const EpisodeSchema = z.discriminatedUnion("status", [
     isolation: IsolationIdentitySchema.optional(),
   }).strict(),
 ]);
+/**
+ * Hard ceiling on attempts retained for one row across every resume.
+ * The frozen budget is six attempts per session; this admits four paused
+ * sessions before the row is refused outright, so a permanently broken
+ * endpoint fails loudly instead of growing a checkpoint without bound.
+ */
+export const MAX_ROW_ATTEMPTS = 24;
 const TrySchema = z.object({
-  attempt: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5), z.literal(6)]),
+  attempt: z.number().int().min(1).max(MAX_ROW_ATTEMPTS),
   durationMs: z.number().finite().nonnegative(),
   tokens: TokenUsageSchema,
   outcome: z.discriminatedUnion("kind", [
@@ -125,7 +132,7 @@ const CheckpointEnvelopeSchema = z.object({
   schemaVersion: z.literal(1),
   rowKey: z.string(),
   identity: RowIdentitySchema,
-  tries: z.array(TrySchema).max(6),
+  tries: z.array(TrySchema).max(MAX_ROW_ATTEMPTS),
   terminal: z.unknown().optional(),
 }).strict();
 const EpisodeRowBaseSchema = z.object({
@@ -134,7 +141,7 @@ const EpisodeRowBaseSchema = z.object({
   identity: RowIdentitySchema,
   durationMs: z.number().finite().nonnegative(),
   tokens: TokenUsageSchema,
-  tryCount: z.number().int().min(1).max(3),
+  tryCount: z.number().int().min(1).max(MAX_ROW_ATTEMPTS),
 });
 const EpisodeRowSchema = z.discriminatedUnion("status", [
   EpisodeRowBaseSchema.extend({
@@ -451,8 +458,7 @@ export function parseCheckpoint(value: unknown, expectedRowKey: string): Repeate
   const expectedTerminal =
     lastTry?.outcome.kind === "TASK_RESULT"
       ? projectTerminalRow(expectedRowKey, identity, tries, lastTry.outcome.episode)
-      : lastTry?.outcome.kind === "HOST_API_FAULT"
-          && (lastTry.outcome.exhausted || tries.length === 6)
+      : lastTry?.outcome.kind === "HOST_API_FAULT" && lastTry.outcome.exhausted
         ? projectTerminalRow(expectedRowKey, identity, tries, exhaustedEpisode(lastTry.outcome))
         : undefined;
   if (canonicalJson(envelope.terminal) !== canonicalJson(expectedTerminal)) {

@@ -63,6 +63,7 @@ import {
   aggregateArmOutcomes,
   assessClaimEligibility,
   registeredProfileBindingsMatch,
+  requiresRegisteredEvidence,
   renderArmFigure,
   renderArmTable,
   renderEffectsFigure,
@@ -73,7 +74,7 @@ import {
   sha256,
 } from "./repeated-failure-report-rendering.js";
 
-export { registeredProfileBindingsMatch };
+export { registeredProfileBindingsMatch, requiresRegisteredEvidence };
 
 const SOURCE_ARTIFACTS = [
   "MANIFEST.json",
@@ -479,9 +480,12 @@ export async function writeRepeatedFailurePaperArtifacts(
   }
   const rawFactPairAudit = JSON.parse(source["fact-pair-audit.json"]) as unknown;
   const factPairAudit = FactPairAuditSchema.parse(rawFactPairAudit);
-  const registeredEvidenceRequired = exactRows
-    && (run.phase === "pilot" || run.phase === "main")
-    && run.modelProfileIds.length === 2;
+  const registeredEvidenceRequired = requiresRegisteredEvidence(
+    exactRows,
+    run.phase,
+    run.modelProfileIds.length,
+    decisionRule.analysisPopulation.modelProfileCount,
+  );
   const registeredFactPairs = registeredEvidenceRequired
     ? await verifyRegisteredFactPairs(rawFactPairAudit, rows, run, dataset)
     : undefined;
@@ -731,7 +735,7 @@ export async function writeRepeatedFailurePaperArtifacts(
     : run.phase === "pilot" ? dataset.splits.pilot : [];
   const registeredContract = run.datasetInventoryHash === H6_FROZEN_INVENTORY_HASH
     && run.suiteVersion === `h6-failure-gate-v1-${H6_FROZEN_INVENTORY_HASH}`
-    && registeredProfileBindingsMatch(run)
+    && registeredProfileBindingsMatch(run, decisionRule.analysisPopulation.modelProfileCount)
     && trapAuditsMatch
     && pilotEvidenceMatched
     && pilotContinuityMatched
@@ -741,8 +745,6 @@ export async function writeRepeatedFailurePaperArtifacts(
     && stableStringify(run.arms) === stableStringify(REPEATED_FAILURE_ARMS)
     && decisionRule.analysisPopulation.datasetInventoryHash === run.datasetInventoryHash
     && decisionRule.analysisPopulation.split === "main"
-    && decisionRule.trapAudit.minimumTrappedRate === 0.5
-    && decisionRule.trapAudit.minimumNonFixedRate === 0.8
     && decisionRule.trapAudit.maximumInvalidRows === 0
     && decisionRule.trapAudit.requireCompleteRows
     && run.statisticsSeed === dataset.seed

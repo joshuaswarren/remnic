@@ -303,9 +303,16 @@ type RegisteredProfileBindings = Pick<
   | "modelTokenizerImplementations"
 >;
 
-export function registeredProfileBindingsMatch(bindings: RegisteredProfileBindings): boolean {
+/**
+ * A registered run may use one or two model profiles, so hard-coding two
+ * would reject a valid single-profile run.
+ */
+export function registeredProfileBindingsMatch(
+  bindings: RegisteredProfileBindings,
+  expectedProfileCount: number,
+): boolean {
   const profileCount = bindings.modelProfileIds.length;
-  return profileCount === 2
+  return profileCount === expectedProfileCount
     && bindings.modelProfileHashes.length === profileCount
     && bindings.modelDigests.length === profileCount
     && bindings.modelDriverKinds.length === profileCount
@@ -321,6 +328,17 @@ export function registeredProfileBindingsMatch(bindings: RegisteredProfileBindin
     && bindings.modelTokenizerImplementations.every(
       (implementation) => implementation === "nfkc-whitespace-v1",
     );
+}
+
+export function requiresRegisteredEvidence(
+  exactRows: boolean,
+  phase: RepeatedFailureRunMetadata["phase"],
+  actualProfileCount: number,
+  expectedProfileCount: number,
+): boolean {
+  return exactRows
+    && (phase === "pilot" || phase === "main")
+    && actualProfileCount === expectedProfileCount;
 }
 
 export function assessClaimEligibility(

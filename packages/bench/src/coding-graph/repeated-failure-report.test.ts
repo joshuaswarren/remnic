@@ -22,6 +22,7 @@ import {
 } from "./repo-gen/index.js";
 import {
   registeredProfileBindingsMatch,
+  requiresRegisteredEvidence,
   writeRepeatedFailurePaperArtifacts,
 } from "./repeated-failure-report.js";
 import { buildRepeatedFailureRowKey } from "./repeated-failure-store.js";
@@ -49,7 +50,7 @@ const TOKENS = {
 const TRACE_BYTES = "{}\n";
 const TRACE_HASH = createHash("sha256").update(TRACE_BYTES).digest("hex");
 
-test("registered profile bindings use the execution profile ID and hash identity", () => {
+test("registered profile bindings use the frozen profile count and execution identity", () => {
   const bindings = {
     modelProfileIds: ["qwen3-thinking-off", "qwen3-thinking-on"],
     modelProfileHashes: ["a".repeat(64), "b".repeat(64)],
@@ -58,32 +59,51 @@ test("registered profile bindings use the execution profile ID and hash identity
     modelTokenizerIdentities: ["qwen3-off-tokenizer", "qwen3-on-tokenizer"],
     modelTokenizerImplementations: ["nfkc-whitespace-v1", "nfkc-whitespace-v1"],
   } as const;
-  assert.equal(registeredProfileBindingsMatch(bindings), true);
+  assert.equal(registeredProfileBindingsMatch(bindings, 2), true);
+  assert.equal(registeredProfileBindingsMatch(bindings, 1), false);
   assert.equal(registeredProfileBindingsMatch({
     ...bindings,
     modelProfileIds: [bindings.modelProfileIds[0], bindings.modelProfileIds[0]],
-  }), true);
+  }, 2), true);
   assert.equal(registeredProfileBindingsMatch({
     ...bindings,
     modelProfileHashes: [bindings.modelProfileHashes[0], bindings.modelProfileHashes[0]],
-  }), true);
+  }, 2), true);
   assert.equal(registeredProfileBindingsMatch({
     ...bindings,
     modelProfileIds: [bindings.modelProfileIds[0], bindings.modelProfileIds[0]],
     modelProfileHashes: [bindings.modelProfileHashes[0], bindings.modelProfileHashes[0]],
-  }), false);
+  }, 2), false);
   assert.equal(registeredProfileBindingsMatch({
     ...bindings,
     modelDigests: [bindings.modelDigests[0], bindings.modelDigests[0]],
-  }), false);
+  }, 2), false);
   assert.equal(registeredProfileBindingsMatch({
     ...bindings,
     modelDriverKinds: ["responses", "ollama-chat"],
-  }), false);
+  }, 2), false);
   assert.equal(registeredProfileBindingsMatch({
     ...bindings,
     modelTokenizerIdentities: ["qwen3-off-tokenizer", ""],
-  }), false);
+  }, 2), false);
+
+  const oneProfile = {
+    modelProfileIds: [bindings.modelProfileIds[0]],
+    modelProfileHashes: [bindings.modelProfileHashes[0]],
+    modelDigests: [bindings.modelDigests[0]],
+    modelDriverKinds: [bindings.modelDriverKinds[0]],
+    modelTokenizerIdentities: [bindings.modelTokenizerIdentities[0]],
+    modelTokenizerImplementations: [bindings.modelTokenizerImplementations[0]],
+  };
+  assert.equal(registeredProfileBindingsMatch(oneProfile, 1), true);
+});
+
+test("one-profile registered phases require fact-pair and trap-audit evidence", () => {
+  assert.equal(requiresRegisteredEvidence(true, "pilot", 1, 1), true);
+  assert.equal(requiresRegisteredEvidence(true, "main", 1, 1), true);
+  assert.equal(requiresRegisteredEvidence(true, "main", 2, 1), false);
+  assert.equal(requiresRegisteredEvidence(false, "main", 1, 1), false);
+  assert.equal(requiresRegisteredEvidence(true, "quick", 1, 1), false);
 });
 
 test("registered fact token counts preserve repeated normalized token occurrences", () => {

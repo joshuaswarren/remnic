@@ -592,7 +592,7 @@ export async function projectBenchmarkResult(
 export async function writeTrace(
   outputDir: string,
   rowKey: string,
-  attempt: 1 | 2 | 3 | 4 | 5 | 6,
+  attempt: number,
   value: unknown,
 ): Promise<{ path: string; hash: string }> {
   const relative = `traces/${rowKey}/attempt-${attempt}.json`;

@@ -101,7 +101,7 @@ const RUN_METADATA_CONTRACT = {
   | "runOrder"
 >;
 
-function faultTry(attempt: 1 | 2 | 3 | 4 | 5 | 6, code = "RATE_LIMIT"): RepeatedFailureTry {
+function faultTry(attempt: number, code = "RATE_LIMIT"): RepeatedFailureTry {
   return {
     attempt,
     durationMs: attempt * 10,
@@ -163,7 +163,7 @@ function validEpisode(overrides: Partial<Extract<RepeatedFailureEpisode, { statu
 }
 
 function taskTry(
-  attempt: 1 | 2 | 3 | 4 | 5 | 6,
+  attempt: number,
   episode: RepeatedFailureEpisode = validEpisode()
 ): RepeatedFailureTry {
   return {
@@ -244,7 +244,7 @@ test("unsafe identity strings cannot control checkpoint paths", () => {
   assert.match(path.basename(checkpointPath), /^h6-row-v1-[a-f0-9]{64}\.json$/);
 });
 
-test("each host fault is atomically persisted and the sixth terminalizes INVALID", async () => {
+test("host-fault-only exhaustion stays resumable until a task result terminalizes the row", async () => {
   const { dir, store } = await tempStore();
   try {
     const first = await commitClaimedTry(store, IDENTITY, faultTry(1));
@@ -254,27 +254,16 @@ test("each host fault is atomically persisted and the sixth terminalizes INVALID
     assert.equal(onDiskFirst.tries.length, 1);
     assert.deepEqual(onDiskFirst.tries[0].tokens, faultTry(1).tokens);
 
-    // Attempts 2 through 5 accumulate without terminalizing: the registered
-    // retry rule allows five retries after the first try (decision rule v9).
-    for (const attempt of [2, 3, 4, 5] as const) {
-      const intermediate = await commitClaimedTry(store, IDENTITY, faultTry(attempt));
-      assert.equal(intermediate.tries.length, attempt);
-      assert.equal(intermediate.terminal, undefined);
+    for (const attempt of [2, 3, 4, 5, 6]) {
+      const checkpoint = await commitClaimedTry(store, IDENTITY, faultTry(attempt));
+      assert.equal(checkpoint.tries.length, attempt);
+      assert.equal(checkpoint.terminal, undefined);
     }
 
-    const sixth = await commitClaimedTry(store, IDENTITY, faultTry(6));
-    assert.equal(sixth.tries.length, 6);
-    assert.equal(sixth.terminal?.status, "INVALID");
-    assert.equal(sixth.terminal?.invalidReason, "HOST_RETRIES_EXHAUSTED");
-    assert.deepEqual(sixth.terminal?.tokens, {
-      input: 21,
-      output: 27,
-      total: 48,
-      cachedInput: 33,
-      cacheWriteInput: 39,
-      reasoningOutput: 45,
-    });
-    assert.equal(sixth.terminal?.durationMs, 210);
+    const completed = await commitClaimedTry(store, IDENTITY, taskTry(7));
+    assert.equal(completed.tries.length, 7);
+    assert.equal(completed.terminal?.status, "VALID");
+    assert.equal(completed.terminal?.finalState, "FIXED");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

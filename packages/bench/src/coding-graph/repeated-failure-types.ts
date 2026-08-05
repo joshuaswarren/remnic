@@ -103,8 +103,14 @@ export type RepeatedFailureEpisode =
       isolation?: RepeatedFailureIsolationIdentity;
     };
 
+/**
+ * The host-fault retry budget is per run session, not cumulative across the
+ * lifetime of a row: resuming a paused run asserts the endpoint was repaired,
+ * so the row earns a fresh budget while its attempt history keeps growing.
+ * `attempt` is therefore a bounded counter rather than a fixed-width union.
+ */
 export interface RepeatedFailureTry {
-  attempt: 1 | 2 | 3 | 4 | 5 | 6;
+  attempt: number;
   durationMs: number;
   tokens: RepeatedFailureTokenUsage;
   outcome:
