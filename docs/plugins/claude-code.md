@@ -12,6 +12,19 @@ What the package README covers, in order:
 4. The `.mcp.json` block you must paste into Claude Code's MCP config yourself.
 5. The agent note explaining why hook/skill/agent files are not auto-published.
 
+## Install from the Claude Code marketplace
+
+The repo ships a Claude Code marketplace manifest (`.claude-plugin/marketplace.json`), so the plugin can be installed with two commands instead of the manual `npm install -g` + plugin-loader step:
+
+```bash
+claude plugin marketplace add joshuaswarren/remnic
+claude plugin install remnic@remnic
+```
+
+This loads the hooks, skills, and the `memory-review` agent through Claude Code's own plugin system. The hooks resolve the daemon bearer token from the Remnic token store (`~/.remnic/tokens.json`) or the `REMNIC_AUTH_TOKEN` / `OPENCLAW_REMNIC_ACCESS_TOKEN` env vars, so auto-recall / auto-observe work against a local daemon out of the box.
+
+What the marketplace install does **not** do: it does not fill in the MCP server credential. The bundled `.mcp.json` ships a `{{REMNIC_TOKEN}}` placeholder pointed at `http://localhost:4318/mcp`; you still complete the token (and, for a remote daemon, the URL) exactly as described in the package README's "MCP setup" section. In other words, the marketplace replaces the *plugin load* step — the token/MCP config step is unchanged.
+
 ## Reality vs. older docs
 
 Earlier versions of this page claimed `remnic connectors install claude-code` "installs the plugin / configures MCP / runs a health check." That is no longer true:

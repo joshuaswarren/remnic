@@ -1,0 +1,24 @@
+{
+  "name": "remnic",
+  "owner": {
+    "name": "Joshua Warren"
+  },
+  "metadata": {
+    "description": "Remnic — local-first AI memory for Claude Code: automatic recall, observation, and cross-agent knowledge sharing.",
+    "version": "9.49.0"
+  },
+  "plugins": [
+    {
+      "name": "remnic",
+      "source": "./packages/plugin-claude-code",
+      "description": "Persistent long-term memory for Claude Code — wires SessionStart/UserPromptSubmit/PostToolUse hooks, MCP tools, memory skills, and the memory-review agent into a running Remnic daemon.",
+      "version": "9.49.0",
+      "author": {
+        "name": "Joshua Warren"
+      },
+      "homepage": "https://github.com/joshuaswarren/remnic",
+      "category": "productivity",
+      "keywords": ["memory", "recall", "observe", "mcp", "engram", "remnic"]
+    }
+  ]
+}
