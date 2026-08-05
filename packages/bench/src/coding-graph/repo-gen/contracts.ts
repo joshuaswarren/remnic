@@ -252,7 +252,7 @@ export const H6_DECISION_RULE = {
   name: "H6 Failure Gate Decision Rule",
   preregistration: {
     path: "docs/research/failure-gate/preregistration.md",
-    sha256: "ecbfe3c047b90bdc115c7654bd22676b405f06ec58e5afbe6a8b0ac2c66e1e19",
+    sha256: "7c5bb227279b42f5e82aa2a0e7d05b7759736bee9a5e5893e1f126c95906b6aa",
   },
   analysisPopulation: {
     datasetVersion: 1,

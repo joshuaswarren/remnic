@@ -19,8 +19,8 @@ Dataset schema version 1, frozen inventory revision 3, contains 30 tasks, three 
 
 The splits are fixed as follows:
 
-- Dev: `h6-task-01`, `h6-task-06`, `h6-task-11`, `h6-task-16`, `h6-task-21`, `h6-task-26`.
-- Pilot: `h6-task-02`, `h6-task-07`, `h6-task-12`, `h6-task-17`, `h6-task-22`, `h6-task-27`.
+- Dev: none. Harness development uses generated tasks but does not define a scored dev split.
+- Pilot: `h6-task-01`, `h6-task-02`, `h6-task-06`, `h6-task-07`, `h6-task-11`, `h6-task-12`, `h6-task-16`, `h6-task-17`, `h6-task-21`, `h6-task-22`, `h6-task-26`, `h6-task-27`.
 - Main: `h6-task-03`, `h6-task-04`, `h6-task-05`, `h6-task-08`, `h6-task-09`, `h6-task-10`, `h6-task-13`, `h6-task-14`, `h6-task-15`, `h6-task-18`, `h6-task-19`, `h6-task-20`, `h6-task-23`, `h6-task-24`, `h6-task-25`, `h6-task-28`, `h6-task-29`, `h6-task-30`.
 
 Dev work may fix the harness. Pilot work may measure the base rate, within-task dependence, match behavior, and note length. A change after pilot requires a new preregistration version and decision-rule hash before any main row runs. Main task outcomes may not tune prompts, notes, matching, caps, seeds, models, or analysis.
