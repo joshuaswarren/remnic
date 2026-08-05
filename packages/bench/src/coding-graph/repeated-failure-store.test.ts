@@ -826,6 +826,10 @@ test("checkpoint reads reject a symlinked checkpoint directory", async () => {
 
     assert.equal((await store.load(IDENTITY)).kind, "MALFORMED");
     await assert.rejects(
+      () => store.claimRow(IDENTITY),
+      /checkpoint directory must be a real directory/,
+    );
+    await assert.rejects(
       () => store.compileRows(),
       /checkpoint directory must be a real directory/,
     );

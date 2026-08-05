@@ -262,7 +262,9 @@ export class RepeatedFailureRowStore {
     });
     const lockPath = this.claimLockPath(rowKey);
     const deadline = Date.now() + this.claimWaitTimeoutMs;
+    await this.assertCheckpointsDirectorySafe();
     await mkdir(this.checkpointsDir, { recursive: true });
+    await this.assertCheckpointsDirectorySafe();
 
     while (true) {
       try {
