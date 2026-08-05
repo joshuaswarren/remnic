@@ -982,8 +982,8 @@ export async function terminalEvidenceIsDurable(
 ): Promise<boolean> {
   if (!row.evidence) return false;
   try {
-    return sha256(await readFile(containedPath(outputDir, row.evidence.traceArtifactPath)))
-      === row.evidence.traceArtifactHash;
+    const tracePath = await containedRegularFile(outputDir, row.evidence.traceArtifactPath);
+    return sha256(await readFile(tracePath)) === row.evidence.traceArtifactHash;
   } catch {
     return false;
   }

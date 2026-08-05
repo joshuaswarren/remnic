@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import type { RepeatedFailureEpisodeRow, RepeatedFailureArm } from "./repeated-failure-types.js";
 import type { FactPairAuditPair } from "./repeated-failure-suite-shared.js";
-import type { TimingPayload } from "./repeated-failure-suite-execution.js";
+import {
+  terminalEvidenceIsDurable,
+  type TimingPayload,
+} from "./repeated-failure-suite-execution.js";
 import {
   buildTimingEvidenceAudit,
   writeTrace,
@@ -186,6 +190,28 @@ test("trace writes reject symlinked parent directories", async () => {
       () => writeTrace(outputDir, "row-1", 1, { status: "test" }),
       /symbolic link path is not allowed/,
     );
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+    await rm(outsideDir, { recursive: true, force: true });
+  }
+});
+
+test("terminal evidence durability rejects symlinked trace leaves", async () => {
+  const outputDir = await mkdtemp(path.join(tmpdir(), "h6-terminal-output-"));
+  const outsideDir = await mkdtemp(path.join(tmpdir(), "h6-terminal-outside-"));
+  const bytes = "{}\n";
+  try {
+    const traceDir = path.join(outputDir, "traces", "row-1");
+    const outsideTrace = path.join(outsideDir, "trace.json");
+    await mkdir(traceDir, { recursive: true });
+    await writeFile(outsideTrace, bytes, "utf8");
+    await symlink(outsideTrace, path.join(traceDir, "attempt-1.json"));
+    const terminalRow = row("PRE_ACTION_FAILURE", "NO_MATCH");
+    assert.ok(terminalRow.evidence);
+    terminalRow.evidence.traceArtifactPath = "traces/row-1/attempt-1.json";
+    terminalRow.evidence.traceArtifactHash = createHash("sha256").update(bytes).digest("hex");
+
+    assert.equal(await terminalEvidenceIsDurable(outputDir, terminalRow), false);
   } finally {
     await rm(outputDir, { recursive: true, force: true });
     await rm(outsideDir, { recursive: true, force: true });
