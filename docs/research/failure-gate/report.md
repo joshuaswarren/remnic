@@ -274,19 +274,29 @@ that is the only class demonstrated to supply it. The tradeoff is scope: a
 dataset weighted toward one trap class narrows what the study can claim, and
 that is a design decision rather than a tuning knob.
 
-### Unresolved: audit `FIXED` does not predict pilot `taskPassed`
+### Resolved: the audit did predict the pilot; I compared the wrong fields
 
-Before designing around "passable" tasks, one discrepancy needs an explanation.
-The audit records 11 of 30 tasks as `FIXED`, meaning the model repaired them in
-its sampled episode. The pilot's trap-bearing population records **0 passes in
-900 episodes**. The two measure different repository states — the pilot's
-primary rows materialize `variant.files` while `no-trap` rows materialize
-`variant.noTrapControlFiles` — but the size of the gap is not yet accounted for.
+An earlier revision flagged an unexplained gap — the audit recording 11 of 30
+tasks `FIXED` while the pilot's trap-bearing population recorded zero passes —
+and said to resolve it before designing a v4. It is resolved, and it was never a
+discrepancy. I was comparing the audit's `finalState` against the pilot's
+`taskPassed`, which are different fields.
 
-Until it is, "build a dataset of tasks the model can pass" rests on an
-unverified assumption, because the audit's `FIXED` label is currently the only
-cheap way to identify such tasks and it demonstrably does not carry over. Resolve
-this before committing generation and compute to a v4.
+Compared like for like, the two agree closely:
+
+| Source | FIXED rate |
+| --- | ---: |
+| Audit (30 tasks, 1 episode each) | 11/30 = **36.7%** |
+| Pilot primary (900 episodes) | 340/900 = **37.8%** |
+
+And `taskPassed` agrees too, for the same reason everywhere: **all 30 audit rows
+carry a `TOKEN_CAP` fault**, so every one of the 11 `FIXED` audit rows also
+records `taskPassed: false`. The cap is hit in 100 percent of audit rows and
+98.7 percent of pilot rows.
+
+So the audit is a sound cheap predictor of `finalState`, and no property of the
+dataset needs re-deriving before a next version. The single thing that needs
+changing is the token budget.
 
 ## Artifacts
 
