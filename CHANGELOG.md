@@ -1396,3 +1396,5 @@ This project auto-releases on every merge to `main`. Per-release notes for indiv
 - add PR5 objective-state memory foundation: typed snapshot schema/store, status CLI, feature flags, and docs/tests
 - add PR7 objective-state recall: bounded snapshot search, recall injection flag, objective-state recall section, and docs/tests
 - Added the PR9 foundation for action-conditioned causal graph construction, including deterministic causal-stage graph edges derived from typed trajectory records behind `actionGraphRecallEnabled`.
+
+<!-- touchpoint: 2026-08-06 14:22:07 round-4 review-cleanup -->
