@@ -59,8 +59,14 @@ be supported doubled the multiplicity penalty on the hypothesis that works.**
 | Raw p | 0.8413 |
 | Task-pass benefit | 0, interval [0, 0], p = 1 |
 
-Content requires strictly positive lower bounds on **both** metrics. The
-task-pass benefit is exactly zero because both content arms pass zero tasks:
+Content requires strictly positive lower bounds on **both** metrics, and the
+task-pass leg is dead for a blunter reason than an arm-level tie.
+
+**In the trap-bearing population the model passed nothing at all: 0 of 900
+episodes, across all 12 tasks and all 5 arms.** Every pass recorded anywhere in
+this pilot came from `no-trap` control revisions, and even there from only two
+tasks. Arm-level rates (the 0.041 figures below) are therefore carried entirely
+by no-trap rows, not by the tasks the primaries are computed on.
 
 | Arm | n | task pass | repeated failure |
 | --- | ---: | ---: | ---: |
@@ -70,15 +76,13 @@ task-pass benefit is exactly zero because both content arms pass zero tasks:
 | `TURN_START_SUCCESS` | 135 | 0.000 | 0.378 |
 | `BOTH` | 135 | 0.000 | 0.000 |
 
-Both content arms passed zero of 135 episodes here, and the v1 pilot measured
-content power 0.000 independently. On that evidence the task-pass benefit is a
-degenerate `[0, 0]` interval with p = 1, and no realistic increase in sample
-size makes it produce a positive lower bound while the underlying rate stays at
-the floor. This is a statement about the observed operating point, not a proof
-about all possible data: the constraint would lift if the model's task-pass rate
-rose materially above zero in these arms. At this model's capability, where even
-the best arm fully repairs 4.1 percent of tasks, that is not in prospect.
-
+So the task-pass benefit is a degenerate `[0, 0]` interval with p = 1, and the
+v1 pilot measured content power 0.000 independently. The binding constraint is
+not that the two content arms tie — it is that this model never repairs a
+trapped task, so the metric has no signal to measure. That is a statement about
+the present operating point rather than a proof about all data: it would lift
+with a model that can sometimes fix these tasks. Nothing in the evidence
+suggests the current one can.
 ### No-trap equivalence — not equivalent
 
 | Quantity | Value | Margin | Inside |
@@ -96,87 +100,81 @@ registered claim "the gate does not change behavior on tasks with no trap" is
 not supported at the registered margin, but nothing here suggests the gate
 causes harm.
 
-#### The ±0.02 margin is below this design's noise floor
+#### The check has an effective sample size of two
 
-The equivalence check had almost no room to pass. Measured
-no-trap population, 12 tasks × 15 episodes per arm:
+**Correction.** An earlier revision of this section computed the standard error
+from an episode-level binomial approximation, giving SE 0.0224, margin ÷ SE
+0.89, and a requirement of roughly 200 no-trap tasks. That was the wrong
+estimator. The analysis bootstraps at the **task** level, so the SE must come
+from the spread of per-task differences. The corrected figures are below and
+they change the conclusion.
+
+Measured no-trap population, 12 tasks × 15 episodes per arm:
 
 | Arm | n | passes | pass rate | mean steps |
 | --- | ---: | ---: | ---: | ---: |
 | `NO_MEMORY` | 180 | 7 | 0.0389 | 5.328 |
 | `PRE_ACTION_FAILURE` | 180 | 10 | 0.0556 | 5.361 |
 
-The entire non-equivalence verdict rests on **three episodes** — 7 passes versus
-10 out of 180 — in the direction that favours the gate.
+Per-task differences tell the real story:
+
+| Task | baseline | candidate | difference |
+| --- | ---: | ---: | ---: |
+| `h6-task-21` | 5/15 | 6/15 | +0.0667 |
+| `h6-task-22` | 2/15 | 4/15 | +0.1333 |
+| **other 10 tasks** | **0/15** | **0/15** | **0.0000** |
+
+**Ten of twelve tasks contribute exactly zero** — the model passes none of them
+in either arm. All variance in the statistic comes from two tasks, so the
+equivalence check has an effective sample size of **2**, not 12, and the whole
+verdict turns on three extra passes (one in `21`, two in `22`).
 
 | Quantity | Value |
 | --- | ---: |
-| Registered margin | 0.0200 (≈ 3.6 episodes of 180) |
-| SE of the pass-rate difference | 0.0224 |
-| 90% CI half-width (1.645·SE) | 0.0368 |
-| **margin ÷ SE** | **0.89** |
+| Registered margin | 0.0200 |
+| SD of per-task differences | 0.0414 |
+| **Task-level SE** | **0.0120** |
+| 90% half-width (1.645·SE) | 0.0197 |
+| **margin ÷ SE** | **1.67** |
 
-A 90% interval fits strictly inside a margin only when that margin exceeds about
-1.645 standard errors of the statistic. Here the margin is **0.89 SE** — smaller
-than one standard error of the quantity it constrains. Under the normal
-approximation, even a true difference of exactly zero yields a half-width of
-0.0368, roughly 1.8× too wide to fit, and reaching strict containment under an
-exact null needs about 609 episodes per arm, or **41 no-trap tasks** against the
-12 this design has.
+At 1.67 SE the margin sits just above the 1.645 needed for containment to be
+possible at all, so — contrary to the earlier revision — equivalence was **not**
+out of reach by construction. It was reachable only if the observed difference
+sat almost exactly on zero, which two passable tasks out of twelve could not
+deliver.
 
-To be precise about what that does and does not establish: the check was not
-strictly impossible. The realised interval is a task-level bootstrap, not the
-normal approximation, and had the two arms produced identical pass counts the
-resulting interval could have landed just inside ±0.02. What the arithmetic
-shows is that passing required the observed difference to sit essentially on
-zero — a knife-edge, not a robust test. A three-episode difference out of 180,
-which is roughly one step of the metric's resolution, was enough to fail it.
+The steps half of the same check has roughly 60× headroom (0.0333 observed
+against a ±2 margin). That asymmetry is still real: the two margins were not set
+from the same operating characteristics.
 
-Two things follow. First, the equivalence failure is far more a property of the
-specification than a finding about the gate. Second, the two margins were set
-with wildly inconsistent stringency: the pass-rate margin sits below the noise
-floor while the steps margin (±2 against an observed 0.0333) has roughly **60×**
-headroom. Margins derived from the design's own operating characteristics — a
-3.9 percent base rate and 180 episodes per arm — would not look like that.
+#### What it would take, using the correct estimator
 
-This is a specification defect that was detectable before the run, from the base
-rate and episode count alone, without reference to any observed difference. That
-distinction matters: correcting the margin on those grounds is a principled
-re-derivation, whereas widening it because the test failed would be threshold
-shopping. Any correction must be argued and documented on the pre-run arithmetic.
+For an equivalence test to reach 80 percent power *at a true difference of
+zero*, the margin must exceed `(z₀.₉₅ + z₀.₉₀) · SE ≈ 2.93 · SE`. Holding the
+observed per-task spread (SD 0.0414) and scaling the task count:
 
-#### No margin works at this operating point
+| No-trap tasks | task-level SE | margin needed for 80% power |
+| ---: | ---: | ---: |
+| **12 (this design)** | 0.0120 | **0.0350** |
+| 18 | 0.0098 | 0.0286 |
+| 30 | 0.0076 | 0.0221 |
+| **41** | 0.0065 | **0.0189** ✓ |
+| 60 | 0.0053 | 0.0157 ✓ |
+| 100 | 0.0041 | 0.0121 ✓ |
 
-Loosening the margin is not a fix either. For an equivalence test to reach 80
-percent power *at a true difference of zero*, the margin must exceed
-`(z₀.₉₅ + z₀.₉) · SE ≈ 2.93 · SE`. Applying that to this design:
+**The registered ±0.02 margin becomes properly powered at about 41 no-trap
+tasks** — roughly 3.4× the current population, not the sixteen-fold increase the
+earlier revision claimed. That is a larger study, but an ordinary one.
 
-| No-trap tasks | episodes/arm | SE | margin needed for 80% power |
-| ---: | ---: | ---: | ---: |
-| **12 (this design)** | 180 | 0.0224 | **0.0654** |
-| 18 | 270 | 0.0183 | 0.0534 |
-| 41 | 615 | 0.0121 | 0.0354 |
-| 100 | 1500 | 0.0077 | 0.0227 |
-| 200 | 3000 | 0.0055 | **0.0160** ✓ |
+This supersedes the previous recommendation to retire the pass-rate check. The
+check is not unusable; it is under-resourced. Retiring a test that a 41-task
+design would answer cleanly would discard a real question rather than settle it.
 
-The design is caught between two impossibilities. Keeping the registered ±0.02
-margin requires roughly **200 no-trap tasks**, sixteen times the current
-population. Keeping the current 12 tasks requires a margin of **0.0654**, which
-is 1.4× the base pass rate itself — a band wide enough to permit the pass rate
-doubling or vanishing, which asserts nothing.
-
-The cause is that task pass is a rare event here (3.9 to 5.6 percent).
-Equivalence testing on a rare binary outcome needs very large samples, and no
-choice of margin substitutes for them.
-
-**Recommendation: retire the pass-rate equivalence check from this design rather
-than loosen it.** The steps half of the same check is viable and passes with 60×
-headroom, so the timidity question — does the gate make the agent work harder or
-behave more cautiously on tasks with no trap — is answerable, and the answer is
-no. Retaining the pass-rate half at any margin this design can support would
-manufacture a verdict rather than measure one. If pass-rate equivalence is
-scientifically required, it needs a fundamentally larger study or a task set
-where the model's base pass rate is not near the floor.
+The caveat is that the SD is itself estimated from two informative tasks, so the
+41 figure is indicative rather than precise, and it assumes added tasks resemble
+the existing mix. Given that 10 of 12 current tasks contribute nothing, the more
+efficient route is not simply more tasks but more tasks the model can sometimes
+pass: the effective sample size, not the nominal one, is what sets the SE.
 
 ## What changed against the v1 pilot
 
@@ -204,16 +202,25 @@ this run's artifacts, so the comparison is left open rather than resolved here.
 1. **Timing is real and adequately powered.** RRR 1.00, benefit 0.317, interval
    clear of zero, and 0.8363 simulated power. It fails today only on a
    multiplicity correction imposed by a hypothesis that cannot be supported.
-2. **Content cannot be rescued by more data.** Any further pilot spends compute
-   to re-measure a structural zero.
-3. **Equivalence needs a decision, not more tasks.** The pass-rate interval
-   misses a ±0.02 margin by 0.019. Whether that margin is right for a 4.1 percent
-   base pass rate is a scientific judgment; re-running without changing anything
-   will reproduce it.
+2. **Content cannot be rescued by more tasks of the current kind.** The model
+   passes none of the trap-bearing tasks — 0 of 900 episodes — so the task-pass
+   leg has no signal. What would rescue it is a task set this model can
+   sometimes solve, not a larger one.
+3. **Equivalence is under-resourced, not unusable.** The registered ±0.02 margin
+   becomes properly powered at roughly 41 no-trap tasks. Ten of the current 12
+   contribute exactly zero, so the effective sample size is 2. The fix is more
+   *passable* tasks, and it needs no change to any threshold.
+
+Points 2 and 3 share one cause: at this model's capability almost every task is
+unsolvable, which starves both the content metric and the equivalence estimator.
+A dataset built around tasks the model can sometimes pass would address both
+without weakening the protocol — and that is exactly the "new dataset version"
+the objective called for, aimed at pass-rate signal rather than trap coverage.
 
 The drafted amendment (`amendment-01-draft.md`) removes content from the main
-power gate. On this evidence it is necessary but **not sufficient** — the
-no-trap gate now fails too, which the draft predates and does not address.
+power gate. Its content argument still holds; its no-trap sections are
+superseded by the corrected estimator above and should not be applied as
+written.
 
 Any amendment that drops content also removes it from the Holm family, which
 moves timing from adjusted p 0.0624 to raw 0.0312 and flips it to `SUPPORTED`.
