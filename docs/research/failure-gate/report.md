@@ -50,7 +50,7 @@ Timing failed on one thing: the Holm correction. The family is
 2 × 0.0312 = 0.0624, just over the 0.05 bar. **Carrying a hypothesis that cannot
 be supported doubled the multiplicity penalty on the hypothesis that works.**
 
-### H6-content — rejected, and unsatisfiable by construction
+### H6-content — rejected, but the cause is instrumentation, not capability
 
 | Quantity | Value |
 | --- | ---: |
@@ -59,30 +59,47 @@ be supported doubled the multiplicity penalty on the hypothesis that works.**
 | Raw p | 0.8413 |
 | Task-pass benefit | 0, interval [0, 0], p = 1 |
 
-Content requires strictly positive lower bounds on **both** metrics, and the
-task-pass leg is dead for a blunter reason than an arm-level tie.
+**Correction — this supersedes earlier revisions of this section.** Those said
+the model "passed nothing at all" and concluded the task-pass metric was dead at
+this model's capability. The first half is true as recorded and the second half
+is wrong. The metric is dead because of a token cap.
 
-**In the trap-bearing population the model passed nothing at all: 0 of 900
-episodes, across all 12 tasks and all 5 arms.** Every pass recorded anywhere in
-this pilot came from `no-trap` control revisions, and even there from only two
-tasks. Arm-level rates (the 0.041 figures below) are therefore carried entirely
-by no-trap rows, not by the tasks the primaries are computed on.
+Cross-tabulating the recorded `finalState` against `taskPassed`:
 
-| Arm | n | task pass | repeated failure |
-| --- | ---: | ---: | ---: |
-| `NO_MEMORY` | 270 | 0.041 | 0.163 |
-| `PRE_ACTION_FAILURE` | 270 | 0.041 | 0.000 |
-| `TURN_START_FAILURE` | 135 | 0.000 | 0.289 |
-| `TURN_START_SUCCESS` | 135 | 0.000 | 0.378 |
-| `BOTH` | 135 | 0.000 | 0.000 |
+| Population | finalState | checkResult | taskPassed | rows |
+| --- | --- | --- | --- | ---: |
+| primary | **FIXED** | PASS | **false** | **340** |
+| primary | TRAPPED | FAIL | false | 142 |
+| primary | UNFIXED | FAIL | false | 418 |
+| no-trap | NO_TRAP | PASS | false | 343 |
+| no-trap | NO_TRAP | PASS | **true** | **17** |
 
-So the task-pass benefit is a degenerate `[0, 0]` interval with p = 1, and the
-v1 pilot measured content power 0.000 independently. The binding constraint is
-not that the two content arms tie — it is that this model never repairs a
-trapped task, so the metric has no signal to measure. That is a statement about
-the present operating point rather than a proof about all data: it would lift
-with a model that can sometimes fix these tasks. Nothing in the evidence
-suggests the current one can.
+**The model repaired 340 of 900 trap-bearing episodes — 37.8 percent — and every
+one was recorded as `taskPassed: false`.** All 340 carry a `TOKEN_CAP` fault, and
+`baseEvidence` forces `taskPassed` false whenever a cap is exceeded. That matches
+the preregistration exactly: a row passes "only when the fixed offline check
+returns `PASS` **within all caps**".
+
+Token usage against the frozen `maxTotalTokens` of 16,384:
+
+| Statistic | Tokens |
+| --- | ---: |
+| Minimum | 15,762 |
+| Median | **17,578** |
+| p90 | 19,811 |
+| Maximum | 25,424 |
+| **Rows at or over cap** | **1,243 of 1,260 (98.7%)** |
+
+The median episode overruns the cap by about 1,200 tokens. The only 17 rows
+recorded as passing are exactly those that finished under it, at a maximum of
+16,281 tokens. `taskPassed` is therefore not measuring "solved the task" in this
+run — it is measuring "finished under 16,384 tokens".
+
+The cap traces back to an operational choice: the profile pins the context window
+to 16,384 because at 32,768 this model spills to CPU and per-call latency rises
+from roughly 0.75 s to 15 s. `DEFAULT_CAPS.maxTotalTokens` matches that window.
+A GPU-memory decision silently disabled one of the two content metrics.
+
 ### No-trap equivalence — not equivalent
 
 | Quantity | Value | Margin | Inside |
@@ -201,33 +218,33 @@ this run's artifacts, so the comparison is left open rather than resolved here.
 
 1. **Timing is real and adequately powered.** RRR 1.00, benefit 0.317, interval
    clear of zero, and 0.8363 simulated power. It fails today only on a
-   multiplicity correction imposed by a hypothesis that cannot be supported.
-2. **Content cannot be rescued by more tasks of the current kind.** The model
-   passes none of the trap-bearing tasks — 0 of 900 episodes — so the task-pass
-   leg has no signal. What would rescue it is a task set this model can
-   sometimes solve, not a larger one.
-3. **Equivalence is under-resourced, not unusable.** The registered ±0.02 margin
-   becomes properly powered at roughly 41 no-trap tasks. Ten of the current 12
-   contribute exactly zero, so the effective sample size is 2. The fix is more
-   *passable* tasks, and it needs no change to any threshold.
+   multiplicity correction imposed by a hypothesis that could not be supported.
+2. **Content and equivalence were both disabled by one config value.** 98.7
+   percent of rows exceeded the 16,384-token cap, which forces `taskPassed`
+   false regardless of outcome. The model actually repaired 37.8 percent of
+   trap-bearing episodes. The task-pass metric never measured capability in this
+   run; it measured whether an episode fitted in the budget.
+3. **The remedy is a cap, not a redesign.** Raising `maxTotalTokens` past the
+   observed p90 of ~19,800 — with headroom, say 24,576 — should restore
+   task-pass signal to both content and the equivalence estimator without
+   touching a single decision threshold, task, or hypothesis.
 
-Points 2 and 3 share one cause: at this model's capability almost every task is
-unsolvable, which starves both the content metric and the equivalence estimator.
-A dataset built around tasks the model can sometimes pass would address both
-without weakening the protocol — and that is exactly the "new dataset version"
-the objective called for, aimed at pass-rate signal rather than trap coverage.
+This supersedes the two earlier recommendations in this document. Retiring the
+pass-rate equivalence check was wrong, and so was rebuilding the dataset around
+"passable" tasks: the tasks were already passable 37.8 percent of the time. Both
+diagnoses mistook an instrumentation limit for a property of the model or the
+task set.
 
-The drafted amendment (`amendment-01-draft.md`) removes content from the main
-power gate. Its content argument still holds; its no-trap sections are
-superseded by the corrected estimator above and should not be applied as
-written.
+The cost is real but ordinary. A larger token budget needs a context window
+above 16,384, which on this GPU means either accepting roughly 15 s per call at
+32,768 or moving to a card with more memory. Then re-audit and re-pilot. That is
+the same compute a dataset rebuild would have cost, spent on the actual cause.
 
-Any amendment that drops content also removes it from the Holm family, which
-moves timing from adjusted p 0.0624 to raw 0.0312 and flips it to `SUPPORTED`.
-That is a large, self-serving-looking consequence of a post-hoc change and must
-be argued on the pre-existing structural grounds — content was unsatisfiable
-before this run, and was measured so in v1 — not on the fact that removing it
-helps timing.
+The drafted amendment (`amendment-01-draft.md`) is now moot in both halves and
+should not be applied. Its content argument assumed the task-pass metric was
+structurally dead; it was not. Removing content from the Holm family would still
+flip timing from adjusted p 0.0624 to raw 0.0312, which is exactly why that
+change should not be made on the strength of a measurement artifact.
 
 ## Design input for a next dataset version
 
