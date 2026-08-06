@@ -19,7 +19,7 @@ Applying any version of this invalidates the completed pilot, its audit receipt,
 and the harness hash. Sequencing lives in `RESUME-HANDOFF.md`; measured results
 live in `report.md`.
 
-## Second blocker: no-trap equivalence (measured, added after the pilot)
+## Second blocker: no-trap equivalence (SUPERSEDED — see header, kept for history)
 
 | Test | Simulated power | Required |
 | --- | ---: | ---: |
@@ -74,26 +74,19 @@ nothing. Task pass is a rare event here (3.9–5.6 percent), and equivalence
 testing on a rare binary outcome needs very large samples that no margin choice
 substitutes for.
 
-## Recommended resolution for the second blocker
+## Resolution for the second blocker — WITHDRAWN
 
-**Retire the pass-rate half of the no-trap check from this design rather than
-loosen it.** The steps half is viable and passes with 60× headroom, so the
-timidity question — does the gate make the agent work harder or behave more
-cautiously where there is no trap — is answerable, and the answer is no.
-Retaining the pass-rate half at any margin this design supports would
-manufacture a verdict instead of measuring one.
+This section previously recommended retiring the pass-rate half of the no-trap
+check. **That recommendation is withdrawn**, because it rested on the wrong
+standard error. With the task-level estimator the margin is 1.67 SE rather than
+0.89, and the registered ±0.02 becomes properly powered at about 41 no-trap
+tasks rather than 200. The check is under-resourced, not unusable, so retiring
+it would discard a question a larger task set answers cleanly.
 
-Rejected alternatives, recorded so the reasoning survives:
-
-- **Widen the margin to 0.0654.** Meaningless at a 3.9 percent base rate.
-- **Drop the whole no-trap check from the gate.** Discards the steps result,
-  which is both valid and informative.
-- **Grow to 200 no-trap tasks.** Scientifically clean, but a fundamentally
-  larger study; worth doing only if pass-rate equivalence is itself a
-  deliverable.
-- **Do not run main at all.** Still viable. The pilot already answers the
-  science: timing real (RRR 1.00, benefit 0.317, interval [0.100, 0.567]),
-  content dead, steps-equivalence supported.
+The current recommendation lives in `report.md`: grow the task set toward tasks
+the model can sometimes pass, which repairs the equivalence estimator and the
+content metric together without touching any threshold. Everything above in this
+section is retained only as a record of the superseded reasoning.
 
 ---
 
@@ -221,9 +214,11 @@ reads it. A reader must be able to see the margin that was retired and why.
 1. `packages/bench/src/coding-graph/repeated-failure-suite-analysis.ts`, in
    `verifyPilotPower`: drop `|| power.contentPower < 0.8` from the gate. Keep
    timing and timidity. Keep reporting content power in the artifact.
-2. Both `decision-rule.json` copies: update `preregistration.sha256` to the new
-   hash of the amended preregistration. Do **not** remove the `H6-content`
-   hypothesis block — it is still estimated and reported.
+2. `packages/bench/fixtures/h6-failure-gate/decision-rule.json` — the single
+   tracked copy, verified with `git ls-files | grep decision-rule.json`. Update
+   `preregistration.sha256` to the new hash of the amended preregistration. Do
+   **not** remove the `H6-content` hypothesis block — it is still estimated and
+   reported.
 3. **Add** a test — do not look for one to update. The power threshold gate is
    currently untested. `repeated-failure-suite.test.ts:1645` ("main phase
    rejects reduced frozen inputs and cannot start without verified pilot
