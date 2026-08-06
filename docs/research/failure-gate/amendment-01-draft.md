@@ -1,9 +1,19 @@
-# Amendment 1 (DRAFT — not yet applied, and now INCOMPLETE)
+# Amendment 1 (DRAFT — content argument stands; no-trap sections SUPERSEDED)
 
-Status: drafted before the v3 pilot finished, then overtaken by its results.
-**Dropping content is necessary but no longer sufficient.** The completed pilot
-shows the no-trap equivalence gate also fails, which this draft predates and
-does not address. Do not apply as written; see "Second blocker" below.
+Status: drafted before the v3 pilot finished, then partly overtaken by it.
+
+- The **content** argument still holds and is strengthened: the model passes
+  none of the trap-bearing tasks (0 of 900 episodes), so the task-pass leg has
+  no signal to measure.
+- The **no-trap sections below are wrong** and must not be applied. They compute
+  the standard error from an episode-level binomial approximation (SE 0.0224,
+  margin ÷ SE 0.89, ~200 tasks required, "no margin works"). The analysis
+  bootstraps at the *task* level, where SE is 0.0120, margin ÷ SE is 1.67, and
+  the registered ±0.02 margin becomes properly powered at about **41** no-trap
+  tasks. The corrected derivation is in `report.md`.
+- The recommendation to retire the pass-rate check is withdrawn. The check is
+  under-resourced, not unusable, and a larger task set answers it without
+  touching any threshold.
 
 Applying any version of this invalidates the completed pilot, its audit receipt,
 and the harness hash. Sequencing lives in `RESUME-HANDOFF.md`; measured results
