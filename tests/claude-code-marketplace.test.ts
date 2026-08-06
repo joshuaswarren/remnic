@@ -1,7 +1,7 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 // Contract tests for the Claude Code marketplace manifest
@@ -39,7 +39,7 @@ test("claude-code marketplace manifest: plugin source resolves to a real plugin"
   assert.equal(
     plugin.source,
     "./packages/plugin-claude-code",
-    "marketplace plugin source must be the canonical ./packages/plugin-claude-code",
+    "marketplace plugin source must be the canonical ./packages/plugin-claude-code"
   );
 
   // `source` is repo-relative; it must resolve to a real plugin directory that
@@ -49,7 +49,7 @@ test("claude-code marketplace manifest: plugin source resolves to a real plugin"
   const pluginManifestPath = path.join(pluginDir, ".claude-plugin", "plugin.json");
   assert.ok(
     fs.existsSync(pluginManifestPath),
-    `plugin manifest missing at ${plugin.source}/.claude-plugin/plugin.json`,
+    `plugin manifest missing at ${plugin.source}/.claude-plugin/plugin.json`
   );
 
   // Drift guard: if the plugin is renamed or moved, this must be updated too.
@@ -57,7 +57,7 @@ test("claude-code marketplace manifest: plugin source resolves to a real plugin"
   assert.equal(
     plugin.name,
     pluginManifest.name,
-    "marketplace plugin name must match the plugin's own plugin.json name",
+    "marketplace plugin name must match the plugin's own plugin.json name"
   );
 });
 
@@ -77,10 +77,37 @@ test("claude-code plugin manifest: author is an object so the plugin is marketpl
   // ("expected object, received string"), which blocks `claude plugin install`.
   // Guards the regression fixed in #2268.
   assert.equal(typeof pluginManifest.author, "object", "plugin author must be an object");
-  assert.ok(
-    pluginManifest.author && !Array.isArray(pluginManifest.author),
-    "plugin author must be a plain object",
-  );
+  assert.ok(pluginManifest.author && !Array.isArray(pluginManifest.author), "plugin author must be a plain object");
   assert.equal(typeof pluginManifest.author.name, "string");
   assert.ok(pluginManifest.author.name.length > 0, "plugin author.name must be non-empty");
+});
+
+test("claude-code marketplace manifest: bundled .mcp.json is a failsafe placeholder, not a working remnic server", () => {
+  // The marketplace install copies packages/plugin-claude-code into Claude Code's
+  // plugin tree and auto-discovers any root .mcp.json. A literal
+  // {{REMNIC_TOKEN}} placeholder + localhost URL would register a `remnic`
+  // server that 401s on every call until the user edits the installed copy,
+  // and reinstalls would silently overwrite that edit. To avoid that, the
+  // bundled file uses a deliberately inert server key + a port-0 URL that
+  // fails closed at startup, so the marketplace install leaves the real
+  // `remnic` server unregistered and the user registers it explicitly via
+  // `claude mcp add` (documented in docs/plugins/claude-code.md).
+  const m = readJson(manifestPath);
+  const pluginDir = path.resolve(repoRoot, m.plugins[0].source);
+  const bundledMcpPath = path.join(pluginDir, ".mcp.json");
+  assert.ok(fs.existsSync(bundledMcpPath), `bundled .mcp.json missing at ${pluginDir}/.mcp.json`);
+  const bundledMcp = readJson(bundledMcpPath);
+  const servers = bundledMcp.mcpServers;
+  assert.equal(typeof servers, "object", "mcpServers must be an object");
+  // Must NOT register a real `remnic` server — that would shadow the
+  // `claude mcp add remnic` the docs ask the user to run.
+  assert.equal(
+    servers.remnic,
+    undefined,
+    "bundled .mcp.json must not register a real `remnic` MCP server on marketplace install"
+  );
+  // The named placeholder server must fail closed at connection time.
+  const placeholder = servers["remnic-placeholder"];
+  assert.ok(placeholder, "bundled .mcp.json must register a `remnic-placeholder` server with a sentinel URL");
+  assert.equal(placeholder.url, "http://127.0.0.1:0/mcp", "placeholder URL must fail closed (port 0)");
 });
