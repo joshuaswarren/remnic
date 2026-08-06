@@ -262,11 +262,29 @@ pilot tasks, two per class:
 
 Two findings follow, both measured rather than inferred.
 
-**`config-shadowing` is inert.** It produced no trapped rows and no passes in
-the pilot, and the full 30-task audit puts all five of its tasks at `UNFIXED`
-with zero `TRAPPED` and zero `FIXED`. One sixth of the dataset currently
-contributes to neither primary nor the equivalence check. Dropping it frees that
-compute for classes that measure something.
+**`config-shadowing` produced no signal of its own.** No trapped rows and no
+passes in the pilot, and the full 30-task audit puts all five of its tasks at
+`UNFIXED` with zero `TRAPPED` and zero `FIXED`.
+
+**But "contributes nothing, so drop it" is wrong for the equivalence estimator,
+and an earlier revision said exactly that.** The two estimators treat a
+zero-outcome task differently. Timing needs a trapped baseline to form a
+contrast, so a class that never traps adds no information there. Equivalence
+averages a per-task *difference*, and a task scoring 0.0000 is a real
+observation that pulls the mean toward zero and shrinks the spread. Removing
+such tasks makes equivalence harder, not easier:
+
+| Population | k | mean | SD | SE | 90% upper |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| all 12 pilot tasks | 12 | 0.0167 | 0.0414 | 0.0120 | 0.0363 |
+| drop the 2 `config-shadowing` | 10 | 0.0200 | 0.0450 | 0.0142 | 0.0434 |
+| drop all 10 zero-difference tasks | 2 | 0.1000 | 0.0471 | 0.0333 | 0.1548 |
+
+Every removal moves the upper bound further from the ±0.02 margin. So the
+correct reading is class-specific: `config-shadowing` is dead weight **for the
+timing contrast**, while for the equivalence check it is doing useful work by
+supplying low-variance zeros. Any reweighting has to state which estimator it is
+optimising, because the two pull in opposite directions.
 
 **Every task pass came from `stale-cache-illusion`** — 17 of 17. If a future
 version needs pass-rate signal for content or for the equivalence estimator,
