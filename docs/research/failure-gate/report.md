@@ -83,7 +83,6 @@ trapped task, so the metric has no signal to measure. That is a statement about
 the present operating point rather than a proof about all data: it would lift
 with a model that can sometimes fix these tasks. Nothing in the evidence
 suggests the current one can.
-
 ### No-trap equivalence — not equivalent
 
 | Quantity | Value | Margin | Inside |
