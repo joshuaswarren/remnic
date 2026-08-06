@@ -70,11 +70,14 @@ task-pass benefit is exactly zero because both content arms pass zero tasks:
 | `TURN_START_SUCCESS` | 135 | 0.000 | 0.378 |
 | `BOTH` | 135 | 0.000 | 0.000 |
 
-No sample size can make a degenerate `[0, 0]` interval have a positive lower
-bound. Content power is structurally 0.000, and the v1 pilot measured the same
-figure independently. This is not an under-powered test; it is an unsatisfiable
-one at this model's capability, where the best arm fully repairs 4.1 percent of
-tasks.
+Both content arms passed zero of 135 episodes here, and the v1 pilot measured
+content power 0.000 independently. On that evidence the task-pass benefit is a
+degenerate `[0, 0]` interval with p = 1, and no realistic increase in sample
+size makes it produce a positive lower bound while the underlying rate stays at
+the floor. This is a statement about the observed operating point, not a proof
+about all possible data: the constraint would lift if the model's task-pass rate
+rose materially above zero in these arms. At this model's capability, where even
+the best arm fully repairs 4.1 percent of tasks, that is not in prospect.
 
 ### No-trap equivalence — not equivalent
 
@@ -95,7 +98,7 @@ causes harm.
 
 #### The ±0.02 margin is below this design's noise floor
 
-The equivalence check could not have passed, whatever the gate did. Measured
+The equivalence check had almost no room to pass. Measured
 no-trap population, 12 tasks × 15 episodes per arm:
 
 | Arm | n | passes | pass rate | mean steps |
@@ -113,15 +116,24 @@ The entire non-equivalence verdict rests on **three episodes** — 7 passes vers
 | 90% CI half-width (1.645·SE) | 0.0368 |
 | **margin ÷ SE** | **0.89** |
 
-A 90% interval can only fit strictly inside a margin when that margin exceeds
-about 1.645 standard errors. Here the margin is **0.89 SE** — smaller than one
-standard error of the very statistic it constrains. Even with a true difference
-of exactly zero, the interval would be roughly 1.8× too wide to fit. Achieving
-strict containment under an exact null needs about 609 episodes per arm, or
-**41 no-trap tasks** against the 12 this design has.
+A 90% interval fits strictly inside a margin only when that margin exceeds about
+1.645 standard errors of the statistic. Here the margin is **0.89 SE** — smaller
+than one standard error of the quantity it constrains. Under the normal
+approximation, even a true difference of exactly zero yields a half-width of
+0.0368, roughly 1.8× too wide to fit, and reaching strict containment under an
+exact null needs about 609 episodes per arm, or **41 no-trap tasks** against the
+12 this design has.
 
-Two things follow. First, the equivalence failure is a property of the
-specification, not a finding about the gate. Second, the two margins were set
+To be precise about what that does and does not establish: the check was not
+strictly impossible. The realised interval is a task-level bootstrap, not the
+normal approximation, and had the two arms produced identical pass counts the
+resulting interval could have landed just inside ±0.02. What the arithmetic
+shows is that passing required the observed difference to sit essentially on
+zero — a knife-edge, not a robust test. A three-episode difference out of 180,
+which is roughly one step of the metric's resolution, was enough to fail it.
+
+Two things follow. First, the equivalence failure is far more a property of the
+specification than a finding about the gate. Second, the two margins were set
 with wildly inconsistent stringency: the pass-rate margin sits below the noise
 floor while the steps margin (±2 against an observed 0.0333) has roughly **60×**
 headroom. Margins derived from the design's own operating characteristics — a
@@ -175,10 +187,17 @@ where the model's base pass rate is not near the floor.
 | no-trap equivalence | 1.000 | **0.1627** |
 
 Widening the pilot split from 6 to 12 tasks bought the timing power it was meant
-to buy. The equivalence result moved the other way, and the v1 figure of 1.000
-should be treated as the less reliable of the two: it rested on 6 tasks, where
-wider intervals make a strict-containment test easier to pass only if the point
-estimate sits near zero.
+to buy. The equivalence result moved the other way, which needs explaining
+rather than waving away: more tasks give *narrower* intervals, and narrower
+intervals make strict containment easier, not harder. So the v3 drop is not a
+sample-size effect.
+
+The likely cause is the point estimate. Equivalence is decided by where the
+interval sits, not only by its width, and the v3 pass-rate difference is
++0.0167 — 83 percent of the way to the margin. An interval centred that close to
+the boundary fails containment however tight it is, until the half-width falls
+under about 0.0033. Whether v1's estimate sat nearer zero cannot be checked from
+this run's artifacts, so the comparison is left open rather than resolved here.
 
 ## Where this leaves the study
 

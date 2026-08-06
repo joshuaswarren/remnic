@@ -169,9 +169,13 @@ that guards main execution changes.
 >
 > H6-content requires a strictly positive lower bound on the task-pass benefit
 > interval. Two independent pilots measured a task-pass rate of exactly zero in
-> both content arms, making that condition unsatisfiable at any sample size and
-> fixing simulated content power at 0.000. The main-run power gate therefore
-> requires timing power and no-trap equivalence power only.
+> both content arms — 270 episodes per arm in total — which fixes the observed
+> benefit at a degenerate `[0, 0]` interval and simulated content power at 0.000.
+> The condition is unsatisfiable at the model's present operating point rather
+> than in principle: it would become testable if the task-pass rate in these arms
+> rose materially above the floor, which nothing in the evidence suggests. The
+> main-run power gate therefore requires timing power and no-trap equivalence
+> power only.
 >
 > H6-content remains registered and reported. On the evidence above it is
 > recorded as `REJECTED`, and the study decision mapping is unchanged. No
