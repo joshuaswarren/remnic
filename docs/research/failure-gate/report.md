@@ -229,6 +229,48 @@ be argued on the pre-existing structural grounds — content was unsatisfiable
 before this run, and was measured so in v1 — not on the fact that removing it
 helps timing.
 
+## Design input for a next dataset version
+
+Outcomes are not spread evenly across trap classes. Pilot totals for the 12
+pilot tasks, two per class:
+
+| Trap class | trapped rows | no-trap passes |
+| --- | ---: | ---: |
+| `stale-cache-illusion` | 27 | **17** |
+| `flaky-looking-test` | 34 | 0 |
+| `misleading-error-message` | 32 | 0 |
+| `wrong-layer-fix` | 25 | 0 |
+| `hidden-invariant` | 24 | 0 |
+| `config-shadowing` | **0** | **0** |
+
+Two findings follow, both measured rather than inferred.
+
+**`config-shadowing` is inert.** It produced no trapped rows and no passes in
+the pilot, and the full 30-task audit puts all five of its tasks at `UNFIXED`
+with zero `TRAPPED` and zero `FIXED`. One sixth of the dataset currently
+contributes to neither primary nor the equivalence check. Dropping it frees that
+compute for classes that measure something.
+
+**Every task pass came from `stale-cache-illusion`** — 17 of 17. If a future
+version needs pass-rate signal for content or for the equivalence estimator,
+that is the only class demonstrated to supply it. The tradeoff is scope: a
+dataset weighted toward one trap class narrows what the study can claim, and
+that is a design decision rather than a tuning knob.
+
+### Unresolved: audit `FIXED` does not predict pilot `taskPassed`
+
+Before designing around "passable" tasks, one discrepancy needs an explanation.
+The audit records 11 of 30 tasks as `FIXED`, meaning the model repaired them in
+its sampled episode. The pilot's trap-bearing population records **0 passes in
+900 episodes**. The two measure different repository states — the pilot's
+primary rows materialize `variant.files` while `no-trap` rows materialize
+`variant.noTrapControlFiles` — but the size of the gap is not yet accounted for.
+
+Until it is, "build a dataset of tasks the model can pass" rests on an
+unverified assumption, because the audit's `FIXED` label is currently the only
+cheap way to identify such tasks and it demonstrably does not carry over. Resolve
+this before committing generation and compute to a v4.
+
 ## Artifacts
 
 | Item | Path |
