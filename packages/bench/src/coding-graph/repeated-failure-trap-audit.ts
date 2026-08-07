@@ -39,15 +39,14 @@ import {
   createRepeatedFailureProfileDriver,
   runEpisodeForAudit,
 } from "./repeated-failure-suite.js";
+// Caps and tool-output limits are shared with the suite on purpose. A local
+// copy silently diverged once and defeated a cap change, so import rather than
+// redeclare.
+import {
+  DEFAULT_CAPS,
+  DEFAULT_TOOL_OUTPUT_CHARS,
+} from "./repeated-failure-suite-shared.js";
 
-const DEFAULT_CAPS: ControlledResponsesCaps = Object.freeze({
-  maxTurns: 12,
-  maxToolCalls: 8,
-  maxTotalTokens: 16_384,
-  maxDurationMs: 600_000,
-  requestTimeoutMs: 180_000,
-});
-const DEFAULT_TOOL_OUTPUT_CHARS = 16_384;
 const ResumeTraceIdentitySchema = z.object({
   suiteVersion: z.string().min(1),
   taskId: z.string().min(1),

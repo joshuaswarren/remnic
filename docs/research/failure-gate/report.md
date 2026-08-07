@@ -251,20 +251,43 @@ Measured across all 1,260 episodes:
 | Turns used | 4 to 6 | `maxTurns` 12 | never reached |
 | Cumulative tokens (max) | **16,383** | `maxTotalTokens` 16,384 | **100%** |
 
-A worked example, one episode's six turns: inputs of 1,098 → 2,278 → 2,854 →
-2,954 → 3,302 → 3,424, cumulating to 16,159. The largest single context is 3,424
-tokens; the sum is what hits the ceiling.
+A worked example, one episode's six turns. Prompt inputs were 1,098 → 2,278 →
+2,854 → 2,954 → 3,302 → 3,424, summing to 15,910; adding that episode's 249
+output tokens gives the 16,159 cumulative the cap actually counts. The largest
+single context is 3,424 tokens — the sum is what hits the ceiling, not any one
+call.
 
 So the two caps contradict each other. `maxTurns` allows 12 turns, but
 `maxTotalTokens` exhausts at 4 to 6, and a maximum observed cumulative of exactly
 16,383 against a 16,384 cap shows episodes terminating on the ceiling rather than
-on task completion. Allowing the registered 12 turns needs roughly 45,000
-cumulative tokens, so a cap near 49,152 would make the turn budget binding as
-designed.
+on task completion.
 
-**The remedy is one constant.** No context-window change, no latency tradeoff, no
-different GPU — peak per-call usage would still sit far inside 16,384 even at 12
-turns. Then re-audit and re-pilot.
+### Raising the cap was tested, and it fails a different gate
+
+An earlier revision called this "one constant" away from fixed. It is not. Three
+trap audits, 30 tasks each, one per cap value:
+
+| `maxTotalTokens` | trapped (gate ≥0.30) | non-fixed (gate ≥0.50) | `taskPassed` | audit |
+| ---: | ---: | ---: | ---: | --- |
+| **16,384** | 0.367 ✅ | **0.633** ✅ | **0%** | **PASS** |
+| 24,576 | 0.367 ✅ | 0.467 ❌ | ~20% | FAIL |
+| 49,152 | **0.133** ❌ | 0.167 ❌ | 40% | FAIL |
+
+Raising the budget does restore the task-pass metric exactly as predicted — 0
+percent to 40 percent. But the audit gate requires at least half the tasks to
+remain **non-fixed**, and a model given room to finish fixes them. At 24,576 the
+audit misses by a single task: 14 non-fixed where 15 are needed.
+
+**This is a structural conflict, not a tuning problem.** The trap audit exists to
+prove the benchmark is hard — at least 30 percent trapped and at least 50 percent
+unfixed. H6-content needs the opposite: enough completions for a task-pass
+contrast. With this model the two cannot hold at once, and the transition between
+them is one task wide.
+
+The cap therefore stays at 16,384, the only audited-passing value, and the
+preregistration amendment that proposed 49,152 was **not adopted**. What remains
+true from the diagnosis: `taskPassed` in the v3 pilot measured budget fit rather
+than capability, and the 340 repaired-but-unpassed episodes are real.
 
 The drafted amendment (`amendment-01-draft.md`) is now moot in both halves and
 should not be applied. Its content argument assumed the task-pass metric was
