@@ -269,25 +269,37 @@ trap audits, 30 tasks each, one per cap value:
 
 | `maxTotalTokens` | trapped (gate ≥0.30) | non-fixed (gate ≥0.50) | `taskPassed` | audit |
 | ---: | ---: | ---: | ---: | --- |
-| **16,384** | 0.367 ✅ | **0.633** ✅ | **0%** | **PASS** |
-| 24,576 | 0.367 ✅ | 0.467 ❌ | ~20% | FAIL |
-| 49,152 | **0.133** ❌ | 0.167 ❌ | 40% | FAIL |
+| 16,384 | 0.367 ✅ | 0.633 ✅ | **0/30** | PASS |
+| **20,480** | **0.467 ✅** | **0.567 ✅** | **1/30** | **PASS** |
+| 24,576 | 0.367 ✅ | 0.467 ❌ | 6/30 | FAIL |
+| 49,152 | **0.133** ❌ | 0.167 ❌ | 12/30 | FAIL |
 
-Raising the budget does restore the task-pass metric exactly as predicted — 0
-percent to 40 percent. But the audit gate requires at least half the tasks to
-remain **non-fixed**, and a model given room to finish fixes them. At 24,576 the
-audit misses by a single task: 14 non-fixed where 15 are needed.
+Raising the budget does restore the task-pass metric exactly as predicted — 0 of
+30 up to 12 of 30. But the audit gate requires at least half the tasks to remain
+**non-fixed**, and a model given room to finish fixes them. At 24,576 the audit
+misses by a single task: 14 non-fixed where 15 are needed.
 
-**This is a structural conflict, not a tuning problem.** The trap audit exists to
-prove the benchmark is hard — at least 30 percent trapped and at least 50 percent
-unfixed. H6-content needs the opposite: enough completions for a task-pass
-contrast. With this model the two cannot hold at once, and the transition between
-them is one task wide.
+**20,480 is the one tested value that clears both gates while producing any
+task-pass signal.** Trapped 14/30, non-fixed 17/30, zero invalid — both with
+margin rather than on a knife edge.
 
-The cap therefore stays at 16,384, the only audited-passing value, and the
-preregistration amendment that proposed 49,152 was **not adopted**. What remains
-true from the diagnosis: `taskPassed` in the v3 pilot measured budget fit rather
-than capability, and the 340 repaired-but-unpassed episodes are real.
+That is progress on the *audit* blocker and probably not on the *content power*
+blocker. One passing episode in thirty will not produce a task-pass benefit whose
+95 percent interval clears zero, and 29 of 30 rows still carry `TOKEN_CAP`. The
+audit-passing window and the content-measurable window appear adjacent rather
+than overlapping: every increment of pass signal costs non-fixed rate at roughly
+one for one.
+
+**The structural tension stands, narrowed but not dissolved.** The trap audit
+exists to prove the benchmark is hard — at least 30 percent trapped, at least 50
+percent unfixed. H6-content needs the opposite: enough completions for a
+task-pass contrast. Across the whole tested range they trade against each other.
+
+The committed cap therefore stays at 16,384 and the amendment proposing 49,152
+was **not adopted**. A 20,480 amendment would now be evidence-backed, but it buys
+an audit pass, not a content measurement. What remains true from the diagnosis:
+`taskPassed` in the v3 pilot measured budget fit rather than capability, and the
+340 repaired-but-unpassed episodes are real.
 
 The drafted amendment (`amendment-01-draft.md`) is now moot in both halves and
 should not be applied. Its content argument assumed the task-pass metric was
