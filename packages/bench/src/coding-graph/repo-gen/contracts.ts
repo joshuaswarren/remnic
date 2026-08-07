@@ -248,11 +248,11 @@ export const H6_DATASET_JSON_SCHEMA = {
 } as const;
 
 export const H6_DECISION_RULE = {
-  version: 10,
+  version: 11,
   name: "H6 Failure Gate Decision Rule",
   preregistration: {
     path: "docs/research/failure-gate/preregistration.md",
-    sha256: "7c5bb227279b42f5e82aa2a0e7d05b7759736bee9a5e5893e1f126c95906b6aa",
+    sha256: "a62578027cb4c97e7da812e61c7ee3639839fba2b383caa017fa53e3591814fe",
   },
   analysisPopulation: {
     datasetVersion: 1,

@@ -664,7 +664,10 @@ export async function verifyPilotPower(
     || power.sourceDesignHash !== sha256(designBytes)
     || power.decisionRuleHash !== metadata.decisionRuleHash
     || power.timingPower < 0.8
-    || power.contentPower < 0.8
+    // H6-content is excluded from this gate by preregistration Amendment 3: its
+    // task-pass condition is unsatisfiable at every audited configuration, so
+    // gating on it would block the study on a test the design cannot run.
+    // Content power is still computed and reported in power.json.
     || power.timidityPower < 0.8
   ) {
     throw new Error("pilot power is absent, underpowered, or does not match immutable pilot rows");

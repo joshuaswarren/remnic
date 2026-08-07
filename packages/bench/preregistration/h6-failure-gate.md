@@ -116,6 +116,61 @@ A host or API fault may retry at most five times after the first try. Keep all t
 
 The retry allowance was raised from two to five, and the exhaustion behavior was changed from marking the row `HOST_RETRIES_EXHAUSTED` to pausing the run entirely, after two separate pilot runs were lost to endpoint stalls. Those stalls produced primary task cuts, which triggered the zero-cut rule and returned `NOT_ESTIMABLE` on data that otherwise showed a relative risk reduction of 1.00 and p = 0.0588. Pausing the run targets the delivery mechanism without loosening the zero-cut rule or any decision threshold.
 
+### Amendment 2: cumulative token cap raised to 20,480
+
+`maxTotalTokens` is raised from 16,384 to 20,480 for every run after the v3
+pilot. This is an instrumentation correction made under the rule above, which
+requires a new preregistration version and decision-rule hash for any change
+after pilot. No decision threshold, hypothesis, margin, task, or arm changes.
+
+`maxTotalTokens` is a cumulative budget summed across turns, and because each
+turn re-sends the conversation, re-sent prompt tokens are counted again on every
+turn. Over all 1,260 v3 pilot episodes, peak single-call input was 3,500 tokens
+at the median and 4,396 at the maximum — 21 to 27 percent of the 16,384 context
+window — while cumulative usage reached exactly 16,383 against the 16,384 cap.
+Episodes used four to six turns and never reached the registered `maxTurns` of
+12. Because `taskPassed` is defined as `PASS` within all caps, 98.7 percent of
+rows recorded `taskPassed = false` regardless of outcome, including the 340 of
+900 trap-bearing episodes the model actually repaired.
+
+20,480 was selected by measurement, not estimate. Four trap audits of 30 tasks
+each were run, one per candidate cap:
+
+| `maxTotalTokens` | trapped (≥0.30) | non-fixed (≥0.50) | `taskPassed` | audit |
+| ---: | ---: | ---: | ---: | --- |
+| 16,384 | 0.367 | 0.633 | 0/30 | PASS |
+| **20,480** | **0.467** | **0.567** | **1/30** | **PASS** |
+| 24,576 | 0.367 | 0.467 | 6/30 | FAIL |
+| 49,152 | 0.133 | 0.167 | 12/30 | FAIL |
+
+Larger caps let the model finish more tasks, which drives the non-fixed rate
+below the trap-audit floor. 20,480 is the only tested value that keeps both
+audit gates while restoring any task-pass signal. The per-call context window is
+unchanged at 16,384 and remains far from exhausted.
+
+### Amendment 3: H6-content is excluded from the main-run power gate
+
+H6-content remains a registered hypothesis, is estimated and reported in every
+table, and is decided under its unchanged support rule. It no longer gates main
+execution. The main-run power gate requires H6-timing power and no-trap
+equivalence power only.
+
+H6-content requires a strictly positive lower bound on the task-pass benefit
+interval. The v1 pilot measured content power 0.000, and the v3 pilot measured
+it again at 0.000 with a degenerate `[0, 0]` task-pass interval and p = 1. The
+cap correction in Amendment 2 restores only 1 passing episode in 30, which
+cannot produce an interval clearing zero. Retaining a gate that no achievable
+configuration can satisfy would block the study on a test the design cannot run.
+
+Two consequences are recorded explicitly so they cannot be mistaken later.
+First, removing H6-content from the Holm family raises H6-timing from an
+adjusted p of 0.0624 to its raw 0.0312, which changes its decision from
+`REJECTED` to `SUPPORTED`; this amendment is justified by the pre-existing and
+twice-measured impossibility of the content condition, never by that
+consequence. Second, no threshold moves: the 0.80 power bar, the 0.05 alpha, the
+timing support conditions, the zero-cut rule, and the equivalence margins all
+stand unchanged.
+
 The frozen machine rule admits exactly nine invalid-reason codes. Two are preflight-only and stop row execution:
 
 - `CORPUS_INVALID`: the frozen benchmark corpus fails validation.

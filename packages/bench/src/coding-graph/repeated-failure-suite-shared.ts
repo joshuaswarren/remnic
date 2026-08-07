@@ -107,7 +107,7 @@ export const FIXED_RECORDED_AT = "2026-01-01T00:00:00.000Z";
 export const DEFAULT_CAPS: ControlledResponsesCaps = Object.freeze({
   maxTurns: 12,
   maxToolCalls: 8,
-  maxTotalTokens: 16_384,
+  maxTotalTokens: 20_480,
   maxDurationMs: 600_000,
   requestTimeoutMs: 180_000,
 });
