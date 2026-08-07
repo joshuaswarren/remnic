@@ -81,3 +81,78 @@ test("claude-code plugin manifest: author is an object so the plugin is marketpl
   assert.equal(typeof pluginManifest.author.name, "string");
   assert.ok(pluginManifest.author.name.length > 0, "plugin author.name must be non-empty");
 });
+
+test("claude-code plugin manifest: userConfig declares bearer token + daemon URL (#2314)", () => {
+  const m = readJson(manifestPath);
+  const pluginDir = path.resolve(repoRoot, m.plugins[0].source);
+  const pluginManifest = readJson(path.join(pluginDir, ".claude-plugin", "plugin.json"));
+  // Claude Code installs the plugin only if userConfig values can be authored
+  // as a JSON Schema object with `type`, `title`, `description`, and (for
+  // secrets) `sensitive: true`. The bearer token MUST be sensitive — Claude
+  // Code routes that to the OS keychain (macOS) or a protected credentials
+  // file rather than the on-disk plugin install record. Guard this so a
+  // future refactor can't silently demote the field to plaintext.
+  const uc = pluginManifest.userConfig;
+  assert.ok(uc && typeof uc === "object", "userConfig must be an object");
+  const token = uc.remnic_daemon_token;
+  assert.ok(token && typeof token === "object", "userConfig.remnic_daemon_token must be a schema object");
+  assert.equal(token.type, "string", "userConfig.remnic_daemon_token.type must be 'string'");
+  assert.equal(token.sensitive, true, "userConfig.remnic_daemon_token.sensitive must be true (routed to OS keychain)");
+  const url = uc.remnic_daemon_url;
+  assert.ok(url && typeof url === "object", "userConfig.remnic_daemon_url must be a schema object");
+  assert.equal(url.type, "string", "userConfig.remnic_daemon_url.type must be 'string'");
+  // The local-loopback default is part of the contract from the package README;
+  // a refactor that drops it forces users into a hidden HTTPS-only install path.
+  assert.equal(
+    url.default,
+    "http://localhost:4318/mcp",
+    "userConfig.remnic_daemon_url.default must equal the documented local daemon URL"
+  );
+});
+
+test("claude-code plugin manifest: inline mcpServers proxies via stdio to the user's daemon (#2314)", () => {
+  const m = readJson(manifestPath);
+  const pluginDir = path.resolve(repoRoot, m.plugins[0].source);
+  const pluginManifest = readJson(path.join(pluginDir, ".claude-plugin", "plugin.json"));
+  // Inline MCP server registration must (a) name the server `remnic` so the
+  // marketplace install registers under that key, (b) launch the stdio proxy
+  // that lives next to the manifest (so ${CLAUDE_PLUGIN_ROOT} resolves),
+  // (c) forward both userConfig values through env (not argv, which is the
+  // path that Claude Code rejects per the security advisory bundled with
+  // the `userConfig` feature), and (d) declare itself as the canonical
+  // server key so older .mcp.json fallback doesn't get out of sync.
+  const ms = pluginManifest.mcpServers;
+  assert.ok(ms && typeof ms === "object", "mcpServers must be an object");
+  const remnic = ms.remnic;
+  assert.ok(remnic, "mcpServers.remnic must exist");
+  assert.equal(remnic.type, "stdio", "mcpServers.remnic.type must be stdio (token is forwarded via env)");
+  assert.ok(Array.isArray(remnic.args), "mcpServers.remnic.args must be an array");
+  assert.ok(
+    remnic.args.some((a: unknown) => typeof a === "string" && a.includes("mcp-server-stdio/server.js")),
+    "mcpServers.remnic.args must reference mcp-server-stdio/server.js"
+  );
+  // verify args interpolate ${CLAUDE_PLUGIN_ROOT} (the bit Claude Code expands)
+  assert.ok(
+    remnic.args.some((a: unknown) => typeof a === "string" && a.includes("${CLAUDE_PLUGIN_ROOT}")),
+    "mcpServers.remnic.args must use ${CLAUDE_PLUGIN_ROOT} interpolation"
+  );
+  // verify the userConfig values are wired in via env (not argv — argv with
+  // user_config values is the rejected shell-injection pattern)
+  assert.ok(remnic.env && typeof remnic.env === "object", "mcpServers.remnic.env must be an object");
+  assert.equal(
+    remnic.env.REMNIC_PLUGIN_DAEMON_TOKEN,
+    "${user_config.remnic_daemon_token}",
+    "mcpServers.remnic.env must forward the userConfig token via env, not argv"
+  );
+  assert.equal(
+    remnic.env.REMNIC_PLUGIN_DAEMON_URL,
+    "${user_config.remnic_daemon_url}",
+    "mcpServers.remnic.env must forward the userConfig URL via env, not argv"
+  );
+  // verify the proxy script actually exists at the packaged path
+  const proxyPath = path.join(pluginDir, "mcp-server-stdio", "server.js");
+  assert.ok(
+    fs.existsSync(proxyPath),
+    `mcp-server-stdio/server.js must be shipped at ${proxyPath} so plugin install can spawn it`
+  );
+});

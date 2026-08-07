@@ -6,6 +6,16 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Claude Code marketplace install now registers a working `remnic` MCP server at install time via the plugin manifest's `userConfig` + inline `mcpServers` (`#2314`). Claude Code prompts for a `remnic_daemon_token` (sensitive; routed to OS keychain on macOS or a protected credentials file elsewhere) and an optional `remnic_daemon_url` (defaults to `http://localhost:4318/mcp`). The bundled `mcp-server-stdio/server.js` proxies JSON-RPC over stdio to the user-configured URL, so neither the marketplace install nor a manual reinstall requires hand-editing the bundled `.mcp.json` placeholder anymore. The bundled `.mcp.json` is retained as the legacy fallback path for older Claude Code releases that do not yet honor `manifest.mcpServers`/`userConfig`.
+
+### Contract tests
+
+- `tests/claude-code-marketplace.test.ts` extended with two new contracts: (a) the plugin manifest declares `userConfig.remnic_daemon_token` with `sensitive: true` (so a future refactor cannot silently demote the field to plaintext), and (b) the plugin manifest declares an inline `mcpServers.remnic` stdio server that wires both `userConfig` values via `env` (not argv — the rejected shell-injection pattern flagged by the Claude Code security advisory bundled with the feature). `tests/integration/plugin-structure.test.ts` extended with one new contract: the `mcp-server-stdio/server.js` entrypoint ships at the path the manifest points at.
+
+
+
+### Added
+
 - Claude Code marketplace manifest (`.claude-plugin/marketplace.json`) so `@remnic/plugin-claude-code` can be installed with `claude plugin marketplace add https://github.com/joshuaswarren/remnic.git` + `claude plugin install remnic@remnic`, instead of the manual `npm install -g` + plugin-loader step. The token / `.mcp.json` MCP-config step is unchanged: Claude Code auto-discovers the plugin's bundled `.mcp.json` on install and registers a `remnic` MCP server with the literal `{{REMNIC_TOKEN}}` placeholder header; the user must fill the placeholder or register their own server. Long-term fix (register via `userConfig` + `lifecycle` hooks) tracked as #2314.
 
 ## [v9.46.0] — 2026-08-02

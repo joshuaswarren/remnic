@@ -6,5 +6,30 @@
     "name": "Joshua Warren"
   },
   "homepage": "https://github.com/joshuaswarren/remnic",
-  "repository": "https://github.com/joshuaswarren/remnic"
+  "repository": "https://github.com/joshuaswarren/remnic",
+  "userConfig": {
+    "remnic_daemon_token": {
+      "type": "string",
+      "title": "Remnic Daemon Bearer Token",
+      "description": "Bearer token the MCP server sends on every request. Mint via `remnic token generate claude-code` (or `remnic connectors install claude-code` on first install).",
+      "sensitive": true
+    },
+    "remnic_daemon_url": {
+      "type": "string",
+      "title": "Remnic Daemon MCP URL",
+      "description": "Full URL of the Remnic daemon's MCP endpoint. Default http://localhost:4318/mcp. Use http:// loopback or https:// — plaintext http to non-loopback is rejected because the bearer token travels with every request.",
+      "default": "http://localhost:4318/mcp"
+    }
+  },
+  "mcpServers": {
+    "remnic": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp-server-stdio/server.js"],
+      "env": {
+        "REMNIC_PLUGIN_DAEMON_URL": "${user_config.remnic_daemon_url}",
+        "REMNIC_PLUGIN_DAEMON_TOKEN": "${user_config.remnic_daemon_token}"
+      }
+    }
+  }
 }

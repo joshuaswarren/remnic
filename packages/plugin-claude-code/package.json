@@ -25,6 +25,7 @@
     "hooks",
     "skills",
     "agents",
+    "mcp-server-stdio",
     ".mcp.json",
     "settings.json"
   ]
