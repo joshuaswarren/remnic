@@ -1,7 +1,7 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -73,13 +73,28 @@ test("plugin-claude-code has .mcp.json", () => {
 // Codex plugin structure
 // ---------------------------------------------------------------------------
 
+test("plugin-claude-code ships the stdio MCP proxy entrypoint referenced by plugin.json (#2314)", () => {
+  // plugin.json declares an inline `mcpServers.remnic` whose `args` point
+  // at `mcp-server-stdio/server.js`. If the shipped file goes missing, the
+  // marketplace install registers a server that fails to spawn — guards
+  // against accidental deletion during package.json cleanup.
+  const proxy = path.join(PACKAGES, "plugin-claude-code", "mcp-server-stdio", "server.js");
+  assert.ok(fs.existsSync(proxy), "mcp-server-stdio/server.js must ship with the plugin package");
+  const manifest = path.join(PACKAGES, "plugin-claude-code", ".claude-plugin", "plugin.json");
+  const pkg = JSON.parse(fs.readFileSync(manifest, "utf-8"));
+  const args = pkg?.mcpServers?.remnic?.args;
+  assert.ok(Array.isArray(args), "plugin.json mcpServers.remnic.args must reference the stdio proxy entrypoint");
+  assert.ok(
+    args.some((a) => typeof a === "string" && a.endsWith("mcp-server-stdio/server.js")),
+    "plugin.json args must include mcp-server-stdio/server.js"
+  );
+});
+
 test("plugin-codex has required plugin manifest", () => {
   const manifest = path.join(PACKAGES, "plugin-codex", ".codex-plugin", "plugin.json");
   assert.ok(fs.existsSync(manifest), ".codex-plugin/plugin.json must exist");
   const pkg = JSON.parse(fs.readFileSync(manifest, "utf-8"));
-  const packageJson = JSON.parse(
-    fs.readFileSync(path.join(PACKAGES, "plugin-codex", "package.json"), "utf-8"),
-  );
+  const packageJson = JSON.parse(fs.readFileSync(path.join(PACKAGES, "plugin-codex", "package.json"), "utf-8"));
   assert.equal(pkg.name, "remnic");
   assert.equal(pkg.version, packageJson.version, "Codex manifest version must match the package");
   assert.equal(pkg.author?.name, "Joshua Warren");
@@ -92,7 +107,7 @@ test("plugin-codex has required plugin manifest", () => {
   assert.ok(prompts.length > 0 && prompts.length <= 3, "Codex manifest must provide one to three prompts");
   assert.ok(
     prompts.every((prompt) => typeof prompt === "string" && prompt.length > 0 && prompt.length <= 128),
-    "Codex manifest prompts must be non-empty strings of at most 128 characters",
+    "Codex manifest prompts must be non-empty strings of at most 128 characters"
   );
 });
 
@@ -119,7 +134,7 @@ test("plugin-codex hooks ship a unified cross-platform Node.js runner (#1440)", 
   for (const required of ["remnic-codex-hook.cjs", "remnic-codex-hook.sh", "remnic-codex-hook.ps1"]) {
     assert.ok(
       fs.existsSync(path.join(binDir, required)),
-      `${required} must ship in hooks/bin so hooks work on every platform`,
+      `${required} must ship in hooks/bin so hooks work on every platform`
     );
   }
   // Every hook event must carry both `command` (POSIX) and `commandWindows`
@@ -131,23 +146,20 @@ test("plugin-codex hooks ship a unified cross-platform Node.js runner (#1440)", 
       for (const hook of matcher.hooks) {
         assert.ok(hook.command, `${event}.command must be set (POSIX)`);
         assert.ok(hook.commandWindows, `${event}.commandWindows must be set (Windows support, #1440)`);
-        assert.ok(
-          /remnic-codex-hook\.sh/.test(hook.command),
-          `${event}.command must call the unified runner shim`,
-        );
+        assert.ok(/remnic-codex-hook\.sh/.test(hook.command), `${event}.command must call the unified runner shim`);
         assert.ok(
           /remnic-codex-hook\.ps1/.test(hook.commandWindows),
-          `${event}.commandWindows must call the unified runner .ps1`,
+          `${event}.commandWindows must call the unified runner .ps1`
         );
         // Codex substitutes ${PLUGIN_ROOT} and runs from the session cwd, so
         // plugin-bundled hooks must be PLUGIN_ROOT-relative, not cwd-relative.
         assert.ok(
           hook.command.includes("${PLUGIN_ROOT}"),
-          `${event}.command must resolve via \${PLUGIN_ROOT} for marketplace installs`,
+          `${event}.command must resolve via \${PLUGIN_ROOT} for marketplace installs`
         );
         assert.ok(
           hook.commandWindows.includes("${PLUGIN_ROOT}"),
-          `${event}.commandWindows must resolve via \${PLUGIN_ROOT}`,
+          `${event}.commandWindows must resolve via \${PLUGIN_ROOT}`
         );
       }
     }
@@ -178,7 +190,7 @@ test("plugin-hermes has MemoryProvider module", () => {
   assert.ok(content.includes("RemnicMemoryProvider"), "Must export RemnicMemoryProvider");
   assert.ok(
     content.includes("EngramMemoryProvider"),
-    "Must keep the EngramMemoryProvider alias during the compat window",
+    "Must keep the EngramMemoryProvider alias during the compat window"
   );
   assert.ok(content.includes("def register"), "Must have register() entry point");
 });
@@ -187,7 +199,14 @@ test("plugin-hermes provider implements MemoryProvider protocol", () => {
   const provider = path.join(PACKAGES, "plugin-hermes", "remnic_hermes", "provider.py");
   assert.ok(fs.existsSync(provider));
   const content = fs.readFileSync(provider, "utf-8");
-  const requiredSyncMethods = ["prefetch", "sync_turn", "shutdown", "initialize", "get_tool_schemas", "handle_tool_call"];
+  const requiredSyncMethods = [
+    "prefetch",
+    "sync_turn",
+    "shutdown",
+    "initialize",
+    "get_tool_schemas",
+    "handle_tool_call",
+  ];
   for (const method of requiredSyncMethods) {
     assert.ok(content.includes(`def ${method}`), `Must implement ${method}()`);
   }
@@ -276,5 +295,5 @@ test("Codex unified runner prefers ~/.remnic/tokens.json with Engram fallback (#
   assert.ok(content.includes(".remnic"), "Must prefer Remnic token path");
   assert.ok(content.includes(".engram"), "Must preserve Engram token fallback");
   assert.ok(content.includes("codex-cli"), "Must look for codex-cli token key");
-  assert.ok(content.includes("\"codex\""), "Must preserve legacy codex token fallback");
+  assert.ok(content.includes('"codex"'), "Must preserve legacy codex token fallback");
 });
