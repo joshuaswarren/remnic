@@ -307,14 +307,38 @@ function forward(msg, isNotification) {
             resolve();
           } catch (err) {
             // The outer guard catches anything that slipped through the inner
-            // parses. Emit a JSON-RPC error envelope so the MCP client sees
-            // a real failure rather than a silent stall.
-            writeError(msg.id ?? null, -32603, `internal proxy error: ${sanitizeMessage(err.message)}`, msg.id ?? null);
+            // parses. For requests, emit a JSON-RPC error envelope so the MCP
+            // client sees a real failure rather than a silent stall. For
+            // notifications (which carry no id and to which the receiver MUST
+            // NOT reply per JSON-RPC 2.0), log to stderr only.
+            if (isNotification) {
+              process.stderr.write(
+                `remnic-mcp-proxy: notification ${msg.method} handler error: ${sanitizeMessage(err.message)}\n`
+              );
+            } else {
+              writeError(
+                msg.id ?? null,
+                -32603,
+                `internal proxy error: ${sanitizeMessage(err.message)}`,
+                msg.id ?? null
+              );
+            }
             resolve();
           }
         });
         res.on("error", (err) => {
-          writeError(msg.id ?? null, -32003, `response stream error: ${sanitizeMessage(err.message)}`, msg.id ?? null);
+          if (isNotification) {
+            process.stderr.write(
+              `remnic-mcp-proxy: notification ${msg.method} response stream error: ${sanitizeMessage(err.message)}\n`
+            );
+          } else {
+            writeError(
+              msg.id ?? null,
+              -32003,
+              `response stream error: ${sanitizeMessage(err.message)}`,
+              msg.id ?? null
+            );
+          }
           resolve();
         });
       }
@@ -323,7 +347,13 @@ function forward(msg, isNotification) {
       req.destroy(new Error(`request timed out after ${REQUEST_TIMEOUT_MS}ms`));
     });
     req.on("error", (err) => {
-      writeError(msg.id ?? null, -32003, `transport error: ${sanitizeMessage(err.message)}`, msg.id ?? null);
+      if (isNotification) {
+        process.stderr.write(
+          `remnic-mcp-proxy: notification ${msg.method} transport error: ${sanitizeMessage(err.message)}\n`
+        );
+      } else {
+        writeError(msg.id ?? null, -32003, `transport error: ${sanitizeMessage(err.message)}`, msg.id ?? null);
+      }
       resolve();
     });
     req.write(body);
