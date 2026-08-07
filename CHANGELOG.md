@@ -1398,3 +1398,5 @@ This project auto-releases on every merge to `main`. Per-release notes for indiv
 - Added the PR9 foundation for action-conditioned causal graph construction, including deterministic causal-stage graph edges derived from typed trajectory records behind `actionGraphRecallEnabled`.
 
 <!-- touchpoint: 2026-08-06 14:22:07 round-4 review-cleanup -->
+
+<!-- post-actions-recovery trigger: 2026-08-06 19:15:58 -->
