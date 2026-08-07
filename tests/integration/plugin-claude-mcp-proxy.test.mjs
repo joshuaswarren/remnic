@@ -7,12 +7,15 @@
 //   2. bearer token is required (fatal exit 2 when missing)
 //   3. unknown URL protocols are rejected (fatal exit 2)
 //   4. 127.0.0.1 is accepted as loopback (proxy stays alive past the gate)
-//   5. notifications produce no stdout lines on response-handler error
+//   5. notifications produce no stdout lines on either the response-handler
+//      success path (HTTP/200 with a JSON-RPC reply body) or the transport-
+//      error path (TCP RST mid-request) — JSON-RPC 2.0 forbids notifications
+//      from receiving a reply in either case.
 //
 // No real Remnic daemon or Claude Code session is required.
 
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import path from "node:path";
 import test from "node:test";
@@ -69,6 +72,23 @@ async function exitedWithCode(child) {
   return code;
 }
 
+async function runProxyAgainstHelper(helperScript) {
+  const { stdout } = await new Promise((resolve, reject) => {
+    execFile(
+      process.execPath,
+      ["-e", helperScript],
+      { env: { ...process.env, PROXY: proxyPath }, encoding: "utf8", timeout: 8000 },
+      (error, stdout) => {
+        if (error && error.signal === "SIGTERM") return resolve({ stdout });
+        if (error && error.code === null) return resolve({ stdout });
+        if (error) return reject(error);
+        return resolve({ stdout });
+      }
+    );
+  });
+  return stdout.split("OUT::")[1]?.split("::END")[0] ?? "";
+}
+
 test("stdio proxy: plain http to non-loopback host is rejected at startup", async () => {
   const child = spawnProxy({
     REMNIC_PLUGIN_DAEMON_TOKEN: "secret-token",
@@ -112,42 +132,23 @@ test("stdio proxy: 127.0.0.1 is accepted as loopback", async () => {
   await readStderr(child).catch(() => {});
 });
 
-test("stdio proxy: notifications produce no stdout on response-handler error", async () => {
-  // JSON-RPC 2.0 forbids notifications from receiving a reply. The proxy
-  // must therefore write NOTHING to stdout for a notification, regardless of
-  // whether the upstream daemon's response is a success, a malformed
-  // body, a transport error, or an empty 202. We exercise two paths:
-  //
-  //   (a) The mock daemon returns a valid HTTP/200 response carrying a
-  //       well-formed JSON-RPC body. The proxy's res.on("end") fires with
-  //       the daemon's reply. The notification branch (isNotification ===
-  //       true) must silently discard without writing anything to stdout.
-  //
-  //   (b) The mock daemon resets the socket mid-request, so the proxy's
-  //       req.on("error") fires. The notification-aware error guard must
-  //       log to stderr only — not stdout.
-  //
-  // Asserting `out === ""` for both sub-cases proves the strict
-  // no-reply-to-notifications contract.
-  const helperScript = `
+test("stdio proxy: notification on response-handler success produces no stdout", async () => {
+  // Sub-case (a): the upstream daemon returns a valid HTTP/200 with a
+  // JSON-RPC notification reply body. The proxy's res.on("end") fires
+  // with the daemon's reply; the notification branch (isNotification ===
+  // true) must silently discard without writing anything to stdout.
+  const helper = `
     const { spawn } = require("node:child_process");
     const http = require("node:http");
-    const net = require("node:net");
-
-    // Sub-case (a): serve a valid HTTP/200 with a JSON-RPC notification
-    // reply body. The proxy must not write it to stdout.
     const serve = http.createServer((req, res) => {
-      let body = "";
-      req.on("data", (c) => { body += c; });
+      req.on("data", () => {});
       req.on("end", () => {
-        // A real daemon would respond with a 202 (notifications/initialized)
-        // or a no-body 200; we use the latter because the proxy's res.on
-        // ("end") still fires on a 0-byte body.
-        res.writeHead(202, { "Content-Type": "application/json" });
-        res.end();
+        // Daemon returns a valid JSON-RPC envelope — the proxy's
+        // notification branch must NOT relay it on stdout.
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ jsonrpc: "2.0", result: { ok: true } }));
       });
     });
-
     serve.listen(0, "127.0.0.1", () => {
       const port = serve.address().port;
       const cp = spawn(process.execPath, [process.env.PROXY], {
@@ -160,7 +161,7 @@ test("stdio proxy: notifications produce no stdout on response-handler error", a
       });
       let out = ""; cp.stdout.setEncoding("utf8"); cp.stdout.on("data", (c) => { out += c; });
       let err = ""; cp.stderr.setEncoding("utf8"); cp.stderr.on("data", (c) => { err += c; });
-      // Send a notification (no id). The proxy must NOT reply on stdout.
+      // Send a notification (no id).
       cp.stdin.end(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }) + "\\n");
       setTimeout(() => {
         cp.kill("SIGKILL");
@@ -171,24 +172,63 @@ test("stdio proxy: notifications produce no stdout on response-handler error", a
       }, 300);
     });
   `;
-  const { execFile } = await import("node:child_process");
-  const { stdout } = await new Promise((resolve, reject) => {
-    execFile(
-      process.execPath,
-      ["-e", helperScript],
-      { env: { ...process.env, PROXY: proxyPath }, encoding: "utf8", timeout: 8000 },
-      (error, stdout) => {
-        if (error && error.signal === "SIGTERM") return resolve({ stdout });
-        if (error && error.code === null) return resolve({ stdout });
-        if (error) return reject(error);
-        return resolve({ stdout });
-      }
-    );
-  });
-  const out = stdout.split("OUT::")[1]?.split("::END")[0] ?? "";
+  const out = await runProxyAgainstHelper(helper);
   assert.equal(
     out,
     "",
-    `notification produced stdout lines (regression — JSON-RPC 2.0 forbids notifications from receiving a reply). Captured stdout: ${JSON.stringify(out)}`
+    `notification produced stdout lines on the response-handler success path (regression — JSON-RPC 2.0 forbids notifications from receiving a reply). Captured stdout: ${JSON.stringify(out)}`
+  );
+});
+
+test("stdio proxy: notification on transport error produces no stdout", async () => {
+  // Sub-case (b): the upstream daemon accepts the TCP connection then
+  // resets the socket mid-request, so the proxy's req.on("error") fires.
+  // The notification-aware error guard must log to stderr only — never
+  // stdout — even though the daemon never produced an HTTP response at
+  // all.
+  const helper = `
+    const { spawn } = require("node:child_process");
+    const net = require("node:net");
+    // A minimal TCP server that accepts a connection, lets the proxy
+    // write its request bytes, then resets the socket so the proxy sees
+    // an ECONNRESET on req.
+    const server = net.createServer((sock) => {
+      sock.on("data", () => {
+        // Wait for the proxy's POST to land, then reset.
+        setImmediate(() => {
+          try { sock.resetAndDestroy(); } catch (_) { try { sock.destroy(); } catch (_) {} }
+        });
+      });
+      sock.on("error", () => {}); // swallow EPIPE etc.
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const port = server.address().port;
+      const cp = spawn(process.execPath, [process.env.PROXY], {
+        env: {
+          ...process.env,
+          REMNIC_PLUGIN_DAEMON_TOKEN: "secret-token",
+          REMNIC_PLUGIN_DAEMON_URL: "http://127.0.0.1:" + port + "/mcp",
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      let out = ""; cp.stdout.setEncoding("utf8"); cp.stdout.on("data", (c) => { out += c; });
+      let err = ""; cp.stderr.setEncoding("utf8"); cp.stderr.on("data", (c) => { err += c; });
+      // Send a notification (no id). The daemon RSTs mid-request, so the
+      // proxy's req.on("error") fires — must not write to stdout.
+      cp.stdin.end(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }) + "\\n");
+      setTimeout(() => {
+        cp.kill("SIGKILL");
+        server.close();
+        process.stdout.write("OUT::" + out + "::END");
+        process.stderr.write(err);
+        process.exit(0);
+      }, 400);
+    });
+  `;
+  const out = await runProxyAgainstHelper(helper);
+  assert.equal(
+    out,
+    "",
+    `notification produced stdout lines on the transport-error path (regression — JSON-RPC 2.0 forbids notifications from receiving a reply). Captured stdout: ${JSON.stringify(out)}`
   );
 });
