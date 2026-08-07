@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Claude Code marketplace manifest (`.claude-plugin/marketplace.json`) so `@remnic/plugin-claude-code` can be installed with `claude plugin marketplace add https://github.com/joshuaswarren/remnic.git` + `claude plugin install remnic@remnic`, instead of the manual `npm install -g` + plugin-loader step. The token / `.mcp.json` MCP-config step is unchanged: Claude Code auto-discovers the plugin's bundled `.mcp.json` on install and registers a `remnic` MCP server with the literal `{{REMNIC_TOKEN}}` placeholder header; the user must fill the placeholder or register their own server. Long-term fix (register via `userConfig` + `lifecycle` hooks) tracked as #2314.
+
 ## [v9.46.0] — 2026-08-02
 
 ### Fixed
@@ -1392,3 +1396,9 @@ This project auto-releases on every merge to `main`. Per-release notes for indiv
 - add PR5 objective-state memory foundation: typed snapshot schema/store, status CLI, feature flags, and docs/tests
 - add PR7 objective-state recall: bounded snapshot search, recall injection flag, objective-state recall section, and docs/tests
 - Added the PR9 foundation for action-conditioned causal graph construction, including deterministic causal-stage graph edges derived from typed trajectory records behind `actionGraphRecallEnabled`.
+
+<!-- touchpoint: 2026-08-06 14:22:07 round-4 review-cleanup -->
+
+<!-- post-actions-recovery trigger: 2026-08-06 19:15:58 -->
+
+<!-- retrigger after Actions recovery: 2026-08-06 19:27:56 -->
