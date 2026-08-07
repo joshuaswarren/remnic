@@ -235,10 +235,36 @@ pass-rate equivalence check was wrong, and so was rebuilding the dataset around
 diagnoses mistook an instrumentation limit for a property of the model or the
 task set.
 
-The cost is real but ordinary. A larger token budget needs a context window
-above 16,384, which on this GPU means either accepting roughly 15 s per call at
-32,768 or moving to a card with more memory. Then re-audit and re-pilot. That is
-the same compute a dataset rebuild would have cost, spent on the actual cause.
+**The cost is lower than an earlier revision of this section claimed.** That
+revision said a larger token budget needs a context window above 16,384, with
+either a latency penalty or a bigger GPU. That is wrong. `maxTotalTokens` is a
+**cumulative** budget summed across turns, and because each turn re-sends the
+conversation, re-sent prompt tokens are counted again every turn. The context
+window is a separate, per-call limit and is nowhere near exhausted.
+
+Measured across all 1,260 episodes:
+
+| Quantity | Value | Limit | Utilisation |
+| --- | ---: | ---: | ---: |
+| Peak single-call input (median) | 3,500 | 16,384 window | **21%** |
+| Peak single-call input (max) | 4,396 | 16,384 window | 27% |
+| Turns used | 4 to 6 | `maxTurns` 12 | never reached |
+| Cumulative tokens (max) | **16,383** | `maxTotalTokens` 16,384 | **100%** |
+
+A worked example, one episode's six turns: inputs of 1,098 → 2,278 → 2,854 →
+2,954 → 3,302 → 3,424, cumulating to 16,159. The largest single context is 3,424
+tokens; the sum is what hits the ceiling.
+
+So the two caps contradict each other. `maxTurns` allows 12 turns, but
+`maxTotalTokens` exhausts at 4 to 6, and a maximum observed cumulative of exactly
+16,383 against a 16,384 cap shows episodes terminating on the ceiling rather than
+on task completion. Allowing the registered 12 turns needs roughly 45,000
+cumulative tokens, so a cap near 49,152 would make the turn budget binding as
+designed.
+
+**The remedy is one constant.** No context-window change, no latency tradeoff, no
+different GPU — peak per-call usage would still sit far inside 16,384 even at 12
+turns. Then re-audit and re-pilot.
 
 The drafted amendment (`amendment-01-draft.md`) is now moot in both halves and
 should not be applied. Its content argument assumed the task-pass metric was
