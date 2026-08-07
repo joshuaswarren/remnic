@@ -72,21 +72,45 @@ async function exitedWithCode(child) {
   return code;
 }
 
-async function runProxyAgainstHelper(helperScript) {
-  const { stdout } = await new Promise((resolve, reject) => {
+// Run a helper script that the caller writes to exercise a specific
+// scenario against the proxy. The helper MUST emit two framed fields on
+// stdout before exiting:
+//   - `REQ::true|false` — true when the proxy actually sent its request
+//     bytes to the mock listener (i.e. the scenario under test was reached).
+//     A test scenario that never reaches the listener would silently pass
+//     without exercising the proxy at all, so the harness requires this flag
+//     to be true.
+//   - `OUT::…::END` — captured proxy stdout (notifications should produce
+//     empty `OUT`; requests that produce stdout are checked by the caller).
+//
+// The harness rejects any execFile error other than the natural SIGTERM/zero
+// exit that the helper reaches after the proxy completes its scenario.
+async function runProxyAgainstHelper(helperScript, timeoutMs = 8000) {
+  const framed = await new Promise((resolve, reject) => {
     execFile(
       process.execPath,
       ["-e", helperScript],
-      { env: { ...process.env, PROXY: proxyPath }, encoding: "utf8", timeout: 8000 },
-      (error, stdout) => {
-        if (error && error.signal === "SIGTERM") return resolve({ stdout });
-        if (error && error.code === null) return resolve({ stdout });
-        if (error) return reject(error);
-        return resolve({ stdout });
+      { env: { ...process.env, PROXY: proxyPath }, encoding: "utf8", timeout: timeoutMs },
+      (error, stdout, stderr) => {
+        // The helper self-exits after the scenario completes; both
+        // SIGTERM (execFile timeout) and `error.code === null` are
+        // accepted as natural completion signals.
+        if (error && error.signal !== "SIGTERM" && error.code !== null) {
+          reject(error);
+          return;
+        }
+        resolve({ stdout, stderr });
       }
     );
   });
-  return stdout.split("OUT::")[1]?.split("::END")[0] ?? "";
+  const outSection = framed.stdout.split("OUT::")[1]?.split("::END")[0] ?? "";
+  const reqSection = framed.stdout.split("REQ::")[1]?.split("\n")[0]?.trim();
+  if (reqSection !== "true") {
+    throw new Error(
+      `proxy never reached the mock listener for this scenario (REQ::${reqSection ?? "<missing>"}). Captured stdout: ${JSON.stringify(framed.stdout.slice(0, 500))}, stderr: ${JSON.stringify(framed.stderr.slice(0, 500))}`
+    );
+  }
+  return outSection;
 }
 
 test("stdio proxy: plain http to non-loopback host is rejected at startup", async () => {
@@ -140,7 +164,9 @@ test("stdio proxy: notification on response-handler success produces no stdout",
   const helper = `
     const { spawn } = require("node:child_process");
     const http = require("node:http");
+    let reqReceived = false;
     const serve = http.createServer((req, res) => {
+      reqReceived = true;
       req.on("data", () => {});
       req.on("end", () => {
         // Daemon returns a valid JSON-RPC envelope — the proxy's
@@ -166,6 +192,7 @@ test("stdio proxy: notification on response-handler success produces no stdout",
       setTimeout(() => {
         cp.kill("SIGKILL");
         serve.close();
+        process.stdout.write("REQ::" + (reqReceived ? "true" : "false") + "\\n");
         process.stdout.write("OUT::" + out + "::END");
         process.stderr.write(err);
         process.exit(0);
@@ -189,11 +216,13 @@ test("stdio proxy: notification on transport error produces no stdout", async ()
   const helper = `
     const { spawn } = require("node:child_process");
     const net = require("node:net");
+    let reqReceived = false;
     // A minimal TCP server that accepts a connection, lets the proxy
     // write its request bytes, then resets the socket so the proxy sees
     // an ECONNRESET on req.
     const server = net.createServer((sock) => {
       sock.on("data", () => {
+        reqReceived = true;
         // Wait for the proxy's POST to land, then reset.
         setImmediate(() => {
           try { sock.resetAndDestroy(); } catch (_) { try { sock.destroy(); } catch (_) {} }
@@ -219,6 +248,7 @@ test("stdio proxy: notification on transport error produces no stdout", async ()
       setTimeout(() => {
         cp.kill("SIGKILL");
         server.close();
+        process.stdout.write("REQ::" + (reqReceived ? "true" : "false") + "\\n");
         process.stdout.write("OUT::" + out + "::END");
         process.stderr.write(err);
         process.exit(0);
