@@ -103,7 +103,7 @@ test("stdio proxy: 127.0.0.1 is accepted as loopback", async () => {
     REMNIC_PLUGIN_DAEMON_URL: "http://127.0.0.1:4318/mcp",
   });
   await new Promise((resolve) => setTimeout(resolve, 150));
-  assert.notStrictEqual(child.exitCode, 2, "http://127.0.0.1 must not be rejected by the loopback gate");
+  assert.strictEqual(child.exitCode, null, "http://127.0.0.1 must not be rejected by the loopback gate");
   child.kill("SIGKILL");
   await readStderr(child).catch(() => {});
 });

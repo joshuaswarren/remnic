@@ -306,7 +306,10 @@ function forward(msg, isNotification) {
             writeResult(msg.id ?? null, parsedResp.result ?? parsedResp);
             resolve();
           } catch (err) {
-            process.stderr.write(`remnic-mcp-proxy: response handler error: ${sanitizeMessage(err.message)}\n`);
+            // The outer guard catches anything that slipped through the inner
+            // parses. Emit a JSON-RPC error envelope so the MCP client sees
+            // a real failure rather than a silent stall.
+            writeError(msg.id ?? null, -32603, `internal proxy error: ${sanitizeMessage(err.message)}`, msg.id ?? null);
             resolve();
           }
         });
