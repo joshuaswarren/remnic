@@ -14,9 +14,7 @@ All notable changes to this project will be documented in this file.
 
 
 
-### Added
 
-- Claude Code marketplace manifest (`.claude-plugin/marketplace.json`) so `@remnic/plugin-claude-code` can be installed with `claude plugin marketplace add https://github.com/joshuaswarren/remnic.git` + `claude plugin install remnic@remnic`, instead of the manual `npm install -g` + plugin-loader step. The token / `.mcp.json` MCP-config step is unchanged: Claude Code auto-discovers the plugin's bundled `.mcp.json` on install and registers a `remnic` MCP server with the literal `{{REMNIC_TOKEN}}` placeholder header; the user must fill the placeholder or register their own server. Long-term fix (register via `userConfig` + `lifecycle` hooks) tracked as #2314.
 
 ## [v9.46.0] — 2026-08-02
 
