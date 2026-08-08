@@ -1610,6 +1610,90 @@ test("parseConfig: non-array patternReinforcementCategories falls back to defaul
   ]);
 });
 
+test("parseConfig: dependency propagation defaults stay disabled and bounded", () => {
+  const result = parseConfig({ openaiApiKey: "sk-test" });
+  assert.deepEqual(result.dependencyPropagation, {
+    enabled: false,
+    linkTypes: ["supports", "follows"],
+    maxDependents: 10,
+    timeoutMs: 20_000,
+    dryRun: false,
+  });
+});
+
+test("parseConfig: dependency propagation accepts documented overrides", () => {
+  const result = parseConfig({
+    openaiApiKey: "sk-test",
+    dependencyPropagation: {
+      enabled: "true",
+      linkTypes: ["references", "supports", "references"],
+      maxDependents: "0",
+      timeoutMs: "2500",
+      dryRun: "yes",
+    },
+  });
+
+  assert.deepEqual(result.dependencyPropagation, {
+    enabled: true,
+    linkTypes: ["references", "supports"],
+    maxDependents: 0,
+    timeoutMs: 2_500,
+    dryRun: true,
+  });
+});
+
+test("parseConfig: dependency propagation honors every documented falsy string", () => {
+  for (const value of ["false", "0", "no", "off"]) {
+    const result = parseConfig({
+      openaiApiKey: "sk-test",
+      dependencyPropagation: { enabled: value, dryRun: value },
+    });
+    assert.equal(result.dependencyPropagation.enabled, false, `${value} must disable propagation`);
+    assert.equal(result.dependencyPropagation.dryRun, false, `${value} must disable dry run`);
+  }
+});
+
+test("parseConfig: dependency propagation rejects invalid integers", () => {
+  for (const maxDependents of ["abc", 3.7, -1]) {
+    assert.throws(
+      () =>
+        parseConfig({
+          openaiApiKey: "sk-test",
+          dependencyPropagation: { maxDependents },
+        }),
+      /dependencyPropagation\.maxDependents must be a non-negative integer/,
+    );
+  }
+
+  assert.throws(
+    () =>
+      parseConfig({
+        openaiApiKey: "sk-test",
+        dependencyPropagation: { timeoutMs: 0 },
+      }),
+    /dependencyPropagation\.timeoutMs must be a positive integer/,
+  );
+});
+
+test("parseConfig: dependency propagation rejects invalid link types and shapes", () => {
+  assert.throws(
+    () =>
+      parseConfig({
+        openaiApiKey: "sk-test",
+        dependencyPropagation: { linkTypes: ["supports", "related"] },
+      }),
+    /dependencyPropagation\.linkTypes must contain only supports, follows, references/,
+  );
+  assert.throws(
+    () =>
+      parseConfig({
+        openaiApiKey: "sk-test",
+        dependencyPropagation: { linkTypes: "supports" },
+      }),
+    /dependencyPropagation\.linkTypes must be an array/,
+  );
+});
+
 // ── #683 PR 2/N: connectors.googleDrive parsing.
 
 test("parseConfig connectors defaults: googleDrive disabled with empty creds", () => {
