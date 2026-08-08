@@ -4,7 +4,7 @@ Thanks to everyone who works on Remnic, once called `openclaw-engram`.
 
 ## Maintainer
 
-- [@joshuaswarren](https://github.com/joshuaswarren) (Joshua Warren). Creator, architect, and lead maintainer. Designed the memory model, the recall and extraction pipeline, the multi-host adapter split, and the à-la-carte packaging contract.
+- [@joshuaswarren](https://github.com/joshuaswarren). Creator, architect, and lead maintainer. Designed the memory model, the recall and extraction pipeline, the multi-host adapter split, and the à-la-carte packaging contract.
 
 ## Community contributors
 
