@@ -17,7 +17,7 @@ function parseBoolean(value: unknown, fallback: boolean, keyName: string): boole
   return parsed;
 }
 
-function parseIntegerAtLeast(value: unknown, min: number, fallback: number, keyName: string): number {
+function parseIntegerAtLeast(value: unknown, fallback: number, min: number, keyName: string): number {
   if (value === undefined) return fallback;
   const parsed = coerceNumber(value, keyName);
   if (
@@ -73,20 +73,25 @@ export function parseDependencyPropagationConfig(
   }
 
   const block = raw as Record<string, unknown>;
-
+  const knownKeys = new Set(["enabled", "linkTypes", "maxDependents", "timeoutMs", "dryRun"]);
+  for (const prop in block) {
+    if (Object.prototype.hasOwnProperty.call(block, prop) && !knownKeys.has(prop)) {
+      throw new Error(`dependencyPropagation has unknown property: ${prop}`);
+    }
+  }
   return {
     enabled: parseBoolean(block.enabled, false, "dependencyPropagation.enabled"),
     linkTypes: parseLinkTypes(block.linkTypes),
     maxDependents: parseIntegerAtLeast(
       block.maxDependents,
-      0,
       10,
+      0,
       "dependencyPropagation.maxDependents",
     ),
     timeoutMs: parseIntegerAtLeast(
       block.timeoutMs,
-      1,
       20_000,
+      1,
       "dependencyPropagation.timeoutMs",
     ),
     dryRun: parseBoolean(block.dryRun, false, "dependencyPropagation.dryRun"),

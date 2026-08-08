@@ -81,3 +81,21 @@ test("legacy memory omits dependency supersession fields", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("serializeFrontmatter rejects an invalid supersessionCause value", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-dependency-invalid-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const { id } = await writeFactFile(storage, "A claim with bad metadata.");
+
+    await assert.rejects(
+      storage.updateMemoryFrontmatter(id, {
+        supersessionCause: "bogus" as "dependency",
+      }),
+      /invalid supersessionCause/,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

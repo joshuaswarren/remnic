@@ -492,7 +492,7 @@ Direct `includeFiles` sync plus the OpenClaw workspace adapter both persist incr
 | `dependencyPropagation.timeoutMs` | `20000` | Maximum duration, in milliseconds, of the single batched revalidation call. |
 | `dependencyPropagation.dryRun` | `false` | Discover and revalidate dependents, but do not write supersession changes. |
 
-The parser accepts boolean-like strings such as `"false"`, `"0"`, `"no"`, and `"off"`. It rejects malformed blocks, link arrays, booleans, and integers.
+The parser accepts boolean-like strings for `enabled` and `dryRun` (`"false"`, `"0"`, `"no"`, `"off"` are falsy). It rejects non-object blocks, unknown keys, and non-integer values for `maxDependents` and `timeoutMs`.
 
 ## v8.3 Lifecycle Policy Engine
 
