@@ -12,10 +12,12 @@
  * cached `readAllMemories()` path so cost is amortized with the rest of the
  * write pipeline.
  */
-import type { MemoryFile, MemoryFrontmatter } from "./types.js";
+import type { MemoryFile, MemoryFrontmatter, PluginConfig } from "./types.js";
+import type { ExtractionEngine } from "./extraction.js";
 import type { StorageManager } from "./storage.js";
 import { log } from "./logger.js";
 import { effectiveValidAt } from "./temporal-validity.js";
+import { propagateInvalidation } from "./orchestration/dependency-propagation.js";
 
 /**
  * Shared normalization for supersession key components.
@@ -244,6 +246,10 @@ export async function applyTemporalSupersession(args: {
    * stale relative to the incoming promotion event (PR #402 Finding Uyui).
    */
   useCallerTimestamp?: boolean;
+  /** Optional orchestration dependencies for one-hop propagation. */
+  extraction?: ExtractionEngine;
+  config?: PluginConfig;
+  namespaceScope?: string;
 }): Promise<TemporalSupersessionResult> {
   const empty: TemporalSupersessionResult = { supersededIds: [], matchedKeys: [] };
   if (!args.enabled) return empty;
@@ -506,6 +512,28 @@ export async function applyTemporalSupersession(args: {
           } catch (tombErr) {
             log.warn(
               `temporal-supersession: tombstone emit failed for ${fresh.frontmatter.id}${key ? ` (key=${key})` : ""} : ${tombErr}`,
+            );
+          }
+        }
+        if (args.extraction && args.config && args.namespaceScope) {
+          try {
+            await propagateInvalidation(
+              {
+                storage: args.storage,
+                extraction: args.extraction,
+                config: args.config,
+              },
+              {
+                oldMemory: fresh,
+                replacementId: args.newMemoryId,
+                replacementContent: newMemoryFile?.content ?? null,
+                cause: "temporal_supersession",
+                namespaceScope: args.namespaceScope,
+              },
+            );
+          } catch (propagationErr) {
+            log.warn(
+              `temporal-supersession: dependency propagation failed for ${fresh.frontmatter.id}: ${propagationErr}`,
             );
           }
         }

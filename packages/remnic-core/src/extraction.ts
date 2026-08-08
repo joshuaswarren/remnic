@@ -4,6 +4,7 @@ import { delinearize } from "./delinearize.js";
 import { LocalLlmClient } from "./local-llm.js";
 import { shouldRunProactivePass } from "./proactive-contention.js";
 import { FallbackLlmClient, fallbackLlmRuntimeContextFromConfig, gatewayTaskChainOptions } from "./fallback-llm.js";
+import { revalidateDependentsViaLlm } from "./orchestration/dependency-revalidation.js";
 import {
   ExtractionResultSchema,
   ConsolidationResultSchema,
@@ -2455,6 +2456,36 @@ Respond with valid JSON matching this schema:
       return null;
     }
   }
+  async revalidateDependents(
+    superseded: { id: string; content: string },
+    replacement: { id: string; content: string } | null,
+    dependents: Array<{ id: string; category: string; content: string }>,
+    signal?: AbortSignal,
+  ): Promise<{
+    verdicts: Array<{
+      memoryId: string;
+      verdict: "still_valid" | "invalidated" | "uncertain";
+      reason?: string;
+    }>;
+  }> {
+    return revalidateDependentsViaLlm(
+      {
+        shouldUseLocalLlm: this.shouldUseLocalLlm,
+        shouldUseDirectClient: this.shouldUseDirectClient,
+        localLlm: this.localLlm,
+        fallbackLlm: this.fallbackLlm,
+        client: this.client,
+        config: this.config,
+        withGatewayAgent: this.withGatewayAgent.bind(this),
+        parseJsonObject: this.parseJsonObject,
+      },
+      superseded,
+      replacement,
+      dependents,
+      signal,
+    );
+  }
+
 
   /**
    * Suggest links between a new memory and existing memories (Phase 3A).
