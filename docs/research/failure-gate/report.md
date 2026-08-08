@@ -1,27 +1,49 @@
 # H6 failure gate — pilot report
 
-Status: **v3 pilot complete (1260/1260 rows, zero invalid). Study decision:
-REJECT. Timing power gate met; main run blocked by content and no-trap power.**
+Status: **v8 pilot complete (1260/1260 rows, zero invalid, zero host faults).
+Timing power gate met at 0.9499. Main run blocked by no-trap equivalence.**
 
-Run: `h6-pilot-v5`, dataset inventory `687615b5…`, 12 pilot tasks, 5 seeds,
-5 arms, 3 variants. Zero task cuts.
+Run: `h6-pilot-v8`, dataset inventory `687615b5…`, decision rule `39952d63…`,
+model profile `h6-qwen35-35b-32k-nothink-q4km-v4` (audit `c581ecef…`, PASSED),
+12 pilot tasks, 5 seeds, 5 arms, 3 variants. Zero task cuts.
 
 ## Power simulation — the gate on the main run
 
 Ten thousand task-group bootstrap experiments, each resampling 18 tasks from the
 12-task pilot population.
 
-| Test | Simulated power | Required | Verdict |
-| --- | ---: | ---: | --- |
-| H6-timing | **0.8363** | 0.80 | **PASS** |
-| H6-content | 0.0000 | 0.80 | FAIL |
-| No-trap equivalence | 0.1627 | 0.80 | FAIL |
+| Test | v3 pilot | **v8 pilot** | Required | Verdict |
+| --- | ---: | ---: | ---: | --- |
+| H6-timing | 0.8363 | **0.9499** | 0.80 | **PASS** |
+| H6-content | 0.0000 | 0.0025 | 0.80 | FAIL (no longer gates — Amendment 3) |
+| No-trap equivalence | 0.1627 | **0.1311** | 0.80 | **FAIL** |
 
-`verifyPilotPower` requires all three, so the main run remains blocked.
+Under Amendment 3 the gate is timing and no-trap equivalence only, so the main
+run is blocked by equivalence alone.
 
-**The registered timing-power objective is met.** The current dataset carries
-enough trap-effective independent tasks; no new dataset version is needed for
-timing. That question is closed.
+**The registered timing-power objective is met, with margin.** Timing rose from
+0.8363 to 0.9499 after the Amendment 2 cap correction and the 32k context fix.
+The current dataset carries enough trap-effective independent tasks for timing;
+no new dataset version is needed for that test. That question is closed.
+
+### Why v8 supersedes v3 and v7
+
+The v3 pilot ran at `maxTotalTokens` 16,384, where 98.7 percent of rows recorded
+`taskPassed = false` regardless of outcome. Amendment 2 raised the cap to 20,480.
+
+A v7 pilot at that cap was abandoned at 320 rows. Its profile used a 49,152-token
+context, whose KV cache pushed roughly 1 GB of a mixture-of-experts model off the
+GPU. Because MoE routing gathers experts per token, that 4 percent spill cost 98
+percent of generation throughput — 2.12 tok/s against 138.60 tok/s at 32,768
+tokens, measured directly with all other settings held constant. Requests then
+exceeded the 180-second timeout, three rows livelocked at ten retry attempts, and
+the run could not have finished. The v8 profile changes exactly two fields from
+the audited v7 profile — `contextWindowTokens` and `id` — so no experimental
+condition moved, and it was re-audited before use (trapped 11/30, non-fixed
+20/30, invalid 0).
+
+v8 then ran 1260 rows with **zero host faults and zero retries**, producing 151
+passing episodes against v3's 17.
 
 ## Pilot decisions
 
@@ -104,94 +126,90 @@ A GPU-memory decision silently disabled one of the two content metrics.
 
 | Quantity | Value | Margin | Inside |
 | --- | ---: | --- | --- |
-| Pass-rate difference | 0.0167, 90% CI [0, **0.0389**] | ±0.02 | **no** |
-| Steps difference | 0.0333, 90% CI [0, 0.0722] | ±2 | yes |
+| Pass-rate difference | 0.0167, 90% CI [0.0056, **0.0333**] | ±0.02 | **no** |
+| Steps difference | -0.0056, 90% CI [-0.0222, 0.0111] | ±2 | yes |
 
-`equivalent: false`. Steps are comfortably inside the margin; the pass-rate
-interval is not, because its upper bound of 0.0389 exceeds the 0.02 margin.
+`equivalent: false`. Steps sit far inside their margin; the pass-rate interval
+does not, because its upper bound exceeds 0.02.
 
 Note the direction: the gate slightly *raises* the pass rate on no-trap
 revisions rather than making the agent timid. Equivalence testing is two-sided,
-so a benefit beyond the margin fails the check just as a harm would. The
-registered claim "the gate does not change behavior on tasks with no trap" is
-not supported at the registered margin, but nothing here suggests the gate
-causes harm.
+so a benefit beyond the margin fails the check exactly as a harm would. Nothing
+here suggests the gate causes harm.
 
-#### The check has an effective sample size of two
+#### The v8 population is far healthier, and the check still fails
 
-**Correction.** An earlier revision of this section computed the standard error
-from an episode-level binomial approximation, giving SE 0.0224, margin ÷ SE
-0.89, and a requirement of roughly 200 no-trap tasks. That was the wrong
-estimator. The analysis bootstraps at the **task** level, so the SE must come
-from the spread of per-task differences. The corrected figures are below and
-they change the conclusion.
+The v3 pilot's equivalence check had an effective sample size of two: ten of its
+twelve tasks passed nothing in either arm, so all variance came from two tasks.
+Amendment 2's cap correction changed that decisively.
 
-Measured no-trap population, 12 tasks × 15 episodes per arm:
+| Measure | v3 pilot | **v8 pilot** |
+| --- | ---: | ---: |
+| `NO_MEMORY` no-trap pass rate | 7/180 = 0.0389 | **53/175 = 0.3029** |
+| `PRE_ACTION_FAILURE` no-trap pass rate | 10/180 = 0.0556 | **56/180 = 0.3111** |
+| Tasks the model can ever pass | 2 of 12 | **8 of 12** |
+| Tasks with a nonzero arm difference | 2 | **4** |
+| SD of per-task differences | 0.0414 | **0.0332** |
+| Task-level SE | 0.0120 | **0.0096** |
 
-| Arm | n | passes | pass rate | mean steps |
-| --- | ---: | ---: | ---: | ---: |
-| `NO_MEMORY` | 180 | 7 | 0.0389 | 5.328 |
-| `PRE_ACTION_FAILURE` | 180 | 10 | 0.0556 | 5.361 |
+Every input improved. The check still fails, and the reason is no longer a
+degenerate sample — it is that the measured difference is small but not zero.
 
-Per-task differences tell the real story:
+#### The registered margin is not reachable by adding tasks
 
-| Task | baseline | candidate | difference |
-| --- | ---: | ---: | ---: |
-| `h6-task-21` | 5/15 | 6/15 | +0.0667 |
-| `h6-task-22` | 2/15 | 4/15 | +0.1333 |
-| **other 10 tasks** | **0/15** | **0/15** | **0.0000** |
+The v3 revision of this section projected that ±0.02 becomes properly powered at
+about 41 no-trap tasks. That projection assumed a **true difference of exactly
+zero**, where the margin only has to cover sampling noise. The v8 pilot measures
+a mean per-task difference of 0.0139 — 70 percent of the margin itself — with a
+90% CI of [-0.0019, 0.0297] that can neither exclude zero nor confirm it.
 
-**Ten of twelve tasks contribute exactly zero** — the model passes none of them
-in either arm. All variance in the statistic comes from two tasks, so the
-equivalence check has an effective sample size of **2**, not 12, and the whole
-verdict turns on three extra passes (one in `21`, two in `22`).
+Power depends critically on which assumption holds, and the pilot cannot settle
+it. Bootstrapping the harness's own procedure from the v8 no-trap population
+(resample tasks with replacement, then episodes within task, 1500–2000 trials)
+gives:
 
-| Quantity | Value |
-| --- | ---: |
-| Registered margin | 0.0200 |
-| SD of per-task differences | 0.0414 |
-| **Task-level SE** | **0.0120** |
-| 90% half-width (1.645·SE) | 0.0197 |
-| **margin ÷ SE** | **1.67** |
+| No-trap tasks | 15 ep/arm | 30 ep/arm | 45 ep/arm | 60 ep/arm |
+| ---: | ---: | ---: | ---: | ---: |
+| 12 (this design) | 0.002 | 0.004 | 0.007 | 0.017 |
+| 18 (main split) | 0.000 | 0.003 | 0.007 | 0.012 |
+| 30 | 0.000 | 0.003 | 0.009 | 0.029 |
+| 60 | 0.001 | 0.022 | 0.093 | 0.142 |
+| 100 | — | — | — | 0.213 |
+| 180 | — | — | — | 0.306 |
+| 300 | — | — | — | 0.362 |
+| 500 | — | — | — | **0.591** |
 
-At 1.67 SE the margin sits just above the 1.645 needed for containment to be
-possible at all, so — contrary to the earlier revision — equivalence was **not**
-out of reach by construction. It was reachable only if the observed difference
-sat almost exactly on zero, which two passable tasks out of twelve could not
-deliver.
+**At the registered margin, five hundred tasks at sixty episodes per arm still
+returns 0.591.** The decision rule's registered remedy —
+`power.increaseIndependentTasksIfBelowThreshold` — cannot deliver this gate,
+because the bootstrap centres on the observed nonzero difference rather than on
+zero. Adding tasks shrinks the interval around 0.0139; it does not move 0.0139
+far enough below 0.02 to fit a 90% interval underneath.
 
-The steps half of the same check has roughly 60× headroom (0.0333 observed
-against a ±2 margin). That asymmetry is still real: the two margins were not set
-from the same operating characteristics.
+Holding the design at 30 tasks and varying the margin instead:
 
-#### What it would take, using the correct estimator
+| Margin | Power at 30 tasks × 60 ep |
+| ---: | ---: |
+| 0.02 (registered) | 0.003 |
+| 0.03 | 0.295 |
+| 0.04 | 0.593 |
+| **0.05** | **0.831** |
+| 0.06 | 0.935 |
 
-For an equivalence test to reach 80 percent power *at a true difference of
-zero*, the margin must exceed `(z₀.₉₅ + z₀.₉₀) · SE ≈ 2.93 · SE`. Holding the
-observed per-task spread (SD 0.0414) and scaling the task count:
+The check becomes answerable at a margin near 0.05 — two and a half times the
+registered value.
 
-| No-trap tasks | task-level SE | margin needed for 80% power |
-| ---: | ---: | ---: |
-| **12 (this design)** | 0.0120 | **0.0350** |
-| 18 | 0.0098 | 0.0286 |
-| 30 | 0.0076 | 0.0221 |
-| **41** | 0.0065 | **0.0189** ✓ |
-| 60 | 0.0053 | 0.0157 ✓ |
-| 100 | 0.0041 | 0.0121 ✓ |
+#### Why the margin is below the design's resolution
 
-**The registered ±0.02 margin becomes properly powered at about 41 no-trap
-tasks** — roughly 3.4× the current population, not the sixteen-fold increase the
-earlier revision claimed. That is a larger study, but an ordinary one.
+A single episode flip moves one task's difference by 1/15 = 0.0667, more than
+three times the margin it is tested against. The statistic is quantised far
+coarser than its own threshold. That is a property of the design fixed before
+any data existed, not a consequence of the observed results, and it is the same
+class of defect as the H6-content impossibility that Amendment 3 recorded.
 
-This supersedes the previous recommendation to retire the pass-rate check. The
-check is not unusable; it is under-resourced. Retiring a test that a 41-task
-design would answer cleanly would discard a real question rather than settle it.
-
-The caveat is that the SD is itself estimated from two informative tasks, so the
-41 figure is indicative rather than precise, and it assumes added tasks resemble
-the existing mix. Given that 10 of 12 current tasks contribute nothing, the more
-efficient route is not simply more tasks but more tasks the model can sometimes
-pass: the effective sample size, not the nominal one, is what sets the SE.
+This supersedes the v3 recommendation that 41 tasks would settle the question.
+Forty-one tasks would settle it only if the true difference were exactly zero,
+which the v8 data does not support.
 
 ## What changed against the v1 pilot
 
