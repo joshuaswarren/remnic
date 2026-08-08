@@ -373,7 +373,14 @@ function serializeFrontmatter(fm: MemoryFrontmatter): string {
     }
     lines.push(`supersessionCause: ${fm.supersessionCause}`);
   }
-  if (fm.invalidatedBy) lines.push(`invalidatedBy: ${fm.invalidatedBy}`);
+  if (fm.invalidatedBy) {
+    if (typeof fm.invalidatedBy !== "string" || /[\n\r:]/.test(fm.invalidatedBy)) {
+      throw new Error(
+        `serializeFrontmatter: invalid invalidatedBy ${JSON.stringify(fm.invalidatedBy)} — expected a single-line ID`,
+      );
+    }
+    lines.push(`invalidatedBy: ${fm.invalidatedBy}`);
+  }
   if (fm.archivedAt) lines.push(`archivedAt: ${fm.archivedAt}`);
   // Issue #680 — explicit fact lifecycle.  Emit only when present so legacy
   // memories round-trip unchanged; readers default `valid_at` to `created`.
