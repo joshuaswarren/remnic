@@ -2,7 +2,6 @@ import path from "node:path";
 import { listJsonFilesStrict, readJsonFile } from "./json-store.js";
 import { throwIfAborted } from "./abort-error.js";
 import { inferMemoryStatus, toMemoryPathRel } from "./memory-lifecycle-ledger-utils.js";
- import { StorageManager } from "./storage.js";
  import {
    HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY,
    resolveAbstractionNodeStoreDir,
@@ -23,7 +22,8 @@ async function readSourceMemories(options: {
   abortSignal?: AbortSignal;
 }): Promise<SourceMemoryMap> {
   const sourceMemories: SourceMemoryMap = new Map();
-  try {
+ try {
+ const { StorageManager } = await import("./storage.js");
  const storage = new StorageManager(options.memoryDir);
  const [hotMemories, coldMemories] = await Promise.all([
  storage.readAllMemories({ abortSignal: options.abortSignal }),
