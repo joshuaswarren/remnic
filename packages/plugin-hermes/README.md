@@ -73,7 +73,7 @@ remnic:
   host: "127.0.0.1"      # Remnic daemon host. Default: 127.0.0.1
   port: 4318             # Remnic daemon port. Default: 4318
   token: ""              # Auth token. Leave empty to auto-load from ~/.remnic/tokens.json.
-  client_id: ""          # Daemon namespace selector. Defaults to hermes. `namespace` is an alias.
+  client_id: ""          # Daemon namespace selector. Leave empty to use the daemon default. `namespace` is an alias.
   session_key: ""        # Session identifier. Auto-generated as hermes-<12hex> if not set.
   timeout: 30.0          # HTTP request timeout in seconds. Default: 30.0
   prefetch_wait_timeout: 2.0  # Max seconds prefetch() blocks a turn on a first-fetch recall. 0 = never wait (cache-only). Default: 2.0
@@ -81,7 +81,7 @@ remnic:
 
 A legacy `engram:` config block is also accepted during the Engram to Remnic transition. The plugin reads `remnic:` first and falls back to `engram:` when the `remnic:` key is absent, so existing configs continue working without edits.
 
-Set `client_id` to the daemon namespace that Hermes should use. A non-empty `client_id` takes precedence over `namespace`. If both are empty, the plugin sends `hermes` for backward compatibility.
+Set `client_id` to the daemon namespace that Hermes should use. A non-empty `client_id` takes precedence over `namespace`. If both are empty, the request omits its namespace and uses the daemon default. The legacy client identifier remains `hermes`.
 
 ### Environment variable overrides
 

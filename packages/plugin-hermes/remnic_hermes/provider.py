@@ -142,7 +142,8 @@ class RemnicMemoryProvider(HermesMemoryProvider):  # type: ignore[misc]
         self._port = cfg.port
         self._token = cfg.token
         self._timeout = cfg.timeout
-        self._namespace = cfg.client_id or "hermes"
+        self._namespace = cfg.client_id or None
+        self._client_id = cfg.client_id or "hermes"
         self._configured_session_key = bool(cfg.session_key)
         self._session_key = cfg.session_key or f"hermes-{uuid.uuid4().hex[:12]}"
         self._client: RemnicClient | None = None
@@ -175,7 +176,7 @@ class RemnicMemoryProvider(HermesMemoryProvider):  # type: ignore[misc]
             host=self._host,
             port=self._port,
             token=self._token,
-            client_id=self._namespace,
+            client_id=self._client_id,
             namespace=self._namespace,
             session_key=self._session_key,
             timeout=self._timeout,

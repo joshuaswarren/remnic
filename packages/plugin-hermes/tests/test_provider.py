@@ -45,7 +45,7 @@ class TestProviderLifecycle:
             MockClient.assert_called_once()
             _, kwargs = MockClient.call_args
             assert kwargs["client_id"] == "hermes"
-            assert kwargs["namespace"] == "hermes"
+            assert kwargs["namespace"] is None
             assert kwargs["session_key"] == "test-session"
             instance.health.assert_awaited_once()
 
