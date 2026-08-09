@@ -48,7 +48,7 @@ import { applyGroundingWithConnector, headerConnector, renderExtractionConversat
 import { isMemoryCategory } from "./write-envelope.js";
 import { classifyExtractionThrownError, classifyFallbackParseFailure } from "./extraction-error-classification.js";
 import { AMBIENT_CAPTURE_PROMPT_SECTION_COMPACT, clampAmbientCaptureConfidence } from "./ambient-provenance.js";
-import { EXTRACTION_RESPONSE_SHAPE, buildExtractionInstructions, eventTimePromptInstruction } from "./extraction-prompt.js";
+import { CUE_ANCHOR_PROMPT_INSTRUCTION, EXTRACTION_RESPONSE_SHAPE, buildExtractionInstructions, eventTimePromptInstruction } from "./extraction-prompt.js";
 import {
   containsExtractionPlaceholder,
   extractionAttributes,
@@ -1434,7 +1434,7 @@ Rules:
 - Use normalized, hyphenated entity names and keep the entity list short.
 - Keep facts standalone. Skip transient task state and operational noise such as routine scheduler, monitoring, or automation status.
 - Add structuredAttributes only for concrete values.
-- Include at most five durable relationships.${this.config.provenance?.enabled ? `
+${CUE_ANCHOR_PROMPT_INSTRUCTION}\n- Include at most five durable relationships.${this.config.provenance?.enabled ? `
 - Each fact must include a quote copied verbatim from one contiguous conversation span.` : ""}${lifecycleCaps.extractionScopeClassification ? `
 - Set each fact scope to "global" for cross-project knowledge or "project" for codebase-specific knowledge. Tool, command, or CLI-flag instructions tied to one agent are "project" (the same tool name can mean different things across agents); when keeping one, begin the fact with a leading "In <agent>," clause naming that agent.` : ""}${ambientCapture ? AMBIENT_CAPTURE_PROMPT_SECTION_COMPACT : ""}
 ${eventTimePromptInstruction(this.config)}

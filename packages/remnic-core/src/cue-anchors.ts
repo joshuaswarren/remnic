@@ -1,13 +1,8 @@
 import { mkdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { resolveAbstractionNodeStoreDir, validateAbstractionNode } from "./abstraction-nodes.js";
-import {
-  listJsonFiles,
-  listJsonFilesStrict,
-  readJsonFile,
-  withJsonStoreMutationLock,
-  writeJsonFileAtomic,
-} from "./json-store.js";
+import { resolveAbstractionNodeStoreDir, validateAbstractionNode, type AbstractionNode } from "./abstraction-nodes.js";
+import { listJsonFilesStrict, readJsonFile, withJsonStoreMutationLock, writeJsonFileAtomic } from "./json-store.js";
+import { compareDeterministicStrings, mergeSortedUniqueStrings } from "./deterministic-order.js";
 import {
   assertIsoRecordedAt,
   assertSafePathSegment,
@@ -105,21 +100,62 @@ export async function recordCueAnchor(options: {
     : path.join(options.memoryDir, "state", "abstraction-nodes");
   const rootDir = resolveCueAnchorStoreDir(abstractionNodeStoreDir, options.cueAnchorStoreDir);
   const validated = validateCueAnchor(options.anchor);
-  const anchorDir = path.join(rootDir, validated.anchorType);
-  const filePath = path.join(anchorDir, `${validated.anchorId}.json`);
+  const bounded = validateCueAnchor({
+    ...validated,
+    nodeRefs: boundNodeRefs(validated.nodeRefs),
+  });
+  const anchorDir = path.join(rootDir, bounded.anchorType);
+  const filePath = path.join(anchorDir, `${bounded.anchorId}.json`);
   await mkdir(anchorDir, { recursive: true });
-  await writeFile(filePath, JSON.stringify(validated, null, 2), "utf8");
+  await writeFile(filePath, JSON.stringify(bounded, null, 2), "utf8");
   return filePath;
 }
 
 function mergeSortedValues(existing: string[] | undefined, incoming: string[] | undefined): string[] {
-  return [...new Set([...(existing ?? []), ...(incoming ?? [])])].sort((left, right) => left.localeCompare(right));
+  return mergeSortedUniqueStrings(existing, incoming);
 }
 
 function isNotFoundError(error: unknown): boolean {
   return (
     typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "ENOENT"
   );
+}
+
+function boundNodeRefs(nodeRefs: string[], liveNodes?: Map<string, AbstractionNode>): string[] {
+  const uniqueRefs = mergeSortedUniqueStrings(nodeRefs);
+  if (!liveNodes) return uniqueRefs.slice(0, 50);
+  return uniqueRefs
+    .filter((nodeRef) => liveNodes.has(nodeRef))
+    .sort(
+      (left, right) =>
+        Date.parse(liveNodes.get(right)?.recordedAt ?? "") - Date.parse(liveNodes.get(left)?.recordedAt ?? "") ||
+        compareDeterministicStrings(left, right)
+    )
+    .slice(0, 50);
+}
+
+async function readLiveNodes(nodesDir: string): Promise<Map<string, AbstractionNode> | undefined> {
+  const liveNodes = new Map<string, AbstractionNode>();
+  let nodeFiles: string[];
+  try {
+    nodeFiles = await listJsonFilesStrict(nodesDir);
+  } catch (error) {
+    if (isNotFoundError(error)) return undefined;
+    throw error;
+  }
+  for (const filePath of nodeFiles) {
+    const node = validateAbstractionNode(await readJsonFile(filePath));
+    const previous = liveNodes.get(node.nodeId);
+    if (
+      !previous ||
+      Date.parse(previous.recordedAt) < Date.parse(node.recordedAt) ||
+      (Date.parse(previous.recordedAt) === Date.parse(node.recordedAt) &&
+        compareDeterministicStrings(previous.sessionKey, node.sessionKey) < 0)
+    ) {
+      liveNodes.set(node.nodeId, node);
+    }
+  }
+  return liveNodes;
 }
 
 export async function upsertCueAnchor(options: {
@@ -132,6 +168,7 @@ export async function upsertCueAnchor(options: {
   return withJsonStoreMutationLock(abstractionNodeStoreDir, async () => {
     const rootDir = resolveCueAnchorStoreDir(abstractionNodeStoreDir, options.cueAnchorStoreDir);
     const incoming = validateCueAnchor(options.anchor);
+    const liveNodes = await readLiveNodes(path.join(abstractionNodeStoreDir, "nodes"));
     const filePath = path.join(rootDir, incoming.anchorType, `${incoming.anchorId}.json`);
     let existing: CueAnchor | undefined;
     try {
@@ -144,7 +181,7 @@ export async function upsertCueAnchor(options: {
     const older = newest === incoming ? existing : incoming;
     const merged = validateCueAnchor({
       ...newest,
-      nodeRefs: mergeSortedValues(existing?.nodeRefs, incoming.nodeRefs),
+      nodeRefs: boundNodeRefs(mergeSortedValues(existing?.nodeRefs, incoming.nodeRefs), liveNodes),
       tags: mergeSortedValues(existing?.tags, incoming.tags),
       metadata: {
         ...(older?.metadata ?? {}),
@@ -164,13 +201,7 @@ export async function pruneOrphanCueAnchors(options: {
   const abstractionNodeStoreDir = resolveAbstractionNodeStoreDir(options.memoryDir, options.abstractionNodeStoreDir);
   return withJsonStoreMutationLock(abstractionNodeStoreDir, async () => {
     const cueAnchorStoreDir = resolveCueAnchorStoreDir(abstractionNodeStoreDir, options.cueAnchorStoreDir);
-    const nodeIds = new Set<string>();
-    const nodeFiles = await listJsonFilesStrict(path.join(abstractionNodeStoreDir, "nodes"), {
-      allowMissingDirectory: true,
-    });
-    for (const filePath of nodeFiles) {
-      nodeIds.add(validateAbstractionNode(await readJsonFile(filePath)).nodeId);
-    }
+    const liveNodes = (await readLiveNodes(path.join(abstractionNodeStoreDir, "nodes"))) ?? new Map();
     let removed = 0;
     const anchorFiles = await listJsonFilesStrict(cueAnchorStoreDir, {
       allowMissingDirectory: true,
@@ -182,12 +213,21 @@ export async function pruneOrphanCueAnchors(options: {
       } catch {
         continue;
       }
-      if (anchor.nodeRefs.some((nodeRef) => nodeIds.has(nodeRef))) continue;
-      try {
-        await unlink(filePath);
-        removed++;
-      } catch (error) {
-        if (!isNotFoundError(error)) throw error;
+      const nodeRefs = boundNodeRefs(anchor.nodeRefs, liveNodes);
+      if (nodeRefs.length === 0) {
+        try {
+          await unlink(filePath);
+          removed++;
+        } catch (error) {
+          if (!isNotFoundError(error)) throw error;
+        }
+        continue;
+      }
+      if (
+        nodeRefs.length !== anchor.nodeRefs.length ||
+        nodeRefs.some((nodeRef, index) => nodeRef !== anchor.nodeRefs[index])
+      ) {
+        await writeJsonFileAtomic(filePath, validateCueAnchor({ ...anchor, nodeRefs }));
       }
     }
     return removed;
@@ -205,7 +245,7 @@ export async function getCueAnchorStoreStatus(options: {
     ? options.abstractionNodeStoreDir.trim()
     : path.join(options.memoryDir, "state", "abstraction-nodes");
   const rootDir = resolveCueAnchorStoreDir(abstractionNodeStoreDir, options.cueAnchorStoreDir);
-  const files = await listJsonFiles(rootDir);
+  const files = await listJsonFilesStrict(rootDir, { allowMissingDirectory: true });
   const anchors: CueAnchor[] = [];
   const invalidAnchors: Array<{ path: string; error: string }> = [];
 
@@ -220,7 +260,9 @@ export async function getCueAnchorStoreStatus(options: {
     }
   }
 
-  anchors.sort((a, b) => b.recordedAt.localeCompare(a.recordedAt));
+  anchors.sort(
+    (a, b) => Date.parse(b.recordedAt) - Date.parse(a.recordedAt) || compareDeterministicStrings(a.anchorId, b.anchorId)
+  );
 
   const byType: Partial<Record<CueAnchorType, number>> = {};
   let totalNodeRefs = 0;

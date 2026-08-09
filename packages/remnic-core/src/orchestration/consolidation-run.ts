@@ -52,6 +52,7 @@ import type { EntitySynthesisCoordinator } from "./entity-synthesis-coordinator.
 import type { RecallSectionCoordinator } from "./recall-section-coordinator.js";
 import type { TierMigrationCoordinator } from "./tier-migration-coordinator.js";
 import type { StorageManager } from "../index.js";
+import type { NamespaceCatalog } from "../namespaces/catalog.js";
 import type { NamespaceStorageRouter } from "../namespaces/storage.js";
 import type { ExtractionEngine } from "../extraction.js";
 import type { EmbeddingFallback } from "../embedding-fallback.js";
@@ -70,6 +71,7 @@ export interface ConsolidationRunCoordinatorDeps {
   config: PluginConfig;
   getStorage: () => StorageManager;
   getStorageRouter: () => NamespaceStorageRouter;
+  getNamespaceCatalog?: () => NamespaceCatalog;
   getExtraction: () => ExtractionEngine;
   embeddingFallback: EmbeddingFallback;
   tmtBuilder: TmtBuilder;
@@ -103,8 +105,60 @@ export interface ConsolidationRunCoordinatorDeps {
   ) => Promise<{ content: string } | null>;
 }
 
+const MAX_HARMONIC_NAMESPACE_STORES = 50;
+
 export class ConsolidationRunCoordinator {
   constructor(private readonly deps: ConsolidationRunCoordinatorDeps) {}
+
+  private async pruneHarmonicStores(storage: StorageManager): Promise<void> {
+    const config = this.deps.config;
+    if (
+      !resolveCapabilities(config).harmonicRetrieval ||
+      !resolveConsolidationCapabilities(config).abstractionAnchors
+    ) {
+      return;
+    }
+
+    const stores = new Map<string, { memoryDir: string; abstractionNodeStoreDir?: string }>();
+    const defaultDir = path.resolve(storage.dir);
+    stores.set(defaultDir, {
+      memoryDir: storage.dir,
+      abstractionNodeStoreDir: config.abstractionNodeStoreDir,
+    });
+
+    try {
+      const catalog = this.deps.getNamespaceCatalog?.();
+      if (catalog?.enabled) {
+        const records = await catalog.listNamespaces({ discoveredBy: "write" });
+        for (const record of records) {
+          if (stores.size >= MAX_HARMONIC_NAMESPACE_STORES) break;
+          const storageDir = path.resolve(record.storageDir);
+          if (!stores.has(storageDir)) {
+            stores.set(storageDir, { memoryDir: record.storageDir });
+          }
+        }
+      }
+    } catch (error) {
+      log.warn(
+        `harmonic namespace catalog read failed open: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
+    for (const store of stores.values()) {
+      try {
+        const removed = await pruneOrphanCueAnchors(store);
+        if (removed > 0) {
+          log.info(`harmonic anchor prune removed ${removed} orphan(s) from ${store.memoryDir}`);
+        }
+      } catch (error) {
+        log.warn(
+          `harmonic anchor prune failed open for ${store.memoryDir}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+  }
 
   async run(): Promise<{
     memoriesProcessed: number;
@@ -127,26 +181,7 @@ export class ConsolidationRunCoordinator {
     if (this.deps.getAccessTrackingBuffer().size > 0) {
       await this.deps.flushAccessTracking();
     }
-    if (
-      resolveCapabilities(config).harmonicRetrieval &&
-      resolveConsolidationCapabilities(config).abstractionAnchors
-    ) {
-      try {
-        const removed = await pruneOrphanCueAnchors({
-          memoryDir: storage.dir,
-          abstractionNodeStoreDir: config.abstractionNodeStoreDir,
-        });
-        if (removed > 0) {
-          log.info(`harmonic anchor prune removed ${removed} orphan(s)`);
-        }
-      } catch (error) {
-        log.warn(
-          `harmonic anchor prune failed open: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
-    }
+    await this.pruneHarmonicStores(storage);
 
     let allMemories = await storage.readAllMemories();
     if (allMemories.length < 5) {

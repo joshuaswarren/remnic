@@ -1530,17 +1530,6 @@ export class ExtractionPersistCoordinator {
       // observedAt, then fall back to the batch anchor (legacy extractors).
       const factAnchor = pickFactEventTimeAnchor(fact, sourceContext?.validAt);
       const biTemporal = this.deps.config.temporalBiTemporal && factAnchor ? resolveFactEventTime(fact.eventTime, factAnchor) : undefined;
-      const harmonicFact: Omit<
-        HarmonicConstructionInput["persistedFacts"][number],
-        "memoryId"
-      > = {
-        category: fact.category,
-        content: fact.content,
-        tags: fact.tags,
-        cueAnchors: fact.cueAnchors,
-        entityRef: fact.entityRef,
-        validAt: biTemporal?.validFrom ?? sourceContext?.validAt,
-      };
       // Content-hash dedup check (v6.0)
       //
       // Canonicalize pre-tagged facts before hashing (Codex P2 — issue #369).
@@ -1632,6 +1621,17 @@ export class ExtractionPersistCoordinator {
           );
         }
       }
+      const harmonicFact: Omit<
+        HarmonicConstructionInput["persistedFacts"][number],
+        "memoryId"
+      > = {
+        category: writeCategory,
+        content: fact.content,
+        tags: fact.tags,
+        cueAnchors: fact.cueAnchors,
+        entityRef: fact.entityRef,
+        validAt: biTemporal?.validFrom ?? sourceContext?.validAt,
+      };
       // #1669 redaction-rule gate: consult BOTH source and target namespace
       // rules before any write. A never-store pattern registered under the
       // source namespace must survive scope-routing to a different target

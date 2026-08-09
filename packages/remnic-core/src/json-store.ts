@@ -1,6 +1,17 @@
 import { randomUUID } from "node:crypto";
 import type { Dirent } from "node:fs";
-import { lstat, mkdir, open, readFile, readdir, rename, unlink, utimes, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rename,
+  unlink,
+  utimes,
+  writeFile,
+  type FileHandle,
+} from "node:fs/promises";
 import path from "node:path";
 
 function hasErrorCode(error: unknown, code: string): boolean {
@@ -81,23 +92,85 @@ function processIsRunning(pid: number): boolean {
   }
 }
 
-async function removeStaleJsonStoreLock(lockPath: string): Promise<void> {
+type JsonStoreLockState = {
+  mtimeMs: number;
+  size: number;
+  ino: number | undefined;
+  content: string;
+};
+
+async function readJsonStoreLockState(lockPath: string): Promise<JsonStoreLockState> {
   const lockStat = await lstat(lockPath);
   if (!lockStat.isFile()) {
     throw new Error(`JSON store mutation lock is not a regular file: ${lockPath}`);
   }
-  if (Date.now() - lockStat.mtimeMs <= JSON_STORE_LOCK_STALE_MS) return;
-  let ownerPid: number | undefined;
+  return {
+    mtimeMs: lockStat.mtimeMs,
+    size: lockStat.size,
+    ino: typeof lockStat.ino === "number" ? lockStat.ino : undefined,
+    content: await readFile(lockPath, "utf8"),
+  };
+}
+
+function sameJsonStoreLockState(left: JsonStoreLockState, right: JsonStoreLockState): boolean {
+  return (
+    left.mtimeMs === right.mtimeMs &&
+    left.size === right.size &&
+    left.ino === right.ino &&
+    left.content === right.content
+  );
+}
+
+async function removeStaleJsonStoreLock(lockPath: string): Promise<void> {
+  const reclaimPath = `${lockPath}.reclaim`;
+  let reclaimHandle: FileHandle | undefined;
+  let ownsReclaimGuard = false;
   try {
-    const metadata = JSON.parse(await readFile(lockPath, "utf8")) as { pid?: unknown };
-    ownerPid = typeof metadata.pid === "number" && Number.isInteger(metadata.pid) ? metadata.pid : undefined;
-  } catch {
-    ownerPid = undefined;
+    reclaimHandle = await open(reclaimPath, "wx", 0o600);
+    ownsReclaimGuard = true;
+    await reclaimHandle.writeFile(JSON.stringify({ pid: process.pid }), "utf8");
+    await reclaimHandle.close();
+    reclaimHandle = undefined;
+
+    let initial: JsonStoreLockState;
+    try {
+      initial = await readJsonStoreLockState(lockPath);
+    } catch (error) {
+      if (hasErrorCode(error, "ENOENT")) return;
+      throw error;
+    }
+    if (Date.now() - initial.mtimeMs <= JSON_STORE_LOCK_STALE_MS) return;
+    let ownerPid: number | undefined;
+    try {
+      const metadata = JSON.parse(initial.content) as { pid?: unknown };
+      ownerPid = typeof metadata.pid === "number" && Number.isInteger(metadata.pid) ? metadata.pid : undefined;
+    } catch {
+      ownerPid = undefined;
+    }
+    if (ownerPid !== undefined && processIsRunning(ownerPid)) return;
+
+    let confirmed: JsonStoreLockState;
+    try {
+      confirmed = await readJsonStoreLockState(lockPath);
+    } catch (error) {
+      if (hasErrorCode(error, "ENOENT")) return;
+      throw error;
+    }
+    if (!sameJsonStoreLockState(initial, confirmed)) return;
+    await unlink(lockPath).catch((error) => {
+      if (!hasErrorCode(error, "ENOENT")) throw error;
+    });
+  } catch (error) {
+    if (hasErrorCode(error, "EEXIST")) return;
+    throw error;
+  } finally {
+    if (ownsReclaimGuard) {
+      if (reclaimHandle) await reclaimHandle.close().catch(() => undefined);
+      await unlink(reclaimPath).catch((error) => {
+        if (!hasErrorCode(error, "ENOENT")) throw error;
+      });
+    }
   }
-  if (ownerPid !== undefined && processIsRunning(ownerPid)) return;
-  await unlink(lockPath).catch((error) => {
-    if (!hasErrorCode(error, "ENOENT")) throw error;
-  });
 }
 
 async function acquireJsonStoreMutationFileLock(key: string): Promise<() => Promise<void>> {
@@ -112,6 +185,20 @@ async function acquireJsonStoreMutationFileLock(key: string): Promise<() => Prom
         await handle.writeFile(JSON.stringify({ pid: process.pid, token }), "utf8");
       } finally {
         await handle.close();
+      }
+      let confirmedToken: unknown;
+      try {
+        const metadata = JSON.parse(await readFile(lockPath, "utf8")) as { token?: unknown };
+        confirmedToken = metadata.token;
+      } catch (error) {
+        if (!hasErrorCode(error, "ENOENT") && !(error instanceof SyntaxError)) throw error;
+      }
+      if (confirmedToken !== token) {
+        if (Date.now() >= deadline) {
+          throw new Error(`Timed out acquiring JSON store mutation lock: ${lockPath}`);
+        }
+        await waitForJsonStoreLock();
+        continue;
       }
       const heartbeat = setInterval(() => {
         void readFile(lockPath, "utf8")
@@ -147,22 +234,23 @@ async function acquireJsonStoreMutationFileLock(key: string): Promise<() => Prom
 }
 
 export async function withJsonStoreMutationLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
-  const previous = jsonStoreMutationTails.get(key) ?? Promise.resolve();
+  const normalizedKey = path.resolve(key);
+  const previous = jsonStoreMutationTails.get(normalizedKey) ?? Promise.resolve();
   const { promise: current, resolve: release } = Promise.withResolvers<void>();
   const tail = previous.catch(() => undefined).then(() => current);
-  jsonStoreMutationTails.set(key, tail);
+  jsonStoreMutationTails.set(normalizedKey, tail);
   await previous.catch(() => undefined);
   let releaseFileLock: (() => Promise<void>) | undefined;
   try {
-    releaseFileLock = await acquireJsonStoreMutationFileLock(key);
+    releaseFileLock = await acquireJsonStoreMutationFileLock(normalizedKey);
     return await operation();
   } finally {
     try {
       await releaseFileLock?.();
     } finally {
       release();
-      if (jsonStoreMutationTails.get(key) === tail) {
-        jsonStoreMutationTails.delete(key);
+      if (jsonStoreMutationTails.get(normalizedKey) === tail) {
+        jsonStoreMutationTails.delete(normalizedKey);
       }
     }
   }

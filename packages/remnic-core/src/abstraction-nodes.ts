@@ -1,6 +1,7 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { listJsonFiles, readJsonFile, withJsonStoreMutationLock, writeJsonFileAtomic } from "./json-store.js";
+import { listJsonFilesStrict, readJsonFile, withJsonStoreMutationLock, writeJsonFileAtomic } from "./json-store.js";
+import { compareDeterministicStrings, mergeSortedUniqueStrings } from "./deterministic-order.js";
 import {
   assertIsoRecordedAt,
   assertSafePathSegment,
@@ -10,6 +11,10 @@ import {
   recordStoreDay,
   validateStringRecord,
 } from "./store-contract.js";
+
+function isNotFoundError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+}
 
 export type AbstractionNodeKind = "episode" | "topic" | "project" | "workflow" | "constraint";
 export type AbstractionLevel = "micro" | "meso" | "macro";
@@ -110,7 +115,7 @@ export async function recordAbstractionNode(options: {
 }
 
 function mergeSortedValues(existing: string[] | undefined, incoming: string[] | undefined): string[] {
-  return [...new Set([...(existing ?? []), ...(incoming ?? [])])].sort((left, right) => left.localeCompare(right));
+  return mergeSortedUniqueStrings(existing, incoming);
 }
 
 export const HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY = "remnic.harmonic.sourceMemoryInsertedAt.v1";
@@ -141,7 +146,8 @@ function mergeRecentSourceMemoryIds(
 ): { ids: string[]; insertedAtJson: string } {
   const insertedAtById = sourceMemoryInsertedAt(existing);
   const incomingSources = [...sourceMemoryInsertedAt(incoming).entries()].sort(
-    ([leftId, leftAt], [rightId, rightAt]) => Date.parse(leftAt) - Date.parse(rightAt) || leftId.localeCompare(rightId)
+    ([leftId, leftAt], [rightId, rightAt]) =>
+      Date.parse(leftAt) - Date.parse(rightAt) || compareDeterministicStrings(leftId, rightId)
   );
   let nextInsertedAtMs = Math.max(
     Date.now(),
@@ -155,12 +161,102 @@ function mergeRecentSourceMemoryIds(
   const retained = [...insertedAtById.entries()]
     .sort(
       ([leftId, leftAt], [rightId, rightAt]) =>
-        Date.parse(rightAt) - Date.parse(leftAt) || leftId.localeCompare(rightId)
+        Date.parse(rightAt) - Date.parse(leftAt) || compareDeterministicStrings(leftId, rightId)
     )
     .slice(0, 50);
-  const ids = retained.map(([memoryId]) => memoryId).sort((left, right) => left.localeCompare(right));
+  const ids = retained.map(([memoryId]) => memoryId).sort(compareDeterministicStrings);
   const retainedInsertedAt = Object.fromEntries(ids.map((memoryId) => [memoryId, insertedAtById.get(memoryId)]));
   return { ids, insertedAtJson: JSON.stringify(retainedInsertedAt) };
+}
+
+type AbstractionNodeFile = {
+  filePath: string;
+  node: AbstractionNode;
+};
+
+function compareNodeFiles(left: AbstractionNodeFile, right: AbstractionNodeFile): number {
+  return (
+    Date.parse(right.node.recordedAt) - Date.parse(left.node.recordedAt) ||
+    compareDeterministicStrings(left.filePath, right.filePath)
+  );
+}
+
+function compareIncomingNodes(left: AbstractionNode, right: AbstractionNode): number {
+  return (
+    Date.parse(left.recordedAt) - Date.parse(right.recordedAt) ||
+    compareDeterministicStrings(JSON.stringify(left), JSON.stringify(right))
+  );
+}
+
+function mergeAbstractionNodes(existing: AbstractionNode | undefined, incoming: AbstractionNode): AbstractionNode {
+  const incomingIsNewest = !existing || Date.parse(existing.recordedAt) <= Date.parse(incoming.recordedAt);
+  const newest = incomingIsNewest ? incoming : existing;
+  const older = incomingIsNewest ? existing : incoming;
+  if (!newest) throw new Error("abstraction node merge requires a node");
+  const retainedSources = mergeRecentSourceMemoryIds(existing, incoming);
+  return validateAbstractionNode({
+    ...newest,
+    sourceMemoryIds: retainedSources.ids,
+    entityRefs: mergeSortedValues(existing?.entityRefs, incoming.entityRefs),
+    tags: mergeSortedValues(existing?.tags, incoming.tags),
+    metadata: {
+      ...(older?.metadata ?? {}),
+      ...(newest.metadata ?? {}),
+      [HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY]: retainedSources.insertedAtJson,
+    },
+  });
+}
+
+export async function upsertAbstractionNodes(options: {
+  memoryDir: string;
+  abstractionNodeStoreDir?: string;
+  nodes: AbstractionNode[];
+}): Promise<string[]> {
+  const rootDir = resolveAbstractionNodeStoreDir(options.memoryDir, options.abstractionNodeStoreDir);
+  const incomingNodes = options.nodes.map(validateAbstractionNode);
+  if (incomingNodes.length === 0) return [];
+  return withJsonStoreMutationLock(rootDir, async () => {
+    const nodesDir = path.join(rootDir, "nodes");
+    const nodeFiles = await listJsonFilesStrict(nodesDir, { allowMissingDirectory: true });
+    const existingNodes = await Promise.all(
+      nodeFiles.map(async (filePath) => ({
+        filePath,
+        node: validateAbstractionNode(await readJsonFile(filePath)),
+      }))
+    );
+    const existingById = new Map<string, AbstractionNodeFile[]>();
+    for (const existing of existingNodes) {
+      const records = existingById.get(existing.node.nodeId) ?? [];
+      records.push(existing);
+      existingById.set(existing.node.nodeId, records);
+    }
+    const incomingById = new Map<string, AbstractionNode[]>();
+    for (const incoming of incomingNodes) {
+      const records = incomingById.get(incoming.nodeId) ?? [];
+      records.push(incoming);
+      incomingById.set(incoming.nodeId, records);
+    }
+
+    const filePaths: string[] = [];
+    for (const nodeId of [...incomingById.keys()].sort(compareDeterministicStrings)) {
+      const existing = (existingById.get(nodeId) ?? []).sort(compareNodeFiles);
+      const incoming = (incomingById.get(nodeId) ?? []).sort(compareIncomingNodes);
+      let merged: AbstractionNode | undefined;
+      for (const next of [...existing].reverse()) merged = mergeAbstractionNodes(merged, next.node);
+      for (const next of incoming) merged = mergeAbstractionNodes(merged, next);
+      if (!merged) throw new Error(`abstraction node batch has no node: ${nodeId}`);
+      const filePath =
+        existing[0]?.filePath ?? path.join(nodesDir, recordStoreDay(merged.recordedAt), `${merged.nodeId}.json`);
+      await writeJsonFileAtomic(filePath, merged);
+      for (const duplicate of existing.slice(1)) {
+        await unlink(duplicate.filePath).catch((error) => {
+          if (!isNotFoundError(error)) throw error;
+        });
+      }
+      filePaths.push(filePath);
+    }
+    return filePaths;
+  });
 }
 
 export async function upsertAbstractionNode(options: {
@@ -168,43 +264,9 @@ export async function upsertAbstractionNode(options: {
   abstractionNodeStoreDir?: string;
   node: AbstractionNode;
 }): Promise<string> {
-  const rootDir = resolveAbstractionNodeStoreDir(options.memoryDir, options.abstractionNodeStoreDir);
-  return withJsonStoreMutationLock(rootDir, async () => {
-    const incoming = validateAbstractionNode(options.node);
-    const nodeFiles = await listJsonFiles(path.join(rootDir, "nodes"));
-    const existingPaths = nodeFiles.filter((filePath) => path.basename(filePath) === `${incoming.nodeId}.json`);
-    const existingNodes = await Promise.all(
-      existingPaths.map(async (filePath) => ({
-        filePath,
-        node: validateAbstractionNode(await readJsonFile(filePath)),
-      }))
-    );
-    existingNodes.sort(
-      (left, right) =>
-        Date.parse(right.node.recordedAt) - Date.parse(left.node.recordedAt) ||
-        left.filePath.localeCompare(right.filePath)
-    );
-    const existing = existingNodes[0];
-    const incomingIsNewest = !existing || Date.parse(existing.node.recordedAt) <= Date.parse(incoming.recordedAt);
-    const newest = incomingIsNewest ? incoming : existing.node;
-    const older = incomingIsNewest ? existing?.node : incoming;
-    const retainedSources = mergeRecentSourceMemoryIds(existing?.node, incoming);
-    const merged = validateAbstractionNode({
-      ...newest,
-      sourceMemoryIds: retainedSources.ids,
-      entityRefs: mergeSortedValues(existing?.node.entityRefs, incoming.entityRefs),
-      tags: mergeSortedValues(existing?.node.tags, incoming.tags),
-      metadata: {
-        ...(older?.metadata ?? {}),
-        ...(newest.metadata ?? {}),
-        [HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY]: retainedSources.insertedAtJson,
-      },
-    });
-    const filePath =
-      existing?.filePath ?? path.join(rootDir, "nodes", recordStoreDay(merged.recordedAt), `${merged.nodeId}.json`);
-    await writeJsonFileAtomic(filePath, merged);
-    return filePath;
-  });
+  const [filePath] = await upsertAbstractionNodes({ ...options, nodes: [options.node] });
+  if (!filePath) throw new Error("abstraction node upsert did not write a file");
+  return filePath;
 }
 
 export async function getAbstractionNodeStoreStatus(options: {
@@ -215,7 +277,7 @@ export async function getAbstractionNodeStoreStatus(options: {
 }): Promise<AbstractionNodeStoreStatus> {
   const rootDir = resolveAbstractionNodeStoreDir(options.memoryDir, options.abstractionNodeStoreDir);
   const nodesDir = path.join(rootDir, "nodes");
-  const files = await listJsonFiles(nodesDir);
+  const files = await listJsonFilesStrict(nodesDir, { allowMissingDirectory: true });
   const nodes: AbstractionNode[] = [];
   const invalidNodes: Array<{ path: string; error: string }> = [];
 
@@ -230,7 +292,9 @@ export async function getAbstractionNodeStoreStatus(options: {
     }
   }
 
-  nodes.sort((a, b) => b.recordedAt.localeCompare(a.recordedAt));
+  nodes.sort(
+    (a, b) => Date.parse(b.recordedAt) - Date.parse(a.recordedAt) || compareDeterministicStrings(a.nodeId, b.nodeId)
+  );
 
   const byKind: Partial<Record<AbstractionNodeKind, number>> = {};
   const byLevel: Partial<Record<AbstractionLevel, number>> = {};

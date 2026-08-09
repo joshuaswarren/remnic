@@ -784,13 +784,13 @@ export class Orchestrator {
    * its own methods + coordinators.
    */
   private _consolidationRunCoordinator: ConsolidationRunCoordinator | undefined;
-
   private get consolidationRunCoordinator(): ConsolidationRunCoordinator {
     if (!this._consolidationRunCoordinator) {
       this._consolidationRunCoordinator = new ConsolidationRunCoordinator({
         config: this.config,
         getStorage: () => this.storage,
         getStorageRouter: () => this.storageRouter,
+        getNamespaceCatalog: () => this.namespaceCatalog,
         getExtraction: () => this.extraction,
         embeddingFallback: this.embeddingFallback,
         tmtBuilder: this.tmtBuilder,

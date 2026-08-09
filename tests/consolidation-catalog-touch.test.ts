@@ -10,9 +10,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import { parseConfig } from "../src/config.js";
 import { Orchestrator } from "../src/orchestrator.js";
+import { recordAbstractionNode } from "../src/abstraction-nodes.js";
+import { recordCueAnchor } from "../src/cue-anchors.js";
 import { LifecyclePolicyCoordinator } from "../packages/remnic-core/src/orchestration/lifecycle-policy-coordinator.js";
 
 test("consolidation with only an INVALIDATE memory-item action records a catalog write touch", async () => {
@@ -64,14 +66,11 @@ test("consolidation with only an INVALIDATE memory-item action records a catalog
     const after = await orchestrator.namespaceCatalog.getNamespaceRecord(config.defaultNamespace);
 
     assert.ok(after, "default namespace record must exist after consolidation");
-    assert.ok(
-      after!.lastWriteAt,
-      "consolidation-only memory-item mutation must record a catalog write touch",
-    );
+    assert.ok(after!.lastWriteAt, "consolidation-only memory-item mutation must record a catalog write touch");
     if (beforeWriteAt) {
       assert.ok(
         new Date(after!.lastWriteAt!).getTime() >= new Date(beforeWriteAt).getTime(),
-        "lastWriteAt must advance (or hold) after a consolidation memory-item mutation",
+        "lastWriteAt must advance (or hold) after a consolidation memory-item mutation"
       );
     }
   } finally {
@@ -129,10 +128,7 @@ test("cleanup-only consolidation (TTL expiry, no LLM outputs) records a catalog 
 
     const record = await orchestrator.namespaceCatalog.getNamespaceRecord(config.defaultNamespace);
     assert.ok(record, "default namespace record must exist after cleanup-only consolidation");
-    assert.ok(
-      record!.lastWriteAt,
-      "a cleanup-only consolidation (TTL expiry) must record a catalog write touch",
-    );
+    assert.ok(record!.lastWriteAt, "a cleanup-only consolidation (TTL expiry) must record a catalog write touch");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
     await rm(workspaceDir, { recursive: true, force: true });
@@ -189,11 +185,12 @@ test("summarization records the catalog write touch after source memories are ar
       getStorage: () => orchestrator.storage,
       extraction: orchestrator.extraction,
       embeddingFallback: orchestrator.embeddingFallback ?? { removeFromIndex: async () => {} },
-      getEffectiveLifecycleThresholds: () => orchestrator.effectiveLifecycleThresholds?.() ?? {
-        promoteHeatThreshold: 70,
-        staleDecayThreshold: 50,
-        archiveDecayThreshold: 80,
-      },
+      getEffectiveLifecycleThresholds: () =>
+        orchestrator.effectiveLifecycleThresholds?.() ?? {
+          promoteHeatThreshold: 70,
+          staleDecayThreshold: 50,
+          archiveDecayThreshold: 80,
+        },
       removeContentHashForMemory: async () => {},
       saveContentHashIndexes: async () => {},
     });
@@ -232,9 +229,85 @@ test("summarization records the catalog write touch after source memories are ar
     assert.notEqual(
       lastTouchAfterArchive,
       -1,
-      `catalog touch must fire during/after archiveMemories; saw ${events.join(" -> ")}`,
+      `catalog touch must fire during/after archiveMemories; saw ${events.join(" -> ")}`
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("consolidation prunes orphan harmonic anchors in a cataloged non-default store", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-harmonic-prune-root-"));
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-harmonic-prune-ws-"));
+  try {
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir,
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: true,
+      harmonicRetrievalEnabled: true,
+      abstractionAnchorsEnabled: true,
+      qmdEnabled: false,
+      topicExtractionEnabled: false,
+      summarizationEnabled: false,
+      identityEnabled: false,
+      entitySummaryEnabled: false,
+      semanticConsolidationEnabled: false,
+      factArchivalEnabled: false,
+      lifecyclePolicyEnabled: false,
+    });
+    const orchestrator = new Orchestrator(config);
+    const defaultStorage = orchestrator.storage;
+    for (let index = 0; index < 5; index += 1) {
+      await defaultStorage.writeMemory("fact", `consolidation seed ${index}`, { source: "test" });
+    }
+    const namespaceStorage = await orchestrator.getStorageForNamespace("team");
+    await namespaceStorage.writeMemory("fact", "team namespace seed", { source: "test" });
+    await orchestrator.namespaceCatalog.markWrite("team", {
+      discoveredBy: "write",
+      storageDir: namespaceStorage.dir,
+    });
+    await recordAbstractionNode({
+      memoryDir: namespaceStorage.dir,
+      node: {
+        schemaVersion: 1,
+        nodeId: "team-live-node",
+        recordedAt: "2026-03-08T00:00:00.000Z",
+        sessionKey: "team",
+        kind: "topic",
+        abstractionLevel: "meso",
+        title: "team topic",
+        summary: "team topic",
+      },
+    });
+    await recordCueAnchor({
+      memoryDir: namespaceStorage.dir,
+      anchor: {
+        schemaVersion: 1,
+        anchorId: "team-orphan-anchor",
+        anchorType: "constraint",
+        anchorValue: "orphan",
+        normalizedCue: "orphan",
+        recordedAt: "2026-03-08T00:01:00.000Z",
+        sessionKey: "team",
+        nodeRefs: ["deleted-team-node"],
+      },
+    });
+    const orphanPath = path.join(
+      namespaceStorage.dir,
+      "state",
+      "abstraction-nodes",
+      "anchors",
+      "constraint",
+      "team-orphan-anchor.json"
+    );
+
+    await orchestrator.runConsolidationNow();
+
+    await assert.rejects(() => stat(orphanPath), { code: "ENOENT" });
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(workspaceDir, { recursive: true, force: true });
   }
 });

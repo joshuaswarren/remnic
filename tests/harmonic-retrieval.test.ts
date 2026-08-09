@@ -2,9 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { parseConfig } from "../src/config.js";
 import { Orchestrator } from "../src/orchestrator.js";
+import { StorageManager } from "../src/storage.js";
 import { recordAbstractionNode } from "../src/abstraction-nodes.js";
 import { recordCueAnchor } from "../src/cue-anchors.js";
 import { runHarmonicSearchCliCommand } from "../src/cli.js";
@@ -135,7 +136,10 @@ test("searchHarmonicRetrieval blends abstraction-node and cue-anchor evidence", 
   assert.equal(results.length, 1);
   assert.equal(results[0]?.node.nodeId, "abstraction-pr-loop");
   assert.match(results[0]?.matchedFields.join(",") ?? "", /title|summary|anchor/i);
-  assert.equal(results[0]?.matchedAnchors.some((anchor) => anchor.anchorType === "constraint"), true);
+  assert.equal(
+    results[0]?.matchedAnchors.some((anchor) => anchor.anchorType === "constraint"),
+    true
+  );
   assert.equal((results[0]?.anchorScore ?? 0) > 0, true);
 });
 
@@ -198,7 +202,7 @@ test("recall injects harmonic retrieval section when the feature is enabled", as
 
   const context = await (orchestrator as any).recallInternal(
     "What rule says the PR loop waits for Cursor terminal state?",
-    "agent:main",
+    "agent:main"
   );
 
   assert.match(context, /## Harmonic Retrieval/);
@@ -215,7 +219,7 @@ test("recall omits harmonic retrieval section when the feature flag is disabled"
 
   const context = await (orchestrator as any).recallInternal(
     "What rule says the PR loop waits for Cursor terminal state?",
-    "agent:main",
+    "agent:main"
   );
 
   assert.equal(context.includes("## Harmonic Retrieval"), false);
@@ -230,8 +234,87 @@ test("recall omits harmonic retrieval section when the pipeline section is disab
 
   const context = await (orchestrator as any).recallInternal(
     "What rule says the PR loop waits for Cursor terminal state?",
-    "agent:main",
+    "agent:main"
   );
 
   assert.equal(context.includes("## Harmonic Retrieval"), false);
+});
+
+test("harmonic retrieval drops inactive and missing sources but keeps an active sibling source", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-harmonic-active-source-"));
+  const storage = new StorageManager(memoryDir);
+  await storage.ensureDirectories();
+  const { id: inactiveId } = await storage.writeMemory("fact", "inactive source fact", { source: "test" });
+  const { id: activeId } = await storage.writeMemory("fact", "active sibling source fact", { source: "test" });
+  await storage.updateMemoryFrontmatter(inactiveId, { status: "archived" });
+
+  const sourceBackedNode = (nodeId: string, sourceMemoryIds: string[]) =>
+    recordAbstractionNode({
+      memoryDir,
+      node: {
+        schemaVersion: 1,
+        nodeId,
+        recordedAt: "2026-03-08T00:00:00.000Z",
+        sessionKey: "agent:source-filter",
+        kind: "topic",
+        abstractionLevel: "meso",
+        title: "source lifecycle rule",
+        summary: "source lifecycle rule summary",
+        sourceMemoryIds,
+      },
+    });
+  await sourceBackedNode("inactive-only", [inactiveId]);
+  await sourceBackedNode("missing-only", ["missing-source"]);
+  await sourceBackedNode("active-sibling", [inactiveId, activeId]);
+  await recordCueAnchor({
+    memoryDir,
+    anchor: {
+      schemaVersion: 1,
+      anchorId: "inactive-anchor",
+      anchorType: "constraint",
+      anchorValue: "source lifecycle rule",
+      normalizedCue: "source lifecycle rule",
+      recordedAt: "2026-03-08T00:01:00.000Z",
+      sessionKey: "agent:source-filter",
+      nodeRefs: ["inactive-only"],
+    },
+  });
+
+  const results = await searchHarmonicRetrieval({
+    memoryDir,
+    query: "Which source lifecycle rule applies?",
+    maxResults: 10,
+    anchorsEnabled: true,
+  });
+
+  assert.deepEqual(
+    results.map((result) => result.node.nodeId),
+    ["active-sibling"]
+  );
+  assert.equal(
+    results.some((result) => result.node.nodeId === "inactive-only"),
+    false
+  );
+  assert.equal(
+    results.some((result) => result.node.nodeId === "missing-only"),
+    false
+  );
+});
+
+test("harmonic retrieval rejects an unreadable sidecar store", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-harmonic-unreadable-"));
+  const unreadableStore = path.join(memoryDir, "not-a-directory");
+  await writeFile(unreadableStore, "not a directory");
+
+  await assert.rejects(
+    () =>
+      searchHarmonicRetrieval({
+        memoryDir,
+        abstractionNodeStoreDir: unreadableStore,
+        query: "unreadable sidecar",
+        maxResults: 3,
+        anchorsEnabled: true,
+      }),
+    (error: unknown) => error instanceof Error && /ENOTDIR|not a directory/i.test(error.message)
+  );
 });

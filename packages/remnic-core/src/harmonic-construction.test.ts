@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { getAbstractionNodeStoreStatus, upsertAbstractionNode, validateAbstractionNode } from "./abstraction-nodes.js";
+import {
+  getAbstractionNodeStoreStatus,
+  upsertAbstractionNode,
+  upsertAbstractionNodes,
+  validateAbstractionNode,
+} from "./abstraction-nodes.js";
 import { parseConfig } from "./config.js";
 import { getCueAnchorStoreStatus, pruneOrphanCueAnchors, upsertCueAnchor, validateCueAnchor } from "./cue-anchors.js";
 import { extractionCueAnchors } from "./extraction-normalization.js";
@@ -16,7 +21,7 @@ import {
   normalizeCueAnchorInputs,
 } from "./harmonic-construction.js";
 import { searchHarmonicRetrieval } from "./harmonic-retrieval.js";
-import { readJsonFile } from "./json-store.js";
+import { readJsonFile, withJsonStoreMutationLock } from "./json-store.js";
 import { filterHarmonicEntityMentions } from "./orchestration/harmonic-construction-persist.js";
 import { Orchestrator } from "./orchestrator.js";
 import { ExtractedFactSchema, ExtractionResultSchema } from "./schemas.js";
@@ -109,6 +114,41 @@ test("deriveHarmonicRecords is deterministic across repeated and shuffled input"
   assert.equal(first.nodes.filter((node) => node.kind === "project").length, 1);
   assert.equal(first.nodes.filter((node) => node.kind === "topic").length, 1);
 });
+test("episode IDs include sorted source memory IDs", () => {
+  const first = deriveHarmonicRecords(
+    constructionInput({
+      persistedFacts: [
+        {
+          memoryId: "mem-a",
+          content: "A valid fact.",
+          category: "fact",
+          tags: [],
+          validAt: "2026-08-08",
+        },
+      ],
+      entityMentions: [],
+    })
+  );
+  const second = deriveHarmonicRecords(
+    constructionInput({
+      persistedFacts: [
+        {
+          memoryId: "mem-b",
+          content: "A different valid fact.",
+          category: "fact",
+          tags: [],
+          validAt: "2026-08-08",
+        },
+      ],
+      entityMentions: [],
+    })
+  );
+  const firstEpisode = first.nodes.find((node) => node.kind === "episode");
+  const secondEpisode = second.nodes.find((node) => node.kind === "episode");
+  assert.ok(firstEpisode);
+  assert.ok(secondEpisode);
+  assert.notEqual(firstEpisode.nodeId, secondEpisode.nodeId);
+});
 
 test("deriveHarmonicRecords caps model anchors and adds deterministic anchors", () => {
   const input = constructionInput({
@@ -195,10 +235,51 @@ test("deriveHarmonicRecords gives every topic a durable source and summary", () 
       entityMentions: [{ name: "release-service", type: "service" }],
     })
   );
-  const topic = records.nodes.find((node) => node.nodeId === "topic-release-service");
+  const topic = records.nodes.find((node) => node.nodeId.startsWith("topic-release-service-"));
   assert.ok(topic);
+
   assert.deepEqual(topic.sourceMemoryIds, ["mem-1"]);
   assert.equal(topic.summary, "The release uses a durable build record.");
+});
+test("separate batches keep normalized-colliding entity topics distinct", () => {
+  const slash = deriveHarmonicRecords(
+    constructionInput({
+      persistedFacts: [{ memoryId: "mem-slash", content: "Slash fact.", category: "fact", tags: [], entityRef: "A/B" }],
+      entityMentions: [{ name: "A/B", type: "project", facts: ["Slash summary."] }],
+    })
+  );
+  const space = deriveHarmonicRecords(
+    constructionInput({
+      persistedFacts: [{ memoryId: "mem-space", content: "Space fact.", category: "fact", tags: [], entityRef: "A B" }],
+      entityMentions: [{ name: "A B", type: "project", facts: ["Space summary."] }],
+    })
+  );
+  const slashTopic = slash.nodes.find((node) => node.kind === "project");
+  const spaceTopic = space.nodes.find((node) => node.kind === "project");
+  assert.ok(slashTopic);
+  assert.ok(spaceTopic);
+  assert.notEqual(slashTopic.nodeId, spaceTopic.nodeId);
+});
+
+test("invalid calendar dates do not emit date cue anchors", () => {
+  const records = deriveHarmonicRecords(
+    constructionInput({
+      persistedFacts: [
+        {
+          memoryId: "mem-invalid-date",
+          content: "The date is invalid.",
+          category: "fact",
+          tags: [],
+          validAt: "2026-02-30",
+        },
+      ],
+      entityMentions: [],
+    })
+  );
+  assert.equal(
+    records.anchors.some((anchor) => anchor.anchorType === "date"),
+    false
+  );
 });
 
 test("deriveHarmonicRecords isolates colliding entity names", () => {
@@ -432,7 +513,7 @@ test("derived insertion timestamps retain the newest links within one large batc
         ],
       })
     );
-    const topic = records.nodes.find((node) => node.nodeId === "topic-atlas-project");
+    const topic = records.nodes.find((node) => node.nodeId.startsWith("topic-atlas-project-"));
     assert.ok(topic);
     const topicPath = await upsertAbstractionNode({ memoryDir, node: topic });
     const capped = validateAbstractionNode(await readJsonFile(topicPath));
@@ -810,6 +891,8 @@ test("extraction schema, prompt, and normalizer carry bounded harmonic fields", 
   );
   assert.match(instructions, /cueAnchors/);
   assert.match(instructions, /episodeTitle/);
+  assert.match(instructions, /at most 3 "cueAnchors"/);
+  assert.match(instructions, /at most 120 characters/);
 });
 
 test("cue-anchor normalization is canonical before the three-anchor cap", () => {
@@ -1023,6 +1106,170 @@ test("persistExtraction keeps the fact when harmonic storage creation fails", as
       sessionKey: "session:harmonic-fail-open",
     });
     assert.equal(persistedIds.length, 1);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("batch abstraction upsert merges duplicate node files and removes stale copies", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-harmonic-duplicate-nodes-"));
+  try {
+    const nodesDir = path.join(memoryDir, "state", "abstraction-nodes", "nodes");
+    const oldPath = path.join(nodesDir, "2026-08-07", "ep-duplicate.json");
+    const currentPath = path.join(nodesDir, "2026-08-08", "ep-duplicate.json");
+    const node = (recordedAt: string, sourceMemoryIds: string[]) => ({
+      schemaVersion: 1 as const,
+      nodeId: "ep-duplicate",
+      recordedAt,
+      sessionKey: "session:duplicate",
+      kind: "episode" as const,
+      abstractionLevel: "micro" as const,
+      title: "Duplicate episode",
+      summary: "The duplicate episode remains readable.",
+      sourceMemoryIds,
+    });
+    await mkdir(path.dirname(oldPath), { recursive: true });
+    await mkdir(path.dirname(currentPath), { recursive: true });
+    await writeFile(oldPath, JSON.stringify(node("2026-08-07T20:00:00.000Z", ["m1"])), "utf8");
+    await writeFile(currentPath, JSON.stringify(node("2026-08-08T20:00:00.000Z", ["m2"])), "utf8");
+
+    const mergedPath = await upsertAbstractionNode({
+      memoryDir,
+      node: node("2026-08-09T20:00:00.000Z", ["m3"]),
+    });
+    const merged = validateAbstractionNode(await readJsonFile(mergedPath));
+    assert.deepEqual(merged.sourceMemoryIds, ["m1", "m2", "m3"]);
+    assert.equal(
+      (
+        await getAbstractionNodeStoreStatus({
+          memoryDir,
+          enabled: true,
+          anchorsEnabled: false,
+        })
+      ).nodes.total,
+      1
+    );
+    await assert.rejects(stat(oldPath), { code: "ENOENT" });
+    assert.ok((await stat(mergedPath)).isFile());
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("cue-anchor upsert caps live refs and pruning removes dead refs", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-harmonic-anchor-cap-"));
+  try {
+    const nodePaths = await Promise.all(
+      Array.from({ length: 55 }, (_, index) =>
+        upsertAbstractionNode({
+          memoryDir,
+          node: {
+            schemaVersion: 1,
+            nodeId: `ep-${String(index).padStart(2, "0")}`,
+            recordedAt: new Date(Date.parse("2026-08-08T00:00:00.000Z") + index * 1_000).toISOString(),
+            sessionKey: "session:anchor-cap",
+            kind: "episode",
+            abstractionLevel: "micro",
+            title: "Anchor cap episode",
+            summary: "The episode supports anchor retention.",
+          },
+        })
+      )
+    );
+    const anchorPath = await upsertCueAnchor({
+      memoryDir,
+      anchor: {
+        schemaVersion: 1,
+        anchorId: "cue-anchor-cap",
+        anchorType: "tool",
+        anchorValue: "anchor cap",
+        normalizedCue: "anchor cap",
+        recordedAt: "2026-08-09T00:00:00.000Z",
+        sessionKey: "session:anchor-cap",
+        nodeRefs: [...Array.from({ length: 55 }, (_, index) => `ep-${String(index).padStart(2, "0")}`), "ep-dead"],
+      },
+    });
+    let anchor = validateCueAnchor(await readJsonFile(anchorPath));
+    assert.equal(anchor.nodeRefs.length, 50);
+    assert.ok(anchor.nodeRefs.includes("ep-54"));
+    assert.ok(!anchor.nodeRefs.includes("ep-dead"));
+
+    await unlink(nodePaths[54]);
+    await pruneOrphanCueAnchors({ memoryDir });
+    anchor = validateCueAnchor(await readJsonFile(anchorPath));
+    assert.equal(anchor.nodeRefs.length, 49);
+    assert.ok(!anchor.nodeRefs.includes("ep-54"));
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("stale lock reclaim does not overlap cross-process mutation ownership", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-json-store-stale-reclaim-"));
+  try {
+    const key = path.join(memoryDir, "harmonic-store");
+    const lockPath = `${path.resolve(key)}.mutation.lock`;
+    const logPath = path.join(memoryDir, "ownership.log");
+    await writeFile(lockPath, JSON.stringify({ pid: 2_147_483_647, token: "stale" }), "utf8");
+    const staleAt = new Date(Date.now() - 120_000);
+    await utimes(lockPath, staleAt, staleAt);
+    const workerPath = path.join(memoryDir, "lock-worker.mjs");
+    const moduleUrl = new URL("./json-store.ts", import.meta.url).href;
+    await writeFile(
+      workerPath,
+      `import { appendFile } from "node:fs/promises";
+import { withJsonStoreMutationLock } from ${JSON.stringify(moduleUrl)};
+const [key, logPath, label] = process.argv.slice(2);
+const gate = Promise.withResolvers();
+process.stdin.once("data", () => gate.resolve());
+await withJsonStoreMutationLock(key, async () => {
+  await appendFile(logPath, label + ":start\\n");
+  process.stdout.write(label + ":started\\n");
+  await gate.promise;
+  await appendFile(logPath, label + ":end\\n");
+});`,
+      "utf8"
+    );
+    const runWorker = (label: string) => {
+      const started = Promise.withResolvers<void>();
+      const done = Promise.withResolvers<void>();
+      const child = spawn(process.execPath, ["--import", "tsx", workerPath, key, logPath, label], {
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      let stderr = "";
+      child.stdout?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk: string) => {
+        if (chunk.includes(`${label}:started`)) started.resolve();
+      });
+      child.stderr?.setEncoding("utf8");
+      child.stderr?.on("data", (chunk: string) => {
+        stderr += chunk;
+      });
+      child.once("error", (error) => {
+        started.reject(error);
+        done.reject(error);
+      });
+      child.once("exit", (code) => {
+        if (code === 0) {
+          done.resolve();
+        } else {
+          const error = new Error(`stale lock worker exited ${String(code)}: ${stderr}`);
+          started.reject(error);
+          done.reject(error);
+        }
+      });
+      return { child, started: started.promise, done: done.promise };
+    };
+    const workers = [runWorker("a"), runWorker("b")];
+    const first = await Promise.race(workers.map((worker, index) => worker.started.then(() => index)));
+    workers[first]?.child.stdin?.end("release\n");
+    const second = first === 0 ? 1 : 0;
+    await workers[second]?.started;
+    workers[second]?.child.stdin?.end("release\n");
+    await Promise.all(workers.map((worker) => worker.done));
+
+    const lines = (await readFile(logPath, "utf8")).trim().split("\n");
+    assert.ok(lines.join("|") === "a:start|a:end|b:start|b:end" || lines.join("|") === "b:start|b:end|a:start|a:end");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

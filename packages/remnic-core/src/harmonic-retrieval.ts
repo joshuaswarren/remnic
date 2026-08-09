@@ -1,18 +1,35 @@
 import path from "node:path";
-import { listJsonFiles, readJsonFile } from "./json-store.js";
+import { listJsonFilesStrict, readJsonFile } from "./json-store.js";
 import { throwIfAborted } from "./abort-error.js";
-import {
-  resolveAbstractionNodeStoreDir,
-  validateAbstractionNode,
-  type AbstractionNode,
-} from "./abstraction-nodes.js";
-import {
-  resolveCueAnchorStoreDir,
-  validateCueAnchor,
-  type CueAnchor,
-  type CueAnchorType,
-} from "./cue-anchors.js";
+import { isActiveMemoryStatus } from "./memory-lifecycle-ledger-utils.js";
+import { resolveAbstractionNodeStoreDir, validateAbstractionNode, type AbstractionNode } from "./abstraction-nodes.js";
+import { resolveCueAnchorStoreDir, validateCueAnchor, type CueAnchor, type CueAnchorType } from "./cue-anchors.js";
 import { countRecallTokenOverlap, normalizeRecallTokens } from "./recall-tokenization.js";
+
+async function readActiveSourceMemoryIds(options: {
+  memoryDir: string;
+  abortSignal?: AbortSignal;
+}): Promise<Set<string>> {
+  const activeIds = new Set<string>();
+  try {
+    const { StorageManager } = await import("./storage.js");
+    const memories = await new StorageManager(options.memoryDir).readAllMemories({
+      abortSignal: options.abortSignal,
+    });
+    for (const memory of memories) {
+      throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
+      if (isActiveMemoryStatus(memory.frontmatter.status)) {
+        activeIds.add(memory.frontmatter.id);
+      }
+    }
+  } catch {
+    throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
+    // Source validation fails closed when the authorized memory directory is
+    // unreadable. Source-less nodes remain eligible for retrieval.
+    activeIds.clear();
+  }
+  return activeIds;
+}
 
 export interface HarmonicMatchedAnchor {
   anchorId: string;
@@ -107,7 +124,7 @@ async function readAbstractionNodes(options: {
   abstractionNodeStoreDir?: string;
 }): Promise<AbstractionNode[]> {
   const rootDir = resolveAbstractionNodeStoreDir(options.memoryDir, options.abstractionNodeStoreDir);
-  const files = await listJsonFiles(path.join(rootDir, "nodes"));
+  const files = await listJsonFilesStrict(path.join(rootDir, "nodes"), { allowMissingDirectory: true });
   const nodes: AbstractionNode[] = [];
   for (const filePath of files) {
     try {
@@ -125,7 +142,7 @@ async function readCueAnchors(options: {
 }): Promise<CueAnchor[]> {
   const abstractionRoot = resolveAbstractionNodeStoreDir(options.memoryDir, options.abstractionNodeStoreDir);
   const rootDir = resolveCueAnchorStoreDir(abstractionRoot);
-  const files = await listJsonFiles(rootDir);
+  const files = await listJsonFilesStrict(rootDir, { allowMissingDirectory: true });
   const anchors: CueAnchor[] = [];
   for (const filePath of files) {
     try {
@@ -151,9 +168,17 @@ export async function searchHarmonicRetrieval(options: {
   if (queryTokens.size === 0 || options.maxResults <= 0) return [];
 
   const nodes = await readAbstractionNodes(options);
+  const sourceBackedNodes = nodes.filter((node) => (node.sourceMemoryIds?.length ?? 0) > 0);
+  const activeSourceMemoryIds =
+    sourceBackedNodes.length > 0 ? await readActiveSourceMemoryIds(options) : new Set<string>();
+  const eligibleNodes = nodes.filter(
+    (node) =>
+      (node.sourceMemoryIds?.length ?? 0) === 0 ||
+      (node.sourceMemoryIds ?? []).some((memoryId) => activeSourceMemoryIds.has(memoryId))
+  );
   const candidates = new Map<string, HarmonicCandidate>();
 
-  for (const node of nodes) {
+  for (const node of eligibleNodes) {
     throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
     const { score, matchedFields } = scoreNode(node, queryTokens);
     if (score <= 0) continue;
@@ -169,7 +194,7 @@ export async function searchHarmonicRetrieval(options: {
   if (options.anchorsEnabled) {
     throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
     const anchors = await readCueAnchors(options);
-    const nodeIndex = new Map(nodes.map((node) => [node.nodeId, node]));
+    const nodeIndex = new Map(eligibleNodes.map((node) => [node.nodeId, node]));
     for (const anchor of anchors) {
       throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
       const { score, matchedFields } = scoreAnchor(anchor, queryTokens);
@@ -207,17 +232,18 @@ export async function searchHarmonicRetrieval(options: {
         nodeScore: candidate.nodeScore,
         anchorScore: candidate.anchorScore,
         matchedFields: [...candidate.matchedFields].sort(),
-        matchedAnchors: [...candidate.matchedAnchors.values()].sort((left, right) =>
-          left.anchorType.localeCompare(right.anchorType) || left.anchorValue.localeCompare(right.anchorValue)
+        matchedAnchors: [...candidate.matchedAnchors.values()].sort(
+          (left, right) =>
+            left.anchorType.localeCompare(right.anchorType) || left.anchorValue.localeCompare(right.anchorValue)
         ),
       };
     })
     .filter((result) => result.nodeScore > 0 || result.anchorScore > 0)
     .sort(
       (left, right) =>
-        right.score - left.score
-        || right.anchorScore - left.anchorScore
-        || right.node.recordedAt.localeCompare(left.node.recordedAt),
+        right.score - left.score ||
+        right.anchorScore - left.anchorScore ||
+        right.node.recordedAt.localeCompare(left.node.recordedAt)
     )
     .slice(0, options.maxResults);
 }

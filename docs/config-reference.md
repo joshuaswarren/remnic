@@ -913,8 +913,8 @@ FAISS notes:
 | `trustZoneRecallEnabled` | `false` | Inject prompt-relevant working and trusted trust-zone records into recall context |
 | `memoryPoisoningDefenseEnabled` | `false` | Enable deterministic provenance trust scoring and corroboration requirements for risky trusted promotions |
 | `memoryRedTeamBenchEnabled` | `false` | Enable typed `memory-red-team` benchmark packs and status accounting for poisoning-defense regression suites |
-| `harmonicRetrievalEnabled` | `false` | Enable harmonic retrieval and, with `abstractionAnchorsEnabled`, construct abstraction nodes after extraction |
-| `abstractionAnchorsEnabled` | `false` | Enable cue-anchor extraction, storage, status, and retrieval |
+| `harmonicRetrievalEnabled` | `false` | Enable harmonic retrieval and construct abstraction nodes after extraction |
+| `abstractionAnchorsEnabled` | `false` | Enable cue-anchor storage, status, and retrieval |
 | `abstractionNodeStoreDir` | `{memoryDir}/state/abstraction-nodes` | Root directory for abstraction-node artifacts |
 | `verifiedRecallEnabled` | `false` | Inject prompt-relevant memory boxes only when their cited source memories verify as non-archived episodes |
 | `semanticRulePromotionEnabled` | `false` | Enable deterministic promotion of explicit `IF ... THEN ...` rules from verified episodic memories via `openclaw engram semantic-rule-promote` |

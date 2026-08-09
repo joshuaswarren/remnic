@@ -2,9 +2,10 @@ import { createHash } from "node:crypto";
 import {
   type AbstractionNode,
   HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY,
-  upsertAbstractionNode,
+  upsertAbstractionNodes,
 } from "./abstraction-nodes.js";
 import { type CueAnchor, type CueAnchorType, upsertCueAnchor } from "./cue-anchors.js";
+import { compareDeterministicStrings } from "./deterministic-order.js";
 import { normalizeRecallTokens } from "./recall-tokenization.js";
 
 export interface HarmonicCueAnchorInput {
@@ -50,14 +51,14 @@ function truncate(value: string, maxChars: number): string {
 }
 
 function sortedUnique(values: Iterable<string>): string[] {
-  return [...new Set(values)].sort((left, right) => left.localeCompare(right));
+  return [...new Set(values)].sort(compareDeterministicStrings);
 }
 
 export function harmonicEntitySegment(name: string): string {
-  const segment = name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+  const normalized = name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  const start = normalized.startsWith("-") ? 1 : 0;
+  const end = normalized.endsWith("-") ? normalized.length - 1 : normalized.length;
+  const segment = normalized.slice(start, end);
   return segment || hashId("entity-", name).slice(0, 23);
 }
 
@@ -92,26 +93,43 @@ export function normalizeCueAnchorInputs(value: unknown, maxAnchors = 3): Harmon
     if (normalizedCue.length === 0) continue;
     const identity = `${type}:${normalizedCue}`;
     const existing = byIdentity.get(identity);
-    if (!existing || anchorValue.localeCompare(existing.value) < 0) {
+    if (!existing || compareDeterministicStrings(anchorValue, existing.value) < 0) {
       byIdentity.set(identity, { type, value: anchorValue });
     }
   }
   return [...byIdentity.entries()]
-    .sort(([left], [right]) => left.localeCompare(right))
+    .sort(([left], [right]) => compareDeterministicStrings(left, right))
     .slice(0, maxAnchors)
     .map(([, anchor]) => anchor);
 }
 
 function validAtDate(validAt: string | null | undefined): string | undefined {
-  if (typeof validAt !== "string" || !/^\d{4}-\d{2}-\d{2}/.test(validAt)) return undefined;
-  return Number.isFinite(Date.parse(validAt)) ? validAt.slice(0, 10) : undefined;
+  if (typeof validAt !== "string") return undefined;
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(validAt);
+  if (!match) return undefined;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(0, month - 1, day));
+  date.setUTCFullYear(year);
+  if (
+    !Number.isFinite(date.getTime()) ||
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return undefined;
+  }
+  return match[0];
 }
 
 function sourceMemoryInsertedAtMetadata(
   facts: Array<{ memoryId: string; insertedAt: string }>
 ): Record<string, string> {
   const insertedAtById = Object.fromEntries(
-    facts.map((fact) => [fact.memoryId, fact.insertedAt] as const).sort(([left], [right]) => left.localeCompare(right))
+    facts
+      .map((fact) => [fact.memoryId, fact.insertedAt] as const)
+      .sort(([left], [right]) => compareDeterministicStrings(left, right))
   );
   return {
     [HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY]: JSON.stringify(insertedAtById),
@@ -136,12 +154,16 @@ export function deriveHarmonicRecords(input: HarmonicConstructionInput): {
       cueAnchors: normalizeCueAnchorInputs(fact.cueAnchors),
     }))
     .filter((fact) => fact.memoryId.length > 0 && fact.content.length > 0)
-    .sort((left, right) => left.memoryId.localeCompare(right.memoryId) || left.content.localeCompare(right.content));
+    .sort(
+      (left, right) =>
+        compareDeterministicStrings(left.memoryId, right.memoryId) ||
+        compareDeterministicStrings(left.content, right.content)
+    );
 
   if (persistedFacts.length === 0) return { nodes: [], anchors: [] };
 
-  const episodeNodeId = hashId("ep-", `${input.sessionKey}|${input.recordedAt}`);
   const sourceMemoryIds = sortedUnique(persistedFacts.map((fact) => fact.memoryId));
+  const episodeNodeId = hashId("ep-", `${input.sessionKey}|${input.recordedAt}|${sourceMemoryIds.join("|")}`);
   const episodeTitle = input.episodeTitle?.trim() || persistedFacts[0]?.content || "Memory episode";
   const episodeNode: AbstractionNode = {
     schemaVersion: 1,
@@ -186,7 +208,7 @@ export function deriveHarmonicRecords(input: HarmonicConstructionInput): {
   }
 
   const topicEntries = [...mentionGroups.entries()]
-    .sort(([left], [right]) => left.localeCompare(right))
+    .sort(([left], [right]) => compareDeterministicStrings(left, right))
     .flatMap(([identity, group]) => {
       const matchingFacts = persistedFacts.filter((fact) => {
         if (!fact.entityRef) return false;
@@ -196,10 +218,7 @@ export function deriveHarmonicRecords(input: HarmonicConstructionInput): {
           groupsPerSegment.get(group.segment) === 1
         );
       });
-      const nodeSegment =
-        groupsPerSegment.get(group.segment) === 1
-          ? group.segment
-          : `${group.segment}-${hashId("", identity).slice(0, 8)}`;
+      const nodeSegment = `${group.segment}-${hashId("", identity)}`;
       const mentionSummary = sortedUnique(group.facts).join("; ");
       const node: AbstractionNode = {
         schemaVersion: 1,
@@ -261,7 +280,7 @@ export function deriveHarmonicRecords(input: HarmonicConstructionInput): {
         anchorId,
         anchorType: anchorInput.type,
         anchorValue:
-          existing && existing.anchorValue.localeCompare(anchorInput.value) < 0
+          existing && compareDeterministicStrings(existing.anchorValue, anchorInput.value) < 0
             ? existing.anchorValue
             : anchorInput.value,
         normalizedCue,
@@ -281,14 +300,14 @@ export function deriveHarmonicRecords(input: HarmonicConstructionInput): {
         entityRefs: sortedUnique(node.entityRefs ?? []),
         tags: sortedUnique(node.tags ?? []),
       }))
-      .sort((left, right) => left.nodeId.localeCompare(right.nodeId)),
+      .sort((left, right) => compareDeterministicStrings(left.nodeId, right.nodeId)),
     anchors: [...anchorsById.values()]
       .map((anchor) => ({
         ...anchor,
         nodeRefs: sortedUnique(anchor.nodeRefs),
         tags: sortedUnique(anchor.tags ?? []),
       }))
-      .sort((left, right) => left.anchorId.localeCompare(right.anchorId)),
+      .sort((left, right) => compareDeterministicStrings(left.anchorId, right.anchorId)),
   };
 }
 
@@ -298,11 +317,11 @@ export async function persistHarmonicRecords(options: {
   nodes: AbstractionNode[];
   anchors: CueAnchor[];
 }): Promise<void> {
-  for (const node of options.nodes) {
-    await upsertAbstractionNode({
+  if (options.nodes.length > 0) {
+    await upsertAbstractionNodes({
       memoryDir: options.memoryDir,
       abstractionNodeStoreDir: options.abstractionNodeStoreDir,
-      node,
+      nodes: options.nodes,
     });
   }
   for (const anchor of options.anchors) {

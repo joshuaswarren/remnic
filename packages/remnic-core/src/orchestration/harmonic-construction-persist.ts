@@ -77,7 +77,7 @@ export async function persistConstructedHarmonicRecords(options: {
       });
     } catch (error) {
       log.warn(
-        `harmonic construction failed open for namespace: ${error instanceof Error ? error.message : String(error)}`
+        `harmonic construction failed open for namespace ${entry.storage.dir}: ${error instanceof Error ? error.message : String(error)}`
       );
     }
   }
