@@ -374,7 +374,7 @@ function serializeFrontmatter(fm: MemoryFrontmatter): string {
     lines.push(`supersessionCause: ${fm.supersessionCause}`);
   }
   if (fm.invalidatedBy) {
-    if (typeof fm.invalidatedBy !== "string" || /[\n\r:]/.test(fm.invalidatedBy)) {
+    if (typeof fm.invalidatedBy !== "string" || /[\n\r]/.test(fm.invalidatedBy)) {
       throw new Error(
         `serializeFrontmatter: invalid invalidatedBy ${JSON.stringify(fm.invalidatedBy)} — expected a single-line ID`,
       );
