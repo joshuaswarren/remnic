@@ -2551,6 +2551,26 @@ export class Orchestrator {
     );
   }
 
+  // Issue #1526 (seam 14): graph-recall expansion moved to
+  // GraphRecallCoordinator. Keep this public seam so callers and tests can
+  // override graph expansion on the orchestrator instance.
+  async expandResultsViaGraph(options: {
+    memoryResults: QmdSearchResult[];
+    recallNamespaces: string[];
+    recallResultLimit: number;
+    asOf?: string;
+    asOfMs?: number;
+    deadlineAtMs?: number | null;
+    includeLowConfidence?: boolean;
+  }): Promise<{
+    merged: QmdSearchResult[];
+    seedPaths: string[];
+    expandedPaths: GraphRecallExpandedEntry[];
+    seedResults: QmdSearchResult[];
+  }> {
+    return this.graphRecallCoordinator.expandResultsViaGraph(options);
+  }
+
   private async recordLastGraphRecallSnapshot(options: {
     storage: StorageManager;
     prompt: string;

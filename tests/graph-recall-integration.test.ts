@@ -1,4 +1,5 @@
 import test from "node:test";
+import type { QmdSearchResult } from "../src/types.js";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
@@ -155,6 +156,84 @@ test("recallInternal writes graph recall snapshot in graph_mode", async (t) => {
   assert.equal(snapshot.seedCount, 1);
   assert.equal(snapshot.expandedCount, 1);
 });
+test("recallInternal keeps malformed and empty historical dates on current-time graph scoring", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-graph-recall-as-of-"));
+  const cfg = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: true,
+    qmdCollection: "engram-test",
+    qmdMaxResults: 3,
+    recallPlannerEnabled: true,
+    graphRecallEnabled: true,
+    multiGraphMemoryEnabled: true,
+    verbatimArtifactsEnabled: false,
+  });
+  const orchestrator = new Orchestrator(cfg);
+  const { id: seedId } = await orchestrator.storage.writeMemory("fact", "seed memory for as-of");
+  const seedMemory = await orchestrator.storage.getMemoryById(seedId);
+  assert.ok(seedMemory);
+
+  const seam = orchestrator as unknown as {
+    qmd: object;
+    expandResultsViaGraph: (options: { memoryResults: QmdSearchResult[] }) => Promise<{
+      merged: QmdSearchResult[];
+      seedPaths: string[];
+      expandedPaths: [];
+      seedResults: QmdSearchResult[];
+    }>;
+  };
+  seam.qmd = {
+    isAvailable: () => true,
+    hybridSearch: async () => [
+      {
+        docid: seedMemory!.frontmatter.id,
+        path: seedMemory!.path,
+        snippet: "seed memory for as-of",
+        score: 0.9,
+      },
+    ],
+    search: async () => [],
+  };
+  const graphCalls: Array<{ memoryResults: QmdSearchResult[] }> = [];
+  seam.expandResultsViaGraph = async (options) => {
+    graphCalls.push(options);
+    return {
+      merged: options.memoryResults,
+      seedPaths: [seedMemory!.path],
+      expandedPaths: [],
+      seedResults: options.memoryResults,
+    };
+  };
+  const recallInternal = (
+    orchestrator as unknown as {
+      recallInternal: (
+        prompt: string,
+        sessionKey: string,
+        options: { asOf: string },
+      ) => Promise<string>;
+    }
+  ).recallInternal.bind(orchestrator);
+
+  await recallInternal(
+    "what happened in the timeline last week",
+    "session-graph-as-of-malformed",
+    { asOf: "not-a-date" },
+  );
+  await recallInternal(
+    "what happened in the timeline last week",
+    "session-graph-as-of-empty",
+    { asOf: "" },
+  );
+
+  assert.equal(graphCalls.length, 2);
+  for (const options of graphCalls) {
+    assert.equal("asOf" in options, false);
+    assert.equal("asOfMs" in options, false);
+  }
+});
+
 
 test("recallInternal labels absolute entity graph results as reconstructed entities", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-graph-recall-entity-label-"));
