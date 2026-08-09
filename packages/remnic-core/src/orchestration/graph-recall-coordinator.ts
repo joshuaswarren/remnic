@@ -427,11 +427,13 @@ export class GraphRecallCoordinator {
 
         if (candidate.activationPath) {
           for (const nodeId of candidate.activationPath.nodeIds.slice(1, -1)) {
-            if (!nodeStates.has(nodeId) && nodeId.endsWith(".md")) {
-              const basenameState = nodeStates.get(path.basename(nodeId, ".md"));
-              if (basenameState) {
-                nodeStates.set(nodeId, { ...basenameState, id: nodeId });
-              }
+            const graphNodeState =
+              nodeStates.get(nodeId) ??
+              (nodeId.endsWith(".md")
+                ? nodeStates.get(path.basename(nodeId, ".md"))
+                : undefined);
+            if (graphNodeState && !nodeStates.has(nodeId)) {
+              nodeStates.set(nodeId, { ...graphNodeState, id: nodeId });
             }
             if (!nodeStates.has(nodeId)) {
               log.debug(`graph path scoring missing intermediate memory state: ${nodeId}`);
