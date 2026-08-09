@@ -1,22 +1,8 @@
 /**
- * Extraction-persist coordinator — extracted from the orchestrator
- * (issue #1526, seam 16).
+ * Extraction persistence coordinator (issue #1526, seam 16).
  *
- * Owns the `persistExtraction` pipeline: the ~2.5k-LOC method that turns
- * an ExtractionResult into durable memory writes. Hosts:
- *   - pre-judge multi-namespace redaction gate
- *   - extraction-judge gating
- *   - scope routing
- *   - tombstone postWriteGuard
- *   - dedup + bitemporal backfill (3 paths)
- *   - contradiction auto-resolve deferral
- *   - promotion paths
- *   - post-persist content-hash indexing
- *   - catalog write-recording
- *
- * Behavior-preserving move from orchestrator.ts. No logic changes — the
- * orchestrator keeps a thin delegating method so existing call sites and
- * tests continue to work.
+ * It owns the extraction-to-memory write pipeline, including redaction,
+ * judging, scope routing, deduplication, lifecycle updates, and indexing.
  */
 
 import { isMemoryCategory } from "../write-envelope.js";
