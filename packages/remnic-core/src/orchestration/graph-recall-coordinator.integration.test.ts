@@ -18,6 +18,7 @@ type NamespaceFixture = {
   dir: string;
   storage: StorageManager;
   seedPath: string;
+  intermediatePath: string;
   cleanPath: string;
   stalePath: string;
 };
@@ -82,14 +83,14 @@ async function createNamespace(
     return path.relative(dir, memory.path).split(path.sep).join("/");
   };
   const seedPath = find(`${name} seed`);
-  const middlePath = find(`${name} intermediate`);
+  const intermediatePath = find(`${name} intermediate`);
   const cleanPath = find(`${name} clean`);
   const stalePath = find(`${name} stale`);
   await appendEdge(dir, seedPath, cleanPath);
-  await appendEdge(dir, seedPath, middlePath);
-  await appendEdge(dir, middlePath, stalePath);
+  await appendEdge(dir, seedPath, intermediatePath);
+  await appendEdge(dir, intermediatePath, stalePath);
   assert.equal(paths.length, 4);
-  return { name, dir, storage, seedPath, cleanPath, stalePath };
+  return { name, dir, storage, seedPath, intermediatePath, cleanPath, stalePath };
 }
 
 function makeCoordinator(
@@ -101,10 +102,20 @@ function makeCoordinator(
   for (const fixture of fixtures.values()) {
     indexes.set(fixture.dir, new GraphIndex(fixture.dir, config as unknown as GraphConfig));
     if (readAllMemoriesCalls) {
-      const original = fixture.storage.readAllMemories.bind(fixture.storage);
+      const originalHot = fixture.storage.readAllMemories.bind(fixture.storage);
       fixture.storage.readAllMemories = async (...args: Parameters<StorageManager["readAllMemories"]>) => {
         readAllMemoriesCalls.count += 1;
-        return original(...args);
+        return originalHot(...args);
+      };
+      const originalCold = fixture.storage.readAllColdMemories.bind(fixture.storage);
+      fixture.storage.readAllColdMemories = async () => {
+        readAllMemoriesCalls.count += 1;
+        return originalCold();
+      };
+      const originalArchived = fixture.storage.readArchivedMemories.bind(fixture.storage);
+      fixture.storage.readArchivedMemories = async () => {
+        readAllMemoriesCalls.count += 1;
+        return originalArchived();
       };
     }
   }
@@ -173,6 +184,25 @@ test("real coordinator demotes stale paths before the namespace cap and repeats 
       [fixture.name, cleanFixture.name],
     );
     assert.ok(capped.merged.some((item) => item.namespace === cleanFixture.name));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("real coordinator demotes a path through an archived intermediate", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-archive-"));
+  try {
+    const fixture = await createNamespace(root, "default");
+    const intermediate = (await fixture.storage.readAllMemories()).find((memory) =>
+      memory.path.endsWith(fixture.intermediatePath),
+    );
+    assert.ok(intermediate);
+    assert.ok(await fixture.storage.archiveMemory(intermediate));
+    const coordinator = makeCoordinator(makeConfig(), new Map([[fixture.name, fixture]]));
+    const result = await expand(coordinator, [seedResult(fixture)], [fixture.name]);
+    const stale = result.expandedPaths.find((entry) => entry.path.endsWith(fixture.stalePath));
+    assert.equal(result.expandedPaths[0]?.path.endsWith(fixture.cleanPath), true);
+    assert.equal(stale?.pathPenaltyApplied, true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
