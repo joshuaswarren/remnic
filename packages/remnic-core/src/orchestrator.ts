@@ -825,6 +825,7 @@ export class Orchestrator {
         getStorageRouter: () => this.storageRouter,
         getThreading: () => this.threading,
         getLocalLlm: () => this.localLlm,
+        getExtraction: () => this.extraction,
         getQmd: () => this.qmd,
         getJudgeVerdictCache: () => this.judgeVerdictCache,
         getJudgeDeferCounts: () => this.judgeDeferCounts,

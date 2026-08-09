@@ -482,6 +482,18 @@ Direct `includeFiles` sync plus the OpenClaw workspace adapter both persist incr
 | `queryAwareIndexingEnabled` | `false` | Build and maintain temporal (`state/index_time.json`) and tag (`state/index_tags.json`) indexes after each extraction. Enables score boosts for temporal queries and `#tag` tokens at recall time. |
 | `queryAwareIndexingMaxCandidates` | `200` | Max candidate paths from the index prefilter (0 = no cap). |
 
+## Dependency-aware supersession propagation (issue #2326)
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `dependencyPropagation.enabled` | `false` | Enable bounded one-hop revalidation of active memories that depend on a superseded or invalidated memory. |
+| `dependencyPropagation.linkTypes` | `["supports","follows"]` | Link types used to find dependents. `references` is valid but opt-in. |
+| `dependencyPropagation.maxDependents` | `10` | Maximum active dependents revalidated per event. `0` disables propagation. |
+| `dependencyPropagation.timeoutMs` | `20000` | Maximum duration, in milliseconds, of the single batched revalidation call. |
+| `dependencyPropagation.dryRun` | `false` | Discover and revalidate dependents, but do not write supersession changes. |
+
+The parser accepts boolean-like strings such as `"false"`, `"0"`, `"no"`, and `"off"`. It rejects malformed blocks, link arrays, booleans, and integers.
+
 ## v8.3 Lifecycle Policy Engine
 
 | Setting | Default | Description |

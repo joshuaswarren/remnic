@@ -365,6 +365,15 @@ function serializeFrontmatter(fm: MemoryFrontmatter): string {
   if (fm.tombstoneBlockTier) lines.push(`tombstoneBlockTier: ${fm.tombstoneBlockTier}`);
   if (fm.supersededBy) lines.push(`supersededBy: ${fm.supersededBy}`);
   if (fm.supersededAt) lines.push(`supersededAt: ${fm.supersededAt}`);
+  if (fm.supersessionCause) {
+    if (fm.supersessionCause !== "direct" && fm.supersessionCause !== "dependency") {
+      throw new Error(
+        `serializeFrontmatter: invalid supersessionCause ${JSON.stringify(fm.supersessionCause)} — expected "direct" | "dependency"`,
+      );
+    }
+    lines.push(`supersessionCause: ${fm.supersessionCause}`);
+  }
+  if (fm.invalidatedBy) lines.push(`invalidatedBy: ${fm.invalidatedBy}`);
   if (fm.archivedAt) lines.push(`archivedAt: ${fm.archivedAt}`);
   // Issue #680 — explicit fact lifecycle.  Emit only when present so legacy
   // memories round-trip unchanged; readers default `valid_at` to `created`.
@@ -893,6 +902,11 @@ export function parseFrontmatter(raw: string): { frontmatter: MemoryFrontmatter;
       supersededBy: fm.supersededBy || undefined,
       supersededAt: fm.supersededAt || undefined,
       archivedAt: fm.archivedAt || undefined,
+      supersessionCause:
+        fm.supersessionCause === "direct" || fm.supersessionCause === "dependency"
+          ? fm.supersessionCause
+          : undefined,
+      invalidatedBy: fm.invalidatedBy || undefined,
       // Issue #680 — explicit fact lifecycle round-trip.
       valid_at: fm.validAt || undefined,
       invalid_at: fm.invalidAt || undefined,

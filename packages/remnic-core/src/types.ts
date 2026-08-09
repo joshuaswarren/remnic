@@ -624,6 +624,19 @@ export interface ContradictionScanConfig {
   /** When true, pairs judged "duplicates" are auto-flagged for dedup (still need user approval). Default false. */
   autoMergeDuplicates: boolean;
 }
+export interface DependencyPropagationConfig {
+  /** Master switch. Default false. */
+  enabled: boolean;
+  /** Link types that can identify one-hop dependents. */
+  linkTypes: Array<"supports" | "follows" | "references">;
+  /** Maximum active dependents to revalidate. `0` disables propagation. */
+  maxDependents: number;
+  /** Maximum duration of the single batched revalidation call, in milliseconds. */
+  timeoutMs: number;
+  /** Discover and revalidate dependents without writing supersession changes. */
+  dryRun: boolean;
+}
+
 
 export interface HeartbeatConfig {
   enabled: boolean;
@@ -847,6 +860,8 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
   contradictionAutoResolve: boolean;
   /** Nightly contradiction-scan cron config (issue #520). */
   contradictionScan: ContradictionScanConfig;
+  /** One-hop dependency invalidation propagation settings (issue #2326). */
+  dependencyPropagation: DependencyPropagationConfig;
   // Temporal Supersession (issue #375)
   /**
    * When enabled, writes that carry `structuredAttributes` mark any older
@@ -2821,6 +2836,10 @@ export interface MemoryFrontmatter extends SourceConnectorProvenance {
   supersededBy?: string;
   /** Timestamp when superseded */
   supersededAt?: string;
+  /** Why this memory was superseded. Absent means legacy/direct. */
+  supersessionCause?: "direct" | "dependency";
+  /** ID of the superseded memory that caused dependency invalidation. */
+  invalidatedBy?: string;
   /** Timestamp when archived */
   archivedAt?: string;
   /**
