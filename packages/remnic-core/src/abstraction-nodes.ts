@@ -114,8 +114,10 @@ export async function recordAbstractionNode(options: {
   return filePath;
 }
 
+const MAX_ABSTRACTION_NODE_VALUES = 50;
+
 function mergeSortedValues(existing: string[] | undefined, incoming: string[] | undefined): string[] {
-  return mergeSortedUniqueStrings(existing, incoming);
+  return mergeSortedUniqueStrings(existing, incoming).slice(0, MAX_ABSTRACTION_NODE_VALUES);
 }
 
 export const HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY = "remnic.harmonic.sourceMemoryInsertedAt.v1";
@@ -163,7 +165,7 @@ function mergeRecentSourceMemoryIds(
       ([leftId, leftAt], [rightId, rightAt]) =>
         Date.parse(rightAt) - Date.parse(leftAt) || compareDeterministicStrings(leftId, rightId)
     )
-    .slice(0, 50);
+    .slice(0, MAX_ABSTRACTION_NODE_VALUES);
   const ids = retained.map(([memoryId]) => memoryId).sort(compareDeterministicStrings);
   const retainedInsertedAt = Object.fromEntries(ids.map((memoryId) => [memoryId, insertedAtById.get(memoryId)]));
   return { ids, insertedAtJson: JSON.stringify(retainedInsertedAt) };

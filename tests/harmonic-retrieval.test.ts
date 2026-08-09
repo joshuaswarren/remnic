@@ -301,6 +301,56 @@ test("harmonic retrieval drops inactive and missing sources but keeps an active 
   );
 });
 
+test("harmonic retrieval applies temporal validity unless expired injection is enabled", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-harmonic-temporal-source-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    const { id } = await storage.writeMemory("fact", "expired temporal source", { source: "test" });
+    await storage.updateMemoryFrontmatter(id, {
+      status: "active",
+      invalid_at: "2020-01-01T00:00:00.000Z",
+    });
+    await recordAbstractionNode({
+      memoryDir,
+      node: {
+        schemaVersion: 1,
+        nodeId: "expired-temporal-node",
+        recordedAt: "2026-03-08T00:00:00.000Z",
+        sessionKey: "agent:temporal-source",
+        kind: "topic",
+        abstractionLevel: "meso",
+        title: "expired temporal source",
+        summary: "expired temporal source",
+        sourceMemoryIds: [id],
+      },
+    });
+
+    const filtered = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "expired temporal source",
+      maxResults: 10,
+      anchorsEnabled: false,
+      temporalExpiredInInjection: false,
+    });
+    assert.deepEqual(filtered, []);
+
+    const included = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "expired temporal source",
+      maxResults: 10,
+      anchorsEnabled: false,
+      temporalExpiredInInjection: true,
+    });
+    assert.deepEqual(
+      included.map((result) => result.node.nodeId),
+      ["expired-temporal-node"]
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("harmonic retrieval projects mixed source nodes from active memories only", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-harmonic-projection-"));
   const originalReadAllMemories = StorageManager.prototype.readAllMemories;
@@ -463,7 +513,7 @@ test("harmonic retrieval projects mixed source nodes from active memories only",
   }
 });
 
-test("harmonic retrieval keeps source-less and fully active nodes unchanged", async () => {
+test("harmonic retrieval rebuilds fully active node metadata from retained sources", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-harmonic-active-projection-"));
   try {
     const storage = new StorageManager(memoryDir);
@@ -480,11 +530,11 @@ test("harmonic retrieval keeps source-less and fully active nodes unchanged", as
       sessionKey: "agent:source-projection",
       kind: "topic" as const,
       abstractionLevel: "meso" as const,
-      title: "stable active title",
-      summary: "stable active summary",
+      title: "stale stored title",
+      summary: "stale stored summary",
       sourceMemoryIds: [activeId],
-      tags: ["active-tag"],
-      entityRefs: ["active-entity"],
+      tags: ["stale-tag"],
+      entityRefs: ["stale-entity"],
       metadata: undefined,
     };
     await recordAbstractionNode({ memoryDir, node: fullyActiveNode });
@@ -515,11 +565,18 @@ test("harmonic retrieval keeps source-less and fully active nodes unchanged", as
 
     const activeResults = await searchHarmonicRetrieval({
       memoryDir,
-      query: "stable active title",
+      query: "fully active source",
       maxResults: 10,
       anchorsEnabled: false,
     });
-    assert.deepEqual(activeResults[0]?.node, fullyActiveNode);
+    const activeNode = activeResults.find((result) => result.node.nodeId === "fully-active-node")?.node;
+    assert.deepEqual(activeNode, {
+      ...fullyActiveNode,
+      title: "fully active source",
+      summary: "fully active source",
+      tags: ["active-tag"],
+      entityRefs: ["active-entity"],
+    });
     const legacyActiveResults = await searchHarmonicRetrieval({
       memoryDir,
       query: "zephyr quasar",
@@ -537,10 +594,7 @@ test("harmonic retrieval keeps source-less and fully active nodes unchanged", as
       maxResults: 10,
       anchorsEnabled: false,
     });
-    assert.deepEqual(
-      sourceLessResults.map((result) => result.node.nodeId),
-      ["source-less-node"]
-    );
+    assert.ok(sourceLessResults.some((result) => result.node.nodeId === "source-less-node"));
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

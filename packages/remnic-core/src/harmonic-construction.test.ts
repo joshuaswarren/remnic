@@ -470,6 +470,8 @@ test("upsertAbstractionNode caps links by insertion recency", async () => {
         title: "Old Atlas title",
         summary: "Old Atlas summary.",
         sourceMemoryIds: Array.from({ length: 50 }, (_, index) => `old-${String(index).padStart(2, "0")}`),
+        tags: Array.from({ length: 50 }, (_, index) => `old-tag-${String(index).padStart(2, "0")}`),
+        entityRefs: Array.from({ length: 50 }, (_, index) => `old-entity-${String(index).padStart(2, "0")}`),
       },
     });
     const cappedPath = await upsertAbstractionNode({
@@ -484,6 +486,8 @@ test("upsertAbstractionNode caps links by insertion recency", async () => {
         title: "New Atlas title",
         summary: "New Atlas summary.",
         sourceMemoryIds: ["new-00", "new-01"],
+        tags: Array.from({ length: 50 }, (_, index) => `new-tag-${String(index).padStart(2, "0")}`),
+        entityRefs: Array.from({ length: 50 }, (_, index) => `new-entity-${String(index).padStart(2, "0")}`),
       },
     });
     await upsertAbstractionNode({
@@ -536,6 +540,8 @@ test("upsertAbstractionNode caps links by insertion recency", async () => {
     assert.ok(capped.sourceMemoryIds?.includes("ancient-replay"));
     assert.ok(capped.sourceMemoryIds?.includes("latest-new"));
     assert.ok(!capped.sourceMemoryIds?.includes("old-03"));
+    assert.equal(capped.tags?.length, 50);
+    assert.equal(capped.entityRefs?.length, 50);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

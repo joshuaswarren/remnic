@@ -12,6 +12,7 @@ import { resolveCueAnchorStoreDir, validateCueAnchor, type CueAnchor, type CueAn
 import { compareDeterministicStrings } from "./deterministic-order.js";
 import { countRecallTokenOverlap, normalizeRecallTokens } from "./recall-tokenization.js";
 import { stripAttributesSuffix } from "./structured-attributes.js";
+import { isValidityExpiredNow } from "./temporal-validity.js";
 import type { MemoryFile } from "./types.js";
 
 type SourceMemoryMap = Map<string, MemoryFile>;
@@ -42,7 +43,9 @@ async function readSourceMemories(options: {
 function projectSourceBackedNode(
   node: AbstractionNode,
   sourceMemories: SourceMemoryMap,
-  memoryDir: string
+  memoryDir: string,
+  temporalExpiredInInjection: boolean,
+  nowMs: number
 ): AbstractionNode | null {
   const sourceMemoryIds = node.sourceMemoryIds ?? [];
   if (sourceMemoryIds.length === 0) return node;
@@ -51,11 +54,11 @@ function projectSourceBackedNode(
     const memory = sourceMemories.get(memoryId);
     return (
       memory !== undefined &&
-      inferMemoryStatus(memory.frontmatter, toMemoryPathRel(memoryDir, memory.path)) === "active"
+      inferMemoryStatus(memory.frontmatter, toMemoryPathRel(memoryDir, memory.path)) === "active" &&
+      (temporalExpiredInInjection || !isValidityExpiredNow(memory.frontmatter, nowMs))
     );
   });
   if (activeSourceMemoryIds.length === 0) return null;
-  if (activeSourceMemoryIds.length === sourceMemoryIds.length) return node;
 
   const activeMemories = activeSourceMemoryIds.flatMap((memoryId) => {
     const memory = sourceMemories.get(memoryId);
@@ -244,6 +247,7 @@ export async function searchHarmonicRetrieval(options: {
   sessionKey?: string;
   anchorsEnabled: boolean;
   abortSignal?: AbortSignal;
+  temporalExpiredInInjection?: boolean;
 }): Promise<HarmonicRetrievalResult[]> {
   throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
   const queryTokens = new Set(normalizeRecallTokens(options.query, ["what", "which"]));
@@ -254,9 +258,20 @@ export async function searchHarmonicRetrieval(options: {
   const sourceMemories: SourceMemoryMap =
     sourceBackedNodes.length > 0 ? await readSourceMemories(options) : new Map<string, MemoryFile>();
   const legacyCompatibleNodeRefs = new Set<string>();
+  const nowMs = Date.now();
   const eligibleNodes = nodes.flatMap((node) => {
-    const projected = projectSourceBackedNode(node, sourceMemories, options.memoryDir);
-    if (projected === node && (node.sourceMemoryIds?.length ?? 0) > 0) {
+    const projected = projectSourceBackedNode(
+      node,
+      sourceMemories,
+      options.memoryDir,
+      options.temporalExpiredInInjection !== false,
+      nowMs
+    );
+    if (
+      projected &&
+      (node.sourceMemoryIds?.length ?? 0) > 0 &&
+      projected.sourceMemoryIds?.length === node.sourceMemoryIds?.length
+    ) {
       legacyCompatibleNodeRefs.add(node.nodeId);
     }
     return projected ? [projected] : [];

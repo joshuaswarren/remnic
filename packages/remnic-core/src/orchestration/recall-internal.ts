@@ -1551,6 +1551,7 @@ export class RecallInternalCoordinator {
               maxResults,
               sessionKey,
               anchorsEnabled: resolveConsolidationCapabilities(this.deps.config).abstractionAnchors,
+              temporalExpiredInInjection: this.deps.config.temporalExpiredInInjection,
               abortSignal: harmonicRetrievalAbort.signal,
             }),
           ),
