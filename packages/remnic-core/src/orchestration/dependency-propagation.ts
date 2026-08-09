@@ -170,6 +170,13 @@ export async function propagateInvalidation(
   let memories: MemoryFile[];
   try {
     memories = await deps.storage.readAllMemories();
+    try {
+      const cold = await deps.storage.readAllColdMemories();
+      memories = [...memories, ...cold];
+    } catch {
+      // Cold tier is optional; hot-only discovery is still correct for
+      // deployments without cold migration.
+    }
   } catch (error) {
     log.warn(`dependency propagation discovery failed for ${event.oldMemory.frontmatter.id}: ${error}`);
     const result = emptyResult("llm_error");
@@ -181,7 +188,7 @@ export async function propagateInvalidation(
     memories,
     event.oldMemory,
     Array.isArray(config.linkTypes) ? (config.linkTypes as MemoryLinkType[]) : ["supports", "follows"],
-  );
+  ).filter((memory) => memory.frontmatter.id !== event.replacementId);
   const dependents = discovered.slice(0, Math.max(0, Math.floor(maxDependents)));
   if (dependents.length === 0) {
     const result = emptyResult("no_dependents");

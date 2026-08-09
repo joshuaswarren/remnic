@@ -138,35 +138,34 @@ export async function revalidateDependentsViaLlm(
   }
 
   if (rawContent === null && deps.shouldUseDirectClient) {
-    const responsesClient = deps.client as unknown as {
-      responses: {
-        create(
-          request: {
-            model: string;
-            instructions: string;
-            input: string;
-            max_output_tokens: number;
-          },
-          options?: { signal?: AbortSignal },
-        ): Promise<unknown>;
+    const chatClient = deps.client as unknown as {
+      chat: {
+        completions: {
+          create(
+            request: {
+              model: string;
+              messages: Array<{ role: string; content: string }>;
+              max_tokens?: number;
+            },
+            options?: { signal?: AbortSignal },
+          ): Promise<{ choices?: Array<{ message?: { content?: string } }> }>;
+        };
       };
     };
-    const response = await responsesClient.responses.create(
+    const response = await chatClient.chat.completions.create(
       {
         model: deps.config.model,
-        instructions: instructionText,
-        input,
-        max_output_tokens: maxTokens,
+        messages: [
+          { role: "system", content: instructionText },
+          { role: "user", content: input },
+        ],
+        max_tokens: maxTokens,
       },
       { signal },
     );
-    const responseRecord: Record<string, unknown> = isPlainRecord(response) ? response : {};
-    rawContent =
-      typeof responseRecord.output_text === "string"
-        ? responseRecord.output_text
-        : JSON.stringify(responseRecord.output ?? "");
+    rawContent = response.choices?.[0]?.message?.content ?? null;
     if (!rawContent?.trim()) {
-      throw new Error("Responses API returned no dependency revalidation output");
+      throw new Error("direct client returned no dependency revalidation output");
     }
   }
 
