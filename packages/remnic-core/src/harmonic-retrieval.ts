@@ -11,6 +11,7 @@ import {
 import { resolveCueAnchorStoreDir, validateCueAnchor, type CueAnchor, type CueAnchorType } from "./cue-anchors.js";
 import { compareDeterministicStrings } from "./deterministic-order.js";
 import { countRecallTokenOverlap, normalizeRecallTokens } from "./recall-tokenization.js";
+import { stripAttributesSuffix } from "./structured-attributes.js";
 import type { MemoryFile } from "./types.js";
 
 type SourceMemoryMap = Map<string, MemoryFile>;
@@ -60,6 +61,9 @@ function projectSourceBackedNode(
     const memory = sourceMemories.get(memoryId);
     return memory ? [memory] : [];
   });
+  const activeContents = activeMemories.map((memory) =>
+    memory.frontmatter.structuredAttributes ? stripAttributesSuffix(memory.content) : memory.content
+  );
   let metadata: Record<string, string> | undefined;
   const insertedAtRaw = node.metadata?.[HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY];
   if (insertedAtRaw) {
@@ -82,12 +86,8 @@ function projectSourceBackedNode(
   return {
     ...node,
     sourceMemoryIds: activeSourceMemoryIds,
-    title: activeMemories[0]?.content.slice(0, 80) ?? node.title,
-    summary: activeMemories
-      .slice(0, 3)
-      .map((memory) => memory.content)
-      .join("; ")
-      .slice(0, 400),
+    title: activeContents[0]?.slice(0, 80) ?? node.title,
+    summary: activeContents.slice(0, 3).join("; ").slice(0, 400),
     tags: [...new Set(activeMemories.flatMap((memory) => memory.frontmatter.tags))].sort(compareDeterministicStrings),
     entityRefs: [
       ...new Set(

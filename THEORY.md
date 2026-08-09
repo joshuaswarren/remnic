@@ -10,7 +10,7 @@ The model may supply three short cue anchors per fact. All extraction paths appl
 
 Atomic replace and a shared mutation lock protect both record types. The in-process queue preserves local order. A filesystem lock serializes cross-process read-merge-write operations. Lock acquisition confirms the token under the stale-reclaim guard before any mutation starts. Abstraction-node upserts scan once, merge duplicate IDs, retain canonical records, and cap source links by first insertion time. Cue-anchor upserts merge bounded live node references, tags, and source attribution.
 
-Recall projects source-backed nodes from active authoritative memories before scoring. It rebuilds titles, summaries, tags, entities, and source links from active sources. It then admits only anchors attributed to those projected sources. Source-less nodes remain eligible.
+Recall projects source-backed nodes from active authoritative memories before scoring. It rebuilds titles, summaries, tags, entities, and source links from active sources. It strips storage-only attribute suffixes from projected content. It then admits only anchors attributed to those projected sources. Source-less nodes remain eligible.
 
 Consolidation prunes orphan anchors in the default store and a rotating, bounded set of writable namespace stores. Any failed scan, unreadable record, or malformed record aborts that store's pass before deletion. A failed namespace does not block independent stores.
 

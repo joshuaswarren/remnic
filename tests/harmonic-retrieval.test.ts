@@ -326,6 +326,7 @@ test("harmonic retrieval projects mixed source nodes from active memories only",
       source: "test",
       tags: ["active-tag"],
       entityRef: "active-entity",
+      structuredAttributes: { status: "current" },
     });
     await storage.updateMemoryFrontmatter(inactiveId, { status: "archived" });
     await storage.updateMemoryFrontmatter(archivedAtId, {
