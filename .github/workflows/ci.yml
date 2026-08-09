@@ -157,10 +157,9 @@ jobs:
       - name: Docs-code parity
         run: node scripts/check-docs-parity.mjs
 
-  # The root suite (895 files) sharded by pattern group so shards run in
-  # parallel. TEST_PATTERN_GROUPS in scripts/root-test-runner-lib.mjs is an
-  # exact partition of TEST_PATTERNS (enforced by test), so the union of the
-  # shards below is exactly the unsharded suite.
+  # The root/misc suite stays on one runner. Package tests use two deterministic
+  # file shards. selectTestShard is an exact partition (enforced by test), so
+  # the package pair's union is exactly its unsharded suite.
   #
   # Runner selection (public repo, self-hosted safety): the self-hosted
   # `remnic` pool (jarvis CTs 340-342, homelab-infra) only serves pushes to
