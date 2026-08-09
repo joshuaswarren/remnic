@@ -143,7 +143,11 @@ export class ContradictionLinkingCoordinator {
               if (!memoryId) continue;
               if (this.namespaceFromPath(result.path) !== namespaceScope) continue;
               const existingMemory = await resultStorage.getMemoryById(memoryId);
-              if (!existingMemory || existingMemory.frontmatter.status !== "active") continue;
+              if (
+                !existingMemory ||
+                existingMemory.frontmatter.status === "superseded" ||
+                existingMemory.frontmatter.status === "forgotten"
+              ) continue;
               hits.push({
                 id: memoryId,
                 content: existingMemory.content,
@@ -170,7 +174,13 @@ export class ContradictionLinkingCoordinator {
 
       for (const candidate of candidates) {
         const existingMemory = await resultStorage.getMemoryById(candidate.id);
-        if (!existingMemory || existingMemory.frontmatter.status !== "active") continue;
+        if (
+          !existingMemory ||
+          (candidate.source === "anchor" && existingMemory.frontmatter.status !== "active") ||
+          (candidate.source === "search" &&
+            (existingMemory.frontmatter.status === "superseded" ||
+              existingMemory.frontmatter.status === "forgotten"))
+        ) continue;
         const verification = await this.getExtraction().verifyContradiction(
           { content, category },
           {

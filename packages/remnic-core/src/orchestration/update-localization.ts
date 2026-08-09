@@ -47,8 +47,9 @@ function compareCandidates(left: LocalizedCandidate, right: LocalizedCandidate):
 
 function anchorScore(memory: MemoryFile, anchor: UpdateAnchor): number {
   const attributes = anchor.attributes;
-  const candidateAttributes = memory.frontmatter.structuredAttributes;
-  if (attributes && Object.keys(attributes).length > 0 && candidateAttributes) {
+  if (attributes && Object.keys(attributes).length > 0) {
+    const candidateAttributes = memory.frontmatter.structuredAttributes;
+    if (!candidateAttributes) return 0;
     let overlap = 0;
     for (const key of Object.keys(attributes)) {
       if (lookupAttributeByNormalizedKey(candidateAttributes, key) !== undefined) overlap++;

@@ -9,6 +9,7 @@ All notable changes to this project will be documented in this file.
 ### Added
 
 - Claude Code marketplace install now registers a working `remnic` MCP server at install time via the plugin manifest's `userConfig` + inline `mcpServers` (`#2314`). Claude Code prompts for a `remnic_daemon_token` (sensitive; routed to OS keychain on macOS or a protected credentials file elsewhere) and an optional `remnic_daemon_url` (defaults to `http://localhost:4318/mcp`). The bundled `mcp-server-stdio/server.js` proxies JSON-RPC over stdio to the user-configured URL, so neither the marketplace install nor a manual reinstall requires hand-editing the bundled `.mcp.json` placeholder anymore. The bundled `.mcp.json` is retained as the legacy fallback path for older Claude Code releases that do not yet honor `manifest.mcpServers`/`userConfig`.
+- Contradiction detection now localizes candidates by `entityRef` and category before namespace-scoped QMD search, with bounded deterministic merging and configurable caps (`#2327`).
 
 ### Contract tests
 

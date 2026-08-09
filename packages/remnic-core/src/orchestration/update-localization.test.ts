@@ -369,3 +369,62 @@ test("keeps anchor and search candidates within the requested namespace", async 
   assert.equal(result?.supersededId, "default-old");
   assert.deepEqual(calls, ["default-old"]);
 });
+test("scores anchor candidates with missing attributes as zero when the incoming anchor has attributes", async () => {
+  const result = await localizeUpdateCandidates(
+    {
+      storage: storage([
+        memory("with-overlap", {
+          entityRef: "person:alice",
+          attributes: { city: "Austin" },
+          created: "2020-01-01T00:00:00.000Z",
+        }),
+        memory("without-attributes", {
+          entityRef: "person:alice",
+          created: "2026-08-08T00:00:00.000Z",
+        }),
+      ]),
+      qmdSearch: search(),
+    },
+    { entityRef: "person:alice", category: "fact", attributes: { city: "New York" } },
+    "incoming",
+    options,
+  );
+
+  assert.deepEqual(result.map((candidate) => candidate.id), ["with-overlap", "without-attributes"]);
+  assert.equal(result[0]?.score, 1);
+  assert.equal(result[1]?.score, 0);
+});
+test("preserves search candidates with pending_review status in enabled mode", async () => {
+  const candidate = memory("pending", { status: "pending_review" });
+  const extraction = {
+    verifyContradiction: async () => ({
+      isContradiction: true,
+      confidence: 0.99,
+      reasoning: "values conflict",
+      whichIsNewer: "second",
+    }),
+  } as unknown as ExtractionEngine;
+  const coordinator = new ContradictionLinkingCoordinator({
+    getConfig: () =>
+      ({
+        contradictionSimilarityThreshold: 0.7,
+        contradictionMinConfidence: 0.9,
+        contradictionAutoResolve: true,
+        contradictionLocalization: {
+          anchorEnabled: true,
+          anchorCandidates: 5,
+          searchCandidates: 5,
+          maxCandidates: 8,
+        },
+      }) as unknown as PluginConfig,
+    isSearchAvailable: () => true,
+    searchAcrossNamespaces: async () => [qmdResult("pending", 0.95)],
+    extractMemoryIdsFromResults: (results) => results.map((result) => result.docid),
+    namespaceFromPath: () => "default",
+    storageForNamespace: async () => storage([candidate]),
+    getExtraction: () => extraction,
+  });
+
+  const result = await coordinator.checkForContradiction("incoming", "fact", "default");
+  assert.equal(result?.supersededId, "pending");
+});
