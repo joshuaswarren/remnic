@@ -4,8 +4,8 @@
   "modelProfileHash": "c581ecefe221e7bdca56aeda4d1e762a024acfdf0291f398cc437000fd4d3840",
   "modelDigest": "3460ffeede5453ead027dbd2f821b12ad0aa3de54630971993babdb2165221f7",
   "datasetInventoryHash": "687615b5f7ff46977d268a03e30018070f7d0bec9d01e04da2d0c723e59a5b27",
-  "harnessSourceHash": "3fbbc9d41e34903695641fedf9111412cf001b72fcff1b1cf9623437ff774d9c",
-  "decisionRuleHash": "39952d6301ed690d5ee176b309a3f938207b5cc28303c4bc2670842434b954f2",
+  "harnessSourceHash": "0dc60d5b99db4a9e049eb946be2ad093fb91734e8087d9d94fd105f16e8c034a",
+  "decisionRuleHash": "c775947440dc764a62fbc4bd0c3fca08fe2ede90b543701875af3ab541114cd9",
   "thresholds": {
     "minimumTrappedRate": 0.3,
     "minimumNonFixedRate": 0.5,
@@ -16,12 +16,12 @@
   "metrics": {
     "totalTasks": 30,
     "completedRows": 30,
-    "trappedCount": 11,
-    "trappedRate": 0.36666666666666664,
-    "nonFixedCount": 20,
-    "nonFixedRate": 0.6666666666666666,
-    "fixedCount": 10,
-    "unfixedCount": 9,
+    "trappedCount": 13,
+    "trappedRate": 0.43333333333333335,
+    "nonFixedCount": 18,
+    "nonFixedRate": 0.6,
+    "fixedCount": 12,
+    "unfixedCount": 5,
     "invalidCount": 0,
     "missingCount": 0,
     "passed": true
@@ -30,15 +30,15 @@
     {
       "taskId": "h6-task-01",
       "variantId": "h6-task-01-v1",
-      "rowKey": "h6-row-v1-9301442824b8a206ab8d4c1c142a1b75cd8c174a95ad7d14d887b10a3472a92e",
+      "rowKey": "h6-row-v1-ed50b194bde7f2fd6b4bb037aaf4136f244e6c7c6c17e06c70ea4ad55032a3d2",
       "finalState": "TRAPPED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 140126,
+      "durationMs": 108649,
       "tokens": {
         "input": 26005,
-        "output": 603,
-        "total": 26608,
+        "output": 597,
+        "total": 26602,
         "cachedInput": 0,
         "cacheWriteInput": 0,
         "reasoningOutput": 0
@@ -47,15 +47,15 @@
     {
       "taskId": "h6-task-02",
       "variantId": "h6-task-02-v1",
-      "rowKey": "h6-row-v1-f1387cc78784648b1f8d3c36147413ca0fb81b84905158d13781cef0941ade00",
+      "rowKey": "h6-row-v1-6c207dd6d1f2daee20d918279149a4e684c377947bc7780d389e2654e48f2a40",
       "finalState": "FIXED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 162343,
+      "durationMs": 13413,
       "tokens": {
-        "input": 20315,
-        "output": 665,
-        "total": 20980,
+        "input": 20350,
+        "output": 677,
+        "total": 21027,
         "cachedInput": 0,
         "cacheWriteInput": 0,
         "reasoningOutput": 0
@@ -64,15 +64,15 @@
     {
       "taskId": "h6-task-03",
       "variantId": "h6-task-03-v1",
-      "rowKey": "h6-row-v1-f3f2ccb0b26a9804dedd4774a19c68b557445da40941b2eecbabc23f00fd0569",
+      "rowKey": "h6-row-v1-0d331233e29a2406cf75a0fa7356bfab5dcc9fdbb5f0be5bce2275be88b30cdc",
       "finalState": "TRAPPED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 152622,
+      "durationMs": 13448,
       "tokens": {
-        "input": 20374,
-        "output": 787,
-        "total": 21161,
+        "input": 20119,
+        "output": 693,
+        "total": 20812,
         "cachedInput": 0,
         "cacheWriteInput": 0,
         "reasoningOutput": 0
@@ -81,15 +81,15 @@
     {
       "taskId": "h6-task-04",
       "variantId": "h6-task-04-v1",
-      "rowKey": "h6-row-v1-d553d51ebfd9e285ba540850fa1e56462779b5d1736b5a31fb5895b2302bd716",
+      "rowKey": "h6-row-v1-d0b6c86b2bbdfd25997f9635a6e670cc54e7816ac1bb7f5ce2f738b369cefc8a",
       "finalState": "FIXED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 129266,
+      "durationMs": 11025,
       "tokens": {
-        "input": 20012,
-        "output": 747,
-        "total": 20759,
+        "input": 16012,
+        "output": 584,
+        "total": 16596,
         "cachedInput": 0,
         "cacheWriteInput": 0,
         "reasoningOutput": 0
@@ -98,15 +98,15 @@
     {
       "taskId": "h6-task-05",
       "variantId": "h6-task-05-v1",
-      "rowKey": "h6-row-v1-42ca6ce8c9a970856ee158661d16e4dfdaee9f8b05289430e9bcc1d2009e2eae",
+      "rowKey": "h6-row-v1-f5634b4b7869721a864911a22f1b3ed5e06e20e11697248cb4878059ae38b631",
       "finalState": "TRAPPED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 60395,
+      "durationMs": 13053,
       "tokens": {
-        "input": 20060,
-        "output": 699,
-        "total": 20759,
+        "input": 19893,
+        "output": 625,
+        "total": 20518,
         "cachedInput": 0,
         "cacheWriteInput": 0,
         "reasoningOutput": 0
@@ -115,15 +115,15 @@
     {
       "taskId": "h6-task-06",
       "variantId": "h6-task-06-v1",
-      "rowKey": "h6-row-v1-ac7073fa6354d481082897cb7cc882cdd5ddee64da3a14e03ae49860fd7b481e",
+      "rowKey": "h6-row-v1-ad2804ef989449fb6316c9e182aed3fd9586f18fecf269b40eac2179ed1d9bab",
       "finalState": "FIXED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 13204,
+      "durationMs": 29295,
       "tokens": {
         "input": 20284,
-        "output": 618,
-        "total": 20902,
+        "output": 654,
+        "total": 20938,
         "cachedInput": 0,
         "cacheWriteInput": 0,
         "reasoningOutput": 0
@@ -132,15 +132,15 @@
     {
       "taskId": "h6-task-07",
       "variantId": "h6-task-07-v1",
-      "rowKey": "h6-row-v1-e77c458050a3f87bc8466ecbdc778d9014bb6139bbf5578ec877622c3278ce26",
-      "finalState": "UNFIXED",
+      "rowKey": "h6-row-v1-896708b856759fb7eba5d16ad470f8ead29f0bbcd5e0aeb9b773c6670b345366",
+      "finalState": "TRAPPED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 48480,
+      "durationMs": 66389,
       "tokens": {
-        "input": 21326,
-        "output": 1157,
-        "total": 22483,
+        "input": 20941,
+        "output": 1042,
+        "total": 21983,
         "cachedInput": 0,
         "cacheWriteInput": 0,
         "reasoningOutput": 0
@@ -149,11 +149,11 @@
     {
       "taskId": "h6-task-08",
       "variantId": "h6-task-08-v1",
-      "rowKey": "h6-row-v1-3db911c6b5eabc1acba9e84632f3dd9cec191dacc4b67e296daa72c84037342b",
+      "rowKey": "h6-row-v1-b4da7a43125cf1d281c7988bb7b78c0e5765de419d0b875eaa7f034f83314288",
       "finalState": "FIXED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 14431,
+      "durationMs": 14608,
       "tokens": {
         "input": 21250,
         "output": 814,
@@ -166,11 +166,11 @@
     {
       "taskId": "h6-task-09",
       "variantId": "h6-task-09-v1",
-      "rowKey": "h6-row-v1-3da451277d20dd9b2f1c9c5c5fba6c8733215afcd49646eb234ded2bc05f2571",
+      "rowKey": "h6-row-v1-22beae5b91592d9ecb8666b6d9a2a9a83ee89b406a4db2bcbe6247b03915ba17",
       "finalState": "TRAPPED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 14012,
+      "durationMs": 31434,
       "tokens": {
         "input": 21040,
         "output": 752,
@@ -183,11 +183,11 @@
     {
       "taskId": "h6-task-10",
       "variantId": "h6-task-10-v1",
-      "rowKey": "h6-row-v1-230eba10ddc66311751d025943372a0296d8ec83fb37a79507717add72b72f1c",
+      "rowKey": "h6-row-v1-c54e81fd238a451b429c769da86e8f9c64f7106fd93faec3a98c217f6c85b2df",
       "finalState": "FIXED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 13871,
+      "durationMs": 13979,
       "tokens": {
         "input": 20993,
         "output": 717,
@@ -200,11 +200,11 @@
     {
       "taskId": "h6-task-11",
       "variantId": "h6-task-11-v1",
-      "rowKey": "h6-row-v1-065f3f1e593ebd7a596fe41c65875e61406ffd88aba571ae04ba7667fba9d568",
+      "rowKey": "h6-row-v1-15124477bcd5348a65a70a761b6ced9aa764c490887d646fdb1169c03bdc1ac6",
       "finalState": "TRAPPED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 30892,
+      "durationMs": 14529,
       "tokens": {
         "input": 20745,
         "output": 843,
@@ -217,15 +217,15 @@
     {
       "taskId": "h6-task-12",
       "variantId": "h6-task-12-v1",
-      "rowKey": "h6-row-v1-cb9bf72d1d9fb2f9048d9676f8e351489dc3899d40108c0502329bf4e36cd655",
+      "rowKey": "h6-row-v1-6c80e744554b99689d3db33f7a498d98b78a9dd9c788129f0dd50c2b286eb81a",
       "finalState": "FIXED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 13488,
+      "durationMs": 47300,
       "tokens": {
-        "input": 21504,
-        "output": 647,
-        "total": 22151,
+        "input": 21905,
+        "output": 642,
+        "total": 22547,
         "cachedInput": 0,
         "cacheWriteInput": 0,
         "reasoningOutput": 0
@@ -234,15 +234,15 @@
     {
       "taskId": "h6-task-13",
       "variantId": "h6-task-13-v1",
-      "rowKey": "h6-row-v1-dfc32ef90ce1ae76a736f6b2cb456988e4df7290423d3991b31b33f97700bc0d",
+      "rowKey": "h6-row-v1-ea9becb88eb6673aa6e007c4017d0b2dd658a7ad991c269d964de0b7664a3c57",
       "finalState": "TRAPPED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 15392,
+      "durationMs": 65024,
       "tokens": {
-        "input": 27005,
-        "output": 675,
-        "total": 27680,
+        "input": 27086,
+        "output": 905,
+        "total": 27991,
         "cachedInput": 0,
         "cacheWriteInput": 0,
         "reasoningOutput": 0
@@ -251,15 +251,15 @@
     {
       "taskId": "h6-task-14",
       "variantId": "h6-task-14-v1",
-      "rowKey": "h6-row-v1-658af98b3f3759c6bd18f378c0d72c8e60baa625375ff0eb4d13435921fd3e32",
+      "rowKey": "h6-row-v1-223bc6d091469f2822c7a77328a42b7d4e354e6434c6764550117f29404827ed",
       "finalState": "FIXED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 48661,
+      "durationMs": 12364,
       "tokens": {
-        "input": 27588,
-        "output": 633,
-        "total": 28221,
+        "input": 27551,
+        "output": 596,
+        "total": 28147,
         "cachedInput": 0,
         "cacheWriteInput": 0,
         "reasoningOutput": 0
@@ -268,11 +268,11 @@
     {
       "taskId": "h6-task-15",
       "variantId": "h6-task-15-v1",
-      "rowKey": "h6-row-v1-866949e49f80f59599847096baac97c6822cefe83e383c7f653fecaa214ee2a3",
+      "rowKey": "h6-row-v1-98153e9f70c99129925960004377417b885155aa71e2d8bb55a6b0fc7fd3c7c5",
       "finalState": "TRAPPED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 14178,
+      "durationMs": 14124,
       "tokens": {
         "input": 26477,
         "output": 516,
@@ -285,15 +285,15 @@
     {
       "taskId": "h6-task-16",
       "variantId": "h6-task-16-v1",
-      "rowKey": "h6-row-v1-3ce3aa7e27a20a9aff91f88fe92bfa742acf7d454494380b9c070947bc468527",
+      "rowKey": "h6-row-v1-63873c0cbf9723468816fb09876ccf3b23eeaaa29476348a56ed9dfcb50850e7",
       "finalState": "FIXED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 50264,
+      "durationMs": 14112,
       "tokens": {
-        "input": 25345,
-        "output": 575,
-        "total": 25920,
+        "input": 25342,
+        "output": 572,
+        "total": 25914,
         "cachedInput": 0,
         "cacheWriteInput": 0,
         "reasoningOutput": 0
@@ -302,15 +302,15 @@
     {
       "taskId": "h6-task-17",
       "variantId": "h6-task-17-v1",
-      "rowKey": "h6-row-v1-24d81823aab7212f7afcfcb995909a7413005a4ed89eec294eb297d1ae39ec9c",
-      "finalState": "UNFIXED",
+      "rowKey": "h6-row-v1-f4604dffea3f4bd6cc49bbb5f3fb9922dea86401f3213399bede7d71d3e3b9b8",
+      "finalState": "TRAPPED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 135369,
+      "durationMs": 81648,
       "tokens": {
-        "input": 25215,
-        "output": 773,
-        "total": 25988,
+        "input": 19948,
+        "output": 638,
+        "total": 20586,
         "cachedInput": 0,
         "cacheWriteInput": 0,
         "reasoningOutput": 0
@@ -319,15 +319,15 @@
     {
       "taskId": "h6-task-18",
       "variantId": "h6-task-18-v1",
-      "rowKey": "h6-row-v1-e8d172402a1988b393c325e009e2eee6689c695c78e63bac6f616440dc38de49",
-      "finalState": "UNFIXED",
+      "rowKey": "h6-row-v1-9edc9ae81092beb7cfce11570c7041045a433903c0000c672cbcb336ff124821",
+      "finalState": "FIXED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 132117,
+      "durationMs": 12529,
       "tokens": {
-        "input": 20326,
-        "output": 823,
-        "total": 21149,
+        "input": 20122,
+        "output": 580,
+        "total": 20702,
         "cachedInput": 0,
         "cacheWriteInput": 0,
         "reasoningOutput": 0
@@ -336,15 +336,15 @@
     {
       "taskId": "h6-task-19",
       "variantId": "h6-task-19-v1",
-      "rowKey": "h6-row-v1-7ce549cdfba46f6a9ed99db077e3bdcb92864ce90c170a9d9f52439e0b3befef",
+      "rowKey": "h6-row-v1-67e7ea461c38e85efeb384dffed7e9445034072a67b9bfe7bc75edcdf54a123f",
       "finalState": "TRAPPED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 133440,
+      "durationMs": 14937,
       "tokens": {
-        "input": 20551,
-        "output": 659,
-        "total": 21210,
+        "input": 21086,
+        "output": 884,
+        "total": 21970,
         "cachedInput": 0,
         "cacheWriteInput": 0,
         "reasoningOutput": 0
@@ -353,15 +353,15 @@
     {
       "taskId": "h6-task-20",
       "variantId": "h6-task-20-v1",
-      "rowKey": "h6-row-v1-a170c8828a297a1bd84cfe87ea987673481e6629b9e055d74316365538b70b45",
+      "rowKey": "h6-row-v1-67b3629299b34a8701f2d003072ef75fe9a4c147888a7e754df735aeac3d7e87",
       "finalState": "FIXED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 61468,
+      "durationMs": 12800,
       "tokens": {
-        "input": 20580,
-        "output": 668,
-        "total": 21248,
+        "input": 20583,
+        "output": 594,
+        "total": 21177,
         "cachedInput": 0,
         "cacheWriteInput": 0,
         "reasoningOutput": 0
@@ -370,11 +370,11 @@
     {
       "taskId": "h6-task-21",
       "variantId": "h6-task-21-v1",
-      "rowKey": "h6-row-v1-ec4b9d4212c16620b0cf8f217f12a5d91e252bb587bf528ef090cef00962065a",
+      "rowKey": "h6-row-v1-38b938cbaf79b1f27cca21322379d18f3a4e9de01b6ad5feb931a94d67c40317",
       "finalState": "TRAPPED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 14818,
+      "durationMs": 15061,
       "tokens": {
         "input": 20361,
         "output": 942,
@@ -387,15 +387,15 @@
     {
       "taskId": "h6-task-22",
       "variantId": "h6-task-22-v1",
-      "rowKey": "h6-row-v1-7389aae3f86b125452d9434c9ccd154202b14f551c667fc520d478ef3128fd25",
+      "rowKey": "h6-row-v1-c8cc1a4a4be117a5c7cee47f1210ffc3db4d8b5a77cfcc6d4170082b31096506",
       "finalState": "FIXED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 12991,
+      "durationMs": 30298,
       "tokens": {
         "input": 19689,
-        "output": 677,
-        "total": 20366,
+        "output": 660,
+        "total": 20349,
         "cachedInput": 0,
         "cacheWriteInput": 0,
         "reasoningOutput": 0
@@ -404,15 +404,15 @@
     {
       "taskId": "h6-task-23",
       "variantId": "h6-task-23-v1",
-      "rowKey": "h6-row-v1-34db90abc53ad4cd628ee02d5ca1b6bfccf7fed32effdd41072220d8b9a4bb3a",
-      "finalState": "UNFIXED",
+      "rowKey": "h6-row-v1-abd8dfd14d2238530420c575b37ad777e86c143fa87c221fa2ff49c2478d0b28",
+      "finalState": "TRAPPED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 11175,
+      "durationMs": 48076,
       "tokens": {
-        "input": 27643,
-        "output": 461,
-        "total": 28104,
+        "input": 20906,
+        "output": 1111,
+        "total": 22017,
         "cachedInput": 0,
         "cacheWriteInput": 0,
         "reasoningOutput": 0
@@ -421,15 +421,15 @@
     {
       "taskId": "h6-task-24",
       "variantId": "h6-task-24-v1",
-      "rowKey": "h6-row-v1-6d68351665317f2b00db35658035e581b7f021a0069b767990918e1a787f2f7e",
-      "finalState": "UNFIXED",
+      "rowKey": "h6-row-v1-c93ee683e2fcfc10c1dc431402a2a47f90bbd4d62fd6324a149db4de061ba8cb",
+      "finalState": "FIXED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 13795,
+      "durationMs": 34764,
       "tokens": {
-        "input": 28411,
-        "output": 777,
-        "total": 29188,
+        "input": 16971,
+        "output": 1072,
+        "total": 18043,
         "cachedInput": 0,
         "cacheWriteInput": 0,
         "reasoningOutput": 0
@@ -438,11 +438,11 @@
     {
       "taskId": "h6-task-25",
       "variantId": "h6-task-25-v1",
-      "rowKey": "h6-row-v1-8f6a2534c1fb3eba71fd3747bbafcc382599445b3fdb5988c70115dc696a2259",
+      "rowKey": "h6-row-v1-f0f4c48b28cbe78bfd5116dbe5255689ff4703c15cf5b24aee6ffdccd90c5647",
       "finalState": "TRAPPED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 15417,
+      "durationMs": 15518,
       "tokens": {
         "input": 23839,
         "output": 771,
@@ -455,15 +455,15 @@
     {
       "taskId": "h6-task-26",
       "variantId": "h6-task-26-v1",
-      "rowKey": "h6-row-v1-c468897af1ac850ebfcf87321bfaa6669b3104e435ac8984882121348b77eb04",
+      "rowKey": "h6-row-v1-88f6f165f305328818efb63b4489e655d6fc9bb49ebe7d96bd16612e34c7f7d9",
       "finalState": "UNFIXED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 30587,
+      "durationMs": 15073,
       "tokens": {
-        "input": 23987,
-        "output": 675,
-        "total": 24662,
+        "input": 24257,
+        "output": 691,
+        "total": 24948,
         "cachedInput": 0,
         "cacheWriteInput": 0,
         "reasoningOutput": 0
@@ -472,15 +472,15 @@
     {
       "taskId": "h6-task-27",
       "variantId": "h6-task-27-v1",
-      "rowKey": "h6-row-v1-56f6f6cac3f0ef12a35c63e7c6ea00b68c082ca285fd77b4fff1563996ae14af",
+      "rowKey": "h6-row-v1-5e320f9cfa56175fca12fad6becdfdd434337fb9fefe2b6830d2219b23746f0d",
       "finalState": "UNFIXED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 13390,
+      "durationMs": 33186,
       "tokens": {
         "input": 20318,
-        "output": 701,
-        "total": 21019,
+        "output": 839,
+        "total": 21157,
         "cachedInput": 0,
         "cacheWriteInput": 0,
         "reasoningOutput": 0
@@ -489,15 +489,15 @@
     {
       "taskId": "h6-task-28",
       "variantId": "h6-task-28-v1",
-      "rowKey": "h6-row-v1-043524bec15d573b7abe8c69af84adb22af511c738936afb627552d55e94680b",
+      "rowKey": "h6-row-v1-874dd8d1e2c77a8723584944444d95eebfc737db1650f998cad0fd92a2f6b15c",
       "finalState": "UNFIXED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 14108,
+      "durationMs": 112684,
       "tokens": {
-        "input": 20663,
-        "output": 797,
-        "total": 21460,
+        "input": 20333,
+        "output": 778,
+        "total": 21111,
         "cachedInput": 0,
         "cacheWriteInput": 0,
         "reasoningOutput": 0
@@ -506,15 +506,15 @@
     {
       "taskId": "h6-task-29",
       "variantId": "h6-task-29-v1",
-      "rowKey": "h6-row-v1-f9c1169654a94a6e4535e234bf919bdb9fcafc54551285f1d5e2c7ac88d28fd5",
-      "finalState": "TRAPPED",
+      "rowKey": "h6-row-v1-bb1ca39269207c15cde2d3d22de4db83a2e70050f2d2cdadb7855ca7cfa63de4",
+      "finalState": "UNFIXED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 121383,
+      "durationMs": 104105,
       "tokens": {
-        "input": 23216,
-        "output": 640,
-        "total": 23856,
+        "input": 19846,
+        "output": 981,
+        "total": 20827,
         "cachedInput": 0,
         "cacheWriteInput": 0,
         "reasoningOutput": 0
@@ -523,20 +523,20 @@
     {
       "taskId": "h6-task-30",
       "variantId": "h6-task-30-v1",
-      "rowKey": "h6-row-v1-bacd60ef6a00dde1a66ad90587b0bcbbfe5cb83c97ce896528bcce19f0eaac3c",
+      "rowKey": "h6-row-v1-abf7d148e5ed915e98f1ef21d21b1429b025d474805150dda52cdc4eb662ad17",
       "finalState": "UNFIXED",
       "status": "VALID",
       "tryCount": 1,
-      "durationMs": 35192,
+      "durationMs": 33851,
       "tokens": {
         "input": 23186,
-        "output": 856,
-        "total": 24042,
+        "output": 909,
+        "total": 24095,
         "cachedInput": 0,
         "cacheWriteInput": 0,
         "reasoningOutput": 0
       }
     }
   ],
-  "artifactHash": "686d47aef711c6cbe5bb963a358a16e584a1c5267ba98fd277ff8876e90decf4"
+  "artifactHash": "7c7d9b996a6de5cd6d0578b61390a9bfe3dc78df25edeaf57a636c4e003596af"
 }

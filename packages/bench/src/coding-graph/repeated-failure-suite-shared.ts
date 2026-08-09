@@ -192,6 +192,9 @@ export const DecisionRuleSchema = z.object({
     population: z.literal("main_no_trap_revisions"),
     passRateMargin: z.number().nonnegative(),
     stepsMargin: z.number().nonnegative(),
+    // Amendment 4 (Option B). Older bundles omit it; absent means the
+    // pass-rate half still gates, preserving the pre-amendment contract.
+    gatePassRate: z.boolean().default(true),
   }).passthrough(),
   completeness: z.object({
     primaryArmCount: z.literal(5),
@@ -259,6 +262,45 @@ export type FixtureBundle = {
   decisionRuleBytes: string;
   suiteVersion: string;
 };
+
+/**
+ * Every statistical threshold the decision rule contributes to
+ * `analyzeRepeatedFailureRows`. All five bundle-driven call sites (live
+ * analysis, stats replay, report replay, power replay, power simulation) MUST
+ * spread this instead of listing fields, so adding a rule knob is a
+ * one-module change. A hand-copied list is how `timidityGatePassRate` reached
+ * the power simulation but silently defaulted in the live analysis.
+ */
+export function decisionRuleAnalysisOptions(
+  decisionRule: z.infer<typeof DecisionRuleSchema>,
+): {
+  alpha: number;
+  timingMinimumRrr: number;
+  timingMinimumAbsoluteBenefit: number;
+  timingMinimumBenefitIntervalLower: number;
+  contentMinimumRepeatedFailureBenefitIntervalLower: number;
+  contentMinimumTaskPassBenefitIntervalLower: number;
+  timidityPassMargin: number;
+  timidityStepsMargin: number;
+  timidityGatePassRate: boolean;
+} {
+  const timing = decisionRule.hypotheses["H6-timing"];
+  const content = decisionRule.hypotheses["H6-content"];
+  return {
+    alpha: decisionRule.analysis.alpha,
+    timingMinimumRrr: timing.minimumRelativeRiskReduction,
+    timingMinimumAbsoluteBenefit: timing.minimumAbsoluteRepeatedFailureBenefit,
+    timingMinimumBenefitIntervalLower:
+      timing.requireRepeatedFailureBenefitIntervalLowerStrictlyAbove,
+    contentMinimumRepeatedFailureBenefitIntervalLower:
+      content.requireRepeatedFailureBenefitIntervalLowerStrictlyAbove,
+    contentMinimumTaskPassBenefitIntervalLower:
+      content.requireTaskPassBenefitIntervalLowerStrictlyAbove,
+    timidityPassMargin: decisionRule.timidity.passRateMargin,
+    timidityStepsMargin: decisionRule.timidity.stepsMargin,
+    timidityGatePassRate: decisionRule.timidity.gatePassRate,
+  };
+}
 export type HistoryTemplate = {
   failureFact: string;
   successFact: string;

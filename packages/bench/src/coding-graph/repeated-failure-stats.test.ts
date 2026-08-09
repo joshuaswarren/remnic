@@ -361,6 +361,69 @@ test("timidity equivalence uses a 90% interval wholly inside both margins", () =
   assert.equal(isRepeatedFailureTimidityEquivalent(inside, { ...stepsInside, lower: -2.1 }, 0.02, 2), false);
 });
 
+test("ungating the pass-rate half keeps it reported but out of the equivalence verdict", () => {
+  const passOutside = { lower: 0.01, upper: 0.031, level: 0.9 };
+  const stepsInside = { lower: -1.9, upper: 1.9, level: 0.9 };
+  const stepsOutside = { lower: -1.9, upper: 2.1, level: 0.9 };
+
+  // Default preserves the pre-Amendment-4 contract.
+  assert.equal(isRepeatedFailureTimidityEquivalent(passOutside, stepsInside, 0.02, 2), false);
+  assert.equal(
+    isRepeatedFailureTimidityEquivalent(passOutside, stepsInside, 0.02, 2, true),
+    false,
+  );
+
+  // Amendment 4: the steps half alone decides the verdict.
+  assert.equal(
+    isRepeatedFailureTimidityEquivalent(passOutside, stepsInside, 0.02, 2, false),
+    true,
+  );
+  // Ungating pass-rate must not weaken the steps margin.
+  assert.equal(
+    isRepeatedFailureTimidityEquivalent(passOutside, stepsOutside, 0.02, 2, false),
+    false,
+  );
+});
+
+test("analysis records pass-rate containment separately from the gated verdict", () => {
+  const rows: RepeatedFailureEpisodeRow[] = [];
+  // Candidate passes one extra no-trap task, putting the pass-rate interval
+  // outside a 0.02 margin while steps stay identical.
+  for (let task = 0; task < 5; task += 1) {
+    rows.push(
+      row(`benign-${task}`, "NO_MEMORY", {
+        repeatedFailure: false,
+        taskPassed: task > 0,
+        steps: 4,
+      }),
+      row(`benign-${task}`, "PRE_ACTION_FAILURE", {
+        repeatedFailure: false,
+        taskPassed: true,
+        steps: 4,
+      }),
+    );
+  }
+  const options = {
+    expectedDesign: { rows: [] },
+    timidityDesign: designFor(rows),
+    seed: 55,
+    draws: 200,
+  } as const;
+
+  const gated = analyzeRepeatedFailureRows(rows, { ...options, timidityGatePassRate: true });
+  assert.equal(gated.timidity.gatePassRate, true);
+  assert.equal(gated.timidity.passRateWithinMargin, false);
+  assert.equal(gated.timidity.equivalent, false);
+
+  const ungated = analyzeRepeatedFailureRows(rows, { ...options, timidityGatePassRate: false });
+  assert.equal(ungated.timidity.gatePassRate, false);
+  // Still measured and still failing its own margin — only the verdict changes.
+  assert.equal(ungated.timidity.passRateWithinMargin, false);
+  assert.equal(ungated.timidity.passRateDifference, gated.timidity.passRateDifference);
+  assert.equal(ungated.timidity.passMargin, 0.02);
+  assert.equal(ungated.timidity.equivalent, true);
+});
+
 test("no-trap analysis reports separate timidity equivalence without Holm inclusion", () => {
   const rows: RepeatedFailureEpisodeRow[] = [];
   for (let task = 0; task < 5; task += 1) {

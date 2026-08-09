@@ -248,11 +248,11 @@ export const H6_DATASET_JSON_SCHEMA = {
 } as const;
 
 export const H6_DECISION_RULE = {
-  version: 11,
+  version: 12,
   name: "H6 Failure Gate Decision Rule",
   preregistration: {
     path: "docs/research/failure-gate/preregistration.md",
-    sha256: "a62578027cb4c97e7da812e61c7ee3639839fba2b383caa017fa53e3591814fe",
+    sha256: "0fe2838c50d3e70be59b47bc5d932fecd52af8975c6c0279b3ebc0ebf4a80236",
   },
   analysisPopulation: {
     datasetVersion: 1,
@@ -363,6 +363,12 @@ export const H6_DECISION_RULE = {
     stepsMargin: 2,
     requireIntervalsStrictlyInsideMargins: true,
     minimumSimulatedPower: 0.8,
+    // Amendment 4 (Option B): the pass-rate half is still estimated and
+    // reported against passRateMargin, but no longer gates the main run. The
+    // margin is finer than the design can resolve — one episode flip moves a
+    // task difference by 1/15 = 0.0667 — so no achievable task count reaches
+    // 0.80 power (500 tasks x 60 episodes returns 0.591).
+    gatePassRate: false,
   },
   completeness: {
     expectedRowsFormula:

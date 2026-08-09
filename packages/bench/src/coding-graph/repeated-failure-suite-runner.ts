@@ -136,6 +136,7 @@ import {
   FixtureToolHost,
   FixtureActionEvaluator,
   countFactTokens,
+  decisionRuleAnalysisOptions,
   runOfflineCheck,
   listRegularFiles,
   hashDirectory,
@@ -453,18 +454,7 @@ export async function runRepeatedFailureSuite(
     timidityDesign: design.timidity,
     seed: configuration.statisticsSeed,
     draws: configuration.statisticsDraws,
-    alpha: bundle.decisionRule.analysis.alpha,
-    timingMinimumRrr: bundle.decisionRule.hypotheses["H6-timing"].minimumRelativeRiskReduction,
-    timingMinimumAbsoluteBenefit:
-      bundle.decisionRule.hypotheses["H6-timing"].minimumAbsoluteRepeatedFailureBenefit,
-    timingMinimumBenefitIntervalLower:
-      bundle.decisionRule.hypotheses["H6-timing"].requireRepeatedFailureBenefitIntervalLowerStrictlyAbove,
-    contentMinimumRepeatedFailureBenefitIntervalLower:
-      bundle.decisionRule.hypotheses["H6-content"].requireRepeatedFailureBenefitIntervalLowerStrictlyAbove,
-    contentMinimumTaskPassBenefitIntervalLower:
-      bundle.decisionRule.hypotheses["H6-content"].requireTaskPassBenefitIntervalLowerStrictlyAbove,
-    timidityPassMargin: bundle.decisionRule.timidity.passRateMargin,
-    timidityStepsMargin: bundle.decisionRule.timidity.stepsMargin,
+    ...decisionRuleAnalysisOptions(bundle.decisionRule),
   });
   const statisticsPath = await writeRepeatedFailureStatistics(configuration.outputDir, analysis);
   const episodesHash = sha256(await readFile(episodesPath));
@@ -639,18 +629,7 @@ export async function replayRepeatedFailureStatistics(
       timidityDesign: design.timidity,
       seed: metadata.statisticsSeed,
       draws: metadata.statisticsDraws,
-      alpha: decisionRule.analysis.alpha,
-      timingMinimumRrr: decisionRule.hypotheses["H6-timing"].minimumRelativeRiskReduction,
-      timingMinimumAbsoluteBenefit:
-        decisionRule.hypotheses["H6-timing"].minimumAbsoluteRepeatedFailureBenefit,
-      timingMinimumBenefitIntervalLower:
-        decisionRule.hypotheses["H6-timing"].requireRepeatedFailureBenefitIntervalLowerStrictlyAbove,
-      contentMinimumRepeatedFailureBenefitIntervalLower:
-        decisionRule.hypotheses["H6-content"].requireRepeatedFailureBenefitIntervalLowerStrictlyAbove,
-      contentMinimumTaskPassBenefitIntervalLower:
-        decisionRule.hypotheses["H6-content"].requireTaskPassBenefitIntervalLowerStrictlyAbove,
-      timidityPassMargin: decisionRule.timidity.passRateMargin,
-      timidityStepsMargin: decisionRule.timidity.stepsMargin,
+      ...decisionRuleAnalysisOptions(decisionRule),
     });
     const replayedBytes = `${JSON.stringify(analysis, null, 2)}\n`;
     const frozenBytes = await readFile(path.join(runDir, "statistics.json"), "utf8");

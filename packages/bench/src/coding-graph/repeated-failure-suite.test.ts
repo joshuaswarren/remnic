@@ -168,7 +168,7 @@ test("decision rule schema seals preregistration and requires the frozen invento
     /preregistration|sha256/,
   );
   const parsed = DecisionRuleSchema.parse(H6_DECISION_RULE);
-  assert.equal(parsed.version, 10);
+  assert.equal(parsed.version, 12);
   assert.equal(parsed.analysisPopulation.datasetInventoryHash, H6_FROZEN_INVENTORY_HASH);
   assert.equal((H6_SUPPORT_ARTIFACT_PATHS as readonly string[]).includes("decision-rule.json"), false);
   const {
@@ -1624,7 +1624,7 @@ test("run metadata freezes revisions, caps, locks, sandbox, retry, order, and an
     assert.deepEqual(metadata.caps, {
       maxTurns: 12,
       maxToolCalls: 8,
-      maxTotalTokens: 16_384,
+      maxTotalTokens: 20_480,
       maxDurationMs: 600_000,
       requestTimeoutMs: 180_000,
       maxToolOutputChars: 16_384,

@@ -40,6 +40,7 @@ import {
   TIMIDITY_ARMS,
   assertNoSymlinkComponents,
   countFactTokens,
+  decisionRuleAnalysisOptions,
   stableStringify,
   publicError,
   type FactPairAuditPair,
@@ -434,18 +435,7 @@ export async function writeRepeatedFailurePaperArtifacts(
     timidityDesign: design.timidity,
     seed: run.statisticsSeed,
     draws: run.statisticsDraws,
-    alpha: decisionRule.analysis.alpha,
-    timingMinimumRrr: decisionRule.hypotheses["H6-timing"].minimumRelativeRiskReduction,
-    timingMinimumAbsoluteBenefit:
-      decisionRule.hypotheses["H6-timing"].minimumAbsoluteRepeatedFailureBenefit,
-    timingMinimumBenefitIntervalLower:
-      decisionRule.hypotheses["H6-timing"].requireRepeatedFailureBenefitIntervalLowerStrictlyAbove,
-    contentMinimumRepeatedFailureBenefitIntervalLower:
-      decisionRule.hypotheses["H6-content"].requireRepeatedFailureBenefitIntervalLowerStrictlyAbove,
-    contentMinimumTaskPassBenefitIntervalLower:
-      decisionRule.hypotheses["H6-content"].requireTaskPassBenefitIntervalLowerStrictlyAbove,
-    timidityPassMargin: decisionRule.timidity.passRateMargin,
-    timidityStepsMargin: decisionRule.timidity.stepsMargin,
+    ...decisionRuleAnalysisOptions(decisionRule),
   });
   if (stableStringify(statistics) !== stableStringify(recomputedStatistics)) {
     throw new Error("paper report statistics do not replay from immutable rows");

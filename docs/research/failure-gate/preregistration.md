@@ -171,6 +171,49 @@ consequence. Second, no threshold moves: the 0.80 power bar, the 0.05 alpha, the
 timing support conditions, the zero-cut rule, and the equivalence margins all
 stand unchanged.
 
+### Amendment 4: the no-trap pass-rate half is excluded from the main-run power gate
+
+The no-trap equivalence check stays registered. Both halves are estimated and
+reported on every run: the steps difference against its unchanged ±2 margin, and
+the pass-rate difference against its unchanged ±0.02 margin. Only the pass-rate
+half stops gating main execution. The gate is now H6-timing power plus the steps
+half of no-trap equivalence. Decision rule version 12 records this as
+`timidity.gatePassRate: false`; the analysis reports the pass-rate containment
+result separately as `passRateWithinMargin`, so it remains on the record.
+
+The registered ±0.02 pass-rate margin is finer than this design can resolve, and
+that was fixed before any data existed. Each task contributes 15 no-trap
+episodes per arm, so one episode flip moves a task's difference by 1/15 =
+0.0667 — more than three times the margin the statistic is tested against. The
+steps half of the same check carries roughly 60× headroom against its margin;
+the two margins were never set from common operating characteristics.
+
+The decision rule already registers a remedy for low power,
+`power.increaseIndependentTasksIfBelowThreshold`. That remedy cannot deliver
+this gate. Bootstrapping the registered procedure from the v8 pilot's no-trap
+population gives 0.142 power at 60 tasks, 0.306 at 180, and 0.591 at 500 tasks
+with 60 episodes per arm — the estimate converges on the measured per-task
+difference of 0.0139, which is 70 percent of the margin, so no achievable task
+count fits a 90 percent interval underneath 0.02.
+
+Three consequences are recorded explicitly so they cannot be mistaken later.
+First, this unblocks a study that is otherwise blocked; the justification rests
+on the pre-existing resolution defect above, never on that consequence. Second,
+the measured difference favours the gate — `PRE_ACTION_FAILURE` passes slightly
+more no-trap revisions than `NO_MEMORY`, +0.0139 per task with a 90% CI of
+[-0.0019, 0.0297] — and equivalence is two-sided, so this fails containment
+exactly as a harm would; nothing in the data suggests the gate causes harm.
+Third, the pass-rate question is recorded as **unresolved by this study**, never
+as passed, and no threshold moves: the 0.80 power bar, the 0.05 alpha, the
+timing support conditions, the zero-cut rule, the ±2 steps margin, and the
+±0.02 pass-rate margin itself all stand unchanged.
+
+A widening of the pass-rate margin to 0.05 was considered and rejected. It would
+have kept the check gating at a value selected by reading a sensitivity table
+computed from the observed results, which is the inference path Amendment 3
+warned against. Declining to answer the question is the more conservative
+outcome than answering it at a post-hoc margin.
+
 The frozen machine rule admits exactly nine invalid-reason codes. Two are preflight-only and stop row execution:
 
 - `CORPUS_INVALID`: the frozen benchmark corpus fails validation.

@@ -143,6 +143,7 @@ import {
   FixtureToolHost,
   FixtureActionEvaluator,
   countFactTokens,
+  decisionRuleAnalysisOptions,
   runOfflineCheck,
   listRegularFiles,
   hashDirectory,
@@ -620,19 +621,7 @@ export async function verifyPilotPower(
     timidityDesign: design.timidity,
     seed: metadata.statisticsSeed,
     draws: metadata.statisticsDraws,
-    alpha: bundle.decisionRule.analysis.alpha,
-    timingMinimumRrr:
-      bundle.decisionRule.hypotheses["H6-timing"].minimumRelativeRiskReduction,
-    timingMinimumAbsoluteBenefit:
-      bundle.decisionRule.hypotheses["H6-timing"].minimumAbsoluteRepeatedFailureBenefit,
-    timingMinimumBenefitIntervalLower:
-      bundle.decisionRule.hypotheses["H6-timing"].requireRepeatedFailureBenefitIntervalLowerStrictlyAbove,
-    contentMinimumRepeatedFailureBenefitIntervalLower:
-      bundle.decisionRule.hypotheses["H6-content"].requireRepeatedFailureBenefitIntervalLowerStrictlyAbove,
-    contentMinimumTaskPassBenefitIntervalLower:
-      bundle.decisionRule.hypotheses["H6-content"].requireTaskPassBenefitIntervalLowerStrictlyAbove,
-    timidityPassMargin: bundle.decisionRule.timidity.passRateMargin,
-    timidityStepsMargin: bundle.decisionRule.timidity.stepsMargin,
+    ...decisionRuleAnalysisOptions(bundle.decisionRule),
   });
   const replayedPower = buildPowerArtifact(
     rows,
@@ -900,18 +889,7 @@ export function buildPowerArtifact(
           ^ (Number.parseInt(sha256(cacheKey).slice(0, 8), 16) >>> 0)
         ) >>> 0,
         draws: configuration.statisticsDraws,
-        alpha: decisionRule.analysis.alpha,
-        timingMinimumRrr: decisionRule.hypotheses["H6-timing"].minimumRelativeRiskReduction,
-        timingMinimumAbsoluteBenefit:
-          decisionRule.hypotheses["H6-timing"].minimumAbsoluteRepeatedFailureBenefit,
-        timingMinimumBenefitIntervalLower:
-          decisionRule.hypotheses["H6-timing"].requireRepeatedFailureBenefitIntervalLowerStrictlyAbove,
-        contentMinimumRepeatedFailureBenefitIntervalLower:
-          decisionRule.hypotheses["H6-content"].requireRepeatedFailureBenefitIntervalLowerStrictlyAbove,
-        contentMinimumTaskPassBenefitIntervalLower:
-          decisionRule.hypotheses["H6-content"].requireTaskPassBenefitIntervalLowerStrictlyAbove,
-        timidityPassMargin: decisionRule.timidity.passRateMargin,
-        timidityStepsMargin: decisionRule.timidity.stepsMargin,
+        ...decisionRuleAnalysisOptions(decisionRule),
       });
       cached.set(cacheKey, simulated);
     }
@@ -947,6 +925,7 @@ export function buildPowerArtifact(
         decisionRule.hypotheses["H6-timing"].minimumRelativeRiskReduction,
       timidityPassRateMargin: decisionRule.timidity.passRateMargin,
       timidityStepsMargin: decisionRule.timidity.stepsMargin,
+      timidityGatePassRate: decisionRule.timidity.gatePassRate,
     },
     simulations: {
       timing: {

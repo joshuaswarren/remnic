@@ -27,6 +27,8 @@ export interface AnalyzeRepeatedFailureOptions {
   contentMinimumTaskPassBenefitIntervalLower?: number;
   timidityPassMargin?: number;
   timidityStepsMargin?: number;
+  /** Amendment 4 (Option B): false keeps the pass-rate half reported but ungated. */
+  timidityGatePassRate?: boolean;
 }
 
 export interface RepeatedFailureInterval {
@@ -79,6 +81,13 @@ export interface RepeatedFailureTimidityAnalysis {
   stepsInterval: RepeatedFailureInterval | null;
   passMargin: number;
   stepsMargin: number;
+  /**
+   * Whether the pass-rate interval sits strictly inside passMargin. Always
+   * estimated and reported. Amendment 4 (Option B) removed it from the gate,
+   * so `equivalent` ignores it when gatePassRate is false.
+   */
+  passRateWithinMargin: boolean | null;
+  gatePassRate: boolean;
   equivalent: boolean | null;
 }
 
@@ -526,13 +535,16 @@ export function isRepeatedFailureTimidityEquivalent(
   passRateInterval: RepeatedFailureInterval,
   stepsInterval: RepeatedFailureInterval,
   passMargin: number,
-  stepsMargin: number
+  stepsMargin: number,
+  gatePassRate = true
 ): boolean {
+  const stepsInside =
+    stepsInterval.lower > -stepsMargin && stepsInterval.upper < stepsMargin;
+  if (!gatePassRate) return stepsInside;
   return (
+    stepsInside &&
     passRateInterval.lower > -passMargin &&
-    passRateInterval.upper < passMargin &&
-    stepsInterval.lower > -stepsMargin &&
-    stepsInterval.upper < stepsMargin
+    passRateInterval.upper < passMargin
   );
 }
 
@@ -552,6 +564,7 @@ export function analyzeRepeatedFailureRows(
     options.contentMinimumTaskPassBenefitIntervalLower ?? 0;
   const timidityPassMargin = options.timidityPassMargin ?? 0.02;
   const timidityStepsMargin = options.timidityStepsMargin ?? 2;
+  const timidityGatePassRate = options.timidityGatePassRate ?? true;
   if (!Number.isSafeInteger(draws) || draws <= 0) throw new Error("draws must be a positive safe integer");
   if (!(level > 0 && level < 1) || !(alpha > 0 && alpha < 1)) throw new Error("level and alpha must be in (0, 1)");
   if (!Number.isSafeInteger(options.seed) || options.seed < 0 || options.seed > 0xffffffff) {
@@ -577,7 +590,8 @@ export function analyzeRepeatedFailureRows(
   const timidityRequested =
     options.timidityDesign !== undefined ||
     options.timidityPassMargin !== undefined ||
-    options.timidityStepsMargin !== undefined;
+    options.timidityStepsMargin !== undefined ||
+    options.timidityGatePassRate !== undefined;
   if (timidityRequested && !options.timidityDesign) {
     throw new Error("timidity analysis requires a compatible timidityDesign");
   }
@@ -632,6 +646,8 @@ export function analyzeRepeatedFailureRows(
       stepsInterval: null,
       passMargin: timidityPassMargin,
       stepsMargin: timidityStepsMargin,
+      passRateWithinMargin: null,
+      gatePassRate: timidityGatePassRate,
       equivalent: null,
     };
   } else {
@@ -656,6 +672,11 @@ export function analyzeRepeatedFailureRows(
       stepsInterval: bootstrap.stepsDifferenceInterval,
       passMargin: timidityPassMargin,
       stepsMargin: timidityStepsMargin,
+      passRateWithinMargin: timidityPreparation.cuts.length > 0
+        ? null
+        : bootstrap.taskPassBenefitInterval.lower > -timidityPassMargin
+          && bootstrap.taskPassBenefitInterval.upper < timidityPassMargin,
+      gatePassRate: timidityGatePassRate,
       equivalent: timidityPreparation.cuts.length > 0
         ? null
         : isRepeatedFailureTimidityEquivalent(
@@ -663,6 +684,7 @@ export function analyzeRepeatedFailureRows(
           bootstrap.stepsDifferenceInterval,
           timidityPassMargin,
           timidityStepsMargin,
+          timidityGatePassRate,
         ),
     };
   }
