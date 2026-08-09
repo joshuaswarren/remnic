@@ -1,4 +1,3 @@
-import { RecallSearchPipelineCoordinator } from "./recall-search-pipeline.js";
 import assert from "node:assert/strict";
 import { appendFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
@@ -20,6 +19,7 @@ type NamespaceFixture = {
   seedPath: string;
   intermediatePath: string;
   cleanPath: string;
+  secondCleanPath?: string;
   stalePath: string;
 };
 
@@ -43,6 +43,7 @@ async function appendEdge(
   dir: string,
   from: string,
   to: string,
+  weight = 1,
 ): Promise<void> {
   const file = graphFilePath(dir, "entity");
   await mkdir(path.dirname(file), { recursive: true });
@@ -51,8 +52,7 @@ async function appendEdge(
     `${JSON.stringify({
       from,
       to,
-      type: "entity",
-      weight: 1,
+      weight,
       label: "test",
       ts: AS_OF,
     })}\n`,
@@ -64,6 +64,7 @@ async function createNamespace(
   root: string,
   name: string,
   intermediateStatus: "active" | "superseded" = "active",
+  includeSecondClean = false,
 ): Promise<NamespaceFixture> {
   const dir = path.join(root, name);
   const storage = new StorageManager(dir);
@@ -74,6 +75,9 @@ async function createNamespace(
     status: intermediateStatus,
   });
   await storage.writeMemory("fact", `${name} clean`, { source: "test" });
+  if (includeSecondClean) {
+    await storage.writeMemory("fact", `${name} second clean`, { source: "test" });
+  }
   await storage.writeMemory("fact", `${name} stale`, { source: "test" });
   const paths = await storage.collectActiveMemoryPaths();
   const memories = await storage.readAllMemories();
@@ -85,12 +89,14 @@ async function createNamespace(
   const seedPath = find(`${name} seed`);
   const intermediatePath = find(`${name} intermediate`);
   const cleanPath = find(`${name} clean`);
+  const secondCleanPath = includeSecondClean ? find(`${name} second clean`) : undefined;
   const stalePath = find(`${name} stale`);
-  await appendEdge(dir, seedPath, cleanPath);
-  await appendEdge(dir, seedPath, intermediatePath);
-  await appendEdge(dir, intermediatePath, stalePath);
-  assert.equal(paths.length, 4);
-  return { name, dir, storage, seedPath, intermediatePath, cleanPath, stalePath };
+  await appendEdge(dir, seedPath, cleanPath, 1);
+  if (secondCleanPath) await appendEdge(dir, seedPath, secondCleanPath, 0.95);
+  await appendEdge(dir, seedPath, intermediatePath, 0.9);
+  await appendEdge(dir, intermediatePath, stalePath, 1);
+  assert.equal(paths.length, includeSecondClean ? 5 : 4);
+  return { name, dir, storage, seedPath, intermediatePath, cleanPath, secondCleanPath, stalePath };
 }
 
 function makeCoordinator(
@@ -166,16 +172,19 @@ async function expand(
 test("real coordinator demotes stale paths before the namespace cap and repeats deterministically", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-coordinator-"));
   try {
-    const fixture = await createNamespace(root, "default", "superseded");
+    const fixture = await createNamespace(root, "default", "superseded", true);
     const cleanFixture = await createNamespace(root, "clean", "active");
     const fixtures = new Map([[fixture.name, fixture], [cleanFixture.name, cleanFixture]]);
     const coordinator = makeCoordinator(makeConfig(), fixtures);
     const first = await expand(coordinator, [seedResult(fixture)], [fixture.name]);
     const second = await expand(coordinator, [seedResult(fixture)], [fixture.name]);
-    assert.equal(first.merged.length, 3);
-    assert.equal(first.expandedPaths.length, 2);
+    console.error("hardened result", JSON.stringify(first, null, 2));
+    assert.equal(first.merged.length, 4);
+    assert.equal(first.expandedPaths.length, 3);
     assert.equal(first.expandedPaths[0]?.path.endsWith(fixture.cleanPath), true);
-    assert.equal(first.expandedPaths[1]?.path.endsWith(fixture.stalePath), true);
+    assert.equal(first.expandedPaths[1]?.path.endsWith(fixture.secondCleanPath ?? ""), true);
+    assert.equal(first.expandedPaths[2]?.path.endsWith(fixture.stalePath), true);
+    assert.equal(first.expandedPaths.slice(0, 2).some((entry) => entry.path.endsWith(fixture.stalePath)), false);
     assert.deepEqual(first.merged, second.merged);
     assert.deepEqual(first.expandedPaths, second.expandedPaths);
     const capped = await expand(

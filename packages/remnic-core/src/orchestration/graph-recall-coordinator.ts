@@ -317,6 +317,7 @@ export class GraphRecallCoordinator {
       seedPaths.push(
         ...seedRelativePaths.map((rel) => path.join(storage.dir, rel)),
       );
+      const seedSet = new Set(seedRelativePaths);
  const scoringEnabled = config.graphPathScoring.enabled;
  let hotCorpusByPath: Map<string, MemoryFile> | undefined;
  let nodeStates: Map<string, PathNodeState> | undefined;
@@ -375,16 +376,53 @@ export class GraphRecallCoordinator {
       if (expanded.length === 0) continue;
       if (deadlineExpired()) break;
 
+      if (!scoringEnabled) {
+        for (const candidate of expanded.slice(0, perNamespaceExpandedCap)) {
+          if (deadlineExpired()) break;
+          if (seedSet.has(candidate.path)) continue;
+          const memory = await storage.readMemoryByPath(path.resolve(storage.dir, candidate.path));
+          if (deadlineExpired()) break;
+          if (!memory) continue;
+          if (/(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(memory.path)) continue;
+          if (memory.frontmatter.status && memory.frontmatter.status !== "active") continue;
+          const score = blendGraphExpandedRecallScore({
+            graphActivationScore: candidate.score,
+            seedRecallScore,
+            activationWeight: config.graphExpansionActivationWeight,
+            blendMin: config.graphExpansionBlendMin,
+            blendMax: config.graphExpansionBlendMax,
+          });
+          expandedResults.push({
+            docid: memory.frontmatter.id,
+            path: memory.path,
+            namespace,
+            snippet: memory.content.slice(0, 400),
+            score,
+          });
+          expandedPaths.push({
+            path: memory.path,
+            score,
+            namespace,
+            seed: path.resolve(storage.dir, candidate.seed),
+            hopDepth: candidate.hopDepth,
+            decayedWeight: candidate.decayedWeight,
+            graphType: candidate.graphType,
+            edgeConfidence: candidate.edgeConfidence,
+          });
+        }
+        continue;
+      }
+
       const scoredExpanded: Array<{
         result: QmdSearchResult;
         entry: GraphRecallExpandedEntry;
       }> = [];
-      const candidates = scoringEnabled ? expanded : expanded.slice(0, perNamespaceExpandedCap);
-      for (const candidate of candidates) {
-        const memory = scoringEnabled
-          ? hotCorpusByPath!.get(candidate.path) ??
-            hotCorpusByPath!.get(path.resolve(storage.dir, candidate.path))
-          : await storage.readMemoryByPath(path.resolve(storage.dir, candidate.path));
+      for (const candidate of expanded) {
+        if (deadlineExpired()) break;
+        if (seedSet.has(candidate.path)) continue;
+        const memory =
+          hotCorpusByPath!.get(candidate.path) ??
+          hotCorpusByPath!.get(path.resolve(storage.dir, candidate.path));
         if (deadlineExpired()) break;
         if (!memory) continue;
         if (/(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(memory.path)) continue;
