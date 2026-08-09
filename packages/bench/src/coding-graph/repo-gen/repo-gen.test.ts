@@ -658,6 +658,7 @@ test("offline checker strips inherited secrets and denies host filesystem, proce
   const sandboxCheck = `
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { networkInterfaces } from "node:os";
 const failures = [];
 if (process.env.H6_SANDBOX_SECRET) failures.push("environment");
 try { readFileSync("/etc/passwd", "utf8"); failures.push("filesystem"); } catch (error) {
@@ -666,12 +667,10 @@ try { readFileSync("/etc/passwd", "utf8"); failures.push("filesystem"); } catch 
 try { spawnSync(process.execPath, ["--version"]); failures.push("process"); } catch (error) {
   if (error.code !== "ERR_ACCESS_DENIED") failures.push("process-code");
 }
-try {
-  await fetch("http://1.1.1.1", { signal: AbortSignal.timeout(1000) });
-  failures.push("network");
-} catch (error) {
-  if (error.cause?.code !== "ENETUNREACH") failures.push("network-code");
-}
+const externalInterfaces = Object.values(networkInterfaces())
+  .flat()
+  .filter((address) => address && !address.internal);
+if (externalInterfaces.length > 0) failures.push("network");
 process.exit(failures.length === 0 ? 0 : 1);
 `;
   const files = variant.files.map((file) =>
