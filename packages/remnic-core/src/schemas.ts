@@ -81,6 +81,16 @@ export const ExtractedFactSchema = z.object({
     .optional()
     .nullable()
     .describe("If about an entity, its normalized name (e.g. person-jane-doe)"),
+  cueAnchors: z
+    .array(
+      z.object({
+        type: z.enum(["entity", "file", "tool", "outcome", "constraint", "date"]),
+        value: z.string(),
+      }),
+    )
+    .optional()
+    .nullable()
+    .describe("Up to three short retrieval cues for this fact."),
   promptedByQuestion: z
     .string()
     .optional()
@@ -296,6 +306,11 @@ export const ExtractionResultSchema = z.object({
     .describe(
       "A brief reflection on what you learned about yourself as an agent in this interaction — patterns in your behavior, growth, things you did well or could improve.",
     ),
+  episodeTitle: z
+    .string()
+    .optional()
+    .nullable()
+    .describe("A six-to-eight word title for this conversation segment."),
   relationships: z
     .array(ExtractedRelationshipSchema)
     .optional()

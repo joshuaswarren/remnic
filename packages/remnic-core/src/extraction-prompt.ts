@@ -18,6 +18,7 @@ export const EXTRACTION_RESPONSE_SHAPE = `{
     "confidence": 0.0,
     "tags": ["<tag>"],
     "entityRef": "<optional normalized-name>",
+    "cueAnchors": [{"type": "<anchor-type>", "value": "<entity-or-topic plus key aspect>"}],
     "promptedByQuestion": "<optional source-grounded question>",
     "quote": "<optional exact contiguous source span>",
     "scope": "<optional project-or-global>",
@@ -40,6 +41,7 @@ export const EXTRACTION_RESPONSE_SHAPE = `{
   "profileUpdates": ["<source-grounded profile update>"],
   "questions": [{"question": "<source-grounded unresolved question>", "context": "<source-grounded context>", "priority": 0.0}],
   "identityReflection": "<conversation-grounded agent reflection>",
+  "episodeTitle": "<six-to-eight word conversation segment title>",
   "relationships": [{"source": "<normalized-name>", "target": "<normalized-name>", "label": "<source-grounded relationship>"}]
 }`;
 export const EXTRACTION_RESPONSE_PLACEHOLDERS: Record<string, true> = {};
@@ -101,6 +103,9 @@ Rules:
 - When entity facts clearly belong under a durable named heading, add them to entity.structuredSections as {key, title, facts}. Example person headings: "Beliefs", "Communication Style", "Building / Working On". Leave structuredSections empty when no stable heading fits.
 - Tags should be concise and reusable (e.g., "coding-style", "personal", "tools")
 - When a fact contains measurable, categorical, or precisely valued data, include a "structuredAttributes" field with key-value string pairs (e.g., {"price": "29.99", "brand": "Sony"}, {"date": "2024-03-15", "location": "SF"}, {"chosen": "PostgreSQL", "rejected": "MongoDB"}). Only for concrete values, not narrative content.
+- For each fact, emit up to 3 "cueAnchors". Each value is a short search hook in the form "<main entity or topic> <key aspect>".
+- Set each cue anchor type to entity, file, tool, outcome, constraint, or date.
+- Example: "Alice booked Bistro Max for Mike's surprise party" can use {"type":"entity","value":"Mike surprise party"} and {"type":"entity","value":"Alice restaurant booking"}.
 - Set confidence using these tiers:
   * Explicit (0.95-1.0): Direct user statements — "I prefer X", "my name is Y"
   * Implied (0.70-0.94): Strong contextual inference — user consistently does X, clear from conversation flow
@@ -136,6 +141,8 @@ Also extract relationships between entities mentioned in the conversation.
 - Only include clear, durable relationships (e.g., "works at", "created", "manages", "uses")
 - Use normalized entity names (e.g., "person-jane-doe", "company-acme-corp")
 
+
+Also emit "episodeTitle" as a six-to-eight word title for this conversation segment.
 Questions are optional. Include only source-grounded unresolved questions that would be useful in future sessions; otherwise return an empty array.
 
 Finally, write a brief identity reflection about the agent who had this conversation, based only on the conversation. Do not write about the extraction process.`;

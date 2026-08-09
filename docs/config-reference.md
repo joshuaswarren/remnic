@@ -913,8 +913,8 @@ FAISS notes:
 | `trustZoneRecallEnabled` | `false` | Inject prompt-relevant working and trusted trust-zone records into recall context |
 | `memoryPoisoningDefenseEnabled` | `false` | Enable deterministic provenance trust scoring and corroboration requirements for risky trusted promotions |
 | `memoryRedTeamBenchEnabled` | `false` | Enable typed `memory-red-team` benchmark packs and status accounting for poisoning-defense regression suites |
-| `harmonicRetrievalEnabled` | `false` | Enable harmonic retrieval blending over abstraction nodes and cue anchors, including the dedicated recall section and `harmonic-search` diagnostics |
-| `abstractionAnchorsEnabled` | `false` | Enable typed cue-anchor indexing for abstraction nodes and expose the anchor store through status tooling |
+| `harmonicRetrievalEnabled` | `false` | Enable harmonic retrieval and, with `abstractionAnchorsEnabled`, construct abstraction nodes after extraction |
+| `abstractionAnchorsEnabled` | `false` | Enable cue-anchor extraction, storage, status, and retrieval |
 | `abstractionNodeStoreDir` | `{memoryDir}/state/abstraction-nodes` | Root directory for abstraction-node artifacts |
 | `verifiedRecallEnabled` | `false` | Inject prompt-relevant memory boxes only when their cited source memories verify as non-archived episodes |
 | `semanticRulePromotionEnabled` | `false` | Enable deterministic promotion of explicit `IF ... THEN ...` rules from verified episodic memories via `openclaw engram semantic-rule-promote` |
@@ -951,8 +951,11 @@ Current foundation slice:
 - When `memoryPoisoningDefenseEnabled` is also on, `openclaw engram trust-zone-status` reports deterministic provenance trust scores derived from source class plus `sourceId` / `evidenceHash` / `sessionKey` anchors so later poisoning defenses can build on explicit signals instead of hidden heuristics.
 - With both `memoryPoisoningDefenseEnabled` and `quarantinePromotionEnabled` enabled, risky `working -> trusted` promotions now require at least one independent non-`quarantine` corroborating record with anchored provenance and overlapping `entityRefs` or `tags`.
 - When `memoryRedTeamBenchEnabled` is on, benchmark manifests can also declare `benchmarkType: "memory-red-team"` plus `attackClass` and `targetSurface`, and `openclaw engram benchmark-status` reports red-team pack counts and unique attack metadata.
-- When `harmonicRetrievalEnabled` is on, Remnic can persist typed abstraction nodes into a separate abstraction-node store for later harmonic retrieval slices.
-- When `abstractionAnchorsEnabled` is also on, Remnic can persist cue-anchor index entries under `{abstractionNodeStoreDir}/anchors` for entities, files, tools, outcomes, constraints, and dates.
+- With harmonic retrieval enabled, each extraction creates one episode node and one topic node per extracted entity. The anchor flag controls cue-anchor writes.
+- Construction includes only active persisted facts. It excludes facts held for review.
+- Each fact contributes up to three model cues. Its `entityRef` and `validAt` add deterministic entity and date cues.
+- Construction upserts records atomically in each writable namespace. Consolidation removes cue anchors that reference no live node.
+- Construction failures emit a warning and never fail fact persistence. Disabling harmonic retrieval prevents node writes. Disabling anchors prevents anchor writes.
 - When the harmonic retrieval section is enabled in the recall pipeline, Remnic can inject a dedicated `## Harmonic Retrieval` section that explains which abstraction nodes matched and which cue anchors contributed.
 - Use `openclaw engram abstraction-node-status` to inspect node storage, `openclaw engram cue-anchor-status` to inspect anchor counts and invalid index records, and `openclaw engram harmonic-search <query>` to preview blended harmonic retrieval matches.
 - When `verifiedRecallEnabled` is on, Remnic can inject a separate `## Verified Episodes` recall section sourced from recent memory boxes, but only when each surfaced box still cites at least one non-archived source memory whose `memoryKind` remains `episode`.

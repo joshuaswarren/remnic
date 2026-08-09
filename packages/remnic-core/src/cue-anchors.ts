@@ -1,6 +1,13 @@
+import { mkdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { mkdir, writeFile } from "node:fs/promises";
-import { listJsonFiles, readJsonFile } from "./json-store.js";
+import { resolveAbstractionNodeStoreDir, validateAbstractionNode } from "./abstraction-nodes.js";
+import {
+  listJsonFiles,
+  listJsonFilesStrict,
+  readJsonFile,
+  withJsonStoreMutationLock,
+  writeJsonFileAtomic,
+} from "./json-store.js";
 import {
   assertIsoRecordedAt,
   assertSafePathSegment,
@@ -62,10 +69,7 @@ function validateNodeRefs(raw: unknown): string[] {
   return nodeRefs.map((nodeRef, index) => assertSafePathSegment(nodeRef, `nodeRefs[${index}]`));
 }
 
-export function resolveCueAnchorStoreDir(
-  abstractionNodeStoreDir: string,
-  overrideDir?: string,
-): string {
+export function resolveCueAnchorStoreDir(abstractionNodeStoreDir: string, overrideDir?: string): string {
   if (typeof overrideDir === "string" && overrideDir.trim().length > 0) {
     return overrideDir.trim();
   }
@@ -106,6 +110,88 @@ export async function recordCueAnchor(options: {
   await mkdir(anchorDir, { recursive: true });
   await writeFile(filePath, JSON.stringify(validated, null, 2), "utf8");
   return filePath;
+}
+
+function mergeSortedValues(existing: string[] | undefined, incoming: string[] | undefined): string[] {
+  return [...new Set([...(existing ?? []), ...(incoming ?? [])])].sort((left, right) => left.localeCompare(right));
+}
+
+function isNotFoundError(error: unknown): boolean {
+  return (
+    typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "ENOENT"
+  );
+}
+
+export async function upsertCueAnchor(options: {
+  memoryDir: string;
+  abstractionNodeStoreDir?: string;
+  cueAnchorStoreDir?: string;
+  anchor: CueAnchor;
+}): Promise<string> {
+  const abstractionNodeStoreDir = resolveAbstractionNodeStoreDir(options.memoryDir, options.abstractionNodeStoreDir);
+  return withJsonStoreMutationLock(abstractionNodeStoreDir, async () => {
+    const rootDir = resolveCueAnchorStoreDir(abstractionNodeStoreDir, options.cueAnchorStoreDir);
+    const incoming = validateCueAnchor(options.anchor);
+    const filePath = path.join(rootDir, incoming.anchorType, `${incoming.anchorId}.json`);
+    let existing: CueAnchor | undefined;
+    try {
+      existing = validateCueAnchor(await readJsonFile(filePath));
+    } catch (error) {
+      if (!isNotFoundError(error)) throw error;
+    }
+    const newest =
+      !existing || Date.parse(existing.recordedAt) <= Date.parse(incoming.recordedAt) ? incoming : existing;
+    const older = newest === incoming ? existing : incoming;
+    const merged = validateCueAnchor({
+      ...newest,
+      nodeRefs: mergeSortedValues(existing?.nodeRefs, incoming.nodeRefs),
+      tags: mergeSortedValues(existing?.tags, incoming.tags),
+      metadata: {
+        ...(older?.metadata ?? {}),
+        ...(newest.metadata ?? {}),
+      },
+    });
+    await writeJsonFileAtomic(filePath, merged);
+    return filePath;
+  });
+}
+
+export async function pruneOrphanCueAnchors(options: {
+  memoryDir: string;
+  abstractionNodeStoreDir?: string;
+  cueAnchorStoreDir?: string;
+}): Promise<number> {
+  const abstractionNodeStoreDir = resolveAbstractionNodeStoreDir(options.memoryDir, options.abstractionNodeStoreDir);
+  return withJsonStoreMutationLock(abstractionNodeStoreDir, async () => {
+    const cueAnchorStoreDir = resolveCueAnchorStoreDir(abstractionNodeStoreDir, options.cueAnchorStoreDir);
+    const nodeIds = new Set<string>();
+    const nodeFiles = await listJsonFilesStrict(path.join(abstractionNodeStoreDir, "nodes"), {
+      allowMissingDirectory: true,
+    });
+    for (const filePath of nodeFiles) {
+      nodeIds.add(validateAbstractionNode(await readJsonFile(filePath)).nodeId);
+    }
+    let removed = 0;
+    const anchorFiles = await listJsonFilesStrict(cueAnchorStoreDir, {
+      allowMissingDirectory: true,
+    });
+    for (const filePath of anchorFiles) {
+      let anchor: CueAnchor;
+      try {
+        anchor = validateCueAnchor(await readJsonFile(filePath));
+      } catch {
+        continue;
+      }
+      if (anchor.nodeRefs.some((nodeRef) => nodeIds.has(nodeRef))) continue;
+      try {
+        await unlink(filePath);
+        removed++;
+      } catch (error) {
+        if (!isNotFoundError(error)) throw error;
+      }
+    }
+    return removed;
+  });
 }
 
 export async function getCueAnchorStoreStatus(options: {

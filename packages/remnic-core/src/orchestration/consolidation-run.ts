@@ -34,6 +34,7 @@ import { deindexMemoriesBatchAsync } from "../temporal-index-batch.js";
 import { isActiveMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import { propagateInvalidation } from "./dependency-propagation.js";
 import {
+  resolveCapabilities,
   resolveConsolidationCapabilities,
   resolveCreationMemoryCapabilities,
   resolveIndexingCapabilities,
@@ -43,6 +44,7 @@ import {
   resolveRecallEnhancementCapabilities,
   type MemoryLifecycleCapabilitySet,
 } from "../capabilities.js";
+import { pruneOrphanCueAnchors } from "../cue-anchors.js";
 import type { LifecyclePolicyCoordinator } from "./lifecycle-policy-coordinator.js";
 import type { CompressionGuidelineCoordinator } from "./compression-guideline-coordinator.js";
 import type { SemanticConsolidationCoordinator } from "./semantic-consolidation-coordinator.js";
@@ -124,6 +126,26 @@ export class ConsolidationRunCoordinator {
     // Flush access tracking buffer first
     if (this.deps.getAccessTrackingBuffer().size > 0) {
       await this.deps.flushAccessTracking();
+    }
+    if (
+      resolveCapabilities(config).harmonicRetrieval &&
+      resolveConsolidationCapabilities(config).abstractionAnchors
+    ) {
+      try {
+        const removed = await pruneOrphanCueAnchors({
+          memoryDir: storage.dir,
+          abstractionNodeStoreDir: config.abstractionNodeStoreDir,
+        });
+        if (removed > 0) {
+          log.info(`harmonic anchor prune removed ${removed} orphan(s)`);
+        }
+      } catch (error) {
+        log.warn(
+          `harmonic anchor prune failed open: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
     }
 
     let allMemories = await storage.readAllMemories();
