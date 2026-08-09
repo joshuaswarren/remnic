@@ -403,14 +403,13 @@ interface GraphFileMeta {
   ino: number;
 }
 
-interface ActivationPredecessor {
+export interface ActivationPredecessor {
   prev: string;
   edgeConfidence: number;
   graphType: GraphType;
 }
 
-
-function reconstructActivationPath(
+export function reconstructActivationPath(
   seed: string,
   candidate: string,
   predecessors: Map<string, ActivationPredecessor>,

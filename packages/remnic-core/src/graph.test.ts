@@ -4,7 +4,15 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { type GraphConfig, type GraphEdge, GraphIndex, graphFilePath, readEdges } from "./graph.js";
+import {
+  type ActivationPredecessor,
+  type GraphConfig,
+  type GraphEdge,
+  GraphIndex,
+  graphFilePath,
+  readEdges,
+  reconstructActivationPath,
+} from "./graph.js";
 
 function makeGraphConfig(): GraphConfig {
   return {
@@ -232,6 +240,44 @@ test("spreadingActivation path recording is deterministic and opt-in output stay
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
+});
+
+test("reconstructActivationPath returns a zero-hop path for a seed candidate", () => {
+  assert.deepEqual(reconstructActivationPath("seed", "seed", new Map(), 0), {
+    nodeIds: ["seed"],
+    edgeConfidences: [],
+    graphTypes: [],
+  });
+});
+
+test("reconstructActivationPath fails closed when a predecessor is missing", () => {
+  const predecessors = new Map<string, ActivationPredecessor>([
+    [
+      "seed\0candidate",
+      { prev: "middle", edgeConfidence: 0.8, graphType: "entity" },
+    ],
+  ]);
+
+  assert.equal(reconstructActivationPath("seed", "candidate", predecessors, 2), null);
+});
+
+test("reconstructActivationPath fails closed on a cycle beyond the step cap", () => {
+  const predecessors = new Map<string, ActivationPredecessor>([
+    [
+      "seed\0candidate",
+      { prev: "cycle-a", edgeConfidence: 0.8, graphType: "entity" },
+    ],
+    [
+      "seed\0cycle-a",
+      { prev: "cycle-b", edgeConfidence: 0.7, graphType: "time" },
+    ],
+    [
+      "seed\0cycle-b",
+      { prev: "cycle-a", edgeConfidence: 0.6, graphType: "causal" },
+    ],
+  ]);
+
+  assert.equal(reconstructActivationPath("seed", "candidate", predecessors, 4), null);
 });
 
 function makeEdge(
