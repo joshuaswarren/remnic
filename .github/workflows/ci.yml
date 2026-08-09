@@ -173,15 +173,17 @@ jobs:
     # remnic pool only for same-repo PRs and main-ref runs; workflow_dispatch
     # on any other ref stays on hosted runners (codex P2 on #1608).
     runs-on: ${{ ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name != 'pull_request' && github.ref == 'refs/heads/main')) && 'remnic' || 'ubuntu-latest' }}
-    timeout-minutes: 20
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - shard: root
             groups: '--group root --group misc'
+            timeout: 20
           - shard: packages
             groups: '--group packages'
+            timeout: 30
     name: tests (${{ matrix.shard }})
     steps:
       - name: Checkout
