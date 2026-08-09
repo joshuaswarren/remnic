@@ -3740,7 +3740,7 @@ export class RecallInternalCoordinator {
             const graphExpansion = await awaitAssemblyStep(
               "graph-expansion",
               () =>
-                this.deps.expandResultsViaGraph({
+                this.deps.graphRecallCoordinator.expandResultsViaGraph({
                   memoryResults,
                   recallNamespaces,
                   recallResultLimit,
@@ -3748,7 +3748,7 @@ export class RecallInternalCoordinator {
                   ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
                   ...(typeof options.asOf === "string" ? { asOf: options.asOf } : {}),
                 }),
-              null as Awaited<ReturnType<typeof this.deps.expandResultsViaGraph>> | null,
+              null as Awaited<ReturnType<typeof this.deps.graphRecallCoordinator.expandResultsViaGraph>> | null,
             );
             if (!graphExpansion) {
               graphSnapshotStatus = "aborted";

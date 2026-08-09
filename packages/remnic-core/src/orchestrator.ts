@@ -2551,25 +2551,6 @@ export class Orchestrator {
     );
   }
 
-  // Issue #1526 (seam 14): graph-recall expansion moved to
-  // GraphRecallCoordinator. Thin delegation keeps the private API stable
-  // for callers (recallInternal, cold-fallback pipeline) + tests.
-  private async expandResultsViaGraph(options: {
-    memoryResults: QmdSearchResult[];
-    recallNamespaces: string[];
-    recallResultLimit: number;
-    deadlineAtMs?: number | null;
-    includeLowConfidence?: boolean;
-    asOf?: string;
-    asOfMs?: number;
-  }): Promise<{
-    merged: QmdSearchResult[];
-    seedPaths: string[];
-    expandedPaths: GraphRecallExpandedEntry[];
-    seedResults: QmdSearchResult[];
-  }> {
-    return this.graphRecallCoordinator.expandResultsViaGraph(options);
-  }
   private async recordLastGraphRecallSnapshot(options: {
     storage: StorageManager;
     prompt: string;
