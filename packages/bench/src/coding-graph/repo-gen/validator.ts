@@ -50,6 +50,14 @@ export { unresolvedHelperImports } from "./import-scanner.js";
 
 const MAX_CHECK_OUTPUT_CHARS = 512;
 
+// Memoize the expensive fixed-dataset validation. The H6 fixture is frozen
+// (H6_FROZEN_INVENTORY_HASH), so the validation report is deterministic for
+// any given dataset content. Negative tests mutate the dataset inline and
+// expect a fresh report; they do not recompute the inventoryHash field, so
+// keying the cache by the JSON content hash (computeH6InventoryHash) is the
+// only safe choice — the field is unchanged but the content differs.
+const cachedDatasetValidations = new Map<string, Promise<ValidationReport>>();
+
 const EXPECTED_CANDIDATE_DESCRIPTIONS: Readonly<Record<string, string>> = {
   "candidate-alpha": "Candidate alpha.",
   "candidate-beta": "Candidate beta.",
@@ -242,7 +250,10 @@ export async function validateH6Dataset(
   }
 
   const { inventoryHash, ...hashableDataset } = schemaParse.data;
-  if (computeH6InventoryHash(hashableDataset) !== inventoryHash) {
+  const contentHash = computeH6InventoryHash(hashableDataset);
+  const cached = cachedDatasetValidations.get(contentHash);
+  if (cached) return cached;
+  if (contentHash !== inventoryHash) {
     issues.push({
       code: "INVENTORY_HASH_MISMATCH",
       message: "Dataset inventory hash does not match its generated contents",
@@ -765,7 +776,7 @@ export async function validateH6Dataset(
     }
   }
 
-  return {
+  const report: ValidationReport = {
     valid: issues.length === 0,
     issues,
     metrics: {
@@ -778,6 +789,8 @@ export async function validateH6Dataset(
       mainTaskCount: mainCount,
     },
   };
+  cachedDatasetValidations.set(contentHash, Promise.resolve(report));
+  return report;
 }
 
 type FixtureArtifact = { path: string; content: string };

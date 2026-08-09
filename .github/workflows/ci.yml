@@ -180,8 +180,10 @@ jobs:
         include:
           - shard: root
             groups: '--group root --group misc'
-          - shard: packages
-            groups: '--group packages'
+          - shard: packages-1
+            groups: '--group packages --shard 1/2'
+          - shard: packages-2
+            groups: '--group packages --shard 2/2'
     name: tests (${{ matrix.shard }})
     steps:
       - name: Checkout
