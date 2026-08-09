@@ -141,17 +141,19 @@ export async function applyPatchAndCommit(
   return git(["rev-parse", "HEAD"]);
 }
 
+export interface RevisionShas {
+  cleanSha: string;
+  trapSha: string;
+  rightSha: string;
+  noTrapSha: string;
+}
+
 export async function computeRevisionShas(
   cleanFiles: SyntheticFile[],
   badPatchFiles: SyntheticFile[],
   goodPatchFiles: SyntheticFile[],
   noTrapFiles: SyntheticFile[],
-): Promise<{
-  cleanSha: string;
-  trapSha: string;
-  rightSha: string;
-  noTrapSha: string;
-}> {
+): Promise<RevisionShas> {
   assertSafeSyntheticFiles(cleanFiles);
   assertSafeSyntheticFiles(badPatchFiles);
   assertSafeSyntheticFiles(goodPatchFiles);

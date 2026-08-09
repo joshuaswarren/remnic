@@ -631,6 +631,22 @@ export function countFactTokens(
     .length;
 }
 
+type OfflineCheckProcessResult = {
+  exitCode: number;
+  output: string;
+  launchErrorCode?: string;
+};
+type OfflineNamespaceLauncher = "unprivileged" | "sudo";
+
+let offlineNamespaceLauncher: OfflineNamespaceLauncher | undefined;
+
+function namespaceLaunchFailed(result: OfflineCheckProcessResult): boolean {
+  return result.launchErrorCode === "EACCES"
+    || result.launchErrorCode === "ENOENT"
+    || result.launchErrorCode === "EPERM"
+    || (result.exitCode !== 0 && /^(?:sudo|unshare):/m.test(result.output));
+}
+
 function nodePermissionFlag(): "--experimental-permission" | "--permission" {
   const [majorText, minorText] = process.versions.node.split(".");
   const major = Number(majorText);
@@ -643,25 +659,62 @@ function nodePermissionFlag(): "--experimental-permission" | "--permission" {
     : "--experimental-permission";
 }
 
+async function executeInOfflineNamespace(
+  repoDir: string,
+  nodeArgs: readonly string[],
+): Promise<OfflineCheckProcessResult> {
+  if (offlineNamespaceLauncher === "unprivileged") {
+    return executeOfflineCheckFile(
+      "/usr/bin/unshare",
+      ["--user", "--map-root-user", "--net", ...nodeArgs],
+      repoDir,
+    );
+  }
+  if (offlineNamespaceLauncher === "sudo") {
+    return executeOfflineCheckFile(
+      "/usr/bin/sudo",
+      ["--non-interactive", "/usr/bin/unshare", "--net", ...nodeArgs],
+      repoDir,
+    );
+  }
+
+  const unprivilegedResult = await executeOfflineCheckFile(
+    "/usr/bin/unshare",
+    ["--user", "--map-root-user", "--net", ...nodeArgs],
+    repoDir,
+  );
+  if (!namespaceLaunchFailed(unprivilegedResult)) {
+    offlineNamespaceLauncher = "unprivileged";
+    return unprivilegedResult;
+  }
+
+  const sudoResult = await executeOfflineCheckFile(
+    "/usr/bin/sudo",
+    ["--non-interactive", "/usr/bin/unshare", "--net", ...nodeArgs],
+    repoDir,
+  );
+  if (namespaceLaunchFailed(sudoResult)) {
+    throw new Error("frozen offline checks require an available network namespace");
+  }
+  offlineNamespaceLauncher = "sudo";
+  return sudoResult;
+}
+
 export async function runOfflineCheck(repoDir: string, task: BaseTask): Promise<CheckExecution> {
   if (task.checkCommand !== "node test/check.js") {
     throw new Error("task check command is not the frozen offline check");
   }
   if (process.platform !== "linux") {
-    throw new Error("frozen offline checks require Linux user and network namespaces");
+    throw new Error("frozen offline checks require Linux network namespaces");
   }
-  const result = await executeOfflineCheckFile(
-    "/usr/bin/unshare",
+  const result = await executeInOfflineNamespace(
+    repoDir,
     [
-      "--user",
-      "--map-root-user",
-      "--net",
       process.execPath,
       nodePermissionFlag(),
       `--allow-fs-read=${repoDir}`,
       "test/check.js",
     ],
-    repoDir,
   );
   const state: CheckExecution["state"] = result.exitCode === 0
     ? "FIXED"
@@ -677,8 +730,8 @@ function executeOfflineCheckFile(
   command: string,
   args: readonly string[],
   cwd: string,
-): Promise<{ exitCode: number; output: string }> {
-  const { promise, resolve } = Promise.withResolvers<{ exitCode: number; output: string }>();
+): Promise<OfflineCheckProcessResult> {
+  const { promise, resolve } = Promise.withResolvers<OfflineCheckProcessResult>();
   execFile(command, [...args], {
     cwd,
     encoding: "utf8",
@@ -695,7 +748,12 @@ function executeOfflineCheckFile(
   }, (error, stdout, stderr) => {
     const errorCode = (error as unknown as { code?: unknown } | null)?.code;
     const exitCode = typeof errorCode === "number" ? errorCode : error ? 255 : 0;
-    resolve({ exitCode, output: `${stdout}${stderr}`.slice(0, 65_536) });
+    const launchErrorCode = typeof errorCode === "string" ? errorCode : undefined;
+    resolve({
+      exitCode,
+      output: `${stdout}${stderr}`.slice(0, 65_536),
+      ...(launchErrorCode ? { launchErrorCode } : {}),
+    });
   });
   return promise;
 }

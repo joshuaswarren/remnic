@@ -157,22 +157,20 @@ jobs:
       - name: Docs-code parity
         run: node scripts/check-docs-parity.mjs
 
-  # The root suite (895 files) sharded by pattern group so shards run in
-  # parallel. TEST_PATTERN_GROUPS in scripts/root-test-runner-lib.mjs is an
-  # exact partition of TEST_PATTERNS (enforced by test), so the union of the
-  # shards below is exactly the unsharded suite.
+  # The root/misc suite runs on a hosted runner. Package tests use two
+  # deterministic file shards on the self-hosted pool when it is safe.
+  # selectTestShard is an exact partition (enforced by test), so the package
+  # pair's union is exactly its unsharded suite.
   #
-  # Runner selection (public repo, self-hosted safety): the self-hosted
-  # `remnic` pool (jarvis CTs 340-342, homelab-infra) only serves pushes to
-  # main and SAME-REPO pull requests. Fork PRs — even ones whose workflows a
-  # maintainer approved — run on GitHub-hosted runners so external code can
-  # never execute on homelab hardware. Pool down? Temporarily replace the
+  # Runner selection (public repo, self-hosted safety): the `remnic` pool only
+  # serves package tests on pushes to main and manual runs from main. Every pull
+  # request runs on GitHub-hosted runners. Pool down? Temporarily replace the
   # expression with 'ubuntu-latest'.
   tests:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    # remnic pool only for same-repo PRs and main-ref runs; workflow_dispatch
-    # on any other ref stays on hosted runners (codex P2 on #1608).
-    runs-on: ${{ ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name != 'pull_request' && github.ref == 'refs/heads/main')) && 'remnic' || 'ubuntu-latest' }}
+    # Root and pull request jobs stay hosted. Trusted main runs may use the
+    # self-hosted pool for package tests.
+    runs-on: ${{ (matrix.shard != 'root' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') && 'remnic' || 'ubuntu-latest' }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -180,8 +178,10 @@ jobs:
         include:
           - shard: root
             groups: '--group root --group misc'
-          - shard: packages
-            groups: '--group packages'
+          - shard: packages-1
+            groups: '--group packages --shard 1/2'
+          - shard: packages-2
+            groups: '--group packages --shard 2/2'
     name: tests (${{ matrix.shard }})
     steps:
       - name: Checkout
