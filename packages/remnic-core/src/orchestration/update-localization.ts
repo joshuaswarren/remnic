@@ -1,8 +1,29 @@
 import type { MemoryFile } from "../types.js";
+import { lookupAttributeByNormalizedKey, normalizeSupersessionKey } from "../temporal-supersession.js";
+
 export interface UpdateLocalizationStorage {
   readAllMemories(): Promise<MemoryFile[]>;
+  readAllColdMemories?: () => Promise<MemoryFile[]>;
 }
-import { lookupAttributeByNormalizedKey } from "../temporal-supersession.js";
+
+export function mergeMemorySnapshots(hot: MemoryFile[], cold: MemoryFile[]): MemoryFile[] {
+  const merged: MemoryFile[] = [];
+  const indexById = new Map<string, number>();
+  for (const memory of [...hot, ...cold]) {
+    const id = memory.frontmatter.id;
+    const existingIndex = indexById.get(id);
+    if (existingIndex === undefined) {
+      indexById.set(id, merged.length);
+      merged.push(memory);
+      continue;
+    }
+    const existing = merged[existingIndex];
+    if (existing.frontmatter.status !== "active" && memory.frontmatter.status === "active") {
+      merged[existingIndex] = memory;
+    }
+  }
+  return merged;
+}
 
 export interface UpdateAnchor {
   entityRef?: string;
@@ -38,6 +59,12 @@ export interface UpdateLocalizationDeps {
 
 function cap(value: number): number {
   return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+}
+
+function normalizeEntityRef(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = normalizeSupersessionKey(value);
+  return normalized.length > 0 ? normalized : undefined;
 }
 
 function compareCandidates(left: LocalizedCandidate, right: LocalizedCandidate): number {
@@ -85,12 +112,15 @@ export async function localizeUpdateCandidates(
   const anchorLimit = cap(options.anchorCandidates);
   const searchLimit = cap(options.searchCandidates);
   const anchorCandidates: LocalizedCandidate[] = [];
-
-  if (anchor.entityRef && anchorLimit > 0) {
-    const memories = await deps.storage.readAllMemories();
+  const normalizedAnchorEntityRef = normalizeEntityRef(anchor.entityRef);
+  if (normalizedAnchorEntityRef !== undefined && anchorLimit > 0) {
+    const hot = await deps.storage.readAllMemories();
+    const cold = deps.storage.readAllColdMemories ? await deps.storage.readAllColdMemories() : [];
+    const memories = mergeMemorySnapshots(hot, cold);
     for (const memory of memories) {
       if (memory.frontmatter.status !== "active") continue;
-      if (memory.frontmatter.entityRef !== anchor.entityRef) continue;
+      const normalizedCandidateEntityRef = normalizeEntityRef(memory.frontmatter.entityRef);
+      if (normalizedCandidateEntityRef !== normalizedAnchorEntityRef) continue;
       if (memory.frontmatter.category !== anchor.category) continue;
       anchorCandidates.push(toAnchorCandidate(memory, anchor));
     }

@@ -2588,3 +2588,9 @@ test("parseConfig parses contradictionLocalization defaults, string booleans, an
     /contradictionLocalization\.maxCandidates/,
   );
 });
+test("parseConfig rejects array contradictionLocalization values", () => {
+  assert.throws(
+    () => parseConfig({ contradictionLocalization: [] }),
+    /contradictionLocalization must be an object/,
+  );
+});

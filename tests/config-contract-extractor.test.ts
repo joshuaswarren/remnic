@@ -31,6 +31,27 @@ function extractFixture() {
     ],
   });
 }
+function extractLocalFunctionFixture(entryFunction = "parseFixtureLocalFunctionConfig") {
+  return extractParsedKeyPaths({
+    repoRoot: REPO_ROOT,
+    entryFile: path.join(FIXTURES, "local-function.ts"),
+    entryFunction,
+  });
+}
+
+test("local function parser reads bind literal calls once and reports unbound calls", () => {
+  const { keys, unparseable } = extractLocalFunctionFixture();
+  assert.ok(keys.includes("literal"), "literal key must bind through the local helper");
+  assert.equal(keys.filter((key) => key === "literal").length, 1, "duplicate literal calls must not revisit");
+  assert.equal(keys.some((key) => key === "variable" || key === "computed"), false);
+  const computedReads = unparseable.filter((entry) => entry.reason.includes("computed element access"));
+  assert.equal(computedReads.length, 1, JSON.stringify(unparseable));
+});
+
+test("local helper parameters shadow aliases without losing literal reads", () => {
+  const { keys } = extractLocalFunctionFixture("parseFixtureShadowedAlias");
+  assert.ok(keys.includes("enabled"), JSON.stringify(keys));
+});
 
 test("hand-rolled fixture: aliases, coercion helpers, nested blocks, and destructuring all resolve", () => {
   const { keys } = extractFixture();

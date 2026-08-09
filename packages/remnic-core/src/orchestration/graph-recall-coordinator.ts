@@ -4,10 +4,10 @@
  * Owns the graph-expansion subsystem in recall: spreading-activation
  * traversal from seed memories, seed-path resolution relative to
  * per-namespace storage, and the last-graph-recall snapshot persistence.
- * Behavior-preserving move from orchestrator.ts — no logic changes; the
- * orchestrator constructs one instance and keeps thin delegating methods so
- * existing call sites (recallInternal, cold-fallback pipeline) continue to
- * work.
+ * Behavior-preserving move from orchestrator.ts with bounded graph-state
+ * lookups and optional path scoring. The orchestrator constructs one instance
+ * and keeps thin delegating methods so existing call sites (recallInternal,
+ * cold-fallback pipeline) continue to work.
  *
  * Config, storage, graph index, namespace resolution, and QMD result
  * resolution are accessed through getter callbacks (not captured at
@@ -27,8 +27,9 @@ import type { StorageManager } from "../index.js";
 import type { GraphIndex } from "../graph.js";
 import type { GraphRecallExpandedEntry } from "../recall-state.js";
 import { clampGraphRecallExpandedEntries } from "../recall-state.js";
+import { scoreEvidencePathDetail, type PathNodeState } from "../graph-path-scoring.js";
+import { GraphPathStateLoader } from "./graph-path-state-loader.js";
 import { qmdCollectionPathParts } from "./qmd-result-resolver.js";
-import { scoreEvidencePath, type PathNodeState } from "../graph-path-scoring.js";
 import { log } from "../logger.js";
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -140,7 +141,7 @@ export class GraphRecallCoordinator {
     recallNamespaces: readonly string[],
     preferredNamespace?: string,
   ) => Promise<MemoryFile | null>;
-
+  private readonly graphPathStateLoader = new GraphPathStateLoader();
   constructor(options: {
     getConfig: () => PluginConfig;
     getStorage: () => StorageManager;
@@ -174,6 +175,7 @@ export class GraphRecallCoordinator {
     this.readQmdResultMemory = options.readQmdResultMemory;
   }
 
+
   async expandResultsViaGraph(options: {
     memoryResults: QmdSearchResult[];
     recallNamespaces: string[];
@@ -191,6 +193,14 @@ export class GraphRecallCoordinator {
     seedResults: QmdSearchResult[];
   }> {
     const config = this.getConfig();
+    const parsedAsOfMs =
+      typeof options.asOf === "string" ? Date.parse(options.asOf) : Number.NaN;
+    const effectiveAsOfMs = Number.isFinite(parsedAsOfMs)
+      ? parsedAsOfMs
+      : typeof options.asOfMs === "number" && Number.isFinite(options.asOfMs)
+        ? options.asOfMs
+        : Date.now();
+    const effectiveAsOf = new Date(effectiveAsOfMs).toISOString();
     const deadlineExpired = (): boolean =>
       typeof options.deadlineAtMs === "number" &&
       Date.now() >= options.deadlineAtMs;
@@ -279,6 +289,10 @@ export class GraphRecallCoordinator {
 
     const perNamespaceSeedCap = Math.max(3, options.recallResultLimit);
     const perNamespaceExpandedCap = Math.max(8, options.recallResultLimit * 2);
+    const graphPathStateLoadLimit = Math.min(
+      200,
+      perNamespaceExpandedCap + Math.max(8, perNamespaceExpandedCap * 4),
+    );
     const seedPaths: string[] = [];
     const seedResults: QmdSearchResult[] = [];
     const expandedPaths: GraphRecallExpandedEntry[] = [];
@@ -337,7 +351,12 @@ export class GraphRecallCoordinator {
         for (const candidate of expanded.slice(0, perNamespaceExpandedCap)) {
           if (deadlineExpired()) break;
           if (seedSet.has(candidate.path)) continue;
-          const memory = await storage.readMemoryByPath(path.resolve(storage.dir, candidate.path));
+          const memory = await this.graphPathStateLoader.readNode(
+            storage,
+            candidate.path,
+            options.deadlineAtMs,
+            false,
+          );
           if (deadlineExpired()) break;
           if (!memory) continue;
           if (/(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(memory.path)) continue;
@@ -369,14 +388,8 @@ export class GraphRecallCoordinator {
         }
         continue;
       }
-      const corpusByPath = new Map<string, MemoryFile>();
       const nodeStates = new Map<string, PathNodeState>();
-      const [hotMemories, coldMemories, archivedMemories] = await Promise.all([
-        storage.readAllMemories(),
-        storage.readAllColdMemories(),
-        storage.readArchivedMemories(),
-      ]);
-      const addState = (memory: MemoryFile): void => {
+      const addState = (memory: MemoryFile): PathNodeState => {
         const relativePath = graphPathRelativeToStorage(storage.dir, memory.path);
         const state: PathNodeState = {
           id: memory.frontmatter.id,
@@ -391,34 +404,22 @@ export class GraphRecallCoordinator {
           add(relativePath);
           if (relativePath.endsWith(".md")) add(path.basename(relativePath, ".md"));
         }
+        return state;
       };
-      const addCorpusMemory = (memory: MemoryFile): void => {
-        const relativePath = graphPathRelativeToStorage(storage.dir, memory.path);
-        const add = (key: string): void => {
-          if (!corpusByPath.has(key)) corpusByPath.set(key, memory);
-        };
-        add(memory.frontmatter.id);
-        add(memory.path);
-        if (relativePath) {
-          add(relativePath);
-          if (relativePath.endsWith(".md")) add(path.basename(relativePath, ".md"));
-        }
-      };
-      for (const memory of [...hotMemories, ...coldMemories, ...archivedMemories]) {
-        addState(memory);
-        addCorpusMemory(memory);
-      }
 
       const scoredExpanded: Array<{
         result: QmdSearchResult;
         entry: GraphRecallExpandedEntry;
       }> = [];
-      for (const candidate of expanded) {
+      for (const candidate of expanded.slice(0, graphPathStateLoadLimit)) {
         if (deadlineExpired()) break;
         if (seedSet.has(candidate.path)) continue;
-        const memory =
-          corpusByPath.get(candidate.path) ??
-          corpusByPath.get(path.resolve(storage.dir, candidate.path));
+        const memory = await this.graphPathStateLoader.readNode(
+          storage,
+          candidate.path,
+          options.deadlineAtMs,
+          true,
+        );
         if (deadlineExpired()) break;
         if (!memory) continue;
         if (/(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(memory.path)) continue;
@@ -426,28 +427,29 @@ export class GraphRecallCoordinator {
 
         if (candidate.activationPath) {
           for (const nodeId of candidate.activationPath.nodeIds.slice(1, -1)) {
-            const graphNodeState =
-              nodeStates.get(nodeId) ??
-              (nodeId.endsWith(".md")
-                ? nodeStates.get(path.basename(nodeId, ".md"))
-                : undefined);
-            if (graphNodeState && !nodeStates.has(nodeId)) {
-              nodeStates.set(nodeId, { ...graphNodeState, id: nodeId });
-            }
-            if (!nodeStates.has(nodeId)) {
+            if (deadlineExpired()) break;
+            const intermediate = await this.graphPathStateLoader.readNode(
+              storage,
+              nodeId,
+              options.deadlineAtMs,
+              true,
+            );
+            if (deadlineExpired()) break;
+            if (!intermediate) {
               log.debug(`graph path scoring missing intermediate memory state: ${nodeId}`);
+              continue;
             }
+            const state = addState(intermediate);
+            nodeStates.set(nodeId, { ...state, id: nodeId });
           }
+          if (deadlineExpired()) break;
         }
-        const pathScoreMultiplier = scoreEvidencePath(
+
+        const pathScoreDetail = scoreEvidencePathDetail(
           candidate.activationPath ?? null,
           nodeStates,
           {
-            asOf:
-              options.asOf ??
-              (typeof options.asOfMs === "number"
-                ? new Date(options.asOfMs).toISOString()
-                : new Date().toISOString()),
+            asOf: effectiveAsOf,
             invalidNodePenalty: config.graphPathScoring.invalidNodePenalty,
           },
         );
@@ -458,7 +460,7 @@ export class GraphRecallCoordinator {
           blendMin: config.graphExpansionBlendMin,
           blendMax: config.graphExpansionBlendMax,
         });
-        const score = blendedScore * pathScoreMultiplier;
+        const score = blendedScore * pathScoreDetail.score;
         const entry: GraphRecallExpandedEntry = {
           path: memory.path,
           score,
@@ -468,7 +470,7 @@ export class GraphRecallCoordinator {
           decayedWeight: candidate.decayedWeight,
           graphType: candidate.graphType,
           edgeConfidence: candidate.edgeConfidence,
-          pathPenaltyApplied: pathScoreMultiplier < 1,
+          pathPenaltyApplied: pathScoreDetail.pathPenaltyApplied,
           ...(config.graphPathScoring.includePathInProvenance &&
           candidate.activationPath
             ? { pathNodeIds: candidate.activationPath.nodeIds }
@@ -481,7 +483,7 @@ export class GraphRecallCoordinator {
             namespace,
             snippet: memory.content.slice(0, 400),
             score,
-            pathPenaltyApplied: pathScoreMultiplier < 1,
+            pathPenaltyApplied: pathScoreDetail.pathPenaltyApplied,
             ...(config.graphPathScoring.includePathInProvenance &&
             candidate.activationPath
               ? { pathNodeIds: candidate.activationPath.nodeIds }

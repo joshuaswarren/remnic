@@ -3909,7 +3909,7 @@ export class Orchestrator {
     storage: StorageManager,
     newMemoryId: string,
     postWriteGuard: boolean,
-  ): Promise<void> {
+  ): Promise<boolean> {
     return this.contradictionLinkingCoordinator.applyDeferredContradictionResolve(
       contradiction,
       storage,

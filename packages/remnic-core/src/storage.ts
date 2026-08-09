@@ -6987,17 +6987,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       .sort((a, b) => (a.frontmatter.chunkIndex ?? 0) - (b.frontmatter.chunkIndex ?? 0));
   }
 
-  // ---------------------------------------------------------------------------
-  // Contradiction Detection (Phase 2B)
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Mark a memory as superseded by another.
-   * Updates the old memory's status and adds the supersededBy link.
-   */
   async supersedeMemory(oldMemoryId: string, newMemoryId: string, reason: string): Promise<boolean> {
     const memories = await this.readAllMemories();
-    const oldMemory = memories.find((m) => m.frontmatter.id === oldMemoryId);
+    let oldMemory = memories.find((m) => m.frontmatter.id === oldMemoryId);
+    if (!oldMemory) {
+      oldMemory = (await this.readAllColdMemories()).find((m) => m.frontmatter.id === oldMemoryId);
+    }
     if (!oldMemory) return false;
 
     const now = new Date().toISOString();
@@ -7007,6 +7002,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     try {
       const written = await this.withTombstoneBlockedMemoryPathLock(oldMemory.path, async (current) => {
         if (current?.frontmatter.id !== oldMemoryId) return false;
+        if (
+          current.frontmatter.supersededBy !== undefined ||
+          (current.frontmatter.status !== undefined && current.frontmatter.status !== "active")
+        ) {
+          return false;
+        }
         currentBefore = current;
         const refIdsAtWrite = this.currentHistoricalIds();
         updatedFm = entityRefs.canonicalizeEntityRefOption(
@@ -7028,11 +7029,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         return true;
       });
       if (!written) return false;
-      // Advance the corpus sentinel immediately after the on-disk write, BEFORE
-      // the awaited lifecycle append (Cursor Medium, #1902). Otherwise a warm
-      // hot-memories cache keeps serving the pre-supersede snapshot during the
-      // await window; bumpMemoryStatusVersion() below additionally invalidates
-      // the entity cache for the status change.
+      if (this.isColdOrArchiveTierPath(currentBefore.path)) {
+        this.invalidateColdMemoriesCache();
+      }
+      // Bump the corpus sentinel before lifecycle I/O so caches cannot serve stale data.
       this.bumpMemoryCorpusVersion();
       await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.supersedeMemory", {
         memoryId: oldMemoryId,
@@ -7047,10 +7047,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       this.bumpMemoryStatusVersion();
       log.debug(`superseded memory ${oldMemoryId} by ${newMemoryId}: ${reason}`);
 
-      // #1579 — every contradiction verb (keep-a/keep-b/merge) funnels here,
-      // so emitting covers each exactly once (rule 22); facts only. One
-      // tombstone PER derived supersession key (thread Oci-Y) so a
-      // paraphrased re-write is caught on the keyed tier.
+      // Emit one fact tombstone per derived supersession key.
       if (currentBefore.frontmatter.category === "fact") {
         for (const input of buildRetiredFactTombstoneInputs(
           {

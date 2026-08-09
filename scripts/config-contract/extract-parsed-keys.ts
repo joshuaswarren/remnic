@@ -225,10 +225,41 @@ function extractParserKeys(
   // literal key name at each call site (for example, parseCap("maxCandidates")).
   const localFunctions = new Map<
     string,
-    ts.ArrowFunction | ts.FunctionExpression
+    {
+      fn: ts.ArrowFunction | ts.FunctionExpression;
+      literalBindings: Set<string>;
+      unboundVisited: boolean;
+    }
   >();
 
   aliases.set(param.name.text, { prefix: [] });
+  const visitLocalFunctionBody = (
+    localFunction: {
+      fn: ts.ArrowFunction | ts.FunctionExpression;
+      literalBindings: Set<string>;
+      unboundVisited: boolean;
+    },
+    literalKey?: string,
+  ): void => {
+    const keyParameter = localFunction.fn.parameters[0]?.name;
+    if (!keyParameter || !ts.isIdentifier(keyParameter)) return;
+    const previousAlias = aliases.get(keyParameter.text);
+    aliases.delete(keyParameter.text);
+    const previousBinding = literalBindings.get(keyParameter.text);
+    if (literalKey !== undefined) literalBindings.set(keyParameter.text, literalKey);
+    visit(localFunction.fn.body);
+    if (previousBinding === undefined) {
+      literalBindings.delete(keyParameter.text);
+    } else {
+      literalBindings.set(keyParameter.text, previousBinding);
+    }
+    if (previousAlias === undefined) {
+      aliases.delete(keyParameter.text);
+    } else {
+      aliases.set(keyParameter.text, previousAlias);
+    }
+  };
+
 
   const recordKey = (aliasPrefix: string[], key: string): void => {
     out.keys.add([...prefix, ...aliasPrefix, key].join("."));
@@ -421,14 +452,22 @@ function extractParserKeys(
       }
     }
     // Register local function expressions before their bodies are visited.
-    // Their bodies are revisited at each call site with literal bindings.
+    // Their bodies are revisited at each distinct literal call site.
     if (
       ts.isVariableDeclaration(node) &&
       ts.isIdentifier(node.name) &&
       node.initializer &&
       (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
     ) {
-      localFunctions.set(node.name.text, node.initializer);
+      const localParameter = node.initializer.parameters[0]?.name;
+      if (!localParameter || !ts.isIdentifier(localParameter)) {
+        return;
+      }
+      localFunctions.set(node.name.text, {
+        fn: node.initializer,
+        literalBindings: new Set<string>(),
+        unboundVisited: false,
+      });
       return;
     }
     // Alias creation: const X = <expr resolving to alias(+segments)>
@@ -570,27 +609,28 @@ function extractParserKeys(
         return;
       }
     }
-
     if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
       const localFunction = localFunctions.get(node.expression.text);
-      if (localFunction) {
-        const keyParameter = localFunction.parameters[0]?.name;
-        if (keyParameter && ts.isIdentifier(keyParameter)) {
-          const keyArgument = node.arguments[0];
-          if (keyArgument && ts.isStringLiteral(keyArgument)) {
-            const previousBinding = literalBindings.get(keyParameter.text);
-            literalBindings.set(keyParameter.text, keyArgument.text);
-            ts.forEachChild(localFunction.body, visit);
-            if (previousBinding === undefined) {
-              literalBindings.delete(keyParameter.text);
-            } else {
-              literalBindings.set(keyParameter.text, previousBinding);
-            }
-            return;
-          }
+      const keyParameter = localFunction?.fn.parameters[0]?.name;
+      if (localFunction && keyParameter && ts.isIdentifier(keyParameter)) {
+        const keyArgument = node.arguments[0];
+        const hasLiteralBinding =
+          keyArgument !== undefined &&
+          ts.isStringLiteral(keyArgument);
+        if (hasLiteralBinding) {
+          const literalKey = keyArgument.text;
+          if (localFunction.literalBindings.has(literalKey)) return;
+          localFunction.literalBindings.add(literalKey);
+          visitLocalFunctionBody(localFunction, literalKey);
+          return;
+        }
+        if (!localFunction.unboundVisited) {
+          localFunction.unboundVisited = true;
+          visitLocalFunctionBody(localFunction);
         }
       }
     }
+
 
     // Helper delegation: `helperFn(alias.sub, …)` — the helper reads keys
     // of the sub-block, so recurse into its body with the sub-path prefix
@@ -680,6 +720,19 @@ function extractParserKeys(
   // value-member calls to ambiguousValueMembers instead of recording a false
   // `item.trim` key. Block bodies fall through to forEachChild unchanged.
   visit(fn.body);
+  for (const localFunction of localFunctions.values()) {
+    const keyParameter = localFunction.fn.parameters[0]?.name;
+    if (
+      localFunction.unboundVisited ||
+      localFunction.literalBindings.size > 0 ||
+      !keyParameter ||
+      !ts.isIdentifier(keyParameter)
+    ) {
+      continue;
+    }
+    localFunction.unboundVisited = true;
+    visitLocalFunctionBody(localFunction);
+  }
 
   // Zod arm: static walk of z.object({ … }) literals in the body.
   extractZodObjectKeys(fn.body, prefix, out);

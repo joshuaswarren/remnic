@@ -53,6 +53,7 @@ export interface ExtractionPersistDeps {
     anchor?: {
       entityRef?: string;
       structuredAttributes?: Record<string, string>;
+      storageSnapshot?: MemoryFile[];
     }
   ) => Promise<{
     supersededId: string;
@@ -76,7 +77,7 @@ export interface ExtractionPersistDeps {
     storage: StorageManager,
     newMemoryId: string,
     postWriteGuard: boolean
-  ) => Promise<void>;
+  ) => Promise<boolean>;
   suggestLinksForMemory: (content: string, category: string, namespaceScope: string) => Promise<MemoryLink[]>;
   storageDirNamespace: (storageDir: string) => string;
   indexPersistedMemory: (storage: StorageManager, memoryId: string) => Promise<void>;

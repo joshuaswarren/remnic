@@ -191,6 +191,17 @@ test("renderXrayText matches golden output for a full snapshot", () => {
   assert.equal(out, expected);
 });
 
+test("renderers omit disabled graph path penalty and node fields", () => {
+  const text = renderXrayText(fullSnapshot());
+  const markdown = renderXrayMarkdown(fullSnapshot());
+  for (const output of [text, markdown]) {
+    assert.equal(output.includes("path-penalty"), false);
+    assert.equal(output.includes("path-node-ids"), false);
+    assert.equal(output.includes("Path penalty"), false);
+    assert.equal(output.includes("Path node ids"), false);
+  }
+});
+
 test("renderXrayText handles the minimal/empty case", () => {
   const out = renderXrayText(minimalSnapshot());
   const expected = [

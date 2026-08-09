@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -107,10 +107,15 @@ function makeCoordinator(
   config: PluginConfig,
   fixtures: Map<string, NamespaceFixture>,
   readAllMemoriesCalls?: { count: number },
+  graphIndexes?: Map<string, GraphIndex>,
 ): GraphRecallCoordinator {
   const indexes = new Map<string, GraphIndex>();
   for (const fixture of fixtures.values()) {
-    indexes.set(fixture.dir, new GraphIndex(fixture.dir, config as unknown as GraphConfig));
+    indexes.set(
+      fixture.dir,
+      graphIndexes?.get(fixture.dir) ??
+        new GraphIndex(fixture.dir, config as unknown as GraphConfig),
+    );
     if (readAllMemoriesCalls) {
       const originalHot = fixture.storage.readAllMemories.bind(fixture.storage);
       fixture.storage.readAllMemories = async (...args: Parameters<StorageManager["readAllMemories"]>) => {
@@ -133,8 +138,16 @@ function makeCoordinator(
   return new GraphRecallCoordinator({
     getConfig: () => config,
     getStorage: () => defaultFixture.storage,
-    storageFor: async (namespace) => fixtures.get(namespace)!.storage,
-    graphIndexFor: (storage) => indexes.get(storage.dir)!,
+    storageFor: async (namespace) => {
+      const fixture = fixtures.get(namespace);
+      assert(fixture, `missing namespace fixture: ${namespace}`);
+      return fixture.storage;
+    },
+    graphIndexFor: (storage) => {
+      const index = indexes.get(storage.dir);
+      assert(index, `missing graph index: ${storage.dir}`);
+      return index;
+    },
     namespaceFromPath: () => defaultFixture.name,
     resolveColdQmdResultForRecall: async () => null,
     storageForAbsoluteQmdResultPath: async (resultPath) => {
@@ -159,16 +172,16 @@ function seedResult(fixture: NamespaceFixture): QmdSearchResult {
     namespace: fixture.name,
   };
 }
-
 async function expand(
   coordinator: GraphRecallCoordinator,
   results: QmdSearchResult[],
   namespaces: string[],
+  recallResultLimit = 1,
 ) {
   return coordinator.expandResultsViaGraph({
     memoryResults: results,
     recallNamespaces: namespaces,
-    recallResultLimit: 1,
+    recallResultLimit,
     asOf: AS_OF,
   });
 }
@@ -229,7 +242,7 @@ test("retains an active cold candidate in disabled and enabled graph scoring mod
       [seedResult(fixture)],
       [fixture.name],
     );
-    assert.equal(enabledReads.count, 3);
+    assert.equal(enabledReads.count, 0);
 
     const disabledCandidate = disabled.merged.find((item) => item.path === moved.targetPath);
     const enabledCandidate = enabled.merged.find((item) => item.path === moved.targetPath);
@@ -352,22 +365,19 @@ test("missing memory status defaults to active for path scoring", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-status-"));
   try {
     const fixture = await createNamespace(root, "default");
-    const originalReadAllMemories = fixture.storage.readAllMemories.bind(fixture.storage);
-    fixture.storage.readAllMemories = async (
-      ...args: Parameters<StorageManager["readAllMemories"]>
-    ) =>
-      (await originalReadAllMemories(...args)).map((memory) =>
-        memory.path.endsWith(fixture.intermediatePath)
-          ? {
-              ...memory,
-              frontmatter: {
-                ...memory.frontmatter,
-                status: undefined,
-                invalid_at: AS_OF,
-              },
-            }
-          : memory,
-      );
+    const originalReadMemoryByPath = fixture.storage.readMemoryByPath.bind(fixture.storage);
+    fixture.storage.readMemoryByPath = async (filePath: string) => {
+      const memory = await originalReadMemoryByPath(filePath);
+      if (!memory || !memory.path.endsWith(fixture.intermediatePath)) return memory;
+      return {
+        ...memory,
+        frontmatter: {
+          ...memory.frontmatter,
+          status: undefined,
+          invalid_at: AS_OF,
+        },
+      };
+    };
     const result = await expand(
       makeCoordinator(makeConfig(), new Map([[fixture.name, fixture]])),
       [seedResult(fixture)],
@@ -415,6 +425,221 @@ test("namespace corpus state stays isolated for equal intermediate ids", async (
     );
     assert.equal(result.merged.find((item) => item.namespace === stale.name && item.path.endsWith(stale.stalePath))?.pathPenaltyApplied, true);
     assert.equal(result.merged.find((item) => item.namespace === clean.name && item.path.endsWith(clean.stalePath))?.pathPenaltyApplied, false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("malformed and absent coordinator asOf use a finite current instant", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-asof-fallback-"));
+  try {
+    const fixture = await createNamespace(root, "default", "superseded");
+    const coordinator = makeCoordinator(
+      makeConfig(),
+      new Map([[fixture.name, fixture]]),
+    );
+    const common = {
+      memoryResults: [seedResult(fixture)],
+      recallNamespaces: [fixture.name],
+      recallResultLimit: 1,
+    };
+    const malformed = await coordinator.expandResultsViaGraph({
+      ...common,
+      asOf: "not-a-date",
+    });
+    const absent = await coordinator.expandResultsViaGraph(common);
+    const malformedStale = malformed.expandedPaths.find((entry) =>
+      entry.path.endsWith(fixture.stalePath),
+    );
+    const absentStale = absent.expandedPaths.find((entry) =>
+      entry.path.endsWith(fixture.stalePath),
+    );
+    assert.equal(malformedStale?.pathPenaltyApplied, true);
+    assert.equal(absentStale?.pathPenaltyApplied, true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("deadline stops remaining graph state reads", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-deadline-"));
+  try {
+    const fixture = await createNamespace(root, "default", "superseded");
+    const reads: string[] = [];
+    const originalNow = Date.now;
+    let now = 1_000;
+    Date.now = () => now;
+    const originalReadMemoryByPath = fixture.storage.readMemoryByPath.bind(fixture.storage);
+    fixture.storage.readMemoryByPath = async (filePath: string) => {
+      reads.push(filePath);
+      if (reads.length === 1) now += 200;
+      return originalReadMemoryByPath(filePath);
+    };
+    const coordinator = makeCoordinator(
+      makeConfig(),
+      new Map([[fixture.name, fixture]]),
+    );
+    try {
+      await coordinator.expandResultsViaGraph({
+        memoryResults: [seedResult(fixture)],
+        recallNamespaces: [fixture.name],
+        recallResultLimit: 1,
+        asOf: AS_OF,
+        deadlineAtMs: now + 100,
+      });
+    } finally {
+      Date.now = originalNow;
+    }
+
+    assert.equal(reads.length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+test("real coordinator demotes a path through a cold intermediate", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-cold-intermediate-"));
+  try {
+    const fixture = await createNamespace(root, "default", "superseded");
+    const intermediate = (await fixture.storage.readAllMemories()).find((memory) =>
+      memory.path.endsWith(fixture.intermediatePath),
+    );
+    assert.ok(intermediate);
+    const moved = await fixture.storage.migrateMemoryToTier(intermediate, "cold");
+    assert.equal(moved.changed, true);
+    const coordinator = makeCoordinator(
+      makeConfig(),
+      new Map([[fixture.name, fixture]]),
+    );
+    const result = await expand(
+      coordinator,
+      [seedResult(fixture)],
+      [fixture.name],
+    );
+    const stale = result.expandedPaths.find((entry) =>
+      entry.path.endsWith(fixture.stalePath),
+    );
+    assert.equal(stale?.pathPenaltyApplied, true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects traversal graph nodes before reading outside storage", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-traversal-"));
+  try {
+    const fixture = await createNamespace(root, "default");
+    const outsidePath = path.join(root, "outside.md");
+    await writeFile(
+      outsidePath,
+      "---\nid: outside\ncategory: fact\ncreated: 2026-01-01T00:00:00.000Z\nupdated: 2026-01-01T00:00:00.000Z\nsource: test\nconfidence: 0.9\nstatus: active\n---\n\noutside\n",
+      "utf8",
+    );
+    await appendEdge(fixture.dir, fixture.seedPath, "../outside.md");
+    const reads: string[] = [];
+    const originalReadMemoryByPath = fixture.storage.readMemoryByPath.bind(fixture.storage);
+    fixture.storage.readMemoryByPath = async (filePath: string) => {
+      reads.push(filePath);
+      return originalReadMemoryByPath(filePath);
+    };
+    const result = await expand(
+      makeCoordinator(makeConfig(), new Map([[fixture.name, fixture]])),
+      [seedResult(fixture)],
+      [fixture.name],
+    );
+    assert.equal(result.expandedPaths.some((entry) => entry.path === outsidePath), false);
+    assert.equal(reads.includes(outsidePath), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects symlink graph nodes before reading outside storage", async () => {
+  if (process.platform === "win32") return;
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-symlink-"));
+  try {
+    const fixture = await createNamespace(root, "default");
+    const outsidePath = path.join(root, "outside.md");
+    await writeFile(
+      outsidePath,
+      "---\nid: outside\ncategory: fact\ncreated: 2026-01-01T00:00:00.000Z\nupdated: 2026-01-01T00:00:00.000Z\nsource: test\nconfidence: 0.9\nstatus: active\n---\n\noutside\n",
+      "utf8",
+    );
+    const linkPath = path.join(fixture.dir, "linked.md");
+    await symlink(outsidePath, linkPath);
+    await appendEdge(fixture.dir, fixture.seedPath, "linked.md");
+    const reads: string[] = [];
+    const originalReadMemoryByPath = fixture.storage.readMemoryByPath.bind(fixture.storage);
+    fixture.storage.readMemoryByPath = async (filePath: string) => {
+      reads.push(filePath);
+      return originalReadMemoryByPath(filePath);
+    };
+    const result = await expand(
+      makeCoordinator(makeConfig(), new Map([[fixture.name, fixture]])),
+      [seedResult(fixture)],
+      [fixture.name],
+    );
+    assert.equal(reads.includes(linkPath), false);
+    assert.equal(reads.includes(outsidePath), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("caps graph path state reads at 200 candidates with deterministic output", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-read-cap-"));
+  try {
+    const fixture = await createNamespace(root, "default", "active");
+    for (let index = 0; index < 250; index += 1) {
+      await fixture.storage.writeMemory("fact", `bounded-${index}`);
+    }
+    const memories = (await fixture.storage.readAllMemories()).filter((memory) =>
+      memory.content.startsWith("bounded-"),
+    );
+    assert.equal(memories.length, 250);
+    const candidates = memories.map((memory, index) => {
+      const relativePath = path.relative(fixture.dir, memory.path).split(path.sep).join("/");
+      return {
+        path: relativePath,
+        score: 1 - index / 1000,
+        seed: fixture.seedPath,
+        hopDepth: 1,
+        decayedWeight: 1,
+        graphType: "entity" as const,
+        edgeConfidence: 1,
+        activationPath: {
+          nodeIds: [fixture.seedPath, relativePath],
+          edgeConfidences: [1],
+        },
+      };
+    });
+    const fakeIndex = {
+      spreadingActivation: async () => candidates,
+    } as unknown as GraphIndex;
+    const readCount = { count: 0 };
+    const originalRead = fixture.storage.readMemoryByPath.bind(fixture.storage);
+    fixture.storage.readMemoryByPath = async (filePath: string) => {
+      readCount.count += 1;
+      return originalRead(filePath);
+    };
+    const coordinator = makeCoordinator(
+      makeConfig(),
+      new Map([[fixture.name, fixture]]),
+      undefined,
+      new Map([[fixture.dir, fakeIndex]]),
+    );
+    const first = await expand(coordinator, [seedResult(fixture)], [fixture.name], 100);
+    const second = await expand(coordinator, [seedResult(fixture)], [fixture.name], 100);
+
+    assert.equal(
+      readCount.count,
+      400,
+      JSON.stringify({ first: first.expandedPaths.length, second: second.expandedPaths.length }),
+    );
+    assert.equal(first.expandedPaths.length, 200);
+    assert.deepEqual(
+      first.expandedPaths.map(({ path: resultPath, score }) => [resultPath, score]),
+      second.expandedPaths.map(({ path: resultPath, score }) => [resultPath, score]),
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

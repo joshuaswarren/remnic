@@ -77,6 +77,50 @@ test("parseConfig applies graphPathScoring defaults and boolean-like strings", (
     invalidNodePenalty: 0.4,
     includePathInProvenance: false,
   });
+
+  const enabled = parseConfig({
+    openaiApiKey: "sk-test",
+    graphPathScoring: { enabled: "true" },
+  });
+  assert.equal(enabled.graphPathScoring.enabled, true);
+});
+
+test("parseConfig accepts the inclusive graphPathScoring penalty bound", () => {
+  const cfg = parseConfig({
+    openaiApiKey: "sk-test",
+    graphPathScoring: { invalidNodePenalty: 1 },
+  });
+  assert.equal(cfg.graphPathScoring.invalidNodePenalty, 1);
+});
+
+test("parseConfig applies graphPathScoring defaults for null values", () => {
+  const defaults = parseConfig({
+    openaiApiKey: "sk-test",
+    graphPathScoring: null,
+  });
+  assert.deepEqual(defaults.graphPathScoring, {
+    enabled: false,
+    invalidNodePenalty: 0.2,
+    includePathInProvenance: true,
+  });
+
+  const fieldsDefault = parseConfig({
+    openaiApiKey: "sk-test",
+    graphPathScoring: {
+      enabled: null,
+      includePathInProvenance: null,
+    },
+  });
+  assert.deepEqual(fieldsDefault.graphPathScoring, defaults.graphPathScoring);
+});
+
+test("parseConfig rejects non-object graphPathScoring values", () => {
+  for (const value of [[], "true"]) {
+    assert.throws(
+      () => parseConfig({ openaiApiKey: "sk-test", graphPathScoring: value }),
+      /graphPathScoring must be a plain object/,
+    );
+  }
 });
 
 test("parseConfig rejects invalid graphPathScoring values", () => {

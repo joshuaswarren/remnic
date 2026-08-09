@@ -11,7 +11,6 @@ import {
   probeSalvageSurvivingFields,
   withReservedMarkerTag,
 } from "./extraction-envelope.js";
-import path from "node:path";
 import {
   StorageManager,
   ContentHashIndex,
@@ -115,6 +114,7 @@ import {
 } from "../orchestrator.js";
 import type { HarmonicConstructionInput } from "../harmonic-construction.js";
 import { persistConstructedHarmonicRecords } from "./harmonic-construction-persist.js";
+import { ExtractionAnchorSnapshot } from "./extraction-anchor-snapshot.js";
 
 
 
@@ -206,6 +206,10 @@ export class ExtractionPersistCoordinator {
     };
     const persistedIds: string[] = [];
     const memoryPathById = new Map<string, string>();
+    const anchorSnapshots = new ExtractionAnchorSnapshot({
+      enabled: this.deps.config.contradictionLocalization?.anchorEnabled !== false,
+      candidateLimit: this.deps.config.contradictionLocalization?.anchorCandidates,
+    });
     const supersessionOrderingAt = (validAt?: string): string =>
       validAt && validAt.length > 0 ? validAt : new Date().toISOString();
     // #1635: pending_review persisted ids, excluded from the thread episode set below.
@@ -2032,7 +2036,6 @@ export class ExtractionPersistCoordinator {
       // must not trigger auto-resolve and retire an existing active memory.
       if (
         resolveRecallEnhancementCapabilities(this.deps.config).contradictionDetection &&
-        this.deps.getQmd().isAvailable() &&
         faithfulnessEnforceStatus !== "pending_review"
       ) {
         const targetNamespace = this.deps.storageDirNamespace(targetStorage.dir);
@@ -2043,6 +2046,7 @@ export class ExtractionPersistCoordinator {
           {
             entityRef: fact.entityRef,
             structuredAttributes: fact.structuredAttributes,
+            storageSnapshot: await anchorSnapshots.get(targetStorage, fact.entityRef),
           },
         );
         if (contradiction) {
@@ -2216,18 +2220,20 @@ export class ExtractionPersistCoordinator {
           });
           const parentId = parentWrite.id;
           // #1645: surface the tombstone block and gate active post-write paths
-          // (chunks, supersession, shared promotion, graph/artifact) like #1576.
           const tombstoneBlocked = parentWrite.tombstoneBlocked;
           const postWriteGuard =
             faithfulnessEnforceStatus === "pending_review" || tombstoneBlocked;
           // #1645: defer contradiction auto-resolve until tombstone status is
           // known (see applyDeferredContradictionResolve).
-          await this.deps.applyDeferredContradictionResolve(
+          const contradictionResolved = await this.deps.applyDeferredContradictionResolve(
             contradiction,
             targetStorage,
             parentId,
             postWriteGuard,
           );
+          if (contradictionResolved) {
+            await anchorSnapshots.remove(targetStorage, contradiction!.supersededId);
+          }
           try {
             // #2014 round 3: chunks inherit the PARENT ENVELOPE's surviving
             // tags (minus the parent-only "chunked" marker) and entityRef —
@@ -2321,6 +2327,7 @@ export class ExtractionPersistCoordinator {
             category: writeCategory,
             harmonicFact,
           });
+          await anchorSnapshots.replace(targetStorage, parentId, writeCategory, memoryPathById);
           // #1576 (cursor Medium): keep pending_review ids out of threadEpisodeIdsForGraph — else later active facts build thread-predecessor edges to an unfaithful memory.
           if (
             !postWriteGuard &&
@@ -2344,7 +2351,7 @@ export class ExtractionPersistCoordinator {
             try {
               // #2014 round 2: same envelope-surviving key rule as the
               // non-chunked path.
-              await applyTemporalSupersession({
+              const temporalSupersession = await applyTemporalSupersession({
                 storage: targetStorage,
                 newMemoryId: parentId,
                 entityRef: parentWriteEnvelope.entityRef,
@@ -2361,6 +2368,9 @@ export class ExtractionPersistCoordinator {
                 config: this.config,
                 namespaceScope: this.deps.storageDirNamespace(targetStorage.dir),
               });
+              for (const supersededId of temporalSupersession.supersededIds) {
+                await anchorSnapshots.remove(targetStorage, supersededId);
+              }
             } catch (err) {
               log.warn(`temporal-supersession (chunked): unexpected error: ${err}`);
             }
@@ -2602,7 +2612,15 @@ export class ExtractionPersistCoordinator {
       // #1645: defer contradiction auto-resolve until tombstone status is
       // known (see applyDeferredContradictionResolve).
       try {
-        await this.deps.applyDeferredContradictionResolve(contradiction, targetStorage, memoryId, postWriteGuard);
+        const contradictionResolved = await this.deps.applyDeferredContradictionResolve(
+          contradiction,
+          targetStorage,
+          memoryId,
+          postWriteGuard,
+        );
+        if (contradictionResolved) {
+          await anchorSnapshots.remove(targetStorage, contradiction!.supersededId);
+        }
       } catch (err) {
         await flushDeferredFactHashOnFailure(() => this.deps.saveContentHashIndexes(), factDedupEnabled);
         throw err;
@@ -2619,10 +2637,7 @@ export class ExtractionPersistCoordinator {
       // the review queue must NOT retire older active memories.
       if (!postWriteGuard) {
         try {
-          // #2014 round 2: key supersession on the envelope's SURVIVING
-          // fields — salvage may have dropped attributes that must not
-          // retire older facts the persisted copy does not actually contest.
-          await applyTemporalSupersession({
+          const temporalSupersession = await applyTemporalSupersession({
             storage: targetStorage,
             newMemoryId: memoryId,
             entityRef: factWriteEnvelope.entityRef,
@@ -2636,6 +2651,9 @@ export class ExtractionPersistCoordinator {
             config: this.config,
             namespaceScope: this.deps.storageDirNamespace(targetStorage.dir),
           });
+          for (const supersededId of temporalSupersession.supersededIds) {
+            await anchorSnapshots.remove(targetStorage, supersededId);
+          }
         } catch (err) {
           log.warn(`temporal-supersession: unexpected error: ${err}`);
         }
@@ -2657,6 +2675,7 @@ export class ExtractionPersistCoordinator {
           category: writeCategory,
           harmonicFact,
         });
+        await anchorSnapshots.replace(targetStorage, memoryId, writeCategory, memoryPathById);
         if (
           !postWriteGuard &&
           threadEpisodeIdsForGraph &&

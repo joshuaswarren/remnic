@@ -140,7 +140,7 @@ export function clampGraphRecallExpandedEntries(
         Array.isArray(item.pathNodeIds) &&
         item.pathNodeIds.every((value): value is string => typeof value === "string")
       ) {
-        out.pathNodeIds = item.pathNodeIds;
+        out.pathNodeIds = item.pathNodeIds.slice(0, 64);
       }
       if (typeof item.pathPenaltyApplied === "boolean") {
         out.pathPenaltyApplied = item.pathPenaltyApplied;

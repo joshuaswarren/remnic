@@ -15,11 +15,44 @@ export interface PathScoringOptions {
 }
 
 function isInvalidIntermediate(state: PathNodeState | undefined, asOfMs: number): boolean {
- if (!state || state.status === null) return false;
- if (state.status !== "active") return true;
- if (state.invalidAt === null) return false;
- const invalidAtMs = Date.parse(state.invalidAt);
- return Number.isFinite(invalidAtMs) && invalidAtMs <= asOfMs;
+  if (!state || state.status === null) return false;
+  if (state.invalidAt !== null) {
+    const invalidAtMs = Date.parse(state.invalidAt);
+    if (Number.isFinite(invalidAtMs)) return invalidAtMs <= asOfMs;
+  }
+  return state.status !== "active";
+}
+
+export interface PathScoreDetail {
+  score: number;
+  pathPenaltyApplied: boolean;
+}
+
+export function scoreEvidencePathDetail(
+  evidencePath: ActivationPath | null,
+  nodeStates: ReadonlyMap<string, PathNodeState>,
+  options: PathScoringOptions,
+): PathScoreDetail {
+  const asOfMs = Date.parse(options.asOf);
+  if (!Number.isFinite(asOfMs)) {
+    throw new Error("asOf must be a finite timestamp");
+  }
+  if (!evidencePath) return { score: 1, pathPenaltyApplied: false };
+  let multiplier = evidencePath.edgeConfidences.reduce(
+    (product, confidence) => product * confidence,
+    1,
+  );
+  let invalidIntermediateCount = 0;
+  for (const nodeId of evidencePath.nodeIds.slice(1, -1)) {
+    if (isInvalidIntermediate(nodeStates.get(nodeId), asOfMs)) {
+      invalidIntermediateCount += 1;
+      multiplier *= options.invalidNodePenalty;
+    }
+  }
+  return {
+    score: multiplier,
+    pathPenaltyApplied: invalidIntermediateCount > 0 && options.invalidNodePenalty !== 1,
+  };
 }
 
 /**
@@ -34,16 +67,5 @@ export function scoreEvidencePath(
   nodeStates: ReadonlyMap<string, PathNodeState>,
   options: PathScoringOptions,
 ): number {
-  if (!evidencePath) return 1;
-  const asOfMs = Date.parse(options.asOf);
-  let multiplier = evidencePath.edgeConfidences.reduce(
-    (product, confidence) => product * confidence,
-    1,
-  );
-  for (const nodeId of evidencePath.nodeIds.slice(1, -1)) {
-    if (isInvalidIntermediate(nodeStates.get(nodeId), asOfMs)) {
-      multiplier *= options.invalidNodePenalty;
-    }
-  }
-  return multiplier;
+  return scoreEvidencePathDetail(evidencePath, nodeStates, options).score;
 }

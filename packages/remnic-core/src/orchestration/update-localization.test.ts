@@ -3,9 +3,11 @@ import type { ExtractionEngine } from "../extraction.js";
 import type { QmdSearchResult, PluginConfig } from "../types.js";
 import assert from "node:assert/strict";
 import test from "node:test";
+import { initLogger } from "../logger.js";
 
 import {
   localizeUpdateCandidates,
+  mergeMemorySnapshots,
   type UpdateLocalizationSearchHit,
 } from "./update-localization.js";
 import type { MemoryFile } from "../types.js";
@@ -43,9 +45,10 @@ function memory(
   } as unknown as MemoryFile;
 }
 
-function storage(memories: MemoryFile[]): StorageManager {
+function storage(memories: MemoryFile[], coldMemories: MemoryFile[] = []): StorageManager {
   return {
     readAllMemories: async () => memories,
+    readAllColdMemories: async () => coldMemories,
     getMemoryById: async (id: string) => memories.find((entry) => entry.frontmatter.id === id) ?? null,
   } as unknown as StorageManager;
 }
@@ -111,6 +114,34 @@ test("includes only active memories in the anchor pass", async () => {
   );
 
   assert.deepEqual(result.map((candidate) => candidate.id), ["active"]);
+});
+
+test("prefers an active cold copy over a superseded hot duplicate", async () => {
+  const id = "duplicate";
+  const result = await localizeUpdateCandidates(
+    {
+      storage: storage(
+        [memory(id, { entityRef: "person:alice", status: "superseded", content: "hot copy" })],
+        [memory(id, { entityRef: "person:alice", status: "active", content: "cold copy" })],
+      ),
+      qmdSearch: search(),
+    },
+    { entityRef: "person:alice", category: "fact" },
+    "incoming",
+    options,
+  );
+
+  assert.deepEqual(result.map((candidate) => candidate.id), [id]);
+  assert.equal(result[0]?.content, "cold copy");
+});
+
+test("keeps the hot copy when duplicate statuses are both active", () => {
+  const merged = mergeMemorySnapshots(
+    [memory("duplicate", { content: "hot copy" })],
+    [memory("duplicate", { content: "cold copy" })],
+  );
+
+  assert.deepEqual(merged.map((entry) => entry.content), ["hot copy"]);
 });
 
 test("scores matching attribute keys before recency and reuses normalized attribute keys", async () => {
@@ -237,8 +268,11 @@ function qmdResult(id: string, score: number, namespace = "default"): QmdSearchR
     score,
   };
 }
-
-function coordinatorFixture(configOverrides: Record<string, unknown> = {}) {
+function coordinatorFixture(
+  configOverrides: Record<string, unknown> = {},
+  searchAvailable = true,
+  storageOverride?: StorageManager,
+) {
   const candidate = memory("old", { entityRef: "person:alice", content: "Alice lives in Austin" });
   const memories = [candidate];
   const verificationCalls: Array<{ incoming: unknown; existing: unknown }> = [];
@@ -267,11 +301,11 @@ function coordinatorFixture(configOverrides: Record<string, unknown> = {}) {
   } as unknown as PluginConfig;
   const coordinator = new ContradictionLinkingCoordinator({
     getConfig: () => config,
-    isSearchAvailable: () => true,
+    isSearchAvailable: () => searchAvailable,
     searchAcrossNamespaces: async () => [],
     extractMemoryIdsFromResults: (results) => results.map((result) => result.docid),
     namespaceFromPath: () => "default",
-    storageForNamespace: async () => storage(memories),
+    storageForNamespace: async () => storageOverride ?? storage(memories),
     getExtraction: () => extraction,
   });
   return { coordinator, verificationCalls, candidate };
@@ -288,6 +322,84 @@ test("finds a contradiction from an anchor when QMD search misses it", async () 
 
   assert.equal(result?.supersededId, candidate.frontmatter.id);
   assert.equal(verificationCalls.length, 1);
+});
+test("continues with anchors and warns when QMD is unavailable", async () => {
+  const warns: string[] = [];
+  initLogger({ info() {}, warn: (message) => warns.push(message), error() {}, debug() {} }, false, {
+    timestamps: false,
+  });
+  try {
+    const { coordinator, candidate } = coordinatorFixture({}, false);
+    const result = await coordinator.checkForContradiction(
+      "Alice lives in New York",
+      "fact",
+      "default",
+      { entityRef: "person:alice" },
+    );
+    assert.equal(result?.supersededId, candidate.frontmatter.id);
+    assert.equal(warns.length, 1);
+    assert.match(warns[0] ?? "", /QMD unavailable/);
+    assert.doesNotMatch(warns[0] ?? "", /Alice lives in New York|person:alice/);
+  } finally {
+    initLogger({ info() {}, warn() {}, error() {}, debug() {} });
+  }
+});
+
+test("localizes an active cold anchor when QMD search is unavailable", async () => {
+  const coldCandidate = memory("cold-old", {
+    entityRef: "person:alice",
+    content: "Alice lives in Austin",
+  });
+  const coldStorage = {
+    readAllMemories: async () => [],
+    readAllColdMemories: async () => [coldCandidate],
+    getMemoryById: async () => null,
+  } as unknown as StorageManager;
+  const { coordinator, verificationCalls } = coordinatorFixture(
+    {
+      contradictionLocalization: {
+        anchorEnabled: true,
+        anchorCandidates: 5,
+        searchCandidates: 0,
+        maxCandidates: 8,
+      },
+    },
+    false,
+    coldStorage,
+  );
+  const result = await coordinator.checkForContradiction(
+    "Alice lives in New York",
+    "fact",
+    "default",
+    { entityRef: "person:alice" },
+  );
+  assert.equal(result?.supersededId, coldCandidate.frontmatter.id);
+  assert.equal(verificationCalls.length, 1);
+});
+
+test("disabled localization preserves the legacy fixed QMD limit", async () => {
+  let requestedLimit = 0;
+  const { coordinator, candidate } = coordinatorFixture({
+    contradictionLocalization: {
+      anchorEnabled: false,
+      anchorCandidates: 0,
+      searchCandidates: 0,
+      maxCandidates: 0,
+    },
+  });
+  (coordinator as unknown as { searchAcrossNamespaces: unknown }).searchAcrossNamespaces = async (
+    options: { maxResults: number },
+  ) => {
+    requestedLimit = options.maxResults;
+    return [qmdResult(candidate.frontmatter.id, 0.95)];
+  };
+  const result = await coordinator.checkForContradiction(
+    "Alice lives in New York",
+    "fact",
+    "default",
+  );
+  assert.equal(result?.supersededId, candidate.frontmatter.id);
+  assert.equal(requestedLimit, 5);
 });
 
 test("disabled localization preserves search-only verification inputs, including string false", async () => {
@@ -369,6 +481,74 @@ test("keeps anchor and search candidates within the requested namespace", async 
   assert.equal(result?.supersededId, "default-old");
   assert.deepEqual(calls, ["default-old"]);
 });
+test("deferred resolve propagates invalidation from a cold anchor", async () => {
+  const old = memory("cold-old", { content: "old cold claim" });
+  old.frontmatter.links = [{ targetId: "dependent", linkType: "supports", strength: 0.9 }];
+  old.path = "/synthetic/cold/cold-old.md";
+  const dependent = memory("dependent", { content: "dependent claim" });
+  dependent.frontmatter.links = [{ targetId: old.frontmatter.id, linkType: "supports", strength: 0.9 }];
+  const calls: string[] = [];
+  const extraction = {
+    revalidateDependents: async (
+      _old: unknown,
+      _replacement: unknown,
+      dependents: Array<{ id: string }>,
+    ) => ({
+      verdicts: dependents.map((item) => ({
+        memoryId: item.id,
+        verdict: "invalidated" as const,
+        reason: "dependent invalidated",
+      })),
+    }),
+  } as unknown as ExtractionEngine;
+  const coldStorage = {
+    readAllMemories: async () => [dependent],
+    readAllColdMemories: async () => [old],
+    getMemoryById: async (id: string) => {
+      if (id === old.frontmatter.id) return null;
+      if (id === dependent.frontmatter.id) return dependent;
+      return memory(id, { content: "replacement claim" });
+    },
+    supersedeMemory: async (id: string, replacementId: string) => {
+      calls.push(`${id}->${replacementId}`);
+      return true;
+    },
+  } as unknown as StorageManager;
+  const coordinator = new ContradictionLinkingCoordinator({
+    getConfig: () =>
+      ({
+        contradictionAutoResolve: true,
+        dependencyPropagation: {
+          enabled: true,
+          linkTypes: ["supports"],
+          maxDependents: 10,
+          timeoutMs: 50,
+          dryRun: false,
+        },
+      }) as unknown as PluginConfig,
+    isSearchAvailable: () => false,
+    searchAcrossNamespaces: async () => [],
+    extractMemoryIdsFromResults: () => [],
+    namespaceFromPath: () => "default",
+    storageForNamespace: async () => coldStorage,
+    getExtraction: () => extraction,
+  });
+
+  await coordinator.applyDeferredContradictionResolve(
+    {
+      supersededId: old.frontmatter.id,
+      reason: "old claim retired",
+      supersededPath: old.path,
+      supersededCreated: old.frontmatter.created,
+      supersededTags: [],
+    },
+    coldStorage,
+    "replacement",
+    false,
+  );
+
+  assert.deepEqual(calls, ["cold-old->replacement", "dependent->replacement"]);
+});
 test("scores anchor candidates with missing attributes as zero when the incoming anchor has attributes", async () => {
   const result = await localizeUpdateCandidates(
     {
@@ -427,4 +607,84 @@ test("preserves search candidates with pending_review status in enabled mode", a
 
   const result = await coordinator.checkForContradiction("incoming", "fact", "default");
   assert.equal(result?.supersededId, "pending");
+});
+
+test("forwards the new content and search limit to QMD", async () => {
+  const calls: Array<{ query: string; limit: number }> = [];
+  const result = await localizeUpdateCandidates(
+    {
+      storage: storage([]),
+      qmdSearch: async (query, limit) => {
+        calls.push({ query, limit });
+        return [hit("search-hit", 0.9)];
+      },
+    },
+    { category: "fact" },
+    "incoming content",
+    { anchorCandidates: 0, searchCandidates: 3, maxCandidates: 5 },
+  );
+
+  assert.deepEqual(calls, [{ query: "incoming content", limit: 3 }]);
+  assert.deepEqual(result.map((candidate) => candidate.id), ["search-hit"]);
+});
+
+test("rejects malformed entity references without reading the memory corpus", async () => {
+  let readCount = 0;
+  let qmdCount = 0;
+  const result = await localizeUpdateCandidates(
+    {
+      storage: {
+        readAllMemories: async () => {
+          readCount++;
+          return [memory("stored", { entityRef: "person:alice" })];
+        },
+      },
+      qmdSearch: async () => {
+        qmdCount++;
+        return [];
+      },
+    },
+    { entityRef: { invalid: true } as unknown as string, category: "fact" },
+    "incoming content",
+    { anchorCandidates: 5, searchCandidates: 0, maxCandidates: 5 },
+  );
+
+  assert.deepEqual(result, []);
+  assert.equal(readCount, 0);
+  assert.equal(qmdCount, 0);
+});
+
+test("normalizes extracted and stored entity references symmetrically", async () => {
+  const result = await localizeUpdateCandidates(
+    {
+      storage: storage([memory("stored", { entityRef: "PERSON-ALICE" })]),
+      qmdSearch: search(),
+    },
+    { entityRef: "person alice", category: "fact" },
+    "incoming content",
+    { anchorCandidates: 5, searchCandidates: 0, maxCandidates: 5 },
+  );
+
+  assert.deepEqual(result.map((candidate) => candidate.id), ["stored"]);
+});
+
+test("runs anchor localization when QMD is unavailable and search is disabled", async () => {
+  const { coordinator, candidate } = coordinatorFixture({
+    contradictionLocalization: {
+      anchorEnabled: true,
+      anchorCandidates: 5,
+      searchCandidates: 0,
+      maxCandidates: 8,
+    },
+  });
+  (coordinator as unknown as { isSearchAvailable: () => boolean }).isSearchAvailable = () => false;
+
+  const result = await coordinator.checkForContradiction(
+    "Alice lives in New York",
+    "fact",
+    "default",
+    { entityRef: "person:alice", attributes: { city: "New York" } },
+  );
+
+  assert.equal(result?.supersededId, candidate.frontmatter.id);
 });

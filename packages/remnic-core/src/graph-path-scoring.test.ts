@@ -107,3 +107,69 @@ test("keeps penalty one as a no-op", () => {
 test("returns one for a missing path", () => {
   assert.equal(score(null, new Map()), 1);
 });
+test("reports path penalty only for invalid intermediate state", async () => {
+  const { scoreEvidencePathDetail } = await import("./graph-path-scoring.js");
+  const validDetail = scoreEvidencePathDetail(
+    activationPath(["seed", "mid", "candidate"], [0.2, 0.3]),
+    new Map([["mid", state("mid", "active")]]),
+    {
+      asOf: "2026-01-01T00:00:00.000Z",
+      invalidNodePenalty: 0.2,
+    },
+  );
+  assert.equal(validDetail.score, 0.2 * 0.3);
+  assert.equal(validDetail.pathPenaltyApplied, false);
+
+  const invalidDetail = scoreEvidencePathDetail(
+    activationPath(["seed", "mid", "candidate"], [1, 1]),
+    new Map([["mid", state("mid", "superseded")]]),
+    {
+      asOf: "2026-01-01T00:00:00.000Z",
+      invalidNodePenalty: 0.2,
+    },
+  );
+  assert.equal(invalidDetail.pathPenaltyApplied, true);
+});
+
+test("uses invalidAt for historical supersession validity", () => {
+  const states = new Map([
+    ["mid", state("mid", "superseded", "2026-02-01T00:00:00.000Z")],
+  ]);
+  assert.equal(
+    score(
+      activationPath(["seed", "mid", "candidate"], [1, 1]),
+      states,
+      { asOf: "2026-01-01T00:00:00.000Z" },
+    ),
+    1,
+  );
+  assert.equal(
+    score(
+      activationPath(["seed", "mid", "candidate"], [1, 1]),
+      states,
+      { asOf: "2026-03-01T00:00:00.000Z" },
+    ),
+    0.2,
+  );
+});
+
+test("rejects a non-finite asOf", () => {
+  assert.throws(
+    () =>
+      score(
+        activationPath(["seed", "mid", "candidate"], [1, 1]),
+        new Map(),
+        { asOf: "not-a-date" },
+      ),
+    /asOf must be a finite timestamp/,
+  );
+  assert.throws(
+    () =>
+      scoreEvidencePath(
+        null,
+        new Map(),
+        { asOf: "not-a-date", invalidNodePenalty: 0.2 },
+      ),
+    /asOf must be a finite timestamp/,
+  );
+});

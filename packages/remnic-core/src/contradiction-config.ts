@@ -61,7 +61,7 @@ export function parseContradictionLocalizationConfig(raw: unknown): Contradictio
     maxCandidates: 8,
   };
   if (raw === undefined || raw === null) return defaults;
-  if (typeof raw !== "object") {
+  if (typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error("contradictionLocalization must be an object");
   }
   const src = raw as Record<string, unknown>;
