@@ -1561,6 +1561,7 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `contradictionDetectionEnabled` | `false` | `false` |
 | `contradictionSimilarityThreshold` | `0.7` | `0.7` |
 | `contradictionMinConfidence` | `0.9` | `0.9` |
+| `contradictionLocalization` | `{ anchorEnabled: true, anchorCandidates: 5, searchCandidates: 5, maxCandidates: 8 }` | `{ anchorEnabled: true, anchorCandidates: 5, searchCandidates: 5, maxCandidates: 8 }` |
 | `contradictionAutoResolve` | `true` | `true` |
 | `memoryLinkingEnabled` | `false` | `false` |
 | `threadingEnabled` | `false` | `false` |

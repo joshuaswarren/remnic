@@ -22,6 +22,7 @@ import type {
   PluginConfig,
   QmdSearchResult,
 } from "../types.js";
+import { coerceBool } from "../connectors/coerce.js";
 // StorageManager type comes from the package barrel (type-only) so this
 // module does not add a direct storage.ts import (ratchet #1533).
 import type { StorageManager } from "../index.js";
@@ -29,6 +30,7 @@ import type { ExtractionEngine } from "../extraction.js";
 import { log } from "../logger.js";
 import { resolveIndexingCapabilities } from "../capabilities.js";
 import { deindexMemoryAsync } from "../temporal-index.js";
+import { localizeUpdateCandidates } from "./update-localization.js";
 import { propagateInvalidation } from "./dependency-propagation.js";
 
 /** Result type of {@link ContradictionLinkingCoordinator.checkForContradiction}. */
@@ -111,10 +113,99 @@ export class ContradictionLinkingCoordinator {
     content: string,
     category: string,
     namespaceScope: string,
+    anchor?: {
+      entityRef?: string;
+      structuredAttributes?: Record<string, string>;
+      attributes?: Record<string, string>;
+    },
   ): Promise<ContradictionResult | null> {
     if (!this.isSearchAvailable()) return null;
 
     const config = this.getConfig();
+    const localization = config.contradictionLocalization;
+    const anchorEnabled = coerceBool(localization?.anchorEnabled) ?? true;
+    if (anchorEnabled) {
+      const resultStorage = await this.storageForNamespace(namespaceScope);
+      const candidates = await localizeUpdateCandidates(
+        {
+          storage: resultStorage,
+          qmdSearch: async (query, limit) => {
+            const results = await this.searchAcrossNamespaces({
+              query,
+              namespaces: [namespaceScope],
+              maxResults: limit,
+              mode: "search",
+            });
+            const hits = [];
+            for (const result of results) {
+              if (result.score < config.contradictionSimilarityThreshold) continue;
+              const memoryId = this.extractMemoryIdsFromResults([result])[0];
+              if (!memoryId) continue;
+              if (this.namespaceFromPath(result.path) !== namespaceScope) continue;
+              const existingMemory = await resultStorage.getMemoryById(memoryId);
+              if (!existingMemory || existingMemory.frontmatter.status !== "active") continue;
+              hits.push({
+                id: memoryId,
+                content: existingMemory.content,
+                category: existingMemory.frontmatter.category,
+                score: result.score,
+              });
+            }
+            return hits;
+          },
+        },
+        {
+          entityRef: anchor?.entityRef,
+          category,
+          attributes: anchor?.structuredAttributes ?? anchor?.attributes,
+        },
+        content,
+        localization ?? {
+          anchorEnabled: true,
+          anchorCandidates: 5,
+          searchCandidates: 5,
+          maxCandidates: 8,
+        },
+      );
+
+      for (const candidate of candidates) {
+        const existingMemory = await resultStorage.getMemoryById(candidate.id);
+        if (!existingMemory || existingMemory.frontmatter.status !== "active") continue;
+        const verification = await this.getExtraction().verifyContradiction(
+          { content, category },
+          {
+            id: existingMemory.frontmatter.id,
+            content: existingMemory.content,
+            category: existingMemory.frontmatter.category,
+            created: existingMemory.frontmatter.created,
+          },
+        );
+        if (!verification) continue;
+        if (
+          verification.isContradiction &&
+          verification.confidence >= config.contradictionMinConfidence
+        ) {
+          if (verification.whichIsNewer === "first") {
+            log.info(
+              `detected contradiction (confidence: ${verification.confidence}): ${existingMemory.frontmatter.id} vs new memory — existing is newer, incoming fact is stale`,
+            );
+            continue;
+          }
+          log.info(
+            `detected contradiction (confidence: ${verification.confidence}): ${existingMemory.frontmatter.id} vs new memory${config.contradictionAutoResolve ? " (auto-resolved)" : " (queued for manual review)"}`,
+          );
+          return {
+            supersededId: existingMemory.frontmatter.id,
+            confidence: verification.confidence,
+            reason: verification.reasoning,
+            supersededPath: existingMemory.path,
+            supersededCreated: existingMemory.frontmatter.created,
+            supersededTags: existingMemory.frontmatter.tags ?? [],
+          };
+        }
+      }
+      return null;
+    }
 
     // Search for similar memories
     const results = await this.searchAcrossNamespaces({

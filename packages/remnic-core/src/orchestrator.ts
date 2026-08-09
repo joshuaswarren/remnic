@@ -844,8 +844,8 @@ export class Orchestrator {
         routeEngineOptions: () => this.routeEngineOptions(),
         semanticDedupLookup: (content, limit, targetStorage) =>
           this.semanticDedupLookup(content, limit, targetStorage),
-        checkForContradiction: (content, category, namespaceScope) =>
-          this.checkForContradiction(content, category, namespaceScope),
+        checkForContradiction: (content, category, namespaceScope, anchor) =>
+          this.checkForContradiction(content, category, namespaceScope, anchor),
         applyDeferredContradictionResolve: (contradiction, storage, newMemoryId, postWriteGuard) =>
           this.applyDeferredContradictionResolve(contradiction, storage, newMemoryId, postWriteGuard),
         suggestLinksForMemory: (content, category, namespaceScope) =>
@@ -3877,6 +3877,10 @@ export class Orchestrator {
     content: string,
     category: string,
     namespaceScope: string,
+    anchor?: {
+      entityRef?: string;
+      structuredAttributes?: Record<string, string>;
+    },
   ): Promise<{
     supersededId: string;
     confidence: number;
@@ -3889,6 +3893,7 @@ export class Orchestrator {
       content,
       category,
       namespaceScope,
+      anchor,
     );
   }
 

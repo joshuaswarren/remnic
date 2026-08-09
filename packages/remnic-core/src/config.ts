@@ -2,8 +2,9 @@ import path from "node:path";
 import type {
   CodexCompactionFlushMode,
   CodingModeConfig,
-  ContradictionScanConfig,
   CodexCompatConfig,
+  ContradictionLocalizationConfig,
+  ContradictionScanConfig,
   DreamingConfig,
   DreamsLightSleepConfig,
   DreamsRemConfig,
@@ -533,6 +534,41 @@ function parseContradictionScanConfig(raw: unknown): ContradictionScanConfig {
     maxPairsPerRun: Math.max(1, maxPairs),
     cooldownDays: Math.max(0, cooldown),
     autoMergeDuplicates: coerceBool(src.autoMergeDuplicates) === true,
+  };
+}
+function parseContradictionLocalizationConfig(raw: unknown): ContradictionLocalizationConfig {
+  const defaults: ContradictionLocalizationConfig = {
+    anchorEnabled: true,
+    anchorCandidates: 5,
+    searchCandidates: 5,
+    maxCandidates: 8,
+  };
+  if (raw === undefined || raw === null) return defaults;
+  if (typeof raw !== "object") {
+    throw new Error("contradictionLocalization must be an object");
+  }
+  const src = raw as Record<string, unknown>;
+  const rawEnabled = src.anchorEnabled;
+  const anchorEnabled = rawEnabled === undefined || rawEnabled === null ? true : coerceBool(rawEnabled);
+  if (anchorEnabled === undefined) {
+    throw new Error("contradictionLocalization.anchorEnabled must be a boolean-like value");
+  }
+
+  const parseCap = (key: keyof Pick<ContradictionLocalizationConfig, "anchorCandidates" | "searchCandidates" | "maxCandidates">): number => {
+    const rawValue = src[key];
+    if (rawValue === undefined) return defaults[key];
+    const parsed = coerceNumber(rawValue);
+    if (parsed === undefined || !Number.isInteger(parsed) || parsed < 0) {
+      throw new Error(`contradictionLocalization.${key} must be an integer >= 0`);
+    }
+    return parsed;
+  };
+
+  return {
+    anchorEnabled,
+    anchorCandidates: parseCap("anchorCandidates"),
+    searchCandidates: parseCap("searchCandidates"),
+    maxCandidates: parseCap("maxCandidates"),
   };
 }
 
@@ -1806,6 +1842,7 @@ export function parseConfig(
       typeof cfg.contradictionSimilarityThreshold === "number" ? cfg.contradictionSimilarityThreshold : 0.7,
     contradictionMinConfidence:
       typeof cfg.contradictionMinConfidence === "number" ? cfg.contradictionMinConfidence : 0.9,
+    contradictionLocalization: parseContradictionLocalizationConfig(cfg.contradictionLocalization),
     contradictionAutoResolve: cfg.contradictionAutoResolve !== false,
     // Contradiction Scan cron (issue #520)
     contradictionScan: parseContradictionScanConfig(cfg.contradictionScan),

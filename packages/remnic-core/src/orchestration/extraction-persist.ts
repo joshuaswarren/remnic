@@ -132,6 +132,7 @@ import { persistConstructedHarmonicRecords } from "./harmonic-construction-persi
 
 
 
+
 export class ExtractionPersistCoordinator {
   constructor(
     private readonly deps: ExtractionPersistDeps,
@@ -2053,6 +2054,10 @@ export class ExtractionPersistCoordinator {
           fact.content,
           writeCategory,
           targetNamespace,
+          {
+            entityRef: fact.entityRef,
+            structuredAttributes: fact.structuredAttributes,
+          },
         );
         if (contradiction) {
           contradictionDetected = true;

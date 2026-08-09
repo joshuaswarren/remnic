@@ -49,7 +49,11 @@ export interface ExtractionPersistDeps {
   checkForContradiction: (
     content: string,
     category: string,
-    namespaceScope: string
+    namespaceScope: string,
+    anchor?: {
+      entityRef?: string;
+      structuredAttributes?: Record<string, string>;
+    }
   ) => Promise<{
     supersededId: string;
     confidence: number;

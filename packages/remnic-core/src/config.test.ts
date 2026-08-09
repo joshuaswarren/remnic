@@ -2549,3 +2549,42 @@ test("parseConfig validates converge conflict policy and defaults to newest-wins
     /converge contains unknown key "conflictPolciy"/,
   );
 });
+test("parseConfig parses contradictionLocalization defaults, string booleans, and integer caps", () => {
+  const defaults = parseConfig({}).contradictionLocalization;
+  assert.deepEqual(defaults, {
+    anchorEnabled: true,
+    anchorCandidates: 5,
+    searchCandidates: 5,
+    maxCandidates: 8,
+  });
+  assert.deepEqual(
+    parseConfig({
+      contradictionLocalization: {
+        anchorEnabled: "false",
+        anchorCandidates: "0",
+        searchCandidates: "2",
+        maxCandidates: 12,
+      },
+    }).contradictionLocalization,
+    {
+      anchorEnabled: false,
+      anchorCandidates: 0,
+      searchCandidates: 2,
+      maxCandidates: 12,
+    },
+  );
+  assert.throws(
+    () =>
+      parseConfig({
+        contradictionLocalization: { anchorCandidates: "not-an-integer" },
+      }),
+    /contradictionLocalization\.anchorCandidates/,
+  );
+  assert.throws(
+    () =>
+      parseConfig({
+        contradictionLocalization: { maxCandidates: 1.5 },
+      }),
+    /contradictionLocalization\.maxCandidates/,
+  );
+});

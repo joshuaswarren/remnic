@@ -624,6 +624,16 @@ export interface ContradictionScanConfig {
   /** When true, pairs judged "duplicates" are auto-flagged for dedup (still need user approval). Default false. */
   autoMergeDuplicates: boolean;
 }
+export interface ContradictionLocalizationConfig {
+  /** Enable the entity/category anchor pass before QMD search. */
+  anchorEnabled: boolean;
+  /** Maximum anchor candidates. Zero disables the anchor pass. */
+  anchorCandidates: number;
+  /** Maximum QMD search candidates. Zero disables text search. */
+  searchCandidates: number;
+  /** Maximum merged candidates passed to contradiction verification. */
+  maxCandidates: number;
+}
 export interface DependencyPropagationConfig {
   /** Master switch. Default false. */
   enabled: boolean;
@@ -860,6 +870,8 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
   contradictionAutoResolve: boolean;
   /** Nightly contradiction-scan cron config (issue #520). */
   contradictionScan: ContradictionScanConfig;
+  /** Anchor-first contradiction candidate localization settings (issue #2327). */
+  contradictionLocalization: ContradictionLocalizationConfig;
   /** One-hop dependency invalidation propagation settings (issue #2326). */
   dependencyPropagation: DependencyPropagationConfig;
   // Temporal Supersession (issue #375)

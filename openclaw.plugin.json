@@ -1384,6 +1384,42 @@
           }
         }
       },
+      "contradictionLocalization": {
+        "type": "object",
+        "additionalProperties": false,
+        "default": {
+          "anchorEnabled": true,
+          "anchorCandidates": 5,
+          "searchCandidates": 5,
+          "maxCandidates": 8
+        },
+        "description": "Anchor-first contradiction candidate localization before QMD search (issue #2327).",
+        "properties": {
+          "anchorEnabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Enable entityRef and category anchor candidates."
+          },
+          "anchorCandidates": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 5,
+            "description": "Maximum anchor candidates. 0 disables the anchor pass."
+          },
+          "searchCandidates": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 5,
+            "description": "Maximum QMD search candidates. 0 disables text search."
+          },
+          "maxCandidates": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 8,
+            "description": "Maximum merged candidates sent to the verifier."
+          }
+        }
+      },
       "dependencyPropagation": {
         "type": "object",
         "additionalProperties": false,
