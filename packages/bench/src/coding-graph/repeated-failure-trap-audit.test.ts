@@ -644,9 +644,23 @@ test("runTrapAudit rejects a tampered prior retry trace with unchanged usage", a
     assert.ok(traceDir);
     const retryTracePath = path.join(outputDir, "traces", traceDir, "attempt-1.json");
     const retryTrace = JSON.parse(await readFile(retryTracePath, "utf8")) as {
-      usage?: { input: number; output: number; total: number };
+      usage?: {
+        input: number;
+        output: number;
+        total: number;
+        cachedInput: number;
+        cacheWriteInput: number;
+        reasoningOutput: number;
+      };
     };
-    assert.deepEqual(retryTrace.usage, { input: 2, output: 1, total: 3 });
+    assert.deepEqual(retryTrace.usage, {
+      input: 2,
+      output: 1,
+      total: 3,
+      cachedInput: 0,
+      cacheWriteInput: 0,
+      reasoningOutput: 0,
+    });
     await writeFile(retryTracePath, `${JSON.stringify({ ...retryTrace, tampered: true })}\n`);
 
     await assert.rejects(

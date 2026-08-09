@@ -263,6 +263,31 @@ test("full dataset validation & split balance", async () => {
   assert.ok(report.metrics.maxStateDefiningSimilarity <= 0.40);
 });
 
+test("validator does not reuse a report for a different claimed inventory hash", async () => {
+  const dataset = await loadCommittedH6BenchmarkDataset();
+  const validReport = await validateH6Dataset(dataset);
+  assert.equal(validReport.valid, true);
+
+  const corrupted = structuredClone(dataset);
+  corrupted.inventoryHash = "0".repeat(64);
+  const corruptedReport = await validateH6Dataset(corrupted);
+
+  assert.equal(corruptedReport.valid, false);
+  assert.ok(corruptedReport.issues.some((issue) => issue.code === "INVENTORY_HASH_MISMATCH"));
+  assert.ok(corruptedReport.issues.some((issue) => issue.code === "NON_FROZEN_INVENTORY"));
+});
+
+test("validator returns a fresh report for repeated validation", async () => {
+  const dataset = await loadCommittedH6BenchmarkDataset();
+  const firstReport = await validateH6Dataset(dataset);
+  assert.equal(firstReport.valid, true);
+  firstReport.valid = false;
+
+  const secondReport = await validateH6Dataset(dataset);
+  assert.equal(secondReport.valid, true);
+  assert.notEqual(secondReport, firstReport);
+});
+
 test("each trap class uses independently generated trap-relevant fixtures", async () => {
   const dataset = await loadCommittedH6BenchmarkDataset();
   for (const trapId of H6_TRAP_IDS) {
@@ -602,6 +627,30 @@ test("malformed package failures stay silent and return bounded diagnostics", as
   );
 });
 
+test("task evaluator strips inherited environment variables", async () => {
+  const dataset = await loadCommittedH6BenchmarkDataset();
+  const task = dataset.tasks[0];
+  const variant = task.variants[0];
+  const files = variant.files.map((file) =>
+    file.path === "test/check.js"
+      ? { ...file, content: "process.exit(process.env.H6_EVALUATOR_SECRET ? 1 : 0);\n" }
+      : file
+  );
+  const previous = process.env.H6_EVALUATOR_SECRET;
+  process.env.H6_EVALUATOR_SECRET = "must-not-cross";
+  try {
+    const result = await evaluateTaskState(task, variant, files);
+    assert.equal(result.state, "FIXED");
+    assert.equal(result.exitCode, 0);
+  } finally {
+    if (previous === undefined) {
+      Reflect.deleteProperty(process.env, "H6_EVALUATOR_SECRET");
+    } else {
+      process.env.H6_EVALUATOR_SECRET = previous;
+    }
+  }
+});
+
 test("offline checker strips inherited secrets and denies host filesystem, processes, and network", async () => {
   const dataset = await loadCommittedH6BenchmarkDataset();
   const task = dataset.tasks[0];
@@ -636,7 +685,7 @@ process.exit(failures.length === 0 ? 0 : 1);
     assert.equal(result.state, "FIXED");
     assert.equal(result.exitCode, 0);
   } finally {
-    if (previous === undefined) delete process.env.H6_SANDBOX_SECRET;
+    if (previous === undefined) Reflect.deleteProperty(process.env, "H6_SANDBOX_SECRET");
     else process.env.H6_SANDBOX_SECRET = previous;
     await repo.cleanup();
   }

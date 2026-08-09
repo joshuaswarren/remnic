@@ -20,6 +20,7 @@ import {
   isSafeSyntheticPath,
   materializeTaskRepo,
 } from "./materializer.js";
+import type { RevisionShas } from "./materializer.js";
 import {
   calculateTrigramSimilarity,
   normalizedTaskLogic,
@@ -50,13 +51,7 @@ export { unresolvedHelperImports } from "./import-scanner.js";
 
 const MAX_CHECK_OUTPUT_CHARS = 512;
 
-// Memoize the expensive fixed-dataset validation. The H6 fixture is frozen
-// (H6_FROZEN_INVENTORY_HASH), so the validation report is deterministic for
-// any given dataset content. Negative tests mutate the dataset inline and
-// expect a fresh report; they do not recompute the inventoryHash field, so
-// keying the cache by the JSON content hash (computeH6InventoryHash) is the
-// only safe choice — the field is unchanged but the content differs.
-const cachedDatasetValidations = new Map<string, Promise<ValidationReport>>();
+const MAX_MEMOIZED_REPO_OPERATIONS = 512;
 
 const EXPECTED_CANDIDATE_DESCRIPTIONS: Readonly<Record<string, string>> = {
   "candidate-alpha": "Candidate alpha.",
@@ -85,6 +80,34 @@ function syntheticFilesDigest(files: readonly SyntheticFile[]): string {
       .map((file) => [file.path, file.content, file.isExecutable ?? false] as const)
       .sort(([left], [right]) => compareCodePoints(left, right)),
   );
+}
+
+const memoizedTaskStates = new Map<string, Promise<Readonly<StateEvaluationResult>>>();
+const memoizedRevisionShas = new Map<string, Promise<Readonly<RevisionShas>>>();
+
+function getOrCreateMemoized<T>(
+  cache: Map<string, Promise<T>>,
+  key: string,
+  create: () => Promise<T>,
+): Promise<T> {
+  const cached = cache.get(key);
+  if (cached) {
+    cache.delete(key);
+    cache.set(key, cached);
+    return cached;
+  }
+
+  const pending = create();
+  cache.set(key, pending);
+  void pending.catch(() => {
+    if (cache.get(key) === pending) cache.delete(key);
+  });
+
+  if (cache.size > MAX_MEMOIZED_REPO_OPERATIONS) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey !== undefined) cache.delete(oldestKey);
+  }
+  return pending;
 }
 
 function readChildProcessFailure(
@@ -116,10 +139,10 @@ export async function evaluateTaskState(
   let stdout = "";
 
   try {
-    stdout = execFileSync("node", ["test/check.js"], {
+    stdout = execFileSync(process.execPath, ["test/check.js"], {
       cwd: repo.dir,
       encoding: "utf8",
-      env: { ...process.env, NODE_OPTIONS: "" },
+      env: { NODE_OPTIONS: "" },
       maxBuffer: 64 * 1024,
       stdio: ["ignore", "pipe", "pipe"],
     })
@@ -174,6 +197,39 @@ export async function evaluateTaskState(
   };
 }
 
+function evaluateTaskStateMemoized(
+  task: BaseTask,
+  variant: TaskVariant,
+  files: SyntheticFile[],
+  options: EvaluateTaskStateOptions = {},
+): Promise<Readonly<StateEvaluationResult>> {
+  const key = JSON.stringify([
+    options.isNoTrapControl ?? false,
+    syntheticFilesDigest(files),
+  ]);
+  return getOrCreateMemoized(memoizedTaskStates, key, async () =>
+    Object.freeze({ ...await evaluateTaskState(task, variant, files, options) })
+  );
+}
+
+function computeRevisionShasMemoized(
+  cleanFiles: SyntheticFile[],
+  badPatchFiles: SyntheticFile[],
+  goodPatchFiles: SyntheticFile[],
+  noTrapFiles: SyntheticFile[],
+): Promise<Readonly<RevisionShas>> {
+  const key = JSON.stringify([
+    syntheticFilesDigest(cleanFiles),
+    syntheticFilesDigest(badPatchFiles),
+    syntheticFilesDigest(goodPatchFiles),
+    syntheticFilesDigest(noTrapFiles),
+  ]);
+  return getOrCreateMemoized(memoizedRevisionShas, key, async () =>
+    Object.freeze({
+      ...await computeRevisionShas(cleanFiles, badPatchFiles, goodPatchFiles, noTrapFiles),
+    })
+  );
+}
 
 function applyPatch(
   files: SyntheticFile[],
@@ -251,8 +307,6 @@ export async function validateH6Dataset(
 
   const { inventoryHash, ...hashableDataset } = schemaParse.data;
   const contentHash = computeH6InventoryHash(hashableDataset);
-  const cached = cachedDatasetValidations.get(contentHash);
-  if (cached) return cached;
   if (contentHash !== inventoryHash) {
     issues.push({
       code: "INVENTORY_HASH_MISMATCH",
@@ -585,7 +639,7 @@ export async function validateH6Dataset(
         continue;
       }
 
-      const unfixedEval = await evaluateTaskState(task, variant, variant.files);
+      const unfixedEval = await evaluateTaskStateMemoized(task, variant, variant.files);
       if (unfixedEval.state !== "UNFIXED") {
         issues.push({
           code: "STATE_CLASSIFICATION_FAIL",
@@ -617,7 +671,7 @@ export async function validateH6Dataset(
         }
       }
       try {
-        const revisions = await computeRevisionShas(
+        const revisions = await computeRevisionShasMemoized(
           variant.files,
           variant.badStrategyPatch.files,
           variant.goodStrategyPatch.files,
@@ -640,7 +694,7 @@ export async function validateH6Dataset(
           message: `Variant ${variant.variantId} patch revision failed: ${String(error)}`,
         });
       }
-      const trappedEval = await evaluateTaskState(task, variant, badFiles);
+      const trappedEval = await evaluateTaskStateMemoized(task, variant, badFiles);
       if (trappedEval.state !== "TRAPPED") {
         issues.push({
           code: "STATE_CLASSIFICATION_FAIL",
@@ -650,7 +704,7 @@ export async function validateH6Dataset(
         });
       }
 
-      const fixedEval = await evaluateTaskState(task, variant, goodFiles);
+      const fixedEval = await evaluateTaskStateMemoized(task, variant, goodFiles);
       if (fixedEval.state !== "FIXED") {
         issues.push({
           code: "STATE_CLASSIFICATION_FAIL",
@@ -660,7 +714,7 @@ export async function validateH6Dataset(
         });
       }
 
-      const noTrapEval = await evaluateTaskState(task, variant, variant.noTrapControlFiles, {
+      const noTrapEval = await evaluateTaskStateMemoized(task, variant, variant.noTrapControlFiles, {
         isNoTrapControl: true,
       });
       if (noTrapEval.state !== "no-trap" || !noTrapEval.testPassed) {
@@ -776,7 +830,7 @@ export async function validateH6Dataset(
     }
   }
 
-  const report: ValidationReport = {
+  return {
     valid: issues.length === 0,
     issues,
     metrics: {
@@ -789,8 +843,6 @@ export async function validateH6Dataset(
       mainTaskCount: mainCount,
     },
   };
-  cachedDatasetValidations.set(contentHash, Promise.resolve(report));
-  return report;
 }
 
 type FixtureArtifact = { path: string; content: string };
