@@ -16,7 +16,13 @@ import * as path from "node:path";
 import { readEdgeConfidence } from "./graph-edge-reinforcement.js";
 import { emitGraphEvent } from "./graph-events.js";
 import type { GraphConstructionCapabilitySet } from "./capabilities.js";
-import { reconstructActivationPath, type ActivationPredecessor } from "./graph-path-reconstruction.js";
+import {
+  ActivationPathTracker,
+  compareActivationPathCandidates,
+  reconstructActivationPath,
+  type ActivationPathCandidate,
+  type ActivationPredecessor,
+} from "./graph-path-reconstruction.js";
 export { reconstructActivationPath, type ActivationPredecessor };
 
 export type GraphType = "entity" | "time" | "causal";
@@ -862,9 +868,9 @@ export class GraphIndex {
           adj.get(edge.to)!.push({ ...edge, from: edge.to, to: edge.from });
         }
       }
-
       const seedSet = new Set(seeds);
       const scores = new Map<string, number>(); // candidate path → accumulated activation score
+
       const provenance = new Map<
         string,
         {
@@ -873,11 +879,13 @@ export class GraphIndex {
           decayedWeight: number;
           graphType: "entity" | "time" | "causal";
           edgeConfidence: number;
+          pathKey: string;
         }
       >();
       let frontier = new Map<string, { node: string; seed: string; activation: number }>();
       const reachedBySeed = new Map<string, Set<string>>();
-      const predecessors = recordPaths ? new Map<string, ActivationPredecessor>() : null;
+      const pathTracker = recordPaths ? new ActivationPathTracker(seeds) : null;
+      const predecessors = pathTracker?.predecessors ?? null;
       for (const seed of seeds) {
         frontier.set(`${seed}\0${seed}`, { node: seed, seed, activation: 1 });
         reachedBySeed.set(seed, new Set([seed]));
@@ -929,31 +937,50 @@ export class GraphIndex {
             if (reachedForSeed?.has(neighbor)) {
               continue;
             }
-            if (recordPaths && predecessors && !seedSet.has(neighbor)) {
-              const key = `${sourceSeed}\0${neighbor}`;
-              if (!predecessors.has(key)) {
-                predecessors.set(key, {
-                  prev: node,
-                  edgeConfidence: conf,
-                  graphType: edge.type,
-                });
-              }
-            }
+            const candidatePathKey =
+              pathTracker && !seedSet.has(neighbor)
+                ? pathTracker.consider(
+                    sourceSeed,
+                    node,
+                    neighbor,
+                    hop + 1,
+                    score,
+                    conf,
+                    edge.type,
+                  )
+                : "";
 
             if (!seedSet.has(neighbor)) {
               const existing = scores.get(neighbor) ?? 0;
               scores.set(neighbor, existing + score);
 
               const prev = provenance.get(neighbor);
-              if (!prev || hop + 1 < prev.hopDepth || (hop + 1 === prev.hopDepth && score > prev.decayedWeight)) {
+              const candidateWinner: ActivationPathCandidate = {
+                hopDepth: hop + 1,
+                landingStrength: score,
+                pathKey: candidatePathKey,
+              };
+              const shouldReplace =
+                !prev ||
+                (recordPaths
+                  ? compareActivationPathCandidates(candidateWinner, {
+                      hopDepth: prev.hopDepth,
+                      landingStrength: prev.decayedWeight,
+                      pathKey: prev.pathKey,
+                    }) > 0
+                  : hop + 1 < prev.hopDepth ||
+                    (hop + 1 === prev.hopDepth && score > prev.decayedWeight));
+              if (shouldReplace) {
                 provenance.set(neighbor, {
                   seed: sourceSeed,
                   hopDepth: hop + 1,
                   decayedWeight: score,
                   graphType: edge.type,
                   edgeConfidence: conf,
+                  pathKey: candidatePathKey,
                 });
               }
+
 
               if (hop + 1 < steps) {
                 const frontierKey = `${sourceSeed}\0${neighbor}`;

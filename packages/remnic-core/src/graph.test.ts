@@ -169,6 +169,52 @@ test("spreadingActivation keeps the first shortest predecessor path", async () =
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+test("spreadingActivation records the stronger equal-hop predecessor", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-strength-"));
+  try {
+    await writeGraphEdges(memoryDir, [
+      makeEdge("seed", "weak"),
+      makeEdge("seed", "strong"),
+      makeEdge("weak", "candidate", "entity", 0.4),
+      makeEdge("strong", "candidate", "entity", 0.9),
+    ]);
+
+    const graph = new GraphIndex(memoryDir, { ...makeGraphConfig(), maxGraphTraversalSteps: 2 });
+    const activated = await graph.spreadingActivation(["seed"], undefined, { recordPaths: true });
+
+    assert.deepEqual(activated.find((candidate) => candidate.path === "candidate")?.activationPath, {
+      nodeIds: ["seed", "strong", "candidate"],
+      edgeConfidences: [1, 0.9],
+      graphTypes: ["entity", "entity"],
+    });
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("spreadingActivation uses a lexical predecessor tie-break", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-lexical-"));
+  try {
+    await writeGraphEdges(memoryDir, [
+      makeEdge("seed", "zulu"),
+      makeEdge("seed", "alpha"),
+      makeEdge("zulu", "candidate"),
+      makeEdge("alpha", "candidate"),
+    ]);
+
+    const graph = new GraphIndex(memoryDir, { ...makeGraphConfig(), maxGraphTraversalSteps: 2 });
+    const activated = await graph.spreadingActivation(["seed"], undefined, { recordPaths: true });
+
+    assert.deepEqual(activated.find((candidate) => candidate.path === "candidate")?.activationPath, {
+      nodeIds: ["seed", "alpha", "candidate"],
+      edgeConfidences: [1, 1],
+      graphTypes: ["entity", "entity"],
+    });
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 
 test("spreadingActivation keeps predecessor paths isolated per seed", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-seeds-"));
