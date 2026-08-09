@@ -3,11 +3,17 @@ import assert from "node:assert/strict";
 import type { ActivationPath } from "./graph.js";
 import { scoreEvidencePath, type PathNodeState, type PathScoringOptions } from "./graph-path-scoring.js";
 
-const path = (nodeIds: string[], edgeConfidences: number[]): ActivationPath => ({
+const activationPath = (nodeIds: string[], edgeConfidences: number[]): ActivationPath => ({
   nodeIds,
   edgeConfidences,
   graphTypes: edgeConfidences.map(() => "entity"),
 });
+
+const state = (
+  id: string,
+  status: PathNodeState["status"] = "active",
+  invalidAt: string | null = null,
+): PathNodeState => ({ id, status, invalidAt });
 
 const score = (
   evidencePath: ActivationPath | null,
@@ -15,58 +21,84 @@ const score = (
   options: Partial<PathScoringOptions> = {},
 ): number =>
   scoreEvidencePath(evidencePath, states, {
-    asOf: Date.parse("2026-01-01T00:00:00.000Z"),
+    asOf: "2026-01-01T00:00:00.000Z",
     invalidNodePenalty: 0.2,
     ...options,
   });
 
-test("scores edge confidence product across a clean path", () => {
-  assert.equal(score(path(["seed", "mid", "candidate"], [0.8, 0.5]), new Map()), 0.4);
+test("scores the edge confidence product across a clean path", () => {
+  assert.equal(score(activationPath(["seed", "mid", "candidate"], [0.8, 0.5]), new Map()), 0.4);
 });
 
-test("applies the invalid-node penalty once per invalid intermediate", () => {
+test("penalizes one invalid intermediate memory", () => {
+  const states = new Map([["mid", state("mid", "superseded")]]);
+  assert.equal(
+    score(activationPath(["seed", "mid", "candidate"], [0.8, 0.5]), states),
+    0.8 * 0.5 * 0.2,
+  );
+});
+
+test("squares the penalty for two invalid intermediate memories", () => {
   const states = new Map([
-    ["mid", { status: "superseded" }],
-    ["mid-2", { invalidAt: "2025-01-01T00:00:00.000Z" }],
+    ["mid", state("mid", "superseded")],
+    ["mid-2", state("mid-2", "active", "2025-01-01T00:00:00.000Z")],
   ]);
   assert.equal(
-    score(path(["seed", "mid", "mid-2", "candidate"], [0.8, 0.5, 0.25]), states),
+    score(activationPath(["seed", "mid", "mid-2", "candidate"], [0.8, 0.5, 0.25]), states),
     0.8 * 0.5 * 0.25 * 0.2 * 0.2,
   );
 });
 
-test("ignores seed and candidate validity while penalizing entity intermediates", () => {
+test("ignores seed and candidate state", () => {
   const states = new Map([
-    ["seed", { status: "rejected" }],
-    ["entity-mid", { status: "archived" }],
-    ["candidate", { invalidAt: "2025-01-01T00:00:00.000Z" }],
+    ["seed", state("seed", "rejected", "2025-01-01T00:00:00.000Z")],
+    ["candidate", state("candidate", "archived", "2025-01-01T00:00:00.000Z")],
   ]);
-  assert.equal(score(path(["seed", "entity-mid", "candidate"], [0.7, 0.6]), states), 0.7 * 0.6 * 0.2);
+  assert.equal(score(activationPath(["seed", "candidate"], [0.7]), states), 0.7);
 });
 
-test("treats null or missing state as neutral", () => {
-  const states = new Map<string, PathNodeState | null>([["mid", null]]);
-  assert.equal(score(path(["seed", "mid", "candidate"], [0.7, 0.6]), states), 0.42);
+test("treats entity intermediate nodes with null status as neutral", () => {
+  const states = new Map([["entity-mid", state("entity-mid", null)]]);
+  assert.equal(
+    score(activationPath(["seed", "entity-mid", "candidate"], [0.7, 0.6]), states),
+    0.7 * 0.6,
+  );
 });
 
-test("uses the exclusive invalidAt boundary and keeps future invalidAt valid", () => {
-  const boundary = Date.parse("2026-01-01T00:00:00.000Z");
+test("treats an unknown intermediate id as neutral", () => {
+  assert.equal(
+    score(activationPath(["seed", "unknown", "candidate"], [0.7, 0.6]), new Map()),
+    0.7 * 0.6,
+  );
+});
+
+test("treats invalidAt equal to asOf as invalid", () => {
   const states = new Map([
-    ["boundary", { invalidAt: "2026-01-01T00:00:00.000Z" }],
-    ["future", { invalidAt: "2026-01-02T00:00:00.000Z" }],
+    ["boundary", state("boundary", "active", "2026-01-01T00:00:00.000Z")],
   ]);
   assert.equal(
-    score(path(["seed", "boundary", "future", "candidate"], [1, 1, 1]), states, { asOf: boundary }),
+    score(activationPath(["seed", "boundary", "candidate"], [1, 1]), states),
     0.2,
   );
 });
 
-test("keeps penalty one as a no-op and clamps the multiplier to one", () => {
+test("treats a future invalidAt as valid", () => {
+  const states = new Map([
+    ["future", state("future", "active", "2026-01-02T00:00:00.000Z")],
+  ]);
   assert.equal(
-    score(path(["seed", "mid", "candidate"], [2, 3]), new Map([["mid", { status: "rejected" }]]), {
+    score(activationPath(["seed", "future", "candidate"], [1, 1]), states),
+    1,
+  );
+});
+
+test("keeps penalty one as a no-op", () => {
+  const states = new Map([["mid", state("mid", "rejected")]]);
+  assert.equal(
+    score(activationPath(["seed", "mid", "candidate"], [0.8, 0.5]), states, {
       invalidNodePenalty: 1,
     }),
-    1,
+    0.8 * 0.5,
   );
 });
 
