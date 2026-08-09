@@ -28,6 +28,7 @@ import type { GraphIndex } from "../graph.js";
 import type { GraphRecallExpandedEntry } from "../recall-state.js";
 import { clampGraphRecallExpandedEntries } from "../recall-state.js";
 import { qmdCollectionPathParts } from "./qmd-result-resolver.js";
+import { scoreEvidencePath, type PathNodeState } from "../graph-path-scoring.js";
 import { log } from "../logger.js";
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -177,6 +178,9 @@ export class GraphRecallCoordinator {
     memoryResults: QmdSearchResult[];
     recallNamespaces: string[];
     recallResultLimit: number;
+    /** Query-time instant used for graph-path invalidity checks. */
+    asOf?: string;
+    asOfMs?: number;
     deadlineAtMs?: number | null;
     /** Issue #681 — when true, bypass graphTraversalConfidenceFloor. */
     includeLowConfidence?: boolean;
@@ -296,9 +300,7 @@ export class GraphRecallCoordinator {
           : (
               await Promise.all(
                 seedCandidates.map((result) =>
-                  this.graphSeedPathRelativeToStorage(storage, result, [
-                    namespace,
-                  ]),
+                  this.graphSeedPathRelativeToStorage(storage, result, [namespace]),
                 ),
               )
             ).filter(
@@ -316,11 +318,30 @@ export class GraphRecallCoordinator {
         ...seedRelativePaths.map((rel) => path.join(storage.dir, rel)),
       );
       const seedSet = new Set(seedRelativePaths);
+      const scoringEnabled = config.graphPathScoring.enabled;
+      const corpusByPath = new Map<string, MemoryFile>();
+      const nodeStates = new Map<string, PathNodeState>();
+      if (scoringEnabled) {
+        for (const memory of await storage.readAllMemories()) {
+          const relativePath = graphPathRelativeToStorage(storage.dir, memory.path);
+          if (relativePath) corpusByPath.set(relativePath, memory);
+          corpusByPath.set(memory.path, memory);
+          corpusByPath.set(memory.frontmatter.id, memory);
+          const state: PathNodeState = {
+            id: memory.frontmatter.id,
+            status: memory.frontmatter.status ?? null,
+            invalidAt: memory.frontmatter.invalid_at ?? null,
+          };
+          nodeStates.set(memory.frontmatter.id, state);
+          if (relativePath) nodeStates.set(relativePath, state);
+        }
+      }
       const expanded = await this.graphIndexFor(storage).spreadingActivation(
         seedRelativePaths,
         config.maxGraphTraversalSteps,
         {
           ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
+          ...(scoringEnabled ? { recordPaths: true } : {}),
           ...(typeof options.deadlineAtMs === "number"
             ? { deadlineAtMs: options.deadlineAtMs }
             : {}),
@@ -329,35 +350,49 @@ export class GraphRecallCoordinator {
       if (expanded.length === 0) continue;
       if (deadlineExpired()) break;
 
-      for (const candidate of expanded.slice(0, perNamespaceExpandedCap)) {
+      const scoredExpanded: Array<{
+        result: QmdSearchResult;
+        entry: GraphRecallExpandedEntry;
+      }> = [];
+      const candidates = scoringEnabled ? expanded : expanded.slice(0, perNamespaceExpandedCap);
+      for (const candidate of candidates) {
         if (deadlineExpired()) break;
         if (seedSet.has(candidate.path)) continue;
-        const memoryPath = path.resolve(storage.dir, candidate.path);
-        const memory = await storage.readMemoryByPath(memoryPath);
+        const memory = scoringEnabled
+          ? corpusByPath.get(candidate.path) ??
+            corpusByPath.get(path.resolve(storage.dir, candidate.path))
+          : await storage.readMemoryByPath(path.resolve(storage.dir, candidate.path));
         if (deadlineExpired()) break;
         if (!memory) continue;
         if (/(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(memory.path)) continue;
-        if (memory.frontmatter.status && memory.frontmatter.status !== "active")
-          continue;
+        if (memory.frontmatter.status && memory.frontmatter.status !== "active") continue;
 
-        const snippet = memory.content.slice(0, 400);
-        const score = blendGraphExpandedRecallScore({
+        const pathPenaltyApplied = scoringEnabled
+          ? scoreEvidencePath(candidate.activationPath ?? null, nodeStates, {
+              asOf:
+                options.asOf ??
+                (typeof options.asOfMs === "number"
+                  ? new Date(options.asOfMs).toISOString()
+                  : new Date().toISOString()),
+              invalidNodePenalty: config.graphPathScoring.invalidNodePenalty,
+            })
+          : 1;
+        if (scoringEnabled && candidate.activationPath) {
+          for (const nodeId of candidate.activationPath.nodeIds.slice(1, -1)) {
+            if (!nodeStates.has(nodeId)) {
+              log.debug(`graph path scoring missing intermediate memory state: ${nodeId}`);
+            }
+          }
+        }
+        const blendedScore = blendGraphExpandedRecallScore({
           graphActivationScore: candidate.score,
           seedRecallScore,
           activationWeight: config.graphExpansionActivationWeight,
           blendMin: config.graphExpansionBlendMin,
           blendMax: config.graphExpansionBlendMax,
         });
-        expandedResults.push({
-          docid: memory.frontmatter.id,
-          // Absolute path, matching the globally-unique identity of primary
-          // fanout hits, so the merge dedups a memory found by both (#2020).
-          path: memory.path,
-          namespace,
-          snippet,
-          score,
-        });
-        expandedPaths.push({
+        const score = blendedScore * pathPenaltyApplied;
+        const entry: GraphRecallExpandedEntry = {
           path: memory.path,
           score,
           namespace,
@@ -365,12 +400,40 @@ export class GraphRecallCoordinator {
           hopDepth: candidate.hopDepth,
           decayedWeight: candidate.decayedWeight,
           graphType: candidate.graphType,
-          // Issue #681 PR 3/3 — surface the per-edge confidence used for
-          // PageRank weighting / floor pruning so downstream observability
-          // (recall_xray, memory_graph_explain) can attribute ranking and
-          // pruning decisions to specific edges.
           edgeConfidence: candidate.edgeConfidence,
+          ...(scoringEnabled ? { pathPenaltyApplied } : {}),
+          ...(scoringEnabled &&
+          config.graphPathScoring.includePathInProvenance &&
+          candidate.activationPath
+            ? { pathNodeIds: candidate.activationPath.nodeIds }
+            : {}),
+        };
+        scoredExpanded.push({
+          result: {
+            docid: memory.frontmatter.id,
+            path: memory.path,
+            namespace,
+            snippet: memory.content.slice(0, 400),
+            score,
+            ...(scoringEnabled ? { pathPenaltyApplied } : {}),
+            ...(scoringEnabled &&
+            config.graphPathScoring.includePathInProvenance &&
+            candidate.activationPath
+              ? { pathNodeIds: candidate.activationPath.nodeIds }
+              : {}),
+          },
+          entry,
         });
+      }
+      if (scoringEnabled) {
+        scoredExpanded.sort((a, b) => {
+          const scoreDelta = b.result.score - a.result.score;
+          return scoreDelta !== 0 ? scoreDelta : a.result.path.localeCompare(b.result.path);
+        });
+      }
+      for (const item of scoredExpanded.slice(0, perNamespaceExpandedCap)) {
+        expandedResults.push(item.result);
+        expandedPaths.push(item.entry);
       }
     }
 

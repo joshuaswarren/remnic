@@ -814,6 +814,7 @@ export class RecallSearchPipelineCoordinator {
         recallResultLimit: options.recallResultLimit,
         deadlineAtMs: options.deadlineAtMs,
         ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
+        ...(typeof options.asOfMs === "number" ? { asOfMs: options.asOfMs } : {}),
       });
       results = merged;
     }

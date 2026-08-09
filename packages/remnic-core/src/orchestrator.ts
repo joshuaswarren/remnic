@@ -2560,6 +2560,8 @@ export class Orchestrator {
     recallResultLimit: number;
     deadlineAtMs?: number | null;
     includeLowConfidence?: boolean;
+    asOf?: string;
+    asOfMs?: number;
   }): Promise<{
     merged: QmdSearchResult[];
     seedPaths: string[];

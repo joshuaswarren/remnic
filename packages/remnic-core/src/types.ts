@@ -3495,6 +3495,10 @@ export interface QmdSearchResult {
   transport?: "daemon" | "subprocess" | "hybrid" | "scoped_prefilter";
   /** Namespace that owned this result when returned by a namespace fanout search. */
   namespace?: string;
+  /** Graph activation path evidence from opt-in path scoring. */
+  pathNodeIds?: string[];
+  /** Graph path multiplier applied to this result. */
+  pathPenaltyApplied?: number;
   sourceConnector?: string;
 }
 

@@ -203,6 +203,12 @@ function renderResultTextLines(
       );
     }
   }
+  if (result.pathPenaltyApplied !== undefined) {
+    lines.push(`    path-penalty: ${result.pathPenaltyApplied.toFixed(3)}`);
+  }
+  if (result.pathNodeIds && result.pathNodeIds.length > 0) {
+    lines.push(`    path-node-ids: ${result.pathNodeIds.join(" -> ")}`);
+  }
   if (result.auditEntryId) {
     lines.push(`    audit-entry: ${result.auditEntryId}`);
   }
@@ -413,6 +419,14 @@ function renderResultMarkdownLines(
           .join(", ")}`,
       );
     }
+  }
+  if (result.pathPenaltyApplied !== undefined) {
+    lines.push(`- **Path penalty:** ${mdInlineCode(result.pathPenaltyApplied.toFixed(3))}`);
+  }
+  if (result.pathNodeIds && result.pathNodeIds.length > 0) {
+    lines.push(
+      `- **Path node ids:** ${result.pathNodeIds.map(mdInlineCode).join(" → ")}`,
+    );
   }
   if (result.auditEntryId) {
     lines.push(`- **Audit entry:** \`${result.auditEntryId}\``);
