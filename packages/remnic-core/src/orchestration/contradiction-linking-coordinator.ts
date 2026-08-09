@@ -17,6 +17,7 @@
  */
 
 import type {
+  MemoryFile,
   MemoryLink,
   PluginConfig,
   QmdSearchResult,
@@ -28,6 +29,7 @@ import type { ExtractionEngine } from "../extraction.js";
 import { log } from "../logger.js";
 import { resolveIndexingCapabilities } from "../capabilities.js";
 import { deindexMemoryAsync } from "../temporal-index.js";
+import { propagateInvalidation } from "./dependency-propagation.js";
 
 /** Result type of {@link ContradictionLinkingCoordinator.checkForContradiction}. */
 export interface ContradictionResult {
@@ -243,12 +245,44 @@ export class ContradictionLinkingCoordinator {
     ) {
       return;
     }
+
+    // Capture links before the primary supersession. The propagation hook is
+    // orchestration-owned, so its own supersessions cannot recurse.
+    let oldMemory: MemoryFile | null = null;
     try {
-      await storage.supersedeMemory(
+      oldMemory = await storage.getMemoryById(contradiction.supersededId);
+    } catch (err) {
+      log.warn(`contradiction propagation snapshot failed for ${contradiction.supersededId}: ${err}`);
+    }
+
+    try {
+      const superseded = await storage.supersedeMemory(
         contradiction.supersededId,
         newMemoryId,
         contradiction.reason,
       );
+      if (!superseded) return;
+      if (oldMemory) {
+        try {
+          await propagateInvalidation(
+            {
+              storage,
+              extraction: this.getExtraction(),
+              config,
+            },
+            {
+              oldMemory,
+              replacementId: newMemoryId,
+              replacementContent: (await storage.getMemoryById(newMemoryId))?.content ?? null,
+              cause: "contradiction",
+              namespaceScope: this.namespaceFromPath(storage.dir),
+            },
+          );
+        } catch (err) {
+          log.warn(`contradiction dependency propagation failed for ${contradiction.supersededId}: ${err}`);
+        }
+      }
+
       if (
         resolveIndexingCapabilities(config).queryAwareIndexing &&
         contradiction.supersededPath

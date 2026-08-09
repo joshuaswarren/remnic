@@ -32,6 +32,7 @@ import { applyCommitmentLedgerLifecycle } from "../commitment-ledger.js";
 import { recordDreamsPhaseRun } from "../maintenance/dreams-ledger.js";
 import { deindexMemoriesBatchAsync } from "../temporal-index-batch.js";
 import { isActiveMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
+import { propagateInvalidation } from "./dependency-propagation.js";
 import {
   resolveConsolidationCapabilities,
   resolveCreationMemoryCapabilities,
@@ -170,10 +171,36 @@ export class ConsolidationRunCoordinator {
             const toInvalidate = resolveIndexingCapabilities(config).queryAwareIndexing
               ? (memoryLookup?.get(item.existingId) ?? null)
               : null;
+            // Always capture the full pre-delete snapshot for propagation.
+            const propagationOld = allMemories.find(
+              (memory) => memory.frontmatter.id === item.existingId,
+            );
             if (await storage.invalidateMemory(item.existingId)) {
               invalidated += 1;
               memoryItemMutated = true;
               await this.deps.embeddingFallback.removeFromIndex(item.existingId);
+              if (propagationOld) {
+                try {
+                  await propagateInvalidation(
+                    {
+                      storage,
+                      extraction: this.deps.getExtraction(),
+                      config,
+                    },
+                    {
+                      oldMemory: propagationOld,
+                      replacementId: null,
+                      replacementContent: null,
+                      cause: "consolidation_invalidate",
+                      namespaceScope: config.defaultNamespace,
+                    },
+                  );
+                } catch (propagationErr) {
+                  log.warn(
+                    `consolidation dependency propagation failed for ${item.existingId}: ${propagationErr}`,
+                  );
+                }
+              }
               if (toInvalidate?.path && toInvalidate.frontmatter?.created) {
                 itemsDeindexBatch.push({
                   path: toInvalidate.path,
@@ -217,10 +244,37 @@ export class ConsolidationRunCoordinator {
               const toMergeInvalidate = resolveIndexingCapabilities(config).queryAwareIndexing
                 ? (memoryLookup?.get(item.mergeWith) ?? null)
                 : null;
+              // Capture the doomed memory before invalidation, independent of
+              // queryAwareIndexing and its optional lookup map.
+              const propagationOld = allMemories.find(
+                (memory) => memory.frontmatter.id === item.mergeWith,
+              );
               if (await storage.invalidateMemory(item.mergeWith)) {
                 invalidated += 1;
                 merged += 1;
                 await this.deps.embeddingFallback.removeFromIndex(item.mergeWith);
+                if (propagationOld) {
+                  try {
+                    await propagateInvalidation(
+                      {
+                        storage,
+                        extraction: this.deps.getExtraction(),
+                        config,
+                      },
+                      {
+                        oldMemory: propagationOld,
+                        replacementId: item.existingId,
+                        replacementContent: item.updatedContent,
+                        cause: "consolidation_merge",
+                        namespaceScope: config.defaultNamespace,
+                      },
+                    );
+                  } catch (propagationErr) {
+                    log.warn(
+                      `consolidation dependency propagation failed for ${item.mergeWith}: ${propagationErr}`,
+                    );
+                  }
+                }
                 if (
                   toMergeInvalidate?.path &&
                   toMergeInvalidate.frontmatter?.created

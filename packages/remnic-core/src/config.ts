@@ -41,6 +41,7 @@ import { coerceBool, coerceBooleanLike, coerceInstallExtension, coerceNumber } f
 import { parseRecallConcurrencyConfig } from "./recall-concurrency-config.js";
 import { parseExtractionLivenessConfig } from "./extraction-liveness.js";
 import { parseReplicaPeersConfig } from "./replica-peers-config.js";
+import { parseDependencyPropagationConfig } from "./dependency-propagation-config.js";
 import { hasLegacyConnectorEntries } from "./connectors/paths.js";
 import {
   parseQmdChunkStrategy,
@@ -1808,6 +1809,7 @@ export function parseConfig(
     contradictionAutoResolve: cfg.contradictionAutoResolve !== false,
     // Contradiction Scan cron (issue #520)
     contradictionScan: parseContradictionScanConfig(cfg.contradictionScan),
+    dependencyPropagation: parseDependencyPropagationConfig(cfg),
     // Temporal Supersession (issue #375)
     temporalSupersessionEnabled: cfg.temporalSupersessionEnabled !== false, // On by default
     temporalSupersessionIncludeInRecall:

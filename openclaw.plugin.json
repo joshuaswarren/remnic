@@ -1384,6 +1384,60 @@
           }
         }
       },
+      "dependencyPropagation": {
+        "type": "object",
+        "additionalProperties": false,
+        "default": {
+          "enabled": false,
+          "linkTypes": [
+            "supports",
+            "follows"
+          ],
+          "maxDependents": 10,
+          "timeoutMs": 20000,
+          "dryRun": false
+        },
+        "description": "Bounded one-hop dependency revalidation after supersession. Disabled by default.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false
+          },
+          "linkTypes": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "supports",
+                "follows",
+                "references"
+              ]
+            },
+            "default": [
+              "supports",
+              "follows"
+            ]
+          },
+          "maxDependents": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 10,
+            "description": "Maximum active dependents to revalidate. 0 disables propagation."
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 20000,
+            "description": "Maximum duration of the batched revalidation call in milliseconds."
+          },
+          "dryRun": {
+            "type": "boolean",
+            "default": false,
+            "description": "Discover and revalidate dependents without writing supersession changes."
+          }
+        }
+      },
       "contradictionSimilarityThreshold": {
         "type": "number",
         "default": 0.7,
@@ -6813,6 +6867,10 @@
     "contradictionScan": {
       "label": "Contradiction Scan",
       "help": "Nightly cron that pairs similar memories and flags contradictions for review (issue #520)"
+    },
+    "dependencyPropagation": {
+      "label": "Dependency Propagation",
+      "help": "Revalidate active dependent memories after supersession. Disabled by default (issue #2326)."
     },
     "converge.conflictPolicy": {
       "label": "Converge Conflict Policy",

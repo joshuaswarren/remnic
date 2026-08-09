@@ -90,6 +90,7 @@ import {
 import { buildProcedurePersistBody } from "../procedural/procedure-types.js";
 import { stripAttributesSuffix } from "../structured-attributes.js";
 import { LocalLlmClient } from "../local-llm.js";
+import type { ExtractionEngine } from "../extraction.js";
 import {
   FallbackLlmClient,
   fallbackLlmRuntimeContextFromConfig,
@@ -129,6 +130,7 @@ export interface ExtractionPersistDeps {
   getStorageRouter: () => NamespaceStorageRouter;
   getThreading: () => ThreadingManager;
   getLocalLlm: () => LocalLlmClient;
+  getExtraction: () => ExtractionEngine;
   getQmd: () => SearchBackend;
   getJudgeVerdictCache: () => Map<string, JudgeVerdict>;
   getJudgeDeferCounts: () => Map<string, number>;
@@ -558,6 +560,9 @@ export class ExtractionPersistCoordinator {
                 structuredAttributes: { ...targetSurvivingAttrs },
                 createdAt: supersessionOrderingAt(options.validAt),
                 enabled: !(options.eventTimeSource === "extracted" && !options.validAt),
+                extraction: this.deps.getExtraction(),
+                config: this.config,
+                namespaceScope: this.deps.storageDirNamespace(targetStorage.dir),
               });
             } catch (profileSupersessionErr) {
               log.warn(
@@ -849,6 +854,9 @@ export class ExtractionPersistCoordinator {
                   createdAt: supersessionOrderingAt(options.validAt),
                   enabled: !(options.eventTimeSource === "extracted" && !options.validAt),
                   useCallerTimestamp: true,
+                  extraction: this.deps.getExtraction(),
+                  config: this.config,
+                  namespaceScope: this.deps.storageDirNamespace(sharedStorage.dir),
                 });
                 // Catalog touch (issue #1499 — codex P2 NElSf): this dedup branch
                 // returns WITHOUT the post-write catalog touch (now at the storage chokepoint #1522),
@@ -971,6 +979,9 @@ export class ExtractionPersistCoordinator {
               structuredAttributes: { ...sharedSurvivingAttrs },
               createdAt: supersessionOrderingAt(options.validAt),
               enabled: !(options.eventTimeSource === "extracted" && !options.validAt),
+              extraction: this.deps.getExtraction(),
+              config: this.config,
+              namespaceScope: this.deps.storageDirNamespace(sharedStorage.dir),
             });
           } catch (sharedSupersessionErr) {
             log.warn(
@@ -2383,6 +2394,9 @@ export class ExtractionPersistCoordinator {
                 // supersede a later active fact (codex P1 on :15534).
                 enabled: lifecycleCaps.temporalSupersession &&
                   !(biTemporal && !biTemporal.validFrom),
+                extraction: this.deps.getExtraction(),
+                config: this.config,
+                namespaceScope: this.deps.storageDirNamespace(targetStorage.dir),
               });
             } catch (err) {
               log.warn(`temporal-supersession (chunked): unexpected error: ${err}`);
@@ -2654,6 +2668,9 @@ export class ExtractionPersistCoordinator {
             createdAt: supersessionOrderingAt(biTemporal?.validFrom ?? sourceContext?.validAt),
             enabled: lifecycleCaps.temporalSupersession &&
               !(biTemporal && !biTemporal.validFrom),
+            extraction: this.deps.getExtraction(),
+            config: this.config,
+            namespaceScope: this.deps.storageDirNamespace(targetStorage.dir),
           });
         } catch (err) {
           log.warn(`temporal-supersession: unexpected error: ${err}`);
