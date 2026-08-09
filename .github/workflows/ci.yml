@@ -163,15 +163,14 @@ jobs:
   # pair's union is exactly its unsharded suite.
   #
   # Runner selection (public repo, self-hosted safety): the `remnic` pool only
-  # serves package tests on pushes to main and same-repo pull requests. Fork
-  # pull requests run on GitHub-hosted runners, even after maintainer approval.
-  # This prevents external code from running on private hardware. Pool down?
-  # Temporarily replace the expression with 'ubuntu-latest'.
+  # serves package tests on pushes to main and manual runs from main. Every pull
+  # request runs on GitHub-hosted runners. Pool down? Temporarily replace the
+  # expression with 'ubuntu-latest'.
   tests:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    # Root stays hosted so both package shards can use available pool slots.
-    # Other refs and fork pull requests also stay on hosted runners.
-    runs-on: ${{ (matrix.shard != 'root' && ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name != 'pull_request' && github.ref == 'refs/heads/main'))) && 'remnic' || 'ubuntu-latest' }}
+    # Root and pull request jobs stay hosted. Trusted main runs may use the
+    # self-hosted pool for package tests.
+    runs-on: ${{ (matrix.shard != 'root' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') && 'remnic' || 'ubuntu-latest' }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
