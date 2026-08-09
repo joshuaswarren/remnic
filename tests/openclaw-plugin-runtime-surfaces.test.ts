@@ -627,7 +627,15 @@ test("root and package OpenClaw manifests stay byte-identical", () => {
 test("all OpenClaw manifests expose contradiction localization schema and UI metadata (#2327)", () => {
   for (const manifestPath of OPENCLAW_MANIFEST_PATHS) {
     const manifest = readManifest(manifestPath) as {
-      configSchema?: { properties?: Record<string, Record<string, unknown>> };
+      configSchema?: {
+        properties?: Record<
+          string,
+          {
+            default?: unknown;
+            properties?: Record<string, { minimum?: unknown }>;
+          }
+        >;
+      };
       uiHints?: Record<string, Record<string, unknown>>;
     };
     const schema = manifest.configSchema?.properties?.contradictionLocalization;
