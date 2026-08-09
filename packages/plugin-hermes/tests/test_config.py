@@ -16,6 +16,7 @@ def test_default_config():
     assert config.token == ""
     assert config.timeout == 30.0
     assert config.prefetch_wait_timeout == 2.0
+    assert config.client_id == ""
 
 
 def test_custom_config():
@@ -31,6 +32,25 @@ def test_from_hermes_config_empty():
     assert config.host == "127.0.0.1"
     assert config.port == 4318
     assert config.prefetch_wait_timeout == 2.0
+
+
+def test_from_hermes_config_resolves_client_id_and_namespace_alias():
+    """client_id wins over the namespace alias; an empty primary value falls back to the alias."""
+    explicit = RemnicHermesConfig.from_hermes_config(
+        {"remnic": {"client_id": " primary ", "namespace": "alias"}}
+    )
+    assert explicit.client_id == "primary"
+
+    aliased = RemnicHermesConfig.from_hermes_config(
+        {"remnic": {"client_id": "  ", "namespace": " generalist "}}
+    )
+    assert aliased.client_id == "generalist"
+
+
+@pytest.mark.parametrize("field", ["client_id", "namespace"])
+def test_from_hermes_config_rejects_non_string_client_identifiers(field):
+    with pytest.raises(TypeError, match=field):
+        RemnicHermesConfig.from_hermes_config({"remnic": {field: 0}})
 
 
 def test_from_hermes_config_parses_prefetch_wait_timeout():

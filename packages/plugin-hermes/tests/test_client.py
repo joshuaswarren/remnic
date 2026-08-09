@@ -1,7 +1,8 @@
 """Tests for the RemnicClient HTTP methods."""
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
 from remnic_hermes import EngramClient
 from remnic_hermes.client import RemnicClient
@@ -23,6 +24,38 @@ class TestClientInit:
 
     def test_client_id(self, client):
         assert client.client_id == "hermes"
+
+
+class TestClientNamespace:
+    @pytest.mark.asyncio
+    async def test_namespace_header_and_rest_default(self):
+        response = MagicMock()
+        response.json.return_value = {"memory": {"id": "fact-1"}}
+
+        with patch("remnic_hermes.client.httpx.AsyncClient") as MockAsyncClient:
+            http = MockAsyncClient.return_value
+            http.headers = {}
+            http.get = AsyncMock(return_value=response)
+            client = RemnicClient(
+                host="127.0.0.1",
+                port=4318,
+                token="test-token",
+                client_id="hermes",
+                namespace="generalist",
+                session_key="session-1",
+            )
+            await client.memory_get("fact-1")
+            client.set_session_key("session-2")
+
+        headers = MockAsyncClient.call_args.kwargs["headers"]
+        assert headers["X-Engram-Client-Id"] == "hermes"
+        assert headers["X-Engram-Namespace"] == "generalist"
+        assert headers["X-Hermes-Session-Id"] == "session-1"
+        assert http.headers["X-Hermes-Session-Id"] == "session-2"
+        http.get.assert_awaited_once_with(
+            "/memories/fact-1",
+            params={"namespace": "generalist"},
+        )
 
 
 class TestClientClose:

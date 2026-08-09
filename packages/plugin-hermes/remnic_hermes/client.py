@@ -24,25 +24,44 @@ class RemnicClient:
         port: int = 4318,
         token: str = "",
         client_id: str = "hermes",
+        namespace: str | None = None,
+        session_key: str = "",
         timeout: float = 30.0,
     ) -> None:
         self.base_url = f"http://{host}:{port}/engram/v1"
         self.mcp_url = f"http://{host}:{port}/mcp"
         self.token = token
         self.client_id = client_id
+        self.namespace = namespace
+        self.session_key = session_key
         self._mcp_request_id = 0
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "X-Engram-Client-Id": client_id,
+        }
+        if namespace:
+            headers["X-Engram-Namespace"] = namespace
+        if session_key:
+            headers["X-Hermes-Session-Id"] = session_key
         self._http = httpx.AsyncClient(
             base_url=self.base_url,
             timeout=timeout,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-                "X-Engram-Client-Id": client_id,
-            },
+            headers=headers,
         )
 
+    def set_session_key(self, session_key: str) -> None:
+        self.session_key = session_key
+        if session_key:
+            self._http.headers["X-Hermes-Session-Id"] = session_key
+        else:
+            self._http.headers.pop("X-Hermes-Session-Id", None)
+
     async def _post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        resp = await self._http.post(path, json=payload)
+        request_payload = payload
+        if self.namespace and "namespace" not in payload:
+            request_payload = {**payload, "namespace": self.namespace}
+        resp = await self._http.post(path, json=request_payload)
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
@@ -52,9 +71,12 @@ class RemnicClient:
             for key, value in (params or {}).items()
             if value is not None
         }
+        if path != "/health" and self.namespace and "namespace" not in clean_params:
+            clean_params["namespace"] = self.namespace
         resp = await self._http.get(path, params=clean_params)
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
+
 
     async def _mcp_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         self._mcp_request_id += 1

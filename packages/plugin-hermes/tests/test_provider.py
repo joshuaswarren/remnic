@@ -43,6 +43,10 @@ class TestProviderLifecycle:
             instance.health = AsyncMock()
             provider.initialize("test-session")
             MockClient.assert_called_once()
+            _, kwargs = MockClient.call_args
+            assert kwargs["client_id"] == "hermes"
+            assert kwargs["namespace"] == "hermes"
+            assert kwargs["session_key"] == "test-session"
             instance.health.assert_awaited_once()
 
     def test_initialize_forwards_timeout(self):
@@ -74,6 +78,14 @@ class TestProviderLifecycle:
             instance.health = AsyncMock()
             provider.initialize("hermes-session-123")
             assert provider._session_key == "hermes-session-123"
+
+    def test_session_switch_updates_client_header(self, provider):
+        with patch("remnic_hermes.provider.RemnicClient") as MockClient:
+            instance = MockClient.return_value
+            instance.health = AsyncMock()
+            provider.initialize("old-session")
+            provider.on_session_switch("new-session")
+            instance.set_session_key.assert_called_once_with("new-session")
 
     def test_initialize_ignores_legacy_config_dict_argument(self, provider):
         """Mixed-version callers may still pass initialize(config); it must not become the session key."""
@@ -180,6 +192,54 @@ class TestPreLlmCall:
         assert len(request_loop_ids) == 2
         assert set(request_loop_ids) != {caller_loop_id}
         assert len(set(request_loop_ids)) == 1
+
+    @pytest.mark.asyncio
+    async def test_configured_namespace_routes_health_and_recall_requests(self):
+        client_ids: list[str | None] = []
+        namespace_headers: list[str | None] = []
+        session_headers: list[str | None] = []
+        recall_namespaces: list[str | None] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            client_ids.append(request.headers.get("X-Engram-Client-Id"))
+            namespace_headers.append(request.headers.get("X-Engram-Namespace"))
+            session_headers.append(request.headers.get("X-Hermes-Session-Id"))
+            if request.url.path.endswith("/health"):
+                return httpx.Response(200, json={"ok": True})
+            if request.url.path.endswith("/recall"):
+                recall_namespaces.append(json.loads(request.content).get("namespace"))
+                return httpx.Response(200, json={"context": "prior memories", "count": 1})
+            return httpx.Response(404, json={"error": "not found"})
+
+        transport = httpx.MockTransport(handler)
+        real_async_client = httpx.AsyncClient
+
+        with patch("remnic_hermes.client.httpx.AsyncClient") as MockAsyncClient:
+            MockAsyncClient.side_effect = lambda **kwargs: real_async_client(
+                **kwargs,
+                transport=transport,
+            )
+            provider = RemnicMemoryProvider(
+                {
+                    "host": "127.0.0.1",
+                    "port": 4318,
+                    "token": "test-token",
+                    "namespace": "generalist",
+                }
+            )
+            provider.initialize("test-session")
+            try:
+                result = await provider.pre_llm_call(
+                    [{"role": "user", "content": "what did we decide last week"}]
+                )
+            finally:
+                provider.shutdown()
+
+        assert "prior memories" in result
+        assert client_ids == ["generalist", "generalist"]
+        assert namespace_headers == ["generalist", "generalist"]
+        assert session_headers == ["test-session", "test-session"]
+        assert recall_namespaces == ["generalist"]
 
 
 class TestPrefetch:

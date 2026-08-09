@@ -1,19 +1,9 @@
-# Theory: construct harmonic memory from committed facts
+# Theory: Hermes namespace routing needs compatible identity headers
 
-Harmonic recall reads abstraction nodes and cue anchors. Extraction constructs those records only after persistence assigns final memory IDs.
+Hermes requests carry three different facts. `X-Hermes-Session-Id` selects the Hermes adapter and scopes its session. `X-Engram-Namespace` selects the caller namespace for MCP requests. REST routes use an explicit `namespace` field instead of adapter defaults.
 
-The accepted fact set is the authority. The coordinator groups active facts by target storage. It excludes pending-review and tombstone-blocked writes. Shared and profile targets receive only entity mentions backed by facts written to that target. Multi-target episodes derive titles from the facts routed to each target.
+Issue #2310 also requires the selected namespace in `X-Engram-Client-Id`. The plugin sends that header for compatibility. It keeps `client_id` as the canonical config field and accepts `namespace` as an alias. A non-empty `client_id` wins. The parser rejects non-string values and falls back to `"hermes"` only when both fields are empty.
 
-Construction is deterministic for fixed inputs. One micro episode summarizes up to three facts. Each extracted entity produces one meso topic or project node. Topic source links include only facts whose `entityRef` matches that entity. Stable hash suffixes separate entity names that share one sanitized path segment.
+The Python client sends the selected value in both namespace headers. It adds the value to REST bodies and query parameters unless a call supplies another namespace. The provider keeps the Hermes session header current after a session switch. Health requests keep an empty query.
 
-The model may supply three short cue anchors per fact. All extraction paths apply one validation contract. Construction rejects unsafe display text in facts, titles, tags, entity references, mentions, and cues. It also derives entity and date anchors. Anchor identity hashes the normalized type and cue. Each node reference records its retained source memory IDs, so lifecycle filtering removes inactive cue provenance without hiding a mixed node's active sources.
-
-Atomic replace and a shared mutation lock protect both record types. The in-process queue preserves local order. A filesystem lock serializes cross-process read-merge-write operations. Lock acquisition confirms the token under the stale-reclaim guard before any mutation starts. Crashed reclaim guards recover after verified staleness. Failed confirmation removes only the caller's matching token. Abstraction-node upserts scan once, merge duplicate IDs, retain canonical records, and cap source links and display metadata. Cue-anchor upserts merge bounded live node references, tags, and source attribution.
-
-Recall projects source-backed nodes from active authoritative memories across hot and cold tiers before scoring. It also applies the primary recall policy for expired validity intervals. Projection always rebuilds titles, summaries, tags, entities, and source links from retained sources. It strips storage-only attribute suffixes from projected content. It then admits only anchors attributed to those projected sources. Anchor tags must also remain on an eligible target node. A legacy anchor without attribution remains eligible only when every node source is eligible. Source-less nodes remain eligible.
-
-Consolidation prunes orphan anchors in the default store and a rotating, bounded set of writable namespace stores. Any failed scan, unreadable record, or malformed record aborts that store's pass before deletion. A failed namespace does not block independent stores.
-
-`harmonicRetrievalEnabled` gates abstraction-node construction. `abstractionAnchorsEnabled` independently gates cue-anchor construction and pruning. Scoped namespaces use local harmonic stores. Only the default namespace uses an explicit store override. Construction failures log the affected store and preserve primary memory persistence.
-
-Focused regressions cover bounds, deterministic derivation, entity collisions, lifecycle projection, source-scoped anchors, namespace pruning, insertion retention, concurrent upserts, prune safety, independent gates, routing, searchability, and fail-open writes. The executable lifecycle subject drives harmonic persistence through all nine canonical rows. Local gates pass. The repository package shard still has the independent timeout tracked by issue #2324 and PR #2338.
+The regression follows each route. Parser tests cover precedence and invalid values. Client tests cover headers, session updates, and REST defaults. A real provider transport test covers health and recall requests. Version 1.0.6 makes the merged code publishable because the release job skips versions already on PyPI.
