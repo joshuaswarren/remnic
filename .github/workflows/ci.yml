@@ -157,21 +157,21 @@ jobs:
       - name: Docs-code parity
         run: node scripts/check-docs-parity.mjs
 
-  # The root/misc suite stays on one runner. Package tests use two deterministic
-  # file shards. selectTestShard is an exact partition (enforced by test), so
-  # the package pair's union is exactly its unsharded suite.
+  # The root/misc suite runs on a hosted runner. Package tests use two
+  # deterministic file shards on the self-hosted pool when it is safe.
+  # selectTestShard is an exact partition (enforced by test), so the package
+  # pair's union is exactly its unsharded suite.
   #
-  # Runner selection (public repo, self-hosted safety): the self-hosted
-  # `remnic` pool (jarvis CTs 340-342, homelab-infra) only serves pushes to
-  # main and SAME-REPO pull requests. Fork PRs — even ones whose workflows a
-  # maintainer approved — run on GitHub-hosted runners so external code can
-  # never execute on homelab hardware. Pool down? Temporarily replace the
-  # expression with 'ubuntu-latest'.
+  # Runner selection (public repo, self-hosted safety): the `remnic` pool only
+  # serves package tests on pushes to main and same-repo pull requests. Fork
+  # pull requests run on GitHub-hosted runners, even after maintainer approval.
+  # This prevents external code from running on private hardware. Pool down?
+  # Temporarily replace the expression with 'ubuntu-latest'.
   tests:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    # remnic pool only for same-repo PRs and main-ref runs; workflow_dispatch
-    # on any other ref stays on hosted runners (codex P2 on #1608).
-    runs-on: ${{ ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name != 'pull_request' && github.ref == 'refs/heads/main')) && 'remnic' || 'ubuntu-latest' }}
+    # Root stays hosted so both package shards can use available pool slots.
+    # Other refs and fork pull requests also stay on hosted runners.
+    runs-on: ${{ (matrix.shard != 'root' && ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name != 'pull_request' && github.ref == 'refs/heads/main'))) && 'remnic' || 'ubuntu-latest' }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
