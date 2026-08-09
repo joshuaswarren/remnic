@@ -624,6 +624,26 @@ test("root and package OpenClaw manifests stay byte-identical", () => {
     "root openclaw.plugin.json must be synced from packages/plugin-openclaw/openclaw.plugin.json to prevent schema drift",
   );
 });
+test("all OpenClaw manifests expose contradiction localization schema and UI metadata (#2327)", () => {
+  for (const manifestPath of OPENCLAW_MANIFEST_PATHS) {
+    const manifest = readManifest(manifestPath) as {
+      configSchema?: { properties?: Record<string, Record<string, unknown>> };
+      uiHints?: Record<string, Record<string, unknown>>;
+    };
+    const schema = manifest.configSchema?.properties?.contradictionLocalization;
+    assert.ok(schema, `${manifestPath} must declare contradictionLocalization`);
+    assert.deepEqual(schema.default, {
+      anchorEnabled: true,
+      anchorCandidates: 5,
+      searchCandidates: 5,
+      maxCandidates: 8,
+    });
+    assert.equal(schema.properties?.anchorCandidates?.minimum, 0);
+    const uiHint = manifest.uiHints?.contradictionLocalization;
+    assert.equal(uiHint?.label, "Contradiction Localization");
+    assert.match(String(uiHint?.help), /anchor/i);
+  }
+});
 
 test("workspace build verifies manifest sync instead of silently rewriting root state", () => {
   const pkg = readRootPackageJson();

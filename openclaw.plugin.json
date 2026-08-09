@@ -6904,6 +6904,11 @@
       "label": "Contradiction Scan",
       "help": "Nightly cron that pairs similar memories and flags contradictions for review (issue #520)"
     },
+    "contradictionLocalization": {
+      "label": "Contradiction Localization",
+      "advanced": true,
+      "help": "Find entityRef and category anchors before QMD search."
+    },
     "dependencyPropagation": {
       "label": "Dependency Propagation",
       "help": "Revalidate active dependent memories after supersession. Disabled by default (issue #2326)."
