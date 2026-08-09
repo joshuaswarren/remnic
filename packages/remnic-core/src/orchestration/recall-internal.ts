@@ -3746,7 +3746,7 @@ export class RecallInternalCoordinator {
                   recallResultLimit,
                   deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
                   ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
-                  ...(typeof options.asOfMs === "number" ? { asOfMs: options.asOfMs } : {}),
+                  ...(typeof options.asOf === "string" ? { asOf: options.asOf } : {}),
                 }),
               null as Awaited<ReturnType<typeof this.deps.expandResultsViaGraph>> | null,
             );
