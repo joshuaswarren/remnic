@@ -1,3 +1,4 @@
+import { RecallSearchPipelineCoordinator } from "./recall-search-pipeline.js";
 import assert from "node:assert/strict";
 import { appendFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
@@ -114,6 +115,7 @@ function makeCoordinator(
     storageFor: async (namespace) => fixtures.get(namespace)!.storage,
     graphIndexFor: (storage) => indexes.get(storage.dir)!,
     namespaceFromPath: () => defaultFixture.name,
+    resolveColdQmdResultForRecall: async () => null,
     storageForAbsoluteQmdResultPath: async (resultPath) => {
       for (const fixture of fixtures.values()) {
         if (resultPath.startsWith(`${fixture.dir}${path.sep}`)) {
@@ -122,8 +124,8 @@ function makeCoordinator(
       }
       return null;
     },
-    readQmdResultMemory: async (result, storage) =>
-      storage.readMemoryByPath(result.path),
+    readQmdResultMemory: async (resultPath, storage) =>
+      storage.readMemoryByPath(resultPath),
   });
 }
 

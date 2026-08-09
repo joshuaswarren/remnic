@@ -57,12 +57,14 @@ test("ignores seed and candidate state", () => {
   assert.equal(score(activationPath(["seed", "candidate"], [0.7]), states), 0.7);
 });
 
-test("treats entity intermediate nodes with null status as neutral", () => {
-  const states = new Map([["entity-mid", state("entity-mid", null)]]);
-  assert.equal(
-    score(activationPath(["seed", "entity-mid", "candidate"], [0.7, 0.6]), states),
-    0.7 * 0.6,
-  );
+test("treats null status as neutral even with invalidAt", () => {
+ const states = new Map([
+ ["entity-mid", state("entity-mid", null, "2020-01-01T00:00:00.000Z")],
+ ]);
+ assert.equal(
+ score(activationPath(["seed", "entity-mid", "candidate"], [0.7, 0.6]), states),
+ 0.7 * 0.6,
+ );
 });
 
 test("treats an unknown intermediate id as neutral", () => {

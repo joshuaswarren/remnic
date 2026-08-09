@@ -15,11 +15,11 @@ export interface PathScoringOptions {
 }
 
 function isInvalidIntermediate(state: PathNodeState | undefined, asOfMs: number): boolean {
-  if (!state) return false;
-  if (state.status !== null && state.status !== "active") return true;
-  if (state.invalidAt === null) return false;
-  const invalidAtMs = Date.parse(state.invalidAt);
-  return Number.isFinite(invalidAtMs) && invalidAtMs <= asOfMs;
+ if (!state || state.status === null) return false;
+ if (state.status !== "active") return true;
+ if (state.invalidAt === null) return false;
+ const invalidAtMs = Date.parse(state.invalidAt);
+ return Number.isFinite(invalidAtMs) && invalidAtMs <= asOfMs;
 }
 
 /**

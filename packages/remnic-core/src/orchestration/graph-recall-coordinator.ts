@@ -317,25 +317,50 @@ export class GraphRecallCoordinator {
       seedPaths.push(
         ...seedRelativePaths.map((rel) => path.join(storage.dir, rel)),
       );
-      const seedSet = new Set(seedRelativePaths);
-      const scoringEnabled = config.graphPathScoring.enabled;
-      const corpusByPath = new Map<string, MemoryFile>();
-      const nodeStates = new Map<string, PathNodeState>();
-      if (scoringEnabled) {
-        for (const memory of await storage.readAllMemories()) {
-          const relativePath = graphPathRelativeToStorage(storage.dir, memory.path);
-          if (relativePath) corpusByPath.set(relativePath, memory);
-          corpusByPath.set(memory.path, memory);
-          corpusByPath.set(memory.frontmatter.id, memory);
-          const state: PathNodeState = {
-            id: memory.frontmatter.id,
-            status: memory.frontmatter.status ?? "active",
-            invalidAt: memory.frontmatter.invalid_at ?? null,
-          };
-          nodeStates.set(memory.frontmatter.id, state);
-          if (relativePath) nodeStates.set(relativePath, state);
-        }
-      }
+ const scoringEnabled = config.graphPathScoring.enabled;
+ let hotCorpusByPath: Map<string, MemoryFile> | undefined;
+ let nodeStates: Map<string, PathNodeState> | undefined;
+ if (scoringEnabled) {
+   hotCorpusByPath = new Map<string, MemoryFile>();
+   nodeStates = new Map<string, PathNodeState>();
+   const [hotMemories, coldMemories, archivedMemories] = await Promise.all([
+     storage.readAllMemories(),
+     storage.readAllColdMemories(),
+     storage.readArchivedMemories(),
+   ]);
+   const addState = (memory: MemoryFile): void => {
+     const relativePath = graphPathRelativeToStorage(storage.dir, memory.path);
+     const state: PathNodeState = {
+       id: memory.frontmatter.id,
+       status: memory.frontmatter.status ?? null,
+       invalidAt: memory.frontmatter.invalid_at ?? null,
+     };
+     const add = (key: string): void => {
+       if (!nodeStates!.has(key)) nodeStates!.set(key, state);
+     };
+     add(memory.frontmatter.id);
+     if (relativePath) {
+       add(relativePath);
+       if (relativePath.endsWith(".md")) add(path.basename(relativePath, ".md"));
+     }
+   };
+   const addHotMemory = (memory: MemoryFile): void => {
+     const relativePath = graphPathRelativeToStorage(storage.dir, memory.path);
+     const add = (key: string): void => {
+       if (!hotCorpusByPath!.has(key)) hotCorpusByPath!.set(key, memory);
+     };
+     add(memory.frontmatter.id);
+     add(memory.path);
+     if (relativePath) {
+       add(relativePath);
+       if (relativePath.endsWith(".md")) add(path.basename(relativePath, ".md"));
+     }
+   };
+   for (const memory of hotMemories) addHotMemory(memory);
+   for (const memory of [...hotMemories, ...coldMemories, ...archivedMemories]) {
+     addState(memory);
+   }
+ }
       const expanded = await this.graphIndexFor(storage).spreadingActivation(
         seedRelativePaths,
         config.maxGraphTraversalSteps,
@@ -356,19 +381,30 @@ export class GraphRecallCoordinator {
       }> = [];
       const candidates = scoringEnabled ? expanded : expanded.slice(0, perNamespaceExpandedCap);
       for (const candidate of candidates) {
-        if (deadlineExpired()) break;
-        if (seedSet.has(candidate.path)) continue;
         const memory = scoringEnabled
-          ? corpusByPath.get(candidate.path) ??
-            corpusByPath.get(path.resolve(storage.dir, candidate.path))
+          ? hotCorpusByPath!.get(candidate.path) ??
+            hotCorpusByPath!.get(path.resolve(storage.dir, candidate.path))
           : await storage.readMemoryByPath(path.resolve(storage.dir, candidate.path));
         if (deadlineExpired()) break;
         if (!memory) continue;
         if (/(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(memory.path)) continue;
         if (memory.frontmatter.status && memory.frontmatter.status !== "active") continue;
 
+        if (scoringEnabled && candidate.activationPath) {
+          for (const nodeId of candidate.activationPath.nodeIds.slice(1, -1)) {
+            if (!nodeStates!.has(nodeId) && nodeId.endsWith(".md")) {
+              const basenameState = nodeStates!.get(path.basename(nodeId, ".md"));
+              if (basenameState) {
+                nodeStates!.set(nodeId, { ...basenameState, id: nodeId });
+              }
+            }
+            if (!nodeStates!.has(nodeId)) {
+              log.debug(`graph path scoring missing intermediate memory state: ${nodeId}`);
+            }
+          }
+        }
         const pathScoreMultiplier = scoringEnabled
-          ? scoreEvidencePath(candidate.activationPath ?? null, nodeStates, {
+          ? scoreEvidencePath(candidate.activationPath ?? null, nodeStates!, {
               asOf:
                 options.asOf ??
                 (typeof options.asOfMs === "number"
@@ -377,13 +413,6 @@ export class GraphRecallCoordinator {
               invalidNodePenalty: config.graphPathScoring.invalidNodePenalty,
             })
           : 1;
-        if (scoringEnabled && candidate.activationPath) {
-          for (const nodeId of candidate.activationPath.nodeIds.slice(1, -1)) {
-            if (!nodeStates.has(nodeId)) {
-              log.debug(`graph path scoring missing intermediate memory state: ${nodeId}`);
-            }
-          }
-        }
         const blendedScore = blendGraphExpandedRecallScore({
           graphActivationScore: candidate.score,
           seedRecallScore,
