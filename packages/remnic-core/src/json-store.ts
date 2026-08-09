@@ -77,9 +77,41 @@ const JSON_STORE_LOCK_RETRY_MS = 25;
 const JSON_STORE_LOCK_STALE_MS = 60_000;
 const JSON_STORE_LOCK_TIMEOUT_MS = 10_000;
 
+type JsonStoreMutationLockTestHooks = {
+  beforeLockOwnerWrite?: (lockPath: string, ownerToken: string) => Promise<void> | void;
+  retryMs?: number;
+  staleLockMs?: number;
+  timeoutMs?: number;
+};
+
+let jsonStoreMutationLockTestHooks: JsonStoreMutationLockTestHooks | null = null;
+
+export function setJsonStoreMutationLockTestHooks(hooks: JsonStoreMutationLockTestHooks | null): void {
+  jsonStoreMutationLockTestHooks = hooks;
+}
+
+function jsonStoreLockRetryMs(): number {
+  return jsonStoreMutationLockTestHooks?.retryMs ?? JSON_STORE_LOCK_RETRY_MS;
+}
+
+function jsonStoreLockStaleMs(): number {
+  return jsonStoreMutationLockTestHooks?.staleLockMs ?? JSON_STORE_LOCK_STALE_MS;
+}
+
+function jsonStoreLockTimeoutMs(): number {
+  return jsonStoreMutationLockTestHooks?.timeoutMs ?? JSON_STORE_LOCK_TIMEOUT_MS;
+}
+
+async function closeAndRemoveJsonStoreReclaimGuard(reclaimPath: string, reclaimHandle: FileHandle): Promise<void> {
+  await reclaimHandle.close().catch(() => undefined);
+  await unlink(reclaimPath).catch((error) => {
+    if (!hasErrorCode(error, "ENOENT")) throw error;
+  });
+}
+
 function waitForJsonStoreLock(): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, JSON_STORE_LOCK_RETRY_MS);
+  setTimeout(resolve, jsonStoreLockRetryMs());
   return promise;
 }
 
@@ -123,14 +155,15 @@ function sameJsonStoreLockState(left: JsonStoreLockState, right: JsonStoreLockSt
 
 async function removeStaleJsonStoreLock(lockPath: string): Promise<void> {
   const reclaimPath = `${lockPath}.reclaim`;
-  let reclaimHandle: FileHandle | undefined;
-  let ownsReclaimGuard = false;
+  let reclaimHandle: FileHandle;
   try {
     reclaimHandle = await open(reclaimPath, "wx", 0o600);
-    ownsReclaimGuard = true;
+  } catch (error) {
+    if (hasErrorCode(error, "EEXIST")) return;
+    throw error;
+  }
+  try {
     await reclaimHandle.writeFile(JSON.stringify({ pid: process.pid }), "utf8");
-    await reclaimHandle.close();
-    reclaimHandle = undefined;
 
     let initial: JsonStoreLockState;
     try {
@@ -139,7 +172,7 @@ async function removeStaleJsonStoreLock(lockPath: string): Promise<void> {
       if (hasErrorCode(error, "ENOENT")) return;
       throw error;
     }
-    if (Date.now() - initial.mtimeMs <= JSON_STORE_LOCK_STALE_MS) return;
+    if (Date.now() - initial.mtimeMs <= jsonStoreLockStaleMs()) return;
     let ownerPid: number | undefined;
     try {
       const metadata = JSON.parse(initial.content) as { pid?: unknown };
@@ -160,15 +193,38 @@ async function removeStaleJsonStoreLock(lockPath: string): Promise<void> {
     await unlink(lockPath).catch((error) => {
       if (!hasErrorCode(error, "ENOENT")) throw error;
     });
-  } catch (error) {
-    if (hasErrorCode(error, "EEXIST")) return;
-    throw error;
   } finally {
-    if (ownsReclaimGuard) {
-      if (reclaimHandle) await reclaimHandle.close().catch(() => undefined);
-      await unlink(reclaimPath).catch((error) => {
-        if (!hasErrorCode(error, "ENOENT")) throw error;
-      });
+    await closeAndRemoveJsonStoreReclaimGuard(reclaimPath, reclaimHandle);
+  }
+}
+
+async function confirmJsonStoreMutationLockOwnership(
+  lockPath: string,
+  token: string,
+  deadline: number
+): Promise<boolean> {
+  const reclaimPath = `${lockPath}.reclaim`;
+  while (true) {
+    let reclaimHandle: FileHandle;
+    try {
+      reclaimHandle = await open(reclaimPath, "wx", 0o600);
+    } catch (error) {
+      if (!hasErrorCode(error, "EEXIST")) throw error;
+      if (Date.now() >= deadline) return false;
+      await waitForJsonStoreLock();
+      continue;
+    }
+    try {
+      try {
+        const state = await readJsonStoreLockState(lockPath);
+        const metadata = JSON.parse(state.content) as { token?: unknown };
+        return metadata.token === token;
+      } catch (error) {
+        if (hasErrorCode(error, "ENOENT") || error instanceof SyntaxError) return false;
+        throw error;
+      }
+    } finally {
+      await closeAndRemoveJsonStoreReclaimGuard(reclaimPath, reclaimHandle);
     }
   }
 }
@@ -177,49 +233,11 @@ async function acquireJsonStoreMutationFileLock(key: string): Promise<() => Prom
   const lockPath = `${path.resolve(key)}.mutation.lock`;
   await mkdir(path.dirname(lockPath), { recursive: true });
   const token = randomUUID();
-  const deadline = Date.now() + JSON_STORE_LOCK_TIMEOUT_MS;
+  const deadline = Date.now() + jsonStoreLockTimeoutMs();
   while (true) {
+    let handle: FileHandle;
     try {
-      const handle = await open(lockPath, "wx", 0o600);
-      try {
-        await handle.writeFile(JSON.stringify({ pid: process.pid, token }), "utf8");
-      } finally {
-        await handle.close();
-      }
-      let confirmedToken: unknown;
-      try {
-        const metadata = JSON.parse(await readFile(lockPath, "utf8")) as { token?: unknown };
-        confirmedToken = metadata.token;
-      } catch (error) {
-        if (!hasErrorCode(error, "ENOENT") && !(error instanceof SyntaxError)) throw error;
-      }
-      if (confirmedToken !== token) {
-        if (Date.now() >= deadline) {
-          throw new Error(`Timed out acquiring JSON store mutation lock: ${lockPath}`);
-        }
-        await waitForJsonStoreLock();
-        continue;
-      }
-      const heartbeat = setInterval(() => {
-        void readFile(lockPath, "utf8")
-          .then((content) => {
-            const metadata = JSON.parse(content) as { token?: unknown };
-            if (metadata.token !== token) return;
-            const now = new Date();
-            return utimes(lockPath, now, now);
-          })
-          .catch(() => undefined);
-      }, JSON_STORE_LOCK_STALE_MS / 3);
-      heartbeat.unref();
-      return async () => {
-        clearInterval(heartbeat);
-        try {
-          const metadata = JSON.parse(await readFile(lockPath, "utf8")) as { token?: unknown };
-          if (metadata.token === token) await unlink(lockPath);
-        } catch (error) {
-          if (!hasErrorCode(error, "ENOENT")) throw error;
-        }
-      };
+      handle = await open(lockPath, "wx", 0o600);
     } catch (error) {
       if (!hasErrorCode(error, "EEXIST")) throw error;
       await removeStaleJsonStoreLock(lockPath).catch((staleError) => {
@@ -229,7 +247,46 @@ async function acquireJsonStoreMutationFileLock(key: string): Promise<() => Prom
         throw new Error(`Timed out acquiring JSON store mutation lock: ${lockPath}`);
       }
       await waitForJsonStoreLock();
+      continue;
     }
+    try {
+      await jsonStoreMutationLockTestHooks?.beforeLockOwnerWrite?.(lockPath, token);
+      await handle.writeFile(JSON.stringify({ pid: process.pid, token }), "utf8");
+    } finally {
+      await handle.close().catch(() => undefined);
+    }
+
+    if (!(await confirmJsonStoreMutationLockOwnership(lockPath, token, deadline))) {
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out acquiring JSON store mutation lock: ${lockPath}`);
+      }
+      await waitForJsonStoreLock();
+      continue;
+    }
+
+    const heartbeat = setInterval(
+      () => {
+        void readFile(lockPath, "utf8")
+          .then((content) => {
+            const metadata = JSON.parse(content) as { token?: unknown };
+            if (metadata.token !== token) return;
+            const now = new Date();
+            return utimes(lockPath, now, now);
+          })
+          .catch(() => undefined);
+      },
+      Math.max(1, Math.floor(jsonStoreLockStaleMs() / 3))
+    );
+    heartbeat.unref();
+    return async () => {
+      clearInterval(heartbeat);
+      try {
+        const metadata = JSON.parse(await readFile(lockPath, "utf8")) as { token?: unknown };
+        if (metadata.token === token) await unlink(lockPath);
+      } catch (error) {
+        if (!hasErrorCode(error, "ENOENT")) throw error;
+      }
+    };
   }
 }
 

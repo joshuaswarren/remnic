@@ -4,7 +4,7 @@ import {
   HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY,
   upsertAbstractionNodes,
 } from "./abstraction-nodes.js";
-import { type CueAnchor, type CueAnchorType, upsertCueAnchor } from "./cue-anchors.js";
+import { type CueAnchor, type CueAnchorType, upsertCueAnchors } from "./cue-anchors.js";
 import { compareDeterministicStrings } from "./deterministic-order.js";
 import { normalizeRecallTokens } from "./recall-tokenization.js";
 
@@ -110,8 +110,8 @@ function validAtDate(validAt: string | null | undefined): string | undefined {
   const year = Number(match[1]);
   const month = Number(match[2]);
   const day = Number(match[3]);
-  const date = new Date(Date.UTC(0, month - 1, day));
-  date.setUTCFullYear(year);
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
   if (
     !Number.isFinite(date.getTime()) ||
     date.getUTCFullYear() !== year ||
@@ -275,6 +275,16 @@ export function deriveHarmonicRecords(input: HarmonicConstructionInput): {
       const topicNodeId = fact.entityRef ? topicNodeIdForEntityRef(fact.entityRef) : undefined;
       const nodeRefs = sortedUnique(topicNodeId ? [episodeNodeId, topicNodeId] : [episodeNodeId]);
       const existing = anchorsById.get(anchorId);
+      const mergedNodeRefs = sortedUnique([...(existing?.nodeRefs ?? []), ...nodeRefs]);
+      const sourceMemoryIdsByNodeRef = Object.fromEntries(
+        mergedNodeRefs.map((nodeRef) => [
+          nodeRef,
+          sortedUnique([
+            ...(existing?.sourceMemoryIdsByNodeRef?.[nodeRef] ?? []),
+            ...(nodeRefs.includes(nodeRef) ? [fact.memoryId] : []),
+          ]),
+        ])
+      );
       anchorsById.set(anchorId, {
         schemaVersion: 1,
         anchorId,
@@ -286,7 +296,8 @@ export function deriveHarmonicRecords(input: HarmonicConstructionInput): {
         normalizedCue,
         recordedAt: input.recordedAt,
         sessionKey: input.sessionKey,
-        nodeRefs: sortedUnique([...(existing?.nodeRefs ?? []), ...nodeRefs]),
+        nodeRefs: mergedNodeRefs,
+        sourceMemoryIdsByNodeRef,
         tags: sortedUnique([...(existing?.tags ?? []), ...fact.tags]),
       });
     }
@@ -324,11 +335,11 @@ export async function persistHarmonicRecords(options: {
       nodes: options.nodes,
     });
   }
-  for (const anchor of options.anchors) {
-    await upsertCueAnchor({
+  if (options.anchors.length > 0) {
+    await upsertCueAnchors({
       memoryDir: options.memoryDir,
       abstractionNodeStoreDir: options.abstractionNodeStoreDir,
-      anchor,
+      anchors: options.anchors,
     });
   }
 }

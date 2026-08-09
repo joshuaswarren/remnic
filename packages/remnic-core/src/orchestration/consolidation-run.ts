@@ -106,9 +106,52 @@ export interface ConsolidationRunCoordinatorDeps {
 }
 
 const MAX_HARMONIC_NAMESPACE_STORES = 50;
+const HARMONIC_CATALOG_CURSOR_FILE = "harmonic-catalog-cursor.json";
+
+type HarmonicStore = {
+  memoryDir: string;
+  abstractionNodeStoreDir?: string;
+};
+
+type HarmonicCatalogCursor = {
+  nextStorageDir?: string;
+};
 
 export class ConsolidationRunCoordinator {
   constructor(private readonly deps: ConsolidationRunCoordinatorDeps) {}
+
+  private async readHarmonicCatalogCursor(defaultDir: string): Promise<string | undefined> {
+    const cursorPath = path.join(defaultDir, "state", HARMONIC_CATALOG_CURSOR_FILE);
+    try {
+      const raw = await readFile(cursorPath, "utf-8");
+      const parsed = JSON.parse(raw) as HarmonicCatalogCursor;
+      return typeof parsed.nextStorageDir === "string" && parsed.nextStorageDir.length > 0
+        ? path.resolve(parsed.nextStorageDir)
+        : undefined;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        log.warn(
+          `harmonic namespace catalog cursor read failed open: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+      return undefined;
+    }
+  }
+
+  private async writeHarmonicCatalogCursor(
+    defaultDir: string,
+    nextStorageDir: string,
+  ): Promise<void> {
+    const stateDir = path.join(defaultDir, "state");
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(
+      path.join(stateDir, HARMONIC_CATALOG_CURSOR_FILE),
+      JSON.stringify({ nextStorageDir }, null, 2),
+      "utf-8",
+    );
+  }
 
   private async pruneHarmonicStores(storage: StorageManager): Promise<void> {
     const config = this.deps.config;
@@ -119,7 +162,7 @@ export class ConsolidationRunCoordinator {
       return;
     }
 
-    const stores = new Map<string, { memoryDir: string; abstractionNodeStoreDir?: string }>();
+    const stores = new Map<string, HarmonicStore>();
     const defaultDir = path.resolve(storage.dir);
     stores.set(defaultDir, {
       memoryDir: storage.dir,
@@ -130,11 +173,49 @@ export class ConsolidationRunCoordinator {
       const catalog = this.deps.getNamespaceCatalog?.();
       if (catalog?.enabled) {
         const records = await catalog.listNamespaces({ discoveredBy: "write" });
+        const catalogStores = new Map<string, HarmonicStore>();
         for (const record of records) {
-          if (stores.size >= MAX_HARMONIC_NAMESPACE_STORES) break;
           const storageDir = path.resolve(record.storageDir);
-          if (!stores.has(storageDir)) {
-            stores.set(storageDir, { memoryDir: record.storageDir });
+          if (!stores.has(storageDir) && !catalogStores.has(storageDir)) {
+            catalogStores.set(storageDir, { memoryDir: record.storageDir });
+          }
+        }
+
+        const candidates = [...catalogStores.entries()];
+        if (candidates.length > 0) {
+          const cursor = await this.readHarmonicCatalogCursor(defaultDir);
+          const cursorIndex = cursor
+            ? candidates.findIndex(([storageDir]) => storageDir === cursor)
+            : -1;
+          const startIndex = cursorIndex >= 0 ? cursorIndex : 0;
+          const selectedCount = Math.min(
+            candidates.length,
+            MAX_HARMONIC_NAMESPACE_STORES - 1,
+          );
+
+          for (let offset = 0; offset < selectedCount; offset += 1) {
+            const index = (startIndex + offset) % candidates.length;
+            const [storageDir, store] = candidates[index];
+            stores.set(storageDir, store);
+          }
+
+          const nextIndex = (startIndex + selectedCount) % candidates.length;
+          const nextStorageDir = candidates[nextIndex][0];
+          try {
+            await this.writeHarmonicCatalogCursor(defaultDir, nextStorageDir);
+          } catch (error) {
+            log.warn(
+              `harmonic namespace catalog cursor write failed open: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
+
+          if (selectedCount < candidates.length) {
+            log.warn(
+              `harmonic namespace catalog truncated at ${MAX_HARMONIC_NAMESPACE_STORES} stores; ` +
+                `skipped ${candidates.length - selectedCount} store(s)`,
+            );
           }
         }
       }

@@ -184,8 +184,21 @@ function compareNodeFiles(left: AbstractionNodeFile, right: AbstractionNodeFile)
 function compareIncomingNodes(left: AbstractionNode, right: AbstractionNode): number {
   return (
     Date.parse(left.recordedAt) - Date.parse(right.recordedAt) ||
-    compareDeterministicStrings(JSON.stringify(left), JSON.stringify(right))
+    compareDeterministicStrings(canonicalNodeKey(left), canonicalNodeKey(right))
   );
+}
+
+function canonicalMetadata(metadata: Record<string, string> | undefined): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(metadata ?? {}).sort(([left], [right]) => compareDeterministicStrings(left, right))
+  );
+}
+
+function canonicalNodeKey(node: AbstractionNode): string {
+  return JSON.stringify({
+    ...node,
+    metadata: canonicalMetadata(node.metadata),
+  });
 }
 
 function mergeAbstractionNodes(existing: AbstractionNode | undefined, incoming: AbstractionNode): AbstractionNode {
@@ -194,16 +207,17 @@ function mergeAbstractionNodes(existing: AbstractionNode | undefined, incoming: 
   const older = incomingIsNewest ? existing : incoming;
   if (!newest) throw new Error("abstraction node merge requires a node");
   const retainedSources = mergeRecentSourceMemoryIds(existing, incoming);
+  const mergedMetadata = canonicalMetadata({
+    ...(older?.metadata ?? {}),
+    ...(newest.metadata ?? {}),
+    [HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY]: retainedSources.insertedAtJson,
+  });
   return validateAbstractionNode({
     ...newest,
     sourceMemoryIds: retainedSources.ids,
     entityRefs: mergeSortedValues(existing?.entityRefs, incoming.entityRefs),
     tags: mergeSortedValues(existing?.tags, incoming.tags),
-    metadata: {
-      ...(older?.metadata ?? {}),
-      ...(newest.metadata ?? {}),
-      [HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY]: retainedSources.insertedAtJson,
-    },
+    metadata: mergedMetadata,
   });
 }
 

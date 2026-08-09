@@ -11,7 +11,13 @@ import {
   validateAbstractionNode,
 } from "./abstraction-nodes.js";
 import { parseConfig } from "./config.js";
-import { getCueAnchorStoreStatus, pruneOrphanCueAnchors, upsertCueAnchor, validateCueAnchor } from "./cue-anchors.js";
+import {
+  getCueAnchorStoreStatus,
+  pruneOrphanCueAnchors,
+  upsertCueAnchor,
+  upsertCueAnchors,
+  validateCueAnchor,
+} from "./cue-anchors.js";
 import { extractionCueAnchors } from "./extraction-normalization.js";
 import { buildExtractionInstructions } from "./extraction-prompt.js";
 import { ExtractionEngine } from "./extraction.js";
@@ -25,11 +31,13 @@ import { readJsonFile, withJsonStoreMutationLock } from "./json-store.js";
 import { filterHarmonicEntityMentions } from "./orchestration/harmonic-construction-persist.js";
 import { Orchestrator } from "./orchestrator.js";
 import { ExtractedFactSchema, ExtractionResultSchema } from "./schemas.js";
-import type { ExtractionResult } from "./types.js";
+import type { ExtractionResult, MemoryFile } from "./types.js";
 
 type HarmonicStorageHarness = {
   dir: string;
   ensureDirectories(): Promise<void>;
+  getMemoryById(id: string): Promise<MemoryFile | null>;
+  archiveMemory(memory: MemoryFile): Promise<string | null>;
 };
 
 type PersistenceHarness = {
@@ -261,23 +269,31 @@ test("separate batches keep normalized-colliding entity topics distinct", () => 
   assert.notEqual(slashTopic.nodeId, spaceTopic.nodeId);
 });
 
-test("invalid calendar dates do not emit date cue anchors", () => {
+test("date cue anchors accept leap days and reject overflow dates", () => {
   const records = deriveHarmonicRecords(
     constructionInput({
       persistedFacts: [
+        {
+          memoryId: "mem-leap-day",
+          content: "The leap day is valid.",
+          category: "fact",
+          tags: [],
+          validAt: "0004-02-29",
+        },
         {
           memoryId: "mem-invalid-date",
           content: "The date is invalid.",
           category: "fact",
           tags: [],
-          validAt: "2026-02-30",
+          validAt: "0004-02-30",
         },
       ],
       entityMentions: [],
     })
   );
+  assert.ok(records.anchors.some((anchor) => anchor.anchorType === "date" && anchor.anchorValue === "0004-02-29"));
   assert.equal(
-    records.anchors.some((anchor) => anchor.anchorType === "date"),
+    records.anchors.some((anchor) => anchor.anchorType === "date" && anchor.anchorValue === "0004-02-30"),
     false
   );
 });
@@ -313,6 +329,43 @@ test("deriveHarmonicRecords isolates colliding entity names", () => {
   assert.ok(topics.every((node) => node.sourceMemoryIds?.length === 1));
   assert.deepEqual(topics.flatMap((node) => node.sourceMemoryIds ?? []).sort(), ["mem-slash", "mem-space"]);
   assert.notEqual(topics[0]?.nodeId, topics[1]?.nodeId);
+});
+test("batch cue-anchor upsert shares one live-node projection across anchors", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-harmonic-anchor-batch-"));
+  try {
+    await upsertAbstractionNode({
+      memoryDir,
+      node: {
+        schemaVersion: 1,
+        nodeId: "ep-live",
+        recordedAt: RECORDED_AT,
+        sessionKey: "session:batch",
+        kind: "episode",
+        abstractionLevel: "micro",
+        title: "Live episode",
+        summary: "The live episode supports both anchors.",
+      },
+    });
+    const paths = await upsertCueAnchors({
+      memoryDir,
+      anchors: ["first", "second"].map((anchorId) => ({
+        schemaVersion: 1 as const,
+        anchorId: `cue-${anchorId}`,
+        anchorType: "tool" as const,
+        anchorValue: `${anchorId} tool`,
+        normalizedCue: `${anchorId} tool`,
+        recordedAt: RECORDED_AT,
+        sessionKey: "session:batch",
+        nodeRefs: ["ep-live", "ep-missing"],
+      })),
+    });
+    assert.equal(paths.length, 2);
+    for (const anchorPath of paths) {
+      assert.deepEqual(validateCueAnchor(await readJsonFile(anchorPath)).nodeRefs, ["ep-live"]);
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
 });
 
 test("filterHarmonicEntityMentions keeps safe aliases and replaces model summaries", () => {
@@ -540,6 +593,7 @@ test("upsertCueAnchor unions node references and keeps newest fields", async () 
         recordedAt: "2026-08-07T20:00:00.000Z",
         sessionKey: "session:old",
         nodeRefs: ["ep-old"],
+        sourceMemoryIdsByNodeRef: { "ep-old": ["mem-old"] },
         tags: ["old"],
       },
     });
@@ -554,6 +608,7 @@ test("upsertCueAnchor unions node references and keeps newest fields", async () 
         recordedAt: RECORDED_AT,
         sessionKey: "session:new",
         nodeRefs: ["ep-new"],
+        sourceMemoryIdsByNodeRef: { "ep-new": ["mem-new"] },
         tags: ["current"],
       },
     });
@@ -561,6 +616,10 @@ test("upsertCueAnchor unions node references and keeps newest fields", async () 
     const merged = validateCueAnchor(await readJsonFile(secondPath));
     assert.deepEqual(merged.nodeRefs, ["ep-new", "ep-old"]);
     assert.deepEqual(merged.tags, ["current", "old"]);
+    assert.deepEqual(merged.sourceMemoryIdsByNodeRef, {
+      "ep-new": ["mem-new"],
+      "ep-old": ["mem-old"],
+    });
     assert.equal(merged.anchorValue, "current atlas storage");
     assert.equal(merged.recordedAt, RECORDED_AT);
   } finally {
@@ -600,6 +659,7 @@ test("concurrent cue-anchor upserts preserve every node reference", async () => 
 
 test("cross-process cue-anchor upserts preserve every node reference", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-harmonic-anchor-processes-"));
+  const children = new Set<ReturnType<typeof spawn>>();
   try {
     const workerPath = path.join(memoryDir, "upsert-worker.mjs");
     const cueAnchorModuleUrl = new URL("./cue-anchors.ts", import.meta.url).href;
@@ -622,20 +682,31 @@ await upsertCueAnchor({
 });`,
       "utf8"
     );
+
     const runWorker = (nodeRef: string): Promise<void> => {
       const { promise, resolve, reject } = Promise.withResolvers<void>();
       const child = spawn(process.execPath, ["--import", "tsx", workerPath, memoryDir, nodeRef], {
-        stdio: ["ignore", "ignore", "pipe"],
+        stdio: ["ignore", "pipe", "pipe"],
       });
+      children.add(child);
+      let stdout = "";
       let stderr = "";
+      child.stdout?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk: string) => {
+        stdout += chunk;
+      });
       child.stderr?.setEncoding("utf8");
       child.stderr?.on("data", (chunk: string) => {
         stderr += chunk;
       });
-      child.once("error", reject);
+      child.once("error", (error) => {
+        children.delete(child);
+        reject(error);
+      });
       child.once("exit", (code) => {
+        children.delete(child);
         if (code === 0) resolve();
-        else reject(new Error(`harmonic upsert worker exited ${String(code)}: ${stderr}`));
+        else reject(new Error(`harmonic upsert worker exited ${String(code)}: ${stdout}${stderr}`));
       });
       return promise;
     };
@@ -653,6 +724,15 @@ await upsertCueAnchor({
     const anchorPath = path.join(memoryDir, "state", "abstraction-nodes", "anchors", "tool", "cue-processes.json");
     assert.deepEqual(validateCueAnchor(await readJsonFile(anchorPath)).nodeRefs, nodeRefs);
   } finally {
+    for (const child of children) child.kill();
+    await Promise.all(
+      [...children].map(
+        (child) =>
+          new Promise<void>((resolve) => {
+            child.once("exit", () => resolve());
+          })
+      )
+    );
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
@@ -1010,6 +1090,78 @@ test("persistExtraction writes nodes with harmonic retrieval and gates cue ancho
   }
 });
 
+test("harmonic anchors stay scoped to projected active sources in a mixed episode", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-harmonic-anchor-sources-"));
+  try {
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      embeddingFallbackEnabled: false,
+      chunkingEnabled: false,
+      harmonicRetrievalEnabled: true,
+      abstractionAnchorsEnabled: true,
+    });
+    const orchestrator = new Orchestrator(config) as unknown as PersistenceHarness;
+    const storage = await orchestrator.getStorage("default");
+    await storage.ensureDirectories();
+    const { persistedIds } = await orchestrator.persistExtraction(
+      {
+        facts: [
+          {
+            category: "fact",
+            content: "The inactive source selected Nimbus transport for the retired rollout.",
+            confidence: 0.99,
+            tags: ["nimbus"],
+            cueAnchors: [{ type: "tool", value: "Nimbus retired cipher" }],
+          },
+          {
+            category: "fact",
+            content: "The active source selected Orion transport for the surviving rollout.",
+            confidence: 0.99,
+            tags: ["orion"],
+            cueAnchors: [{ type: "tool", value: "Orion surviving transport" }],
+          },
+        ],
+        entities: [],
+        profileUpdates: [],
+        questions: [],
+        relationships: [],
+        episodeTitle: "Mixed rollout transport decisions",
+      },
+      storage,
+      null,
+      { sessionKey: "session:harmonic-anchor-sources" }
+    );
+    const inactiveMemory = await storage.getMemoryById(persistedIds[0] ?? "");
+    assert.ok(inactiveMemory);
+    assert.ok(await storage.archiveMemory(inactiveMemory));
+
+    const inactiveResults = await searchHarmonicRetrieval({
+      memoryDir: storage.dir,
+      query: "Nimbus retired cipher",
+      maxResults: 5,
+      anchorsEnabled: true,
+    });
+    assert.equal(inactiveResults.length, 0);
+
+    const activeResults = await searchHarmonicRetrieval({
+      memoryDir: storage.dir,
+      query: "Orion surviving transport",
+      maxResults: 5,
+      anchorsEnabled: true,
+    });
+    assert.ok(
+      activeResults.some((result) =>
+        result.matchedAnchors.some((anchor) => anchor.anchorValue === "Orion surviving transport")
+      )
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("non-default namespace construction ignores the default store override", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-harmonic-namespace-"));
   try {
@@ -1155,6 +1307,39 @@ test("batch abstraction upsert merges duplicate node files and removes stale cop
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+test("equal-time node merges are stable when metadata keys arrive in reverse order", async () => {
+  const forwardDir = await mkdtemp(path.join(os.tmpdir(), "remnic-harmonic-node-order-forward-"));
+  const reverseDir = await mkdtemp(path.join(os.tmpdir(), "remnic-harmonic-node-order-reverse-"));
+  try {
+    const node = (metadata: Record<string, string>) => ({
+      schemaVersion: 1 as const,
+      nodeId: "ep-equal-time",
+      recordedAt: RECORDED_AT,
+      sessionKey: "session:equal-time",
+      kind: "episode" as const,
+      abstractionLevel: "micro" as const,
+      title: "Equal-time episode",
+      summary: "Metadata order must not affect this merge.",
+      metadata,
+    });
+    const forward = node({ alpha: "a", zeta: "z" });
+    const reverse = node({ zeta: "z", alpha: "a" });
+    const [forwardPath] = await upsertAbstractionNodes({
+      memoryDir: forwardDir,
+      nodes: [forward, reverse],
+    });
+    const [reversePath] = await upsertAbstractionNodes({
+      memoryDir: reverseDir,
+      nodes: [reverse, forward],
+    });
+    assert.ok(forwardPath);
+    assert.ok(reversePath);
+    assert.equal(JSON.stringify(await readJsonFile(forwardPath)), JSON.stringify(await readJsonFile(reversePath)));
+  } finally {
+    await rm(forwardDir, { recursive: true, force: true });
+    await rm(reverseDir, { recursive: true, force: true });
+  }
+});
 
 test("cue-anchor upsert caps live refs and pruning removes dead refs", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-harmonic-anchor-cap-"));
@@ -1206,71 +1391,127 @@ test("cue-anchor upsert caps live refs and pruning removes dead refs", async () 
 
 test("stale lock reclaim does not overlap cross-process mutation ownership", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-json-store-stale-reclaim-"));
+  const children = new Set<ReturnType<typeof spawn>>();
   try {
     const key = path.join(memoryDir, "harmonic-store");
     const lockPath = `${path.resolve(key)}.mutation.lock`;
     const logPath = path.join(memoryDir, "ownership.log");
-    await writeFile(lockPath, JSON.stringify({ pid: 2_147_483_647, token: "stale" }), "utf8");
-    const staleAt = new Date(Date.now() - 120_000);
-    await utimes(lockPath, staleAt, staleAt);
     const workerPath = path.join(memoryDir, "lock-worker.mjs");
     const moduleUrl = new URL("./json-store.ts", import.meta.url).href;
     await writeFile(
       workerPath,
       `import { appendFile } from "node:fs/promises";
-import { withJsonStoreMutationLock } from ${JSON.stringify(moduleUrl)};
+import { setJsonStoreMutationLockTestHooks, withJsonStoreMutationLock } from ${JSON.stringify(moduleUrl)};
 const [key, logPath, label] = process.argv.slice(2);
-const gate = Promise.withResolvers();
-process.stdin.once("data", () => gate.resolve());
-await withJsonStoreMutationLock(key, async () => {
-  await appendFile(logPath, label + ":start\\n");
-  process.stdout.write(label + ":started\\n");
-  await gate.promise;
-  await appendFile(logPath, label + ":end\\n");
-});`,
+const ownerGate = Promise.withResolvers();
+const callbackGate = Promise.withResolvers();
+process.on("message", (command) => {
+  if (command === "owner-release") ownerGate.resolve();
+  if (command === "callback-release") callbackGate.resolve();
+});
+setJsonStoreMutationLockTestHooks({
+  retryMs: 5,
+  staleLockMs: 50,
+  timeoutMs: 500,
+  beforeLockOwnerWrite: label === "a"
+    ? async () => {
+        process.stdout.write(label + ":opened\\n");
+        await ownerGate.promise;
+      }
+    : undefined,
+});
+try {
+  await withJsonStoreMutationLock(key, async () => {
+    await appendFile(logPath, label + ":start\\n");
+    process.stdout.write(label + ":started\\n");
+    if (label === "b") await callbackGate.promise;
+    await appendFile(logPath, label + ":end\\n");
+  });
+} catch (error) {
+  await appendFile(logPath, label + ":error\\n");
+  process.stdout.write(label + ":error:" + String(error) + "\\n");
+} finally {
+  process.disconnect();
+}`,
       "utf8"
     );
     const runWorker = (label: string) => {
+      const opened = Promise.withResolvers<void>();
       const started = Promise.withResolvers<void>();
       const done = Promise.withResolvers<void>();
       const child = spawn(process.execPath, ["--import", "tsx", workerPath, key, logPath, label], {
-        stdio: ["pipe", "pipe", "pipe"],
+        stdio: ["ignore", "pipe", "pipe", "ipc"],
       });
+      children.add(child);
+      let stdout = "";
       let stderr = "";
       child.stdout?.setEncoding("utf8");
       child.stdout?.on("data", (chunk: string) => {
-        if (chunk.includes(`${label}:started`)) started.resolve();
+        stdout += chunk;
+        if (stdout.includes(`${label}:opened`)) opened.resolve();
+        if (stdout.includes(`${label}:started`)) started.resolve();
       });
       child.stderr?.setEncoding("utf8");
       child.stderr?.on("data", (chunk: string) => {
         stderr += chunk;
       });
       child.once("error", (error) => {
+        children.delete(child);
+        opened.reject(error);
         started.reject(error);
         done.reject(error);
       });
       child.once("exit", (code) => {
+        children.delete(child);
         if (code === 0) {
           done.resolve();
         } else {
-          const error = new Error(`stale lock worker exited ${String(code)}: ${stderr}`);
+          const error = new Error(`stale lock worker exited ${String(code)}: ${stdout}${stderr}`);
+          opened.reject(error);
           started.reject(error);
           done.reject(error);
         }
       });
-      return { child, started: started.promise, done: done.promise };
+      return {
+        child,
+        opened: opened.promise,
+        started: started.promise,
+        done: done.promise,
+        get stdout() {
+          return stdout;
+        },
+      };
     };
-    const workers = [runWorker("a"), runWorker("b")];
-    const first = await Promise.race(workers.map((worker, index) => worker.started.then(() => index)));
-    workers[first]?.child.stdin?.end("release\n");
-    const second = first === 0 ? 1 : 0;
-    await workers[second]?.started;
-    workers[second]?.child.stdin?.end("release\n");
-    await Promise.all(workers.map((worker) => worker.done));
 
+    const first = runWorker("a");
+    await first.opened;
+    const staleAt = new Date(Date.now() - 1000);
+    await utimes(lockPath, staleAt, staleAt);
+
+    const second = runWorker("b");
+    await second.started;
+    first.child.send("owner-release");
+    await first.done;
+    assert.match(first.stdout, /a:error:/);
+    assert.doesNotMatch(first.stdout, /a:started/);
+
+    second.child.send("callback-release");
+    await second.done;
     const lines = (await readFile(logPath, "utf8")).trim().split("\n");
-    assert.ok(lines.join("|") === "a:start|a:end|b:start|b:end" || lines.join("|") === "b:start|b:end|a:start|a:end");
+    assert.deepEqual(
+      lines.filter((line) => /:(start|end)$/.test(line)),
+      ["b:start", "b:end"]
+    );
   } finally {
+    for (const child of children) child.kill();
+    await Promise.all(
+      [...children].map(
+        (child) =>
+          new Promise<void>((resolve) => {
+            child.once("exit", () => resolve());
+          })
+      )
+    );
     await rm(memoryDir, { recursive: true, force: true });
   }
 });

@@ -23,6 +23,7 @@ export interface CueAnchor {
   recordedAt: string;
   sessionKey: string;
   nodeRefs: string[];
+  sourceMemoryIdsByNodeRef?: Record<string, string[]>;
   tags?: string[];
   metadata?: Record<string, string>;
 }
@@ -64,6 +65,46 @@ function validateNodeRefs(raw: unknown): string[] {
   return nodeRefs.map((nodeRef, index) => assertSafePathSegment(nodeRef, `nodeRefs[${index}]`));
 }
 
+function validateSourceMemoryIdsByNodeRef(raw: unknown): Record<string, string[]> | undefined {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw)) throw new Error("sourceMemoryIdsByNodeRef must be an object of string arrays");
+  const entries: Array<[string, string[]]> = [];
+  for (const [rawNodeRef, rawSourceMemoryIds] of Object.entries(raw)) {
+    const nodeRef = assertSafePathSegment(rawNodeRef, `sourceMemoryIdsByNodeRef.${rawNodeRef}`);
+    const sourceMemoryIds = optionalStringArray(rawSourceMemoryIds, `sourceMemoryIdsByNodeRef.${nodeRef}`);
+    if (sourceMemoryIds) entries.push([nodeRef, mergeSortedUniqueStrings(sourceMemoryIds)]);
+  }
+  if (entries.length === 0) return undefined;
+  return Object.fromEntries(entries.sort(([left], [right]) => compareDeterministicStrings(left, right)));
+}
+
+function mergeSourceMemoryIdsByNodeRef(
+  existing: Record<string, string[]> | undefined,
+  incoming: Record<string, string[]> | undefined
+): Record<string, string[]> | undefined {
+  const merged = new Map<string, string[]>();
+  for (const [nodeRef, sourceMemoryIds] of Object.entries(existing ?? {})) {
+    merged.set(nodeRef, [...sourceMemoryIds]);
+  }
+  for (const [nodeRef, sourceMemoryIds] of Object.entries(incoming ?? {})) {
+    merged.set(nodeRef, mergeSortedUniqueStrings(merged.get(nodeRef), sourceMemoryIds));
+  }
+  return validateSourceMemoryIdsByNodeRef(Object.fromEntries(merged));
+}
+
+function boundSourceMemoryIdsByNodeRef(
+  sourceMemoryIdsByNodeRef: Record<string, string[]> | undefined,
+  nodeRefs: string[]
+): Record<string, string[]> | undefined {
+  if (!sourceMemoryIdsByNodeRef) return undefined;
+  const retained = Object.fromEntries(
+    nodeRefs
+      .filter((nodeRef) => sourceMemoryIdsByNodeRef[nodeRef])
+      .map((nodeRef) => [nodeRef, sourceMemoryIdsByNodeRef[nodeRef]] as const)
+  );
+  return validateSourceMemoryIdsByNodeRef(retained);
+}
+
 export function resolveCueAnchorStoreDir(abstractionNodeStoreDir: string, overrideDir?: string): string {
   if (typeof overrideDir === "string" && overrideDir.trim().length > 0) {
     return overrideDir.trim();
@@ -84,6 +125,7 @@ export function validateCueAnchor(raw: unknown): CueAnchor {
     recordedAt: assertIsoRecordedAt(assertString(raw.recordedAt, "recordedAt")),
     sessionKey: assertString(raw.sessionKey, "sessionKey"),
     nodeRefs: validateNodeRefs(raw.nodeRefs),
+    sourceMemoryIdsByNodeRef: validateSourceMemoryIdsByNodeRef(raw.sourceMemoryIdsByNodeRef),
     tags: optionalStringArray(raw.tags, "tags"),
     metadata: validateStringRecord(raw.metadata, "metadata"),
   };
@@ -100,9 +142,11 @@ export async function recordCueAnchor(options: {
     : path.join(options.memoryDir, "state", "abstraction-nodes");
   const rootDir = resolveCueAnchorStoreDir(abstractionNodeStoreDir, options.cueAnchorStoreDir);
   const validated = validateCueAnchor(options.anchor);
+  const boundedNodeRefs = boundNodeRefs(validated.nodeRefs);
   const bounded = validateCueAnchor({
     ...validated,
-    nodeRefs: boundNodeRefs(validated.nodeRefs),
+    nodeRefs: boundedNodeRefs,
+    sourceMemoryIdsByNodeRef: boundSourceMemoryIdsByNodeRef(validated.sourceMemoryIdsByNodeRef, boundedNodeRefs),
   });
   const anchorDir = path.join(rootDir, bounded.anchorType);
   const filePath = path.join(anchorDir, `${bounded.anchorId}.json`);
@@ -158,39 +202,102 @@ async function readLiveNodes(nodesDir: string): Promise<Map<string, AbstractionN
   return liveNodes;
 }
 
+export async function upsertCueAnchors(options: {
+  memoryDir: string;
+  abstractionNodeStoreDir?: string;
+  cueAnchorStoreDir?: string;
+  anchors: CueAnchor[];
+}): Promise<string[]> {
+  const abstractionNodeStoreDir = resolveAbstractionNodeStoreDir(options.memoryDir, options.abstractionNodeStoreDir);
+  const incomingAnchors = options.anchors.map(validateCueAnchor);
+  if (incomingAnchors.length === 0) return [];
+
+  return withJsonStoreMutationLock(abstractionNodeStoreDir, async () => {
+    const rootDir = resolveCueAnchorStoreDir(abstractionNodeStoreDir, options.cueAnchorStoreDir);
+    const liveNodes = await readLiveNodes(path.join(abstractionNodeStoreDir, "nodes"));
+    const incomingByKey = new Map<string, CueAnchor[]>();
+    for (const anchor of incomingAnchors) {
+      const key = `${anchor.anchorType}\u0000${anchor.anchorId}`;
+      const grouped = incomingByKey.get(key) ?? [];
+      grouped.push(anchor);
+      incomingByKey.set(key, grouped);
+    }
+    const filePaths: string[] = [];
+    for (const key of [...incomingByKey.keys()].sort(compareDeterministicStrings)) {
+      const grouped = incomingByKey.get(key) ?? [];
+      grouped.sort(compareIncomingCueAnchors);
+      const incoming = grouped.shift();
+      if (!incoming) throw new Error(`cue anchor batch has no anchor: ${key}`);
+      const filePath = path.join(rootDir, incoming.anchorType, `${incoming.anchorId}.json`);
+      let existing: CueAnchor | undefined;
+      try {
+        existing = validateCueAnchor(await readJsonFile(filePath));
+      } catch (error) {
+        if (!isNotFoundError(error)) throw error;
+      }
+      let merged = mergeCueAnchors(existing, incoming, liveNodes);
+      for (const next of grouped) merged = mergeCueAnchors(merged, next, liveNodes);
+      await writeJsonFileAtomic(filePath, merged);
+      filePaths.push(filePath);
+    }
+    return filePaths;
+  });
+}
+
+function compareIncomingCueAnchors(left: CueAnchor, right: CueAnchor): number {
+  return (
+    Date.parse(left.recordedAt) - Date.parse(right.recordedAt) ||
+    compareDeterministicStrings(canonicalCueAnchorKey(left), canonicalCueAnchorKey(right))
+  );
+}
+
+function canonicalMetadata(metadata: Record<string, string> | undefined): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(metadata ?? {}).sort(([left], [right]) => compareDeterministicStrings(left, right))
+  );
+}
+
+function canonicalCueAnchorKey(anchor: CueAnchor): string {
+  return JSON.stringify({
+    ...anchor,
+    metadata: canonicalMetadata(anchor.metadata),
+  });
+}
+
+function mergeCueAnchors(
+  existing: CueAnchor | undefined,
+  incoming: CueAnchor,
+  liveNodes: Map<string, AbstractionNode> | undefined
+): CueAnchor {
+  const incomingIsNewest = !existing || Date.parse(existing.recordedAt) <= Date.parse(incoming.recordedAt);
+  const newest = incomingIsNewest ? incoming : existing;
+  const older = incomingIsNewest ? existing : incoming;
+  const mergedMetadata = canonicalMetadata({
+    ...(older?.metadata ?? {}),
+    ...(newest.metadata ?? {}),
+  });
+  const nodeRefs = boundNodeRefs(mergeSortedValues(existing?.nodeRefs, incoming.nodeRefs), liveNodes);
+  return validateCueAnchor({
+    ...newest,
+    nodeRefs,
+    sourceMemoryIdsByNodeRef: boundSourceMemoryIdsByNodeRef(
+      mergeSourceMemoryIdsByNodeRef(existing?.sourceMemoryIdsByNodeRef, incoming.sourceMemoryIdsByNodeRef),
+      nodeRefs
+    ),
+    tags: mergeSortedValues(existing?.tags, incoming.tags),
+    metadata: mergedMetadata,
+  });
+}
+
 export async function upsertCueAnchor(options: {
   memoryDir: string;
   abstractionNodeStoreDir?: string;
   cueAnchorStoreDir?: string;
   anchor: CueAnchor;
 }): Promise<string> {
-  const abstractionNodeStoreDir = resolveAbstractionNodeStoreDir(options.memoryDir, options.abstractionNodeStoreDir);
-  return withJsonStoreMutationLock(abstractionNodeStoreDir, async () => {
-    const rootDir = resolveCueAnchorStoreDir(abstractionNodeStoreDir, options.cueAnchorStoreDir);
-    const incoming = validateCueAnchor(options.anchor);
-    const liveNodes = await readLiveNodes(path.join(abstractionNodeStoreDir, "nodes"));
-    const filePath = path.join(rootDir, incoming.anchorType, `${incoming.anchorId}.json`);
-    let existing: CueAnchor | undefined;
-    try {
-      existing = validateCueAnchor(await readJsonFile(filePath));
-    } catch (error) {
-      if (!isNotFoundError(error)) throw error;
-    }
-    const newest =
-      !existing || Date.parse(existing.recordedAt) <= Date.parse(incoming.recordedAt) ? incoming : existing;
-    const older = newest === incoming ? existing : incoming;
-    const merged = validateCueAnchor({
-      ...newest,
-      nodeRefs: boundNodeRefs(mergeSortedValues(existing?.nodeRefs, incoming.nodeRefs), liveNodes),
-      tags: mergeSortedValues(existing?.tags, incoming.tags),
-      metadata: {
-        ...(older?.metadata ?? {}),
-        ...(newest.metadata ?? {}),
-      },
-    });
-    await writeJsonFileAtomic(filePath, merged);
-    return filePath;
-  });
+  const [filePath] = await upsertCueAnchors({ ...options, anchors: [options.anchor] });
+  if (!filePath) throw new Error("cue anchor upsert did not write a file");
+  return filePath;
 }
 
 export async function pruneOrphanCueAnchors(options: {
@@ -214,6 +321,7 @@ export async function pruneOrphanCueAnchors(options: {
         continue;
       }
       const nodeRefs = boundNodeRefs(anchor.nodeRefs, liveNodes);
+      const sourceMemoryIdsByNodeRef = boundSourceMemoryIdsByNodeRef(anchor.sourceMemoryIdsByNodeRef, nodeRefs);
       if (nodeRefs.length === 0) {
         try {
           await unlink(filePath);
@@ -225,9 +333,10 @@ export async function pruneOrphanCueAnchors(options: {
       }
       if (
         nodeRefs.length !== anchor.nodeRefs.length ||
-        nodeRefs.some((nodeRef, index) => nodeRef !== anchor.nodeRefs[index])
+        nodeRefs.some((nodeRef, index) => nodeRef !== anchor.nodeRefs[index]) ||
+        JSON.stringify(sourceMemoryIdsByNodeRef) !== JSON.stringify(anchor.sourceMemoryIdsByNodeRef)
       ) {
-        await writeJsonFileAtomic(filePath, validateCueAnchor({ ...anchor, nodeRefs }));
+        await writeJsonFileAtomic(filePath, validateCueAnchor({ ...anchor, nodeRefs, sourceMemoryIdsByNodeRef }));
       }
     }
     return removed;

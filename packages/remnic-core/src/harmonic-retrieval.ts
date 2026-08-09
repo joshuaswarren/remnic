@@ -1,16 +1,25 @@
 import path from "node:path";
 import { listJsonFilesStrict, readJsonFile } from "./json-store.js";
 import { throwIfAborted } from "./abort-error.js";
-import { isActiveMemoryStatus } from "./memory-lifecycle-ledger-utils.js";
-import { resolveAbstractionNodeStoreDir, validateAbstractionNode, type AbstractionNode } from "./abstraction-nodes.js";
+import { inferMemoryStatus, toMemoryPathRel } from "./memory-lifecycle-ledger-utils.js";
+import {
+  HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY,
+  resolveAbstractionNodeStoreDir,
+  validateAbstractionNode,
+  type AbstractionNode,
+} from "./abstraction-nodes.js";
 import { resolveCueAnchorStoreDir, validateCueAnchor, type CueAnchor, type CueAnchorType } from "./cue-anchors.js";
+import { compareDeterministicStrings } from "./deterministic-order.js";
 import { countRecallTokenOverlap, normalizeRecallTokens } from "./recall-tokenization.js";
+import type { MemoryFile } from "./types.js";
 
-async function readActiveSourceMemoryIds(options: {
+type SourceMemoryMap = Map<string, MemoryFile>;
+
+async function readSourceMemories(options: {
   memoryDir: string;
   abortSignal?: AbortSignal;
-}): Promise<Set<string>> {
-  const activeIds = new Set<string>();
+}): Promise<SourceMemoryMap> {
+  const sourceMemories: SourceMemoryMap = new Map();
   try {
     const { StorageManager } = await import("./storage.js");
     const memories = await new StorageManager(options.memoryDir).readAllMemories({
@@ -18,17 +27,84 @@ async function readActiveSourceMemoryIds(options: {
     });
     for (const memory of memories) {
       throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
-      if (isActiveMemoryStatus(memory.frontmatter.status)) {
-        activeIds.add(memory.frontmatter.id);
-      }
+      sourceMemories.set(memory.frontmatter.id, memory);
     }
   } catch {
     throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
     // Source validation fails closed when the authorized memory directory is
     // unreadable. Source-less nodes remain eligible for retrieval.
-    activeIds.clear();
+    sourceMemories.clear();
   }
-  return activeIds;
+  return sourceMemories;
+}
+
+function projectSourceBackedNode(
+  node: AbstractionNode,
+  sourceMemories: SourceMemoryMap,
+  memoryDir: string
+): AbstractionNode | null {
+  const sourceMemoryIds = node.sourceMemoryIds ?? [];
+  if (sourceMemoryIds.length === 0) return node;
+
+  const activeSourceMemoryIds = sourceMemoryIds.filter((memoryId) => {
+    const memory = sourceMemories.get(memoryId);
+    return (
+      memory !== undefined &&
+      inferMemoryStatus(memory.frontmatter, toMemoryPathRel(memoryDir, memory.path)) === "active"
+    );
+  });
+  if (activeSourceMemoryIds.length === 0) return null;
+  if (activeSourceMemoryIds.length === sourceMemoryIds.length) return node;
+
+  const activeMemories = activeSourceMemoryIds.flatMap((memoryId) => {
+    const memory = sourceMemories.get(memoryId);
+    return memory ? [memory] : [];
+  });
+  let metadata: Record<string, string> | undefined;
+  const insertedAtRaw = node.metadata?.[HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY];
+  if (insertedAtRaw) {
+    try {
+      const insertedAt = JSON.parse(insertedAtRaw) as Record<string, unknown>;
+      const activeInsertedAt = activeSourceMemoryIds.flatMap((memoryId) => {
+        const value = insertedAt[memoryId];
+        return typeof value === "string" ? [[memoryId, value] as const] : [];
+      });
+      if (activeInsertedAt.length > 0) {
+        metadata = {
+          [HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY]: JSON.stringify(Object.fromEntries(activeInsertedAt)),
+        };
+      }
+    } catch {
+      metadata = undefined;
+    }
+  }
+
+  return {
+    ...node,
+    sourceMemoryIds: activeSourceMemoryIds,
+    title: activeMemories[0]?.content.slice(0, 80) ?? node.title,
+    summary: activeMemories
+      .slice(0, 3)
+      .map((memory) => memory.content)
+      .join("; ")
+      .slice(0, 400),
+    tags: [...new Set(activeMemories.flatMap((memory) => memory.frontmatter.tags))].sort(compareDeterministicStrings),
+    entityRefs: [
+      ...new Set(
+        activeMemories.flatMap((memory) =>
+          typeof memory.frontmatter.entityRef === "string" ? [memory.frontmatter.entityRef] : []
+        )
+      ),
+    ].sort(compareDeterministicStrings),
+    metadata,
+  };
+}
+
+function anchorMatchesProjectedNode(anchor: CueAnchor, nodeRef: string, node: AbstractionNode): boolean {
+  const activeSourceMemoryIds = node.sourceMemoryIds ?? [];
+  if (activeSourceMemoryIds.length === 0) return true;
+  const anchorSourceMemoryIds = anchor.sourceMemoryIdsByNodeRef?.[nodeRef] ?? [];
+  return anchorSourceMemoryIds.some((sourceMemoryId) => activeSourceMemoryIds.includes(sourceMemoryId));
 }
 
 export interface HarmonicMatchedAnchor {
@@ -169,13 +245,12 @@ export async function searchHarmonicRetrieval(options: {
 
   const nodes = await readAbstractionNodes(options);
   const sourceBackedNodes = nodes.filter((node) => (node.sourceMemoryIds?.length ?? 0) > 0);
-  const activeSourceMemoryIds =
-    sourceBackedNodes.length > 0 ? await readActiveSourceMemoryIds(options) : new Set<string>();
-  const eligibleNodes = nodes.filter(
-    (node) =>
-      (node.sourceMemoryIds?.length ?? 0) === 0 ||
-      (node.sourceMemoryIds ?? []).some((memoryId) => activeSourceMemoryIds.has(memoryId))
-  );
+  const sourceMemories: SourceMemoryMap =
+    sourceBackedNodes.length > 0 ? await readSourceMemories(options) : new Map<string, MemoryFile>();
+  const eligibleNodes = nodes.flatMap((node) => {
+    const projected = projectSourceBackedNode(node, sourceMemories, options.memoryDir);
+    return projected ? [projected] : [];
+  });
   const candidates = new Map<string, HarmonicCandidate>();
 
   for (const node of eligibleNodes) {
@@ -201,7 +276,7 @@ export async function searchHarmonicRetrieval(options: {
       if (score <= 0) continue;
       for (const nodeRef of anchor.nodeRefs) {
         const node = nodeIndex.get(nodeRef);
-        if (!node) continue;
+        if (!node || !anchorMatchesProjectedNode(anchor, nodeRef, node)) continue;
         const existing = candidates.get(nodeRef) ?? {
           node,
           nodeScore: 0,

@@ -2,11 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { parseConfig } from "../src/config.js";
 import { Orchestrator } from "../src/orchestrator.js";
 import { StorageManager } from "../src/storage.js";
-import { recordAbstractionNode } from "../src/abstraction-nodes.js";
+import { HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY, recordAbstractionNode } from "../src/abstraction-nodes.js";
 import { recordCueAnchor } from "../src/cue-anchors.js";
 import { runHarmonicSearchCliCommand } from "../src/cli.js";
 import { searchHarmonicRetrieval } from "../src/harmonic-retrieval.js";
@@ -258,8 +258,8 @@ test("harmonic retrieval drops inactive and missing sources but keeps an active 
         sessionKey: "agent:source-filter",
         kind: "topic",
         abstractionLevel: "meso",
-        title: "source lifecycle rule",
-        summary: "source lifecycle rule summary",
+        title: "active sibling source fact",
+        summary: "active sibling source fact",
         sourceMemoryIds,
       },
     });
@@ -282,7 +282,7 @@ test("harmonic retrieval drops inactive and missing sources but keeps an active 
 
   const results = await searchHarmonicRetrieval({
     memoryDir,
-    query: "Which source lifecycle rule applies?",
+    query: "Which active sibling source fact applies?",
     maxResults: 10,
     anchorsEnabled: true,
   });
@@ -299,6 +299,207 @@ test("harmonic retrieval drops inactive and missing sources but keeps an active 
     results.some((result) => result.node.nodeId === "missing-only"),
     false
   );
+});
+
+test("harmonic retrieval projects mixed source nodes from active memories only", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-harmonic-projection-"));
+  const originalReadAllMemories = StorageManager.prototype.readAllMemories;
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    const { id: inactiveId } = await storage.writeMemory("fact", "inactive source payload", {
+      source: "test",
+      tags: ["inactive-tag"],
+      entityRef: "inactive-entity",
+    });
+    const { id: archivedAtId } = await storage.writeMemory("fact", "archived-at source payload", {
+      source: "test",
+      tags: ["archived-at-tag"],
+      entityRef: "archived-at-entity",
+    });
+    const { id: archivePathId } = await storage.writeMemory("fact", "archive-path source payload", {
+      source: "test",
+      tags: ["archive-path-tag"],
+      entityRef: "archive-path-entity",
+    });
+    const { id: activeId } = await storage.writeMemory("fact", "active source payload", {
+      source: "test",
+      tags: ["active-tag"],
+      entityRef: "active-entity",
+    });
+    await storage.updateMemoryFrontmatter(inactiveId, { status: "archived" });
+    await storage.updateMemoryFrontmatter(archivedAtId, {
+      status: "active",
+      archivedAt: "2026-03-08T00:00:00.000Z",
+    });
+
+    const originalRead = originalReadAllMemories;
+    StorageManager.prototype.readAllMemories = async function (options) {
+      const memories = await originalRead.call(this, options);
+      return memories.map((memory) =>
+        memory.frontmatter.id === archivePathId
+          ? { ...memory, path: path.join(this.dir, "archive", "2026-03-08", path.basename(memory.path)) }
+          : memory
+      );
+    };
+
+    const sourceMemoryIds = [inactiveId, archivedAtId, archivePathId, activeId];
+    await recordAbstractionNode({
+      memoryDir,
+      node: {
+        schemaVersion: 1,
+        nodeId: "mixed-source-node",
+        recordedAt: "2026-03-08T00:00:00.000Z",
+        sessionKey: "agent:source-projection",
+        kind: "topic",
+        abstractionLevel: "meso",
+        title: "inactive title archived-at title archive-path title active title",
+        summary: "inactive summary archived-at summary archive-path summary active summary",
+        sourceMemoryIds,
+        tags: ["inactive-tag", "archived-at-tag", "archive-path-tag", "active-tag"],
+        entityRefs: ["inactive-entity", "archived-at-entity", "archive-path-entity", "active-entity"],
+        metadata: {
+          [HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY]: JSON.stringify(
+            Object.fromEntries(sourceMemoryIds.map((id, index) => [id, `2026-03-08T00:0${index}:00.000Z`]))
+          ),
+        },
+      },
+    });
+    await recordAbstractionNode({
+      memoryDir,
+      node: {
+        schemaVersion: 1,
+        nodeId: "inactive-only-node",
+        recordedAt: "2026-03-08T00:00:00.000Z",
+        sessionKey: "agent:source-projection",
+        kind: "topic",
+        abstractionLevel: "meso",
+        title: "inactive title",
+        summary: "inactive summary",
+        sourceMemoryIds: [inactiveId],
+      },
+    });
+    await recordAbstractionNode({
+      memoryDir,
+      node: {
+        schemaVersion: 1,
+        nodeId: "missing-only-node",
+        recordedAt: "2026-03-08T00:00:00.000Z",
+        sessionKey: "agent:source-projection",
+        kind: "topic",
+        abstractionLevel: "meso",
+        title: "missing title",
+        summary: "missing summary",
+        sourceMemoryIds: ["missing-source"],
+      },
+    });
+    await recordCueAnchor({
+      memoryDir,
+      anchor: {
+        schemaVersion: 1,
+        anchorId: "inactive-only-anchor",
+        anchorType: "constraint",
+        anchorValue: "inactive title",
+        normalizedCue: "inactive title",
+        recordedAt: "2026-03-08T00:01:00.000Z",
+        sessionKey: "agent:source-projection",
+        nodeRefs: ["inactive-only-node"],
+      },
+    });
+
+    const results = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "active source payload",
+      maxResults: 10,
+      anchorsEnabled: true,
+    });
+    assert.deepEqual(
+      results.map((result) => result.node.nodeId),
+      ["mixed-source-node"]
+    );
+    const projected = results[0]?.node;
+    assert.ok(projected);
+    assert.deepEqual(projected.sourceMemoryIds, [activeId]);
+    assert.deepEqual(projected.tags, ["active-tag"]);
+    assert.deepEqual(projected.entityRefs, ["active-entity"]);
+    assert.equal(projected.title, "active source payload");
+    assert.equal(projected.summary, "active source payload");
+    assert.deepEqual(JSON.parse(projected.metadata?.[HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY] ?? "{}"), {
+      [activeId]: "2026-03-08T00:03:00.000Z",
+    });
+    assert.equal(JSON.stringify(projected).includes("inactive"), false);
+
+    const inactiveResults = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "inactive title",
+      maxResults: 10,
+      anchorsEnabled: true,
+    });
+    assert.deepEqual(inactiveResults, []);
+  } finally {
+    StorageManager.prototype.readAllMemories = originalReadAllMemories;
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("harmonic retrieval keeps source-less and fully active nodes unchanged", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-harmonic-active-projection-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    const { id: activeId } = await storage.writeMemory("fact", "fully active source", {
+      source: "test",
+      tags: ["active-tag"],
+      entityRef: "active-entity",
+    });
+    const fullyActiveNode = {
+      schemaVersion: 1 as const,
+      nodeId: "fully-active-node",
+      recordedAt: "2026-03-08T00:00:00.000Z",
+      sessionKey: "agent:source-projection",
+      kind: "topic" as const,
+      abstractionLevel: "meso" as const,
+      title: "stable active title",
+      summary: "stable active summary",
+      sourceMemoryIds: [activeId],
+      tags: ["active-tag"],
+      entityRefs: ["active-entity"],
+      metadata: undefined,
+    };
+    await recordAbstractionNode({ memoryDir, node: fullyActiveNode });
+    const sourceLessNode = {
+      schemaVersion: 1 as const,
+      nodeId: "source-less-node",
+      recordedAt: "2026-03-08T00:00:00.000Z",
+      sessionKey: "agent:source-projection",
+      kind: "topic" as const,
+      abstractionLevel: "meso" as const,
+      title: "source-less title",
+      summary: "source-less summary",
+    };
+    await recordAbstractionNode({ memoryDir, node: sourceLessNode });
+
+    const activeResults = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "stable active title",
+      maxResults: 10,
+      anchorsEnabled: false,
+    });
+    assert.deepEqual(activeResults[0]?.node, fullyActiveNode);
+
+    const sourceLessResults = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "source-less",
+      maxResults: 10,
+      anchorsEnabled: false,
+    });
+    assert.deepEqual(
+      sourceLessResults.map((result) => result.node.nodeId),
+      ["source-less-node"]
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
 });
 
 test("harmonic retrieval rejects an unreadable sidecar store", async () => {
