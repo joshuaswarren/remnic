@@ -1064,6 +1064,9 @@ of truth for similarity logic across read-time and write-time code paths.
 | `graphExpansionActivationWeight` | `0.65` | Blend weight for graph activation vs seed QMD score (0-1) |
 | `graphExpansionBlendMin` | `0.05` | Lower clamp bound for blended graph-expanded scores (0-1) |
 | `graphExpansionBlendMax` | `0.95` | Upper clamp bound for blended graph-expanded scores (0-1) |
+| `graphPathScoring.enabled` | `false` | Penalize graph-expanded results that use invalid intermediate memories |
+| `graphPathScoring.invalidNodePenalty` | `0.2` | Multiplier applied once per invalid intermediate memory. Range `(0, 1]` |
+| `graphPathScoring.includePathInProvenance` | `true` | Include graph path node ids in provenance output |
 
 ## File Hygiene
 
@@ -1525,6 +1528,9 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `causalGraphEnabled` | `true` | `true` |
 | `maxGraphTraversalSteps` | `3` | `3` |
 | `graphActivationDecay` | `0.7` | `0.7` |
+| `graphPathScoring.enabled` | `false` | `false` |
+| `graphPathScoring.invalidNodePenalty` | `0.2` | `0.2` |
+| `graphPathScoring.includePathInProvenance` | `true` | `true` |
 | `graphExpansionActivationWeight` | `0.65` | `0.65` |
 | `graphExpansionBlendMin` | `0.05` | `0.05` |
 | `graphExpansionBlendMax` | `0.95` | `0.95` |

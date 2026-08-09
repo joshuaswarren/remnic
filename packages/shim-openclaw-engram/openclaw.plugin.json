@@ -2620,6 +2620,29 @@
         "default": true,
         "description": "Escalate broader causal/timeline phrasing into graph_mode planning."
       },
+      "graphPathScoring": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Penalize graph-expanded results that rely on invalid intermediate memories."
+          },
+          "invalidNodePenalty": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 1,
+            "default": 0.2,
+            "description": "Multiplicative penalty applied once per invalid intermediate memory."
+          },
+          "includePathInProvenance": {
+            "type": "boolean",
+            "default": true,
+            "description": "Include graph path node ids in recall provenance when path scoring is enabled."
+          }
+        },
+        "additionalProperties": false
+      },
       "graphExpansionActivationWeight": {
         "type": "number",
         "default": 0.65,
@@ -6954,6 +6977,11 @@
     "recallGraphEnabled": {
       "label": "Graph Retrieval (PPR)",
       "help": "Run Personalized PageRank on the retrieval graph and merge with QMD via MMR (issue #559)."
+    },
+    "graphPathScoring": {
+      "label": "Graph Path Scoring",
+      "advanced": true,
+      "help": "Penalize expanded results that rely on invalid intermediate memories. Disabled by default."
     },
     "recallGraphDamping": {
       "label": "Graph Recall Damping",

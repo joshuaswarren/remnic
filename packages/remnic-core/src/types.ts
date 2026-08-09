@@ -694,6 +694,12 @@ export interface SemanticChunkingConfigShape {
   fallbackToRecursive: boolean;
 }
 
+export interface GraphPathScoringConfig {
+  enabled: boolean;
+  invalidNodePenalty: number;
+  includePathInProvenance: boolean;
+}
+
 export interface PluginConfig extends BoundedJsonlStateConfig {
   openaiApiKey: string | undefined;
   openaiBaseUrl: string | undefined;
@@ -2113,6 +2119,7 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
   causalGraphEnabled: boolean;
   maxGraphTraversalSteps: number;
   graphActivationDecay: number;
+  graphPathScoring: GraphPathScoringConfig;
   /** Weight of graph activation score when blending with seed QMD score (0-1). */
   graphExpansionActivationWeight: number;
   /** Lower bound for blended graph-expanded recall scores (0-1). */

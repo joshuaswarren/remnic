@@ -56,3 +56,40 @@ test("parseConfig applies graph expansion scoring defaults and clamps bounds", (
   assert.equal(clamped.graphExpansionBlendMin, 0);
   assert.equal(clamped.graphExpansionBlendMax, 1);
 });
+test("parseConfig applies graphPathScoring defaults and boolean-like strings", () => {
+  const defaults = parseConfig({ openaiApiKey: "sk-test" });
+  assert.deepEqual(defaults.graphPathScoring, {
+    enabled: false,
+    invalidNodePenalty: 0.2,
+    includePathInProvenance: true,
+  });
+
+  const disabled = parseConfig({
+    openaiApiKey: "sk-test",
+    graphPathScoring: {
+      enabled: "false",
+      invalidNodePenalty: "0.4",
+      includePathInProvenance: "false",
+    },
+  });
+  assert.deepEqual(disabled.graphPathScoring, {
+    enabled: false,
+    invalidNodePenalty: 0.4,
+    includePathInProvenance: false,
+  });
+});
+
+test("parseConfig rejects invalid graphPathScoring values", () => {
+  assert.throws(
+    () => parseConfig({ openaiApiKey: "sk-test", graphPathScoring: { invalidNodePenalty: 0 } }),
+    /graphPathScoring\.invalidNodePenalty/,
+  );
+  assert.throws(
+    () => parseConfig({ openaiApiKey: "sk-test", graphPathScoring: { invalidNodePenalty: 1.1 } }),
+    /graphPathScoring\.invalidNodePenalty/,
+  );
+  assert.throws(
+    () => parseConfig({ openaiApiKey: "sk-test", graphPathScoring: { invalidNodePenalty: "nope" } }),
+    /graphPathScoring\.invalidNodePenalty/,
+  );
+});

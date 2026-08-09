@@ -352,6 +352,47 @@ function resolveBooleanConfig(
   }
   return coerced;
 }
+function parseGraphPathScoringConfig(
+  cfg: Record<string, unknown> | undefined,
+): {
+  enabled: boolean;
+  invalidNodePenalty: number;
+  includePathInProvenance: boolean;
+} {
+  if (cfg !== undefined && (typeof cfg !== "object" || Array.isArray(cfg))) {
+    throw new Error("graphPathScoring must be a plain object");
+  }
+  const block = cfg ?? {};
+  const invalidNodePenalty = coerceNumber(block.invalidNodePenalty);
+  if (
+    invalidNodePenalty === undefined ||
+    !Number.isFinite(invalidNodePenalty) ||
+    invalidNodePenalty <= 0 ||
+    invalidNodePenalty > 1
+  ) {
+    if (block.invalidNodePenalty !== undefined) {
+      throw new Error(
+        `graphPathScoring.invalidNodePenalty must be a number in (0,1]; got ${JSON.stringify(block.invalidNodePenalty)}`,
+      );
+    }
+  }
+  return {
+    enabled: resolveBooleanConfig(block.enabled, false, "graphPathScoring.enabled"),
+    invalidNodePenalty:
+      invalidNodePenalty !== undefined &&
+      Number.isFinite(invalidNodePenalty) &&
+      invalidNodePenalty > 0 &&
+      invalidNodePenalty <= 1
+        ? invalidNodePenalty
+        : 0.2,
+    includePathInProvenance: resolveBooleanConfig(
+      block.includePathInProvenance,
+      true,
+      "graphPathScoring.includePathInProvenance",
+    ),
+  };
+}
+
 
 function resolvePositiveIntegerConfig(
   value: unknown,
@@ -3537,6 +3578,9 @@ export function parseConfig(
       typeof cfg.graphActivationDecay === "number"
         ? Math.min(1, Math.max(0, cfg.graphActivationDecay))
         : 0.7,
+    graphPathScoring: parseGraphPathScoringConfig(
+      cfg.graphPathScoring as Record<string, unknown> | undefined,
+    ),
     graphExpansionActivationWeight:
       typeof cfg.graphExpansionActivationWeight === "number"
         ? Math.min(1, Math.max(0, cfg.graphExpansionActivationWeight))
