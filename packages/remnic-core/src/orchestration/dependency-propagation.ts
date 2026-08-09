@@ -8,6 +8,7 @@ import type { ExtractionEngine } from "../extraction.js";
 import { log } from "../logger.js";
 import type { StorageManager } from "../index.js";
 import type {
+  DependencyPropagationConfig,
   MemoryFile,
   MemoryFrontmatter,
   MemoryLinkType,
@@ -35,31 +36,14 @@ export interface PropagationResult {
   skipped: "disabled" | "no_dependents" | "llm_error" | "timeout" | null;
 }
 
-interface DependencyPropagationConfig {
-  enabled?: boolean | string;
-  linkTypes?: MemoryLinkType[] | string[];
-  maxDependents?: number;
-  timeoutMs?: number;
-  dryRun?: boolean | string;
-}
-
 function propagationConfig(config: PluginConfig): DependencyPropagationConfig {
-  return (config as PluginConfig & { dependencyPropagation?: DependencyPropagationConfig })
-    .dependencyPropagation ?? {};
+  return config.dependencyPropagation;
 }
 
 function isEnabled(value: unknown): boolean {
   if (value === true) return true;
   if (typeof value !== "string") return false;
   return ["true", "1", "yes", "on"].includes(value.trim().toLowerCase());
-}
-
-function isTruthy(value: unknown): boolean {
-  if (value === false || value === 0 || value === null || value === undefined) return false;
-  if (typeof value === "string") {
-    return !["", "0", "false", "no", "off"].includes(value.trim().toLowerCase());
-  }
-  return Boolean(value);
 }
 
 const ACTIVE_STATUS = "active";
@@ -159,9 +143,8 @@ export async function propagateInvalidation(
     return result;
   }
 
-
-  const maxDependents = Number(config.maxDependents ?? 10);
-  if (!Number.isFinite(maxDependents) || maxDependents <= 0) {
+  const maxDependents = config.maxDependents;
+  if (maxDependents <= 0) {
     const result = emptyResult("no_dependents");
     logResult(event, result);
     return result;
@@ -170,26 +153,23 @@ export async function propagateInvalidation(
   let memories: MemoryFile[];
   try {
     memories = await deps.storage.readAllMemories();
-    try {
-      const cold = await deps.storage.readAllColdMemories();
-      memories = [...memories, ...cold];
-    } catch {
-      // Cold tier is optional; hot-only discovery is still correct for
-      // deployments without cold migration.
-    }
   } catch (error) {
     log.warn(`dependency propagation discovery failed for ${event.oldMemory.frontmatter.id}: ${error}`);
     const result = emptyResult("llm_error");
     logResult(event, result);
     return result;
   }
+  // Cold-tier active dependents are not scanned in v1: the supersede and
+  // frontmatter write paths operate on hot storage. Cold discovery without
+  // cold write support would surface dependents it cannot act on.
 
   const discovered = findDependents(
     memories,
     event.oldMemory,
-    Array.isArray(config.linkTypes) ? (config.linkTypes as MemoryLinkType[]) : ["supports", "follows"],
+    config.linkTypes,
   ).filter((memory) => memory.frontmatter.id !== event.replacementId);
   const dependents = discovered.slice(0, Math.max(0, Math.floor(maxDependents)));
+
   if (dependents.length === 0) {
     const result = emptyResult("no_dependents");
     logResult(event, result);
@@ -197,7 +177,7 @@ export async function propagateInvalidation(
   }
 
   const controller = new AbortController();
-  const timeoutMs = Number(config.timeoutMs ?? 20_000);
+  const timeoutMs = config.timeoutMs;
   const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0
     ? setTimeout(() => controller.abort(new PropagationTimeoutError()), timeoutMs)
     : undefined;
@@ -238,7 +218,7 @@ export async function propagateInvalidation(
   for (const dependent of dependents) {
     const verdict = verdicts.find((candidate) => candidate.memoryId === dependent.frontmatter.id);
     if (verdict?.verdict === "invalidated") {
-      if (isTruthy(config.dryRun)) {
+      if (config.dryRun) {
         invalidated += 1;
         continue;
       }
