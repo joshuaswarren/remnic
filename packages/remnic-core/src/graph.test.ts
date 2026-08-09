@@ -116,23 +116,151 @@ test("spreadingActivation propagates same-depth alternate path activation", asyn
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+test("spreadingActivation records seed-first paths with aligned edge metadata", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-order-"));
+  try {
+    await writeGraphEdges(memoryDir, [makeEdge("seed", "middle", "entity", 0.8)]);
+    await writeGraphEdges(memoryDir, [makeEdge("middle", "candidate", "causal", 0.7)], "causal");
 
-function makeEdge(from: string, to: string): GraphEdge {
+    const graph = new GraphIndex(memoryDir, {
+      ...makeGraphConfig(),
+      causalGraphEnabled: true,
+      maxGraphTraversalSteps: 2,
+    });
+    const activated = await graph.spreadingActivation(["seed"], undefined, { recordPaths: true });
+
+    assert.deepEqual(activated.find((candidate) => candidate.path === "candidate")?.activationPath, {
+      nodeIds: ["seed", "middle", "candidate"],
+      edgeConfidences: [0.8, 0.7],
+      graphTypes: ["entity", "causal"],
+    });
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("spreadingActivation keeps the first shortest predecessor path", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-shortest-"));
+  try {
+    await writeGraphEdges(memoryDir, [
+      makeEdge("seed", "long"),
+      makeEdge("seed", "short"),
+      makeEdge("long", "candidate"),
+      makeEdge("short", "candidate"),
+    ]);
+
+    const graph = new GraphIndex(memoryDir, { ...makeGraphConfig(), maxGraphTraversalSteps: 2 });
+    const activated = await graph.spreadingActivation(["seed"], undefined, { recordPaths: true });
+
+    assert.deepEqual(activated.find((candidate) => candidate.path === "candidate")?.activationPath, {
+      nodeIds: ["seed", "long", "candidate"],
+      edgeConfidences: [1, 1],
+      graphTypes: ["entity", "entity"],
+    });
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("spreadingActivation keeps predecessor paths isolated per seed", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-seeds-"));
+  try {
+    await writeGraphEdges(memoryDir, [
+      makeEdge("seed-a", "middle-a"),
+      makeEdge("seed-b", "middle-b"),
+      makeEdge("middle-a", "shared"),
+      makeEdge("middle-b", "shared"),
+    ]);
+
+    const graph = new GraphIndex(memoryDir, { ...makeGraphConfig(), maxGraphTraversalSteps: 2 });
+    const activated = await graph.spreadingActivation(["seed-a", "seed-b"], undefined, { recordPaths: true });
+
+    assert.deepEqual(activated.find((candidate) => candidate.path === "shared")?.activationPath, {
+      nodeIds: ["seed-a", "middle-a", "shared"],
+      edgeConfidences: [1, 1],
+      graphTypes: ["entity", "entity"],
+    });
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("spreadingActivation reconstructs bounded paths through cycles without looping", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-cycle-"));
+  try {
+    await writeGraphEdges(memoryDir, [
+      makeEdge("seed", "a"),
+      makeEdge("a", "b"),
+      makeEdge("b", "a"),
+      makeEdge("b", "candidate"),
+    ]);
+
+    const graph = new GraphIndex(memoryDir, { ...makeGraphConfig(), maxGraphTraversalSteps: 3 });
+    const activated = await graph.spreadingActivation(["seed"], undefined, { recordPaths: true });
+    const candidatePath = activated.find((candidate) => candidate.path === "candidate")?.activationPath;
+
+    assert.deepEqual(candidatePath, {
+      nodeIds: ["seed", "a", "b", "candidate"],
+      edgeConfidences: [1, 1, 1],
+      graphTypes: ["entity", "entity", "entity"],
+    });
+    assert.ok(activated.every((candidate) => (candidate.activationPath?.nodeIds.length ?? 0) <= 4));
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("spreadingActivation path recording is deterministic and opt-in output stays unchanged", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-determinism-"));
+  try {
+    await writeGraphEdges(memoryDir, [
+      makeEdge("seed", "left"),
+      makeEdge("seed", "right"),
+      makeEdge("left", "candidate"),
+      makeEdge("right", "candidate"),
+    ]);
+
+    const graph = new GraphIndex(memoryDir, { ...makeGraphConfig(), maxGraphTraversalSteps: 2 });
+    const baseline = await graph.spreadingActivation(["seed"]);
+    const explicitDisabled = await graph.spreadingActivation(["seed"], undefined, { recordPaths: false });
+    const first = await graph.spreadingActivation(["seed"], undefined, { recordPaths: true });
+    const second = await graph.spreadingActivation(["seed"], undefined, { recordPaths: true });
+
+    assert.deepEqual(explicitDisabled, baseline);
+    assert.ok(baseline.every((candidate) => !("activationPath" in candidate)));
+    assert.deepEqual(second, first);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+function makeEdge(
+  from: string,
+  to: string,
+  type: GraphEdge["type"] = "entity",
+  confidence?: number,
+): GraphEdge {
   return {
     from,
     to,
-    type: "entity",
+    type,
     weight: 1,
+    ...(confidence === undefined ? {} : { confidence }),
     label: "test",
     ts: "2026-01-01T00:00:00.000Z",
   };
 }
 
-async function writeGraphEdges(memoryDir: string, edges: GraphEdge[]): Promise<void> {
-  const filePath = graphFilePath(memoryDir, "entity");
+async function writeGraphEdges(
+  memoryDir: string,
+  edges: GraphEdge[],
+  type: GraphEdge["type"] = "entity",
+): Promise<void> {
+  const filePath = graphFilePath(memoryDir, type);
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, `${edges.map((edge) => JSON.stringify(edge)).join("\n")}\n`, "utf-8");
 }
+
 
 // ---------------------------------------------------------------------------
 // Incremental edge cache (issue #1904). onMemoryWritten pushes single-writer

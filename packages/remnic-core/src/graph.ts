@@ -19,6 +19,15 @@ import type { GraphConstructionCapabilitySet } from "./capabilities.js";
 
 export type GraphType = "entity" | "time" | "causal";
 
+export interface ActivationPath {
+  /** Node ids from the seed (inclusive) to the reached node (inclusive). */
+  nodeIds: string[];
+  /** Edge confidences, parallel to the hops in {@link nodeIds}. */
+  edgeConfidences: number[];
+  /** Graph types, parallel to the hops in {@link nodeIds}. */
+  graphTypes: GraphType[];
+}
+
 export interface GraphEdge {
   from: string; // relative memory path (e.g. "facts/2026-02-22/abc.md")
   to: string; // relative memory path
@@ -392,6 +401,45 @@ interface GraphFileMeta {
   size: number;
   mtimeMs: number;
   ino: number;
+}
+
+interface ActivationPredecessor {
+  prev: string;
+  edgeConfidence: number;
+  graphType: GraphType;
+}
+
+
+function reconstructActivationPath(
+  seed: string,
+  candidate: string,
+  predecessors: Map<string, ActivationPredecessor>,
+  maxSteps: number,
+): ActivationPath | null {
+  const nodeIds = [candidate];
+  const edgeConfidences: number[] = [];
+  const graphTypes: GraphType[] = [];
+  let current = candidate;
+  const stepCap = Number.isFinite(maxSteps)
+    ? Math.max(0, Math.ceil(maxSteps))
+    : predecessors.size + 1;
+  for (let step = 0; step < stepCap && current !== seed; step += 1) {
+    const predecessor = predecessors.get(`${seed}\0${current}`);
+    if (!predecessor) return null;
+    nodeIds.push(predecessor.prev);
+    edgeConfidences.push(predecessor.edgeConfidence);
+    graphTypes.push(predecessor.graphType);
+    current = predecessor.prev;
+  }
+
+  if (current !== seed) return null;
+  nodeIds.reverse();
+  edgeConfidences.reverse();
+  graphTypes.reverse();
+  if (edgeConfidences.length !== nodeIds.length - 1 || graphTypes.length !== nodeIds.length - 1) {
+    return null;
+  }
+  return { nodeIds, edgeConfidences, graphTypes };
 }
 
 export class GraphIndex {
@@ -791,6 +839,8 @@ export class GraphIndex {
        * Default `false` (floor from config is applied).
        */
       includeLowConfidence?: boolean;
+      /** Record one shortest seed-to-candidate path in each result. */
+      recordPaths?: boolean;
       /** Absolute deadline in ms-since-epoch for post-retrieval assembly. */
       deadlineAtMs?: number;
     }
@@ -808,6 +858,7 @@ export class GraphIndex {
        * In `[0, 1]`. Legacy edges without `confidence` surface as 1.0.
        */
       edgeConfidence: number;
+      activationPath?: ActivationPath | null;
     }>
   > {
     if (!this.cfg.multiGraphMemoryEnabled) return [];
@@ -821,6 +872,7 @@ export class GraphIndex {
     const floor =
       opts?.includeLowConfidence === true ? 0 : clampConfidenceFloor(this.cfg.graphTraversalConfidenceFloor);
     const iterations = clampPageRankIterations(this.cfg.graphTraversalPageRankIterations);
+    const recordPaths = opts?.recordPaths === true;
     const deadlineAtMs = opts?.deadlineAtMs;
     const deadlineExpired = (): boolean =>
       typeof deadlineAtMs === "number" && Date.now() >= deadlineAtMs;
@@ -862,12 +914,13 @@ export class GraphIndex {
       >();
       let frontier = new Map<string, { node: string; seed: string; activation: number }>();
       const reachedBySeed = new Map<string, Set<string>>();
+      const predecessors = recordPaths ? new Map<string, ActivationPredecessor>() : null;
       for (const seed of seeds) {
         frontier.set(`${seed}\0${seed}`, { node: seed, seed, activation: 1 });
         reachedBySeed.set(seed, new Set([seed]));
       }
-      const finalizeScores = () =>
-        Array.from(scores.entries())
+      const finalizeScores = () => {
+        const results = Array.from(scores.entries())
           .map(([p, score]) => ({
             path: p,
             score,
@@ -877,7 +930,21 @@ export class GraphIndex {
             graphType: provenance.get(p)?.graphType ?? "entity",
             edgeConfidence: provenance.get(p)?.edgeConfidence ?? 1,
           }))
-          .sort((a, b) => b.score - a.score);
+          .sort((a, b) => {
+            const scoreDelta = b.score - a.score;
+            if (scoreDelta !== 0 || !recordPaths) return scoreDelta;
+            return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
+          });
+        if (!recordPaths || !predecessors) return results;
+        return results.map((result) => {
+          const seed = provenance.get(result.path)?.seed;
+          return {
+            ...result,
+            activationPath:
+              seed === undefined ? null : reconstructActivationPath(seed, result.path, predecessors, steps),
+          };
+        });
+      };
 
       for (let hop = 0; hop < steps && frontier.size > 0; hop++) {
         if (deadlineExpired()) return finalizeScores();
@@ -898,6 +965,16 @@ export class GraphIndex {
             const reachedForSeed = reachedBySeed.get(sourceSeed);
             if (reachedForSeed?.has(neighbor)) {
               continue;
+            }
+            if (recordPaths && predecessors && !seedSet.has(neighbor)) {
+              const key = `${sourceSeed}\0${neighbor}`;
+              if (!predecessors.has(key)) {
+                predecessors.set(key, {
+                  prev: node,
+                  edgeConfidence: conf,
+                  graphType: edge.type,
+                });
+              }
             }
 
             if (!seedSet.has(neighbor)) {
