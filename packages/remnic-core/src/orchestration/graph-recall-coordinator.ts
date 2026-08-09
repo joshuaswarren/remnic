@@ -16,13 +16,7 @@
  * ContradictionLinkingCoordinator accessor pattern.
  */
 
-import type {
-  MemoryFile,
-  MemoryIntent,
-  PluginConfig,
-  QmdSearchResult,
-  RecallPlanMode,
-} from "../types.js";
+import type { MemoryFile, MemoryIntent, PluginConfig, QmdSearchResult, RecallPlanMode } from "../types.js";
 import type { StorageManager } from "../index.js";
 import type { GraphIndex } from "../graph.js";
 import type { GraphRecallExpandedEntry } from "../recall-state.js";
@@ -57,10 +51,7 @@ export interface GraphRecallShadowComparison {
 // Utility functions (moved from orchestrator.ts; re-exported for callers)
 // ---------------------------------------------------------------------------
 
-export function mergeGraphExpandedResults(
-  primary: QmdSearchResult[],
-  expanded: QmdSearchResult[],
-): QmdSearchResult[] {
+export function mergeGraphExpandedResults(primary: QmdSearchResult[], expanded: QmdSearchResult[]): QmdSearchResult[] {
   const mergedByNamespaceAndPath = new Map<string, QmdSearchResult>();
   for (const item of [...primary, ...expanded]) {
     const key = `${item.namespace ?? ""}\0${item.path}`;
@@ -76,13 +67,8 @@ export function mergeGraphExpandedResults(
   return Array.from(mergedByNamespaceAndPath.values());
 }
 
-export function graphPathRelativeToStorage(
-  storageDir: string,
-  candidatePath: string,
-): string | null {
-  const absolutePath = path.isAbsolute(candidatePath)
-    ? candidatePath
-    : path.resolve(storageDir, candidatePath);
+export function graphPathRelativeToStorage(storageDir: string, candidatePath: string): string | null {
+  const absolutePath = path.isAbsolute(candidatePath) ? candidatePath : path.resolve(storageDir, candidatePath);
   const rel = path.relative(storageDir, absolutePath);
   if (!rel || rel === ".") return null;
   if (rel.startsWith("..")) return null;
@@ -102,9 +88,7 @@ export function blendGraphExpandedRecallScore(options: {
   blendMax: number;
 }): number {
   const graphNorm = normalizeGraphActivationScore(options.graphActivationScore);
-  const seedScore = Number.isFinite(options.seedRecallScore)
-    ? Math.min(1, Math.max(0, options.seedRecallScore))
-    : 0;
+  const seedScore = Number.isFinite(options.seedRecallScore) ? Math.min(1, Math.max(0, options.seedRecallScore)) : 0;
   const weight = Math.min(1, Math.max(0, options.activationWeight));
   const rawMin = Math.min(1, Math.max(0, options.blendMin));
   const rawMax = Math.min(1, Math.max(0, options.blendMax));
@@ -127,18 +111,18 @@ export class GraphRecallCoordinator {
   private readonly resolveColdQmdResultForRecall: (
     result: QmdSearchResult,
     fallbackStorage: StorageManager,
-    recallNamespaces: readonly string[],
+    recallNamespaces: readonly string[]
   ) => Promise<{ namespace: string; result: QmdSearchResult } | null>;
   private readonly storageForAbsoluteQmdResultPath: (
     resultPath: string,
     fallbackStorage: StorageManager,
-    recallNamespaces: readonly string[],
+    recallNamespaces: readonly string[]
   ) => Promise<{ storage: StorageManager; dir: string; namespace: string } | null>;
   private readonly readQmdResultMemory: (
     resultPath: string,
     fallbackStorage: StorageManager,
     recallNamespaces: readonly string[],
-    preferredNamespace?: string,
+    preferredNamespace?: string
   ) => Promise<MemoryFile | null>;
 
   constructor(options: {
@@ -150,18 +134,18 @@ export class GraphRecallCoordinator {
     resolveColdQmdResultForRecall: (
       result: QmdSearchResult,
       fallbackStorage: StorageManager,
-      recallNamespaces: readonly string[],
+      recallNamespaces: readonly string[]
     ) => Promise<{ namespace: string; result: QmdSearchResult } | null>;
     storageForAbsoluteQmdResultPath: (
       resultPath: string,
       fallbackStorage: StorageManager,
-      recallNamespaces: readonly string[],
+      recallNamespaces: readonly string[]
     ) => Promise<{ storage: StorageManager; dir: string; namespace: string } | null>;
     readQmdResultMemory: (
       resultPath: string,
       fallbackStorage: StorageManager,
       recallNamespaces: readonly string[],
-      preferredNamespace?: string,
+      preferredNamespace?: string
     ) => Promise<MemoryFile | null>;
   }) {
     this.getConfig = options.getConfig;
@@ -192,13 +176,9 @@ export class GraphRecallCoordinator {
   }> {
     const config = this.getConfig();
     const deadlineExpired = (): boolean =>
-      typeof options.deadlineAtMs === "number" &&
-      Date.now() >= options.deadlineAtMs;
+      typeof options.deadlineAtMs === "number" && Date.now() >= options.deadlineAtMs;
     const byNamespace = new Map<string, QmdSearchResult[]>();
-    const addResultForNamespace = (
-      namespace: string,
-      result: QmdSearchResult,
-    ): void => {
+    const addResultForNamespace = (namespace: string, result: QmdSearchResult): void => {
       const existing = byNamespace.get(namespace);
       if (existing) {
         existing.push(result);
@@ -206,13 +186,10 @@ export class GraphRecallCoordinator {
         byNamespace.set(namespace, [result]);
       }
     };
-    const resolvedAmbiguousSeeds = new Map<
-      string,
-      { namespace: string; result: QmdSearchResult } | null
-    >();
+    const resolvedAmbiguousSeeds = new Map<string, { namespace: string; result: QmdSearchResult } | null>();
     const resolveAmbiguousSeedOwner = async (
       result: QmdSearchResult,
-      parts: { collection: string; relativePath: string } | null,
+      parts: { collection: string; relativePath: string } | null
     ): Promise<{ namespace: string; result: QmdSearchResult } | null> => {
       const cached = resolvedAmbiguousSeeds.get(result.path);
       if (cached !== undefined) return cached;
@@ -227,7 +204,7 @@ export class GraphRecallCoordinator {
         const resolvedCold = await this.resolveColdQmdResultForRecall(
           result,
           this.getStorage(),
-          options.recallNamespaces,
+          options.recallNamespaces
         );
         if (!resolvedCold || deadlineExpired()) {
           resolvedAmbiguousSeeds.set(result.path, null);
@@ -244,7 +221,7 @@ export class GraphRecallCoordinator {
       const ownerStorage = await this.storageForAbsoluteQmdResultPath(
         resolvedPath,
         this.getStorage(),
-        options.recallNamespaces,
+        options.recallNamespaces
       );
       const ownerNamespace = ownerStorage?.namespace ?? null;
       const resolved =
@@ -291,87 +268,27 @@ export class GraphRecallCoordinator {
       seedResults.push(...seedCandidates);
       const seedRelativePaths =
         typeof options.deadlineAtMs === "number"
-          ? await this.graphSeedPathsWithinDeadline(
-              storage,
-              seedCandidates,
-              options.deadlineAtMs,
-              [namespace],
-            )
+          ? await this.graphSeedPathsWithinDeadline(storage, seedCandidates, options.deadlineAtMs, [namespace])
           : (
               await Promise.all(
-                seedCandidates.map((result) =>
-                  this.graphSeedPathRelativeToStorage(storage, result, [namespace]),
-                ),
+                seedCandidates.map((result) => this.graphSeedPathRelativeToStorage(storage, result, [namespace]))
               )
-            ).filter(
-              (value): value is string =>
-                typeof value === "string" && value.length > 0,
-            );
+            ).filter((value): value is string => typeof value === "string" && value.length > 0);
       if (deadlineExpired()) break;
       if (seedRelativePaths.length === 0) continue;
 
-      const seedRecallScore = seedCandidates.reduce(
-        (max, item) => Math.max(max, item.score),
-        0,
-      );
-      seedPaths.push(
-        ...seedRelativePaths.map((rel) => path.join(storage.dir, rel)),
-      );
+      const seedRecallScore = seedCandidates.reduce((max, item) => Math.max(max, item.score), 0);
+      seedPaths.push(...seedRelativePaths.map((rel) => path.join(storage.dir, rel)));
       const seedSet = new Set(seedRelativePaths);
- const scoringEnabled = config.graphPathScoring.enabled;
- let hotCorpusByPath: Map<string, MemoryFile> | undefined;
- let nodeStates: Map<string, PathNodeState> | undefined;
- if (scoringEnabled) {
-   hotCorpusByPath = new Map<string, MemoryFile>();
-   nodeStates = new Map<string, PathNodeState>();
-   const [hotMemories, coldMemories, archivedMemories] = await Promise.all([
-     storage.readAllMemories(),
-     storage.readAllColdMemories(),
-     storage.readArchivedMemories(),
-   ]);
-   const addState = (memory: MemoryFile): void => {
-     const relativePath = graphPathRelativeToStorage(storage.dir, memory.path);
-     const state: PathNodeState = {
-       id: memory.frontmatter.id,
-       status: memory.frontmatter.status ?? null,
-       invalidAt: memory.frontmatter.invalid_at ?? null,
-     };
-     const add = (key: string): void => {
-       if (!nodeStates!.has(key)) nodeStates!.set(key, state);
-     };
-     add(memory.frontmatter.id);
-     if (relativePath) {
-       add(relativePath);
-       if (relativePath.endsWith(".md")) add(path.basename(relativePath, ".md"));
-     }
-   };
-   const addHotMemory = (memory: MemoryFile): void => {
-     const relativePath = graphPathRelativeToStorage(storage.dir, memory.path);
-     const add = (key: string): void => {
-       if (!hotCorpusByPath!.has(key)) hotCorpusByPath!.set(key, memory);
-     };
-     add(memory.frontmatter.id);
-     add(memory.path);
-     if (relativePath) {
-       add(relativePath);
-       if (relativePath.endsWith(".md")) add(path.basename(relativePath, ".md"));
-     }
-   };
-   for (const memory of hotMemories) addHotMemory(memory);
-   for (const memory of [...hotMemories, ...coldMemories, ...archivedMemories]) {
-     addState(memory);
-   }
- }
+      const scoringEnabled = config.graphPathScoring.enabled;
       const expanded = await this.graphIndexFor(storage).spreadingActivation(
         seedRelativePaths,
         config.maxGraphTraversalSteps,
         {
           ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
           ...(scoringEnabled ? { recordPaths: true } : {}),
-          ...(typeof options.deadlineAtMs === "number"
-            ? { deadlineAtMs: options.deadlineAtMs }
-            : {}),
-        },
+          ...(typeof options.deadlineAtMs === "number" ? { deadlineAtMs: options.deadlineAtMs } : {}),
+        }
       );
       if (expanded.length === 0) continue;
       if (deadlineExpired()) break;
@@ -412,6 +329,45 @@ export class GraphRecallCoordinator {
         }
         continue;
       }
+      const hotCorpusByPath = new Map<string, MemoryFile>();
+      const nodeStates = new Map<string, PathNodeState>();
+      const [hotMemories, coldMemories, archivedMemories] = await Promise.all([
+        storage.readAllMemories(),
+        storage.readAllColdMemories(),
+        storage.readArchivedMemories(),
+      ]);
+      const addState = (memory: MemoryFile): void => {
+        const relativePath = graphPathRelativeToStorage(storage.dir, memory.path);
+        const state: PathNodeState = {
+          id: memory.frontmatter.id,
+          status: memory.frontmatter.status ?? "active",
+          invalidAt: memory.frontmatter.invalid_at ?? null,
+        };
+        const add = (key: string): void => {
+          if (!nodeStates.has(key)) nodeStates.set(key, state);
+        };
+        add(memory.frontmatter.id);
+        if (relativePath) {
+          add(relativePath);
+          if (relativePath.endsWith(".md")) add(path.basename(relativePath, ".md"));
+        }
+      };
+      const addHotMemory = (memory: MemoryFile): void => {
+        const relativePath = graphPathRelativeToStorage(storage.dir, memory.path);
+        const add = (key: string): void => {
+          if (!hotCorpusByPath.has(key)) hotCorpusByPath.set(key, memory);
+        };
+        add(memory.frontmatter.id);
+        add(memory.path);
+        if (relativePath) {
+          add(relativePath);
+          if (relativePath.endsWith(".md")) add(path.basename(relativePath, ".md"));
+        }
+      };
+      for (const memory of hotMemories) addHotMemory(memory);
+      for (const memory of [...hotMemories, ...coldMemories, ...archivedMemories]) {
+        addState(memory);
+      }
 
       const scoredExpanded: Array<{
         result: QmdSearchResult;
@@ -421,36 +377,31 @@ export class GraphRecallCoordinator {
         if (deadlineExpired()) break;
         if (seedSet.has(candidate.path)) continue;
         const memory =
-          hotCorpusByPath!.get(candidate.path) ??
-          hotCorpusByPath!.get(path.resolve(storage.dir, candidate.path));
+          hotCorpusByPath.get(candidate.path) ?? hotCorpusByPath.get(path.resolve(storage.dir, candidate.path));
         if (deadlineExpired()) break;
         if (!memory) continue;
         if (/(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(memory.path)) continue;
         if (memory.frontmatter.status && memory.frontmatter.status !== "active") continue;
 
-        if (scoringEnabled && candidate.activationPath) {
+        if (candidate.activationPath) {
           for (const nodeId of candidate.activationPath.nodeIds.slice(1, -1)) {
-            if (!nodeStates!.has(nodeId) && nodeId.endsWith(".md")) {
-              const basenameState = nodeStates!.get(path.basename(nodeId, ".md"));
+            if (!nodeStates.has(nodeId) && nodeId.endsWith(".md")) {
+              const basenameState = nodeStates.get(path.basename(nodeId, ".md"));
               if (basenameState) {
-                nodeStates!.set(nodeId, { ...basenameState, id: nodeId });
+                nodeStates.set(nodeId, { ...basenameState, id: nodeId });
               }
             }
-            if (!nodeStates!.has(nodeId)) {
+            if (!nodeStates.has(nodeId)) {
               log.debug(`graph path scoring missing intermediate memory state: ${nodeId}`);
             }
           }
         }
-        const pathScoreMultiplier = scoringEnabled
-          ? scoreEvidencePath(candidate.activationPath ?? null, nodeStates!, {
-              asOf:
-                options.asOf ??
-                (typeof options.asOfMs === "number"
-                  ? new Date(options.asOfMs).toISOString()
-                  : new Date().toISOString()),
-              invalidNodePenalty: config.graphPathScoring.invalidNodePenalty,
-            })
-          : 1;
+        const pathScoreMultiplier = scoreEvidencePath(candidate.activationPath ?? null, nodeStates, {
+          asOf:
+            options.asOf ??
+            (typeof options.asOfMs === "number" ? new Date(options.asOfMs).toISOString() : new Date().toISOString()),
+          invalidNodePenalty: config.graphPathScoring.invalidNodePenalty,
+        });
         const blendedScore = blendGraphExpandedRecallScore({
           graphActivationScore: candidate.score,
           seedRecallScore,
@@ -468,10 +419,8 @@ export class GraphRecallCoordinator {
           decayedWeight: candidate.decayedWeight,
           graphType: candidate.graphType,
           edgeConfidence: candidate.edgeConfidence,
-          ...(scoringEnabled ? { pathPenaltyApplied: pathScoreMultiplier < 1 } : {}),
-          ...(scoringEnabled &&
-          config.graphPathScoring.includePathInProvenance &&
-          candidate.activationPath
+          pathPenaltyApplied: pathScoreMultiplier < 1,
+          ...(config.graphPathScoring.includePathInProvenance && candidate.activationPath
             ? { pathNodeIds: candidate.activationPath.nodeIds }
             : {}),
         };
@@ -482,22 +431,12 @@ export class GraphRecallCoordinator {
             namespace,
             snippet: memory.content.slice(0, 400),
             score,
-            ...(scoringEnabled
-              ? { pathPenaltyApplied: pathScoreMultiplier < 1 }
-              : {}),
-            ...(scoringEnabled &&
-            config.graphPathScoring.includePathInProvenance &&
-            candidate.activationPath
+            pathPenaltyApplied: pathScoreMultiplier < 1,
+            ...(config.graphPathScoring.includePathInProvenance && candidate.activationPath
               ? { pathNodeIds: candidate.activationPath.nodeIds }
               : {}),
           },
           entry,
-        });
-      }
-      if (scoringEnabled) {
-        scoredExpanded.sort((a, b) => {
-          const scoreDelta = b.result.score - a.result.score;
-          return scoreDelta !== 0 ? scoreDelta : a.result.path.localeCompare(b.result.path);
         });
       }
       for (const item of scoredExpanded.slice(0, perNamespaceExpandedCap)) {
@@ -506,9 +445,8 @@ export class GraphRecallCoordinator {
       }
     }
 
-    const namespacedPrimaryResults = Array.from(byNamespace.entries()).flatMap(
-      ([namespace, results]) =>
-        results.map((result) => ({ ...result, namespace })),
+    const namespacedPrimaryResults = Array.from(byNamespace.entries()).flatMap(([namespace, results]) =>
+      results.map((result) => ({ ...result, namespace }))
     );
     return {
       merged: mergeGraphExpandedResults(namespacedPrimaryResults, expandedResults),
@@ -534,20 +472,13 @@ export class GraphRecallCoordinator {
     shadowComparison?: GraphRecallShadowComparison;
   }): Promise<void> {
     try {
-      const snapshotPath = path.join(
-        options.storage.dir,
-        "state",
-        "last_graph_recall.json",
-      );
+      const snapshotPath = path.join(options.storage.dir, "state", "last_graph_recall.json");
       await mkdir(path.dirname(snapshotPath), { recursive: true });
       const now = new Date().toISOString();
       const totalSeedCount = options.seedPaths.length;
       const totalExpandedCount = options.expandedPaths.length;
       const seeds = options.seedPaths.slice(0, 64);
-      const expanded = clampGraphRecallExpandedEntries(
-        options.expandedPaths,
-        64,
-      );
+      const expanded = clampGraphRecallExpandedEntries(options.expandedPaths, 64);
       const payload = {
         recordedAt: now,
         mode: options.recallMode,
@@ -575,19 +506,12 @@ export class GraphRecallCoordinator {
   private async graphSeedPathRelativeToStorage(
     storage: StorageManager,
     result: QmdSearchResult,
-    recallNamespaces: readonly string[] = [],
+    recallNamespaces: readonly string[] = []
   ): Promise<string | null> {
     const parts = qmdCollectionPathParts(result.path);
     if (parts) {
-      const memory = await this.readQmdResultMemory(
-        result.path,
-        storage,
-        recallNamespaces,
-        result.namespace,
-      );
-      return memory
-        ? graphPathRelativeToStorage(storage.dir, memory.path)
-        : null;
+      const memory = await this.readQmdResultMemory(result.path, storage, recallNamespaces, result.namespace);
+      return memory ? graphPathRelativeToStorage(storage.dir, memory.path) : null;
     }
     return graphPathRelativeToStorage(storage.dir, result.path);
   }
@@ -596,16 +520,12 @@ export class GraphRecallCoordinator {
     storage: StorageManager,
     results: QmdSearchResult[],
     deadlineAtMs: number,
-    recallNamespaces: readonly string[] = [],
+    recallNamespaces: readonly string[] = []
   ): Promise<string[]> {
     const resolved: string[] = [];
     for (const result of results) {
       if (Date.now() >= deadlineAtMs) break;
-      const seedPath = await this.graphSeedPathRelativeToStorage(
-        storage,
-        result,
-        recallNamespaces,
-      );
+      const seedPath = await this.graphSeedPathRelativeToStorage(storage, result, recallNamespaces);
       if (Date.now() >= deadlineAtMs) break;
       if (seedPath) resolved.push(seedPath);
     }

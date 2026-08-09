@@ -6,11 +6,9 @@ import test from "node:test";
 
 import { parseConfig } from "../config.js";
 import { graphFilePath, GraphIndex, type GraphConfig } from "../graph.js";
-import {
-  blendGraphExpandedRecallScore,
-  GraphRecallCoordinator,
-} from "./graph-recall-coordinator.js";
+import { blendGraphExpandedRecallScore, GraphRecallCoordinator } from "./graph-recall-coordinator.js";
 import type { PluginConfig, QmdSearchResult } from "../types.js";
+import { StorageManager } from "../storage.js";
 
 const AS_OF = "2026-01-01T00:00:00.000Z";
 
@@ -41,12 +39,7 @@ function makeConfig(overrides: Record<string, unknown> = {}): PluginConfig {
   });
 }
 
-async function appendEdge(
-  dir: string,
-  from: string,
-  to: string,
-  weight = 1,
-): Promise<void> {
+async function appendEdge(dir: string, from: string, to: string, weight = 1): Promise<void> {
   const file = graphFilePath(dir, "entity");
   await mkdir(path.dirname(file), { recursive: true });
   await appendFile(
@@ -59,7 +52,7 @@ async function appendEdge(
       label: "test",
       ts: AS_OF,
     })}\n`,
-    "utf8",
+    "utf8"
   );
 }
 
@@ -67,7 +60,7 @@ async function createNamespace(
   root: string,
   name: string,
   intermediateStatus: "active" | "superseded" = "active",
-  includeSecondClean = false,
+  includeSecondClean = false
 ): Promise<NamespaceFixture> {
   const dir = path.join(root, name);
   const storage = new StorageManager(dir);
@@ -105,7 +98,7 @@ async function createNamespace(
 function makeCoordinator(
   config: PluginConfig,
   fixtures: Map<string, NamespaceFixture>,
-  readAllMemoriesCalls?: { count: number },
+  readAllMemoriesCalls?: { count: number }
 ): GraphRecallCoordinator {
   const indexes = new Map<string, GraphIndex>();
   for (const fixture of fixtures.values()) {
@@ -144,8 +137,7 @@ function makeCoordinator(
       }
       return null;
     },
-    readQmdResultMemory: async (resultPath, storage) =>
-      storage.readMemoryByPath(resultPath),
+    readQmdResultMemory: async (resultPath, storage) => storage.readMemoryByPath(resultPath),
   });
 }
 
@@ -159,11 +151,7 @@ function seedResult(fixture: NamespaceFixture): QmdSearchResult {
   };
 }
 
-async function expand(
-  coordinator: GraphRecallCoordinator,
-  results: QmdSearchResult[],
-  namespaces: string[],
-) {
+async function expand(coordinator: GraphRecallCoordinator, results: QmdSearchResult[], namespaces: string[]) {
   return coordinator.expandResultsViaGraph({
     memoryResults: results,
     recallNamespaces: namespaces,
@@ -177,7 +165,10 @@ test("real coordinator demotes stale paths before the namespace cap and repeats 
   try {
     const fixture = await createNamespace(root, "default", "superseded", true);
     const cleanFixture = await createNamespace(root, "clean", "active");
-    const fixtures = new Map([[fixture.name, fixture], [cleanFixture.name, cleanFixture]]);
+    const fixtures = new Map([
+      [fixture.name, fixture],
+      [cleanFixture.name, cleanFixture],
+    ]);
     const coordinator = makeCoordinator(makeConfig(), fixtures);
     const first = await expand(coordinator, [seedResult(fixture)], [fixture.name]);
     const second = await expand(coordinator, [seedResult(fixture)], [fixture.name]);
@@ -186,13 +177,16 @@ test("real coordinator demotes stale paths before the namespace cap and repeats 
     assert.equal(first.expandedPaths[0]?.path.endsWith(fixture.cleanPath), true);
     assert.equal(first.expandedPaths[1]?.path.endsWith(fixture.secondCleanPath ?? ""), true);
     assert.equal(first.expandedPaths[2]?.path.endsWith(fixture.stalePath), true);
-    assert.equal(first.expandedPaths.slice(0, 2).some((entry) => entry.path.endsWith(fixture.stalePath)), false);
+    assert.equal(
+      first.expandedPaths.slice(0, 2).some((entry) => entry.path.endsWith(fixture.stalePath)),
+      false
+    );
     assert.deepEqual(first.merged, second.merged);
     assert.deepEqual(first.expandedPaths, second.expandedPaths);
     const capped = await expand(
       coordinator,
       [seedResult(fixture), seedResult(cleanFixture)],
-      [fixture.name, cleanFixture.name],
+      [fixture.name, cleanFixture.name]
     );
     assert.ok(capped.merged.some((item) => item.namespace === cleanFixture.name));
   } finally {
@@ -205,7 +199,7 @@ test("real coordinator demotes a path through an archived intermediate", async (
   try {
     const fixture = await createNamespace(root, "default");
     const intermediate = (await fixture.storage.readAllMemories()).find((memory) =>
-      memory.path.endsWith(fixture.intermediatePath),
+      memory.path.endsWith(fixture.intermediatePath)
     );
     assert.ok(intermediate);
     assert.ok(await fixture.storage.archiveMemory(intermediate));
@@ -227,11 +221,66 @@ test("disabled boolean and parsed string false preserve output and skip corpus r
     const reads = { count: 0 };
     const falseConfig = makeConfig({ graphPathScoring: { enabled: false } });
     const stringConfig = makeConfig({ graphPathScoring: { enabled: "false" } });
+    const oldActivation = await new GraphIndex(fixture.dir, falseConfig as unknown as GraphConfig).spreadingActivation(
+      [fixture.seedPath],
+      falseConfig.maxGraphTraversalSteps
+    );
+    const expectedCandidate = oldActivation.find((candidate) => candidate.path === fixture.cleanPath);
+    assert.ok(expectedCandidate);
+    const expectedPath = path.join(fixture.dir, expectedCandidate.path);
+    const expectedScore = blendGraphExpandedRecallScore({
+      graphActivationScore: expectedCandidate.score,
+      seedRecallScore: 0.5,
+      activationWeight: falseConfig.graphExpansionActivationWeight,
+      blendMin: falseConfig.graphExpansionBlendMin,
+      blendMax: falseConfig.graphExpansionBlendMax,
+    });
     const falseRun = await expand(makeCoordinator(falseConfig, fixtures, reads), [seedResult(fixture)], [fixture.name]);
-    const stringRun = await expand(makeCoordinator(stringConfig, fixtures, reads), [seedResult(fixture)], [fixture.name]);
+    const stringRun = await expand(
+      makeCoordinator(stringConfig, fixtures, reads),
+      [seedResult(fixture)],
+      [fixture.name]
+    );
+    const retained = falseRun.merged.find((item) => item.path === expectedPath);
+    assert.ok(retained);
+    assert.equal(retained.path, expectedPath);
+    assert.equal(retained.score, expectedScore);
     assert.deepEqual(falseRun, stringRun);
     assert.equal(reads.count, 0);
-    assert.ok(falseRun.merged.every((item) => !("pathPenaltyApplied" in item)));
+    for (const item of [...falseRun.merged, ...falseRun.expandedPaths]) {
+      assert.equal("pathNodeIds" in item, false);
+      assert.equal("pathPenaltyApplied" in item, false);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("missing memory status defaults to active for path scoring", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-status-"));
+  try {
+    const fixture = await createNamespace(root, "default");
+    const originalReadAllMemories = fixture.storage.readAllMemories.bind(fixture.storage);
+    fixture.storage.readAllMemories = async (...args: Parameters<StorageManager["readAllMemories"]>) =>
+      (await originalReadAllMemories(...args)).map((memory) =>
+        memory.path.endsWith(fixture.intermediatePath)
+          ? {
+              ...memory,
+              frontmatter: {
+                ...memory.frontmatter,
+                status: undefined,
+                invalid_at: AS_OF,
+              },
+            }
+          : memory
+      );
+    const result = await expand(
+      makeCoordinator(makeConfig(), new Map([[fixture.name, fixture]])),
+      [seedResult(fixture)],
+      [fixture.name]
+    );
+    const stale = result.expandedPaths.find((entry) => entry.path.endsWith(fixture.stalePath));
+    assert.equal(stale?.pathPenaltyApplied, true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -246,7 +295,7 @@ test("provenance ids are optional while penalty boolean remains enabled", async 
     const withoutIds = await expand(
       makeCoordinator(makeConfig({ graphPathScoring: { enabled: true, includePathInProvenance: false } }), fixtures),
       [seedResult(fixture)],
-      [fixture.name],
+      [fixture.name]
     );
     const withStale = withIds.merged.find((item) => item.path.endsWith(fixture.stalePath));
     const withoutStale = withoutIds.merged.find((item) => item.path.endsWith(fixture.stalePath));
@@ -268,10 +317,18 @@ test("namespace corpus state stays isolated for equal intermediate ids", async (
     const result = await expand(
       makeCoordinator(makeConfig(), fixtures),
       [seedResult(stale), seedResult(clean)],
-      [stale.name, clean.name],
+      [stale.name, clean.name]
     );
-    assert.equal(result.merged.find((item) => item.namespace === stale.name && item.path.endsWith(stale.stalePath))?.pathPenaltyApplied, true);
-    assert.equal(result.merged.find((item) => item.namespace === clean.name && item.path.endsWith(clean.stalePath))?.pathPenaltyApplied, false);
+    assert.equal(
+      result.merged.find((item) => item.namespace === stale.name && item.path.endsWith(stale.stalePath))
+        ?.pathPenaltyApplied,
+      true
+    );
+    assert.equal(
+      result.merged.find((item) => item.namespace === clean.name && item.path.endsWith(clean.stalePath))
+        ?.pathPenaltyApplied,
+      false
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
