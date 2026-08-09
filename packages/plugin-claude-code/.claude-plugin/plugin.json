@@ -1,7 +1,7 @@
 {
   "name": "remnic",
   "description": "Universal memory for AI agents — automatic recall, observation, and cross-agent knowledge sharing",
-  "version": "9.49.0",
+  "version": "9.49.1",
   "author": {
     "name": "Joshua Warren"
   },
@@ -25,7 +25,9 @@
     "remnic": {
       "type": "stdio",
       "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp-server-stdio/server.js"],
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/mcp-server-stdio/server.js"
+      ],
       "env": {
         "REMNIC_PLUGIN_DAEMON_URL": "${user_config.remnic_daemon_url}",
         "REMNIC_PLUGIN_DAEMON_TOKEN": "${user_config.remnic_daemon_token}"

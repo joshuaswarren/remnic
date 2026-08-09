@@ -1,6 +1,6 @@
 {
   "name": "@remnic/plugin-claude-code",
-  "version": "9.49.0",
+  "version": "9.49.1",
   "description": "Remnic memory plugin for Claude Code — hooks, skills, MCP integration",
   "type": "module",
   "license": "MIT",
@@ -9,10 +9,24 @@
     "url": "https://github.com/joshuaswarren/remnic.git",
     "directory": "packages/plugin-claude-code"
   },
-  "keywords": ["remnic", "memory", "claude-code", "plugin", "ai-agent"],
+  "keywords": [
+    "remnic",
+    "memory",
+    "claude-code",
+    "plugin",
+    "ai-agent"
+  ],
   "publishConfig": {
     "access": "public",
     "provenance": true
   },
-  "files": [".claude-plugin", "hooks", "skills", "agents", "mcp-server-stdio", ".mcp.json", "settings.json"]
+  "files": [
+    ".claude-plugin",
+    "hooks",
+    "skills",
+    "agents",
+    "mcp-server-stdio",
+    ".mcp.json",
+    "settings.json"
+  ]
 }
