@@ -23,13 +23,6 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 const CLI_SRC = path.join(ROOT, "packages", "remnic-cli", "src", "index.ts");
-const OPENCLAW_MANAGED_UPGRADE_SRC = path.join(
-  ROOT,
-  "packages",
-  "remnic-cli",
-  "src",
-  "openclaw-managed-upgrade.ts",
-);
 const OPTIONAL_BENCH_SRC = path.join(
   ROOT,
   "packages",
@@ -47,14 +40,6 @@ const OPTIONAL_WECLONE_SRC = path.join(
 
 async function readCli(): Promise<string> {
   return readFile(CLI_SRC, "utf-8");
-}
-
-async function readOpenclawUpgradeSources(): Promise<string> {
-  const [cli, managedUpgrade] = await Promise.all([
-    readCli(),
-    readFile(OPENCLAW_MANAGED_UPGRADE_SRC, "utf-8"),
-  ]);
-  return `${cli}\n${managedUpgrade}`;
 }
 
 async function readOptionalBench(): Promise<string> {
@@ -304,60 +289,6 @@ test("CLI openclaw upgrade uses collision-resistant backup directories", async (
     upgradeSrc.indexOf("if (!opts.yes)") <
       upgradeSrc.indexOf("const backupDir = createOpenclawUpgradeBackupDir();"),
     "CLI upgrade must not create backup directories before confirmation",
-  );
-});
-
-test("CLI openclaw upgrade rolls back if the managed plugin install fails after mutation", async () => {
-  const src = await readOpenclawUpgradeSources();
-  assert.ok(
-    src.includes("PublishedOpenclawPluginInstallError"),
-    "CLI upgrade must track failures after the host starts a managed install",
-  );
-  assert.ok(
-    src.includes("let installResult") &&
-      /installResult = installPublishedOpenclawPlugin\(\s*packageSpec,\s*pluginDir,\s*configPath,\s*managedTargetDir\s*\);/s.test(
-        src,
-      ),
-    "CLI upgrade must assign the published plugin install inside the rollback try/catch",
-  );
-  assert.ok(
-    src.includes("publishedInstallError.managedRollbackDir"),
-    "CLI upgrade must reuse the managed rollback path from failures before installResult is assigned",
-  );
-});
-
-test("CLI openclaw upgrade preserves the original install error if rollback also fails", async () => {
-  const src = await readOpenclawUpgradeSources();
-  assert.ok(
-    src.includes("createOpenclawUpgradeRollbackFailure"),
-    "CLI upgrade must construct a combined failure when rollback throws",
-  );
-  assert.ok(
-    src.includes("const rollbackErrors: unknown[] = [];") &&
-      src.includes("installResult.rollbackManagedInstall();") &&
-      src.includes("rollbackErrors.push(error);") &&
-      src.includes("rollbackError,"),
-    "CLI upgrade must preserve managed and file/config rollback failures with the original install error",
-  );
-  assert.ok(
-    src.includes("Original failure: ${installErrorText}."),
-    "CLI upgrade must include the original install error text in the post-rollback failure message",
-  );
-  assert.ok(
-    src.includes("const installErrorText = describeErrorWithCause(installError);"),
-    "CLI upgrade must include wrapped install causes in the surfaced failure text",
-  );
-});
-
-test("CLI openclaw upgrade rejects file-backed pluginDir paths before backup and install", async () => {
-  const src = await readOpenclawUpgradeSources();
-  assert.ok(
-    src.includes("function assertDirectoryPathOrMissing"),
-    "CLI upgrade must define a shared directory guard for pluginDir",
-  );
-  assert.ok(
-    src.includes('assertDirectoryPathOrMissing(pluginDir, "OpenClaw plugin dir");'),
-    "CLI upgrade must validate pluginDir before backup/install work begins",
   );
 });
 

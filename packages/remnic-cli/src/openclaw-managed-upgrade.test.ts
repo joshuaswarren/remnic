@@ -1,16 +1,32 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { PublishedOpenclawPluginInstallError, installPublishedOpenclawPlugin } from "./openclaw-managed-upgrade.js";
+import {
+  type OpenclawCommandRunner,
+  PublishedOpenclawPluginInstallError,
+  installPublishedOpenclawPlugin,
+} from "@remnic/plugin-openclaw/managed-upgrade";
 import { restoreDirectoryFromRollback } from "./openclaw-upgrade-swap.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const tsxCli = path.join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
 const cliSource = path.join(repoRoot, "packages", "remnic-cli", "src", "index.ts");
+const createOpenclawCommandRunner =
+  (configPath: string): OpenclawCommandRunner =>
+  (args, { timeoutMs }) =>
+    execFileSync("openclaw", [...args], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        OPENCLAW_CONFIG_PATH: configPath,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: timeoutMs,
+    });
 
 interface UpgradeFixture {
   configPath: string;
@@ -529,7 +545,12 @@ test("managed install failures expose a native rollback that the caller can retr
     }) as typeof fs.renameSync;
 
     try {
-      installPublishedOpenclawPlugin("@remnic/plugin-openclaw@9.49.0", customTarget, fixture.configPath, nativeTarget);
+      installPublishedOpenclawPlugin(
+        "@remnic/plugin-openclaw@9.49.0",
+        customTarget,
+        nativeTarget,
+        createOpenclawCommandRunner(fixture.configPath)
+      );
     } catch (error) {
       assert.ok(error instanceof PublishedOpenclawPluginInstallError);
       installError = error;
@@ -714,6 +735,174 @@ test("openclaw upgrade keeps a host-managed extension installed at the legacy ta
     assert.equal(result.status, 0, result.stderr);
     assert.equal(fs.readFileSync(path.join(fixture.pluginDir, "new-install-marker"), "utf8"), "installed\n");
     assert.equal(fs.existsSync(path.join(fixture.pluginDir, "old-install-marker")), false);
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+test("openclaw upgrade refuses tracked installs with unsupported or incomplete registry metadata before mutation", () => {
+  const cases = [
+    {
+      name: "unsupported source",
+      record: {
+        installPath: "",
+        source: "path",
+        spec: "/tmp/openclaw-remnic",
+        version: "9.24.0",
+      },
+    },
+    {
+      name: "missing version",
+      record: {
+        installPath: "",
+        source: "npm",
+        spec: "npm:@remnic/plugin-openclaw",
+      },
+    },
+    {
+      name: "missing ClawHub package",
+      record: {
+        installPath: "",
+        source: "clawhub",
+        spec: "clawhub:@remnic/plugin-openclaw@9.24.0",
+        version: "9.24.0",
+      },
+    },
+  ];
+
+  for (const testCase of cases) {
+    const fixture = createUpgradeFixture();
+    const originalConfig = fs.readFileSync(fixture.configPath, "utf8");
+    const originalPlugin = fs.readFileSync(path.join(fixture.pluginDir, "old-install-marker"), "utf8");
+    fs.writeFileSync(
+      fixture.managedIndexPath,
+      JSON.stringify({ ...testCase.record, installPath: fixture.managedInstallDir })
+    );
+    const originalIndex = fs.readFileSync(fixture.managedIndexPath, "utf8");
+    try {
+      const result = runUpgrade(fixture);
+
+      assert.notEqual(result.status, 0, testCase.name);
+      assert.match(result.stderr, /refusing a non-reversible update|refusing to replace/);
+      assert.equal(fs.readFileSync(fixture.configPath, "utf8"), originalConfig, testCase.name);
+      assert.equal(fs.readFileSync(path.join(fixture.pluginDir, "old-install-marker"), "utf8"), originalPlugin);
+      assert.equal(fs.readFileSync(fixture.managedIndexPath, "utf8"), originalIndex, testCase.name);
+      assert.equal(
+        readCalls(fixture.openclawLogPath).some(
+          (call) => (call.args[1] === "install" || call.args[1] === "uninstall") && !call.args.includes("--help")
+        ),
+        false,
+        testCase.name
+      );
+      assert.equal(fs.existsSync(fixture.managedInstallDir), false, testCase.name);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("openclaw upgrade refuses symlinked plugin and managed roots before mutation", () => {
+  const cases = [
+    {
+      name: "plugin root",
+      setup: (fixture: UpgradeFixture): string => {
+        const symlinkPath = path.join(fixture.root, "plugin-link");
+        fs.symlinkSync(fixture.pluginDir, symlinkPath, "dir");
+        return symlinkPath;
+      },
+    },
+    {
+      name: "managed root",
+      setup: (fixture: UpgradeFixture): string => {
+        const managedTargetDir = path.join(fixture.root, ".openclaw", "extensions", "openclaw-remnic");
+        fs.mkdirSync(path.dirname(managedTargetDir), { recursive: true });
+        fs.symlinkSync(fixture.pluginDir, managedTargetDir, "dir");
+        return fixture.pluginDir;
+      },
+    },
+  ];
+
+  for (const testCase of cases) {
+    const fixture = createUpgradeFixture();
+    const originalConfig = fs.readFileSync(fixture.configPath, "utf8");
+    try {
+      const pluginDir = testCase.setup(fixture);
+      const result = runUpgrade({ ...fixture, pluginDir });
+
+      assert.notEqual(result.status, 0, testCase.name);
+      assert.match(result.stderr, /must not be a symlink/);
+      assert.equal(fs.readFileSync(fixture.configPath, "utf8"), originalConfig, testCase.name);
+      assert.equal(fs.readFileSync(path.join(fixture.pluginDir, "old-install-marker"), "utf8"), "present\n");
+      assert.equal(readCalls(fixture.openclawLogPath).length, 0, testCase.name);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("tracked rollback keeps a local copy when registry restore fails", () => {
+  const fixture = createUpgradeFixture();
+  const originalEnv = { ...process.env };
+  fs.mkdirSync(fixture.managedInstallDir, { recursive: true });
+  fs.writeFileSync(path.join(fixture.managedInstallDir, "old-managed-marker"), "present\n");
+  fs.writeFileSync(
+    fixture.managedIndexPath,
+    JSON.stringify({
+      installPath: fixture.managedInstallDir,
+      source: "npm",
+      spec: "npm:@remnic/plugin-openclaw@9.24.0",
+      version: "9.24.0",
+    })
+  );
+  let installError: PublishedOpenclawPluginInstallError | undefined;
+  try {
+    Object.assign(process.env, fixture.env, { OPENCLAW_INSTALL_FAIL_AFTER_MUTATION: "1" });
+    try {
+      installPublishedOpenclawPlugin(
+        "@remnic/plugin-openclaw@9.49.0",
+        fixture.pluginDir,
+        fixture.managedInstallDir,
+        createOpenclawCommandRunner(fixture.configPath)
+      );
+    } catch (error) {
+      assert.ok(error instanceof PublishedOpenclawPluginInstallError);
+      installError = error;
+    }
+
+    const managedRollbackDir = installError?.managedRollbackDir;
+    assert.ok(managedRollbackDir);
+    assert.equal(fs.readFileSync(path.join(managedRollbackDir, "old-managed-marker"), "utf8"), "present\n");
+    restoreDirectoryFromRollback(fixture.managedInstallDir, managedRollbackDir);
+    assert.equal(fs.readFileSync(path.join(fixture.managedInstallDir, "old-managed-marker"), "utf8"), "present\n");
+  } finally {
+    for (const key of Object.keys(process.env)) {
+      if (!(key in originalEnv)) delete process.env[key];
+    }
+    Object.assign(process.env, originalEnv);
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("openclaw upgrade restores local managed files when registry rollback fails", () => {
+  const fixture = createUpgradeFixture();
+  fs.mkdirSync(fixture.managedInstallDir, { recursive: true });
+  fs.writeFileSync(path.join(fixture.managedInstallDir, "old-managed-marker"), "present\n");
+  fs.writeFileSync(
+    fixture.managedIndexPath,
+    JSON.stringify({
+      installPath: fixture.managedInstallDir,
+      source: "npm",
+      spec: "npm:@remnic/plugin-openclaw@9.24.0",
+      version: "9.24.0",
+    })
+  );
+  try {
+    const result = runUpgrade(fixture, {
+      ...fixture.env,
+      OPENCLAW_INSTALL_FAIL_AFTER_MUTATION: "1",
+    });
+
+    assert.notEqual(result.status, 0);
+    assert.equal(fs.readFileSync(path.join(fixture.managedInstallDir, "old-managed-marker"), "utf8"), "present\n");
   } finally {
     fs.rmSync(fixture.root, { recursive: true, force: true });
   }

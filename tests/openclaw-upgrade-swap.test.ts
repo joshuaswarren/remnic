@@ -250,6 +250,36 @@ test("rollbackOpenclawUpgrade keeps backup restore cleanup failures non-fatal", 
     fs.rmSync = rmSync;
   }
 });
+test("rollbackOpenclawUpgrade reports config removal failure when the backup path is absent", async () => {
+  const tmp = await makeTmpDir();
+  const configPath = path.join(tmp, "openclaw.json");
+  const configBackupPath = path.join(tmp, "backups", "missing-openclaw.json");
+
+  fs.writeFileSync(configPath, '{"plugins":{"slots":{"memory":"broken"}}}\n', "utf8");
+
+  const rmSync = fs.rmSync;
+  fs.rmSync = ((target: fs.PathLike, options?: fs.RmOptions) => {
+    if (String(target) === configPath) {
+      throw new Error("config removal failed");
+    }
+    return rmSync(target, options);
+  }) as typeof fs.rmSync;
+
+  try {
+    assert.throws(
+      () =>
+        rollbackOpenclawUpgrade({
+          configBackupPath,
+          configPath,
+          removeConfigIfUnbacked: true,
+          pluginDir: path.join(tmp, "extensions", "openclaw-remnic"),
+        }),
+      /Failed to remove OpenClaw config created during the failed upgrade: config removal failed/
+    );
+  } finally {
+    fs.rmSync = rmSync;
+  }
+});
 
 test("rollbackOpenclawUpgrade keeps the current plugin when backup restore cannot be swapped in", async () => {
   const tmp = await makeTmpDir();

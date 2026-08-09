@@ -171,7 +171,7 @@ import {
   OPERATION_NAMES,
   validateCapabilitiesForMint,
 } from "@remnic/core";
-import { resolveRemnicPluginEntry } from "@remnic/core/plugin-id.js";
+import { PLUGIN_ID as REMNIC_OPENCLAW_PLUGIN_ID, resolveRemnicPluginEntry } from "@remnic/core/plugin-id.js";
 import { runMeetingsBinaryCommand } from "./commands/meetings.js";
 import { runExternalWikiBinaryCommand } from "./commands/external-wiki.js";
 // @remnic/export-weclone is an optional install surface (training:export
@@ -269,13 +269,8 @@ import {
   runBestEffortGatewayRestart,
   rollbackOpenclawUpgrade,
 } from "./openclaw-upgrade-swap.js";
-import {
-  assertDirectoryPathOrMissing,
-  describeErrorWithCause,
-  installPublishedOpenclawPlugin,
-  PublishedOpenclawPluginInstallError,
-  REMNIC_OPENCLAW_PLUGIN_ID,
-} from "./openclaw-managed-upgrade.js";
+import type { OpenclawCommandRunner } from "@remnic/plugin-openclaw/managed-upgrade";
+import { loadOpenclawManagedUpgradeModule } from "./openclaw-managed-upgrade-loader.js";
 import { expandTilde, resolveHomeDir } from "./path-utils.js";
 import {
   inspectLaunchdPlist,
@@ -11829,6 +11824,12 @@ async function cmdOpenclawUpgrade(opts: OpenclawUpgradeOptions): Promise<void> {
     : undefined;
   const fallbackMemoryDir = path.join(resolveHomeDir(), ".openclaw", "workspace", "memory", "local");
   const packageSpec = `@remnic/plugin-openclaw@${opts.version ?? "latest"}`;
+  const {
+    assertDirectoryPathOrMissing,
+    describeErrorWithCause,
+    installPublishedOpenclawPlugin,
+    PublishedOpenclawPluginInstallError,
+  } = await loadOpenclawManagedUpgradeModule(packageSpec);
   const configExistedBefore = fs.existsSync(configPath);
 
   const existingConfig = readOpenclawConfig(configPath);
@@ -11837,6 +11838,7 @@ async function cmdOpenclawUpgrade(opts: OpenclawUpgradeOptions): Promise<void> {
     ? path.resolve(expandTilde(opts.memoryDir))
     : resolveCurrentOpenclawMemoryDir(entries, slots, fallbackMemoryDir);
   assertDirectoryPathOrMissing(pluginDir, "OpenClaw plugin dir");
+  assertDirectoryPathOrMissing(managedTargetDir, "Managed OpenClaw plugin dir");
   if (legacyPluginDirForBackup) {
     assertDirectoryPathOrMissing(legacyPluginDirForBackup, "Legacy OpenClaw plugin dir");
   }
@@ -11907,10 +11909,26 @@ async function cmdOpenclawUpgrade(opts: OpenclawUpgradeOptions): Promise<void> {
       backupNotes.push(`  No existing legacy plugin dir found at ${legacyPluginDirForBackup}; nothing to preserve`);
     }
   }
+  const runOpenclawCommand: OpenclawCommandRunner = (args, { timeoutMs }) =>
+    childProcess.execFileSync("openclaw", [...args], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        OPENCLAW_CONFIG_PATH: configPath,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: timeoutMs,
+    });
+
 
   let installResult: ReturnType<typeof installPublishedOpenclawPlugin> | undefined;
   try {
-    installResult = installPublishedOpenclawPlugin(packageSpec, pluginDir, configPath, managedTargetDir);
+    installResult = installPublishedOpenclawPlugin(
+      packageSpec,
+      pluginDir,
+      managedTargetDir,
+      runOpenclawCommand
+    );
     await cmdOpenclawInstall({
       yes: true,
       dryRun: false,
@@ -11926,7 +11944,17 @@ async function cmdOpenclawUpgrade(opts: OpenclawUpgradeOptions): Promise<void> {
     const managedRollbackDir = publishedInstallError
       ? publishedInstallError.managedRollbackDir
       : installResult?.managedRollbackDir;
-    const shouldRestorePlugin = Boolean(installResult || rollbackDir || publishedInstallError?.shouldRestoreBackup);
+    const managedRollbackTargetDir =
+      publishedInstallError?.managedRollbackTargetDir ??
+      installResult?.managedRollbackTargetDir ??
+      managedTargetDir;
+    const pluginRollbackDir =
+      managedRollbackDir && path.resolve(managedRollbackTargetDir) === path.resolve(pluginDir)
+        ? (rollbackDir ?? managedRollbackDir)
+        : rollbackDir;
+    const shouldRestorePlugin = Boolean(
+      installResult || pluginRollbackDir || publishedInstallError?.shouldRestoreBackup
+    );
     const shouldRestoreConfig = Boolean(installResult || publishedInstallError?.shouldRestoreConfig);
     const shouldRollback = shouldRestorePlugin || shouldRestoreConfig || Boolean(managedRollbackDir);
 
@@ -11964,19 +11992,19 @@ async function cmdOpenclawUpgrade(opts: OpenclawUpgradeOptions): Promise<void> {
           configPath,
           pluginBackupDir: shouldRestorePlugin ? pluginBackupDir : undefined,
           pluginDir,
-          rollbackDir,
+          rollbackDir: pluginRollbackDir,
           removeConfigIfUnbacked: shouldRestoreConfig && !configExistedBefore,
         })
       );
     } catch (error) {
       rollbackErrors.push(error);
     }
-    if (managedRollbackDir && path.resolve(managedTargetDir) !== path.resolve(pluginDir)) {
+    if (managedRollbackDir && path.resolve(managedRollbackTargetDir) !== path.resolve(pluginDir)) {
       try {
         rollbackNotes.push(
           ...rollbackOpenclawUpgrade({
             configPath,
-            pluginDir: managedTargetDir,
+            pluginDir: managedRollbackTargetDir,
             rollbackDir: managedRollbackDir,
           })
         );
@@ -12003,13 +12031,13 @@ async function cmdOpenclawUpgrade(opts: OpenclawUpgradeOptions): Promise<void> {
     );
   }
   const rollbackCleanupWarning = cleanupRollbackDirectoryBestEffort(installResult?.rollbackDir);
-  const managedRollbackCleanupWarning = cleanupRollbackDirectoryBestEffort(installResult.managedRollbackDir);
+  const managedRollbackCleanupWarning = cleanupRollbackDirectoryBestEffort(installResult?.managedRollbackDir);
 
   console.log("\nUpgrade backups:");
   for (const note of backupNotes) console.log(`  ${note}`);
   console.log(
     `\nInstalled published plugin through OpenClaw from ${packageSpec}` +
-      `${installResult.version ? ` (version ${installResult.version})` : ""}.`
+      `${installResult?.version ? ` (version ${installResult?.version})` : ""}.`
   );
   if (rollbackCleanupWarning) {
     console.warn(rollbackCleanupWarning);

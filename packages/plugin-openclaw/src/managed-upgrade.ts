@@ -1,8 +1,8 @@
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
 export const REMNIC_OPENCLAW_PLUGIN_ID = "openclaw-remnic";
+const OPENCLAW_EXEC_TIMEOUT_MS = 120_000;
 interface ManagedPluginInspection {
   installPath?: string;
   installPackage?: string;
@@ -10,10 +10,23 @@ interface ManagedPluginInspection {
   status?: unknown;
   version?: string;
 }
+export interface OpenclawCommandOptions {
+  timeoutMs: number;
+}
+
+export type OpenclawCommandRunner = (args: readonly string[], options: OpenclawCommandOptions) => string;
 
 export function assertDirectoryPathOrMissing(targetPath: string, label: string): void {
-  if (!fs.existsSync(targetPath)) return;
-  const stat = fs.statSync(targetPath);
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(targetPath);
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return;
+    throw error;
+  }
+  if (stat.isSymbolicLink()) {
+    throw new Error(`${label} must not be a symlink: ${targetPath}`);
+  }
   if (!stat.isDirectory()) {
     throw new Error(`${label} must be a directory when it already exists: ${targetPath}`);
   }
@@ -33,6 +46,7 @@ export function describeErrorWithCause(error: unknown): string {
 
 export class PublishedOpenclawPluginInstallError extends Error {
   readonly managedRollbackDir?: string;
+  readonly managedRollbackTargetDir?: string;
   readonly rollbackDir?: string;
   readonly shouldRestoreBackup: boolean;
   readonly shouldRestoreConfig: boolean;
@@ -41,6 +55,7 @@ export class PublishedOpenclawPluginInstallError extends Error {
     message: string,
     options: ErrorOptions & {
       managedRollbackDir?: string;
+      managedRollbackTargetDir?: string;
       rollbackDir?: string;
       shouldRestoreBackup?: boolean;
       shouldRestoreConfig?: boolean;
@@ -49,6 +64,7 @@ export class PublishedOpenclawPluginInstallError extends Error {
     super(message, options);
     this.name = "PublishedOpenclawPluginInstallError";
     this.managedRollbackDir = options.managedRollbackDir;
+    this.managedRollbackTargetDir = options.managedRollbackTargetDir;
     this.rollbackDir = options.rollbackDir;
     this.shouldRestoreBackup = options.shouldRestoreBackup ?? false;
     this.shouldRestoreConfig = options.shouldRestoreConfig ?? false;
@@ -58,39 +74,33 @@ export class PublishedOpenclawPluginInstallError extends Error {
 export function installPublishedOpenclawPlugin(
   spec: string,
   pluginDir: string,
-  configPath: string,
-  managedTargetDir: string
+  managedTargetDir: string,
+  runOpenclaw: OpenclawCommandRunner
 ): {
   managedRollbackDir?: string;
+  managedRollbackTargetDir?: string;
   rollbackDir?: string;
   rollbackManagedInstall: () => void;
   version?: string;
 } {
-  const rollbackDir = `${pluginDir}.rollback-${process.pid}-${Date.now()}`;
-  const managedRollbackDir = `${managedTargetDir}.rollback-${process.pid}-${Date.now()}`;
-  const openclawEnv = {
-    ...process.env,
-    OPENCLAW_CONFIG_PATH: configPath,
-  };
+  assertDirectoryPathOrMissing(pluginDir, "OpenClaw plugin dir");
+  assertDirectoryPathOrMissing(managedTargetDir, "Managed OpenClaw plugin dir");
+  const rollbackSuffix = `${process.pid}-${Date.now()}`;
+  const rollbackDir = `${pluginDir}.rollback-${rollbackSuffix}`;
+  const managedRollbackDir = `${managedTargetDir}.rollback-${rollbackSuffix}`;
+  const runOpenclawCommand = (args: readonly string[]): string =>
+    runOpenclaw(args, { timeoutMs: OPENCLAW_EXEC_TIMEOUT_MS });
   let activeRollbackDir: string | undefined;
   let activeManagedRollbackDir: string | undefined;
+  let activeManagedRollbackTargetDir: string | undefined;
   let managedInstallStarted = false;
-  let managedInstallCompleted = false;
   let shouldRestoreBackup = false;
 
   const readOpenclawHelp = (subcommand: "inspect" | "install"): string =>
-    execFileSync("openclaw", ["plugins", subcommand, "--help"], {
-      encoding: "utf8",
-      env: openclawEnv,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    runOpenclawCommand(["plugins", subcommand, "--help"]);
 
   const inspectManagedPlugin = (inspectArgs: string[]): ManagedPluginInspection => {
-    const inspectOutput = execFileSync("openclaw", inspectArgs, {
-      encoding: "utf8",
-      env: openclawEnv,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const inspectOutput = runOpenclawCommand(inspectArgs);
 
     let inspectResult: unknown;
     try {
@@ -167,6 +177,20 @@ export function installPublishedOpenclawPlugin(
     if (!fs.existsSync(managedTargetDir)) return;
     fs.renameSync(managedTargetDir, managedRollbackDir);
     activeManagedRollbackDir = managedRollbackDir;
+    activeManagedRollbackTargetDir = managedTargetDir;
+  };
+  const preserveManagedTarget = (): void => {
+    const targetDir = previousManagedInstall?.installPath?.trim() || managedTargetDir;
+    assertDirectoryPathOrMissing(targetDir, "Tracked managed OpenClaw plugin dir");
+    const targetRollbackDir =
+      path.resolve(targetDir) === path.resolve(managedTargetDir)
+        ? managedRollbackDir
+        : `${targetDir}.rollback-${rollbackSuffix}`;
+    fs.rmSync(targetRollbackDir, { recursive: true, force: true });
+    if (!fs.existsSync(targetDir)) return;
+    fs.cpSync(targetDir, targetRollbackDir, { recursive: true });
+    activeManagedRollbackDir = targetRollbackDir;
+    activeManagedRollbackTargetDir = targetDir;
   };
 
   let previousManagedInstall: ManagedPluginInspection | undefined;
@@ -179,10 +203,7 @@ export function installPublishedOpenclawPlugin(
       if (!installSupportsForce) {
         const currentInstall = inspectManagedPlugin(["plugins", "inspect", "--all", "--json"]);
         if (currentInstall.installSource) {
-          execFileSync("openclaw", ["plugins", "uninstall", REMNIC_OPENCLAW_PLUGIN_ID, "--force"], {
-            env: openclawEnv,
-            stdio: ["ignore", "pipe", "pipe"],
-          });
+          runOpenclawCommand(["plugins", "uninstall", REMNIC_OPENCLAW_PLUGIN_ID, "--force"]);
         }
       }
       const previousSpec =
@@ -193,10 +214,7 @@ export function installPublishedOpenclawPlugin(
         installSupportsForce && previousSource === "npm" ? `npm:${previousSpec}` : previousSpec;
       const restoreArgs = ["plugins", "install", previousPackageArg];
       if (installSupportsForce) restoreArgs.push("--force");
-      execFileSync("openclaw", restoreArgs, {
-        env: openclawEnv,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
+      runOpenclawCommand(restoreArgs);
       const restoredPlugin = inspectInstalledPlugin(inspectSupportsRuntime);
       if (
         restoredPlugin.status !== "loaded" ||
@@ -210,19 +228,17 @@ export function installPublishedOpenclawPlugin(
     const rollbackErrors: unknown[] = [];
     if (managedInstallStarted) {
       try {
-        execFileSync("openclaw", ["plugins", "uninstall", REMNIC_OPENCLAW_PLUGIN_ID, "--force"], {
-          env: openclawEnv,
-          stdio: ["ignore", "pipe", "pipe"],
-        });
+        runOpenclawCommand(["plugins", "uninstall", REMNIC_OPENCLAW_PLUGIN_ID, "--force"]);
       } catch (error) {
         rollbackErrors.push(error);
       }
     }
-    if (activeManagedRollbackDir) {
+    if (activeManagedRollbackDir && activeManagedRollbackTargetDir) {
       try {
-        fs.rmSync(managedTargetDir, { recursive: true, force: true });
-        fs.renameSync(activeManagedRollbackDir, managedTargetDir);
+        fs.rmSync(activeManagedRollbackTargetDir, { recursive: true, force: true });
+        fs.renameSync(activeManagedRollbackDir, activeManagedRollbackTargetDir);
         activeManagedRollbackDir = undefined;
+        activeManagedRollbackTargetDir = undefined;
       } catch (error) {
         rollbackErrors.push(error);
       }
@@ -259,12 +275,12 @@ export function installPublishedOpenclawPlugin(
       retireManagedTarget();
       retireUnmanagedPlugin();
     }
+    if (previousSource === "npm" || previousSource === "clawhub") {
+      preserveManagedTarget();
+    }
     if ((previousSource === "npm" || previousSource === "clawhub") && !installSupportsForce) {
       managedInstallStarted = true;
-      execFileSync("openclaw", ["plugins", "uninstall", REMNIC_OPENCLAW_PLUGIN_ID, "--force"], {
-        env: openclawEnv,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
+      runOpenclawCommand(["plugins", "uninstall", REMNIC_OPENCLAW_PLUGIN_ID, "--force"]);
     }
 
     const packageArg = installSupportsForce ? `npm:${spec}` : spec;
@@ -272,11 +288,7 @@ export function installPublishedOpenclawPlugin(
     if (installSupportsForce) installArgs.push("--force");
 
     managedInstallStarted = true;
-    execFileSync("openclaw", installArgs, {
-      env: openclawEnv,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    managedInstallCompleted = true;
+    runOpenclawCommand(installArgs);
 
     let inspectedPlugin = inspectInstalledPlugin(inspectSupportsRuntime);
     const installPath = inspectedPlugin.installPath;
@@ -309,6 +321,7 @@ export function installPublishedOpenclawPlugin(
 
     return {
       managedRollbackDir: activeManagedRollbackDir,
+      managedRollbackTargetDir: activeManagedRollbackTargetDir,
       rollbackDir: activeRollbackDir,
       rollbackManagedInstall,
       version: inspectedPlugin.version,
@@ -330,6 +343,7 @@ export function installPublishedOpenclawPlugin(
     throw new PublishedOpenclawPluginInstallError(`Failed to install published OpenClaw plugin from ${spec}.`, {
       cause: installFailure,
       managedRollbackDir: activeManagedRollbackDir,
+      managedRollbackTargetDir: activeManagedRollbackTargetDir,
       rollbackDir: activeRollbackDir,
       shouldRestoreBackup,
       shouldRestoreConfig: managedInstallStarted,

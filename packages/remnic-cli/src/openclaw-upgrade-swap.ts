@@ -228,6 +228,7 @@ export function rollbackOpenclawUpgrade({
   const notes: string[] = [];
   const errors: string[] = [];
   let rollbackRestoreError: string | undefined;
+  let configRemovalAttempted = false;
   let pluginRestored = false;
 
   try {
@@ -273,14 +274,15 @@ export function rollbackOpenclawUpgrade({
       restoreFileFromBackup(configPath, configBackupPath);
       notes.push(`Restored OpenClaw config from backup at ${configBackupPath}`);
     } else if (removeConfigIfUnbacked && fs.existsSync(configPath)) {
-      fs.rmSync(configPath);
+      configRemovalAttempted = true;
+      fs.rmSync(configPath, { force: true });
       notes.push("Removed OpenClaw config created during the failed upgrade");
     }
   } catch (error) {
     errors.push(
-      configBackupPath
-        ? `Failed to restore OpenClaw config from backup at ${configBackupPath}: ${error instanceof Error ? error.message : String(error)}`
-        : `Failed to remove OpenClaw config created during the failed upgrade: ${error instanceof Error ? error.message : String(error)}`
+      configRemovalAttempted || !configBackupPath
+        ? `Failed to remove OpenClaw config created during the failed upgrade: ${error instanceof Error ? error.message : String(error)}`
+        : `Failed to restore OpenClaw config from backup at ${configBackupPath}: ${error instanceof Error ? error.message : String(error)}`
     );
   }
 

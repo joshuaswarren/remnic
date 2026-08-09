@@ -13,13 +13,7 @@
     "remnic": "./bin/remnic.cjs",
     "engram": "./bin/engram.cjs"
   },
-  "files": [
-    "dist",
-    "assets",
-    "bin/remnic.cjs",
-    "bin/engram.cjs",
-    "templates"
-  ],
+  "files": ["dist", "assets", "bin/remnic.cjs", "bin/engram.cjs", "templates"],
   "publishConfig": {
     "access": "public",
     "provenance": true
@@ -40,6 +34,7 @@
   },
   "peerDependencies": {
     "@remnic/bench": "^9.50.0",
+    "@remnic/plugin-openclaw": "^9.50.0",
     "@remnic/export-weclone": "^9.50.0",
     "@remnic/import-weclone": "^9.50.0",
     "@remnic/import-chatgpt": "^9.50.0",
@@ -55,6 +50,9 @@
   },
   "peerDependenciesMeta": {
     "@remnic/bench": {
+      "optional": true
+    },
+    "@remnic/plugin-openclaw": {
       "optional": true
     },
     "@remnic/export-weclone": {
@@ -96,6 +94,7 @@
   },
   "devDependencies": {
     "@remnic/bench": "workspace:*",
+    "@remnic/plugin-openclaw": "workspace:*",
     "@remnic/export-weclone": "workspace:*",
     "@remnic/import-weclone": "workspace:*",
     "@remnic/import-chatgpt": "workspace:*",

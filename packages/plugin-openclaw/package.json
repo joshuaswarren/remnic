@@ -7,6 +7,11 @@
   "exports": {
     ".": {
       "import": "./dist/index.js"
+    },
+    "./managed-upgrade": {
+      "types": "./dist/managed-upgrade.d.ts",
+      "remnic-source": "./src/managed-upgrade.ts",
+      "import": "./dist/managed-upgrade.js"
     }
   },
   "files": [
