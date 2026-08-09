@@ -3221,14 +3221,9 @@ export interface ExtractedFact {
   confidence: number;
   tags: string[];
   entityRef?: string;
+  cueAnchors?: Array<{ type: "entity" | "file" | "tool" | "outcome" | "constraint" | "date"; value: string }>;
   source?: ExtractionPassSource;
-  /**
-   * Claim-level provenance spans backing this fact (issue #1575).
-   * Populated by the PR 2 extraction validator when `provenance.enabled`
-   * is true. Absent for legacy extractions — downstream consumers (the
-   * faithfulness gate #1576, TrustScore #1577) MUST treat absent as
-   * "no verified span" and skip gracefully.
-   */
+  /** Claim-level provenance spans. Missing spans fail closed when verification requires them. */
   sources?: ProvenanceSource[];
   /**
    * Coarse provenance strength tag (issue #1575 PR 2). Set by the extraction
@@ -3346,6 +3341,7 @@ export interface ExtractionResult {
   entities: EntityMention[];
   questions: ExtractedQuestion[];
   identityReflection?: string;
+  episodeTitle?: string;
   relationships?: ExtractedRelationship[];
   extractionFailure?: string;
   /** Coarse class used by the retry/backoff + circuit-breaker layer (extraction hot loop). */

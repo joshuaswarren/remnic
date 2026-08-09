@@ -34,6 +34,7 @@ import { deindexMemoriesBatchAsync } from "../temporal-index-batch.js";
 import { isActiveMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import { propagateInvalidation } from "./dependency-propagation.js";
 import {
+  resolveCapabilities,
   resolveConsolidationCapabilities,
   resolveCreationMemoryCapabilities,
   resolveIndexingCapabilities,
@@ -43,6 +44,7 @@ import {
   resolveRecallEnhancementCapabilities,
   type MemoryLifecycleCapabilitySet,
 } from "../capabilities.js";
+import { pruneOrphanCueAnchors } from "../cue-anchors.js";
 import type { LifecyclePolicyCoordinator } from "./lifecycle-policy-coordinator.js";
 import type { CompressionGuidelineCoordinator } from "./compression-guideline-coordinator.js";
 import type { SemanticConsolidationCoordinator } from "./semantic-consolidation-coordinator.js";
@@ -50,6 +52,7 @@ import type { EntitySynthesisCoordinator } from "./entity-synthesis-coordinator.
 import type { RecallSectionCoordinator } from "./recall-section-coordinator.js";
 import type { TierMigrationCoordinator } from "./tier-migration-coordinator.js";
 import type { StorageManager } from "../index.js";
+import type { NamespaceCatalog } from "../namespaces/catalog.js";
 import type { NamespaceStorageRouter } from "../namespaces/storage.js";
 import type { ExtractionEngine } from "../extraction.js";
 import type { EmbeddingFallback } from "../embedding-fallback.js";
@@ -68,6 +71,7 @@ export interface ConsolidationRunCoordinatorDeps {
   config: PluginConfig;
   getStorage: () => StorageManager;
   getStorageRouter: () => NamespaceStorageRouter;
+  getNamespaceCatalog?: () => NamespaceCatalog;
   getExtraction: () => ExtractionEngine;
   embeddingFallback: EmbeddingFallback;
   tmtBuilder: TmtBuilder;
@@ -101,8 +105,141 @@ export interface ConsolidationRunCoordinatorDeps {
   ) => Promise<{ content: string } | null>;
 }
 
+const MAX_HARMONIC_NAMESPACE_STORES = 50;
+const HARMONIC_CATALOG_CURSOR_FILE = "harmonic-catalog-cursor.json";
+
+type HarmonicStore = {
+  memoryDir: string;
+  abstractionNodeStoreDir?: string;
+};
+
+type HarmonicCatalogCursor = {
+  nextStorageDir?: string;
+};
+
 export class ConsolidationRunCoordinator {
   constructor(private readonly deps: ConsolidationRunCoordinatorDeps) {}
+
+  private async readHarmonicCatalogCursor(defaultDir: string): Promise<string | undefined> {
+    const cursorPath = path.join(defaultDir, "state", HARMONIC_CATALOG_CURSOR_FILE);
+    try {
+      const raw = await readFile(cursorPath, "utf-8");
+      const parsed = JSON.parse(raw) as HarmonicCatalogCursor;
+      return typeof parsed.nextStorageDir === "string" && parsed.nextStorageDir.length > 0
+        ? path.resolve(parsed.nextStorageDir)
+        : undefined;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        log.warn(
+          `harmonic namespace catalog cursor read failed open: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+      return undefined;
+    }
+  }
+
+  private async writeHarmonicCatalogCursor(
+    defaultDir: string,
+    nextStorageDir: string,
+  ): Promise<void> {
+    const stateDir = path.join(defaultDir, "state");
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(
+      path.join(stateDir, HARMONIC_CATALOG_CURSOR_FILE),
+      JSON.stringify({ nextStorageDir }, null, 2),
+      "utf-8",
+    );
+  }
+
+  private async pruneHarmonicStores(storage: StorageManager): Promise<void> {
+    const config = this.deps.config;
+    if (
+      !resolveCapabilities(config).harmonicRetrieval ||
+      !resolveConsolidationCapabilities(config).abstractionAnchors
+    ) {
+      return;
+    }
+
+    const stores = new Map<string, HarmonicStore>();
+    const defaultDir = path.resolve(storage.dir);
+    stores.set(defaultDir, {
+      memoryDir: storage.dir,
+      abstractionNodeStoreDir: config.abstractionNodeStoreDir,
+    });
+
+    try {
+      const catalog = this.deps.getNamespaceCatalog?.();
+      if (catalog?.enabled) {
+        const records = await catalog.listNamespaces({ discoveredBy: "write" });
+        const catalogStores = new Map<string, HarmonicStore>();
+        for (const record of records) {
+          const storageDir = path.resolve(record.storageDir);
+          if (!stores.has(storageDir) && !catalogStores.has(storageDir)) {
+            catalogStores.set(storageDir, { memoryDir: record.storageDir });
+          }
+        }
+
+        const candidates = [...catalogStores.entries()];
+        if (candidates.length > 0) {
+          const cursor = await this.readHarmonicCatalogCursor(defaultDir);
+          const cursorIndex = cursor
+            ? candidates.findIndex(([storageDir]) => storageDir === cursor)
+            : -1;
+          const startIndex = cursorIndex >= 0 ? cursorIndex : 0;
+          const selectedCount = Math.min(
+            candidates.length,
+            MAX_HARMONIC_NAMESPACE_STORES - 1,
+          );
+
+          for (let offset = 0; offset < selectedCount; offset += 1) {
+            const index = (startIndex + offset) % candidates.length;
+            const [storageDir, store] = candidates[index];
+            stores.set(storageDir, store);
+          }
+
+          const nextIndex = (startIndex + selectedCount) % candidates.length;
+          const nextStorageDir = candidates[nextIndex][0];
+          try {
+            await this.writeHarmonicCatalogCursor(defaultDir, nextStorageDir);
+          } catch (error) {
+            log.warn(
+              `harmonic namespace catalog cursor write failed open: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
+
+          if (selectedCount < candidates.length) {
+            log.warn(
+              `harmonic namespace catalog truncated at ${MAX_HARMONIC_NAMESPACE_STORES} stores; ` +
+                `skipped ${candidates.length - selectedCount} store(s)`,
+            );
+          }
+        }
+      }
+    } catch (error) {
+      log.warn(
+        `harmonic namespace catalog read failed open: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
+    for (const store of stores.values()) {
+      try {
+        const removed = await pruneOrphanCueAnchors(store);
+        if (removed > 0) {
+          log.info(`harmonic anchor prune removed ${removed} orphan(s) from ${store.memoryDir}`);
+        }
+      } catch (error) {
+        log.warn(
+          `harmonic anchor prune failed open for ${store.memoryDir}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+  }
 
   async run(): Promise<{
     memoriesProcessed: number;
@@ -125,6 +262,7 @@ export class ConsolidationRunCoordinator {
     if (this.deps.getAccessTrackingBuffer().size > 0) {
       await this.deps.flushAccessTracking();
     }
+    await this.pruneHarmonicStores(storage);
 
     let allMemories = await storage.readAllMemories();
     if (allMemories.length < 5) {

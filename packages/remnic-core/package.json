@@ -46,6 +46,16 @@
       "remnic-source": "./src/abstraction-nodes.ts",
       "import": "./dist/abstraction-nodes.js"
     },
+    "./harmonic-construction": {
+      "types": "./dist/harmonic-construction.d.ts",
+      "remnic-source": "./src/harmonic-construction.ts",
+      "import": "./dist/harmonic-construction.js"
+    },
+    "./harmonic-construction.js": {
+      "types": "./dist/harmonic-construction.d.ts",
+      "remnic-source": "./src/harmonic-construction.ts",
+      "import": "./dist/harmonic-construction.js"
+    },
     "./access-audit": {
       "types": "./dist/access-audit.d.ts",
       "remnic-source": "./src/access-audit.ts",

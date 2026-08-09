@@ -576,7 +576,7 @@ test("orchestration coverage is per-file: only files extraction-lifecycle exerci
     "orchestration/** must not be a covered glob — it would falsely cover unexercised files",
   );
   // Files the extraction/flush/persist lifecycle actually drives → covered.
-  for (const f of ["extraction-run.ts", "extraction-persist.ts", "turn-ingestion.ts", "session-context.ts"]) {
+  for (const f of ["extraction-run.ts", "extraction-persist.ts", "extraction-persist-deps.ts", "harmonic-construction-persist.ts", "turn-ingestion.ts", "session-context.ts"]) {
     const { covered, violations } = evaluateCoverage([P + f], manifest);
     assert.equal(violations.length, 0, `${f} must not violate`);
     assert.equal(covered.length, 1, `${f} must be covered`);

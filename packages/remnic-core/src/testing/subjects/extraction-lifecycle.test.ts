@@ -21,7 +21,8 @@ import { resolveNamespaceStorageRoot } from "../../namespaces/storage.js";
 import type { BufferTurn, PluginConfig } from "../../types.js";
 import {
   cleanupDir,
-  makeLifecycleConfig,
+  harmonicNodeStoreStatus,
+  makeHarmonicLifecycleConfig,
   markdownFilesUnder,
   memoryFilesContaining,
   mkTempMemoryDir,
@@ -29,12 +30,7 @@ import {
   singleFactResult,
   stubExtraction,
 } from "../orchestrator-lite.js";
-import {
-  type LifecycleSubject,
-  type MatrixRow,
-  type MatrixRowId,
-  runLifecycleMatrix,
-} from "../lifecycle-matrix.js";
+import { type LifecycleSubject, type MatrixRow, type MatrixRowId, runLifecycleMatrix } from "../lifecycle-matrix.js";
 
 interface ExtractionLifecycleState {
   memoryDir: string;
@@ -63,7 +59,7 @@ interface ExtractionLifecycleState {
 
 /** Namespaces-on config with alice/bob principal prefix routing (identity rows). */
 function namespacedConfig(memoryDir: string): PluginConfig {
-  return makeLifecycleConfig(memoryDir, {
+  return makeHarmonicLifecycleConfig(memoryDir, {
     namespacesEnabled: true,
     defaultNamespace: "default",
     sharedNamespace: "shared",
@@ -94,7 +90,7 @@ const UNBOUND_SESSION = "unbound-session-0000";
 
 /** Map-mode config where {@link REMEMBERED_SESSION} is bound to alice. */
 function rememberedBindingConfig(memoryDir: string): PluginConfig {
-  return makeLifecycleConfig(memoryDir, {
+  return makeHarmonicLifecycleConfig(memoryDir, {
     namespacesEnabled: true,
     defaultNamespace: "default",
     sharedNamespace: "shared",
@@ -111,6 +107,18 @@ const NAMESPACE_ROWS: Partial<Record<MatrixRowId, true>> = {
   "provider-rebinding": true,
 };
 
+async function assertHarmonicEpisode(memoryDir: string, sessionKey?: string): Promise<void> {
+  const status = await harmonicNodeStoreStatus(memoryDir);
+  assert.equal(status.nodes.invalid, 0, "harmonic persistence must write only valid abstraction nodes");
+  assert.ok(status.nodes.valid > 0, "harmonic persistence must write an abstraction node");
+  assert.ok((status.nodes.byKind.episode ?? 0) > 0, "harmonic persistence must write an episode node");
+  assert.ok(
+    (status.latestNode?.sourceMemoryIds?.length ?? 0) > 0,
+    "the persisted episode must retain its source memory ids"
+  );
+  if (sessionKey) assert.equal(status.latestNode?.sessionKey, sessionKey);
+}
+
 const subject: LifecycleSubject<ExtractionLifecycleState> = {
   async setup(row: MatrixRow): Promise<ExtractionLifecycleState> {
     const memoryDir = await mkTempMemoryDir(`extraction-${row.id}`);
@@ -122,15 +130,13 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
           : NAMESPACE_ROWS[row.id]
             ? namespacedConfig(memoryDir)
             : row.id === "dedupe-replay"
-              ? makeLifecycleConfig(memoryDir, {
+              ? makeHarmonicLifecycleConfig(memoryDir, {
                   extractionDedupeEnabled: true,
                   extractionDedupeWindowMs: 60_000,
                 })
-              : makeLifecycleConfig(memoryDir);
+              : makeHarmonicLifecycleConfig(memoryDir);
       primary = new Orchestrator(cfg);
-      const calls = stubExtraction(primary, (turns) =>
-        singleFactResult(turns.map((turn) => turn.content).join(" | ")),
-      );
+      const calls = stubExtraction(primary, (turns) => singleFactResult(turns.map((turn) => turn.content).join(" | ")));
       return { memoryDir, cfg, orchestrators: [primary], calls };
     } catch (err) {
       // Transactional setup: a partial build must not leak the orchestrator or temp dir.
@@ -147,7 +153,7 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
         await primary.processTurn(
           "user",
           "Please remember: alice uses the teal dashboard theme for staging telemetry.",
-          "alice:chat",
+          "alice:chat"
         );
         assert.equal(await primary.waitForExtractionIdle(15_000), true);
         return;
@@ -158,6 +164,13 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
         // on the turn, yet recall resolves through the same remembered binding.
         const aliceRoot = await resolveNamespaceStorageRoot(state.cfg, "alice");
         await seedFactFile(aliceRoot, "remembered-binding", "alice pins deploys to the us-east-2 region.");
+        await primary.processTurn(
+          "user",
+          "The harmonic lifecycle probe is retained for this sparse session.",
+          REMEMBERED_SESSION
+        );
+        await primary.flushSession(REMEMBERED_SESSION, { reason: "before_reset" });
+        assert.equal(await primary.waitForExtractionIdle(15_000), true);
         return;
       }
       case "sparse-metadata-without-binding": {
@@ -165,18 +178,25 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
         // remembered binding to her — recall must not fabricate one to reach it.
         const aliceRoot = await resolveNamespaceStorageRoot(state.cfg, "alice");
         await seedFactFile(aliceRoot, "unbound", "alice pins deploys to the us-east-2 region.");
+        await primary.processTurn(
+          "user",
+          "The harmonic lifecycle probe is retained for this unbound session.",
+          UNBOUND_SESSION
+        );
+        await primary.flushSession(UNBOUND_SESSION, { reason: "before_reset" });
+        assert.equal(await primary.waitForExtractionIdle(15_000), true);
         return;
       }
       case "provider-rebinding": {
         await primary.processTurn(
           "user",
           "Please remember: alice uses the teal dashboard theme for staging telemetry.",
-          "alice:chat",
+          "alice:chat"
         );
         await primary.processTurn(
           "user",
           "Please remember: bob files quarterly billing reconciliation in the ledger spreadsheet.",
-          "bob:chat",
+          "bob:chat"
         );
         assert.equal(await primary.waitForExtractionIdle(15_000), true);
         return;
@@ -185,22 +205,21 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
         await primary.processTurn(
           "user",
           "Please remember: the failover drill rehearses the read-replica promotion path.",
-          "session-flushed",
+          "session-flushed"
         );
         assert.equal(await primary.waitForExtractionIdle(15_000), true);
         // Park a second session's turn WITHOUT flushing, then restart.
         await primary.processTurn(
           "user",
           "The quota reconciler defers negative balances to manual review.",
-          "session-parked",
+          "session-parked"
         );
         await primary.destroy();
         state.orchestrators.length = 0;
-
-        const second = new Orchestrator(makeLifecycleConfig(state.memoryDir));
+        const second = new Orchestrator(makeHarmonicLifecycleConfig(state.memoryDir));
         state.orchestrators.push(second);
         state.restartCalls = stubExtraction(second, (turns) =>
-          singleFactResult(turns.map((turn) => turn.content).join(" | ")),
+          singleFactResult(turns.map((turn) => turn.content).join(" | "))
         );
         // Drain the buffer that survived the restart (state/buffer.json).
         await second.flushSession("session-parked", { reason: "session_end" });
@@ -222,7 +241,11 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
         // `before_clear_buffer`) must abort BEFORE the buffer is cleared, so a
         // timed-out reset cannot drop turns. Falsifiable (acceptance #1993):
         // dropping the abortSignal threading fails THIS row and only this row.
-        await primary.processTurn("user", "The replay ledger checkpoint compacts after five hundred entries.", "session-reset");
+        await primary.processTurn(
+          "user",
+          "The replay ledger checkpoint compacts after five hundred entries.",
+          "session-reset"
+        );
         const controller = new AbortController();
         // Rewire the seam: extraction succeeds but trips the abort mid-flight.
         state.abortFlushCalls = stubExtraction(primary, (turns) => {
@@ -245,7 +268,7 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
         // itself succeed — swallowing its failure would let a recovery-flush
         // regression pass vacuously (the extraction call still bumps the count).
         state.secondFlushCalls = stubExtraction(primary, (turns) =>
-          singleFactResult(turns.map((turn) => turn.content).join(" | ")),
+          singleFactResult(turns.map((turn) => turn.content).join(" | "))
         );
         await primary.flushSession("session-reset", { reason: "before_reset" });
         // The recovery flush must PERSIST the preserved turn as a fact...
@@ -260,7 +283,11 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
         return;
       }
       case "session-end": {
-        await primary.processTurn("user", "The nightly compaction sweep runs after the backup snapshot.", "session-end");
+        await primary.processTurn(
+          "user",
+          "The nightly compaction sweep runs after the backup snapshot.",
+          "session-end"
+        );
         await primary.flushSession("session-end", { reason: "session_end" });
         return;
       }
@@ -287,6 +314,7 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
 
   async invariants(state: ExtractionLifecycleState, row: MatrixRow): Promise<void> {
     const primary = state.orchestrators[0];
+    assert.equal(state.cfg.harmonicRetrievalEnabled, true, "every lifecycle row enables harmonic persistence");
     switch (row.id) {
       case "explicit-provider-identity": {
         const aliceRoot = await resolveNamespaceStorageRoot(state.cfg, "alice");
@@ -295,19 +323,22 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
         assert.equal(
           (await markdownFilesUnder(path.join(state.memoryDir, "facts"))).length,
           0,
-          "an identity-routed write must not land in the default root",
+          "an identity-routed write must not land in the default root"
         );
         const context = await primary.recall("Which dashboard theme is used for staging telemetry?", "alice:chat");
         assert.match(context, /teal dashboard theme/i);
+        await assertHarmonicEpisode(aliceRoot);
         return;
       }
       case "sparse-metadata-with-binding": {
+        const aliceRoot = await resolveNamespaceStorageRoot(state.cfg, "alice");
         const context = await primary.recall("Which region does alice pin deploys to?", REMEMBERED_SESSION);
         assert.match(
           context,
           /us-east-2/i,
-          "a sparse session key that does not encode alice recalls her memory ONLY through the remembered binding",
+          "a sparse session key that does not encode alice recalls her memory ONLY through the remembered binding"
         );
+        await assertHarmonicEpisode(aliceRoot);
         return;
       }
       case "sparse-metadata-without-binding": {
@@ -317,13 +348,14 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
         assert.doesNotMatch(
           context,
           /us-east-2/i,
-          "an unbound sparse session must NOT reach alice's memory — no binding may be fabricated",
+          "an unbound sparse session must NOT reach alice's memory — no binding may be fabricated"
         );
         assert.equal(
           (await markdownFilesUnder(aliceRoot)).length,
           seededFiles,
-          "a recall with no binding must not create phantom memory files",
+          "a recall with no binding must not create phantom memory files"
         );
+        await assertHarmonicEpisode(state.memoryDir);
         return;
       }
       case "provider-rebinding": {
@@ -334,94 +366,103 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
         assert.equal((await memoryFilesContaining(aliceRoot, "ledger spreadsheet")).length, 0);
         const aliceContext = await primary.recall("Which dashboard theme is used for staging telemetry?", "alice:chat");
         assert.doesNotMatch(aliceContext, /ledger spreadsheet/i, "a rebind must not leak the prior identity's memory");
+        await assertHarmonicEpisode(aliceRoot);
+        await assertHarmonicEpisode(bobRoot);
         return;
       }
       case "restart-reload-recovery": {
         const second = state.orchestrators[0];
         assert.ok(state.restartCalls, "the restarted instance must have a recorded drain");
         assert.equal(state.restartCalls.length, 1, "the new instance flushes the buffer parked before restart");
-        assert.deepEqual(state.restartCalls[0]?.map((turn) => turn.content), [
-          "The quota reconciler defers negative balances to manual review.",
-        ]);
+        assert.deepEqual(
+          state.restartCalls[0]?.map((turn) => turn.content),
+          ["The quota reconciler defers negative balances to manual review."]
+        );
         const context = await second.recall("How does the failover drill handle read-replica promotion?", "reader");
         assert.match(context, /read-replica promotion/i, "prior persisted memory survives the restart");
         assert.equal(
           (await memoryFilesContaining(path.join(state.memoryDir, "facts"), "quota reconciler")).length,
           1,
-          "the parked buffer's turn persists after the restart drain",
+          "the parked buffer's turn persists after the restart drain"
         );
+        await assertHarmonicEpisode(state.memoryDir);
         return;
       }
       case "compaction-flush": {
         assert.equal(state.calls.length, 1, "the flush compacts the buffered turns into one extraction");
-        assert.deepEqual(state.calls[0]?.map((turn) => turn.content), [
-          "The deploy train departs at nine on Tuesdays.",
-          "Noted the Tuesday deploy train departure.",
-        ]);
+        assert.deepEqual(
+          state.calls[0]?.map((turn) => turn.content),
+          ["The deploy train departs at nine on Tuesdays.", "Noted the Tuesday deploy train departure."]
+        );
         assert.equal(
           (await memoryFilesContaining(path.join(state.memoryDir, "facts"), "deploy train departs")).length,
-          1,
+          1
         );
+        await assertHarmonicEpisode(state.memoryDir);
         return;
       }
       case "before-reset": {
         assert.equal(
           state.abortFlushRejected,
           true,
-          "the aborted before_reset flush must reject — the abort tripped mid-flush, not a silent success",
+          "the aborted before_reset flush must reject — the abort tripped mid-flush, not a silent success"
         );
         assert.ok(state.abortFlushCalls, "the aborting flush's extraction calls must be recorded");
         assert.equal(
           state.abortFlushCalls.length,
           1,
-          "the abort must trip AFTER exactly one extraction attempt — a reject before extraction ran (length 0) would mean the mid-extraction abort path was never exercised",
+          "the abort must trip AFTER exactly one extraction attempt — a reject before extraction ran (length 0) would mean the mid-extraction abort path was never exercised"
         );
         assert.equal(
           state.abortedWriteCount,
           0,
-          "the aborted before_reset flush must persist nothing — the abort guards before_persist, so no fact is written before the buffer-preserving recovery flush",
+          "the aborted before_reset flush must persist nothing — the abort guards before_persist, so no fact is written before the buffer-preserving recovery flush"
         );
         assert.ok(state.secondFlushCalls, "a re-flush must have been recorded");
         assert.equal(
           state.secondFlushCalls.length,
           1,
-          "a timed-out before_reset must NOT clear the buffer — the re-flush re-extracts the preserved turn",
+          "a timed-out before_reset must NOT clear the buffer — the re-flush re-extracts the preserved turn"
         );
-        assert.deepEqual(state.secondFlushCalls[0]?.map((turn) => turn.content), [
-          "The replay ledger checkpoint compacts after five hundred entries.",
-        ]);
+        assert.deepEqual(
+          state.secondFlushCalls[0]?.map((turn) => turn.content),
+          ["The replay ledger checkpoint compacts after five hundred entries."]
+        );
         assert.equal(
           state.recoveredFactCount,
           1,
-          "the recovery flush must PERSIST the preserved turn as exactly one fact",
+          "the recovery flush must PERSIST the preserved turn as exactly one fact"
         );
         assert.equal(
           state.factCountAfterExtraFlush,
           1,
-          "a further before_reset flush with an empty buffer must NOT duplicate the recovered fact",
+          "a further before_reset flush with an empty buffer must NOT duplicate the recovered fact"
         );
+        await assertHarmonicEpisode(state.memoryDir);
         return;
       }
       case "session-end": {
         assert.equal(state.calls.length, 1, "session_end drains the buffer like before_reset");
         assert.equal(
           (await memoryFilesContaining(path.join(state.memoryDir, "facts"), "nightly compaction sweep")).length,
-          1,
+          1
         );
+        await assertHarmonicEpisode(state.memoryDir);
         return;
       }
       case "dedupe-replay": {
         assert.equal(
           state.callsBeforeForceFlush,
           1,
-          "the in-window duplicate must be suppressed — exactly one extraction before the force flush",
+          "the in-window duplicate must be suppressed — exactly one extraction before the force flush"
         );
         assert.equal(state.calls.length, 2, "the force flush bypasses the dedupe fingerprint and re-extracts");
         assert.match(
           (state.calls[1] ?? []).map((turn) => turn.content).join(" "),
           /canary gate/,
-          "the second extraction is the force-flushed duplicate, not a no-op",
+          "the second extraction is the force-flushed duplicate, not a no-op"
         );
+        await assertHarmonicEpisode(state.memoryDir);
         return;
       }
       default: {

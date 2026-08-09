@@ -48,7 +48,14 @@ import { applyGroundingWithConnector, headerConnector, renderExtractionConversat
 import { isMemoryCategory } from "./write-envelope.js";
 import { classifyExtractionThrownError, classifyFallbackParseFailure } from "./extraction-error-classification.js";
 import { AMBIENT_CAPTURE_PROMPT_SECTION_COMPACT, clampAmbientCaptureConfidence } from "./ambient-provenance.js";
-import { EXTRACTION_RESPONSE_PLACEHOLDERS, EXTRACTION_RESPONSE_SHAPE, buildExtractionInstructions, eventTimePromptInstruction } from "./extraction-prompt.js";
+import { CUE_ANCHOR_PROMPT_INSTRUCTION, EXTRACTION_RESPONSE_SHAPE, buildExtractionInstructions, eventTimePromptInstruction } from "./extraction-prompt.js";
+import {
+  containsExtractionPlaceholder,
+  extractionAttributes,
+  extractionCueAnchors,
+  extractionText,
+  isPlainRecord,
+} from "./extraction-normalization.js";
 export { classifyExtractionThrownError, classifyFallbackParseFailure } from "./extraction-error-classification.js";
 import { resolveLocalLlmCapabilities, resolveMemoryLifecycleCapabilities, resolvePipelineProcessingCapabilities, resolveRecallAuxiliaryCapabilities } from "./capabilities.js";
 
@@ -72,34 +79,6 @@ const CONSOLIDATION_RESPONSE_SCHEMA = `{
   "entityUpdates": [{"name": "person-jane-doe", "type": "person", "facts": ["Now leads the backend team", "Recently migrated the user service to TypeScript"]}]
 }`;
 
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function containsExtractionPlaceholder(value: unknown): boolean {
-  if (typeof value === "string") return EXTRACTION_RESPONSE_PLACEHOLDERS[value.trim()] === true;
-  if (Array.isArray(value)) return value.some(containsExtractionPlaceholder);
-  return isPlainRecord(value) && Object.values(value).some(containsExtractionPlaceholder);
-}
-
-function extractionText(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const text = value.trim();
-  return text.length > 0 && !containsExtractionPlaceholder(text) ? text : undefined;
-}
-
-function extractionAttributes(value: unknown): Record<string, string> | undefined {
-  if (!isPlainRecord(value)) return undefined;
-  const attributes: Record<string, string> = {};
-  for (const [key, candidate] of Object.entries(value)) {
-    const normalizedKey = extractionText(key);
-    const normalizedValue = extractionText(candidate);
-    if (normalizedKey !== undefined && normalizedValue !== undefined) {
-      attributes[normalizedKey] = normalizedValue;
-    }
-  }
-  return Object.keys(attributes).length > 0 ? attributes : undefined;
-}
 
 function extractionEntityType(value: unknown): ExtractedEntityResult["type"] | undefined {
   const type = extractionText(value);
@@ -269,9 +248,13 @@ export class ExtractionEngine {
         if (resolvePipelineProcessingCapabilities(this.config).delinearize) {
           content = delinearize(content, result.entities, ts);
         }
-        return { ...fact, content };
+        return {
+          ...fact,
+          content,
+          cueAnchors: extractionCueAnchors(fact.cueAnchors),
+        };
       });
-    return { ...result, facts };
+    return { ...result, facts, episodeTitle: extractionText(result.episodeTitle) };
   }
 
   private hasExtractionOutputs(result: ExtractionResult): boolean {
@@ -339,6 +322,7 @@ export class ExtractionEngine {
                   })
                 : [],
               entityRef: extractionText(f.entityRef),
+              cueAnchors: extractionCueAnchors(f.cueAnchors),
               promptedByQuestion: extractionText(f.promptedByQuestion),
               scope:
                 f.scope === "global" || f.scope === "project" ? f.scope : undefined,
@@ -399,6 +383,7 @@ export class ExtractionEngine {
       profileUpdates,
       questions,
       identityReflection: extractionText(parsed?.identityReflection),
+      episodeTitle: extractionText(parsed?.episodeTitle),
       relationships,
     };
   }
@@ -1449,7 +1434,7 @@ Rules:
 - Use normalized, hyphenated entity names and keep the entity list short.
 - Keep facts standalone. Skip transient task state and operational noise such as routine scheduler, monitoring, or automation status.
 - Add structuredAttributes only for concrete values.
-- Include at most five durable relationships.${this.config.provenance?.enabled ? `
+${CUE_ANCHOR_PROMPT_INSTRUCTION}\n- Include at most five durable relationships.${this.config.provenance?.enabled ? `
 - Each fact must include a quote copied verbatim from one contiguous conversation span.` : ""}${lifecycleCaps.extractionScopeClassification ? `
 - Set each fact scope to "global" for cross-project knowledge or "project" for codebase-specific knowledge. Tool, command, or CLI-flag instructions tied to one agent are "project" (the same tool name can mean different things across agents); when keeping one, begin the fact with a leading "In <agent>," clause naming that agent.` : ""}${ambientCapture ? AMBIENT_CAPTURE_PROMPT_SECTION_COMPACT : ""}
 ${eventTimePromptInstruction(this.config)}

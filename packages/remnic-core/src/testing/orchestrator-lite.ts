@@ -14,6 +14,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { parseConfig } from "../config.js";
+import { getAbstractionNodeStoreStatus, type AbstractionNodeStoreStatus } from "../abstraction-nodes.js";
 import type { Orchestrator } from "../orchestrator.js";
 import type { ExtractionRunCoordinatorDeps } from "../orchestration/extraction-run.js";
 import type { BufferTurn, ExtractionResult, PluginConfig } from "../types.js";
@@ -25,10 +26,7 @@ import type { BufferTurn, ExtractionResult, PluginConfig } from "../types.js";
  * init gate floored so a recall() that never ran initialize() does not block.
  * Mirrors tests/orchestrator-characterization.test.ts:makeConfig.
  */
-export function makeLifecycleConfig(
-  memoryDir: string,
-  overrides: Record<string, unknown> = {},
-): PluginConfig {
+export function makeLifecycleConfig(memoryDir: string, overrides: Record<string, unknown> = {}): PluginConfig {
   return parseConfig({
     openaiApiKey: "sk-test",
     memoryDir,
@@ -44,6 +42,27 @@ export function makeLifecycleConfig(
     consolidateEveryN: 50,
     initGateTimeoutMs: 1000,
     ...overrides,
+  });
+}
+
+/** Enable the production harmonic-construction persistence path for a lifecycle row. */
+export function makeHarmonicLifecycleConfig(memoryDir: string, overrides: Record<string, unknown> = {}): PluginConfig {
+  return makeLifecycleConfig(memoryDir, {
+    harmonicRetrievalEnabled: true,
+    ...overrides,
+  });
+}
+
+/** Read and validate abstraction nodes written by the production store path. */
+export function harmonicNodeStoreStatus(
+  memoryDir: string,
+  abstractionNodeStoreDir?: string
+): Promise<AbstractionNodeStoreStatus> {
+  return getAbstractionNodeStoreStatus({
+    memoryDir,
+    abstractionNodeStoreDir,
+    enabled: true,
+    anchorsEnabled: false,
   });
 }
 
@@ -95,7 +114,7 @@ interface ExtractionClientSeam {
  */
 export function stubExtraction(
   orchestrator: Orchestrator,
-  factory: (turns: BufferTurn[], call: number) => ExtractionResult | Promise<ExtractionResult>,
+  factory: (turns: BufferTurn[], call: number) => ExtractionResult | Promise<ExtractionResult>
 ): BufferTurn[][] {
   const calls: BufferTurn[][] = [];
   // The `extraction` field is private and structurally unexpressible from
@@ -143,7 +162,7 @@ interface PersistExtractionSeam {
  */
 export function stubPersistExtraction(
   orchestrator: Orchestrator,
-  factory?: (args: PersistExtractionArgs, call: number) => string[] | Promise<string[]>,
+  factory?: (args: PersistExtractionArgs, call: number) => string[] | Promise<string[]>
 ): PersistExtractionArgs[] {
   const calls: PersistExtractionArgs[] = [];
   // `persistExtraction` is replaced in place; the named cast keeps the
@@ -191,7 +210,7 @@ export async function seedFactFile(memoryDir: string, id: string, content: strin
       content,
       "",
     ].join("\n"),
-    "utf-8",
+    "utf-8"
   );
   return file;
 }
@@ -222,7 +241,7 @@ export async function memoryFilesContaining(root: string, needle: string): Promi
 export async function eventually<T>(
   probe: () => Promise<T | null | undefined | false>,
   label: string,
-  timeoutMs = 5000,
+  timeoutMs = 5000
 ): Promise<T> {
   const startedAt = Date.now();
   for (;;) {

@@ -37,6 +37,8 @@ import { semanticChunkContent, type SemanticChunkResult } from "../semantic-chun
 import { isAboveImportanceThreshold, scoreImportance } from "../importance.js";
 import { sanitizeMemoryContent } from "../sanitize.js";
 import {
+  resolveCapabilities,
+  resolveConsolidationCapabilities,
   resolveGraphConstructionCapabilities,
   resolveMemoryLifecycleCapabilities,
   resolvePipelineProcessingCapabilities,
@@ -118,107 +120,17 @@ import {
   readActiveMemoriesBothTiers,
   shouldPromoteToShared,
 } from "./extraction-persist-promotion.js";
+import type { ExtractionPersistDeps } from "./extraction-persist-deps.js";
 import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
 import {
   buildMemoryPathById,
   appendMemoryToGraphContext,
   resolvePersistedMemoryRelativePath,
 } from "../orchestrator.js";
+import type { HarmonicConstructionInput } from "../harmonic-construction.js";
+import { persistConstructedHarmonicRecords } from "./harmonic-construction-persist.js";
 
-export interface ExtractionPersistDeps {
-  config: PluginConfig;
-  getStorageRouter: () => NamespaceStorageRouter;
-  getThreading: () => ThreadingManager;
-  getLocalLlm: () => LocalLlmClient;
-  getExtraction: () => ExtractionEngine;
-  getQmd: () => SearchBackend;
-  getJudgeVerdictCache: () => Map<string, JudgeVerdict>;
-  getJudgeDeferCounts: () => Map<string, number>;
-  getFaithfulnessCounters: () => FaithfulnessGateCounters;
-  getEmbeddingFallback: () => EmbeddingFallback;
-  setLastPersistExtractionDeferredCount: (value: number) => void;
-  setLastPersistExtractionPendingReviewIds: (ids: string[]) => void;
-  addContentHashDedup: (targetStorage: StorageManager, content: string) => Promise<void>;
-  hasContentHashDedup: (targetStorage: StorageManager, content: string) => Promise<boolean>;
-  backfillTemporalBoundsOnDedupHit: (
-    targetStorage: StorageManager,
-    dedupContent: string,
-    bounds: {
-      invalidAt?: string;
-      validFrom?: string;
-      observedAt?: string;
-      eventTimeSource?: "extracted" | "assumed";
-    },
-    entityRef?: string,
-    sourceConnector?: string,
-  ) => Promise<void>;
-  saveContentHashIndexes: () => Promise<void>;
-  artifactTypeForCategory: (
-    category: string,
-  ) =>
-    | "decision"
-    | "constraint"
-    | "todo"
-    | "definition"
-    | "commitment"
-    | "correction"
-    | "fact";
-  loadRoutingRules: () => Promise<RouteRule[]>;
-  routeEngineOptions: () => RoutingEngineOptions;
-  semanticDedupLookup: (
-    content: string,
-    limit: number,
-    targetStorage: StorageManager,
-  ) => Promise<SemanticDedupHit[]>;
-  checkForContradiction: (
-    content: string,
-    category: string,
-    namespaceScope: string,
-  ) => Promise<{
-    supersededId: string;
-    confidence: number;
-    reason: string;
-    supersededPath: string;
-    supersededCreated: string;
-    supersededTags: string[];
-  } | null>;
-  applyDeferredContradictionResolve: (
-    contradiction: {
-      supersededId: string;
-      reason: string;
-      supersededPath: string;
-      supersededCreated: string;
-      supersededTags: string[];
-    } | null | undefined,
-    storage: StorageManager,
-    newMemoryId: string,
-    postWriteGuard: boolean,
-  ) => Promise<void>;
-  suggestLinksForMemory: (
-    content: string,
-    category: string,
-    namespaceScope: string,
-  ) => Promise<MemoryLink[]>;
-  storageDirNamespace: (storageDir: string) => string;
-  indexPersistedMemory: (storage: StorageManager, memoryId: string) => Promise<void>;
-  buildGraphEdge: (
-    storage: StorageManager,
-    memoryRelPath: string,
-    entityRef: string | undefined,
-    memoryId: string,
-    factContent: string,
-    allMemsForGraph: MemoryFile[] | null | undefined,
-    memoryPathById: Map<string, string>,
-    threadIdForEdge: string | undefined,
-    threadEpisodeIdsForGraph: string[] | undefined,
-    fallbackCausalPredecessor: string | undefined,
-    graphCaps?: GraphConstructionCapabilitySet,
-  ) => Promise<void>;
-  updateTemporalTagIndexes: (
-    storage: StorageManager,
-    persistedIds: string[],
-  ) => Promise<void>;
-}
+
 
 export class ExtractionPersistCoordinator {
   constructor(
@@ -256,6 +168,20 @@ export class ExtractionPersistCoordinator {
     // ensureFactHashIndexAuthoritative), so a deferred write, crash, or
     // multi-process interleave is safe by construction with no marker to guard.
     const factDedupEnabled = resolveRecallAuxiliaryCapabilities(this.deps.config).factDeduplication;
+    const harmonicConstructionEnabled = resolveCapabilities(this.deps.config).harmonicRetrieval;
+    const harmonicAnchorsEnabled =
+      resolveConsolidationCapabilities(this.deps.config).abstractionAnchors;
+    const harmonicBaseNamespace =
+      baseNamespace ?? this.deps.storageDirNamespace(storage.dir);
+    const harmonicFactsByStorage = new Map<
+      string,
+      {
+        storage: StorageManager;
+        facts: HarmonicConstructionInput["persistedFacts"];
+      }
+    >();
+    const harmonicSourceInsertedAtBase = Date.now();
+    let harmonicSourceOrder = 0;
 
   // Canonicalize stored content for dedup comparison: strip citations
   // (using the same template), sanitize, then normalize whitespace.
@@ -306,6 +232,10 @@ export class ExtractionPersistCoordinator {
         /** #1635: keep this id out of the persisted thread episode set. */
         pendingReview?: boolean;
         category?: MemoryCategory;
+        harmonicFact?: Omit<
+          HarmonicConstructionInput["persistedFacts"][number],
+          "memoryId"
+        >;
       } = {},
     ): void => {
       if (options.includeReturnedIds !== false) {
@@ -320,6 +250,23 @@ export class ExtractionPersistCoordinator {
         existing.ids.push(id);
       } else {
         persistedIdsByStorage.set(key, { storage: targetStorage, ids: [id] });
+      }
+      if (
+        harmonicConstructionEnabled &&
+        options.harmonicFact &&
+        !options.pendingReview
+      ) {
+        const harmonicEntry = harmonicFactsByStorage.get(key) ?? {
+          storage: targetStorage,
+          facts: [],
+        };
+        harmonicEntry.facts.push({
+          ...options.harmonicFact,
+          memoryId: id,
+          insertedAt: new Date(harmonicSourceInsertedAtBase + harmonicSourceOrder).toISOString(),
+        });
+        harmonicSourceOrder++;
+        harmonicFactsByStorage.set(key, harmonicEntry);
       }
       if (options.category && !memoryPathById.has(id)) {
         const relPath = resolvePersistedMemoryRelativePath({ memoryId: id, pathById: memoryPathById, category: options.category });
@@ -422,6 +369,10 @@ export class ExtractionPersistCoordinator {
       sources?: ProvenanceSource[];
       provenance?: "verified" | "unverified" | "none";
       toolScoped?: true;
+      harmonicFact?: Omit<
+        HarmonicConstructionInput["persistedFacts"][number],
+        "memoryId"
+      >;
     }): Promise<void> => {
       if (
         !scopeProfileWritePlan ||
@@ -573,7 +524,11 @@ export class ExtractionPersistCoordinator {
           // #1645 TV6: a tombstone-blocked promotion is pending_review (no
           // active copy) — skip catalog/index/behavior like postWriteGuard.
           if (!targetPromotion.tombstoneBlocked) {
-            trackPersistedId(targetStorage, promotedId, { includeReturnedIds: false, category: options.category as MemoryCategory });
+            trackPersistedId(targetStorage, promotedId, {
+              includeReturnedIds: false,
+              category: options.category as MemoryCategory,
+              harmonicFact: options.harmonicFact,
+            });
             await this.deps.indexPersistedMemory(targetStorage, promotedId);
             trackBehaviorSignals(
               targetStorage,
@@ -621,6 +576,10 @@ export class ExtractionPersistCoordinator {
       /** Claim-level provenance spans (issue #1575 PR 2). */
       sources?: ProvenanceSource[];
       provenance?: "verified" | "unverified" | "none";
+      harmonicFact?: Omit<
+        HarmonicConstructionInput["persistedFacts"][number],
+        "memoryId"
+      >;
     }): Promise<void> => {
       const toolScoped = withholdToolScopedFromSharedNamespace(options);
       await promoteMemoryToProfileTargets({
@@ -1003,6 +962,7 @@ export class ExtractionPersistCoordinator {
           trackPersistedId(sharedStorage, promotedId, {
             includeReturnedIds: false,
             category: options.category as MemoryCategory,
+            harmonicFact: options.harmonicFact,
           });
           await this.deps.indexPersistedMemory(sharedStorage, promotedId);
           trackBehaviorSignals(
@@ -1661,6 +1621,17 @@ export class ExtractionPersistCoordinator {
           );
         }
       }
+      const harmonicFact: Omit<
+        HarmonicConstructionInput["persistedFacts"][number],
+        "memoryId"
+      > = {
+        category: writeCategory,
+        content: fact.content,
+        tags: fact.tags,
+        cueAnchors: fact.cueAnchors,
+        entityRef: fact.entityRef,
+        validAt: biTemporal?.validFrom ?? sourceContext?.validAt,
+      };
       // #1669 redaction-rule gate: consult BOTH source and target namespace
       // rules before any write. A never-store pattern registered under the
       // source namespace must survive scope-routing to a different target
@@ -2357,6 +2328,7 @@ export class ExtractionPersistCoordinator {
           trackPersistedId(targetStorage, parentId, {
             pendingReview: postWriteGuard,
             category: writeCategory,
+            harmonicFact,
           });
           // #1576 (cursor Medium): keep pending_review ids out of threadEpisodeIdsForGraph — else later active facts build thread-predecessor edges to an unfaithful memory.
           if (
@@ -2432,6 +2404,7 @@ export class ExtractionPersistCoordinator {
             ...(fact.procedureSteps && fact.procedureSteps.length ? { procedureSteps: fact.procedureSteps } : {}),
             ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
             ...(fact.provenance ? { provenance: fact.provenance } : {}),
+            harmonicFact,
           });
           // Register chunked content in the target storage hash index too.
           // Thread 3 fix: canonicalize by stripping any pre-existing citation
@@ -2691,6 +2664,7 @@ export class ExtractionPersistCoordinator {
         trackPersistedId(targetStorage, memoryId, {
           pendingReview: postWriteGuard,
           category: writeCategory,
+          harmonicFact,
         });
         if (
           !postWriteGuard &&
@@ -2738,6 +2712,7 @@ export class ExtractionPersistCoordinator {
           ...(fact.procedureSteps && fact.procedureSteps.length ? { procedureSteps: fact.procedureSteps } : {}),
           ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
           ...(fact.provenance ? { provenance: fact.provenance } : {}),
+          harmonicFact,
         });
         // v8.2: graph edge building (fail-open). #1576: skip pending_review facts.
         if (graphCaps.multiGraphMemory && !postWriteGuard) {
@@ -3011,6 +2986,21 @@ export class ExtractionPersistCoordinator {
     log.info(
       `persisted: ${facts.length - dedupedCount - importanceGatedCount - judgeGatedCount - redactionGatedCount} facts${dedupSuffix}${gatedSuffix}${judgeSuffix}${redactionSuffix}, ${entities.length} entities, ${questions.length} questions, ${profileUpdates.length} profile updates`,
     );
+    if (harmonicConstructionEnabled && harmonicFactsByStorage.size > 0) {
+      await persistConstructedHarmonicRecords({
+        entries: harmonicFactsByStorage.values(),
+        baseStorageDir: storage.dir,
+        abstractionNodeStoreDir:
+          !scopeProfileWritePlan && harmonicBaseNamespace === this.deps.config.defaultNamespace
+            ? this.deps.config.abstractionNodeStoreDir
+            : undefined,
+        sessionKey: sourceContext?.sessionKey,
+        validAt: sourceContext?.validAt,
+        episodeTitle: result.episodeTitle,
+        anchorsEnabled: harmonicAnchorsEnabled,
+        entityMentions: entities,
+      });
+    }
     // Update temporal + tag indexes (v8.1) — fire-and-forget, fail-open
     void (async () => {
       if (persistedIdsByStorage.size === 0) {

@@ -2,10 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { parseConfig } from "../src/config.js";
 import { Orchestrator } from "../src/orchestrator.js";
-import { recordAbstractionNode } from "../src/abstraction-nodes.js";
+import { StorageManager } from "../src/storage.js";
+import { HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY, recordAbstractionNode } from "../src/abstraction-nodes.js";
 import { recordCueAnchor } from "../src/cue-anchors.js";
 import { runHarmonicSearchCliCommand } from "../src/cli.js";
 import { searchHarmonicRetrieval } from "../src/harmonic-retrieval.js";
@@ -135,7 +136,10 @@ test("searchHarmonicRetrieval blends abstraction-node and cue-anchor evidence", 
   assert.equal(results.length, 1);
   assert.equal(results[0]?.node.nodeId, "abstraction-pr-loop");
   assert.match(results[0]?.matchedFields.join(",") ?? "", /title|summary|anchor/i);
-  assert.equal(results[0]?.matchedAnchors.some((anchor) => anchor.anchorType === "constraint"), true);
+  assert.equal(
+    results[0]?.matchedAnchors.some((anchor) => anchor.anchorType === "constraint"),
+    true
+  );
   assert.equal((results[0]?.anchorScore ?? 0) > 0, true);
 });
 
@@ -180,12 +184,16 @@ test("harmonic-search CLI command returns blended harmonic results", async () =>
     abstractionNodeStoreDir: undefined,
     harmonicRetrievalEnabled: true,
     abstractionAnchorsEnabled: true,
+    temporalExpiredInInjection: false,
     query: "Which workflow depends on Cursor terminal state?",
     maxResults: 2,
     sessionKey: "agent:main",
   });
 
-  assert.equal(results.length, 1);
+  assert.deepEqual(
+    results.map((result) => result.node.nodeId),
+    ["abstraction-pr-loop"]
+  );
   assert.equal(results[0]?.node.nodeId, "abstraction-pr-loop");
   assert.equal(results[0]?.matchedAnchors.length, 1);
 });
@@ -198,7 +206,7 @@ test("recall injects harmonic retrieval section when the feature is enabled", as
 
   const context = await (orchestrator as any).recallInternal(
     "What rule says the PR loop waits for Cursor terminal state?",
-    "agent:main",
+    "agent:main"
   );
 
   assert.match(context, /## Harmonic Retrieval/);
@@ -215,7 +223,7 @@ test("recall omits harmonic retrieval section when the feature flag is disabled"
 
   const context = await (orchestrator as any).recallInternal(
     "What rule says the PR loop waits for Cursor terminal state?",
-    "agent:main",
+    "agent:main"
   );
 
   assert.equal(context.includes("## Harmonic Retrieval"), false);
@@ -230,8 +238,511 @@ test("recall omits harmonic retrieval section when the pipeline section is disab
 
   const context = await (orchestrator as any).recallInternal(
     "What rule says the PR loop waits for Cursor terminal state?",
-    "agent:main",
+    "agent:main"
   );
 
   assert.equal(context.includes("## Harmonic Retrieval"), false);
+});
+
+test("harmonic retrieval drops inactive and missing sources but keeps an active sibling source", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-harmonic-active-source-"));
+  const storage = new StorageManager(memoryDir);
+  await storage.ensureDirectories();
+  const { id: inactiveId } = await storage.writeMemory("fact", "inactive source fact", { source: "test" });
+  const { id: activeId } = await storage.writeMemory("fact", "active sibling source fact", { source: "test" });
+  await storage.updateMemoryFrontmatter(inactiveId, { status: "archived" });
+
+  const sourceBackedNode = (nodeId: string, sourceMemoryIds: string[]) =>
+    recordAbstractionNode({
+      memoryDir,
+      node: {
+        schemaVersion: 1,
+        nodeId,
+        recordedAt: "2026-03-08T00:00:00.000Z",
+        sessionKey: "agent:source-filter",
+        kind: "topic",
+        abstractionLevel: "meso",
+        title: "active sibling source fact",
+        summary: "active sibling source fact",
+        sourceMemoryIds,
+      },
+    });
+  await sourceBackedNode("inactive-only", [inactiveId]);
+  await sourceBackedNode("missing-only", ["missing-source"]);
+  await sourceBackedNode("active-sibling", [inactiveId, activeId]);
+  await recordCueAnchor({
+    memoryDir,
+    anchor: {
+      schemaVersion: 1,
+      anchorId: "inactive-anchor",
+      anchorType: "constraint",
+      anchorValue: "source lifecycle rule",
+      normalizedCue: "source lifecycle rule",
+      recordedAt: "2026-03-08T00:01:00.000Z",
+      sessionKey: "agent:source-filter",
+      nodeRefs: ["inactive-only"],
+    },
+  });
+
+  const results = await searchHarmonicRetrieval({
+    memoryDir,
+    query: "Which active sibling source fact applies?",
+    maxResults: 10,
+    anchorsEnabled: true,
+  });
+
+  assert.deepEqual(
+    results.map((result) => result.node.nodeId),
+    ["active-sibling"]
+  );
+  assert.equal(
+    results.some((result) => result.node.nodeId === "inactive-only"),
+    false
+  );
+  assert.equal(
+    results.some((result) => result.node.nodeId === "missing-only"),
+    false
+  );
+});
+
+test("harmonic retrieval validates sources across hot and cold tiers", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-harmonic-cold-source-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    const { id } = await storage.writeMemory("fact", "cold tier harmonic source", { source: "test" });
+    const memory = (await storage.readAllMemories()).find((candidate) => candidate.frontmatter.id === id);
+    assert.ok(memory);
+    const coldPath = path.join(memoryDir, "cold", path.relative(memoryDir, memory.path));
+    await mkdir(path.dirname(coldPath), { recursive: true });
+    await rename(memory.path, coldPath);
+    storage.invalidateMemoryCachesForTiers(["hot", "cold"]);
+    await recordAbstractionNode({
+      memoryDir,
+      node: {
+        schemaVersion: 1,
+        nodeId: "cold-source-node",
+        recordedAt: "2026-03-08T00:00:00.000Z",
+        sessionKey: "agent:cold-source",
+        kind: "topic",
+        abstractionLevel: "meso",
+        title: "cold tier harmonic source",
+        summary: "cold tier harmonic source",
+        sourceMemoryIds: [id],
+      },
+    });
+
+    const results = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "cold tier harmonic source",
+      maxResults: 10,
+      anchorsEnabled: false,
+    });
+    assert.deepEqual(
+      results.map((result) => result.node.nodeId),
+      ["cold-source-node"]
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("harmonic anchor tags come only from eligible source-backed nodes", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-harmonic-anchor-tags-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    const { id: activeId } = await storage.writeMemory("fact", "active anchor source", {
+      source: "test",
+      tags: ["activeflag"],
+    });
+    const { id: archivedId } = await storage.writeMemory("fact", "archived anchor source", {
+      source: "test",
+      tags: ["obsoleteflag"],
+    });
+    await storage.updateMemoryFrontmatter(archivedId, { status: "archived" });
+    for (const [nodeId, sourceMemoryId] of [
+      ["active-anchor-node", activeId],
+      ["archived-anchor-node", archivedId],
+    ] as const) {
+      await recordAbstractionNode({
+        memoryDir,
+        node: {
+          schemaVersion: 1,
+          nodeId,
+          recordedAt: "2026-03-08T00:00:00.000Z",
+          sessionKey: "agent:anchor-tags",
+          kind: "topic",
+          abstractionLevel: "meso",
+          title: "shared anchor topic",
+          summary: "shared anchor topic",
+          sourceMemoryIds: [sourceMemoryId],
+        },
+      });
+    }
+    await recordCueAnchor({
+      memoryDir,
+      anchor: {
+        schemaVersion: 1,
+        anchorId: "mixed-tag-anchor",
+        anchorType: "constraint",
+        anchorValue: "shared lifecycle cue",
+        normalizedCue: "shared lifecycle cue",
+        recordedAt: "2026-03-08T00:01:00.000Z",
+        sessionKey: "agent:anchor-tags",
+        nodeRefs: ["active-anchor-node", "archived-anchor-node"],
+        sourceMemoryIdsByNodeRef: {
+          "active-anchor-node": [activeId],
+          "archived-anchor-node": [archivedId],
+        },
+        tags: ["activeflag", "obsoleteflag"],
+      },
+    });
+
+    const staleResults = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "obsoleteflag",
+      maxResults: 10,
+      anchorsEnabled: true,
+    });
+    assert.deepEqual(staleResults, []);
+
+    const activeResults = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "activeflag",
+      maxResults: 10,
+      anchorsEnabled: true,
+    });
+    assert.deepEqual(
+      activeResults.map((result) => result.node.nodeId),
+      ["active-anchor-node"]
+    );
+    assert.ok(activeResults[0]?.matchedFields.includes("anchorTags"));
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("harmonic retrieval applies temporal validity unless expired injection is enabled", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-harmonic-temporal-source-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    const { id } = await storage.writeMemory("fact", "expired temporal source", { source: "test" });
+    await storage.updateMemoryFrontmatter(id, {
+      status: "active",
+      invalid_at: "2020-01-01T00:00:00.000Z",
+    });
+    await recordAbstractionNode({
+      memoryDir,
+      node: {
+        schemaVersion: 1,
+        nodeId: "expired-temporal-node",
+        recordedAt: "2026-03-08T00:00:00.000Z",
+        sessionKey: "agent:temporal-source",
+        kind: "topic",
+        abstractionLevel: "meso",
+        title: "expired temporal source",
+        summary: "expired temporal source",
+        sourceMemoryIds: [id],
+      },
+    });
+
+    const defaultFiltered = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "expired temporal source",
+      maxResults: 10,
+      anchorsEnabled: false,
+    });
+    assert.deepEqual(defaultFiltered, []);
+    const filtered = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "expired temporal source",
+      maxResults: 10,
+      anchorsEnabled: false,
+      temporalExpiredInInjection: false,
+    });
+    assert.deepEqual(filtered, []);
+
+    const included = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "expired temporal source",
+      maxResults: 10,
+      anchorsEnabled: false,
+      temporalExpiredInInjection: true,
+    });
+    assert.deepEqual(
+      included.map((result) => result.node.nodeId),
+      ["expired-temporal-node"]
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("harmonic retrieval projects mixed source nodes from active memories only", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-harmonic-projection-"));
+  const originalReadAllMemories = StorageManager.prototype.readAllMemories;
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    const { id: inactiveId } = await storage.writeMemory("fact", "inactive source payload", {
+      source: "test",
+      tags: ["inactive-tag"],
+      entityRef: "inactive-entity",
+    });
+    const { id: archivedAtId } = await storage.writeMemory("fact", "archived-at source payload", {
+      source: "test",
+      tags: ["archived-at-tag"],
+      entityRef: "archived-at-entity",
+    });
+    const { id: archivePathId } = await storage.writeMemory("fact", "archive-path source payload", {
+      source: "test",
+      tags: ["archive-path-tag"],
+      entityRef: "archive-path-entity",
+    });
+    const { id: activeId } = await storage.writeMemory("fact", "active source payload", {
+      source: "test",
+      tags: ["active-tag"],
+      entityRef: "active-entity",
+      structuredAttributes: { status: "current" },
+    });
+    await storage.updateMemoryFrontmatter(inactiveId, { status: "archived" });
+    await storage.updateMemoryFrontmatter(archivedAtId, {
+      status: "active",
+      archivedAt: "2026-03-08T00:00:00.000Z",
+    });
+
+    const originalRead = originalReadAllMemories;
+    StorageManager.prototype.readAllMemories = async function (options) {
+      const memories = await originalRead.call(this, options);
+      return memories.map((memory) =>
+        memory.frontmatter.id === archivePathId
+          ? { ...memory, path: path.join(this.dir, "archive", "2026-03-08", path.basename(memory.path)) }
+          : memory
+      );
+    };
+
+    const sourceMemoryIds = [inactiveId, archivedAtId, archivePathId, activeId];
+    await recordAbstractionNode({
+      memoryDir,
+      node: {
+        schemaVersion: 1,
+        nodeId: "mixed-source-node",
+        recordedAt: "2026-03-08T00:00:00.000Z",
+        sessionKey: "agent:source-projection",
+        kind: "topic",
+        abstractionLevel: "meso",
+        title: "inactive title archived-at title archive-path title active title",
+        summary: "inactive summary archived-at summary archive-path summary active summary",
+        sourceMemoryIds,
+        tags: ["inactive-tag", "archived-at-tag", "archive-path-tag", "active-tag"],
+        entityRefs: ["inactive-entity", "archived-at-entity", "archive-path-entity", "active-entity"],
+        metadata: {
+          [HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY]: JSON.stringify(
+            Object.fromEntries(sourceMemoryIds.map((id, index) => [id, `2026-03-08T00:0${index}:00.000Z`]))
+          ),
+        },
+      },
+    });
+    await recordAbstractionNode({
+      memoryDir,
+      node: {
+        schemaVersion: 1,
+        nodeId: "inactive-only-node",
+        recordedAt: "2026-03-08T00:00:00.000Z",
+        sessionKey: "agent:source-projection",
+        kind: "topic",
+        abstractionLevel: "meso",
+        title: "inactive title",
+        summary: "inactive summary",
+        sourceMemoryIds: [inactiveId],
+      },
+    });
+    await recordAbstractionNode({
+      memoryDir,
+      node: {
+        schemaVersion: 1,
+        nodeId: "missing-only-node",
+        recordedAt: "2026-03-08T00:00:00.000Z",
+        sessionKey: "agent:source-projection",
+        kind: "topic",
+        abstractionLevel: "meso",
+        title: "missing title",
+        summary: "missing summary",
+        sourceMemoryIds: ["missing-source"],
+      },
+    });
+    await recordCueAnchor({
+      memoryDir,
+      anchor: {
+        schemaVersion: 1,
+        anchorId: "inactive-only-anchor",
+        anchorType: "constraint",
+        anchorValue: "inactive title",
+        normalizedCue: "inactive title",
+        recordedAt: "2026-03-08T00:01:00.000Z",
+        sessionKey: "agent:source-projection",
+        nodeRefs: ["inactive-only-node"],
+      },
+    });
+    await recordCueAnchor({
+      memoryDir,
+      anchor: {
+        schemaVersion: 1,
+        anchorId: "legacy-mixed-anchor",
+        anchorType: "constraint",
+        anchorValue: "retired legacy cue",
+        normalizedCue: "retired legacy cue",
+        recordedAt: "2026-03-08T00:02:00.000Z",
+        sessionKey: "agent:source-projection",
+        nodeRefs: ["mixed-source-node"],
+      },
+    });
+
+    const results = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "active source payload",
+      maxResults: 10,
+      anchorsEnabled: true,
+    });
+    assert.deepEqual(
+      results.map((result) => result.node.nodeId),
+      ["mixed-source-node"]
+    );
+    const projected = results[0]?.node;
+    assert.ok(projected);
+    assert.deepEqual(projected.sourceMemoryIds, [activeId]);
+    assert.deepEqual(projected.tags, ["active-tag"]);
+    assert.deepEqual(projected.entityRefs, ["active-entity"]);
+    assert.equal(projected.title, "active source payload");
+    assert.equal(projected.summary, "active source payload");
+    assert.deepEqual(JSON.parse(projected.metadata?.[HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY] ?? "{}"), {
+      [activeId]: "2026-03-08T00:03:00.000Z",
+    });
+    assert.equal(JSON.stringify(projected).includes("inactive"), false);
+
+    const inactiveResults = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "inactive title",
+      maxResults: 10,
+      anchorsEnabled: true,
+    });
+    assert.deepEqual(inactiveResults, []);
+    const legacyMixedResults = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "retired legacy cue",
+      maxResults: 10,
+      anchorsEnabled: true,
+    });
+    assert.deepEqual(legacyMixedResults, []);
+  } finally {
+    StorageManager.prototype.readAllMemories = originalReadAllMemories;
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("harmonic retrieval rebuilds fully active node metadata from retained sources", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-harmonic-active-projection-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    const { id: activeId } = await storage.writeMemory("fact", "fully active source", {
+      source: "test",
+      tags: ["active-tag"],
+      entityRef: "active-entity",
+    });
+    const fullyActiveNode = {
+      schemaVersion: 1 as const,
+      nodeId: "fully-active-node",
+      recordedAt: "2026-03-08T00:00:00.000Z",
+      sessionKey: "agent:source-projection",
+      kind: "topic" as const,
+      abstractionLevel: "meso" as const,
+      title: "stale stored title",
+      summary: "stale stored summary",
+      sourceMemoryIds: [activeId],
+      tags: ["stale-tag"],
+      entityRefs: ["stale-entity"],
+      metadata: undefined,
+    };
+    await recordAbstractionNode({ memoryDir, node: fullyActiveNode });
+    const sourceLessNode = {
+      schemaVersion: 1 as const,
+      nodeId: "source-less-node",
+      recordedAt: "2026-03-08T00:00:00.000Z",
+      sessionKey: "agent:source-projection",
+      kind: "topic" as const,
+      abstractionLevel: "meso" as const,
+      title: "source-less title",
+      summary: "source-less summary",
+    };
+    await recordAbstractionNode({ memoryDir, node: sourceLessNode });
+    await recordCueAnchor({
+      memoryDir,
+      anchor: {
+        schemaVersion: 1,
+        anchorId: "legacy-active-anchor",
+        anchorType: "constraint",
+        anchorValue: "zephyr quasar",
+        normalizedCue: "zephyr quasar",
+        recordedAt: "2026-03-08T00:01:00.000Z",
+        sessionKey: "agent:source-projection",
+        nodeRefs: ["fully-active-node"],
+      },
+    });
+
+    const activeResults = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "fully active source",
+      maxResults: 10,
+      anchorsEnabled: false,
+    });
+    const activeNode = activeResults.find((result) => result.node.nodeId === "fully-active-node")?.node;
+    assert.deepEqual(activeNode, {
+      ...fullyActiveNode,
+      title: "fully active source",
+      summary: "fully active source",
+      tags: ["active-tag"],
+      entityRefs: ["active-entity"],
+    });
+    const legacyActiveResults = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "zephyr quasar",
+      maxResults: 10,
+      anchorsEnabled: true,
+    });
+    assert.deepEqual(
+      legacyActiveResults.map((result) => result.node.nodeId),
+      ["fully-active-node"]
+    );
+
+    const sourceLessResults = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "source-less",
+      maxResults: 10,
+      anchorsEnabled: false,
+    });
+    assert.ok(sourceLessResults.some((result) => result.node.nodeId === "source-less-node"));
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("harmonic retrieval rejects an unreadable sidecar store", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-harmonic-unreadable-"));
+  const unreadableStore = path.join(memoryDir, "not-a-directory");
+  await writeFile(unreadableStore, "not a directory");
+
+  await assert.rejects(
+    () =>
+      searchHarmonicRetrieval({
+        memoryDir,
+        abstractionNodeStoreDir: unreadableStore,
+        query: "unreadable sidecar",
+        maxResults: 3,
+        anchorsEnabled: true,
+      }),
+    (error: unknown) => error instanceof Error && /ENOTDIR|not a directory/i.test(error.message)
+  );
 });

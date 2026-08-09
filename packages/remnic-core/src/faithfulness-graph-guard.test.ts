@@ -23,6 +23,7 @@ import test from "node:test";
 import { parseConfig } from "./config.js";
 import { Orchestrator } from "./orchestrator.js";
 import { readEdges } from "./graph.js";
+import { searchHarmonicRetrieval } from "./harmonic-retrieval.js";
 import type { ExtractionResult, PluginConfig } from "./types.js";
 import type { LocalLlmClient } from "./local-llm.js";
 import type { BufferTurn, ConversationThread } from "./types.js";
@@ -96,6 +97,8 @@ async function makeHarness(): Promise<OrchHarness> {
     extractionMinChars: 0,
     extractionMinImportanceLevel: "trivial",
     inlineSourceAttributionEnabled: false,
+    harmonicRetrievalEnabled: true,
+    abstractionAnchorsEnabled: true,
   });
   const orchestrator = new Orchestrator(config);
   return { orchestrator, memoryDir };
@@ -190,6 +193,20 @@ test("pending_review fact gets no graph edge; an active fact with the same entit
       !edgesAfter1.some((e) => e.from.includes(id1!) || e.from.includes(id0!)),
       "neither fact0 nor fact1 originates an entity edge",
     );
+    const harmonicAfter1 = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "widget factory",
+      maxResults: 10,
+      anchorsEnabled: true,
+    });
+    assert.ok(
+      harmonicAfter1.some((result) => result.node.sourceMemoryIds?.includes(id0!)),
+      "active fact must appear in harmonic node sources",
+    );
+    assert.ok(
+      !harmonicAfter1.some((result) => result.node.sourceMemoryIds?.includes(id1!)),
+      "pending_review fact must not appear in harmonic node sources",
+    );
 
     // Control: an ACTIVE fact with the same entityRef DOES create entity edges
     // (proving the graph is wired and only pending_review is excluded).
@@ -218,6 +235,16 @@ test("pending_review fact gets no graph edge; an active fact with the same entit
     assert.ok(
       !edgesAfter2.some((e) => e.from.includes(id1!)),
       "pending_review fact1 must never originate an entity edge even after a later active fact",
+    );
+    const harmonicAfter2 = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "widget factory",
+      maxResults: 10,
+      anchorsEnabled: true,
+    });
+    assert.ok(
+      harmonicAfter2.some((result) => result.node.sourceMemoryIds?.includes(id2!)),
+      "active fact must appear in harmonic node sources",
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });

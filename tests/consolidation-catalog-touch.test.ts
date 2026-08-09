@@ -10,14 +10,30 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import { parseConfig } from "../src/config.js";
 import { Orchestrator } from "../src/orchestrator.js";
+import type { ExtractionEngine } from "../packages/remnic-core/src/extraction.js";
+import type { MemoryFile } from "../packages/remnic-core/src/types.js";
+import { recordAbstractionNode } from "../src/abstraction-nodes.js";
+import { recordCueAnchor } from "../src/cue-anchors.js";
 import { LifecyclePolicyCoordinator } from "../packages/remnic-core/src/orchestration/lifecycle-policy-coordinator.js";
+
+type Consolidate = ExtractionEngine["consolidate"];
+
+function installConsolidationStub(orchestrator: Orchestrator, consolidate: Consolidate): void {
+  const descriptor = Object.getOwnPropertyDescriptor(orchestrator, "extraction");
+  assert.ok(descriptor, "Orchestrator extraction field must exist");
+  Object.defineProperty(orchestrator, "extraction", {
+    configurable: true,
+    value: { consolidate },
+  });
+}
 
 test("consolidation with only an INVALIDATE memory-item action records a catalog write touch", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-consolidate-catalog-"));
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-consolidate-ws-"));
+  let orchestrator: Orchestrator | undefined;
   try {
     const config = parseConfig({
       openaiApiKey: "sk-test",
@@ -32,23 +48,28 @@ test("consolidation with only an INVALIDATE memory-item action records a catalog
       namespaceCatalogEnabled: true,
     });
 
-    const orchestrator = new Orchestrator(config) as any;
+    orchestrator = new Orchestrator(config);
     const storage = orchestrator.storage;
 
     // runConsolidation only runs with >= 5 memories. Seed a corpus, then have the
     // pass INVALIDATE one — a durable mutation with NO profile/entity updates.
     const ids: string[] = [];
     for (let i = 0; i < 5; i += 1) {
-      ids.push(await storage.writeMemory("fact", `seed fact ${i}`, { source: "test" }));
+      ids.push((await storage.writeMemory("fact", `seed fact ${i}`, { source: "test" })).id);
     }
     const staleId = ids[0];
-    orchestrator.extraction = {
-      consolidate: async () => ({
-        items: [{ action: "INVALIDATE", existingId: staleId }],
+    let receivedNewMemories: MemoryFile[] | undefined;
+    let receivedExistingMemories: MemoryFile[] | undefined;
+    installConsolidationStub(orchestrator, async (newMemories, existingMemories, currentProfile) => {
+      receivedNewMemories = newMemories;
+      receivedExistingMemories = existingMemories;
+      assert.equal(currentProfile, "");
+      return {
+        items: [{ action: "INVALIDATE", existingId: staleId, reason: "synthetic invalidation" }],
         profileUpdates: [],
         entityUpdates: [],
-      }),
-    };
+      };
+    });
 
     // Establish the default namespace in the catalog so we can observe its
     // lastWriteAt advance (vs. an absent record).
@@ -57,6 +78,14 @@ test("consolidation with only an INVALIDATE memory-item action records a catalog
     const beforeWriteAt = before?.lastWriteAt;
 
     await orchestrator.runConsolidationNow();
+    assert.deepEqual(
+      receivedNewMemories?.map((memory) => memory.content),
+      ids.map((_, index) => `seed fact ${4 - index}`)
+    );
+    assert.deepEqual(
+      receivedExistingMemories?.map((memory) => memory.content),
+      ids.map((_, index) => `seed fact ${index}`)
+    );
 
     // The catalog touch is best-effort/fire-and-forget; let its serialized write
     // chain settle, then read back the record.
@@ -64,19 +93,20 @@ test("consolidation with only an INVALIDATE memory-item action records a catalog
     const after = await orchestrator.namespaceCatalog.getNamespaceRecord(config.defaultNamespace);
 
     assert.ok(after, "default namespace record must exist after consolidation");
-    assert.ok(
-      after!.lastWriteAt,
-      "consolidation-only memory-item mutation must record a catalog write touch",
-    );
+    assert.ok(after!.lastWriteAt, "consolidation-only memory-item mutation must record a catalog write touch");
     if (beforeWriteAt) {
       assert.ok(
         new Date(after!.lastWriteAt!).getTime() >= new Date(beforeWriteAt).getTime(),
-        "lastWriteAt must advance (or hold) after a consolidation memory-item mutation",
+        "lastWriteAt must advance (or hold) after a consolidation memory-item mutation"
       );
     }
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
-    await rm(workspaceDir, { recursive: true, force: true });
+    try {
+      await orchestrator?.destroy();
+    } finally {
+      await rm(memoryDir, { recursive: true, force: true });
+      await rm(workspaceDir, { recursive: true, force: true });
+    }
   }
 });
 
@@ -88,6 +118,7 @@ test("consolidation with only an INVALIDATE memory-item action records a catalog
 test("cleanup-only consolidation (TTL expiry, no LLM outputs) records a catalog write touch", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-consolidate-cleanup-"));
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-consolidate-cleanup-ws-"));
+  let orchestrator: Orchestrator | undefined;
   try {
     const config = parseConfig({
       openaiApiKey: "sk-test",
@@ -105,7 +136,7 @@ test("cleanup-only consolidation (TTL expiry, no LLM outputs) records a catalog 
       namespaceCatalogEnabled: true,
     });
 
-    const orchestrator = new Orchestrator(config) as any;
+    orchestrator = new Orchestrator(config);
     const storage = orchestrator.storage;
 
     // Seed 5 memories (the consolidation floor); one is already TTL-expired so the
@@ -118,24 +149,37 @@ test("cleanup-only consolidation (TTL expiry, no LLM outputs) records a catalog 
       expiresAt: new Date(Date.now() - 60_000).toISOString(),
     });
 
-    // No LLM outputs at all — only cleanup will mutate the namespace.
-    orchestrator.extraction = {
-      consolidate: async () => ({ items: [], profileUpdates: [], entityUpdates: [] }),
-    };
+    let receivedNewMemories: MemoryFile[] | undefined;
+    let receivedExistingMemories: MemoryFile[] | undefined;
+    installConsolidationStub(orchestrator, async (newMemories, existingMemories, currentProfile) => {
+      receivedNewMemories = newMemories;
+      receivedExistingMemories = existingMemories;
+      assert.equal(currentProfile, "");
+      return { items: [], profileUpdates: [], entityUpdates: [] };
+    });
 
     await orchestrator.namespaceCatalog.registerConfiguredNamespaces();
     await orchestrator.runConsolidationNow();
+    assert.deepEqual(
+      receivedNewMemories?.map((memory) => memory.content),
+      ["expired speculative fact", "keeper fact 3", "keeper fact 2", "keeper fact 1", "keeper fact 0"]
+    );
+    assert.deepEqual(
+      receivedExistingMemories?.map((memory) => memory.content),
+      ["keeper fact 0", "keeper fact 1", "keeper fact 2", "keeper fact 3", "expired speculative fact"]
+    );
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     const record = await orchestrator.namespaceCatalog.getNamespaceRecord(config.defaultNamespace);
     assert.ok(record, "default namespace record must exist after cleanup-only consolidation");
-    assert.ok(
-      record!.lastWriteAt,
-      "a cleanup-only consolidation (TTL expiry) must record a catalog write touch",
-    );
+    assert.ok(record!.lastWriteAt, "a cleanup-only consolidation (TTL expiry) must record a catalog write touch");
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
-    await rm(workspaceDir, { recursive: true, force: true });
+    try {
+      await orchestrator?.destroy();
+    } finally {
+      await rm(memoryDir, { recursive: true, force: true });
+      await rm(workspaceDir, { recursive: true, force: true });
+    }
   }
 });
 
@@ -189,11 +233,12 @@ test("summarization records the catalog write touch after source memories are ar
       getStorage: () => orchestrator.storage,
       extraction: orchestrator.extraction,
       embeddingFallback: orchestrator.embeddingFallback ?? { removeFromIndex: async () => {} },
-      getEffectiveLifecycleThresholds: () => orchestrator.effectiveLifecycleThresholds?.() ?? {
-        promoteHeatThreshold: 70,
-        staleDecayThreshold: 50,
-        archiveDecayThreshold: 80,
-      },
+      getEffectiveLifecycleThresholds: () =>
+        orchestrator.effectiveLifecycleThresholds?.() ?? {
+          promoteHeatThreshold: 70,
+          staleDecayThreshold: 50,
+          archiveDecayThreshold: 80,
+        },
       removeContentHashForMemory: async () => {},
       saveContentHashIndexes: async () => {},
     });
@@ -232,9 +277,231 @@ test("summarization records the catalog write touch after source memories are ar
     assert.notEqual(
       lastTouchAfterArchive,
       -1,
-      `catalog touch must fire during/after archiveMemories; saw ${events.join(" -> ")}`,
+      `catalog touch must fire during/after archiveMemories; saw ${events.join(" -> ")}`
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("consolidation prunes orphan harmonic anchors in a cataloged non-default store", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-harmonic-prune-root-"));
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-harmonic-prune-ws-"));
+  let orchestrator: Orchestrator | undefined;
+  try {
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir,
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: true,
+      harmonicRetrievalEnabled: true,
+      abstractionAnchorsEnabled: true,
+      qmdEnabled: false,
+      topicExtractionEnabled: false,
+      summarizationEnabled: false,
+      identityEnabled: false,
+      entitySummaryEnabled: false,
+      semanticConsolidationEnabled: false,
+      factArchivalEnabled: false,
+      lifecyclePolicyEnabled: false,
+    });
+    orchestrator = new Orchestrator(config);
+    const defaultStorage = orchestrator.storage;
+    await defaultStorage.writeMemory("fact", "consolidation seed", { source: "test" });
+    const namespaceStorage = await orchestrator.getStorageForNamespace("team");
+    await namespaceStorage.writeMemory("fact", "team namespace seed", { source: "test" });
+    await orchestrator.namespaceCatalog.markWrite("team", {
+      discoveredBy: "write",
+      storageDir: namespaceStorage.dir,
+    });
+    await recordAbstractionNode({
+      memoryDir: namespaceStorage.dir,
+      node: {
+        schemaVersion: 1,
+        nodeId: "team-live-node",
+        recordedAt: "2026-03-08T00:00:00.000Z",
+        sessionKey: "team",
+        kind: "topic",
+        abstractionLevel: "meso",
+        title: "team topic",
+        summary: "team topic",
+      },
+    });
+    await recordCueAnchor({
+      memoryDir: namespaceStorage.dir,
+      anchor: {
+        schemaVersion: 1,
+        anchorId: "team-orphan-anchor",
+        anchorType: "constraint",
+        anchorValue: "orphan",
+        normalizedCue: "orphan",
+        recordedAt: "2026-03-08T00:01:00.000Z",
+        sessionKey: "team",
+        nodeRefs: ["deleted-team-node"],
+      },
+    });
+    const orphanPath = path.join(
+      namespaceStorage.dir,
+      "state",
+      "abstraction-nodes",
+      "anchors",
+      "constraint",
+      "team-orphan-anchor.json"
+    );
+
+    await orchestrator.runConsolidationNow();
+
+    await assert.rejects(() => stat(orphanPath), { code: "ENOENT" });
+  } finally {
+    try {
+      await orchestrator?.destroy();
+    } finally {
+      await rm(memoryDir, { recursive: true, force: true });
+      await rm(workspaceDir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("consolidation rotates harmonic catalog pruning across more than 49 stores", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-harmonic-rotation-root-"));
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-harmonic-rotation-ws-"));
+  let orchestrator: Orchestrator | undefined;
+  try {
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir,
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: true,
+      harmonicRetrievalEnabled: true,
+      abstractionAnchorsEnabled: true,
+      qmdEnabled: false,
+      topicExtractionEnabled: false,
+      summarizationEnabled: false,
+      identityEnabled: false,
+      entitySummaryEnabled: false,
+      semanticConsolidationEnabled: false,
+      factArchivalEnabled: false,
+      lifecyclePolicyEnabled: false,
+    });
+    orchestrator = new Orchestrator(config);
+    await orchestrator.storage.writeMemory("fact", "rotation default seed", { source: "test" });
+
+    const namespaceCount = 55;
+    const orphanPaths: string[] = [];
+    for (let index = 0; index < namespaceCount; index += 1) {
+      const namespace = `rotation-${String(index).padStart(2, "0")}`;
+      const namespaceStorage = await orchestrator.getStorageForNamespace(namespace);
+      await namespaceStorage.writeMemory("fact", `${namespace} seed`, { source: "test" });
+      await orchestrator.namespaceCatalog.markWrite(namespace, {
+        discoveredBy: "write",
+        storageDir: namespaceStorage.dir,
+      });
+      const anchorId = `${namespace}-orphan`;
+      await recordCueAnchor({
+        memoryDir: namespaceStorage.dir,
+        anchor: {
+          schemaVersion: 1,
+          anchorId,
+          anchorType: "constraint",
+          anchorValue: "orphan",
+          normalizedCue: "orphan",
+          recordedAt: "2026-03-08T00:01:00.000Z",
+          sessionKey: namespace,
+          nodeRefs: ["deleted-node"],
+        },
+      });
+      orphanPaths.push(
+        path.join(namespaceStorage.dir, "state", "abstraction-nodes", "anchors", "constraint", `${anchorId}.json`)
+      );
+    }
+    await orchestrator.namespaceCatalog.flushPendingTouches();
+    const catalogRecords = await orchestrator.namespaceCatalog.listNamespaces({
+      discoveredBy: "write",
+    });
+    const duplicateRecord = catalogRecords.find((record) => record.namespace === "rotation-00");
+    assert.ok(duplicateRecord, "rotation fixture must have a catalog record");
+    Reflect.set(orchestrator.namespaceCatalog, "listNamespaces", async () => [
+      ...catalogRecords,
+      { ...duplicateRecord, storageDir: `${duplicateRecord.storageDir}${path.sep}.` },
+    ]);
+
+    const defaultAnchorPath = path.join(
+      orchestrator.storage.dir,
+      "state",
+      "abstraction-nodes",
+      "anchors",
+      "constraint",
+      "default-first-orphan.json"
+    );
+    await recordCueAnchor({
+      memoryDir: orchestrator.storage.dir,
+      anchor: {
+        schemaVersion: 1,
+        anchorId: "default-first-orphan",
+        anchorType: "constraint",
+        anchorValue: "orphan",
+        normalizedCue: "orphan",
+        recordedAt: "2026-03-08T00:01:00.000Z",
+        sessionKey: "default",
+        nodeRefs: ["deleted-node"],
+      },
+    });
+
+    await orchestrator.runConsolidationNow();
+    await assert.rejects(() => stat(defaultAnchorPath), { code: "ENOENT" });
+
+    const presentAfterFirstRun = await Promise.all(
+      orphanPaths.map(async (orphanPath) => {
+        try {
+          await stat(orphanPath);
+          return true;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          return false;
+        }
+      })
+    );
+    assert.equal(
+      presentAfterFirstRun.filter(Boolean).length,
+      namespaceCount - 49,
+      "one run must prune at most 49 catalog stores plus the default store"
+    );
+
+    const defaultSecondAnchorPath = path.join(
+      orchestrator.storage.dir,
+      "state",
+      "abstraction-nodes",
+      "anchors",
+      "constraint",
+      "default-second-orphan.json"
+    );
+    await recordCueAnchor({
+      memoryDir: orchestrator.storage.dir,
+      anchor: {
+        schemaVersion: 1,
+        anchorId: "default-second-orphan",
+        anchorType: "constraint",
+        anchorValue: "orphan",
+        normalizedCue: "orphan",
+        recordedAt: "2026-03-08T00:02:00.000Z",
+        sessionKey: "default",
+        nodeRefs: ["deleted-node"],
+      },
+    });
+
+    await orchestrator.runConsolidationNow();
+    await assert.rejects(() => stat(defaultSecondAnchorPath), { code: "ENOENT" });
+    for (const orphanPath of orphanPaths) {
+      await assert.rejects(() => stat(orphanPath), { code: "ENOENT" });
+    }
+  } finally {
+    try {
+      await orchestrator?.destroy();
+    } finally {
+      await rm(memoryDir, { recursive: true, force: true });
+      await rm(workspaceDir, { recursive: true, force: true });
+    }
   }
 });
