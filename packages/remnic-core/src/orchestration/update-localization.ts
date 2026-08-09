@@ -1,5 +1,7 @@
-import type { StorageManager } from "../storage.js";
 import type { MemoryFile } from "../types.js";
+export interface UpdateLocalizationStorage {
+  readAllMemories(): Promise<MemoryFile[]>;
+}
 import { lookupAttributeByNormalizedKey } from "../temporal-supersession.js";
 
 export interface UpdateAnchor {
@@ -30,7 +32,7 @@ export interface UpdateLocalizationOptions {
 }
 
 export interface UpdateLocalizationDeps {
-  storage: StorageManager;
+  storage: UpdateLocalizationStorage;
   qmdSearch: (query: string, limit: number) => Promise<UpdateLocalizationSearchHit[]>;
 }
 
