@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import { compareCodePoints } from "../../codepoint-order.js";
@@ -80,6 +80,15 @@ function syntheticFilesDigest(files: readonly SyntheticFile[]): string {
       .map((file) => [file.path, file.content, file.isExecutable ?? false] as const)
       .sort(([left], [right]) => compareCodePoints(left, right)),
   );
+}
+
+function materializerEnvironmentDigest(): string {
+  const inheritedEnvironment = Object.entries(process.env)
+    .filter(([key, value]) => !key.startsWith("GIT_") && value !== undefined)
+    .sort(([left], [right]) => compareCodePoints(left, right));
+  return createHash("sha256")
+    .update(JSON.stringify(inheritedEnvironment))
+    .digest("hex");
 }
 
 const memoizedTaskStates = new Map<string, Promise<Readonly<StateEvaluationResult>>>();
@@ -204,6 +213,7 @@ function evaluateTaskStateMemoized(
   options: EvaluateTaskStateOptions = {},
 ): Promise<Readonly<StateEvaluationResult>> {
   const key = JSON.stringify([
+    materializerEnvironmentDigest(),
     options.isNoTrapControl ?? false,
     syntheticFilesDigest(files),
   ]);
@@ -219,6 +229,7 @@ function computeRevisionShasMemoized(
   noTrapFiles: SyntheticFile[],
 ): Promise<Readonly<RevisionShas>> {
   const key = JSON.stringify([
+    materializerEnvironmentDigest(),
     syntheticFilesDigest(cleanFiles),
     syntheticFilesDigest(badPatchFiles),
     syntheticFilesDigest(goodPatchFiles),
