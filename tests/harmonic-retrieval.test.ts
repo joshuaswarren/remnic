@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { parseConfig } from "../src/config.js";
 import { Orchestrator } from "../src/orchestrator.js";
 import { StorageManager } from "../src/storage.js";
@@ -184,12 +184,16 @@ test("harmonic-search CLI command returns blended harmonic results", async () =>
     abstractionNodeStoreDir: undefined,
     harmonicRetrievalEnabled: true,
     abstractionAnchorsEnabled: true,
+    temporalExpiredInInjection: false,
     query: "Which workflow depends on Cursor terminal state?",
     maxResults: 2,
     sessionKey: "agent:main",
   });
 
-  assert.equal(results.length, 1);
+  assert.deepEqual(
+    results.map((result) => result.node.nodeId),
+    ["abstraction-pr-loop"]
+  );
   assert.equal(results[0]?.node.nodeId, "abstraction-pr-loop");
   assert.equal(results[0]?.matchedAnchors.length, 1);
 });
@@ -301,6 +305,124 @@ test("harmonic retrieval drops inactive and missing sources but keeps an active 
   );
 });
 
+test("harmonic retrieval validates sources across hot and cold tiers", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-harmonic-cold-source-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    const { id } = await storage.writeMemory("fact", "cold tier harmonic source", { source: "test" });
+    const memory = (await storage.readAllMemories()).find((candidate) => candidate.frontmatter.id === id);
+    assert.ok(memory);
+    const coldPath = path.join(memoryDir, "cold", path.relative(memoryDir, memory.path));
+    await mkdir(path.dirname(coldPath), { recursive: true });
+    await rename(memory.path, coldPath);
+    storage.invalidateMemoryCachesForTiers(["hot", "cold"]);
+    await recordAbstractionNode({
+      memoryDir,
+      node: {
+        schemaVersion: 1,
+        nodeId: "cold-source-node",
+        recordedAt: "2026-03-08T00:00:00.000Z",
+        sessionKey: "agent:cold-source",
+        kind: "topic",
+        abstractionLevel: "meso",
+        title: "cold tier harmonic source",
+        summary: "cold tier harmonic source",
+        sourceMemoryIds: [id],
+      },
+    });
+
+    const results = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "cold tier harmonic source",
+      maxResults: 10,
+      anchorsEnabled: false,
+    });
+    assert.deepEqual(
+      results.map((result) => result.node.nodeId),
+      ["cold-source-node"]
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("harmonic anchor tags come only from eligible source-backed nodes", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-harmonic-anchor-tags-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    const { id: activeId } = await storage.writeMemory("fact", "active anchor source", {
+      source: "test",
+      tags: ["activeflag"],
+    });
+    const { id: archivedId } = await storage.writeMemory("fact", "archived anchor source", {
+      source: "test",
+      tags: ["obsoleteflag"],
+    });
+    await storage.updateMemoryFrontmatter(archivedId, { status: "archived" });
+    for (const [nodeId, sourceMemoryId] of [
+      ["active-anchor-node", activeId],
+      ["archived-anchor-node", archivedId],
+    ] as const) {
+      await recordAbstractionNode({
+        memoryDir,
+        node: {
+          schemaVersion: 1,
+          nodeId,
+          recordedAt: "2026-03-08T00:00:00.000Z",
+          sessionKey: "agent:anchor-tags",
+          kind: "topic",
+          abstractionLevel: "meso",
+          title: "shared anchor topic",
+          summary: "shared anchor topic",
+          sourceMemoryIds: [sourceMemoryId],
+        },
+      });
+    }
+    await recordCueAnchor({
+      memoryDir,
+      anchor: {
+        schemaVersion: 1,
+        anchorId: "mixed-tag-anchor",
+        anchorType: "constraint",
+        anchorValue: "shared lifecycle cue",
+        normalizedCue: "shared lifecycle cue",
+        recordedAt: "2026-03-08T00:01:00.000Z",
+        sessionKey: "agent:anchor-tags",
+        nodeRefs: ["active-anchor-node", "archived-anchor-node"],
+        sourceMemoryIdsByNodeRef: {
+          "active-anchor-node": [activeId],
+          "archived-anchor-node": [archivedId],
+        },
+        tags: ["activeflag", "obsoleteflag"],
+      },
+    });
+
+    const staleResults = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "obsoleteflag",
+      maxResults: 10,
+      anchorsEnabled: true,
+    });
+    assert.deepEqual(staleResults, []);
+
+    const activeResults = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "activeflag",
+      maxResults: 10,
+      anchorsEnabled: true,
+    });
+    assert.deepEqual(
+      activeResults.map((result) => result.node.nodeId),
+      ["active-anchor-node"]
+    );
+    assert.ok(activeResults[0]?.matchedFields.includes("anchorTags"));
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("harmonic retrieval applies temporal validity unless expired injection is enabled", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-harmonic-temporal-source-"));
   try {
@@ -326,6 +448,13 @@ test("harmonic retrieval applies temporal validity unless expired injection is e
       },
     });
 
+    const defaultFiltered = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "expired temporal source",
+      maxResults: 10,
+      anchorsEnabled: false,
+    });
+    assert.deepEqual(defaultFiltered, []);
     const filtered = await searchHarmonicRetrieval({
       memoryDir,
       query: "expired temporal source",

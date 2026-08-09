@@ -110,6 +110,9 @@ Rules:
 - Priority: corrections > principles${resolveRecallAuxiliaryCapabilities(config).causalRuleExtraction ? " > rules" : ""} > preferences > commitments > decisions > relationships > entities > moments > skills > facts
 - Corrections get highest confidence.
 - Each fact should be a standalone, self-contained statement.
+- Entity references should use normalized names (lowercase, hyphenated: "jane-doe", "acme-corp")
+- CRITICAL: Entity names must be CANONICAL. Always use the hyphenated multi-word form: "acme-corp" NOT "acmecorp" or "acme". "jane-doe" NOT "janedoe" or "jane". If unsure, prefer the most specific full name.
+- Avoid creating entities typed as "other" when a more specific type fits (company, project, tool, person, place)
 ${CUE_ANCHOR_PROMPT_INSTRUCTION}
 - When entity facts clearly belong under a durable named heading, add them to entity.structuredSections as {key, title, facts}. Example person headings: "Beliefs", "Communication Style", "Building / Working On". Leave structuredSections empty when no stable heading fits.
 - Tags should be concise and reusable (e.g., "coding-style", "personal", "tools")

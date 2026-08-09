@@ -982,6 +982,9 @@ test("extraction schema, prompt, and normalizer carry bounded harmonic fields", 
   assert.match(instructions, /episodeTitle/);
   assert.match(instructions, /at most 3 "cueAnchors"/);
   assert.match(instructions, /at most 120 characters/);
+  assert.match(instructions, /lowercase, hyphenated/);
+  assert.match(instructions, /most specific full name/);
+  assert.match(instructions, /Avoid creating entities typed as "other"/);
 });
 
 test("cue-anchor normalization is canonical before the three-anchor cap", () => {

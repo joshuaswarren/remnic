@@ -20,6 +20,7 @@
 import type { Orchestrator } from "../orchestrator.js";
 import { resolveCapabilities, resolveSecurityCapabilities, resolveUtilityLearningCapabilities, resolveObjectiveStateCapabilities, resolveConsolidationCapabilities } from "../capabilities.js";
 import type { CliCommand } from "../cli.js";
+import { runHarmonicSearchCliCommand } from "./harmonic-search.js";
 import type { UtilityTelemetryEvent } from "../utility-telemetry.js";
 import { resolveRecallEnhancementCapabilities } from "../capabilities.js";
 import {
@@ -29,7 +30,6 @@ import {
   runTrustZoneDemoSeedCliCommand,
   runAbstractionNodeStatusCliCommand,
   runCueAnchorStatusCliCommand,
-  runHarmonicSearchCliCommand,
   runUtilityTelemetryStatusCliCommand,
   runUtilityTelemetryRecordCliCommand,
   runUtilityLearningStatusCliCommand,
@@ -154,6 +154,7 @@ cmd
       abstractionNodeStoreDir: orchestrator.config.abstractionNodeStoreDir,
       harmonicRetrievalEnabled: caps.harmonicRetrieval,
       abstractionAnchorsEnabled: resolveConsolidationCapabilities(orchestrator.config).abstractionAnchors,
+      temporalExpiredInInjection: orchestrator.config.temporalExpiredInInjection,
       query,
       maxResults: Number.isFinite(maxResults) ? maxResults : 3,
       sessionKey: typeof options.sessionKey === "string" ? options.sessionKey : undefined,
