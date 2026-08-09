@@ -6,7 +6,8 @@ import test from "node:test";
 
 import { parseConfig } from "../config.js";
 import { Orchestrator } from "../orchestrator.js";
-import type { ExtractionResult, ExtractionEngine, PluginConfig } from "../types.js";
+import type { ExtractionEngine } from "../extraction.js";
+import type { ExtractionResult, MemoryFile, PluginConfig } from "../types.js";
 import type { StorageManager } from "../storage.js";
 import { ContradictionLinkingCoordinator } from "./contradiction-linking-coordinator.js";
 
@@ -98,7 +99,7 @@ test("anchor-only contradiction flows through deferred resolve and supersedes th
         entityRef: "person:alice",
         structuredAttributes: { city: "Austin" },
       },
-    } as never;
+    } as unknown as MemoryFile;
     const storage = {
       readAllMemories: async () => [old],
       getMemoryById: async (id: string) => (id === "old" ? old : null),
