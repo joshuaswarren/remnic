@@ -120,6 +120,7 @@ import { ConsolidationRunCoordinator } from "./orchestration/consolidation-run.j
 import { ExtractionPersistCoordinator } from "./orchestration/extraction-persist.js";
 import { RecallInternalCoordinator } from "./orchestration/recall-internal.js";
 import { RecallSearchPipelineCoordinator } from "./orchestration/recall-search-pipeline.js";
+import type { GraphRecallExpansionOptions, GraphRecallExpansionResult } from "./orchestration/graph-recall-seam.js";
 import type { ArtifactRecallOptions } from "./orchestration/recall-search-prefilter.js";
 import type { CorpusReadOptions } from "./corpus-read-cancellation.js";
 import { TurnIngestionCoordinator, type TurnIngestionOptions } from "./orchestration/turn-ingestion.js";
@@ -2554,20 +2555,9 @@ export class Orchestrator {
   // Issue #1526 (seam 14): graph-recall expansion moved to
   // GraphRecallCoordinator. Keep this public seam so callers and tests can
   // override graph expansion on the orchestrator instance.
-  async expandResultsViaGraph(options: {
-    memoryResults: QmdSearchResult[];
-    recallNamespaces: string[];
-    recallResultLimit: number;
-    asOf?: string;
-    asOfMs?: number;
-    deadlineAtMs?: number | null;
-    includeLowConfidence?: boolean;
-  }): Promise<{
-    merged: QmdSearchResult[];
-    seedPaths: string[];
-    expandedPaths: GraphRecallExpandedEntry[];
-    seedResults: QmdSearchResult[];
-  }> {
+  async expandResultsViaGraph(
+    options: GraphRecallExpansionOptions,
+  ): Promise<GraphRecallExpansionResult> {
     return this.graphRecallCoordinator.expandResultsViaGraph(options);
   }
 

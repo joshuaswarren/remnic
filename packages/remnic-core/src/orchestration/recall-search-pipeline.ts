@@ -28,7 +28,10 @@ import { NamespaceStorageRouter } from "../namespaces/storage.js";
 import { NegativeExampleStore } from "../negative.js";
 import { qmdCollectionPathParts } from "./qmd-result-resolver.js";
 import type { RecallRerankCoordinator, RecallResultPartitionSink } from "./recall-rerank-coordinator.js";
-import type { GraphRecallExpandedEntry } from "../recall-state.js";
+import type {
+  GraphRecallExpansionOptions,
+  GraphRecallExpansionResult,
+} from "./graph-recall-seam.js";
 import { RelevanceStore } from "../relevance.js";
 import { RerankCache, rerankLocalOrNoop, reorderByRankedKeys } from "../rerank.js";
 import type { SearchBackend, SearchDegradation, SearchExecutionOptions, SearchQueryOptions } from "../search/port.js";
@@ -119,20 +122,9 @@ export interface RecallSearchPipelineDeps {
   ): QmdSearchResult[];
   effectiveRecencyWeight(): number;
   readonly embeddingFallback: EmbeddingFallback;
-  expandResultsViaGraph(options: {
-    memoryResults: QmdSearchResult[];
-    recallNamespaces: string[];
-    recallResultLimit: number;
-    asOf?: string;
-    asOfMs?: number;
-    deadlineAtMs?: number | null;
-    includeLowConfidence?: boolean;
-  }): Promise<{
-    merged: QmdSearchResult[];
-    seedPaths: string[];
-    expandedPaths: GraphRecallExpandedEntry[];
-    seedResults: QmdSearchResult[];
-  }>;
+  expandResultsViaGraph(
+    options: GraphRecallExpansionOptions,
+  ): Promise<GraphRecallExpansionResult>;
   readonly fastLlmForRerank: {
     chatCompletion: (
       messages: Array<{ role: string; content: string }>,
