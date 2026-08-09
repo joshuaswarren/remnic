@@ -4,7 +4,7 @@ import { delinearize } from "./delinearize.js";
 import { LocalLlmClient } from "./local-llm.js";
 import { shouldRunProactivePass } from "./proactive-contention.js";
 import { FallbackLlmClient, fallbackLlmRuntimeContextFromConfig, gatewayTaskChainOptions } from "./fallback-llm.js";
-import { revalidateDependentsViaLlm } from "./orchestration/dependency-revalidation.js";
+import { revalidateDependentsViaLlm, type RevalidationFastChatCompletion } from "./orchestration/dependency-revalidation.js";
 import {
   ExtractionResultSchema,
   ConsolidationResultSchema,
@@ -152,6 +152,7 @@ export class ExtractionEngine {
     localLlm?: LocalLlmClient,
     gatewayConfig?: GatewayConfig,
     modelRegistry?: ModelRegistry,
+    private readonly fastChatCompletion?: RevalidationFastChatCompletion,
   ) {
     this.profiler = profilerArg ?? new ProfilingCollector({ enabled: false, storageDir: "/tmp/engram-profiler-disabled", maxTraces: 0 });
     if (config.openaiApiKey) {
@@ -2453,21 +2454,21 @@ Respond with valid JSON matching this schema:
       reason?: string;
     }>;
   }> {
+    if (!this.fastChatCompletion) {
+      throw new Error("fast completion is not configured for dependency revalidation");
+    }
     return revalidateDependentsViaLlm(
       {
-        shouldUseLocalLlm: this.shouldUseLocalLlm,
-        shouldUseDirectClient: this.shouldUseDirectClient,
-        localLlm: this.localLlm,
-        fallbackLlm: this.fallbackLlm,
-        client: this.client,
-        config: this.config,
-        withGatewayAgent: this.withGatewayAgent.bind(this),
+        fastChatCompletion: this.fastChatCompletion,
         parseJsonObject: this.parseJsonObject,
       },
       superseded,
       replacement,
       dependents,
-      signal,
+      {
+        signal,
+        timeoutMs: this.config.dependencyPropagation.timeoutMs,
+      },
     );
   }
 

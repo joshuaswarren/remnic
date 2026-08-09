@@ -267,13 +267,24 @@ test("disabled propagation is an immediate no-op for boolean and string false", 
       },
     );
 
-    assert.deepEqual(result, {
-      dependentsFound: 0,
-      invalidated: 0,
-      stillValid: 0,
-      uncertain: 0,
-      skipped: "disabled",
-    });
+    assert.deepEqual(
+      {
+        dependentsFound: result.dependentsFound,
+        invalidated: result.invalidated,
+        stillValid: result.stillValid,
+        uncertain: result.uncertain,
+        skipped: result.skipped,
+      },
+      {
+        dependentsFound: 0,
+        invalidated: 0,
+        stillValid: 0,
+        uncertain: 0,
+        skipped: "disabled",
+      },
+    );
+    assert.equal(result.route, null);
+    assert.equal(typeof result.durationMs, "number");
     assert.equal(fixtureValue.calls.revalidate.length, 0);
   }
 });
@@ -295,6 +306,12 @@ test("invalidated verdict supersedes the dependent and persists dependency front
   );
 
   assert.equal(result.invalidated, 1);
+  assert.equal(result.dependentsFound, 1);
+  assert.equal(result.stillValid, 0);
+  assert.equal(result.uncertain, 0);
+  assert.equal(result.skipped, null);
+  assert.equal(result.route, "fast-completion");
+  assert.equal(typeof result.durationMs, "number");
   assert.deepEqual(fixtureValue.calls.supersede, [
     {
       id: "dep",
@@ -387,6 +404,12 @@ test("LLM errors skip the event and perform zero writes", async () => {
     },
   );
 
+  assert.equal(result.dependentsFound, 1);
+  assert.equal(result.invalidated, 0);
+  assert.equal(result.stillValid, 0);
+  assert.equal(result.uncertain, 0);
+  assert.equal(result.route, "fast-completion");
+  assert.equal(typeof result.durationMs, "number");
   assert.equal(result.skipped, "llm_error");
   assert.equal(fixtureValue.calls.supersede.length, 0);
   assert.equal(fixtureValue.calls.frontmatter.length, 0);
@@ -411,9 +434,46 @@ test("LLM timeout aborts the batch and performs zero writes", async () => {
     },
   );
 
+  assert.equal(result.dependentsFound, 1);
+  assert.equal(result.route, "fast-completion");
+  assert.equal(typeof result.durationMs, "number");
   assert.equal(result.skipped, "timeout");
   assert.equal(fixtureValue.calls.supersede.length, 0);
   assert.equal(fixtureValue.calls.frontmatter.length, 0);
+});
+
+test("a completion that ignores AbortSignal returns at the shared deadline", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
+  try {
+    const old = memory("old", { links: [{ targetId: "dep", linkType: "supports" }] });
+    const fixtureValue = fixture([old, memory("dep")], () => new Promise<never>(() => {}));
+    const resultPromise = propagateInvalidation(
+      deps(fixtureValue, { dependencyPropagation: { timeoutMs: 20 } }),
+      {
+        oldMemory: old,
+        replacementId: "new",
+        replacementContent: "replacement",
+        cause: "contradiction",
+        namespaceScope: "namespace-a",
+      },
+    );
+
+    await Promise.resolve();
+    t.mock.timers.tick(20);
+    const result = await resultPromise;
+
+    assert.equal(result.dependentsFound, 1);
+    assert.equal(result.invalidated, 0);
+    assert.equal(result.stillValid, 0);
+    assert.equal(result.uncertain, 0);
+    assert.equal(result.skipped, "timeout");
+    assert.equal(result.route, "fast-completion");
+    assert.equal(result.durationMs, 20);
+    assert.equal(fixtureValue.calls.supersede.length, 0);
+    assert.equal(fixtureValue.calls.frontmatter.length, 0);
+  } finally {
+    t.mock.timers.reset();
+  }
 });
 
 test("dryRun computes invalidation verdicts without writing", async () => {

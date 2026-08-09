@@ -4,8 +4,6 @@
  * Extracted from ExtractionEngine to keep extraction.ts under its ratchet
  * ceiling. The ExtractionEngine.revalidateDependents method delegates here.
  */
-import type { LocalLlmClient } from "../local-llm.js";
-import type { FallbackLlmClient, FallbackLlmOptions } from "../fallback-llm.js";
 
 export interface RevalidationVerdict {
   memoryId: string;
@@ -13,18 +11,20 @@ export interface RevalidationVerdict {
   reason?: string;
 }
 
-export interface RevalidationDeps {
-  shouldUseLocalLlm: boolean;
-  shouldUseDirectClient: boolean;
-  localLlm: LocalLlmClient;
-  fallbackLlm: FallbackLlmClient;
-  client: unknown;
-  config: { model: string; localLlmFallback?: boolean };
-  withGatewayAgent: (opts: {
-    temperature: number;
-    maxTokens: number;
+export type RevalidationFastChatCompletion = (
+  messages: Array<{ role: string; content: string }>,
+  options: {
+    temperature?: number;
+    maxTokens?: number;
+    timeoutMs?: number;
+    operation?: string;
+    priority?: "background" | "recall-critical";
     signal?: AbortSignal;
-  }) => FallbackLlmOptions;
+  },
+) => Promise<{ content: string } | null>;
+
+export interface RevalidationDeps {
+  fastChatCompletion: RevalidationFastChatCompletion;
   parseJsonObject: (raw: string | null) => unknown;
 }
 
@@ -95,78 +95,27 @@ export async function revalidateDependentsViaLlm(
   superseded: { id: string; content: string },
   replacement: { id: string; content: string } | null,
   dependents: Array<{ id: string; category: string; content: string }>,
-  signal?: AbortSignal,
+  options: { signal?: AbortSignal; timeoutMs?: number } = {},
 ): Promise<{ verdicts: RevalidationVerdict[] }> {
   const { input, instructionText } = buildPrompt(superseded, replacement, dependents);
   const maxTokens = Math.max(1024, dependents.length * 256);
-
-  let rawContent: string | null = null;
-  if (deps.shouldUseLocalLlm) {
-    try {
-      const response = await deps.localLlm.chatCompletion(
-        [
-          { role: "system", content: instructionText },
-          { role: "user", content: input },
-        ],
-        {
-          temperature: 0.2,
-          maxTokens,
-          operation: "dependency_revalidation",
-          priority: "background",
-          signal,
-        },
-      );
-      rawContent = response?.content ?? null;
-      if (!rawContent && !deps.config.localLlmFallback) {
-        throw new Error("local LLM returned no dependency revalidation output");
-      }
-    } catch (error) {
-      if (!deps.config.localLlmFallback || signal?.aborted) throw error;
-    }
-  }
-
-  if (rawContent === null && !deps.shouldUseDirectClient) {
-    const response = await deps.fallbackLlm.chatCompletion(
-      [
-        { role: "system", content: instructionText },
-        { role: "user", content: input },
-      ],
-      deps.withGatewayAgent({ temperature: 0.2, maxTokens, signal }),
-    );
-    rawContent = response?.content ?? null;
-    if (!rawContent) throw new Error("fallback LLM returned no dependency revalidation output");
-  }
-
-  if (rawContent === null && deps.shouldUseDirectClient) {
-    const chatClient = deps.client as unknown as {
-      chat: {
-        completions: {
-          create(
-            request: {
-              model: string;
-              messages: Array<{ role: string; content: string }>;
-              max_tokens?: number;
-            },
-            options?: { signal?: AbortSignal },
-          ): Promise<{ choices?: Array<{ message?: { content?: string } }> }>;
-        };
-      };
-    };
-    const response = await chatClient.chat.completions.create(
-      {
-        model: deps.config.model,
-        messages: [
-          { role: "system", content: instructionText },
-          { role: "user", content: input },
-        ],
-        max_tokens: maxTokens,
-      },
-      { signal },
-    );
-    rawContent = response.choices?.[0]?.message?.content ?? null;
-    if (!rawContent?.trim()) {
-      throw new Error("direct client returned no dependency revalidation output");
-    }
+  const response = await deps.fastChatCompletion(
+    [
+      { role: "system", content: instructionText },
+      { role: "user", content: input },
+    ],
+    {
+      temperature: 0.2,
+      maxTokens,
+      operation: "dependency_revalidation",
+      priority: "background",
+      timeoutMs: options.timeoutMs,
+      signal: options.signal,
+    },
+  );
+  const rawContent = response?.content ?? null;
+  if (!rawContent?.trim()) {
+    throw new Error("fast completion returned no dependency revalidation output");
   }
 
   return { verdicts: normalizeVerdicts(deps.parseJsonObject(rawContent), dependents) };
