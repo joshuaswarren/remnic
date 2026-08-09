@@ -369,7 +369,7 @@ export class GraphRecallCoordinator {
         }
         continue;
       }
-      const hotCorpusByPath = new Map<string, MemoryFile>();
+      const corpusByPath = new Map<string, MemoryFile>();
       const nodeStates = new Map<string, PathNodeState>();
       const [hotMemories, coldMemories, archivedMemories] = await Promise.all([
         storage.readAllMemories(),
@@ -392,10 +392,10 @@ export class GraphRecallCoordinator {
           if (relativePath.endsWith(".md")) add(path.basename(relativePath, ".md"));
         }
       };
-      const addHotMemory = (memory: MemoryFile): void => {
+      const addCorpusMemory = (memory: MemoryFile): void => {
         const relativePath = graphPathRelativeToStorage(storage.dir, memory.path);
         const add = (key: string): void => {
-          if (!hotCorpusByPath.has(key)) hotCorpusByPath.set(key, memory);
+          if (!corpusByPath.has(key)) corpusByPath.set(key, memory);
         };
         add(memory.frontmatter.id);
         add(memory.path);
@@ -404,11 +404,10 @@ export class GraphRecallCoordinator {
           if (relativePath.endsWith(".md")) add(path.basename(relativePath, ".md"));
         }
       };
-      for (const memory of hotMemories) addHotMemory(memory);
       for (const memory of [...hotMemories, ...coldMemories, ...archivedMemories]) {
         addState(memory);
+        addCorpusMemory(memory);
       }
-
 
       const scoredExpanded: Array<{
         result: QmdSearchResult;
@@ -418,8 +417,8 @@ export class GraphRecallCoordinator {
         if (deadlineExpired()) break;
         if (seedSet.has(candidate.path)) continue;
         const memory =
-          hotCorpusByPath.get(candidate.path) ??
-          hotCorpusByPath.get(path.resolve(storage.dir, candidate.path));
+          corpusByPath.get(candidate.path) ??
+          corpusByPath.get(path.resolve(storage.dir, candidate.path));
         if (deadlineExpired()) break;
         if (!memory) continue;
         if (/(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(memory.path)) continue;

@@ -201,6 +201,65 @@ test("real coordinator demotes stale paths before the namespace cap and repeats 
   }
 });
 
+test("retains an active cold candidate in disabled and enabled graph scoring modes", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-cold-candidate-"));
+  try {
+    const fixture = await createNamespace(root, "default");
+    const cleanMemory = (await fixture.storage.readAllMemories()).find((memory) =>
+      memory.path.endsWith(fixture.cleanPath),
+    );
+    assert.ok(cleanMemory);
+    const moved = await fixture.storage.migrateMemoryToTier(cleanMemory, "cold");
+    assert.equal(moved.changed, true);
+    const coldPath = path.relative(fixture.dir, moved.targetPath).split(path.sep).join("/");
+    await appendEdge(fixture.dir, fixture.seedPath, coldPath, 1);
+
+    const fixtures = new Map([[fixture.name, fixture]]);
+    const disabledReads = { count: 0 };
+    const disabled = await expand(
+      makeCoordinator(makeConfig({ graphPathScoring: { enabled: false } }), fixtures, disabledReads),
+      [seedResult(fixture)],
+      [fixture.name],
+    );
+    assert.equal(disabledReads.count, 0);
+
+    const enabledReads = { count: 0 };
+    const enabled = await expand(
+      makeCoordinator(makeConfig(), fixtures, enabledReads),
+      [seedResult(fixture)],
+      [fixture.name],
+    );
+    assert.equal(enabledReads.count, 3);
+
+    const disabledCandidate = disabled.merged.find((item) => item.path === moved.targetPath);
+    const enabledCandidate = enabled.merged.find((item) => item.path === moved.targetPath);
+    assert.ok(disabledCandidate);
+    assert.ok(enabledCandidate);
+    assert.equal(disabledCandidate.namespace, fixture.name);
+    assert.equal(enabledCandidate.namespace, fixture.name);
+    assert.deepEqual(
+      {
+        docid: enabledCandidate.docid,
+        path: enabledCandidate.path,
+        namespace: enabledCandidate.namespace,
+        snippet: enabledCandidate.snippet,
+      },
+      {
+        docid: disabledCandidate.docid,
+        path: disabledCandidate.path,
+        namespace: disabledCandidate.namespace,
+        snippet: disabledCandidate.snippet,
+      },
+    );
+    assert.equal(enabledCandidate.score, disabledCandidate.score);
+    assert.equal("pathPenaltyApplied" in disabledCandidate, false);
+    assert.equal(enabledCandidate.pathPenaltyApplied, false);
+    assert.deepEqual(enabledCandidate.pathNodeIds, [fixture.seedPath, coldPath]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("real coordinator demotes a path through an archived intermediate", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-archive-"));
   try {
