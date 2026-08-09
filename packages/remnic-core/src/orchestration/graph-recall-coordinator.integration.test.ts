@@ -6,8 +6,10 @@ import test from "node:test";
 
 import { parseConfig } from "../config.js";
 import { graphFilePath, GraphIndex, type GraphConfig } from "../graph.js";
-import { GraphRecallCoordinator } from "./graph-recall-coordinator.js";
-import { StorageManager } from "../storage.js";
+import {
+  blendGraphExpandedRecallScore,
+  GraphRecallCoordinator,
+} from "./graph-recall-coordinator.js";
 import type { PluginConfig, QmdSearchResult } from "../types.js";
 
 const AS_OF = "2026-01-01T00:00:00.000Z";
@@ -52,6 +54,7 @@ async function appendEdge(
     `${JSON.stringify({
       from,
       to,
+      type: "entity",
       weight,
       label: "test",
       ts: AS_OF,
@@ -178,7 +181,6 @@ test("real coordinator demotes stale paths before the namespace cap and repeats 
     const coordinator = makeCoordinator(makeConfig(), fixtures);
     const first = await expand(coordinator, [seedResult(fixture)], [fixture.name]);
     const second = await expand(coordinator, [seedResult(fixture)], [fixture.name]);
-    console.error("hardened result", JSON.stringify(first, null, 2));
     assert.equal(first.merged.length, 4);
     assert.equal(first.expandedPaths.length, 3);
     assert.equal(first.expandedPaths[0]?.path.endsWith(fixture.cleanPath), true);
