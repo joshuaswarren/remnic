@@ -333,8 +333,8 @@ export class RecallIntrospectionCoordinator {
             ? `, path=${e.pathNodeIds.join("->")}`
             : "";
         const penaltyLabel =
-          typeof e.pathPenaltyApplied === "number"
-            ? `, penalty=${e.pathPenaltyApplied.toFixed(3)}`
+          typeof e.pathPenaltyApplied === "boolean"
+            ? `, penalty=${e.pathPenaltyApplied ? "yes" : "no"}`
             : "";
         return `- ${e.path} (score=${e.score.toFixed(3)}, ns=${e.namespace}, seed=${e.seed || "unknown"}, hop=${e.hopDepth}, w=${e.decayedWeight.toFixed(3)}, type=${e.graphType}, conf=${confLabel}${penaltyLabel}${pathLabel})`;
       }),

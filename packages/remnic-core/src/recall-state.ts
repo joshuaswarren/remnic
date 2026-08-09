@@ -95,8 +95,8 @@ export interface GraphRecallExpandedEntry {
   edgeConfidence?: number;
   /** Graph-relative activation path node ids when provenance is enabled. */
   pathNodeIds?: string[];
-  /** Multiplicative penalty applied to this activation path. */
-  pathPenaltyApplied?: number;
+  /** True when a graph path penalty was applied. */
+  pathPenaltyApplied?: boolean;
 }
 
 export function clampGraphRecallExpandedEntries(
@@ -142,11 +142,8 @@ export function clampGraphRecallExpandedEntries(
       ) {
         out.pathNodeIds = item.pathNodeIds;
       }
-      if (
-        typeof item.pathPenaltyApplied === "number" &&
-        Number.isFinite(item.pathPenaltyApplied)
-      ) {
-        out.pathPenaltyApplied = Math.min(1, Math.max(0, item.pathPenaltyApplied));
+      if (typeof item.pathPenaltyApplied === "boolean") {
+        out.pathPenaltyApplied = item.pathPenaltyApplied;
       }
       return out;
     })

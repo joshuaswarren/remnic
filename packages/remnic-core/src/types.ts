@@ -3497,8 +3497,8 @@ export interface QmdSearchResult {
   namespace?: string;
   /** Graph activation path evidence from opt-in path scoring. */
   pathNodeIds?: string[];
-  /** Graph path multiplier applied to this result. */
-  pathPenaltyApplied?: number;
+  /** True when a graph path penalty was applied. */
+  pathPenaltyApplied?: boolean;
   sourceConnector?: string;
 }
 

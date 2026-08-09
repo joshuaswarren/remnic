@@ -329,7 +329,7 @@ export class GraphRecallCoordinator {
           corpusByPath.set(memory.frontmatter.id, memory);
           const state: PathNodeState = {
             id: memory.frontmatter.id,
-            status: memory.frontmatter.status ?? null,
+            status: memory.frontmatter.status ?? "active",
             invalidAt: memory.frontmatter.invalid_at ?? null,
           };
           nodeStates.set(memory.frontmatter.id, state);
@@ -367,7 +367,7 @@ export class GraphRecallCoordinator {
         if (/(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(memory.path)) continue;
         if (memory.frontmatter.status && memory.frontmatter.status !== "active") continue;
 
-        const pathPenaltyApplied = scoringEnabled
+        const pathScoreMultiplier = scoringEnabled
           ? scoreEvidencePath(candidate.activationPath ?? null, nodeStates, {
               asOf:
                 options.asOf ??
@@ -391,7 +391,7 @@ export class GraphRecallCoordinator {
           blendMin: config.graphExpansionBlendMin,
           blendMax: config.graphExpansionBlendMax,
         });
-        const score = blendedScore * pathPenaltyApplied;
+        const score = blendedScore * pathScoreMultiplier;
         const entry: GraphRecallExpandedEntry = {
           path: memory.path,
           score,
@@ -401,7 +401,7 @@ export class GraphRecallCoordinator {
           decayedWeight: candidate.decayedWeight,
           graphType: candidate.graphType,
           edgeConfidence: candidate.edgeConfidence,
-          ...(scoringEnabled ? { pathPenaltyApplied } : {}),
+          ...(scoringEnabled ? { pathPenaltyApplied: pathScoreMultiplier < 1 } : {}),
           ...(scoringEnabled &&
           config.graphPathScoring.includePathInProvenance &&
           candidate.activationPath
@@ -415,7 +415,9 @@ export class GraphRecallCoordinator {
             namespace,
             snippet: memory.content.slice(0, 400),
             score,
-            ...(scoringEnabled ? { pathPenaltyApplied } : {}),
+            ...(scoringEnabled
+              ? { pathPenaltyApplied: pathScoreMultiplier < 1 }
+              : {}),
             ...(scoringEnabled &&
             config.graphPathScoring.includePathInProvenance &&
             candidate.activationPath

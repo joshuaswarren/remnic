@@ -204,7 +204,7 @@ function renderResultTextLines(
     }
   }
   if (result.pathPenaltyApplied !== undefined) {
-    lines.push(`    path-penalty: ${result.pathPenaltyApplied.toFixed(3)}`);
+    lines.push(`    path-penalty: ${result.pathPenaltyApplied ? "yes" : "no"}`);
   }
   if (result.pathNodeIds && result.pathNodeIds.length > 0) {
     lines.push(`    path-node-ids: ${result.pathNodeIds.join(" -> ")}`);
@@ -421,7 +421,9 @@ function renderResultMarkdownLines(
     }
   }
   if (result.pathPenaltyApplied !== undefined) {
-    lines.push(`- **Path penalty:** ${mdInlineCode(result.pathPenaltyApplied.toFixed(3))}`);
+    lines.push(
+      `- **Path penalty applied:** ${mdInlineCode(result.pathPenaltyApplied ? "yes" : "no")}`,
+    );
   }
   if (result.pathNodeIds && result.pathNodeIds.length > 0) {
     lines.push(

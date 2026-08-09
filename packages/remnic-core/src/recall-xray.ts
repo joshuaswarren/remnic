@@ -132,8 +132,8 @@ export interface RecallXrayResult {
   graphEdgeConfidences?: number[];
   /** Graph activation node ids recorded for path-scoring provenance. */
   pathNodeIds?: string[];
-  /** Graph path multiplier applied to the final score. */
-  pathPenaltyApplied?: number;
+  /** True when a graph path penalty was applied. */
+  pathPenaltyApplied?: boolean;
   auditEntryId?: string;
   /** Human-readable list of filters the candidate *passed*. */
   admittedBy: string[];
@@ -526,9 +526,8 @@ function cloneResult(result: RecallXrayResult): RecallXrayResult {
     ? result.pathNodeIds.filter((x): x is string => typeof x === "string")
     : undefined;
   const pathPenaltyApplied =
-    typeof result.pathPenaltyApplied === "number" &&
-    Number.isFinite(result.pathPenaltyApplied)
-      ? Math.min(1, Math.max(0, result.pathPenaltyApplied))
+    typeof result.pathPenaltyApplied === "boolean"
+      ? result.pathPenaltyApplied
       : undefined;
   const auditEntryId = nonEmptyString(result.auditEntryId);
   const rejectedBy = nonEmptyString(result.rejectedBy);

@@ -5090,7 +5090,7 @@ export class RecallInternalCoordinator {
             scoreDecomposition,
             admittedBy: [],
             ...(xrayResult?.pathNodeIds ? { pathNodeIds: xrayResult.pathNodeIds } : {}),
-            ...(typeof xrayResult?.pathPenaltyApplied === "number"
+            ...(typeof xrayResult?.pathPenaltyApplied === "boolean"
               ? { pathPenaltyApplied: xrayResult.pathPenaltyApplied }
               : {}),
             ...(provenance ? { provenance } : {}),
