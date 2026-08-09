@@ -1567,7 +1567,10 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `contradictionDetectionEnabled` | `false` | `false` |
 | `contradictionSimilarityThreshold` | `0.7` | `0.7` |
 | `contradictionMinConfidence` | `0.9` | `0.9` |
-| `contradictionLocalization` | `{ anchorEnabled: true, anchorCandidates: 5, searchCandidates: 5, maxCandidates: 8 }` | `{ anchorEnabled: true, anchorCandidates: 5, searchCandidates: 5, maxCandidates: 8 }` |
+| `contradictionLocalization.anchorEnabled` | `true` | Enable entityRef and category anchor candidates |
+| `contradictionLocalization.anchorCandidates` | `5` | Maximum anchor candidates. `0` disables the anchor pass |
+| `contradictionLocalization.searchCandidates` | `5` | Maximum QMD search candidates. `0` disables text search |
+| `contradictionLocalization.maxCandidates` | `8` | Maximum merged candidates sent to the verifier |
 | `contradictionAutoResolve` | `true` | `true` |
 | `memoryLinkingEnabled` | `false` | `false` |
 | `threadingEnabled` | `false` | `false` |

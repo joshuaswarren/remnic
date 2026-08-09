@@ -221,6 +221,13 @@ function extractParserKeys(
 
   // alias name -> path prefix relative to the parser input
   const aliases = new Map<string, AliasInfo>();
+  // Local helpers can close over an aliased config block while receiving a
+  // literal key name at each call site (for example, parseCap("maxCandidates")).
+  const localFunctions = new Map<
+    string,
+    ts.ArrowFunction | ts.FunctionExpression
+  >();
+
   aliases.set(param.name.text, { prefix: [] });
 
   const recordKey = (aliasPrefix: string[], key: string): void => {
@@ -413,6 +420,17 @@ function extractParserKeys(
         );
       }
     }
+    // Register local function expressions before their bodies are visited.
+    // Their bodies are revisited at each call site with literal bindings.
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer &&
+      (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
+    ) {
+      localFunctions.set(node.name.text, node.initializer);
+      return;
+    }
     // Alias creation: const X = <expr resolving to alias(+segments)>
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
       const resolved = resolveAliasChain(node.initializer);
@@ -550,6 +568,27 @@ function extractParserKeys(
           );
         }
         return;
+      }
+    }
+
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+      const localFunction = localFunctions.get(node.expression.text);
+      if (localFunction) {
+        const keyParameter = localFunction.parameters[0]?.name;
+        if (keyParameter && ts.isIdentifier(keyParameter)) {
+          const keyArgument = node.arguments[0];
+          if (keyArgument && ts.isStringLiteral(keyArgument)) {
+            const previousBinding = literalBindings.get(keyParameter.text);
+            literalBindings.set(keyParameter.text, keyArgument.text);
+            ts.forEachChild(localFunction.body, visit);
+            if (previousBinding === undefined) {
+              literalBindings.delete(keyParameter.text);
+            } else {
+              literalBindings.set(keyParameter.text, previousBinding);
+            }
+            return;
+          }
+        }
       }
     }
 

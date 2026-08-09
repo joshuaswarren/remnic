@@ -205,3 +205,18 @@ test("literal key-name binding: `readFlatOrNestedConfig(cfg, \"flatKey\", …)` 
     "the flat maintenanceNamespaceFanoutEnabled key must bind through the reader helper",
   );
 });
+test("local literal-key helper calls surface every parsed contradiction cap", () => {
+  const { keys, unparseable } = extractReal();
+  for (const field of ["anchorCandidates", "searchCandidates", "maxCandidates"]) {
+    assert.ok(keys.includes(`contradictionLocalization.${field}`), `${field} must extract`);
+  }
+  assert.equal(
+    unparseable.some(
+      (entry) =>
+        entry.file.endsWith("packages/remnic-core/src/config.ts") &&
+        entry.reason.includes("computed element access"),
+    ),
+    false,
+    "local literal-key helper access must be statically resolved",
+  );
+});
