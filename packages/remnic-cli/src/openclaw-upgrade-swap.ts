@@ -1,16 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 
-export interface PreparedDirectorySwap {
-  rollbackDir?: string;
-}
-
 export interface RollbackOpenclawUpgradeOptions {
   configBackupPath?: string;
   configPath: string;
   pluginBackupDir?: string;
   pluginDir: string;
   rollbackDir?: string;
+  removeConfigIfUnbacked?: boolean;
 }
 
 export interface BestEffortGatewayRestartResult {
@@ -64,27 +61,21 @@ function createSiblingSwapPath(targetDir: string, label: string): string {
   return path.join(path.dirname(targetDir), `.${path.basename(targetDir)}.${label}.${nonce}`);
 }
 
-function cleanupDisplacedDirectoryBestEffort(
-  displacedDir: string | undefined,
-  context: string,
-): string | undefined {
+function cleanupDisplacedDirectoryBestEffort(displacedDir: string | undefined, context: string): string | undefined {
   if (!displacedDir) return undefined;
 
   try {
     fs.rmSync(displacedDir, { recursive: true, force: true });
     return undefined;
   } catch (error) {
-    return (
-      `Warning: ${context}, but failed to remove the displaced plugin copy at ` +
-      `${displacedDir}: ${describeError(error)}`
-    );
+    return `Warning: ${context}, but failed to remove the displaced plugin copy at ${displacedDir}: ${describeError(error)}`;
   }
 }
 
 export function atomicWriteFileSync(
   targetPath: string,
   data: string | NodeJS.ArrayBufferView,
-  options: { hooks?: AtomicFileOperationHooks; mode?: fs.Mode } = {},
+  options: { hooks?: AtomicFileOperationHooks; mode?: fs.Mode } = {}
 ): void {
   const resolvedTargetPath = resolveAtomicReplacementPath(targetPath);
   fs.mkdirSync(path.dirname(resolvedTargetPath), { recursive: true });
@@ -109,7 +100,7 @@ export function atomicWriteFileSync(
 export function atomicCopyFileSync(
   sourcePath: string,
   targetPath: string,
-  options: { hooks?: AtomicFileOperationHooks } = {},
+  options: { hooks?: AtomicFileOperationHooks } = {}
 ): void {
   if (!fs.existsSync(sourcePath)) return;
   const resolvedTargetPath = resolveAtomicReplacementPath(targetPath);
@@ -129,42 +120,6 @@ export function atomicCopyFileSync(
   }
 }
 
-export function swapDirectoryWithRollback(
-  stagedDir: string,
-  targetDir: string,
-  rollbackDir: string,
-): PreparedDirectorySwap {
-  let hasRollbackCopy = false;
-
-  fs.mkdirSync(path.dirname(targetDir), { recursive: true });
-  fs.rmSync(rollbackDir, { recursive: true, force: true });
-  if (fs.existsSync(targetDir)) {
-    fs.renameSync(targetDir, rollbackDir);
-    hasRollbackCopy = true;
-  }
-
-  try {
-    fs.renameSync(stagedDir, targetDir);
-  } catch (swapError) {
-    fs.rmSync(targetDir, { recursive: true, force: true });
-    if (hasRollbackCopy && fs.existsSync(rollbackDir)) {
-      try {
-        fs.renameSync(rollbackDir, targetDir);
-        hasRollbackCopy = false;
-      } catch (restoreError) {
-        throw new AggregateError(
-          [swapError, restoreError],
-          `Failed to stage upgraded plugin and failed to restore the previous plugin copy. ` +
-          `The last known-good plugin remains preserved at ${rollbackDir}.`,
-        );
-      }
-    }
-    throw swapError;
-  }
-
-  return { rollbackDir: hasRollbackCopy ? rollbackDir : undefined };
-}
-
 export function cleanupRollbackDirectory(rollbackDir?: string): void {
   if (!rollbackDir) return;
   fs.rmSync(rollbackDir, { recursive: true, force: true });
@@ -177,25 +132,17 @@ export function cleanupRollbackDirectoryBestEffort(rollbackDir?: string): string
     cleanupRollbackDirectory(rollbackDir);
     return undefined;
   } catch (error) {
-    return (
-      `Warning: the upgrade completed, but failed to remove the preserved rollback copy at ` +
-      `${rollbackDir}: ${describeError(error)}`
-    );
+    return `Warning: the upgrade completed, but failed to remove the preserved rollback copy at ${rollbackDir}: ${describeError(error)}`;
   }
 }
 
-export function restoreDirectoryFromRollback(
-  targetDir: string,
-  rollbackDir: string,
-): string | undefined {
+export function restoreDirectoryFromRollback(targetDir: string, rollbackDir: string): string | undefined {
   if (!fs.existsSync(rollbackDir)) {
     throw new Error(`Rollback directory is missing: ${rollbackDir}`);
   }
 
   fs.mkdirSync(path.dirname(targetDir), { recursive: true });
-  const displacedDir = fs.existsSync(targetDir)
-    ? createSiblingSwapPath(targetDir, "rollback-restore")
-    : undefined;
+  const displacedDir = fs.existsSync(targetDir) ? createSiblingSwapPath(targetDir, "rollback-restore") : undefined;
 
   if (displacedDir) {
     fs.renameSync(targetDir, displacedDir);
@@ -210,24 +157,18 @@ export function restoreDirectoryFromRollback(
       } catch (revertError) {
         throw new AggregateError(
           [restoreError, revertError],
-          `Failed to restore the previous plugin copy into ${targetDir}, and failed to put the ` +
-          `current plugin copy back in place. The last known-good plugin remains preserved at ` +
-          `${rollbackDir}. The displaced plugin copy remains preserved at ${displacedDir}.`,
+          `Failed to restore the previous plugin copy into ${targetDir}, and failed to put the current plugin copy back in place. The last known-good plugin remains preserved at ${rollbackDir}. The displaced plugin copy remains preserved at ${displacedDir}.`
         );
       }
     }
 
     throw new Error(
-      `Failed to restore the previous plugin copy into ${targetDir}. ` +
-      `The last known-good plugin remains preserved at ${rollbackDir}.`,
-      { cause: restoreError },
+      `Failed to restore the previous plugin copy into ${targetDir}. The last known-good plugin remains preserved at ${rollbackDir}.`,
+      { cause: restoreError }
     );
   }
 
-  return cleanupDisplacedDirectoryBestEffort(
-    displacedDir,
-    `restored the previous plugin copy into ${targetDir}`,
-  );
+  return cleanupDisplacedDirectoryBestEffort(displacedDir, `restored the previous plugin copy into ${targetDir}`);
 }
 
 function restoreDirectoryFromBackup(targetDir: string, backupDir: string): string | undefined {
@@ -238,9 +179,7 @@ function restoreDirectoryFromBackup(targetDir: string, backupDir: string): strin
   fs.mkdirSync(path.dirname(targetDir), { recursive: true });
 
   const stagedDir = createSiblingSwapPath(targetDir, "backup-restore");
-  const displacedDir = fs.existsSync(targetDir)
-    ? createSiblingSwapPath(targetDir, "pre-backup-restore")
-    : undefined;
+  const displacedDir = fs.existsSync(targetDir) ? createSiblingSwapPath(targetDir, "pre-backup-restore") : undefined;
 
   fs.cpSync(backupDir, stagedDir, { recursive: true });
 
@@ -259,25 +198,19 @@ function restoreDirectoryFromBackup(targetDir: string, backupDir: string): strin
       } catch (revertError) {
         throw new AggregateError(
           [restoreError, revertError],
-          `Failed to restore the plugin backup into ${targetDir}, and failed to put the current ` +
-          `plugin copy back in place. The durable backup remains preserved at ${backupDir}. ` +
-          `The displaced plugin copy remains preserved at ${displacedDir}.`,
+          `Failed to restore the plugin backup into ${targetDir}, and failed to put the current plugin copy back in place. The durable backup remains preserved at ${backupDir}. The displaced plugin copy remains preserved at ${displacedDir}.`
         );
       }
     }
 
     fs.rmSync(stagedDir, { recursive: true, force: true });
     throw new Error(
-      `Failed to restore the plugin backup into ${targetDir}. ` +
-      `The durable backup remains preserved at ${backupDir}.`,
-      { cause: restoreError },
+      `Failed to restore the plugin backup into ${targetDir}. The durable backup remains preserved at ${backupDir}.`,
+      { cause: restoreError }
     );
   }
 
-  return cleanupDisplacedDirectoryBestEffort(
-    displacedDir,
-    `restored the plugin backup into ${targetDir}`,
-  );
+  return cleanupDisplacedDirectoryBestEffort(displacedDir, `restored the plugin backup into ${targetDir}`);
 }
 
 function restoreFileFromBackup(targetPath: string, backupPath: string): void {
@@ -290,6 +223,7 @@ export function rollbackOpenclawUpgrade({
   pluginBackupDir,
   pluginDir,
   rollbackDir,
+  removeConfigIfUnbacked,
 }: RollbackOpenclawUpgradeOptions): string[] {
   const notes: string[] = [];
   const errors: string[] = [];
@@ -311,10 +245,7 @@ export function rollbackOpenclawUpgrade({
     if (!pluginRestored && pluginBackupDir && fs.existsSync(pluginBackupDir)) {
       const cleanupWarning = restoreDirectoryFromBackup(pluginDir, pluginBackupDir);
       if (rollbackRestoreError) {
-        notes.push(
-          `Rollback copy restore failed; restored previous plugin from durable backup at ` +
-          `${pluginBackupDir}`,
-        );
+        notes.push(`Rollback copy restore failed; restored previous plugin from durable backup at ${pluginBackupDir}`);
       } else {
         notes.push(`Restored previous plugin from backup at ${pluginBackupDir}`);
       }
@@ -341,11 +272,15 @@ export function rollbackOpenclawUpgrade({
     if (configBackupPath && fs.existsSync(configBackupPath)) {
       restoreFileFromBackup(configPath, configBackupPath);
       notes.push(`Restored OpenClaw config from backup at ${configBackupPath}`);
+    } else if (removeConfigIfUnbacked && fs.existsSync(configPath)) {
+      fs.rmSync(configPath);
+      notes.push("Removed OpenClaw config created during the failed upgrade");
     }
   } catch (error) {
     errors.push(
-      `Failed to restore OpenClaw config from backup at ${configBackupPath}: ` +
-      `${error instanceof Error ? error.message : String(error)}`,
+      configBackupPath
+        ? `Failed to restore OpenClaw config from backup at ${configBackupPath}: ${error instanceof Error ? error.message : String(error)}`
+        : `Failed to remove OpenClaw config created during the failed upgrade: ${error instanceof Error ? error.message : String(error)}`
     );
   }
 
@@ -364,15 +299,13 @@ export function createOpenclawUpgradeRollbackFailure(options: {
   const { failurePhase, installError, rollbackError } = options;
   return new AggregateError(
     [installError, rollbackError],
-    `OpenClaw upgrade failed while ${failurePhase}. ` +
-    `Automatic rollback also failed: ${describeError(rollbackError)}. ` +
-    `Original upgrade failure: ${describeError(installError)}.`,
+    `OpenClaw upgrade failed while ${failurePhase}. Automatic rollback also failed: ${describeError(rollbackError)}. Original upgrade failure: ${describeError(installError)}.`
   );
 }
 
 export function runBestEffortGatewayRestart(
   restartGateway: () => void,
-  gatewayLabel: string,
+  gatewayLabel: string
 ): BestEffortGatewayRestartResult {
   try {
     restartGateway();
@@ -383,10 +316,7 @@ export function runBestEffortGatewayRestart(
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     return {
-      message:
-        `Warning: the upgrade completed, but the automatic OpenClaw gateway restart failed: ${reason}\n` +
-        "Run this manually when you're ready:\n" +
-        `  launchctl kickstart -k gui/$(id -u)/${gatewayLabel}`,
+      message: `Warning: the upgrade completed, but the automatic OpenClaw gateway restart failed: ${reason}\nRun this manually when you're ready:\n  launchctl kickstart -k gui/$(id -u)/${gatewayLabel}`,
       restarted: false,
     };
   }

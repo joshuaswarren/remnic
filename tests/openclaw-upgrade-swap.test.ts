@@ -1,18 +1,17 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp } from "node:fs/promises";
+import test from "node:test";
 
 import {
   cleanupRollbackDirectory,
   cleanupRollbackDirectoryBestEffort,
   createOpenclawUpgradeRollbackFailure,
   restoreDirectoryFromRollback,
-  runBestEffortGatewayRestart,
   rollbackOpenclawUpgrade,
-  swapDirectoryWithRollback,
+  runBestEffortGatewayRestart,
 } from "../packages/remnic-cli/src/openclaw-upgrade-swap.ts";
 
 async function makeTmpDir(): Promise<string> {
@@ -27,23 +26,6 @@ function writeMarker(dirPath: string, value: string): void {
 function readMarker(dirPath: string): string {
   return fs.readFileSync(path.join(dirPath, "marker.txt"), "utf8");
 }
-
-test("swapDirectoryWithRollback preserves the previous plugin copy until cleanup", async () => {
-  const tmp = await makeTmpDir();
-  const pluginDir = path.join(tmp, "extensions", "openclaw-remnic");
-  const stagedDir = path.join(tmp, "staged");
-  const rollbackDir = path.join(tmp, "rollback");
-
-  writeMarker(pluginDir, "old-plugin");
-  writeMarker(stagedDir, "new-plugin");
-
-  const result = swapDirectoryWithRollback(stagedDir, pluginDir, rollbackDir);
-
-  assert.equal(result.rollbackDir, rollbackDir);
-  assert.equal(readMarker(pluginDir), "new-plugin");
-  assert.equal(readMarker(rollbackDir), "old-plugin");
-  assert.equal(fs.existsSync(stagedDir), false);
-});
 
 test("cleanupRollbackDirectory removes the preserved rollback copy after success", async () => {
   const tmp = await makeTmpDir();
@@ -83,16 +65,12 @@ test("cleanupRollbackDirectoryBestEffort degrades cleanup failures into a warnin
 test("restoreDirectoryFromRollback reinstates the previous plugin copy", async () => {
   const tmp = await makeTmpDir();
   const pluginDir = path.join(tmp, "extensions", "openclaw-remnic");
-  const stagedDir = path.join(tmp, "staged");
   const rollbackDir = path.join(tmp, "rollback");
 
-  writeMarker(pluginDir, "old-plugin");
-  writeMarker(stagedDir, "new-plugin");
+  writeMarker(pluginDir, "new-plugin");
+  writeMarker(rollbackDir, "old-plugin");
 
-  const result = swapDirectoryWithRollback(stagedDir, pluginDir, rollbackDir);
-  assert.equal(readMarker(pluginDir), "new-plugin");
-
-  const warning = restoreDirectoryFromRollback(pluginDir, result.rollbackDir!);
+  const warning = restoreDirectoryFromRollback(pluginDir, rollbackDir);
 
   assert.equal(warning, undefined);
   assert.equal(readMarker(pluginDir), "old-plugin");
@@ -102,15 +80,10 @@ test("restoreDirectoryFromRollback reinstates the previous plugin copy", async (
 test("restoreDirectoryFromRollback degrades displaced-dir cleanup failures into a warning", async () => {
   const tmp = await makeTmpDir();
   const pluginDir = path.join(tmp, "extensions", "openclaw-remnic");
-  const stagedDir = path.join(tmp, "staged");
   const rollbackDir = path.join(tmp, "rollback");
 
-  writeMarker(pluginDir, "old-plugin");
-  writeMarker(stagedDir, "new-plugin");
-
-  const result = swapDirectoryWithRollback(stagedDir, pluginDir, rollbackDir);
-  assert.equal(readMarker(pluginDir), "new-plugin");
-
+  writeMarker(pluginDir, "new-plugin");
+  writeMarker(rollbackDir, "old-plugin");
   const rmSync = fs.rmSync;
   fs.rmSync = ((target: fs.PathLike, options?: fs.RmOptions) => {
     if (String(target).includes(".openclaw-remnic.rollback-restore.")) {
@@ -120,12 +93,12 @@ test("restoreDirectoryFromRollback degrades displaced-dir cleanup failures into 
   }) as typeof fs.rmSync;
 
   try {
-    const warning = restoreDirectoryFromRollback(pluginDir, result.rollbackDir!);
+    const warning = restoreDirectoryFromRollback(pluginDir, rollbackDir);
 
     assert.match(warning ?? "", /failed to remove the displaced plugin copy/i);
     assert.match(warning ?? "", /cleanup busy/);
     assert.equal(readMarker(pluginDir), "old-plugin");
-    assert.equal(fs.existsSync(result.rollbackDir!), false);
+    assert.equal(fs.existsSync(rollbackDir), false);
   } finally {
     fs.rmSync = rmSync;
   }
@@ -134,19 +107,14 @@ test("restoreDirectoryFromRollback degrades displaced-dir cleanup failures into 
 test("restoreDirectoryFromRollback keeps the current plugin if the rollback rename fails", async () => {
   const tmp = await makeTmpDir();
   const pluginDir = path.join(tmp, "extensions", "openclaw-remnic");
-  const stagedDir = path.join(tmp, "staged");
   const rollbackDir = path.join(tmp, "rollback");
 
-  writeMarker(pluginDir, "old-plugin");
-  writeMarker(stagedDir, "new-plugin");
-
-  const result = swapDirectoryWithRollback(stagedDir, pluginDir, rollbackDir);
-  assert.equal(readMarker(pluginDir), "new-plugin");
-
+  writeMarker(pluginDir, "new-plugin");
+  writeMarker(rollbackDir, "old-plugin");
   const renameSync = fs.renameSync;
   let rollbackRenameSeen = false;
   fs.renameSync = ((from: fs.PathLike, to: fs.PathLike) => {
-    if (String(from) === result.rollbackDir && String(to) === pluginDir && !rollbackRenameSeen) {
+    if (String(from) === rollbackDir && String(to) === pluginDir && !rollbackRenameSeen) {
       rollbackRenameSeen = true;
       throw new Error("restore failed");
     }
@@ -155,11 +123,11 @@ test("restoreDirectoryFromRollback keeps the current plugin if the rollback rena
 
   try {
     assert.throws(
-      () => restoreDirectoryFromRollback(pluginDir, result.rollbackDir!),
-      /Failed to restore the previous plugin copy/,
+      () => restoreDirectoryFromRollback(pluginDir, rollbackDir),
+      /Failed to restore the previous plugin copy/
     );
     assert.equal(readMarker(pluginDir), "new-plugin");
-    assert.equal(readMarker(result.rollbackDir!), "old-plugin");
+    assert.equal(readMarker(rollbackDir), "old-plugin");
   } finally {
     fs.renameSync = renameSync;
   }
@@ -296,11 +264,7 @@ test("rollbackOpenclawUpgrade keeps the current plugin when backup restore canno
   const renameSync = fs.renameSync;
   let stagedRenameSeen = false;
   fs.renameSync = ((from: fs.PathLike, to: fs.PathLike) => {
-    if (
-      String(to) === pluginDir &&
-      String(from).includes(".openclaw-remnic.backup-restore.") &&
-      !stagedRenameSeen
-    ) {
+    if (String(to) === pluginDir && String(from).includes(".openclaw-remnic.backup-restore.") && !stagedRenameSeen) {
       stagedRenameSeen = true;
       throw new Error("swap failed");
     }
@@ -309,12 +273,13 @@ test("rollbackOpenclawUpgrade keeps the current plugin when backup restore canno
 
   try {
     assert.throws(
-      () => rollbackOpenclawUpgrade({
-        configPath,
-        pluginBackupDir,
-        pluginDir,
-      }),
-      /Failed to restore the plugin backup into/,
+      () =>
+        rollbackOpenclawUpgrade({
+          configPath,
+          pluginBackupDir,
+          pluginDir,
+        }),
+      /Failed to restore the plugin backup into/
     );
     assert.equal(readMarker(pluginDir), "new-plugin");
     assert.equal(readMarker(pluginBackupDir), "old-plugin");
@@ -356,44 +321,4 @@ test("createOpenclawUpgradeRollbackFailure preserves both the install and rollba
   assert.equal(error.errors[1], rollbackError);
   assert.match(error.message, /Automatic rollback also failed: restore rename failed/);
   assert.match(error.message, /Original upgrade failure: package\.json parse failed/);
-});
-
-test("swapDirectoryWithRollback preserves both swap and restore failures", async () => {
-  const tmp = await makeTmpDir();
-  const pluginDir = path.join(tmp, "extensions", "openclaw-remnic");
-  const stagedDir = path.join(tmp, "staged");
-  const rollbackDir = path.join(tmp, "rollback");
-
-  writeMarker(pluginDir, "old-plugin");
-  writeMarker(stagedDir, "new-plugin");
-
-  const renameSync = fs.renameSync;
-  let renameCalls = 0;
-  fs.renameSync = ((from: fs.PathLike, to: fs.PathLike) => {
-    renameCalls += 1;
-    if (renameCalls === 2) {
-      throw new Error("swap failed");
-    }
-    if (renameCalls === 3) {
-      throw new Error("restore failed");
-    }
-    return renameSync(from, to);
-  }) as typeof fs.renameSync;
-
-  try {
-    assert.throws(
-      () => swapDirectoryWithRollback(stagedDir, pluginDir, rollbackDir),
-      (error: unknown) => {
-        assert.ok(error instanceof AggregateError);
-        assert.equal(error.errors.length, 2);
-        assert.equal((error.errors[0] as Error).message, "swap failed");
-        assert.equal((error.errors[1] as Error).message, "restore failed");
-        assert.match(error.message, /Failed to stage upgraded plugin/);
-        return true;
-      },
-    );
-    assert.equal(readMarker(rollbackDir), "old-plugin");
-  } finally {
-    fs.renameSync = renameSync;
-  }
 });

@@ -23,6 +23,13 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 const CLI_SRC = path.join(ROOT, "packages", "remnic-cli", "src", "index.ts");
+const OPENCLAW_MANAGED_UPGRADE_SRC = path.join(
+  ROOT,
+  "packages",
+  "remnic-cli",
+  "src",
+  "openclaw-managed-upgrade.ts",
+);
 const OPTIONAL_BENCH_SRC = path.join(
   ROOT,
   "packages",
@@ -40,6 +47,14 @@ const OPTIONAL_WECLONE_SRC = path.join(
 
 async function readCli(): Promise<string> {
   return readFile(CLI_SRC, "utf-8");
+}
+
+async function readOpenclawUpgradeSources(): Promise<string> {
+  const [cli, managedUpgrade] = await Promise.all([
+    readCli(),
+    readFile(OPENCLAW_MANAGED_UPGRADE_SRC, "utf-8"),
+  ]);
+  return `${cli}\n${managedUpgrade}`;
 }
 
 async function readOptionalBench(): Promise<string> {
@@ -292,34 +307,37 @@ test("CLI openclaw upgrade uses collision-resistant backup directories", async (
   );
 });
 
-test("CLI openclaw upgrade rolls back if the published plugin install fails after swap", async () => {
-  const src = await readCli();
+test("CLI openclaw upgrade rolls back if the managed plugin install fails after mutation", async () => {
+  const src = await readOpenclawUpgradeSources();
   assert.ok(
     src.includes("PublishedOpenclawPluginInstallError"),
-    "CLI upgrade must track plugin install failures that happen after the staged swap",
+    "CLI upgrade must track failures after the host starts a managed install",
   );
   assert.ok(
     src.includes("let installResult") &&
-      src.includes("installResult = installPublishedOpenclawPlugin(packageSpec, pluginDir)"),
+      /installResult = installPublishedOpenclawPlugin\(\s*packageSpec,\s*pluginDir,\s*configPath,\s*managedTargetDir\s*\);/s.test(
+        src,
+      ),
     "CLI upgrade must assign the published plugin install inside the rollback try/catch",
   );
   assert.ok(
-    src.includes("const publishedInstallError = installError instanceof PublishedOpenclawPluginInstallError") &&
-      src.includes("const rollbackDir = publishedInstallError") &&
-      src.includes("? publishedInstallError.rollbackDir"),
-    "CLI upgrade must reuse rollbackDir from install failures that occur before installResult is assigned",
+    src.includes("publishedInstallError.managedRollbackDir"),
+    "CLI upgrade must reuse the managed rollback path from failures before installResult is assigned",
   );
 });
 
 test("CLI openclaw upgrade preserves the original install error if rollback also fails", async () => {
-  const src = await readCli();
+  const src = await readOpenclawUpgradeSources();
   assert.ok(
     src.includes("createOpenclawUpgradeRollbackFailure"),
     "CLI upgrade must construct a combined failure when rollback throws",
   );
   assert.ok(
-    /try\s*\{\s*rollbackNotes = rollbackOpenclawUpgrade\(\{[\s\S]*?\}\);\s*\}\s*catch \(rollbackError\)\s*\{\s*throw createOpenclawUpgradeRollbackFailure\(\{[\s\S]*?installError,[\s\S]*?rollbackError,[\s\S]*?\}\);\s*\}/s.test(src),
-    "CLI upgrade must catch rollback failures separately so the original install error is still surfaced",
+    src.includes("const rollbackErrors: unknown[] = [];") &&
+      src.includes("installResult.rollbackManagedInstall();") &&
+      src.includes("rollbackErrors.push(error);") &&
+      src.includes("rollbackError,"),
+    "CLI upgrade must preserve managed and file/config rollback failures with the original install error",
   );
   assert.ok(
     src.includes("Original failure: ${installErrorText}."),
@@ -331,39 +349,8 @@ test("CLI openclaw upgrade preserves the original install error if rollback also
   );
 });
 
-test("CLI openclaw upgrade skips rollback work when install fails before any swap or reconfigure", async () => {
-  const src = await readCli();
-  assert.ok(
-    src.includes("const shouldRestorePlugin =") &&
-      src.includes("const shouldRestoreConfig = Boolean(installResult);") &&
-      src.includes("const shouldRollback = shouldRestorePlugin || shouldRestoreConfig;"),
-    "CLI upgrade must distinguish plugin rollback from config rollback before deciding to restore",
-  );
-  assert.ok(
-    /if \(!shouldRollback\)\s*\{\s*throw new Error\(\s*`OpenClaw upgrade failed while \$\{failurePhase\}\. ` \+\s*`Original failure: \$\{installErrorText\}\.`/s.test(src),
-    "CLI upgrade must surface the install failure directly when rollback is unnecessary",
-  );
-});
-
-test("CLI openclaw upgrade preserves backup rollback for swap failures that lose rollbackDir", async () => {
-  const src = await readCli();
-  assert.ok(
-    src.includes("readonly shouldRestoreBackup: boolean;") &&
-      src.includes("this.shouldRestoreBackup = options.shouldRestoreBackup ?? false;"),
-    "published plugin install errors must carry whether durable backup rollback is still required",
-  );
-  assert.ok(
-    src.includes("shouldRestoreBackup = swapError instanceof AggregateError;"),
-    "published plugin install must remember swap+restore double failures that still need backup rollback",
-  );
-  assert.ok(
-    src.includes("publishedInstallError?.shouldRestoreBackup"),
-    "CLI upgrade rollback gating must honor the durable-backup restore signal from install failures",
-  );
-});
-
-test("CLI openclaw upgrade rejects file-backed pluginDir paths before backup and swap", async () => {
-  const src = await readCli();
+test("CLI openclaw upgrade rejects file-backed pluginDir paths before backup and install", async () => {
+  const src = await readOpenclawUpgradeSources();
   assert.ok(
     src.includes("function assertDirectoryPathOrMissing"),
     "CLI upgrade must define a shared directory guard for pluginDir",
@@ -371,13 +358,6 @@ test("CLI openclaw upgrade rejects file-backed pluginDir paths before backup and
   assert.ok(
     src.includes('assertDirectoryPathOrMissing(pluginDir, "OpenClaw plugin dir");'),
     "CLI upgrade must validate pluginDir before backup/install work begins",
-  );
-  assert.ok(
-    src.includes('childProcess.execFileSync("npm", ["install", "--omit=dev"]') &&
-      src.includes('assertDirectoryPathOrMissing(pluginDir, "OpenClaw plugin dir");') &&
-      src.includes("const swapResult = (() => {") &&
-      src.includes("return swapDirectoryWithRollback(stagedDir, pluginDir, rollbackDir);"),
-    "published plugin installs must validate pluginDir immediately before the staged swap",
   );
 });
 
