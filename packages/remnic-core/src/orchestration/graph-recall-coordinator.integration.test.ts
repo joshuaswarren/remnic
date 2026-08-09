@@ -209,12 +209,40 @@ test("real coordinator demotes a path through an archived intermediate", async (
       memory.path.endsWith(fixture.intermediatePath),
     );
     assert.ok(intermediate);
+    const intermediateId = intermediate.frontmatter.id;
     assert.ok(await fixture.storage.archiveMemory(intermediate));
-    const coordinator = makeCoordinator(makeConfig(), new Map([[fixture.name, fixture]]));
+    const archived = await fixture.storage.readArchivedMemories();
+    const archivedIntermediate = archived.find((memory) => memory.frontmatter.id === intermediateId);
+    assert.ok(archivedIntermediate);
+    assert.equal(path.basename(archivedIntermediate.path, ".md"), intermediateId);
+    const config = makeConfig();
+    const coordinator = makeCoordinator(config, new Map([[fixture.name, fixture]]));
     const result = await expand(coordinator, [seedResult(fixture)], [fixture.name]);
     const stale = result.expandedPaths.find((entry) => entry.path.endsWith(fixture.stalePath));
-    assert.equal(result.expandedPaths[0]?.path.endsWith(fixture.cleanPath), true);
-    assert.equal(stale?.pathPenaltyApplied, true);
+    const clean = result.expandedPaths.find((entry) => entry.path.endsWith(fixture.cleanPath));
+    assert.ok(clean);
+    assert.ok(stale);
+    assert.deepEqual(stale.pathNodeIds, [fixture.seedPath, fixture.intermediatePath, fixture.stalePath]);
+    const activation = await new GraphIndex(
+      fixture.dir,
+      config as unknown as GraphConfig,
+    ).spreadingActivation([fixture.seedPath], config.maxGraphTraversalSteps);
+    const expectedScore = (candidatePath: string, penalty: number): number => {
+      const candidate = activation.find((item) => item.path === candidatePath);
+      assert.ok(candidate);
+      return (
+        blendGraphExpandedRecallScore({
+          graphActivationScore: candidate.score,
+          seedRecallScore: 0.5,
+          activationWeight: config.graphExpansionActivationWeight,
+          blendMin: config.graphExpansionBlendMin,
+          blendMax: config.graphExpansionBlendMax,
+        }) * penalty
+      );
+    };
+    assert.equal(clean.score, expectedScore(fixture.cleanPath, 1));
+    assert.equal(stale.score, expectedScore(fixture.stalePath, config.graphPathScoring.invalidNodePenalty));
+    assert.equal(stale.pathPenaltyApplied, true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
