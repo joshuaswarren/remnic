@@ -7,6 +7,7 @@ import {
 import { type CueAnchor, type CueAnchorType, upsertCueAnchors } from "./cue-anchors.js";
 import { compareDeterministicStrings } from "./deterministic-order.js";
 import { normalizeRecallTokens } from "./recall-tokenization.js";
+import { sanitizeMemoryContent } from "./sanitize.js";
 
 export interface HarmonicCueAnchorInput {
   type: CueAnchorType;
@@ -42,6 +43,16 @@ const CUE_ANCHOR_TYPES: Record<CueAnchorType, true> = {
   constraint: true,
   date: true,
 };
+
+function safeHarmonicDisplayText(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const candidate = value.trim();
+  if (candidate.length === 0) return undefined;
+  const sanitized = sanitizeMemoryContent(candidate);
+  if (!sanitized.clean) return undefined;
+  const clean = sanitized.text.trim();
+  return clean.length > 0 ? clean : undefined;
+}
 function hashId(prefix: string, value: string): string {
   return `${prefix}${createHash("sha256").update(value).digest("hex").slice(0, 16)}`;
 }
@@ -85,9 +96,8 @@ export function normalizeCueAnchorInputs(value: unknown, maxAnchors = 3): Harmon
     if (typeof record.type !== "string" || !Object.hasOwn(CUE_ANCHOR_TYPES, record.type)) {
       continue;
     }
-    if (typeof record.value !== "string") continue;
-    const anchorValue = record.value.trim();
-    if (anchorValue.length === 0 || anchorValue.length > 120) continue;
+    const anchorValue = safeHarmonicDisplayText(record.value);
+    if (anchorValue === undefined || anchorValue.length > 120) continue;
     const type = record.type as CueAnchorType;
     const normalizedCue = normalizeRecallTokens(anchorValue).join(" ");
     if (normalizedCue.length === 0) continue;
@@ -144,13 +154,18 @@ export function deriveHarmonicRecords(input: HarmonicConstructionInput): {
     .map((fact) => ({
       ...fact,
       memoryId: fact.memoryId.trim(),
-      content: fact.content.trim(),
+      content: safeHarmonicDisplayText(fact.content) ?? "",
       insertedAt:
         fact.insertedAt && Number.isFinite(Date.parse(fact.insertedAt))
           ? new Date(fact.insertedAt).toISOString()
           : input.recordedAt,
-      tags: sortedUnique(fact.tags.map((tag) => tag.trim()).filter(Boolean)),
-      entityRef: fact.entityRef?.trim() || undefined,
+      tags: sortedUnique(
+        fact.tags.flatMap((tag) => {
+          const safeTag = safeHarmonicDisplayText(tag);
+          return safeTag ? [safeTag] : [];
+        })
+      ),
+      entityRef: safeHarmonicDisplayText(fact.entityRef),
       cueAnchors: normalizeCueAnchorInputs(fact.cueAnchors),
     }))
     .filter((fact) => fact.memoryId.length > 0 && fact.content.length > 0)
@@ -164,7 +179,7 @@ export function deriveHarmonicRecords(input: HarmonicConstructionInput): {
 
   const sourceMemoryIds = sortedUnique(persistedFacts.map((fact) => fact.memoryId));
   const episodeNodeId = hashId("ep-", `${input.sessionKey}|${input.recordedAt}|${sourceMemoryIds.join("|")}`);
-  const episodeTitle = input.episodeTitle?.trim() || persistedFacts[0]?.content || "Memory episode";
+  const episodeTitle = safeHarmonicDisplayText(input.episodeTitle) ?? persistedFacts[0]?.content ?? "Memory episode";
   const episodeNode: AbstractionNode = {
     schemaVersion: 1,
     nodeId: episodeNodeId,
@@ -188,8 +203,8 @@ export function deriveHarmonicRecords(input: HarmonicConstructionInput): {
 
   const mentionGroups = new Map<string, { names: string[]; types: string[]; facts: string[]; segment: string }>();
   for (const mention of input.entityMentions) {
-    const name = mention.name.trim();
-    if (name.length === 0) continue;
+    const name = safeHarmonicDisplayText(mention.name);
+    if (!name) continue;
     const identity = normalizedHarmonicEntityIdentity(name);
     const group = mentionGroups.get(identity) ?? {
       names: [],
@@ -199,7 +214,12 @@ export function deriveHarmonicRecords(input: HarmonicConstructionInput): {
     };
     group.names.push(name);
     group.types.push(mention.type.trim().toLowerCase());
-    group.facts.push(...(mention.facts ?? []).map((fact) => fact.trim()).filter(Boolean));
+    group.facts.push(
+      ...(mention.facts ?? []).flatMap((fact) => {
+        const safeFact = safeHarmonicDisplayText(fact);
+        return safeFact ? [safeFact] : [];
+      })
+    );
     mentionGroups.set(identity, group);
   }
   const groupsPerSegment = new Map<string, number>();
@@ -269,7 +289,9 @@ export function deriveHarmonicRecords(input: HarmonicConstructionInput): {
     if (date) deterministicAnchors.push({ type: "date", value: date });
 
     for (const anchorInput of [...fact.cueAnchors, ...deterministicAnchors]) {
-      const normalizedCue = normalizeRecallTokens(anchorInput.value).join(" ");
+      const anchorValue = safeHarmonicDisplayText(anchorInput.value);
+      if (anchorValue === undefined) continue;
+      const normalizedCue = normalizeRecallTokens(anchorValue).join(" ");
       if (normalizedCue.length === 0) continue;
       const anchorId = hashId("cue-", `${anchorInput.type}:${normalizedCue}`);
       const topicNodeId = fact.entityRef ? topicNodeIdForEntityRef(fact.entityRef) : undefined;
@@ -290,9 +312,9 @@ export function deriveHarmonicRecords(input: HarmonicConstructionInput): {
         anchorId,
         anchorType: anchorInput.type,
         anchorValue:
-          existing && compareDeterministicStrings(existing.anchorValue, anchorInput.value) < 0
+          existing && compareDeterministicStrings(existing.anchorValue, anchorValue) < 0
             ? existing.anchorValue
-            : anchorInput.value,
+            : anchorValue,
         normalizedCue,
         recordedAt: input.recordedAt,
         sessionKey: input.sessionKey,

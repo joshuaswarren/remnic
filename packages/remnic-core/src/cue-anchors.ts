@@ -70,7 +70,10 @@ function validateSourceMemoryIdsByNodeRef(raw: unknown): Record<string, string[]
   if (!isRecord(raw)) throw new Error("sourceMemoryIdsByNodeRef must be an object of string arrays");
   const entries: Array<[string, string[]]> = [];
   for (const [rawNodeRef, rawSourceMemoryIds] of Object.entries(raw)) {
-    const nodeRef = assertSafePathSegment(rawNodeRef, `sourceMemoryIdsByNodeRef.${rawNodeRef}`);
+    const nodeRef = assertSafePathSegment(
+      assertString(rawNodeRef, "sourceMemoryIdsByNodeRef key"),
+      "sourceMemoryIdsByNodeRef.nodeRef"
+    );
     const sourceMemoryIds = optionalStringArray(rawSourceMemoryIds, `sourceMemoryIdsByNodeRef.${nodeRef}`);
     if (sourceMemoryIds) entries.push([nodeRef, mergeSortedUniqueStrings(sourceMemoryIds)]);
   }
@@ -94,13 +97,21 @@ function mergeSourceMemoryIdsByNodeRef(
 
 function boundSourceMemoryIdsByNodeRef(
   sourceMemoryIdsByNodeRef: Record<string, string[]> | undefined,
-  nodeRefs: string[]
+  nodeRefs: string[],
+  liveNodes?: Map<string, AbstractionNode>
 ): Record<string, string[]> | undefined {
   if (!sourceMemoryIdsByNodeRef) return undefined;
   const retained = Object.fromEntries(
-    nodeRefs
-      .filter((nodeRef) => sourceMemoryIdsByNodeRef[nodeRef])
-      .map((nodeRef) => [nodeRef, sourceMemoryIdsByNodeRef[nodeRef]] as const)
+    nodeRefs.flatMap((nodeRef) => {
+      const sourceMemoryIds = sourceMemoryIdsByNodeRef[nodeRef];
+      if (!sourceMemoryIds) return [];
+      const liveSourceMemoryIds = liveNodes?.get(nodeRef)?.sourceMemoryIds;
+      if (liveNodes && !liveSourceMemoryIds) return [];
+      const retainedSourceMemoryIds = mergeSortedUniqueStrings(sourceMemoryIds).filter((sourceMemoryId) =>
+        liveSourceMemoryIds ? liveSourceMemoryIds.includes(sourceMemoryId) : true
+      );
+      return retainedSourceMemoryIds.length > 0 ? [[nodeRef, retainedSourceMemoryIds] as const] : [];
+    })
   );
   return validateSourceMemoryIdsByNodeRef(retained);
 }
@@ -245,10 +256,10 @@ export async function upsertCueAnchors(options: {
 }
 
 function compareIncomingCueAnchors(left: CueAnchor, right: CueAnchor): number {
-  return (
-    Date.parse(left.recordedAt) - Date.parse(right.recordedAt) ||
-    compareDeterministicStrings(canonicalCueAnchorKey(left), canonicalCueAnchorKey(right))
-  );
+  const recordedAtComparison = Date.parse(left.recordedAt) - Date.parse(right.recordedAt);
+  if (recordedAtComparison < 0) return -1;
+  if (recordedAtComparison > 0) return 1;
+  return compareDeterministicStrings(canonicalCueAnchorKey(left), canonicalCueAnchorKey(right));
 }
 
 function canonicalMetadata(metadata: Record<string, string> | undefined): Record<string, string> {
@@ -282,7 +293,8 @@ function mergeCueAnchors(
     nodeRefs,
     sourceMemoryIdsByNodeRef: boundSourceMemoryIdsByNodeRef(
       mergeSourceMemoryIdsByNodeRef(existing?.sourceMemoryIdsByNodeRef, incoming.sourceMemoryIdsByNodeRef),
-      nodeRefs
+      nodeRefs,
+      liveNodes
     ),
     tags: mergeSortedValues(existing?.tags, incoming.tags),
     metadata: mergedMetadata,
@@ -321,7 +333,11 @@ export async function pruneOrphanCueAnchors(options: {
         continue;
       }
       const nodeRefs = boundNodeRefs(anchor.nodeRefs, liveNodes);
-      const sourceMemoryIdsByNodeRef = boundSourceMemoryIdsByNodeRef(anchor.sourceMemoryIdsByNodeRef, nodeRefs);
+      const sourceMemoryIdsByNodeRef = boundSourceMemoryIdsByNodeRef(
+        anchor.sourceMemoryIdsByNodeRef,
+        nodeRefs,
+        liveNodes
+      );
       if (nodeRefs.length === 0) {
         try {
           await unlink(filePath);

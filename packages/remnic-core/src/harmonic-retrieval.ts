@@ -100,10 +100,16 @@ function projectSourceBackedNode(
   };
 }
 
-function anchorMatchesProjectedNode(anchor: CueAnchor, nodeRef: string, node: AbstractionNode): boolean {
+function anchorMatchesProjectedNode(
+  anchor: CueAnchor,
+  nodeRef: string,
+  node: AbstractionNode,
+  allowLegacyAttribution: boolean
+): boolean {
   const activeSourceMemoryIds = node.sourceMemoryIds ?? [];
   if (activeSourceMemoryIds.length === 0) return true;
-  const anchorSourceMemoryIds = anchor.sourceMemoryIdsByNodeRef?.[nodeRef] ?? [];
+  if (!anchor.sourceMemoryIdsByNodeRef) return allowLegacyAttribution;
+  const anchorSourceMemoryIds = anchor.sourceMemoryIdsByNodeRef[nodeRef] ?? [];
   return anchorSourceMemoryIds.some((sourceMemoryId) => activeSourceMemoryIds.includes(sourceMemoryId));
 }
 
@@ -247,8 +253,12 @@ export async function searchHarmonicRetrieval(options: {
   const sourceBackedNodes = nodes.filter((node) => (node.sourceMemoryIds?.length ?? 0) > 0);
   const sourceMemories: SourceMemoryMap =
     sourceBackedNodes.length > 0 ? await readSourceMemories(options) : new Map<string, MemoryFile>();
+  const legacyCompatibleNodeRefs = new Set<string>();
   const eligibleNodes = nodes.flatMap((node) => {
     const projected = projectSourceBackedNode(node, sourceMemories, options.memoryDir);
+    if (projected === node && (node.sourceMemoryIds?.length ?? 0) > 0) {
+      legacyCompatibleNodeRefs.add(node.nodeId);
+    }
     return projected ? [projected] : [];
   });
   const candidates = new Map<string, HarmonicCandidate>();
@@ -276,7 +286,9 @@ export async function searchHarmonicRetrieval(options: {
       if (score <= 0) continue;
       for (const nodeRef of anchor.nodeRefs) {
         const node = nodeIndex.get(nodeRef);
-        if (!node || !anchorMatchesProjectedNode(anchor, nodeRef, node)) continue;
+        if (!node || !anchorMatchesProjectedNode(anchor, nodeRef, node, legacyCompatibleNodeRefs.has(nodeRef))) {
+          continue;
+        }
         const existing = candidates.get(nodeRef) ?? {
           node,
           nodeScore: 0,

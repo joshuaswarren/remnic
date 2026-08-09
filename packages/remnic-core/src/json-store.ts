@@ -79,6 +79,8 @@ const JSON_STORE_LOCK_TIMEOUT_MS = 10_000;
 
 type JsonStoreMutationLockTestHooks = {
   beforeLockOwnerWrite?: (lockPath: string, ownerToken: string) => Promise<void> | void;
+  beforeLockOwnershipConfirm?: (lockPath: string, ownerToken: string) => Promise<void> | void;
+  afterReclaimGuardWrite?: (reclaimPath: string, ownerToken: string) => Promise<void> | void;
   retryMs?: number;
   staleLockMs?: number;
   timeoutMs?: number;
@@ -107,6 +109,53 @@ async function closeAndRemoveJsonStoreReclaimGuard(reclaimPath: string, reclaimH
   await unlink(reclaimPath).catch((error) => {
     if (!hasErrorCode(error, "ENOENT")) throw error;
   });
+}
+
+async function removeStaleJsonStoreReclaimGuard(reclaimPath: string): Promise<void> {
+  let initial: JsonStoreLockState;
+  try {
+    initial = await readJsonStoreLockState(reclaimPath);
+  } catch (error) {
+    if (hasErrorCode(error, "ENOENT")) return;
+    throw error;
+  }
+  if (Date.now() - initial.mtimeMs <= jsonStoreLockStaleMs()) return;
+
+  let ownerPid: number | undefined;
+  try {
+    const metadata = JSON.parse(initial.content) as { pid?: unknown };
+    ownerPid = typeof metadata.pid === "number" && Number.isInteger(metadata.pid) ? metadata.pid : undefined;
+  } catch {
+    ownerPid = undefined;
+  }
+  if (ownerPid !== undefined && processIsRunning(ownerPid)) return;
+
+  let confirmed: JsonStoreLockState;
+  try {
+    confirmed = await readJsonStoreLockState(reclaimPath);
+  } catch (error) {
+    if (hasErrorCode(error, "ENOENT")) return;
+    throw error;
+  }
+  if (!sameJsonStoreLockState(initial, confirmed)) return;
+  await unlink(reclaimPath).catch((error) => {
+    if (!hasErrorCode(error, "ENOENT")) throw error;
+  });
+}
+
+async function acquireJsonStoreReclaimGuard(reclaimPath: string): Promise<FileHandle | undefined> {
+  try {
+    return await open(reclaimPath, "wx", 0o600);
+  } catch (error) {
+    if (!hasErrorCode(error, "EEXIST")) throw error;
+    await removeStaleJsonStoreReclaimGuard(reclaimPath);
+    try {
+      return await open(reclaimPath, "wx", 0o600);
+    } catch (retryError) {
+      if (hasErrorCode(retryError, "EEXIST")) return undefined;
+      throw retryError;
+    }
+  }
 }
 
 function waitForJsonStoreLock(): Promise<void> {
@@ -153,17 +202,23 @@ function sameJsonStoreLockState(left: JsonStoreLockState, right: JsonStoreLockSt
   );
 }
 
+async function removeJsonStoreMutationLockIfOwned(lockPath: string, token: string): Promise<void> {
+  try {
+    const state = await readJsonStoreLockState(lockPath);
+    const metadata = JSON.parse(state.content) as { token?: unknown };
+    if (metadata.token === token) await unlink(lockPath);
+  } catch (error) {
+    if (!hasErrorCode(error, "ENOENT") && !(error instanceof SyntaxError)) throw error;
+  }
+}
+
 async function removeStaleJsonStoreLock(lockPath: string): Promise<void> {
   const reclaimPath = `${lockPath}.reclaim`;
-  let reclaimHandle: FileHandle;
-  try {
-    reclaimHandle = await open(reclaimPath, "wx", 0o600);
-  } catch (error) {
-    if (hasErrorCode(error, "EEXIST")) return;
-    throw error;
-  }
+  const reclaimHandle = await acquireJsonStoreReclaimGuard(reclaimPath);
+  if (!reclaimHandle) return;
   try {
     await reclaimHandle.writeFile(JSON.stringify({ pid: process.pid }), "utf8");
+    await jsonStoreMutationLockTestHooks?.afterReclaimGuardWrite?.(reclaimPath, String(process.pid));
 
     let initial: JsonStoreLockState;
     try {
@@ -205,11 +260,8 @@ async function confirmJsonStoreMutationLockOwnership(
 ): Promise<boolean> {
   const reclaimPath = `${lockPath}.reclaim`;
   while (true) {
-    let reclaimHandle: FileHandle;
-    try {
-      reclaimHandle = await open(reclaimPath, "wx", 0o600);
-    } catch (error) {
-      if (!hasErrorCode(error, "EEXIST")) throw error;
+    const reclaimHandle = await acquireJsonStoreReclaimGuard(reclaimPath);
+    if (!reclaimHandle) {
       if (Date.now() >= deadline) return false;
       await waitForJsonStoreLock();
       continue;
@@ -255,8 +307,10 @@ async function acquireJsonStoreMutationFileLock(key: string): Promise<() => Prom
     } finally {
       await handle.close().catch(() => undefined);
     }
+    await jsonStoreMutationLockTestHooks?.beforeLockOwnershipConfirm?.(lockPath, token);
 
     if (!(await confirmJsonStoreMutationLockOwnership(lockPath, token, deadline))) {
+      await removeJsonStoreMutationLockIfOwned(lockPath, token);
       if (Date.now() >= deadline) {
         throw new Error(`Timed out acquiring JSON store mutation lock: ${lockPath}`);
       }

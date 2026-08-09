@@ -55,12 +55,14 @@ export async function persistConstructedHarmonicRecords(options: {
     options.validAt && Number.isFinite(Date.parse(options.validAt))
       ? new Date(options.validAt).toISOString()
       : new Date().toISOString();
-  for (const entry of options.entries) {
+  const entries = [...options.entries];
+  const sharedEpisodeTitle = entries.length === 1 ? options.episodeTitle : undefined;
+  for (const entry of entries) {
     try {
       const records = deriveHarmonicRecords({
         sessionKey,
         recordedAt,
-        episodeTitle: options.episodeTitle,
+        episodeTitle: sharedEpisodeTitle,
         persistedFacts: entry.facts,
         entityMentions: filterHarmonicEntityMentions(entry.facts, options.entityMentions).map((entity) => ({
           name: entity.name,

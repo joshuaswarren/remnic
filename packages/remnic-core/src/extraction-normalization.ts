@@ -1,5 +1,6 @@
 import { EXTRACTION_RESPONSE_PLACEHOLDERS } from "./extraction-prompt.js";
 import { normalizeRecallTokens } from "./recall-tokenization.js";
+import { sanitizeMemoryContent } from "./sanitize.js";
 import type { ExtractedFact } from "./types.js";
 
 export function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -40,22 +41,25 @@ export function extractionCueAnchors(value: unknown): NonNullable<ExtractedFact[
     if (!isPlainRecord(candidate)) continue;
     const type = extractionText(candidate.type);
     const anchorValue = extractionText(candidate.value);
+    const sanitizedAnchor = anchorValue === undefined ? undefined : sanitizeMemoryContent(anchorValue);
+    const sanitizedAnchorValue = sanitizedAnchor?.clean === true ? sanitizedAnchor.text.trim() : undefined;
     if (
       type === undefined ||
-      anchorValue === undefined ||
-      anchorValue.length > 120 ||
+      sanitizedAnchorValue === undefined ||
+      sanitizedAnchorValue.length === 0 ||
+      sanitizedAnchorValue.length > 120 ||
       !EXTRACTION_CUE_ANCHOR_TYPES.has(type)
     ) {
       continue;
     }
-    const normalizedCue = normalizeRecallTokens(anchorValue).join(" ");
+    const normalizedCue = normalizeRecallTokens(sanitizedAnchorValue).join(" ");
     if (normalizedCue.length === 0) continue;
     const identity = `${type}:${normalizedCue}`;
     const existing = anchorsByIdentity.get(identity);
-    if (!existing || anchorValue.localeCompare(existing.value) < 0) {
+    if (!existing || sanitizedAnchorValue.localeCompare(existing.value) < 0) {
       anchorsByIdentity.set(identity, {
         type: type as NonNullable<ExtractedFact["cueAnchors"]>[number]["type"],
-        value: anchorValue,
+        value: sanitizedAnchorValue,
       });
     }
   }

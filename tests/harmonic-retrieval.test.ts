@@ -407,6 +407,19 @@ test("harmonic retrieval projects mixed source nodes from active memories only",
         nodeRefs: ["inactive-only-node"],
       },
     });
+    await recordCueAnchor({
+      memoryDir,
+      anchor: {
+        schemaVersion: 1,
+        anchorId: "legacy-mixed-anchor",
+        anchorType: "constraint",
+        anchorValue: "retired legacy cue",
+        normalizedCue: "retired legacy cue",
+        recordedAt: "2026-03-08T00:02:00.000Z",
+        sessionKey: "agent:source-projection",
+        nodeRefs: ["mixed-source-node"],
+      },
+    });
 
     const results = await searchHarmonicRetrieval({
       memoryDir,
@@ -437,6 +450,13 @@ test("harmonic retrieval projects mixed source nodes from active memories only",
       anchorsEnabled: true,
     });
     assert.deepEqual(inactiveResults, []);
+    const legacyMixedResults = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "retired legacy cue",
+      maxResults: 10,
+      anchorsEnabled: true,
+    });
+    assert.deepEqual(legacyMixedResults, []);
   } finally {
     StorageManager.prototype.readAllMemories = originalReadAllMemories;
     await rm(memoryDir, { recursive: true, force: true });
@@ -479,6 +499,19 @@ test("harmonic retrieval keeps source-less and fully active nodes unchanged", as
       summary: "source-less summary",
     };
     await recordAbstractionNode({ memoryDir, node: sourceLessNode });
+    await recordCueAnchor({
+      memoryDir,
+      anchor: {
+        schemaVersion: 1,
+        anchorId: "legacy-active-anchor",
+        anchorType: "constraint",
+        anchorValue: "zephyr quasar",
+        normalizedCue: "zephyr quasar",
+        recordedAt: "2026-03-08T00:01:00.000Z",
+        sessionKey: "agent:source-projection",
+        nodeRefs: ["fully-active-node"],
+      },
+    });
 
     const activeResults = await searchHarmonicRetrieval({
       memoryDir,
@@ -487,6 +520,16 @@ test("harmonic retrieval keeps source-less and fully active nodes unchanged", as
       anchorsEnabled: false,
     });
     assert.deepEqual(activeResults[0]?.node, fullyActiveNode);
+    const legacyActiveResults = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "zephyr quasar",
+      maxResults: 10,
+      anchorsEnabled: true,
+    });
+    assert.deepEqual(
+      legacyActiveResults.map((result) => result.node.nodeId),
+      ["fully-active-node"]
+    );
 
     const sourceLessResults = await searchHarmonicRetrieval({
       memoryDir,

@@ -13,9 +13,22 @@ import path from "node:path";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { parseConfig } from "../src/config.js";
 import { Orchestrator } from "../src/orchestrator.js";
+import type { ExtractionEngine } from "../packages/remnic-core/src/extraction.js";
+import type { MemoryFile } from "../packages/remnic-core/src/types.js";
 import { recordAbstractionNode } from "../src/abstraction-nodes.js";
 import { recordCueAnchor } from "../src/cue-anchors.js";
 import { LifecyclePolicyCoordinator } from "../packages/remnic-core/src/orchestration/lifecycle-policy-coordinator.js";
+
+type Consolidate = ExtractionEngine["consolidate"];
+
+function installConsolidationStub(orchestrator: Orchestrator, consolidate: Consolidate): void {
+  const descriptor = Object.getOwnPropertyDescriptor(orchestrator, "extraction");
+  assert.ok(descriptor, "Orchestrator extraction field must exist");
+  Object.defineProperty(orchestrator, "extraction", {
+    configurable: true,
+    value: { consolidate },
+  });
+}
 
 test("consolidation with only an INVALIDATE memory-item action records a catalog write touch", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-consolidate-catalog-"));
@@ -45,12 +58,17 @@ test("consolidation with only an INVALIDATE memory-item action records a catalog
       ids.push((await storage.writeMemory("fact", `seed fact ${i}`, { source: "test" })).id);
     }
     const staleId = ids[0];
-    Reflect.set(orchestrator, "extraction", {
-      consolidate: async () => ({
-        items: [{ action: "INVALIDATE", existingId: staleId }],
+    let receivedNewMemories: MemoryFile[] | undefined;
+    let receivedExistingMemories: MemoryFile[] | undefined;
+    installConsolidationStub(orchestrator, async (newMemories, existingMemories, currentProfile) => {
+      receivedNewMemories = newMemories;
+      receivedExistingMemories = existingMemories;
+      assert.equal(currentProfile, "");
+      return {
+        items: [{ action: "INVALIDATE", existingId: staleId, reason: "synthetic invalidation" }],
         profileUpdates: [],
         entityUpdates: [],
-      }),
+      };
     });
 
     // Establish the default namespace in the catalog so we can observe its
@@ -60,6 +78,14 @@ test("consolidation with only an INVALIDATE memory-item action records a catalog
     const beforeWriteAt = before?.lastWriteAt;
 
     await orchestrator.runConsolidationNow();
+    assert.deepEqual(
+      receivedNewMemories?.map((memory) => memory.content),
+      ids.map((_, index) => `seed fact ${4 - index}`)
+    );
+    assert.deepEqual(
+      receivedExistingMemories?.map((memory) => memory.content),
+      ids.map((_, index) => `seed fact ${index}`)
+    );
 
     // The catalog touch is best-effort/fire-and-forget; let its serialized write
     // chain settle, then read back the record.
@@ -123,13 +149,25 @@ test("cleanup-only consolidation (TTL expiry, no LLM outputs) records a catalog 
       expiresAt: new Date(Date.now() - 60_000).toISOString(),
     });
 
-    // No LLM outputs at all — only cleanup will mutate the namespace.
-    Reflect.set(orchestrator, "extraction", {
-      consolidate: async () => ({ items: [], profileUpdates: [], entityUpdates: [] }),
+    let receivedNewMemories: MemoryFile[] | undefined;
+    let receivedExistingMemories: MemoryFile[] | undefined;
+    installConsolidationStub(orchestrator, async (newMemories, existingMemories, currentProfile) => {
+      receivedNewMemories = newMemories;
+      receivedExistingMemories = existingMemories;
+      assert.equal(currentProfile, "");
+      return { items: [], profileUpdates: [], entityUpdates: [] };
     });
 
     await orchestrator.namespaceCatalog.registerConfiguredNamespaces();
     await orchestrator.runConsolidationNow();
+    assert.deepEqual(
+      receivedNewMemories?.map((memory) => memory.content),
+      ["expired speculative fact", "keeper fact 3", "keeper fact 2", "keeper fact 1", "keeper fact 0"]
+    );
+    assert.deepEqual(
+      receivedExistingMemories?.map((memory) => memory.content),
+      ["keeper fact 0", "keeper fact 1", "keeper fact 2", "keeper fact 3", "expired speculative fact"]
+    );
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     const record = await orchestrator.namespaceCatalog.getNamespaceRecord(config.defaultNamespace);
