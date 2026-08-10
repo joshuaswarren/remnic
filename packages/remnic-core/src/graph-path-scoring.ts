@@ -1,11 +1,15 @@
 import type { ActivationPath } from "./graph.js";
-import type { MemoryStatus } from "./types.js";
+import type { MemoryFrontmatter, MemoryStatus } from "./types.js";
+import { isValidAsOf } from "./temporal-validity.js";
 
 /** Memory state used to score an intermediate path node. */
-export interface PathNodeState {
+export interface PathNodeState
+  extends Pick<
+    MemoryFrontmatter,
+    "valid_at" | "invalid_at" | "created" | "supersededAt" | "eventTimeSource"
+  > {
   id: string;
   status: MemoryStatus | null;
-  invalidAt: string | null;
 }
 
 /** Configuration for graph-path evidence scoring. */
@@ -16,12 +20,12 @@ export interface PathScoringOptions {
 
 function isInvalidIntermediate(state: PathNodeState | undefined, asOfMs: number): boolean {
   if (!state || state.status === null) return false;
-  if (state.invalidAt !== null) {
-    const invalidAtMs = Date.parse(state.invalidAt);
-    if (!Number.isFinite(invalidAtMs)) return false;
-    return invalidAtMs <= asOfMs;
-  }
-  return state.status !== "active";
+  if (!isValidAsOf({ ...state, status: state.status }, asOfMs)) return true;
+
+  const hasTemporalEnd =
+    (state.invalid_at?.trim().length ?? 0) > 0 ||
+    (state.status === "superseded" && (state.supersededAt?.trim().length ?? 0) > 0);
+  return state.status !== "active" && !hasTemporalEnd;
 }
 
 export interface PathScoreDetail {

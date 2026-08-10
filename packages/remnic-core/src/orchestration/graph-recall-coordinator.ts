@@ -418,11 +418,14 @@ export class GraphRecallCoordinator {
       const addState = (memory: MemoryFile): PathNodeState => {
         const relativePath = graphPathRelativeToStorage(storage.dir, memory.path);
         const rawStatus: unknown = memory.frontmatter.status;
-        const rawInvalidAt: unknown = memory.frontmatter.invalid_at;
         const state: PathNodeState = {
           id: memory.frontmatter.id,
           status: normalizePathNodeStatus(rawStatus),
-          invalidAt: typeof rawInvalidAt === "string" ? rawInvalidAt : null,
+          created: memory.frontmatter.created,
+          valid_at: memory.frontmatter.valid_at,
+          invalid_at: memory.frontmatter.invalid_at,
+          supersededAt: memory.frontmatter.supersededAt,
+          eventTimeSource: memory.frontmatter.eventTimeSource,
         };
         const add = (key: string): void => {
           if (!nodeStates.has(key)) nodeStates.set(key, state);

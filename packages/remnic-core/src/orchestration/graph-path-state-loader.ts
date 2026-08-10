@@ -10,6 +10,7 @@ interface ArchivePathIndex {
 }
 const MAX_ARCHIVE_PATH_INDEXES = 32;
 const MAX_ARCHIVE_PATH_INDEX_BUILDS = 32;
+const MAX_ARCHIVE_PATH_INDEX_GENERATION_RETRIES = 1;
 
 export class GraphPathStateLoader {
   private archivePathIndexes?: Map<string, ArchivePathIndex>;
@@ -83,13 +84,14 @@ export class GraphPathStateLoader {
     deadlineAtMs: number | null | undefined,
   ): Promise<ArchivePathIndex | null> {
     if (typeof deadlineAtMs === "number" && Date.now() >= deadlineAtMs) return null;
-    const version = await storage.getArchiveMutationVersion();
-    if (typeof deadlineAtMs === "number" && Date.now() >= deadlineAtMs) return null;
     if (!this.archivePathIndexes) this.archivePathIndexes = new Map();
     const archivePathIndexes = this.archivePathIndexes;
-    const cacheKey = `${storageRoot}\0${version}`;
+    let generationRetries = 0;
 
     while (true) {
+      const version = storage.getArchiveMutationVersion();
+      if (typeof deadlineAtMs === "number" && Date.now() >= deadlineAtMs) return null;
+      const cacheKey = `${storageRoot}\0${version}`;
       const cached = archivePathIndexes.get(cacheKey);
       if (cached) {
         archivePathIndexes.delete(cacheKey);
@@ -110,6 +112,7 @@ export class GraphPathStateLoader {
         build = this.buildArchivePathIndex(storageRoot, version)
           .then((index) => {
             if (!index) return null;
+            if (storage.getArchiveMutationVersion() !== version) return null;
             const rootPrefix = `${storageRoot}\0`;
             for (const key of archivePathIndexes.keys()) {
               if (key.startsWith(rootPrefix)) archivePathIndexes.delete(key);
@@ -127,7 +130,14 @@ export class GraphPathStateLoader {
           });
         this.archivePathIndexBuilds.set(cacheKey, build);
       }
-      return await this.waitForDeadline(build, deadlineAtMs);
+      const index = await this.waitForDeadline(build, deadlineAtMs);
+      if (typeof deadlineAtMs === "number" && Date.now() >= deadlineAtMs) return null;
+      const currentVersion = storage.getArchiveMutationVersion();
+      if (index && currentVersion === version) return index;
+      if (index && currentVersion !== version) archivePathIndexes.delete(cacheKey);
+      if (currentVersion === version) return null;
+      if (generationRetries >= MAX_ARCHIVE_PATH_INDEX_GENERATION_RETRIES) return null;
+      generationRetries += 1;
     }
   }
 

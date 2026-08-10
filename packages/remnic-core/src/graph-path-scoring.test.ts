@@ -13,7 +13,14 @@ const state = (
   id: string,
   status: PathNodeState["status"] = "active",
   invalidAt: string | null = null,
-): PathNodeState => ({ id, status, invalidAt });
+  temporal: Record<string, string | null | undefined> = {},
+): PathNodeState => ({
+  id,
+  status,
+  created: "2025-01-01T00:00:00.000Z",
+  ...(invalidAt !== null ? { invalid_at: invalidAt } : {}),
+  ...temporal,
+});
 
 const score = (
   evidencePath: ActivationPath | null,
@@ -160,6 +167,41 @@ test("uses invalidAt for historical supersession validity", () => {
     ),
     0.2,
   );
+});
+
+test("penalizes an active intermediate that begins after historical asOf", () => {
+  const states = new Map([
+    [
+      "mid",
+      state("mid", "active", null, {
+        valid_at: "2026-02-01T00:00:00.000Z",
+        created: "2026-02-01T00:00:00.000Z",
+      }),
+    ],
+  ]);
+  assert.equal(
+    score(
+      activationPath(["seed", "mid", "candidate"], [1, 1]),
+      states,
+      { asOf: "2026-01-01T00:00:00.000Z" },
+    ),
+    0.2,
+  );
+});
+
+test("uses legacy supersededAt as the historical end bound", () => {
+  const states = new Map([
+    [
+      "mid",
+      state("mid", "superseded", null, {
+        created: "2025-01-01T00:00:00.000Z",
+        supersededAt: "2026-02-01T00:00:00.000Z",
+      }),
+    ],
+  ]);
+  const path = activationPath(["seed", "mid", "candidate"], [1, 1]);
+  assert.equal(score(path, states, { asOf: "2026-01-01T00:00:00.000Z" }), 1);
+  assert.equal(score(path, states, { asOf: "2026-03-01T00:00:00.000Z" }), 0.2);
 });
 
 test("rejects a non-finite asOf", () => {

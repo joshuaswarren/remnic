@@ -214,6 +214,34 @@ test("real coordinator demotes stale paths before the namespace cap and repeats 
   }
 });
 
+test("loads valid_at onto active intermediate path state before historical scoring", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-valid-at-"));
+  try {
+    const fixture = await createNamespace(root, "default");
+    const intermediate = (await fixture.storage.readAllMemories()).find((memory) =>
+      memory.path.endsWith(fixture.intermediatePath),
+    );
+    assert.ok(intermediate);
+    assert.equal(
+      await fixture.storage.writeMemoryFrontmatter(intermediate, {
+        valid_at: "2025-01-01T00:00:00.000Z",
+      }),
+      true,
+    );
+
+    const result = await expand(
+      makeCoordinator(makeConfig(), new Map([[fixture.name, fixture]])),
+      [seedResult(fixture)],
+      [fixture.name],
+    );
+    const stale = result.expandedPaths.find((entry) => entry.path.endsWith(fixture.stalePath));
+    assert.ok(stale);
+    assert.equal(stale.pathPenaltyApplied, false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("retains an active cold candidate in disabled and enabled graph scoring modes", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-cold-candidate-"));
   try {
@@ -530,6 +558,16 @@ test("namespace corpus state stays isolated for equal intermediate ids", async (
   try {
     const stale = await createNamespace(root, "stale", "superseded");
     const clean = await createNamespace(root, "clean", "active");
+    const cleanIntermediate = (await clean.storage.readAllMemories()).find((memory) =>
+      memory.path.endsWith(clean.intermediatePath),
+    );
+    assert.ok(cleanIntermediate);
+    assert.equal(
+      await clean.storage.writeMemoryFrontmatter(cleanIntermediate, {
+        valid_at: "2025-01-01T00:00:00.000Z",
+      }),
+      true,
+    );
     const fixtures = new Map([stale, clean].map((item) => [item.name, item]));
     const result = await expand(
       makeCoordinator(makeConfig(), fixtures),

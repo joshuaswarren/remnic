@@ -42,7 +42,7 @@ function fakeStorage(
 ): StorageManager {
   return {
     dir: root,
-    getArchiveMutationVersion: async () => archiveVersionRef.value,
+    getArchiveMutationVersion: () => archiveVersionRef.value,
     getCorpusScanVersion: async () => corpusVersionRef.value,
     readMemoryByPath: async (filePath: string) =>
       filePath === archivePath ? result : null,
@@ -136,6 +136,108 @@ test("invalidates archive index when archive mutation version changes", async ()
     archiveVersionRef.value = 2;
     assert.equal((await loader.readNode(storage, "node.md", null, true))?.content, "fresh");
     assert.equal(builds, 2);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+test("discards an archive index when generation changes during its build", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-loader-generation-race-"));
+  try {
+    const oldArchivePath = path.join(root, "archive", "2026-01-01", "node.md");
+    const newArchivePath = path.join(root, "archive", "2026-01-02", "node.md");
+    const archiveVersionRef = { value: 1 };
+    const storage = {
+      dir: root,
+      getArchiveMutationVersion: () => archiveVersionRef.value,
+      readMemoryByPath: async (filePath: string) => {
+        if (filePath === oldArchivePath) return memory(filePath, "stale");
+        if (filePath === newArchivePath) return memory(filePath, "fresh");
+        return null;
+      },
+    } as unknown as StorageManager;
+    const loader = new GraphPathStateLoader();
+    const internals = loader as unknown as LoaderInternals;
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let builds = 0;
+    internals.buildArchivePathIndex = async (_storageRoot, version) => {
+      const build = builds++;
+      if (build === 0) {
+        started.resolve();
+        await release.promise;
+      }
+      const archivePath = version === 1 ? oldArchivePath : newArchivePath;
+      return { version, pathsByBasename: new Map([["node.md", [archivePath]]]) };
+    };
+
+    const resultPromise = loader.readNode(storage, "node.md", null, true);
+    await started.promise;
+    archiveVersionRef.value = 2;
+    release.resolve();
+
+    assert.equal((await resultPromise)?.content, "fresh");
+    assert.equal(builds, 2);
+    assert.equal(internals.archivePathIndexes?.size, 1);
+    assert.equal([...internals.archivePathIndexes?.values() ?? []][0]?.version, 2);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+test("bounds retries when archive generation changes during every build", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-loader-generation-churn-"));
+  try {
+    const archiveVersionRef = { value: 1 };
+    const storage = {
+      dir: root,
+      getArchiveMutationVersion: () => archiveVersionRef.value,
+      readMemoryByPath: async () => null,
+    } as unknown as StorageManager;
+    const loader = new GraphPathStateLoader();
+    const internals = loader as unknown as LoaderInternals;
+    let builds = 0;
+    internals.buildArchivePathIndex = async (_storageRoot, version) => {
+      builds += 1;
+      archiveVersionRef.value += 1;
+      return { version, pathsByBasename: new Map([["node.md", []]]) };
+    };
+
+    assert.equal(await loader.readNode(storage, "node.md", null, true), null);
+    assert.equal(builds, 2);
+    assert.equal(internals.archivePathIndexes?.size ?? 0, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+test("discards an index when generation changes after build validation", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-loader-post-build-race-"));
+  try {
+    const oldArchivePath = path.join(root, "archive", "2026-01-01", "node.md");
+    const newArchivePath = path.join(root, "archive", "2026-01-02", "node.md");
+    const generations = [1, 1, 2, 2, 2, 2];
+    let generationReads = 0;
+    const storage = {
+      dir: root,
+      getArchiveMutationVersion: () =>
+        generations[Math.min(generationReads++, generations.length - 1)] ?? 2,
+      readMemoryByPath: async (filePath: string) => {
+        if (filePath === oldArchivePath) return memory(filePath, "stale");
+        if (filePath === newArchivePath) return memory(filePath, "fresh");
+        return null;
+      },
+    } as unknown as StorageManager;
+    const loader = new GraphPathStateLoader();
+    const internals = loader as unknown as LoaderInternals;
+    let builds = 0;
+    internals.buildArchivePathIndex = async (_storageRoot, version) => {
+      builds += 1;
+      const archivePath = version === 1 ? oldArchivePath : newArchivePath;
+      return { version, pathsByBasename: new Map([["node.md", [archivePath]]]) };
+    };
+
+    assert.equal((await loader.readNode(storage, "node.md", null, true))?.content, "fresh");
+    assert.equal(builds, 2);
+    assert.equal(internals.archivePathIndexes?.size, 1);
+    assert.equal([...internals.archivePathIndexes?.values() ?? []][0]?.version, 2);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
