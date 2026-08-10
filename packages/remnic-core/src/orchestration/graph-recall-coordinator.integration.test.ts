@@ -213,6 +213,75 @@ test("real coordinator demotes stale paths before the namespace cap and repeats 
     await rm(root, { recursive: true, force: true });
   }
 });
+test("retains a superseded graph candidate at its historical asOf but not now", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-historical-candidate-"));
+  try {
+    const fixture = await createNamespace(root, "default");
+    const candidate = (await fixture.storage.readAllMemories()).find((memory) =>
+      memory.path.endsWith(fixture.cleanPath),
+    );
+    assert.ok(candidate);
+    assert.equal(
+      await fixture.storage.writeMemoryFrontmatter(candidate, {
+        status: "superseded",
+        valid_at: "2025-01-01T00:00:00.000Z",
+        invalid_at: "2026-06-01T00:00:00.000Z",
+      }),
+      true,
+    );
+
+    const fixtures = new Map([[fixture.name, fixture]]);
+    const coordinator = makeCoordinator(makeConfig(), fixtures);
+    const historical = await expand(coordinator, [seedResult(fixture)], [fixture.name]);
+    const current = await coordinator.expandResultsViaGraph({
+      memoryResults: [seedResult(fixture)],
+      recallNamespaces: [fixture.name],
+      recallResultLimit: 1,
+    });
+
+    assert.equal(
+      historical.expandedPaths.some((entry) => entry.path.endsWith(fixture.cleanPath)),
+      true,
+    );
+    assert.equal(
+      current.expandedPaths.some((entry) => entry.path.endsWith(fixture.cleanPath)),
+      false,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+test("excludes an archived graph candidate from historical expansion", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-historical-archived-"));
+  try {
+    const fixture = await createNamespace(root, "default");
+    const candidate = (await fixture.storage.readAllMemories()).find((memory) =>
+      memory.path.endsWith(fixture.cleanPath),
+    );
+    assert.ok(candidate);
+    assert.equal(
+      await fixture.storage.writeMemoryFrontmatter(candidate, {
+        status: "archived",
+        valid_at: "2025-01-01T00:00:00.000Z",
+        invalid_at: "2026-06-01T00:00:00.000Z",
+      }),
+      true,
+    );
+
+    const result = await expand(
+      makeCoordinator(makeConfig(), new Map([[fixture.name, fixture]])),
+      [seedResult(fixture)],
+      [fixture.name],
+    );
+
+    assert.equal(
+      result.expandedPaths.some((entry) => entry.path.endsWith(fixture.cleanPath)),
+      false,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("loads valid_at onto active intermediate path state before historical scoring", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-valid-at-"));

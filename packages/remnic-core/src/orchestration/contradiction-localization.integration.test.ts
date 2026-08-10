@@ -10,6 +10,7 @@ import type { GraphConstructionCapabilitySet } from "../capabilities.js";
 import type { ExtractionEngine } from "../extraction.js";
 import type { ExtractionResult, MemoryFile, PluginConfig } from "../types.js";
 import type { StorageManager } from "../storage.js";
+import { initLogger, resetLogger } from "../logger.js";
 import { ContradictionLinkingCoordinator } from "./contradiction-linking-coordinator.js";
 import { ExtractionAnchorSnapshot } from "./extraction-anchor-snapshot.js";
 
@@ -284,16 +285,103 @@ test("persistExtraction memoizes one anchor snapshot for all facts in one pass",
   }
 });
 
-test("evicts a rejected anchor snapshot so the next call retries", async () => {
-  let hotReads = 0;
-  const replacement = {
-    path: "memories/replacement.md",
-    content: "replacement",
-    frontmatter: {
-      id: "replacement",
-      category: "fact",
+test("keeps durable fact writes when anchor snapshot refresh read fails", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-contradiction-anchor-refresh-failure-"));
+  const warnings: string[] = [];
+  initLogger(
+    {
+      info: () => {},
+      warn: (message) => warnings.push(message),
+      error: () => {},
+      debug: () => {},
     },
-  } as unknown as MemoryFile;
+    false,
+    { timestamps: false },
+  );
+  try {
+    const orchestrator = new Orchestrator(baseConfig(memoryDir)) as unknown as {
+      qmd: { isAvailable: () => boolean };
+      getStorage: (namespace: string) => Promise<StorageManager>;
+      persistExtraction: (
+        result: ExtractionResult,
+        storage: StorageManager,
+        threadId: null,
+        sourceContext?: undefined,
+        baseNamespace?: undefined,
+        scopeProfileWritePlan?: undefined,
+        sourceText?: undefined,
+        graphCaps?: GraphConstructionCapabilitySet,
+      ) => Promise<{ persistedIds: string[] }>;
+      contradictionLinkingCoordinator: ContradictionLinkingCoordinator;
+    };
+    const snapshots: unknown[] = [];
+    orchestrator.contradictionLinkingCoordinator.checkForContradiction = async (...args: unknown[]) => {
+      const anchor = args[3];
+      if (anchor && typeof anchor === "object" && "storageSnapshot" in anchor) {
+        snapshots.push(anchor.storageSnapshot);
+      } else {
+        snapshots.push(undefined);
+      }
+      return null;
+    };
+    const storage = await orchestrator.getStorage("default");
+    await storage.ensureDirectories();
+    const readMemoryByPath = storage.readMemoryByPath.bind(storage);
+    let failRefreshRead = true;
+    storage.readMemoryByPath = async (memoryPath: string) => {
+      const memory = await readMemoryByPath(memoryPath);
+      if (failRefreshRead && memory) {
+        failRefreshRead = false;
+        throw new Error("anchor snapshot refresh read failed");
+      }
+      return memory;
+    };
+    const result = extractionResult({
+      category: "fact",
+      content: "Alice lives in Austin",
+      confidence: 0.95,
+      tags: [],
+      entityRef: "person:alice",
+    });
+    result.facts.push({
+      category: "fact",
+      content: "Alice works in Austin",
+      confidence: 0.95,
+      tags: [],
+      entityRef: "person:alice",
+    });
+
+    const persisted = await orchestrator.persistExtraction(
+      result,
+      storage,
+      null,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        entityGraph: false,
+        timeGraph: false,
+        causalGraph: false,
+        multiGraphMemory: false,
+        graphWriteSessionAdjacency: false,
+      },
+    );
+
+    assert.equal(persisted.persistedIds.length, 2);
+    assert.equal((await storage.readAllMemories()).length, 2);
+    assert.equal(snapshots.length, 2);
+    assert.ok(Array.isArray(snapshots[0]));
+    assert.deepEqual(snapshots[1], []);
+    assert.ok(warnings.some((warning) => warning.includes("anchor snapshot update failed")));
+  } finally {
+    resetLogger();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("disables anchor snapshot reuse after a rejected read", async () => {
+  let hotReads = 0;
   const storage = {
     dir: "/tmp/remnic-anchor-snapshot-test",
     readAllMemories: async () => {
@@ -302,26 +390,136 @@ test("evicts a rejected anchor snapshot so the next call retries", async () => {
       return [];
     },
     readAllColdMemories: async () => [],
-    readMemoryByPath: async () => replacement,
   } as unknown as StorageManager;
   const snapshots = new ExtractionAnchorSnapshot();
 
-  await assert.rejects(
-    snapshots.get(storage, "person:alice"),
-    /transient snapshot read/,
-  );
-  const retry = await snapshots.get(storage, "person:alice");
-  assert.deepEqual(retry, []);
+  assert.deepEqual(await snapshots.get(storage, "person:alice"), []);
+  assert.deepEqual(await snapshots.get(storage, "person:alice"), []);
+  assert.equal(hotReads, 1);
+});
 
-  await snapshots.replace(storage, "replacement", "fact", new Map([["replacement", "memories/replacement.md"]]));
-  assert.deepEqual(retry, [replacement]);
-  await snapshots.remove(storage, "replacement");
-  assert.deepEqual(retry, []);
-  assert.equal(hotReads, 2);
+test("isolates anchor snapshot failures per storage", async () => {
+  const snapshots = new ExtractionAnchorSnapshot();
+  const failedStorage = {
+    dir: "/tmp/remnic-anchor-snapshot-failed",
+    readAllMemories: async () => {
+      throw new Error("storage A read failed");
+    },
+    readAllColdMemories: async () => [],
+  } as unknown as StorageManager;
+  const replacement = {
+    path: "memories/storage-b.md",
+    content: "storage B",
+    frontmatter: { id: "storage-b", category: "fact" },
+  } as unknown as MemoryFile;
+  const healthyStorage = {
+    dir: "/tmp/remnic-anchor-snapshot-healthy",
+    readAllMemories: async () => [],
+    readAllColdMemories: async () => [],
+    readMemoryByPath: async () => replacement,
+  } as unknown as StorageManager;
+
+  assert.deepEqual(await snapshots.get(failedStorage, "person:alice"), []);
+  const healthySnapshot = await snapshots.get(healthyStorage, "person:bob");
+  assert.deepEqual(healthySnapshot, []);
+  await snapshots.replace(
+    healthyStorage,
+    "storage-b",
+    "fact",
+    new Map([["storage-b", "memories/storage-b.md"]]),
+  );
+  assert.deepEqual(healthySnapshot, [replacement]);
 });
 
 
+test("keeps durable fact writes when initial anchor snapshot read fails", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-contradiction-anchor-initial-read-failure-"));
+  const warnings: string[] = [];
+  initLogger(
+    {
+      info: () => {},
+      warn: (message) => warnings.push(message),
+      error: () => {},
+      debug: () => {},
+    },
+    false,
+    { timestamps: false },
+  );
+  try {
+    const orchestrator = new Orchestrator(
+      baseConfig(memoryDir, { semanticDedupEnabled: false }),
+    ) as unknown as {
+      qmd: { isAvailable: () => boolean };
+      getStorage: (namespace: string) => Promise<StorageManager>;
+      persistExtraction: (
+        result: ExtractionResult,
+        storage: StorageManager,
+        threadId: null,
+        sourceContext?: undefined,
+        baseNamespace?: undefined,
+        scopeProfileWritePlan?: undefined,
+        sourceText?: undefined,
+        graphCaps?: GraphConstructionCapabilitySet,
+      ) => Promise<{ persistedIds: string[] }>;
+      contradictionLinkingCoordinator: ContradictionLinkingCoordinator;
+    };
+    orchestrator.qmd = { isAvailable: () => false };
+    const storage = await orchestrator.getStorage("default");
+    await storage.ensureDirectories();
+    const readAllMemories = storage.readAllMemories.bind(storage);
+    const readAllColdMemories = storage.readAllColdMemories.bind(storage);
+    let hotReadActive = false;
+    let failedCorpusReads = 0;
+    storage.readAllMemories = async () => {
+      hotReadActive = true;
+      try {
+        return await readAllMemories();
+      } finally {
+        hotReadActive = false;
+      }
+    };
+    storage.readAllColdMemories = async () => {
+      if (hotReadActive && failedCorpusReads === 0) {
+        failedCorpusReads++;
+        throw new Error("initial anchor snapshot read failed");
+      }
+      return readAllColdMemories();
+    };
+
+    const persisted = await orchestrator.persistExtraction(
+      extractionResult({
+        category: "fact",
+        content: "Alice lives in Austin",
+        confidence: 0.95,
+        tags: [],
+        entityRef: "person:alice",
+      }),
+      storage,
+      null,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        entityGraph: false,
+        timeGraph: false,
+        causalGraph: false,
+        multiGraphMemory: false,
+        graphWriteSessionAdjacency: false,
+      },
+    );
+    assert.equal(persisted.persistedIds.length, 1);
+    assert.equal((await storage.readAllMemories()).length, 1);
+
+    assert.equal(failedCorpusReads, 1);
+    assert.ok(warnings.some((warning) => warning.includes("anchor snapshot update failed")));
+  } finally {
+    resetLogger();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
 test("updates the memoized anchor snapshot after each same-batch write", async () => {
+
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-contradiction-batch-snapshot-"));
   try {
     const orchestrator = new Orchestrator(baseConfig(memoryDir)) as unknown as {

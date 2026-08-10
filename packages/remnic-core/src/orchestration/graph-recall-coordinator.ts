@@ -28,6 +28,7 @@ import type { GraphIndex } from "../graph.js";
 import type { GraphRecallExpandedEntry } from "../recall-state.js";
 import { clampGraphRecallExpandedEntries } from "../recall-state.js";
 import { scoreEvidencePathDetail, type PathNodeState } from "../graph-path-scoring.js";
+import { isValidAsOf } from "../temporal-validity.js";
 import { GraphPathStateLoader } from "./graph-path-state-loader.js";
 import { qmdCollectionPathParts } from "./qmd-result-resolver.js";
 import { log } from "../logger.js";
@@ -212,12 +213,21 @@ export class GraphRecallCoordinator {
     const config = this.getConfig();
     const parsedAsOfMs =
       typeof options.asOf === "string" ? Date.parse(options.asOf) : Number.NaN;
+    const hasHistoricalAsOf =
+      Number.isFinite(parsedAsOfMs) ||
+      (typeof options.asOfMs === "number" && Number.isFinite(options.asOfMs));
     const effectiveAsOfMs = Number.isFinite(parsedAsOfMs)
       ? parsedAsOfMs
       : typeof options.asOfMs === "number" && Number.isFinite(options.asOfMs)
         ? options.asOfMs
         : Date.now();
     const effectiveAsOf = new Date(effectiveAsOfMs).toISOString();
+    const isEligibleGraphCandidate = (memory: MemoryFile): boolean =>
+      !memory.frontmatter.status ||
+      memory.frontmatter.status === "active" ||
+      (memory.frontmatter.status === "superseded" &&
+        hasHistoricalAsOf &&
+        isValidAsOf(memory.frontmatter, effectiveAsOfMs));
     const deadlineExpired = (): boolean =>
       typeof options.deadlineAtMs === "number" &&
       Date.now() >= options.deadlineAtMs;
@@ -386,7 +396,7 @@ export class GraphRecallCoordinator {
           if (deadlineExpired()) break;
           if (!memory) continue;
           if (/(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(memory.path)) continue;
-          if (memory.frontmatter.status && memory.frontmatter.status !== "active") continue;
+          if (!isEligibleGraphCandidate(memory)) continue;
           const score = blendGraphExpandedRecallScore({
             graphActivationScore: candidate.score,
             seedRecallScore,
@@ -449,7 +459,7 @@ export class GraphRecallCoordinator {
         if (deadlineExpired()) break;
         if (!memory) continue;
         if (/(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(memory.path)) continue;
-        if (memory.frontmatter.status && memory.frontmatter.status !== "active") continue;
+        if (!isEligibleGraphCandidate(memory)) continue;
 
         if (candidate.activationPath) {
           for (const nodeId of candidate.activationPath.nodeIds.slice(1, -1)) {

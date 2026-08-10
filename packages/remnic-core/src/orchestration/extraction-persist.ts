@@ -206,6 +206,7 @@ export class ExtractionPersistCoordinator {
     const anchorSnapshots = new ExtractionAnchorSnapshot({
       enabled: coerceBool(this.deps.config.contradictionLocalization?.anchorEnabled) ?? true,
       candidateLimit: this.deps.config.contradictionLocalization?.anchorCandidates,
+      onRefreshError: (error) => log.warn(`anchor snapshot update failed; using empty snapshot: ${error}`),
     });
     const supersessionOrderingAt = (validAt?: string): string =>
       validAt && validAt.length > 0 ? validAt : new Date().toISOString();
