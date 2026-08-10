@@ -557,6 +557,9 @@ importers:
       '@remnic/import-weclone':
         specifier: workspace:*
         version: link:../import-weclone
+      '@remnic/plugin-openclaw':
+        specifier: workspace:*
+        version: link:../plugin-openclaw
       tsup:
         specifier: ^8.5.1
         version: 8.5.1(postcss@8.5.16)(tsx@4.23.0)(typescript@5.9.3)(yaml@2.9.0)

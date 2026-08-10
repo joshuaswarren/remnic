@@ -17,6 +17,17 @@ ensurePackageBuild(
 );
 ensurePackageBuild(
   repoRoot,
+  "@remnic/plugin-openclaw",
+  path.join(repoRoot, "packages", "plugin-openclaw", "dist", "managed-upgrade.js"),
+  [
+    path.join(repoRoot, "packages", "plugin-openclaw", "src", "managed-upgrade.ts"),
+    path.join(repoRoot, "packages", "plugin-openclaw", "package.json"),
+    path.join(repoRoot, "packages", "plugin-openclaw", "tsup.config.ts"),
+    path.join(repoRoot, "packages", "plugin-openclaw", "tsconfig.json"),
+  ],
+);
+ensurePackageBuild(
+  repoRoot,
   "@remnic/bench",
   path.join(repoRoot, "packages", "bench", "dist", "index.js"),
   [
