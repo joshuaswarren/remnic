@@ -221,14 +221,15 @@ export class GraphRecallCoordinator {
         ? options.asOfMs
         : Date.now();
     const effectiveAsOf = new Date(effectiveAsOfMs).toISOString();
-    const isEligibleGraphCandidate = (memory: MemoryFile): boolean => {
+    const isEligibleGraphCandidate = (memory: MemoryFile, storageDir: string): boolean => {
       if (hasHistoricalAsOf && !isValidAsOf(memory.frontmatter, effectiveAsOfMs)) {
         return false;
       }
+      const lifecyclePath = toMemoryPathRel(storageDir, memory.path);
+      const status = inferMemoryStatus(memory.frontmatter, lifecyclePath);
       return (
-        !memory.frontmatter.status ||
-        memory.frontmatter.status === "active" ||
-        (memory.frontmatter.status === "superseded" && hasHistoricalAsOf)
+        status === "active" ||
+        (status === "superseded" && hasHistoricalAsOf)
       );
     };
     const deadlineExpired = (): boolean =>
@@ -395,16 +396,13 @@ export class GraphRecallCoordinator {
 
       if (!scoringEnabled) {
         let eligibleCount = 0;
-        const disabledScanLimit = hasHistoricalAsOf
-          ? graphCandidateScanLimit
-          : perNamespaceExpandedCap;
-        for (const candidate of expanded.slice(0, disabledScanLimit)) {
+        for (const candidate of expanded.slice(0, graphCandidateScanLimit)) {
           if (seedSet.has(candidate.path)) continue;
           const memory = await readGraphNode(candidate.path, false);
           if (deadlineExpired()) break;
           if (!memory) continue;
           if (/(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(memory.path)) continue;
-          if (!isEligibleGraphCandidate(memory)) continue;
+          if (!isEligibleGraphCandidate(memory, storage.dir)) continue;
           const score = blendGraphExpandedRecallScore({
             graphActivationScore: candidate.score,
             seedRecallScore,
@@ -471,7 +469,7 @@ export class GraphRecallCoordinator {
         if (deadlineExpired()) break;
         if (!memory) continue;
         if (/(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(memory.path)) continue;
-        if (!isEligibleGraphCandidate(memory)) continue;
+        if (!isEligibleGraphCandidate(memory, storage.dir)) continue;
 
         if (candidate.activationPath) {
           for (const nodeId of candidate.activationPath.nodeIds.slice(1, -1)) {

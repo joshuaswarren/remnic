@@ -743,3 +743,114 @@ test("explainLastGraphRecall tolerates richer fallback snapshots and surfaces th
     assert.match(explanation, /seed/i);
   }
 });
+
+
+test("graph expansion fills its cap after excluding legacy archived candidates", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-graph-recall-cap-underfill-"));
+  const cfg = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    graphRecallEnabled: true,
+    multiGraphMemoryEnabled: true,
+    verbatimArtifactsEnabled: false,
+  });
+  const orchestrator = new Orchestrator(cfg);
+  const { id: seedId } = await orchestrator.storage.writeMemory("fact", "graph cap seed");
+  const seedMemory = await orchestrator.storage.getMemoryById(seedId);
+  assert.ok(seedMemory);
+  const { id: validId } = await orchestrator.storage.writeMemory("fact", "valid graph candidate");
+  const validMemory = await orchestrator.storage.getMemoryById(validId);
+  assert.ok(validMemory);
+
+  const legacyCandidates = [
+    ...Array.from({ length: 3 }, (_, index) => ({
+      relativePath: `archive/2026-07-25/legacy-absent-${index}.md`,
+      frontmatter: [
+        `id: legacy-absent-${index}`,
+        "category: fact",
+        "created: 2026-07-25T00:00:00.000Z",
+        "updated: 2026-07-25T00:00:00.000Z",
+      ],
+    })),
+    ...Array.from({ length: 3 }, (_, index) => ({
+      relativePath: `facts/2026-07-25/legacy-archived-at-${index}.md`,
+      frontmatter: [
+        `id: legacy-archived-at-${index}`,
+        "category: fact",
+        "created: 2026-07-25T00:00:00.000Z",
+        "updated: 2026-07-25T00:00:00.000Z",
+        "status: active",
+        "archivedAt: 2026-07-25T01:00:00.000Z",
+      ],
+    })),
+    ...Array.from({ length: 2 }, (_, index) => ({
+      relativePath: `archive/2026-07-26/legacy-active-${index}.md`,
+      frontmatter: [
+        `id: legacy-active-${index}`,
+        "category: fact",
+        "created: 2026-07-26T00:00:00.000Z",
+        "updated: 2026-07-26T00:00:00.000Z",
+        "status: active",
+      ],
+    })),
+  ];
+  for (const candidate of legacyCandidates) {
+    const candidatePath = path.join(memoryDir, candidate.relativePath);
+    await mkdir(path.dirname(candidatePath), { recursive: true });
+    await writeFile(
+      candidatePath,
+      ["---", ...candidate.frontmatter, "---", "", "legacy archived graph candidate"].join("\n"),
+      "utf-8",
+    );
+  }
+
+  const seedPath = graphPathRelativeToStorage(memoryDir, seedMemory.path);
+  const validPath = graphPathRelativeToStorage(memoryDir, validMemory.path);
+  assert.ok(seedPath);
+  assert.ok(validPath);
+  const graphCandidates = [
+    ...legacyCandidates.map((candidate, index) => ({
+      path: candidate.relativePath,
+      score: 1 - index * 0.01,
+    })),
+    { path: validPath, score: 0.5 },
+  ];
+  const orchestratorInternals = orchestrator as unknown as {
+    graphIndexes: Map<string, Pick<GraphIndex, "spreadingActivation">>;
+  };
+  const graphIndexes = orchestratorInternals.graphIndexes;
+  graphIndexes.set(memoryDir, {
+    spreadingActivation: async () =>
+      graphCandidates.map((candidate) => ({
+        ...candidate,
+        seed: seedPath,
+        hopDepth: 1,
+        decayedWeight: candidate.score,
+        graphType: "entity" as const,
+        edgeConfidence: 1,
+      })),
+  });
+
+  const result = await orchestrator.graphRecallCoordinator.expandResultsViaGraph({
+    memoryResults: [{
+      docid: seedMemory.frontmatter.id,
+      path: seedMemory.path,
+      namespace: "default",
+      snippet: "graph cap seed",
+      score: 0.9,
+    }],
+    recallNamespaces: ["default"],
+    recallResultLimit: 4,
+  });
+
+  assert.deepEqual(result.expandedPaths.map((entry) => entry.path), [validMemory.path]);
+  assert.equal(result.merged.some((entry) => entry.path === validMemory.path), true);
+  for (const candidate of legacyCandidates) {
+    assert.equal(
+      result.merged.some((entry) => entry.path.endsWith(candidate.relativePath)),
+      false,
+      candidate.relativePath,
+    );
+  }
+});
