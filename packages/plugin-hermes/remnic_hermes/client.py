@@ -24,15 +24,15 @@ def _validate_header_value(field: str, value: str) -> str:
 
 
 def _url_host_and_scheme(host: str, allow_insecure_http: bool) -> tuple[str, str]:
-    normalized_host = host.removeprefix("[").removesuffix("]")
-    normalized_hostname = normalized_host.rstrip(".").lower()
+    normalized_host = host.rstrip(".").removeprefix("[").removesuffix("]")
+    normalized_hostname = normalized_host.lower()
     try:
         address = ipaddress.ip_address(normalized_host)
     except ValueError:
         is_loopback = normalized_hostname == "localhost" or normalized_hostname.endswith(
             ".localhost"
         )
-        url_host = normalized_host
+        url_host = host
     else:
         is_loopback = address.is_loopback or bool(
             address.version == 6
