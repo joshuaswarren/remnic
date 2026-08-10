@@ -57,6 +57,28 @@ class TestClientNamespace:
             params={"namespace": "generalist"},
         )
 
+    @pytest.mark.asyncio
+    async def test_configured_namespace_replaces_null_rest_override(self):
+        response = MagicMock()
+        response.json.return_value = {"memory": {"id": "fact-1"}}
+
+        with patch("remnic_hermes.client.httpx.AsyncClient") as mock_async_client:
+            http = mock_async_client.return_value
+            http.post = AsyncMock(return_value=response)
+            client = RemnicClient(
+                host="127.0.0.1",
+                port=4318,
+                token="test-token",
+                client_id="hermes",
+                namespace="generalist",
+            )
+            await client.store("content", namespace=None)
+
+        http.post.assert_awaited_once_with(
+            "/memories",
+            json={"content": "content", "namespace": "generalist"},
+        )
+
     @pytest.mark.parametrize(
         ("field", "value"),
         [
@@ -84,6 +106,24 @@ class TestClientNamespace:
         with (
             patch("remnic_hermes.client.httpx.AsyncClient") as mock_async_client,
             pytest.raises(ValueError, match=f"{field} must be printable ASCII without edge spaces"),
+        ):
+            RemnicClient(**kwargs)
+
+        mock_async_client.assert_not_called()
+
+    @pytest.mark.parametrize("field", ["client_id", "namespace"])
+    def test_rejects_namespace_identifiers_over_daemon_limit(self, field):
+        kwargs = {
+            "host": "127.0.0.1",
+            "port": 4318,
+            "token": "test-token",
+            "client_id": "hermes",
+        }
+        kwargs[field] = "a" * 257
+
+        with (
+            patch("remnic_hermes.client.httpx.AsyncClient") as mock_async_client,
+            pytest.raises(ValueError, match=f"{field} must contain at most 256 characters"),
         ):
             RemnicClient(**kwargs)
 

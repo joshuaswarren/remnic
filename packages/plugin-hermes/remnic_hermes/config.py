@@ -52,7 +52,7 @@ class RemnicHermesConfig:
             host=str(section.get("host", _read_compat_env("REMNIC_HOST", "ENGRAM_HOST", "127.0.0.1"))),
             port=int(section.get("port", _read_compat_env("REMNIC_PORT", "ENGRAM_PORT", "4318"))),
             token=token,
-            session_key=str(section.get("session_key", "")),
+            session_key=str(section.get("session_key", "")).strip(),
             timeout=float(section.get("timeout", 30.0)),
             prefetch_wait_timeout=_parse_prefetch_wait_timeout(section.get("prefetch_wait_timeout", 2.0)),
             client_id=client_id,

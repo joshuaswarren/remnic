@@ -46,6 +46,11 @@ def test_from_hermes_config_resolves_client_id_and_namespace_alias():
     )
     assert aliased.client_id == "generalist"
 
+    session = RemnicHermesConfig.from_hermes_config(
+        {"remnic": {"session_key": " session-1 "}}
+    )
+    assert session.session_key == "session-1"
+
 
 @pytest.mark.parametrize("field", ["client_id", "namespace"])
 def test_from_hermes_config_rejects_non_string_client_identifiers(field):

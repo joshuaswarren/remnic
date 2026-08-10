@@ -17,6 +17,8 @@ def _validate_header_value(field: str, value: str) -> str:
         or any(ord(character) < 0x20 or ord(character) > 0x7E for character in value)
     ):
         raise ValueError(f"{field} must be printable ASCII without edge spaces")
+    if field in {"client_id", "namespace"} and len(value) > 256:
+        raise ValueError(f"{field} must contain at most 256 characters")
     return value
 
 
@@ -76,7 +78,7 @@ class RemnicClient:
 
     async def _post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         request_payload = payload
-        if self.namespace and "namespace" not in payload:
+        if self.namespace and payload.get("namespace") is None:
             request_payload = {**payload, "namespace": self.namespace}
         resp = await self._http.post(path, json=request_payload)
         resp.raise_for_status()
