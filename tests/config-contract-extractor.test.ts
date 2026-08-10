@@ -31,6 +31,36 @@ function extractFixture() {
     ],
   });
 }
+function extractLocalFunctionFixture(entryFunction = "parseFixtureLocalFunctionConfig") {
+  return extractParsedKeyPaths({
+    repoRoot: REPO_ROOT,
+    entryFile: path.join(FIXTURES, "local-function.ts"),
+    entryFunction,
+  });
+}
+
+test("local function parser preserves sibling reads, registered subtrees, and duplicate literal arguments", () => {
+  const { keys, unparseable } = extractLocalFunctionFixture();
+  assert.ok(keys.includes("literal"), "literal key must bind through the local helper");
+  assert.ok(keys.includes("sibling"), "sibling call arguments must still be traversed");
+  assert.ok(keys.includes("unhandled"), "unhandled local-function bodies must still be traversed");
+  assert.ok(keys.includes("registeredDefault"), "registered local-function subtrees must not be dropped");
+  assert.equal(
+    keys.includes("sibling.global"),
+    false,
+    "a shadowed top-level helper must not add false keys",
+  );
+  assert.equal(
+    unparseable.filter((entry) => entry.reason.includes("computed element access")).length,
+    3,
+    "literal duplicate and unbound local calls must traverse their distinct dynamic reads",
+  );
+});
+
+test("local helper parameters shadow aliases without losing literal reads", () => {
+  const { keys } = extractLocalFunctionFixture("parseFixtureShadowedAlias");
+  assert.ok(keys.includes("enabled"), JSON.stringify(keys));
+});
 
 test("hand-rolled fixture: aliases, coercion helpers, nested blocks, and destructuring all resolve", () => {
   const { keys } = extractFixture();
@@ -203,5 +233,20 @@ test("literal key-name binding: `readFlatOrNestedConfig(cfg, \"flatKey\", …)` 
   assert.ok(
     keys.includes("maintenanceNamespaceFanoutEnabled"),
     "the flat maintenanceNamespaceFanoutEnabled key must bind through the reader helper",
+  );
+});
+test("local literal-key helper calls surface every parsed contradiction cap", () => {
+  const { keys, unparseable } = extractReal();
+  for (const field of ["anchorCandidates", "searchCandidates", "maxCandidates"]) {
+    assert.ok(keys.includes(`contradictionLocalization.${field}`), `${field} must extract`);
+  }
+  assert.equal(
+    unparseable.some(
+      (entry) =>
+        entry.file.endsWith("packages/remnic-core/src/config.ts") &&
+        entry.reason.includes("computed element access"),
+    ),
+    false,
+    "local literal-key helper access must be statically resolved",
   );
 });

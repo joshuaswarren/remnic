@@ -1,3 +1,4 @@
+import type { ContradictionResolveOutcome } from "./contradiction-linking-coordinator.js";
 import type { GraphConstructionCapabilitySet } from "../capabilities.js";
 import type { SemanticDedupHit } from "../dedup/semantic.js";
 import type { EmbeddingFallback } from "../embedding-fallback.js";
@@ -49,7 +50,12 @@ export interface ExtractionPersistDeps {
   checkForContradiction: (
     content: string,
     category: string,
-    namespaceScope: string
+    namespaceScope: string,
+    anchor?: {
+      entityRef?: string;
+      structuredAttributes?: Record<string, string>;
+      storageSnapshot?: MemoryFile[];
+    }
   ) => Promise<{
     supersededId: string;
     confidence: number;
@@ -72,7 +78,7 @@ export interface ExtractionPersistDeps {
     storage: StorageManager,
     newMemoryId: string,
     postWriteGuard: boolean
-  ) => Promise<void>;
+  ) => Promise<ContradictionResolveOutcome>;
   suggestLinksForMemory: (content: string, category: string, namespaceScope: string) => Promise<MemoryLink[]>;
   storageDirNamespace: (storageDir: string) => string;
   indexPersistedMemory: (storage: StorageManager, memoryId: string) => Promise<void>;

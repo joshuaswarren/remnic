@@ -4,10 +4,10 @@
  * Owns the graph-expansion subsystem in recall: spreading-activation
  * traversal from seed memories, seed-path resolution relative to
  * per-namespace storage, and the last-graph-recall snapshot persistence.
- * Behavior-preserving move from orchestrator.ts — no logic changes; the
- * orchestrator constructs one instance and keeps thin delegating methods so
- * existing call sites (recallInternal, cold-fallback pipeline) continue to
- * work.
+ * Behavior-preserving move from orchestrator.ts with bounded graph-state
+ * lookups and optional path scoring. The orchestrator constructs one instance
+ * and keeps thin delegating methods so existing call sites (recallInternal,
+ * cold-fallback pipeline) continue to work.
  *
  * Config, storage, graph index, namespace resolution, and QMD result
  * resolution are accessed through getter callbacks (not captured at
@@ -27,6 +27,10 @@ import type { StorageManager } from "../index.js";
 import type { GraphIndex } from "../graph.js";
 import type { GraphRecallExpandedEntry } from "../recall-state.js";
 import { clampGraphRecallExpandedEntries } from "../recall-state.js";
+import { scoreEvidencePathDetail, type PathNodeState } from "../graph-path-scoring.js";
+import { isValidAsOf, isValidityExpiredNow } from "../temporal-validity.js";
+import { inferMemoryStatus, toMemoryPathRel } from "../memory-lifecycle-ledger-utils.js";
+import { GraphPathStateLoader } from "./graph-path-state-loader.js";
 import { qmdCollectionPathParts } from "./qmd-result-resolver.js";
 import { log } from "../logger.js";
 import { createHash } from "node:crypto";
@@ -113,6 +117,21 @@ export function blendGraphExpandedRecallScore(options: {
   return Math.max(minBound, Math.min(maxBound, blended));
 }
 
+const KNOWN_PATH_NODE_STATUSES: Record<string, true> = {
+  active: true,
+  pending_review: true,
+  rejected: true,
+  quarantined: true,
+  superseded: true,
+  archived: true,
+  forgotten: true,
+};
+
+function normalizeInferredPathNodeStatus(value: unknown): PathNodeState["status"] {
+  if (typeof value !== "string" || KNOWN_PATH_NODE_STATUSES[value] !== true) return null;
+  return value as Exclude<PathNodeState["status"], null>;
+}
+
 // ---------------------------------------------------------------------------
 // Coordinator
 // ---------------------------------------------------------------------------
@@ -139,7 +158,7 @@ export class GraphRecallCoordinator {
     recallNamespaces: readonly string[],
     preferredNamespace?: string,
   ) => Promise<MemoryFile | null>;
-
+  private readonly graphPathStateLoader = new GraphPathStateLoader();
   constructor(options: {
     getConfig: () => PluginConfig;
     getStorage: () => StorageManager;
@@ -173,10 +192,14 @@ export class GraphRecallCoordinator {
     this.readQmdResultMemory = options.readQmdResultMemory;
   }
 
+
   async expandResultsViaGraph(options: {
     memoryResults: QmdSearchResult[];
     recallNamespaces: string[];
     recallResultLimit: number;
+    /** Query-time instant used for graph-path invalidity checks. */
+    asOf?: string;
+    asOfMs?: number;
     deadlineAtMs?: number | null;
     /** Issue #681 — when true, bypass graphTraversalConfidenceFloor. */
     includeLowConfidence?: boolean;
@@ -187,6 +210,36 @@ export class GraphRecallCoordinator {
     seedResults: QmdSearchResult[];
   }> {
     const config = this.getConfig();
+    const parsedAsOfMs =
+      typeof options.asOf === "string" ? Date.parse(options.asOf) : Number.NaN;
+    const hasHistoricalAsOf =
+      Number.isFinite(parsedAsOfMs) ||
+      (typeof options.asOfMs === "number" && Number.isFinite(options.asOfMs));
+    const effectiveAsOfMs = Number.isFinite(parsedAsOfMs)
+      ? parsedAsOfMs
+      : typeof options.asOfMs === "number" && Number.isFinite(options.asOfMs)
+        ? options.asOfMs
+        : Date.now();
+    const effectiveAsOf = new Date(effectiveAsOfMs).toISOString();
+    const isEligibleGraphCandidate = (memory: MemoryFile, storageDir: string): boolean => {
+      if (hasHistoricalAsOf && !isValidAsOf(memory.frontmatter, effectiveAsOfMs)) {
+        return false;
+      }
+      if (
+        !hasHistoricalAsOf &&
+        config.temporalBiTemporal === true &&
+        config.temporalExpiredInInjection !== true &&
+        isValidityExpiredNow(memory.frontmatter, Date.now())
+      ) {
+        return false;
+      }
+      const lifecyclePath = toMemoryPathRel(storageDir, memory.path);
+      const status = inferMemoryStatus(memory.frontmatter, lifecyclePath);
+      return (
+        status === "active" ||
+        (status === "superseded" && hasHistoricalAsOf)
+      );
+    };
     const deadlineExpired = (): boolean =>
       typeof options.deadlineAtMs === "number" &&
       Date.now() >= options.deadlineAtMs;
@@ -275,6 +328,11 @@ export class GraphRecallCoordinator {
 
     const perNamespaceSeedCap = Math.max(3, options.recallResultLimit);
     const perNamespaceExpandedCap = Math.max(8, options.recallResultLimit * 2);
+    const graphPathStateLoadLimit = Math.min(
+      200,
+      perNamespaceExpandedCap + Math.max(8, perNamespaceExpandedCap * 4),
+    );
+    const graphCandidateScanLimit = hasHistoricalAsOf ? 200 : graphPathStateLoadLimit;
     const seedPaths: string[] = [];
     const seedResults: QmdSearchResult[] = [];
     const expandedPaths: GraphRecallExpandedEntry[] = [];
@@ -296,9 +354,7 @@ export class GraphRecallCoordinator {
           : (
               await Promise.all(
                 seedCandidates.map((result) =>
-                  this.graphSeedPathRelativeToStorage(storage, result, [
-                    namespace,
-                  ]),
+                  this.graphSeedPathRelativeToStorage(storage, result, [namespace]),
                 ),
               )
             ).filter(
@@ -316,11 +372,28 @@ export class GraphRecallCoordinator {
         ...seedRelativePaths.map((rel) => path.join(storage.dir, rel)),
       );
       const seedSet = new Set(seedRelativePaths);
+      const nodeMemoryCache = new Map<string, MemoryFile | null>();
+      const readGraphNode = async (
+        nodeId: string,
+        allowArchiveLookup: boolean,
+      ): Promise<MemoryFile | null> => {
+        if (nodeMemoryCache.has(nodeId)) return nodeMemoryCache.get(nodeId) ?? null;
+        const memory = await this.graphPathStateLoader.readNode(
+          storage,
+          nodeId,
+          options.deadlineAtMs,
+          allowArchiveLookup,
+        );
+        nodeMemoryCache.set(nodeId, memory);
+        return memory;
+      };
+      const scoringEnabled = config.graphPathScoring.enabled;
       const expanded = await this.graphIndexFor(storage).spreadingActivation(
         seedRelativePaths,
         config.maxGraphTraversalSteps,
         {
           ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
+          ...(scoringEnabled ? { recordPaths: true } : {}),
           ...(typeof options.deadlineAtMs === "number"
             ? { deadlineAtMs: options.deadlineAtMs }
             : {}),
@@ -329,35 +402,115 @@ export class GraphRecallCoordinator {
       if (expanded.length === 0) continue;
       if (deadlineExpired()) break;
 
-      for (const candidate of expanded.slice(0, perNamespaceExpandedCap)) {
+      if (!scoringEnabled) {
+        let eligibleCount = 0;
+        for (const candidate of expanded.slice(0, graphCandidateScanLimit)) {
+          if (seedSet.has(candidate.path)) continue;
+          const memory = await readGraphNode(candidate.path, false);
+          if (deadlineExpired()) break;
+          if (!memory) continue;
+          if (/(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(memory.path)) continue;
+          if (!isEligibleGraphCandidate(memory, storage.dir)) continue;
+          const score = blendGraphExpandedRecallScore({
+            graphActivationScore: candidate.score,
+            seedRecallScore,
+            activationWeight: config.graphExpansionActivationWeight,
+            blendMin: config.graphExpansionBlendMin,
+            blendMax: config.graphExpansionBlendMax,
+          });
+          expandedResults.push({
+            docid: memory.frontmatter.id,
+            path: memory.path,
+            namespace,
+            snippet: memory.content.slice(0, 400),
+            score,
+          });
+          expandedPaths.push({
+            path: memory.path,
+            score,
+            namespace,
+            seed: path.resolve(storage.dir, candidate.seed),
+            hopDepth: candidate.hopDepth,
+            decayedWeight: candidate.decayedWeight,
+            graphType: candidate.graphType,
+            edgeConfidence: candidate.edgeConfidence,
+          });
+          eligibleCount += 1;
+          if (eligibleCount >= perNamespaceExpandedCap) break;
+        }
+        continue;
+      }
+      const nodeStates = new Map<string, PathNodeState>();
+      const addState = (memory: MemoryFile): PathNodeState => {
+        const relativePath = graphPathRelativeToStorage(storage.dir, memory.path);
+        const lifecyclePath = toMemoryPathRel(storage.dir, memory.path);
+        const state: PathNodeState = {
+          id: memory.frontmatter.id,
+          status: normalizeInferredPathNodeStatus(
+            inferMemoryStatus(memory.frontmatter, lifecyclePath),
+          ),
+          created: memory.frontmatter.created,
+          valid_at: memory.frontmatter.valid_at,
+          invalid_at: memory.frontmatter.invalid_at,
+          supersededAt: memory.frontmatter.supersededAt,
+          eventTimeSource: memory.frontmatter.eventTimeSource,
+        };
+        const add = (key: string): void => {
+          if (!nodeStates.has(key)) nodeStates.set(key, state);
+        };
+        add(memory.frontmatter.id);
+        if (relativePath) {
+          add(relativePath);
+          if (relativePath.endsWith(".md")) add(path.basename(relativePath, ".md"));
+        }
+        return state;
+      };
+
+      const scoredExpanded: Array<{
+        result: QmdSearchResult;
+        entry: GraphRecallExpandedEntry;
+      }> = [];
+      for (const candidate of expanded.slice(0, graphCandidateScanLimit)) {
         if (deadlineExpired()) break;
         if (seedSet.has(candidate.path)) continue;
-        const memoryPath = path.resolve(storage.dir, candidate.path);
-        const memory = await storage.readMemoryByPath(memoryPath);
+        const memory = await readGraphNode(candidate.path, true);
         if (deadlineExpired()) break;
         if (!memory) continue;
         if (/(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(memory.path)) continue;
-        if (memory.frontmatter.status && memory.frontmatter.status !== "active")
-          continue;
+        if (!isEligibleGraphCandidate(memory, storage.dir)) continue;
 
-        const snippet = memory.content.slice(0, 400);
-        const score = blendGraphExpandedRecallScore({
+        if (candidate.activationPath) {
+          for (const nodeId of candidate.activationPath.nodeIds.slice(1, -1)) {
+            if (deadlineExpired()) break;
+            const intermediate = await readGraphNode(nodeId, true);
+            if (deadlineExpired()) break;
+            if (!intermediate) {
+              log.debug(`graph path scoring missing intermediate memory state: ${nodeId}`);
+              continue;
+            }
+            const state = addState(intermediate);
+            nodeStates.set(nodeId, { ...state, id: nodeId });
+          }
+          if (deadlineExpired()) break;
+        }
+
+        const pathScoreDetail = scoreEvidencePathDetail(
+          candidate.activationPath ?? null,
+          nodeStates,
+          {
+            asOf: effectiveAsOf,
+            invalidNodePenalty: config.graphPathScoring.invalidNodePenalty,
+          },
+        );
+        const blendedScore = blendGraphExpandedRecallScore({
           graphActivationScore: candidate.score,
           seedRecallScore,
           activationWeight: config.graphExpansionActivationWeight,
           blendMin: config.graphExpansionBlendMin,
           blendMax: config.graphExpansionBlendMax,
         });
-        expandedResults.push({
-          docid: memory.frontmatter.id,
-          // Absolute path, matching the globally-unique identity of primary
-          // fanout hits, so the merge dedups a memory found by both (#2020).
-          path: memory.path,
-          namespace,
-          snippet,
-          score,
-        });
-        expandedPaths.push({
+        const score = blendedScore * pathScoreDetail.score;
+        const entry: GraphRecallExpandedEntry = {
           path: memory.path,
           score,
           namespace,
@@ -365,12 +518,36 @@ export class GraphRecallCoordinator {
           hopDepth: candidate.hopDepth,
           decayedWeight: candidate.decayedWeight,
           graphType: candidate.graphType,
-          // Issue #681 PR 3/3 — surface the per-edge confidence used for
-          // PageRank weighting / floor pruning so downstream observability
-          // (recall_xray, memory_graph_explain) can attribute ranking and
-          // pruning decisions to specific edges.
           edgeConfidence: candidate.edgeConfidence,
+          pathPenaltyApplied: pathScoreDetail.pathPenaltyApplied,
+          ...(config.graphPathScoring.includePathInProvenance &&
+          candidate.activationPath
+            ? { pathNodeIds: candidate.activationPath.nodeIds }
+            : {}),
+        };
+        scoredExpanded.push({
+          result: {
+            docid: memory.frontmatter.id,
+            path: memory.path,
+            namespace,
+            snippet: memory.content.slice(0, 400),
+            score,
+            pathPenaltyApplied: pathScoreDetail.pathPenaltyApplied,
+            ...(config.graphPathScoring.includePathInProvenance &&
+            candidate.activationPath
+              ? { pathNodeIds: candidate.activationPath.nodeIds }
+              : {}),
+          },
+          entry,
         });
+      }
+      scoredExpanded.sort((a, b) => {
+        if (a.result.score !== b.result.score) return a.result.score > b.result.score ? -1 : 1;
+        return a.result.path < b.result.path ? -1 : a.result.path > b.result.path ? 1 : 0;
+      });
+      for (const item of scoredExpanded.slice(0, perNamespaceExpandedCap)) {
+        expandedResults.push(item.result);
+        expandedPaths.push(item.entry);
       }
     }
 

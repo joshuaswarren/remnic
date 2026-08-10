@@ -3746,6 +3746,7 @@ export class RecallInternalCoordinator {
                   recallResultLimit,
                   deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
                   ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
+                  ...(typeof asOfMs === "number" ? { asOfMs } : {}),
                 }),
               null as Awaited<ReturnType<typeof this.deps.expandResultsViaGraph>> | null,
             );
@@ -5088,6 +5089,10 @@ export class RecallInternalCoordinator {
             servedBy,
             scoreDecomposition,
             admittedBy: [],
+            ...(xrayResult?.pathNodeIds ? { pathNodeIds: xrayResult.pathNodeIds } : {}),
+            ...(typeof xrayResult?.pathPenaltyApplied === "boolean"
+              ? { pathPenaltyApplied: xrayResult.pathPenaltyApplied }
+              : {}),
             ...(provenance ? { provenance } : {}),
             ...(sourceSpan ? { sourceSpan } : {}),
             // Issue #1577 — per-result trust projection for X-ray visibility.

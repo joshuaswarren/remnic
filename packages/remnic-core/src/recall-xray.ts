@@ -130,6 +130,10 @@ export interface RecallXrayResult {
    * empty or absent so legacy snapshots round-trip cleanly.
    */
   graphEdgeConfidences?: number[];
+  /** Graph activation node ids recorded for path-scoring provenance. */
+  pathNodeIds?: string[];
+  /** True when a graph path penalty was applied. */
+  pathPenaltyApplied?: boolean;
   auditEntryId?: string;
   /** Human-readable list of filters the candidate *passed*. */
   admittedBy: string[];
@@ -518,6 +522,13 @@ function cloneResult(result: RecallXrayResult): RecallXrayResult {
       }
     }
   }
+  const pathNodeIds = Array.isArray(result.pathNodeIds)
+    ? result.pathNodeIds.filter((x): x is string => typeof x === "string")
+    : undefined;
+  const pathPenaltyApplied =
+    typeof result.pathPenaltyApplied === "boolean"
+      ? result.pathPenaltyApplied
+      : undefined;
   const auditEntryId = nonEmptyString(result.auditEntryId);
   const rejectedBy = nonEmptyString(result.rejectedBy);
   const scoreDecomposition = cloneScoreDecomposition(result.scoreDecomposition);
@@ -532,6 +543,8 @@ function cloneResult(result: RecallXrayResult): RecallXrayResult {
   if (graphEdgeConfidences !== undefined) {
     out.graphEdgeConfidences = graphEdgeConfidences;
   }
+  if (pathNodeIds !== undefined) out.pathNodeIds = pathNodeIds;
+  if (pathPenaltyApplied !== undefined) out.pathPenaltyApplied = pathPenaltyApplied;
   if (auditEntryId !== undefined) out.auditEntryId = auditEntryId;
   if (rejectedBy !== undefined) out.rejectedBy = rejectedBy;
   // Disclosure + token telemetry (issue #677 PR 3/4).  Only attach when

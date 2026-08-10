@@ -5,6 +5,10 @@ import type { WearablesConfig } from "./wearables/types.js";
 import type { ExtractionLivenessConfig } from "./extraction-liveness.js";
 import type { ReplicaPeersConfig } from "./replica-peers-config.js";
 import type { ExternalWikiRoot } from "./external-wiki-config.js";
+import type { ContradictionLocalizationConfig, ContradictionScanConfig } from "./contradiction-config.js";
+import type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
+export type { ContradictionLocalizationConfig, ContradictionScanConfig } from "./contradiction-config.js";
+export type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
 
 import type { AmbientCaptureProvenance, BufferTurnOwner } from "./buffer-turn-helpers.js";
 export type ReasoningEffort = "none" | "low" | "medium" | "high";
@@ -609,21 +613,6 @@ export interface ScopeTeamConfig {
   promote: string[];
 }
 
-/** Configuration for the nightly contradiction-scan cron (issue #520). */
-export interface ContradictionScanConfig {
-  /** Master switch for the contradiction scan cron. Default true. */
-  enabled: boolean;
-  /** Embedding cosine similarity floor for candidate pair generation. Default 0.82. */
-  similarityFloor: number;
-  /** Minimum topic-token Jaccard overlap for unstructured pairs. Default 0.4. */
-  topicOverlapFloor: number;
-  /** Cap on candidate pairs evaluated per cron run. Default 500. */
-  maxPairsPerRun: number;
-  /** Cooldown in days before re-evaluating a pair judged independent/both-valid. Default 14. */
-  cooldownDays: number;
-  /** When true, pairs judged "duplicates" are auto-flagged for dedup (still need user approval). Default false. */
-  autoMergeDuplicates: boolean;
-}
 export interface DependencyPropagationConfig {
   /** Master switch. Default false. */
   enabled: boolean;
@@ -683,6 +672,7 @@ export interface SemanticChunkingConfigShape {
   embeddingBatchSize: number;
   fallbackToRecursive: boolean;
 }
+
 
 export interface PluginConfig extends BoundedJsonlStateConfig {
   openaiApiKey: string | undefined;
@@ -860,6 +850,8 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
   contradictionAutoResolve: boolean;
   /** Nightly contradiction-scan cron config (issue #520). */
   contradictionScan: ContradictionScanConfig;
+  /** Anchor-first contradiction candidate localization settings (issue #2327). */
+  contradictionLocalization: ContradictionLocalizationConfig;
   /** One-hop dependency invalidation propagation settings (issue #2326). */
   dependencyPropagation: DependencyPropagationConfig;
   // Temporal Supersession (issue #375)
@@ -2101,6 +2093,7 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
   causalGraphEnabled: boolean;
   maxGraphTraversalSteps: number;
   graphActivationDecay: number;
+  graphPathScoring: GraphPathScoringConfig;
   /** Weight of graph activation score when blending with seed QMD score (0-1). */
   graphExpansionActivationWeight: number;
   /** Lower bound for blended graph-expanded recall scores (0-1). */
@@ -3476,6 +3469,10 @@ export interface QmdSearchResult {
   transport?: "daemon" | "subprocess" | "hybrid" | "scoped_prefilter";
   /** Namespace that owned this result when returned by a namespace fanout search. */
   namespace?: string;
+  /** Graph activation path evidence from opt-in path scoring. */
+  pathNodeIds?: string[];
+  /** True when a graph path penalty was applied. */
+  pathPenaltyApplied?: boolean;
   sourceConnector?: string;
 }
 

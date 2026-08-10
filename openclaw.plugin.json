@@ -1384,6 +1384,42 @@
           }
         }
       },
+      "contradictionLocalization": {
+        "type": "object",
+        "additionalProperties": false,
+        "default": {
+          "anchorEnabled": true,
+          "anchorCandidates": 5,
+          "searchCandidates": 5,
+          "maxCandidates": 8
+        },
+        "description": "Anchor-first contradiction candidate localization before QMD search (issue #2327).",
+        "properties": {
+          "anchorEnabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Enable entityRef and category anchor candidates."
+          },
+          "anchorCandidates": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 5,
+            "description": "Maximum anchor candidates. 0 disables the anchor pass."
+          },
+          "searchCandidates": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 5,
+            "description": "Maximum QMD search candidates. 0 disables text search."
+          },
+          "maxCandidates": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 8,
+            "description": "Maximum merged candidates sent to the verifier."
+          }
+        }
+      },
       "dependencyPropagation": {
         "type": "object",
         "additionalProperties": false,
@@ -2583,6 +2619,29 @@
         "type": "boolean",
         "default": true,
         "description": "Escalate broader causal/timeline phrasing into graph_mode planning."
+      },
+      "graphPathScoring": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Penalize graph-expanded results that rely on invalid intermediate memories."
+          },
+          "invalidNodePenalty": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 1,
+            "default": 0.2,
+            "description": "Multiplicative penalty applied once per invalid intermediate memory."
+          },
+          "includePathInProvenance": {
+            "type": "boolean",
+            "default": true,
+            "description": "Include graph path node ids in recall provenance when path scoring is enabled."
+          }
+        },
+        "additionalProperties": false
       },
       "graphExpansionActivationWeight": {
         "type": "number",
@@ -6868,6 +6927,11 @@
       "label": "Contradiction Scan",
       "help": "Nightly cron that pairs similar memories and flags contradictions for review (issue #520)"
     },
+    "contradictionLocalization": {
+      "label": "Contradiction Localization",
+      "advanced": true,
+      "help": "Find entityRef and category anchors before QMD search."
+    },
     "dependencyPropagation": {
       "label": "Dependency Propagation",
       "help": "Revalidate active dependent memories after supersession. Disabled by default (issue #2326)."
@@ -6913,6 +6977,11 @@
     "recallGraphEnabled": {
       "label": "Graph Retrieval (PPR)",
       "help": "Run Personalized PageRank on the retrieval graph and merge with QMD via MMR (issue #559)."
+    },
+    "graphPathScoring": {
+      "label": "Graph Path Scoring",
+      "advanced": true,
+      "help": "Penalize expanded results that rely on invalid intermediate memories. Disabled by default."
     },
     "recallGraphDamping": {
       "label": "Graph Recall Damping",

@@ -16,8 +16,25 @@ import * as path from "node:path";
 import { readEdgeConfidence } from "./graph-edge-reinforcement.js";
 import { emitGraphEvent } from "./graph-events.js";
 import type { GraphConstructionCapabilitySet } from "./capabilities.js";
+import {
+  ActivationPathTracker,
+  compareActivationPathCandidates,
+  reconstructActivationPath,
+  type ActivationPathCandidate,
+  type ActivationPredecessor,
+} from "./graph-path-reconstruction.js";
+export { reconstructActivationPath, type ActivationPredecessor };
 
 export type GraphType = "entity" | "time" | "causal";
+
+export interface ActivationPath {
+  /** Node ids from the seed (inclusive) to the reached node (inclusive). */
+  nodeIds: string[];
+  /** Edge confidences, parallel to the hops in {@link nodeIds}. */
+  edgeConfidences: number[];
+  /** Graph types, parallel to the hops in {@link nodeIds}. */
+  graphTypes: GraphType[];
+}
 
 export interface GraphEdge {
   from: string; // relative memory path (e.g. "facts/2026-02-22/abc.md")
@@ -791,6 +808,8 @@ export class GraphIndex {
        * Default `false` (floor from config is applied).
        */
       includeLowConfidence?: boolean;
+      /** Record one shortest seed-to-candidate path in each result. */
+      recordPaths?: boolean;
       /** Absolute deadline in ms-since-epoch for post-retrieval assembly. */
       deadlineAtMs?: number;
     }
@@ -808,6 +827,7 @@ export class GraphIndex {
        * In `[0, 1]`. Legacy edges without `confidence` surface as 1.0.
        */
       edgeConfidence: number;
+      activationPath?: ActivationPath | null;
     }>
   > {
     if (!this.cfg.multiGraphMemoryEnabled) return [];
@@ -821,6 +841,7 @@ export class GraphIndex {
     const floor =
       opts?.includeLowConfidence === true ? 0 : clampConfidenceFloor(this.cfg.graphTraversalConfidenceFloor);
     const iterations = clampPageRankIterations(this.cfg.graphTraversalPageRankIterations);
+    const recordPaths = opts?.recordPaths === true;
     const deadlineAtMs = opts?.deadlineAtMs;
     const deadlineExpired = (): boolean =>
       typeof deadlineAtMs === "number" && Date.now() >= deadlineAtMs;
@@ -847,9 +868,9 @@ export class GraphIndex {
           adj.get(edge.to)!.push({ ...edge, from: edge.to, to: edge.from });
         }
       }
-
       const seedSet = new Set(seeds);
       const scores = new Map<string, number>(); // candidate path → accumulated activation score
+
       const provenance = new Map<
         string,
         {
@@ -858,16 +879,19 @@ export class GraphIndex {
           decayedWeight: number;
           graphType: "entity" | "time" | "causal";
           edgeConfidence: number;
+          pathKey: string;
         }
       >();
       let frontier = new Map<string, { node: string; seed: string; activation: number }>();
       const reachedBySeed = new Map<string, Set<string>>();
+      const pathTracker = recordPaths ? new ActivationPathTracker(seeds) : null;
+      const predecessors = pathTracker?.predecessors ?? null;
       for (const seed of seeds) {
         frontier.set(`${seed}\0${seed}`, { node: seed, seed, activation: 1 });
         reachedBySeed.set(seed, new Set([seed]));
       }
-      const finalizeScores = () =>
-        Array.from(scores.entries())
+      const finalizeScores = () => {
+        const results = Array.from(scores.entries())
           .map(([p, score]) => ({
             path: p,
             score,
@@ -877,7 +901,21 @@ export class GraphIndex {
             graphType: provenance.get(p)?.graphType ?? "entity",
             edgeConfidence: provenance.get(p)?.edgeConfidence ?? 1,
           }))
-          .sort((a, b) => b.score - a.score);
+          .sort((a, b) => {
+            const scoreDelta = b.score - a.score;
+            if (scoreDelta !== 0 || !recordPaths) return scoreDelta;
+            return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
+          });
+        if (!recordPaths || !predecessors) return results;
+        return results.map((result) => {
+          const seed = provenance.get(result.path)?.seed;
+          return {
+            ...result,
+            activationPath:
+              seed === undefined ? null : reconstructActivationPath(seed, result.path, predecessors, steps),
+          };
+        });
+      };
 
       for (let hop = 0; hop < steps && frontier.size > 0; hop++) {
         if (deadlineExpired()) return finalizeScores();
@@ -899,21 +937,50 @@ export class GraphIndex {
             if (reachedForSeed?.has(neighbor)) {
               continue;
             }
+            const candidatePathKey =
+              pathTracker && !seedSet.has(neighbor)
+                ? pathTracker.consider(
+                    sourceSeed,
+                    node,
+                    neighbor,
+                    hop + 1,
+                    score,
+                    conf,
+                    edge.type,
+                  )
+                : "";
 
             if (!seedSet.has(neighbor)) {
               const existing = scores.get(neighbor) ?? 0;
               scores.set(neighbor, existing + score);
 
               const prev = provenance.get(neighbor);
-              if (!prev || hop + 1 < prev.hopDepth || (hop + 1 === prev.hopDepth && score > prev.decayedWeight)) {
+              const candidateWinner: ActivationPathCandidate = {
+                hopDepth: hop + 1,
+                landingStrength: score,
+                pathKey: candidatePathKey,
+              };
+              const shouldReplace =
+                !prev ||
+                (recordPaths
+                  ? compareActivationPathCandidates(candidateWinner, {
+                      hopDepth: prev.hopDepth,
+                      landingStrength: prev.decayedWeight,
+                      pathKey: prev.pathKey,
+                    }) > 0
+                  : hop + 1 < prev.hopDepth ||
+                    (hop + 1 === prev.hopDepth && score > prev.decayedWeight));
+              if (shouldReplace) {
                 provenance.set(neighbor, {
                   seed: sourceSeed,
                   hopDepth: hop + 1,
                   decayedWeight: score,
                   graphType: edge.type,
                   edgeConfidence: conf,
+                  pathKey: candidatePathKey,
                 });
               }
+
 
               if (hop + 1 < steps) {
                 const frontierKey = `${sourceSeed}\0${neighbor}`;

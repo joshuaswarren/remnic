@@ -93,6 +93,10 @@ export interface GraphRecallExpandedEntry {
    * round-trip through `clampGraphRecallExpandedEntries` without dropping.
    */
   edgeConfidence?: number;
+  /** Graph-relative activation path node ids when provenance is enabled. */
+  pathNodeIds?: string[];
+  /** True when a graph path penalty was applied. */
+  pathPenaltyApplied?: boolean;
 }
 
 export function clampGraphRecallExpandedEntries(
@@ -131,6 +135,15 @@ export function clampGraphRecallExpandedEntries(
         Number.isFinite(item.edgeConfidence)
       ) {
         out.edgeConfidence = Math.min(1, Math.max(0, item.edgeConfidence));
+      }
+      if (
+        Array.isArray(item.pathNodeIds) &&
+        item.pathNodeIds.every((value): value is string => typeof value === "string")
+      ) {
+        out.pathNodeIds = item.pathNodeIds.slice(0, 64);
+      }
+      if (typeof item.pathPenaltyApplied === "boolean") {
+        out.pathPenaltyApplied = item.pathPenaltyApplied;
       }
       return out;
     })

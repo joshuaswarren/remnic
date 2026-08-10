@@ -4,7 +4,7 @@ import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, wri
 import os from "node:os";
 import path from "node:path";
 
-import { LastRecallStore } from "./recall-state.js";
+import { clampGraphRecallExpandedEntries, LastRecallStore } from "./recall-state.js";
 import type { RecallTierExplain } from "./types.js";
 import { listContainedSpillFiles } from "./utils/path-containment.js";
 
@@ -15,6 +15,34 @@ async function freshStore() {
   return { store, dir };
 }
 
+
+test("clampGraphRecallExpandedEntries caps path provenance and preserves legacy omission", () => {
+  const pathNodeIds = Array.from({ length: 80 }, (_, index) => `node-${index}`);
+  const [current, legacy] = clampGraphRecallExpandedEntries([
+    {
+      path: "current.md",
+      score: 1,
+      namespace: "default",
+      seed: "seed",
+      hopDepth: 1,
+      decayedWeight: 1,
+      graphType: "entity",
+      pathNodeIds,
+    },
+    {
+      path: "legacy.md",
+      score: 1,
+      namespace: "default",
+      seed: "seed",
+      hopDepth: 1,
+      decayedWeight: 1,
+      graphType: "entity",
+    },
+  ]);
+  assert.equal(current?.pathNodeIds?.length, 64);
+  assert.deepEqual(current?.pathNodeIds, pathNodeIds.slice(0, 64));
+  assert.equal("pathNodeIds" in (legacy ?? {}), false);
+});
 // ── Tier-explain field is optional and absent by default ───────────────────
 
 test("LastRecallStore.record omits tierExplain when caller did not provide it", async () => {

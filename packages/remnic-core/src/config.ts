@@ -2,7 +2,6 @@ import path from "node:path";
 import type {
   CodexCompactionFlushMode,
   CodingModeConfig,
-  ContradictionScanConfig,
   CodexCompatConfig,
   DreamingConfig,
   DreamsLightSleepConfig,
@@ -42,6 +41,11 @@ import { parseRecallConcurrencyConfig } from "./recall-concurrency-config.js";
 import { parseExtractionLivenessConfig } from "./extraction-liveness.js";
 import { parseReplicaPeersConfig } from "./replica-peers-config.js";
 import { parseDependencyPropagationConfig } from "./dependency-propagation-config.js";
+import {
+  parseContradictionLocalizationConfig,
+  parseContradictionScanConfig,
+} from "./contradiction-config.js";
+import { parseGraphPathScoringConfig } from "./graph-path-scoring-config.js";
 import { hasLegacyConnectorEntries } from "./connectors/paths.js";
 import {
   parseQmdChunkStrategy,
@@ -352,6 +356,7 @@ function resolveBooleanConfig(
   return coerced;
 }
 
+
 function resolvePositiveIntegerConfig(
   value: unknown,
   defaultValue: number,
@@ -506,35 +511,6 @@ function normalizeMemoryRelativeDir(raw: unknown, fallback: string): string {
   return normalized.length > 0 ? normalized : fallback;
 }
 
-/**
- * Parse and validate the semanticChunkingConfig sub-object.
- * Returns only recognized numeric/boolean fields with their correct types.
- */
-function parseContradictionScanConfig(raw: unknown): ContradictionScanConfig {
-  if (!raw || typeof raw !== "object") {
-    return {
-      enabled: false,
-      similarityFloor: 0.82,
-      topicOverlapFloor: 0.4,
-      maxPairsPerRun: 500,
-      cooldownDays: 14,
-      autoMergeDuplicates: false,
-    };
-  }
-  const src = raw as Record<string, unknown>;
-  const simFloor = coerceNumber(src.similarityFloor) ?? 0.82;
-  const topicFloor = coerceNumber(src.topicOverlapFloor) ?? 0.4;
-  const maxPairs = coerceNumber(src.maxPairsPerRun) ?? 500;
-  const cooldown = coerceNumber(src.cooldownDays) ?? 14;
-  return {
-    enabled: coerceBool(src.enabled) === true,
-    similarityFloor: Math.min(1, Math.max(0, simFloor)),
-    topicOverlapFloor: Math.min(1, Math.max(0, topicFloor)),
-    maxPairsPerRun: Math.max(1, maxPairs),
-    cooldownDays: Math.max(0, cooldown),
-    autoMergeDuplicates: coerceBool(src.autoMergeDuplicates) === true,
-  };
-}
 
 function parseSemanticChunkingConfig(
   raw: unknown,
@@ -1806,6 +1782,7 @@ export function parseConfig(
       typeof cfg.contradictionSimilarityThreshold === "number" ? cfg.contradictionSimilarityThreshold : 0.7,
     contradictionMinConfidence:
       typeof cfg.contradictionMinConfidence === "number" ? cfg.contradictionMinConfidence : 0.9,
+    contradictionLocalization: parseContradictionLocalizationConfig(cfg.contradictionLocalization),
     contradictionAutoResolve: cfg.contradictionAutoResolve !== false,
     // Contradiction Scan cron (issue #520)
     contradictionScan: parseContradictionScanConfig(cfg.contradictionScan),
@@ -3500,6 +3477,9 @@ export function parseConfig(
       typeof cfg.graphActivationDecay === "number"
         ? Math.min(1, Math.max(0, cfg.graphActivationDecay))
         : 0.7,
+    graphPathScoring: parseGraphPathScoringConfig(
+      cfg.graphPathScoring as Record<string, unknown> | undefined,
+    ),
     graphExpansionActivationWeight:
       typeof cfg.graphExpansionActivationWeight === "number"
         ? Math.min(1, Math.max(0, cfg.graphExpansionActivationWeight))

@@ -35,6 +35,10 @@ import type { CodingContext, EngramTraceEvent, IdentityInjectionMode, MemoryFile
 import type { VerifiedEpisodeResult } from "../verified-recall.js";
 import type { WorkProductLedgerSearchResult } from "../work-product-ledger.js";
 import type { GraphRecallRankedResult, GraphRecallShadowComparison } from "./graph-recall-coordinator.js";
+import type {
+  GraphRecallExpansionOptions,
+  GraphRecallExpansionResult,
+} from "./graph-recall-seam.js";
 import type { RecallRerankCoordinator, RecallResultPartitionSink } from "./recall-rerank-coordinator.js";
 import type { ArtifactRecallOptions } from "./recall-search-prefilter.js";
 import type { RecallSectionAppendOptions, RecallSectionBuckets } from "./recall-section-coordinator.js";
@@ -194,19 +198,9 @@ export interface RecallInternalDeps {
   ): QmdSearchResult[];
   effectiveCronRecallInstructionHeavyTokenCap(): number;
   emitTrace(event: EngramTraceEvent): void;
-  expandResultsViaGraph(options: {
-    memoryResults: QmdSearchResult[];
-    recallNamespaces: string[];
-    recallResultLimit: number;
-    deadlineAtMs?: number | null;
-    includeLowConfidence?: boolean;
-  }): Promise<{
-    merged: QmdSearchResult[];
-    seedPaths: string[];
-    expandedPaths: GraphRecallExpandedEntry[];
-    seedResults: QmdSearchResult[];
-  }>;
-  extractMemoryIdsFromResults(results: QmdSearchResult[]): string[];
+  expandResultsViaGraph(
+    options: GraphRecallExpansionOptions,
+  ): Promise<GraphRecallExpansionResult>;
   readonly fastLlmForRerank: {
     chatCompletion: (
       messages: Array<{ role: string; content: string }>,

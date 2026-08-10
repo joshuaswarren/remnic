@@ -328,7 +328,15 @@ export class RecallIntrospectionCoordinator {
           typeof e.edgeConfidence === "number" && Number.isFinite(e.edgeConfidence)
             ? e.edgeConfidence.toFixed(2)
             : "n/a";
-        return `- ${e.path} (score=${e.score.toFixed(3)}, ns=${e.namespace}, seed=${e.seed || "unknown"}, hop=${e.hopDepth}, w=${e.decayedWeight.toFixed(3)}, type=${e.graphType}, conf=${confLabel})`;
+        const pathLabel =
+          Array.isArray(e.pathNodeIds) && e.pathNodeIds.length > 0
+            ? `, path=${e.pathNodeIds.join("->")}`
+            : "";
+        const penaltyLabel =
+          typeof e.pathPenaltyApplied === "boolean"
+            ? `, penalty=${e.pathPenaltyApplied ? "yes" : "no"}`
+            : "";
+        return `- ${e.path} (score=${e.score.toFixed(3)}, ns=${e.namespace}, seed=${e.seed || "unknown"}, hop=${e.hopDepth}, w=${e.decayedWeight.toFixed(3)}, type=${e.graphType}, conf=${confLabel}${penaltyLabel}${pathLabel})`;
       }),
       `Final ranked results (${snapshot.finalResults?.length ?? 0}, showing ${finalResults.length}):`,
       ...finalResults.map(

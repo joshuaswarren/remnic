@@ -111,7 +111,10 @@ import {
   type RecallSectionBuckets,
 } from "./orchestration/recall-section-coordinator.js";
 import { QmdResultResolver, qmdCollectionPathParts, qmdResultPathCandidates } from "./orchestration/qmd-result-resolver.js";
-import { ContradictionLinkingCoordinator } from "./orchestration/contradiction-linking-coordinator.js";
+import {
+  ContradictionLinkingCoordinator,
+  type ContradictionResolveOutcome,
+} from "./orchestration/contradiction-linking-coordinator.js";
 import {
   ExtractionRunCoordinator,
   type ExtractionRunResult,
@@ -121,6 +124,7 @@ import { ConsolidationRunCoordinator } from "./orchestration/consolidation-run.j
 import { ExtractionPersistCoordinator } from "./orchestration/extraction-persist.js";
 import { RecallInternalCoordinator } from "./orchestration/recall-internal.js";
 import { RecallSearchPipelineCoordinator } from "./orchestration/recall-search-pipeline.js";
+import type { GraphRecallExpansionOptions, GraphRecallExpansionResult } from "./orchestration/graph-recall-seam.js";
 import type { ArtifactRecallOptions } from "./orchestration/recall-search-prefilter.js";
 import type { CorpusReadOptions } from "./corpus-read-cancellation.js";
 import { TurnIngestionCoordinator, type TurnIngestionOptions } from "./orchestration/turn-ingestion.js";
@@ -845,8 +849,8 @@ export class Orchestrator {
         routeEngineOptions: () => this.routeEngineOptions(),
         semanticDedupLookup: (content, limit, targetStorage) =>
           this.semanticDedupLookup(content, limit, targetStorage),
-        checkForContradiction: (content, category, namespaceScope) =>
-          this.checkForContradiction(content, category, namespaceScope),
+        checkForContradiction: (content, category, namespaceScope, anchor) =>
+          this.checkForContradiction(content, category, namespaceScope, anchor),
         applyDeferredContradictionResolve: (contradiction, storage, newMemoryId, postWriteGuard) =>
           this.applyDeferredContradictionResolve(contradiction, storage, newMemoryId, postWriteGuard),
         suggestLinksForMemory: (content, category, namespaceScope) =>
@@ -2550,22 +2554,14 @@ export class Orchestrator {
   }
 
   // Issue #1526 (seam 14): graph-recall expansion moved to
-  // GraphRecallCoordinator. Thin delegation keeps the private API stable
-  // for callers (recallInternal, cold-fallback pipeline) + tests.
-  private async expandResultsViaGraph(options: {
-    memoryResults: QmdSearchResult[];
-    recallNamespaces: string[];
-    recallResultLimit: number;
-    deadlineAtMs?: number | null;
-    includeLowConfidence?: boolean;
-  }): Promise<{
-    merged: QmdSearchResult[];
-    seedPaths: string[];
-    expandedPaths: GraphRecallExpandedEntry[];
-    seedResults: QmdSearchResult[];
-  }> {
+  // GraphRecallCoordinator. Keep this public seam so callers and tests can
+  // override graph expansion on the orchestrator instance.
+  async expandResultsViaGraph(
+    options: GraphRecallExpansionOptions,
+  ): Promise<GraphRecallExpansionResult> {
     return this.graphRecallCoordinator.expandResultsViaGraph(options);
   }
+
   private async recordLastGraphRecallSnapshot(options: {
     storage: StorageManager;
     prompt: string;
@@ -3875,6 +3871,10 @@ export class Orchestrator {
     content: string,
     category: string,
     namespaceScope: string,
+    anchor?: {
+      entityRef?: string;
+      structuredAttributes?: Record<string, string>;
+    },
   ): Promise<{
     supersededId: string;
     confidence: number;
@@ -3887,6 +3887,7 @@ export class Orchestrator {
       content,
       category,
       namespaceScope,
+      anchor,
     );
   }
 
@@ -3909,7 +3910,7 @@ export class Orchestrator {
     storage: StorageManager,
     newMemoryId: string,
     postWriteGuard: boolean,
-  ): Promise<void> {
+  ): Promise<ContradictionResolveOutcome> {
     return this.contradictionLinkingCoordinator.applyDeferredContradictionResolve(
       contradiction,
       storage,
