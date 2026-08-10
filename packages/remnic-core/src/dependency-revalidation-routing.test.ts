@@ -30,6 +30,7 @@ test("revalidation keeps the official OpenAI base URL on the Responses API", asy
   let request: Record<string, unknown> | undefined;
   let requestOptions: { signal?: AbortSignal } | undefined;
   Reflect.set(engine, "client", {
+    baseURL: "https://api.openai.com/v1",
     responses: {
       async create(body: Record<string, unknown>, options: { signal?: AbortSignal }) {
         calls += 1;
@@ -48,11 +49,11 @@ test("revalidation keeps the official OpenAI base URL on the Responses API", asy
   assert.equal(requestOptions?.signal, signal);
 });
 
-test("revalidation keeps custom OpenAI-compatible endpoints on chat completions", async () => {
+test("revalidation uses the client's effective custom base URL", async () => {
   const engine = new ExtractionEngine(
     parseConfig({
       openaiApiKey: "fixture-key",
-      openaiBaseUrl: "https://inference.example.test/v1",
+      openaiBaseUrl: "https://api.openai.com/v1",
     }),
   );
   const signal = new AbortController().signal;
@@ -60,6 +61,7 @@ test("revalidation keeps custom OpenAI-compatible endpoints on chat completions"
   let chatOptions: { signal?: AbortSignal } | undefined;
   let responsesCalls = 0;
   Reflect.set(engine, "client", {
+    baseURL: "https://inference.example.test/v1",
     chat: {
       completions: {
         async create(body: Record<string, unknown>, options: { signal?: AbortSignal }) {
@@ -87,7 +89,7 @@ test("revalidation keeps custom OpenAI-compatible endpoints on chat completions"
 
 test("revalidation falls back to the direct route when the injected fast route is unavailable", async () => {
   const engine = new ExtractionEngine(
-    parseConfig({ openaiApiKey: "fixture-key" }),
+    parseConfig({ openaiApiKey: "fixture-key", openaiBaseUrl: "https://api.openai.com/v1" }),
     undefined,
     undefined,
     undefined,
@@ -108,6 +110,7 @@ test("revalidation falls back to the direct route when the injected fast route i
     return null;
   });
   Reflect.set(engine, "client", {
+    baseURL: "https://api.openai.com/v1",
     responses: {
       async create(body: Record<string, unknown>, options: { signal?: AbortSignal }) {
         directCalls += 1;

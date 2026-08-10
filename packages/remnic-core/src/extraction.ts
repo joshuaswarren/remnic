@@ -2457,7 +2457,7 @@ Respond with valid JSON matching this schema:
       }
       const client = this.client;
       if (!client) return null;
-      if (this.config.openaiBaseUrl && !shouldAssumeOpenAiChatCompletions(this.config.openaiBaseUrl)) {
+      if (!shouldAssumeOpenAiChatCompletions(client.baseURL ?? this.config.openaiBaseUrl)) {
         const response = await client.chat.completions.create(
           {
             model: this.config.model,
