@@ -612,8 +612,8 @@ test("updates the memoized anchor snapshot after each same-batch write", async (
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
-test("keeps a failed supersession anchor in the next same-batch snapshot", async () => {
-  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-contradiction-supersede-failure-"));
+test("clears a losing supersedes link and removes the raced anchor", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-contradiction-supersede-race-"));
   try {
     const orchestrator = new Orchestrator(
       baseConfig(memoryDir, { contradictionAutoResolve: true }),
@@ -637,7 +637,11 @@ test("keeps a failed supersession anchor in the next same-batch snapshot", async
       entityRef: "person:alice",
       source: "test",
     });
-    storage.supersedeMemory = async () => false;
+    const supersedeMemory = storage.supersedeMemory.bind(storage);
+    storage.supersedeMemory = async (...args: Parameters<StorageManager["supersedeMemory"]>) => {
+      await supersedeMemory(...args);
+      return false;
+    };
     const snapshots: MemoryFile[][] = [];
     orchestrator.contradictionLinkingCoordinator.checkForContradiction = async (...args: unknown[]) => {
       const anchor = args[3];
@@ -680,7 +684,144 @@ test("keeps a failed supersession anchor in the next same-batch snapshot", async
 
     assert.equal(snapshots.length, 2);
     assert.equal(snapshots[0]?.some((memory) => memory.frontmatter.id === oldId), true);
-    assert.equal(snapshots[1]?.some((memory) => memory.frontmatter.id === oldId), true);
+    assert.equal(snapshots[1]?.some((memory) => memory.frontmatter.id === oldId), false);
+    const persisted = (await storage.readAllMemories()).filter(
+      (memory) => memory.frontmatter.id !== oldId,
+    );
+    const losingWrites = persisted.filter(
+      (memory) => memory.content.includes("Boston") || memory.content.includes("Dallas"),
+    );
+    assert.equal(losingWrites.length, 2);
+    assert.equal(losingWrites.every((memory) => memory.frontmatter.supersedes === undefined), true);
+    assert.equal(
+      (await storage.getMemoryById(oldId))?.frontmatter.status,
+      "superseded",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+test("preserves the anchor when supersede I/O throws", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-contradiction-supersede-io-"));
+  try {
+    const config = baseConfig(memoryDir, { contradictionAutoResolve: true });
+    const old = {
+      path: path.join(memoryDir, "old.md"),
+      content: "Alice lives in Austin",
+      frontmatter: {
+        id: "old",
+        category: "fact",
+        created: "2026-08-01T00:00:00.000Z",
+        updated: "2026-08-01T00:00:00.000Z",
+        source: "test",
+        confidence: 0.9,
+        confidenceTier: "explicit",
+        tags: [],
+        status: "active",
+      },
+    } as unknown as MemoryFile;
+    const storage = {
+      dir: memoryDir,
+      getMemoryById: async (id: string) => (id === "old" ? old : null),
+      readAllColdMemories: async () => [],
+      supersedeMemory: async () => {
+        throw new Error("supersede I/O failed");
+      },
+    } as unknown as StorageManager;
+    const coordinator = new ContradictionLinkingCoordinator({
+      getConfig: () => config,
+      isSearchAvailable: () => false,
+      searchAcrossNamespaces: async () => [],
+      extractMemoryIdsFromResults: () => [],
+      namespaceFromPath: () => "default",
+      storageForNamespace: async () => storage,
+      getExtraction: () => ({}) as ExtractionEngine,
+    });
+
+    const outcome = await coordinator.applyDeferredContradictionResolve(
+      {
+        supersededId: "old",
+        reason: "city changed",
+        supersededPath: old.path,
+        supersededCreated: old.frontmatter.created,
+        supersededTags: [],
+      },
+      storage,
+      "new",
+      false,
+    );
+    assert.equal(outcome, "supersede_failed");
+    assert.equal(old.frontmatter.status, "active");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("preserves the anchor when a losing supersedes clear fails", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-contradiction-clear-io-"));
+  try {
+    const config = baseConfig(memoryDir, { contradictionAutoResolve: true });
+    const old = {
+      path: path.join(memoryDir, "old.md"),
+      content: "Alice lives in Austin",
+      frontmatter: {
+        id: "old",
+        category: "fact",
+        created: "2026-08-01T00:00:00.000Z",
+        updated: "2026-08-01T00:00:00.000Z",
+        source: "test",
+        confidence: 0.9,
+        confidenceTier: "explicit",
+        tags: [],
+        status: "active",
+      },
+    } as unknown as MemoryFile;
+    const losing = {
+      path: path.join(memoryDir, "new.md"),
+      content: "Alice lives in Boston",
+      frontmatter: {
+        ...old.frontmatter,
+        id: "new",
+        supersedes: "old",
+      },
+    } as unknown as MemoryFile;
+    const storage = {
+      dir: memoryDir,
+      getMemoryById: async (id: string) => (id === "old" ? old : id === "new" ? losing : null),
+      readAllColdMemories: async () => [],
+      supersedeMemory: async () => {
+        old.frontmatter.status = "superseded";
+        return false;
+      },
+      writeMemoryFrontmatter: async () => {
+        throw new Error("supersedes clear I/O failed");
+      },
+    } as unknown as StorageManager;
+    const coordinator = new ContradictionLinkingCoordinator({
+      getConfig: () => config,
+      isSearchAvailable: () => false,
+      searchAcrossNamespaces: async () => [],
+      extractMemoryIdsFromResults: () => [],
+      namespaceFromPath: () => "default",
+      storageForNamespace: async () => storage,
+      getExtraction: () => ({}) as ExtractionEngine,
+    });
+
+    const outcome = await coordinator.applyDeferredContradictionResolve(
+      {
+        supersededId: "old",
+        reason: "city changed",
+        supersededPath: old.path,
+        supersededCreated: old.frontmatter.created,
+        supersededTags: [],
+      },
+      storage,
+      "new",
+      false,
+    );
+    assert.equal(outcome, "supersedes_clear_failed");
+    assert.equal(old.frontmatter.status, "superseded");
+    assert.equal(losing.frontmatter.supersedes, "old");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

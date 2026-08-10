@@ -47,6 +47,15 @@ export interface ContradictionResult {
   supersededTags: string[];
 }
 
+/** Outcome of the post-write contradiction retirement attempt. */
+export type ContradictionResolveOutcome =
+  | "not_attempted"
+  | "blocked"
+  | "resolved"
+  | "lost_race"
+  | "supersede_failed"
+  | "supersedes_clear_failed";
+
 /**
  * Subset of {@link ContradictionResult} used by
  * {@link ContradictionLinkingCoordinator.applyDeferredContradictionResolve}.
@@ -314,7 +323,7 @@ export class ContradictionLinkingCoordinator {
     storage: StorageManager,
     newMemoryId: string,
     postWriteGuard: boolean,
-  ): Promise<boolean> {
+  ): Promise<ContradictionResolveOutcome> {
     const config = this.getConfig();
     // #1645 yG2: clear the pre-write `supersedes` link from a blocked row so
     // it doesn't claim to supersede a still-active memory (best-effort).
@@ -335,7 +344,7 @@ export class ContradictionLinkingCoordinator {
       !config.contradictionAutoResolve ||
       postWriteGuard
     ) {
-      return false;
+      return postWriteGuard ? "blocked" : "not_attempted";
     }
 
     // Capture links before the primary supersession. The propagation hook is
@@ -357,7 +366,41 @@ export class ContradictionLinkingCoordinator {
         newMemoryId,
         contradiction.reason,
       );
-      if (!superseded) return false;
+      if (!superseded) {
+        let targetStillActive = true;
+        try {
+          let target = await storage.getMemoryById(contradiction.supersededId);
+          if (!target) {
+            target = (await storage.readAllColdMemories()).find(
+              (memory) => memory.frontmatter.id === contradiction.supersededId,
+            ) ?? null;
+          }
+          targetStillActive =
+            target !== null &&
+            (target.frontmatter.status === undefined || target.frontmatter.status === "active");
+        } catch (err) {
+          log.warn(
+            `contradiction auto-resolve race check failed for ${contradiction.supersededId}: ${err}`,
+          );
+          return "supersede_failed";
+        }
+        if (targetStillActive) return "supersede_failed";
+        try {
+          const losingMemory = await storage.getMemoryById(newMemoryId);
+          if (losingMemory && losingMemory.frontmatter.supersedes === contradiction.supersededId) {
+            const cleared = await storage.writeMemoryFrontmatter(losingMemory, {
+              supersedes: undefined,
+            });
+            if (cleared === false) return "supersedes_clear_failed";
+          }
+        } catch (err) {
+          log.warn(
+            `contradiction auto-resolve losing supersedes clear failed for ${newMemoryId}: ${err}`,
+          );
+          return "supersedes_clear_failed";
+        }
+        return "lost_race";
+      }
       if (oldMemory) {
         try {
           await propagateInvalidation(
@@ -383,19 +426,25 @@ export class ContradictionLinkingCoordinator {
         resolveIndexingCapabilities(config).queryAwareIndexing &&
         contradiction.supersededPath
       ) {
-        await deindexMemoryAsync(
-          config.memoryDir,
-          contradiction.supersededPath,
-          contradiction.supersededCreated,
-          contradiction.supersededTags,
-        );
+        try {
+          await deindexMemoryAsync(
+            config.memoryDir,
+            contradiction.supersededPath,
+            contradiction.supersededCreated,
+            contradiction.supersededTags,
+          );
+        } catch (err) {
+          log.warn(
+            `contradiction auto-resolve deindex failed for ${contradiction.supersededId}: ${err}`,
+          );
+        }
       }
-      return true;
+      return "resolved";
     } catch (err) {
       log.warn(
         `contradiction auto-resolve supersede failed for ${contradiction.supersededId}: ${err}`,
       );
-      return false;
+      return "supersede_failed";
     }
   }
 

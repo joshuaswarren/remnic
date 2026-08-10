@@ -111,7 +111,10 @@ import {
   type RecallSectionBuckets,
 } from "./orchestration/recall-section-coordinator.js";
 import { QmdResultResolver, qmdCollectionPathParts, qmdResultPathCandidates } from "./orchestration/qmd-result-resolver.js";
-import { ContradictionLinkingCoordinator } from "./orchestration/contradiction-linking-coordinator.js";
+import {
+  ContradictionLinkingCoordinator,
+  type ContradictionResolveOutcome,
+} from "./orchestration/contradiction-linking-coordinator.js";
 import {
   ExtractionRunCoordinator,
   type ExtractionRunResult,
@@ -3907,7 +3910,7 @@ export class Orchestrator {
     storage: StorageManager,
     newMemoryId: string,
     postWriteGuard: boolean,
-  ): Promise<boolean> {
+  ): Promise<ContradictionResolveOutcome> {
     return this.contradictionLinkingCoordinator.applyDeferredContradictionResolve(
       contradiction,
       storage,

@@ -2225,13 +2225,13 @@ export class ExtractionPersistCoordinator {
             faithfulnessEnforceStatus === "pending_review" || tombstoneBlocked;
           // #1645: defer contradiction auto-resolve until tombstone status is
           // known (see applyDeferredContradictionResolve).
-          const contradictionResolved = await this.deps.applyDeferredContradictionResolve(
+          const contradictionOutcome = await this.deps.applyDeferredContradictionResolve(
             contradiction,
             targetStorage,
             parentId,
             postWriteGuard,
           );
-          if (contradictionResolved) {
+          if (contradictionOutcome === "resolved" || contradictionOutcome === "lost_race") {
             await anchorSnapshots.remove(targetStorage, contradiction!.supersededId);
           }
           try {
@@ -2607,18 +2607,17 @@ export class ExtractionPersistCoordinator {
       // #1645: surface the tombstone block; gate active post-write paths like #1576
       // so a blocked fact creates no active shared copy / supersession / graph entry.
       const tombstoneBlocked = factWrite.tombstoneBlocked;
-      const postWriteGuard =
-        faithfulnessEnforceStatus === "pending_review" || tombstoneBlocked;
+      const postWriteGuard = faithfulnessEnforceStatus === "pending_review" || tombstoneBlocked;
       // #1645: defer contradiction auto-resolve until tombstone status is
       // known (see applyDeferredContradictionResolve).
       try {
-        const contradictionResolved = await this.deps.applyDeferredContradictionResolve(
+        const contradictionOutcome = await this.deps.applyDeferredContradictionResolve(
           contradiction,
           targetStorage,
           memoryId,
           postWriteGuard,
         );
-        if (contradictionResolved) {
+        if (contradictionOutcome === "resolved" || contradictionOutcome === "lost_race") {
           await anchorSnapshots.remove(targetStorage, contradiction!.supersededId);
         }
       } catch (err) {
