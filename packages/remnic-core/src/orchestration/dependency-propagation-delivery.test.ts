@@ -8,6 +8,7 @@ import {
   DependencyPropagationDelivery,
   type DependencyPropagationJob,
   type DependencyPropagationPreparationToken,
+  type DependencyPropagationReplayReconciliationPort,
 } from "./dependency-propagation-delivery.js";
 import type { ExtractionEngine } from "../extraction.js";
 import type { MemoryFile, MemoryLinkType, PluginConfig } from "../types.js";
@@ -15,7 +16,7 @@ import { sanitizeMemoryContent } from "../sanitize.js";
 import type { StorageManager } from "../storage.js";
 
 type PropagationEvent = {
-  oldMemory: { content: string; frontmatter: MemoryFile["frontmatter"] };
+  oldMemory: { content: string; frontmatter: MemoryFile["frontmatter"]; path?: string };
   replacementId: string | null;
   replacementContent: string | null;
   cause:
@@ -84,6 +85,7 @@ function event(oldMemory: MemoryFile, overrides: Partial<PropagationEvent> = {})
     oldMemory: {
       content: oldMemory.content,
       frontmatter: { ...oldMemory.frontmatter },
+      path: oldMemory.path,
     },
     replacementId: "replacement",
     replacementContent: "replacement claim",
@@ -194,6 +196,7 @@ function deliveryOptions(
     maxAttempts?: number;
     config?: PluginConfig;
     getStorage?: (namespace: string) => Promise<StorageManager>;
+    replayReconciliation?: DependencyPropagationReplayReconciliationPort;
   } = {},
 ) {
   const storageCalls: string[] = [];
@@ -212,6 +215,7 @@ function deliveryOptions(
       retryDelayMs: options.retryDelayMs,
       leaseMs: options.leaseMs,
       maxAttempts: options.maxAttempts,
+      replayReconciliation: options.replayReconciliation,
     },
     storageCalls,
   };
@@ -266,6 +270,31 @@ test("prepare durably persists a prepared job before the primary mutation", asyn
         status: "prepared",
         attempts: 0,
       },
+    );
+  });
+});
+test("consolidation merge preparation defers after a transient survivor lookup failure", async () => {
+  await withTempQueue(async (queueRoot) => {
+    const old = memory("old");
+    const fixtureValue = fixture([old, memory("replacement")]);
+    fixtureValue.storage.getMemoryById = async (id: string): Promise<MemoryFile | null> => {
+      if (id === "replacement") throw new Error("transient survivor lookup failure");
+      return fixtureValue.memories.get(id) ?? null;
+    };
+    const delivery = new DependencyPropagationDelivery(deliveryOptions(queueRoot, fixtureValue).options);
+
+    const token = await delivery.prepare(
+      event(old, {
+        cause: "consolidation_merge",
+        replacementId: "replacement",
+      }),
+    );
+
+    assert.equal(token, null, "merge preparation defers instead of creating an unsafe job");
+    assert.deepEqual(
+      await delivery.listJobs(),
+      [],
+      "no durable merge job exists without preparedReplacementFingerprint",
     );
   });
 });
@@ -708,10 +737,11 @@ test("consolidation merge recovery uses exact cold and archive snapshots", async
       content: sanitizeMemoryContent(rawReplacement).text,
     });
     const fixtureValue = fixture([old, replacement]);
+    let preparing = true;
     const storage = {
       ...fixtureValue.storage,
-      async getMemoryById(): Promise<MemoryFile | null> {
-        return null;
+      async getMemoryById(id: string): Promise<MemoryFile | null> {
+        return preparing && id === replacement.frontmatter.id ? replacement : null;
       },
       async readAllColdMemories(): Promise<MemoryFile[]> {
         return [old];
@@ -744,6 +774,7 @@ test("consolidation merge recovery uses exact cold and archive snapshots", async
       replacementContent: rawReplacement,
     }));
     assert.ok(token);
+    preparing = false;
 
     await delivery.recover();
 
@@ -1264,6 +1295,106 @@ test("a fenced write renews an expired lease before releasing the queue lock", a
     assert.equal(writeCount, 1);
     assert.equal(jobById(await second.listJobs(), token).status, "completed");
     assert.equal(dependent.frontmatter.status, "superseded");
+  });
+});
+
+test("recovery routes an expired recovery lease through primary replay before dependent delivery", async () => {
+  await withTempQueue(async (queueRoot) => {
+    let now = 1_000;
+    const ordered: string[] = [];
+    const old = memory("old", { links: [{ targetId: "dependent", linkType: "supports" }] });
+    const fixtureValue = fixture(
+      [old, memory("dependent"), memory("replacement", { content: "replacement claim" })],
+      [{ memoryId: "dependent", verdict: "invalidated" }],
+    );
+    const originalSupersede = fixtureValue.storage.supersedeMemory.bind(fixtureValue.storage);
+    fixtureValue.storage.supersedeMemory = async (...args): Promise<boolean> => {
+      const result = await originalSupersede(...args);
+      if (args[0] === old.frontmatter.id) ordered.push("primary");
+      return result;
+    };
+    let extractionCalls = 0;
+    fixtureValue.extraction = {
+      async revalidateDependents(): Promise<{ verdicts: Verdict[] }> {
+        extractionCalls += 1;
+        ordered.push("revalidation");
+        return { verdicts: [{ memoryId: "dependent", verdict: "invalidated" }] };
+      },
+    } as unknown as ExtractionEngine;
+
+    const first = new DependencyPropagationDelivery(
+      deliveryOptions(queueRoot, fixtureValue, {
+        workerId: "worker-a",
+        clock: () => now,
+        leaseMs: 1_000_000,
+      }).options,
+    );
+    const propagationEvent = event(old);
+    const token = await first.prepare(propagationEvent);
+    assert.ok(token);
+
+    // Reproduce the crash: a recovery run claimed the prepared job, persisted a
+    // recovery-owned lease, and died BEFORE primary replay. Plant that exact
+    // durable state — a `leased` job whose owner carries `:recovery:`.
+    const preparedPath = path.join(queueRoot, "prepared", `${token.jobId}.json`);
+    const leasedDir = path.join(queueRoot, "leased");
+    const leasedPath = path.join(leasedDir, `${token.jobId}.json`);
+    const seeded = JSON.parse(await readFile(preparedPath, "utf8")) as DependencyPropagationJob;
+    await mkdir(leasedDir, { recursive: true });
+    await writeFile(
+      leasedPath,
+      JSON.stringify(
+        {
+          ...seeded,
+          status: "leased",
+          leaseOwner: "worker-a:recovery:dead-before-replay",
+          leaseExpiresAt: now + 1_000_000,
+          revision: seeded.revision + 1,
+          updatedAt: now,
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    await unlink(preparedPath);
+    assert.equal(old.frontmatter.status, "active");
+    assert.equal(extractionCalls, 0);
+
+    // The next recovery run observes the expired recovery lease and must replay
+    // the primary mutation BEFORE any dependent delivery.
+    now = 1_001_001;
+    const second = new DependencyPropagationDelivery(
+      deliveryOptions(queueRoot, fixtureValue, {
+        workerId: "worker-b",
+        clock: () => now,
+        leaseMs: 1_000_000,
+      }).options,
+    );
+    await second.recover();
+
+    assert.equal(
+      old.frontmatter.status,
+      "superseded",
+      "recovery replayed the primary mutation for the expired recovery lease",
+    );
+    assert.equal(
+      jobById(await second.listJobs(), token).status,
+      "ready",
+      "recovery readies the replayed job for dependent delivery",
+    );
+    assert.equal(extractionCalls, 0, "no dependent revalidation runs during recovery");
+    assert.deepEqual(ordered, ["primary"], "primary mutation precedes dependent revalidation");
+
+    await second.runUntilIdle();
+
+    assert.equal(extractionCalls, 1, "dependent delivery runs only after the primary replay");
+    assert.equal(jobById(await second.listJobs(), token).status, "completed");
+    assert.deepEqual(
+      ordered,
+      ["primary", "revalidation"],
+      "primary mutation strictly precedes dependent revalidation",
+    );
   });
 });
 
@@ -2027,5 +2158,173 @@ test("terminal queue files retain only the recent fixed cap", async () => {
     const jobs = await delivery.listJobs();
     assert.equal(jobs.length, 32);
     assert.ok(jobs.every((job) => job.status === "completed"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Recovery index reconciliation — focused tests for the injected
+// DependencyPropagationReplayReconciliationPort.
+//
+// A normal consolidation MERGE reindexes the survivor and deindexes the
+// superseded source inline; an INVALIDATE deindexes. Recovery that replays the
+// same primary mutation must perform the equivalent reconciliation BEFORE the
+// job becomes ready. Failed index work keeps the job retryable, not ready.
+// ---------------------------------------------------------------------------
+
+function recordingReplayReconciliation(): DependencyPropagationReplayReconciliationPort & {
+  deindexCalls: string[][];
+  reindexCalls: string[];
+  setFault(error: Error | null): void;
+} {
+  const deindexCalls: string[][] = [];
+  const reindexCalls: string[] = [];
+  let fault: Error | null = null;
+  return {
+    deindexCalls,
+    reindexCalls,
+    setFault(error) {
+      fault = error;
+    },
+    async deindex(_event: PropagationEvent, memoryIds: readonly string[]): Promise<void> {
+      deindexCalls.push([...memoryIds]);
+      if (fault) throw fault;
+    },
+    async reindex(_event: PropagationEvent, survivorId: string): Promise<void> {
+      reindexCalls.push(survivorId);
+      if (fault) throw fault;
+    },
+  };
+}
+
+test("replayed merge refreshes survivor index visibility during recovery", async () => {
+  await withTempQueue(async (queueRoot) => {
+    const old = memory("old", { links: [{ targetId: "dependent", linkType: "supports" }] });
+    const fixtureValue = fixture([
+      old,
+      memory("dependent"),
+      memory("replacement", { content: "replacement claim" }),
+    ]);
+    const storage = {
+      ...fixtureValue.storage,
+      async updateMemoryIfUnchanged(
+        expected: MemoryFile,
+        content: string,
+        options?: { supersedes?: string; lineage?: string[] },
+      ): Promise<boolean> {
+        const current = fixtureValue.memories.get(expected.frontmatter.id);
+        if (!current) return false;
+        fixtureValue.memories.set(expected.frontmatter.id, {
+          ...current,
+          content,
+          frontmatter: {
+            ...current.frontmatter,
+            supersedes: options?.supersedes,
+            lineage: options?.lineage,
+          },
+        });
+        return true;
+      },
+      async invalidateMemory(id: string): Promise<boolean> {
+        return fixtureValue.memories.delete(id);
+      },
+    } as unknown as StorageManager;
+    const replay = recordingReplayReconciliation();
+    const first = new DependencyPropagationDelivery(
+      deliveryOptions(queueRoot, fixtureValue, { getStorage: async () => storage }).options,
+    );
+    const jobId = await first.prepare(event(old, { cause: "consolidation_merge" }));
+    assert.ok(jobId);
+
+    const second = new DependencyPropagationDelivery(
+      deliveryOptions(queueRoot, fixtureValue, {
+        getStorage: async () => storage,
+        replayReconciliation: replay,
+      }).options,
+    );
+    await second.recover();
+
+    // The survivor (replacement) is the replayed MERGE target: its index
+    // visibility is refreshed via the injected reindex port, and the superseded
+    // source is deindexed — equivalent to a consolidation MERGE's inline effects.
+    assert.deepEqual(replay.reindexCalls, ["replacement"], "recovery reindexes the survivor");
+    assert.deepEqual(replay.deindexCalls, [["old"]], "recovery deindexes the superseded source");
+    assert.equal(jobById(await second.listJobs(), jobId).status, "ready");
+  });
+});
+
+test("replayed invalidation removes stale index visibility during recovery", async () => {
+  await withTempQueue(async (queueRoot) => {
+    const old = memory("old");
+    const fixtureValue = fixture([old]);
+    const storage = {
+      ...fixtureValue.storage,
+      async getMemoryById(): Promise<MemoryFile | null> {
+        return null;
+      },
+      async readAllColdMemories(): Promise<MemoryFile[]> {
+        return [old];
+      },
+      async invalidateMemory(
+        id: string,
+        snapshot?: Pick<MemoryFile, "content" | "frontmatter" | "path">,
+      ): Promise<boolean> {
+        assert.equal(id, old.frontmatter.id);
+        assert.equal(snapshot?.path, old.path);
+        return true;
+      },
+    } as unknown as StorageManager;
+    const replay = recordingReplayReconciliation();
+    const delivery = new DependencyPropagationDelivery(
+      deliveryOptions(queueRoot, fixtureValue, {
+        getStorage: async () => storage,
+        replayReconciliation: replay,
+      }).options,
+    );
+    const token = await delivery.prepare(
+      event(old, {
+        cause: "consolidation_invalidate",
+        replacementId: null,
+        replacementContent: null,
+      }),
+    );
+    assert.ok(token);
+
+    await delivery.recover();
+
+    // The superseded source (old) is the replayed INVALIDATION target: its
+    // stale index visibility is removed via the injected deindex port. No
+    // survivor exists for an invalidation, so reindex is never called.
+    assert.deepEqual(replay.deindexCalls, [["old"]], "recovery deindexes the invalidated source");
+    assert.deepEqual(replay.reindexCalls, [], "an invalidation replays no survivor to reindex");
+    assert.equal(jobById(await delivery.listJobs(), token).status, "ready");
+  });
+});
+
+test("failed index work keeps recovery retryable rather than marking ready", async () => {
+  await withTempQueue(async (queueRoot) => {
+    const old = memory("old", { links: [{ targetId: "dependent", linkType: "supports" }] });
+    const fixtureValue = fixture([
+      old,
+      memory("dependent"),
+      memory("replacement", { content: "replacement claim" }),
+    ]);
+    const replay = recordingReplayReconciliation();
+    replay.setFault(new Error("index backend unavailable"));
+    const first = new DependencyPropagationDelivery(deliveryOptions(queueRoot, fixtureValue).options);
+    const jobId = await first.prepare(event(old));
+    assert.ok(jobId);
+
+    const second = new DependencyPropagationDelivery(
+      deliveryOptions(queueRoot, fixtureValue, { replayReconciliation: replay }).options,
+    );
+    await second.recover();
+
+    // The injected port threw, so the failed index work keeps recovery
+    // retryable — the job is retained (prepared), NOT marked ready. The primary
+    // mutation already landed, so a later replay with the backend available will
+    // see it applied and finish only the reconciliation.
+    const retained = jobById(await second.listJobs(), jobId);
+    assert.notEqual(retained.status, "ready", "a failed reconciliation must not mark the job ready");
+    assert.equal(retained.attempts, 1, "the failed replay counts as one attempt");
   });
 });

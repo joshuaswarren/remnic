@@ -21,7 +21,7 @@ export function isDependencyPropagationEnabled(config: Pick<PluginConfig, "depen
 
 export interface PropagationEvent {
   /** Snapshot captured before the primary supersession or deletion. */
-  oldMemory: { content: string; frontmatter: MemoryFrontmatter };
+  oldMemory: { content: string; frontmatter: MemoryFrontmatter; path?: string };
   replacementId: string | null;
   replacementContent: string | null;
   cause:

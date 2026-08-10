@@ -356,6 +356,7 @@ import {
   recencyWindowFromPrompt,
   extractTagsFromPrompt,
   resolvePromptTagPrefilterAsync,
+  deindexMemoriesBatchAsync,
 } from "./temporal-index.js";
 import { GraphIndex } from "./graph.js";
 import {
@@ -754,6 +755,32 @@ export class Orchestrator {
         readQueueFile: (filePath) => this.storage.readDependencyPropagationQueueFile(filePath),
         writeQueueFile: (filePath, content) => this.storage.writeDependencyPropagationQueueFile(filePath, content),
         autoStart: true,
+        replayReconciliation: {
+          reindex: async (event, survivorId) => {
+            if (event.cause !== "consolidation_merge") return;
+            const storage = await this.getStorage(event.namespaceScope);
+            await this.indexPersistedMemory(storage, survivorId);
+          },
+          deindex: async (event, memoryIds) => {
+            if (
+              event.cause !== "consolidation_merge" &&
+              event.cause !== "consolidation_invalidate"
+            ) {
+              return;
+            }
+            await Promise.all(
+              memoryIds.map((memoryId) => this.embeddingFallback.removeFromIndex(memoryId)),
+            );
+            if (!resolveIndexingCapabilities(this.config).queryAwareIndexing) return;
+            if (!event.oldMemory.path || !event.oldMemory.frontmatter.created) return;
+            const storage = await this.getStorage(event.namespaceScope);
+            await deindexMemoriesBatchAsync(storage.dir, [{
+              path: event.oldMemory.path,
+              createdAt: event.oldMemory.frontmatter.created,
+              tags: event.oldMemory.frontmatter.tags ?? [],
+            }]);
+          },
+        },
       });
     }
     return this._dependencyPropagationDelivery;

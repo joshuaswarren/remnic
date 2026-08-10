@@ -73,6 +73,24 @@ export interface DependencyPropagationDeliveryPort {
   deferPrepared(token: DependencyPropagationPreparationToken | null): Promise<void>;
 }
 
+/**
+ * Index reconciliation for a replayed primary mutation (recovery). Implemented
+ * by the host and injected via {@link DependencyPropagationDeliveryOptions} so
+ * the core delivery never statically imports optional index backends (rule 57).
+ *
+ * A normal consolidation pass reindexes the survivor and deindexes the
+ * superseded source inline after a MERGE/INVALIDATE. Recovery that replays the
+ * same primary mutation must perform the equivalent reconciliation BEFORE the
+ * job becomes ready; this port is the seam. A rejection keeps the job
+ * retryable rather than marking it ready (see recoverPrimaryMutation).
+ */
+export interface DependencyPropagationReplayReconciliationPort {
+  /** Deindex superseded memories — removes their stale index visibility. */
+  deindex(event: PropagationEvent, memoryIds: readonly string[]): Promise<void>;
+  /** Reindex the survivor — refreshes its index visibility. */
+  reindex(event: PropagationEvent, survivorId: string): Promise<void>;
+}
+
 export interface DependencyPropagationDeliveryOptions {
   queueRoot: string;
   config: PluginConfig;
@@ -87,6 +105,13 @@ export interface DependencyPropagationDeliveryOptions {
   schedule?: (run: () => Promise<void>, delayMs: number) => void;
   readQueueFile?: (filePath: string) => Promise<string>;
   writeQueueFile?: (filePath: string, content: string) => Promise<void>;
+  /**
+   * Index reconciliation invoked after a recovered primary-mutation replay,
+   * before the job becomes ready. Host-injected so the core never imports an
+   * index backend; absent it, recovery skips index reconciliation (back-compat).
+   * A rejection keeps the recovered job retryable rather than marking it ready.
+   */
+  replayReconciliation?: DependencyPropagationReplayReconciliationPort;
 }
 
 type JobEntry = {
@@ -161,6 +186,7 @@ export class DependencyPropagationDelivery {
   private readonly schedule: (run: () => Promise<void>, delayMs: number) => void;
   private readonly readQueueFile: (filePath: string) => Promise<string>;
   private readonly writeQueueFile: (filePath: string, content: string) => Promise<void>;
+  private readonly replayReconciliation?: DependencyPropagationReplayReconciliationPort;
   private backgroundScheduled = false;
   private recoveryScheduled = false;
   private backgroundRun: Promise<number> | null = null;
@@ -192,6 +218,7 @@ export class DependencyPropagationDelivery {
     this.writeQueueFile =
       options.writeQueueFile ??
       ((filePath, content) => writeJsonFileAtomic(filePath, JSON.parse(content) as unknown));
+    this.replayReconciliation = options.replayReconciliation;
   }
   async prepare(event: PropagationEvent): Promise<DependencyPropagationPreparationToken | null> {
     if (this.stopped) return null;
@@ -206,9 +233,18 @@ export class DependencyPropagationDelivery {
         try {
           const storage = await this.getStorage(snapshot.namespaceScope);
           const replacement = await storage.getMemoryById(snapshot.replacementId);
-          if (replacement) preparedReplacementFingerprint = memoryFingerprint(replacement);
+          if (!replacement) {
+            log.warn(
+              `dependency propagation survivor lookup returned no record for ${snapshot.replacementId}`,
+            );
+            return null;
+          }
+          preparedReplacementFingerprint = memoryFingerprint(replacement);
         } catch (error) {
+          // A transient survivor lookup failure must defer merge preparation.
+          // Do not persist a job that cannot prove its replacement fingerprint.
           log.warn(`dependency propagation survivor fingerprint capture failed: ${error}`);
+          return null;
         }
       }
       let token: DependencyPropagationPreparationToken | null = null;
@@ -456,6 +492,35 @@ export class DependencyPropagationDelivery {
         retryPreparedRecovery ||= !(await this.finalizeTerminalJob(job));
       }
     }
+    const now = this.clock();
+    // A prior recovery run may have claimed a prepared job, persisted a
+    // recovery-owned lease, and died BEFORE primary replay. Such a job sits in
+    // `leased` with an owner carrying the `:recovery:` segment (the only place
+    // that owner is ever written; both replay success → ready and replay
+    // failure → prepared clear it). Once that lease expires it MUST be routed
+    // back through primary replay before the background worker can claim it and
+    // deliver to dependents — otherwise dependent revalidation runs against a
+    // source whose primary mutation was never committed (#2326).
+    for (const job of jobs) {
+      if (
+        job.status !== "leased" ||
+        job.leaseOwner === undefined ||
+        !job.leaseOwner.includes(":recovery:") ||
+        (job.leaseExpiresAt ?? Number.POSITIVE_INFINITY) > now
+      )
+        continue;
+      let claimed: DependencyPropagationJob | null;
+      try {
+        claimed = await this.claimExpiredRecoveryLease(job);
+      } catch (error) {
+        retryPreparedRecovery = true;
+        log.warn(`dependency propagation expired recovery lease claim failed: ${error}`);
+        continue;
+      }
+      if (!claimed) continue;
+      const outcome = await this.recoverPrimaryMutation(claimed);
+      retryPreparedRecovery ||= outcome.retry;
+    }
     for (const job of jobs) {
       if (job.status !== "prepared") continue;
       let claimed: DependencyPropagationJob | null;
@@ -467,42 +532,8 @@ export class DependencyPropagationDelivery {
         continue;
       }
       if (!claimed) continue;
-      try {
-        const storage = await this.getStorage(claimed.event.namespaceScope);
-        const replayed = await this.withCurrentLease(claimed, () =>
-          this.replayPrimaryMutation(
-            storage,
-            claimed.event,
-            claimed.preparedReplacementFingerprint,
-          ),
-        );
-        if (replayed !== true) {
-          retryPreparedRecovery ||= await this.retainPreparedJob(
-            claimed,
-            new Error("primary mutation replay incomplete"),
-          );
-          continue;
-        }
-        await withJsonStoreMutationLock(this.queueRoot, async () => {
-          const entries = await this.readEntries();
-          const matching = entries.filter((entry) => entry.job.jobId === claimed.jobId);
-          const current = chooseEntry(matching);
-          if (
-            current &&
-            current.job.status === "leased" &&
-            current.job.leaseOwner === claimed.leaseOwner &&
-            (current.job.leaseExpiresAt ?? Number.NEGATIVE_INFINITY) > this.clock()
-          ) {
-            await this.transitionUnlocked(matching, current.job, "ready", {
-              leaseOwner: undefined,
-              leaseExpiresAt: undefined,
-            });
-          }
-        });
-      } catch (error) {
-        retryPreparedRecovery ||= await this.retainPreparedJob(claimed, error);
-        log.warn(`dependency propagation prepared-job recovery failed: ${error}`);
-      }
+      const outcome = await this.recoverPrimaryMutation(claimed);
+      retryPreparedRecovery ||= outcome.retry;
     }
     if (retryPreparedRecovery) this.scheduleBackgroundRecovery();
     await this.scheduleNextPendingRun();
@@ -523,6 +554,96 @@ export class DependencyPropagationDelivery {
         lastError: undefined,
       });
     });
+  }
+
+  private async claimExpiredRecoveryLease(
+    job: DependencyPropagationJob,
+  ): Promise<DependencyPropagationJob | null> {
+    return withJsonStoreMutationLock(this.queueRoot, async () => {
+      const entries = await this.readEntries();
+      const matching = entries.filter((entry) => entry.job.jobId === job.jobId);
+      const current = chooseEntry(matching);
+      if (
+        !current ||
+        current.job.status !== "leased" ||
+        current.job.leaseOwner !== job.leaseOwner
+      ) {
+        // The job advanced (another run reclaimed/replayed it) since the scan;
+        // never preempt a live owner — fencing.
+        return null;
+      }
+      // Re-check expiry against the live clock: a lease renewed between the
+      // scan and this claim still belongs to an in-flight run and must not be
+      // stolen.
+      if ((current.job.leaseExpiresAt ?? Number.POSITIVE_INFINITY) > this.clock()) {
+        return null;
+      }
+      return this.transitionUnlocked(matching, current.job, "leased", {
+        leaseOwner: `${this.workerId}:recovery:${randomUUID()}`,
+        leaseExpiresAt: this.clock() + this.leaseMs,
+        nextAttemptAt: undefined,
+        lastError: undefined,
+      });
+    });
+  }
+
+  private async recoverPrimaryMutation(
+    claimed: DependencyPropagationJob,
+  ): Promise<{ retry: boolean }> {
+    try {
+      const storage = await this.getStorage(claimed.event.namespaceScope);
+      const replayed = await this.withCurrentLease(claimed, () =>
+        this.replayPrimaryMutation(
+          storage,
+          claimed.event,
+          claimed.preparedReplacementFingerprint,
+        ),
+      );
+      if (replayed !== true) {
+        return {
+          retry: await this.retainPreparedJob(
+            claimed,
+            new Error("primary mutation replay incomplete"),
+          ),
+        };
+      }
+
+      if (this.replayReconciliation) {
+        if (
+          claimed.event.cause === "consolidation_merge" &&
+          claimed.event.replacementId
+        ) {
+          await this.replayReconciliation.reindex(
+            claimed.event,
+            claimed.event.replacementId,
+          );
+        }
+        await this.replayReconciliation.deindex(
+          claimed.event,
+          [claimed.event.oldMemory.frontmatter.id],
+        );
+      }
+      await withJsonStoreMutationLock(this.queueRoot, async () => {
+        const entries = await this.readEntries();
+        const matching = entries.filter((entry) => entry.job.jobId === claimed.jobId);
+        const current = chooseEntry(matching);
+        if (
+          current &&
+          current.job.status === "leased" &&
+          current.job.leaseOwner === claimed.leaseOwner &&
+          (current.job.leaseExpiresAt ?? Number.NEGATIVE_INFINITY) > this.clock()
+        ) {
+          await this.transitionUnlocked(matching, current.job, "ready", {
+            leaseOwner: undefined,
+            leaseExpiresAt: undefined,
+          });
+        }
+      });
+      return { retry: false };
+    } catch (error) {
+      log.warn(`dependency propagation prepared-job recovery failed: ${error}`);
+      return { retry: await this.retainPreparedJob(claimed, error) };
+    }
   }
 
   runUntilIdle(): Promise<number> {
