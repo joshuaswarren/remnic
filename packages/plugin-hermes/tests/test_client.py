@@ -63,9 +63,13 @@ class TestClientNamespace:
             ("client_id", "généraliste"),
             ("namespace", "généraliste"),
             ("session_key", "séance-1"),
+            ("client_id", "bad\nvalue"),
+            ("namespace", "bad\rvalue"),
+            ("session_key", "bad\x00value"),
+            ("namespace", "bad\x7fvalue"),
         ],
     )
-    def test_rejects_non_ascii_header_values(self, field, value):
+    def test_rejects_invalid_header_values(self, field, value):
         kwargs = {
             "host": "127.0.0.1",
             "port": 4318,
@@ -76,13 +80,13 @@ class TestClientNamespace:
 
         with (
             patch("remnic_hermes.client.httpx.AsyncClient") as mock_async_client,
-            pytest.raises(ValueError, match=f"{field} must contain only ASCII characters"),
+            pytest.raises(ValueError, match=f"{field} must contain only printable ASCII characters"),
         ):
             RemnicClient(**kwargs)
 
         mock_async_client.assert_not_called()
 
-    def test_rejects_non_ascii_session_update_without_changing_header(self):
+    def test_rejects_invalid_session_update_without_changing_header(self):
         with patch("remnic_hermes.client.httpx.AsyncClient") as mock_async_client:
             http = mock_async_client.return_value
             http.headers = {"X-Hermes-Session-Id": "session-1"}
@@ -94,8 +98,11 @@ class TestClientNamespace:
                 session_key="session-1",
             )
 
-            with pytest.raises(ValueError, match="session_key must contain only ASCII characters"):
-                client.set_session_key("séance-2")
+            with pytest.raises(
+                ValueError,
+                match="session_key must contain only printable ASCII characters",
+            ):
+                client.set_session_key("session-\n2")
 
         assert http.headers["X-Hermes-Session-Id"] == "session-1"
 

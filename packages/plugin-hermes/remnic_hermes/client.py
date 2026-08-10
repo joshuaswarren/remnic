@@ -11,10 +11,8 @@ import httpx
 def _validate_header_value(field: str, value: str) -> str:
     if not isinstance(value, str):
         raise TypeError(f"{field} must be a string")
-    try:
-        value.encode("ascii")
-    except UnicodeEncodeError as exc:
-        raise ValueError(f"{field} must contain only ASCII characters") from exc
+    if any(ord(character) < 0x20 or ord(character) > 0x7E for character in value):
+        raise ValueError(f"{field} must contain only printable ASCII characters")
     return value
 
 

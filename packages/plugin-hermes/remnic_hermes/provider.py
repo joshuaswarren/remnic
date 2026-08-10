@@ -452,9 +452,9 @@ class RemnicMemoryProvider(HermesMemoryProvider):  # type: ignore[misc]
             return
         normalized = new_session_id.strip()
         if normalized:
-            self._session_key = normalized
             if self._client:
                 self._client.set_session_key(normalized)
+            self._session_key = normalized
             self._clear_prefetch_cache()
 
     def shutdown(self) -> None:

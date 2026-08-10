@@ -86,6 +86,19 @@ class TestProviderLifecycle:
             provider.initialize("old-session")
             provider.on_session_switch("new-session")
             instance.set_session_key.assert_called_once_with("new-session")
+    def test_session_switch_keeps_provider_state_when_header_update_fails(self, provider):
+        with patch("remnic_hermes.provider.RemnicClient") as mock_client:
+            instance = mock_client.return_value
+            instance.health = AsyncMock()
+            instance.set_session_key.side_effect = ValueError("invalid header")
+            provider.initialize("old-session")
+
+            with pytest.raises(ValueError, match="invalid header"):
+                provider.on_session_switch("new-session")
+
+            assert provider._session_key == "old-session"
+            instance.set_session_key.assert_called_once_with("new-session")
+
 
     def test_initialize_ignores_legacy_config_dict_argument(self, provider):
         """Mixed-version callers may still pass initialize(config); it must not become the session key."""

@@ -156,8 +156,8 @@ remnic:
 | `host` | string | `"127.0.0.1"` | Hostname or IP of the Remnic daemon. Overridden by `REMNIC_HOST` env var. |
 | `port` | integer | `4318` | TCP port of the Remnic daemon. Overridden by `REMNIC_PORT` env var. |
 | `token` | string | `""` | Auth token for the daemon. If empty, auto-loaded from the token store (see [Token bootstrap](#token-bootstrap)). |
-| `client_id` | string | `""` | ASCII daemon namespace selector. The client sends a configured value as `X-Engram-Client-Id`, `X-Engram-Namespace`, and the REST `namespace` field. If empty, `namespace` is used. If both are empty, the request uses the daemon default while the legacy client identifier remains `"hermes"`. Added in 1.0.6 (issue #2310). |
-| `session_key` | string | `""` | ASCII session identifier passed on every recall/observe call. If empty, auto-generated as `hermes-<12 random hex chars>` at startup. |
+| `client_id` | string | `""` | Printable ASCII daemon namespace selector. The client sends a configured value as `X-Engram-Client-Id`, `X-Engram-Namespace`, and the REST `namespace` field. If empty, `namespace` is used. If both are empty, the request uses the daemon default while the legacy client identifier remains `"hermes"`. Added in 1.0.6 (issue #2310). |
+| `session_key` | string | `""` | Printable ASCII session identifier passed on every recall/observe call. If empty, auto-generated as `hermes-<12 random hex chars>` at startup. |
 | `timeout` | float | `30.0` | HTTP request timeout in seconds applied to all daemon calls. |
 | `prefetch_wait_timeout` | float | `2.0` | Maximum seconds `prefetch()` blocks the turn waiting for a first-fetch recall (always additionally capped by `timeout`). Set `0` for pure fire-and-forget: prefetch only ever returns cached results and never waits. Invalid values (negative, non-numeric, NaN/inf) are rejected at load. Added in 1.0.5 (issue #1929). |
 
