@@ -81,6 +81,10 @@ interface ManagedPluginInspection {
   version?: string;
 }
 
+function isInstalledPluginStatus(status: unknown): boolean {
+  return status === "loaded" || status === "disabled";
+}
+
 export interface OpenclawCommandOptions {
   timeoutMs: number;
 }
@@ -298,7 +302,7 @@ export function installPublishedOpenclawPlugin(
         runOpenclawCommand(restoreArgs);
         const restoredPlugin = inspectInstalledPlugin(inspectSupportsRuntime);
         if (
-          restoredPlugin.status !== "loaded" ||
+          !isInstalledPluginStatus(restoredPlugin.status) ||
           restoredPlugin.installSource !== previousSource ||
           restoredPlugin.version !== previousInstall.version
         ) {
@@ -320,7 +324,7 @@ export function installPublishedOpenclawPlugin(
           runOpenclawCommand(localRestoreArgs);
           const locallyRestoredPlugin = inspectInstalledPlugin(inspectSupportsRuntime);
           if (
-            locallyRestoredPlugin.status !== "loaded" ||
+            !isInstalledPluginStatus(locallyRestoredPlugin.status) ||
             locallyRestoredPlugin.installSource !== "path" ||
             locallyRestoredPlugin.version !== previousInstall.version
           ) {
@@ -428,7 +432,7 @@ export function installPublishedOpenclawPlugin(
       shouldRestoreBackup = true;
     }
 
-    if (inspectedPlugin.status !== "loaded" && inspectedPlugin.status !== "disabled") {
+    if (!isInstalledPluginStatus(inspectedPlugin.status)) {
       throw new Error(
         `OpenClaw reported plugin status ${JSON.stringify(inspectedPlugin.status ?? "missing")} ` +
           `for ${REMNIC_OPENCLAW_PLUGIN_ID} after the managed install.`

@@ -475,6 +475,24 @@ test("openclaw upgrade preserves an intentionally disabled plugin", () => {
     };
     assert.equal(updatedConfig.plugins?.entries?.["openclaw-remnic"]?.enabled, false);
     assert.equal(fs.readFileSync(path.join(fixture.managedInstallDir, "new-install-marker"), "utf8"), "installed\n");
+
+    const rollbackResult = runUpgrade(
+      fixture,
+      {
+        ...fixture.env,
+        OPENCLAW_BREAK_CONFIG_AFTER_INSTALL: "1",
+        OPENCLAW_PLUGIN_DISABLED: "1",
+      },
+      "9.50.0"
+    );
+    const restoredIndex = JSON.parse(fs.readFileSync(fixture.managedIndexPath, "utf8")) as {
+      source?: string;
+      version?: string;
+    };
+    assert.notEqual(rollbackResult.status, 0);
+    assert.doesNotMatch(rollbackResult.stderr, /rollback steps failed|could not restore/i);
+    assert.equal(restoredIndex.source, "npm");
+    assert.equal(restoredIndex.version, "9.49.0");
   } finally {
     fs.rmSync(fixture.root, { recursive: true, force: true });
   }
