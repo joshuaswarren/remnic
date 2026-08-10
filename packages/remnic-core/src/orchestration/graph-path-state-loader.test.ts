@@ -10,12 +10,18 @@ import type { MemoryFile } from "../types.js";
 import type { StorageManager } from "../index.js";
 
 type LoaderInternals = {
-  archivePathIndexes?: Map<string, { version: number; pathsByBasename: Map<string, string[]> }>;
-  archivePathIndexBuilds?: Map<string, Promise<{ version: number; pathsByBasename: Map<string, string[]> } | null>>;
+  archivePathIndexes?: Map<
+    string,
+    { version: number; pathsByBasename: Map<string, string[]>; unavailable?: "oversized" }
+  >;
+  archivePathIndexBuilds?: Map<
+    string,
+    Promise<{ version: number; pathsByBasename: Map<string, string[]>; unavailable?: "oversized" } | null>
+  >;
   buildArchivePathIndex: (
     storageRoot: string,
     version: number,
-  ) => Promise<{ version: number; pathsByBasename: Map<string, string[]> } | null>;
+  ) => Promise<{ version: number; pathsByBasename: Map<string, string[]>; unavailable?: "oversized" } | null>;
   openArchiveDirectory?: (directoryPath: string) => Promise<Dir>;
   archiveLstat?: (filePath: string) => Promise<Stats>;
   archiveRealpath?: (filePath: string) => Promise<string>;
@@ -67,6 +73,31 @@ test("does not return archive state when the memory id mismatches", async () => 
     const loader = new GraphPathStateLoader();
 
     assert.equal(await loader.readNode(storage, "node.md", null, true), null);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+test("skips a mismatched hot direct candidate before checking the active cold tier", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-loader-direct-id-"));
+  try {
+    const hotPath = path.join(root, "node.md");
+    const coldPath = path.join(root, "cold", "node.md");
+    await mkdir(path.dirname(coldPath), { recursive: true });
+    await writeFile(hotPath, "hot", "utf8");
+    await writeFile(coldPath, "cold", "utf8");
+    const hot = memory(hotPath, "wrong", "other");
+    hot.frontmatter.status = "active";
+    const cold = memory(coldPath, "right", "node");
+    cold.frontmatter.status = "active";
+    const storage = {
+      dir: root,
+      getArchiveMutationVersion: () => 1,
+      getCorpusScanVersion: async () => "hot:1:cold:1",
+      readMemoryByPath: async (filePath: string) =>
+        filePath === hotPath ? hot : filePath === coldPath ? cold : null,
+    } as unknown as StorageManager;
+
+    assert.equal((await new GraphPathStateLoader().readNode(storage, "node.md", null, true))?.content, "right");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -502,7 +533,7 @@ test("rejects a symlinked archive root before enumerating its target", async () 
   }
 });
 
-test("does not publish a partial index after the visited-entry cap", async () => {
+test("publishes an oversized sentinel after the visited-entry cap", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-loader-path-cap-"));
   try {
     const archiveRoot = path.join(root, "archive");
@@ -528,7 +559,127 @@ test("does not publish a partial index after the visited-entry cap", async () =>
     const internals = loader as unknown as LoaderInternals;
 
     assert.equal(await loader.readNode(storage, "missing.md", null, true), null);
-    assert.equal(internals.archivePathIndexes?.size ?? 0, 0);
+    assert.equal(internals.archivePathIndexes?.size ?? 0, 1);
+    assert.equal([...internals.archivePathIndexes?.values() ?? []][0]?.unavailable, "oversized");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+test("caches an oversized archive scan for one generation and retries after mutation", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-loader-cap-cache-"));
+  try {
+    const archiveRoot = path.join(root, "archive");
+    await mkdir(archiveRoot, { recursive: true });
+    const archiveVersionRef = { value: 1 };
+    const storage = {
+      dir: root,
+      getArchiveMutationVersion: () => archiveVersionRef.value,
+      readMemoryByPath: async () => null,
+    } as unknown as StorageManager;
+    const loader = new GraphPathStateLoader();
+    const internals = loader as unknown as LoaderInternals;
+    let openCalls = 0;
+    internals.openArchiveDirectory = async () => {
+      openCalls += 1;
+      return {
+        async *[Symbol.asyncIterator]() {
+          for (let index = 0; index < 100_000; index += 1) {
+            yield {
+              name: `noise-${index}.txt`,
+              isSymbolicLink: () => false,
+              isDirectory: () => false,
+              isFile: () => false,
+            } as Dirent;
+          }
+        },
+      } as unknown as Dir;
+    };
+
+    assert.equal(await loader.readNode(storage, "missing.md", null, true), null);
+    assert.equal(await loader.readNode(storage, "missing.md", null, true), null);
+    assert.equal(openCalls, 1);
+    assert.equal([...internals.archivePathIndexes?.values() ?? []][0]?.unavailable, "oversized");
+
+    archiveVersionRef.value = 2;
+    assert.equal(await loader.readNode(storage, "missing.md", null, true), null);
+    assert.equal(openCalls, 2);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+test("skips a vanished nested archive directory but retries unknown opener failures", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-loader-opendir-race-"));
+  try {
+    const archiveRoot = path.join(root, "archive");
+    const vanishedRoot = path.join(archiveRoot, "vanished");
+    const validRoot = path.join(archiveRoot, "valid");
+    const validPath = path.join(validRoot, "node.md");
+    await mkdir(validRoot, { recursive: true });
+    await writeFile(validPath, "archive", "utf8");
+    const storage = {
+      dir: root,
+      getArchiveMutationVersion: () => 1,
+      readMemoryByPath: async (filePath: string) =>
+        filePath === validPath ? memory(filePath, "valid") : null,
+    } as unknown as StorageManager;
+    const loader = new GraphPathStateLoader();
+    const internals = loader as unknown as LoaderInternals;
+    const directory = (entries: Dirent[]): Dir =>
+      ({
+        async *[Symbol.asyncIterator]() {
+          yield* entries;
+        },
+      }) as unknown as Dir;
+    internals.archiveLstat = async (filePath) =>
+      filePath === vanishedRoot
+        ? ({ isDirectory: () => true, isSymbolicLink: () => false } as Stats)
+        : lstat(filePath);
+    internals.archiveRealpath = async (filePath) =>
+      filePath === vanishedRoot ? filePath : realpath(filePath);
+    internals.openArchiveDirectory = async (directoryPath) => {
+      if (directoryPath === archiveRoot) {
+        return directory([
+          {
+            name: "vanished",
+            isSymbolicLink: () => false,
+            isDirectory: () => true,
+            isFile: () => false,
+          } as Dirent,
+          {
+            name: "valid",
+            isSymbolicLink: () => false,
+            isDirectory: () => true,
+            isFile: () => false,
+          } as Dirent,
+        ]);
+      }
+      if (directoryPath === vanishedRoot) {
+        throw Object.assign(new Error("vanished directory"), { code: "ENOENT" });
+      }
+      return directory([
+        {
+          name: "node.md",
+          isSymbolicLink: () => false,
+          isDirectory: () => false,
+          isFile: () => true,
+        } as Dirent,
+      ]);
+    };
+
+    assert.equal((await loader.readNode(storage, "node.md", null, true))?.content, "valid");
+    assert.equal(internals.archivePathIndexes?.size, 1);
+
+    const unknownFailureLoader = new GraphPathStateLoader();
+    const unknownInternals = unknownFailureLoader as unknown as LoaderInternals;
+    let unknownOpenCalls = 0;
+    unknownInternals.openArchiveDirectory = async () => {
+      unknownOpenCalls += 1;
+      throw Object.assign(new Error("unknown opener failure"), { code: "EIO" });
+    };
+    assert.equal(await unknownFailureLoader.readNode(storage, "missing.md", null, true), null);
+    assert.equal(await unknownFailureLoader.readNode(storage, "missing.md", null, true), null);
+    assert.equal(unknownOpenCalls, 2);
+    assert.equal(unknownInternals.archivePathIndexes?.size ?? 0, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

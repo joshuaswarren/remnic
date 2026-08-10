@@ -4,10 +4,9 @@
  * Owns the write-path semantic-analysis subsystem: contradiction detection
  * (QMD similarity search + LLM verification), deferred contradiction
  * auto-resolve (#1645 — retires superseded memories only after the new write's
- * tombstone status is known), and memory link suggestion. Behavior-preserving
- * move from orchestrator.ts — no logic changes; the orchestrator constructs one
- * instance and keeps thin delegating methods so existing call sites (writeMemory
- * fact-write branches) continue to work.
+ * tombstone status is known), and memory link suggestion. The orchestrator
+ * constructs one instance and keeps thin delegating methods so existing call
+ * sites (writeMemory fact-write branches) continue to work.
  *
  * Config, storage, search, namespace resolution, and the extraction engine are
  * accessed through getter callbacks (not captured at construction) so that
@@ -367,27 +366,43 @@ export class ContradictionLinkingCoordinator {
         contradiction.reason,
       );
       if (!superseded) {
-        let targetStillActive = true;
+        let mergedSnapshot: MemoryFile[];
         try {
-          let target = await storage.getMemoryById(contradiction.supersededId);
-          if (!target) {
-            target = (await storage.readAllColdMemories()).find(
-              (memory) => memory.frontmatter.id === contradiction.supersededId,
-            ) ?? null;
-          }
-          targetStillActive =
-            target !== null &&
-            (target.frontmatter.status === undefined || target.frontmatter.status === "active");
+          const [hot, cold] = await Promise.all([
+            typeof storage.readAllMemories === "function"
+              ? storage.readAllMemories()
+              : Promise.all([
+                  storage.getMemoryById(contradiction.supersededId),
+                  storage.getMemoryById(newMemoryId),
+                ]).then((memories) =>
+                  memories.filter((memory): memory is MemoryFile => memory !== null),
+                ),
+            typeof storage.readAllColdMemories === "function"
+              ? storage.readAllColdMemories()
+              : Promise.resolve([]),
+          ]);
+          mergedSnapshot = mergeMemorySnapshots(hot, cold, storage.dir);
         } catch (err) {
           log.warn(
             `contradiction auto-resolve race check failed for ${contradiction.supersededId}: ${err}`,
           );
           return "supersede_failed";
         }
-        if (targetStillActive) return "supersede_failed";
+        const target = mergedSnapshot.find(
+          (memory) => memory.frontmatter.id === contradiction.supersededId,
+        );
+        if (!target) return "supersede_failed";
+        if (inferLocalizationMemoryStatus(target, storage.dir) === "active") {
+          return "supersede_failed";
+        }
+        const losingMemory = mergedSnapshot.find(
+          (memory) =>
+            memory.frontmatter.id === newMemoryId &&
+            inferLocalizationMemoryStatus(memory, storage.dir) === "active",
+        );
+        if (!losingMemory) return "supersede_failed";
         try {
-          const losingMemory = await storage.getMemoryById(newMemoryId);
-          if (losingMemory && losingMemory.frontmatter.supersedes === contradiction.supersededId) {
+          if (losingMemory.frontmatter.supersedes === contradiction.supersededId) {
             const cleared = await storage.writeMemoryFrontmatter(losingMemory, {
               supersedes: undefined,
             });

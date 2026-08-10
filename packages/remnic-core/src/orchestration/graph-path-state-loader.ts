@@ -9,6 +9,16 @@ interface ArchivePathIndex {
   version: number;
   pathsByBasename: Map<string, string[]>;
 }
+interface ArchivePathIndexUnavailable {
+  version: number;
+  unavailable: "oversized";
+}
+type ArchivePathIndexResult = ArchivePathIndex | ArchivePathIndexUnavailable;
+
+function isArchivePathIndexUnavailable(index: ArchivePathIndexResult): index is ArchivePathIndexUnavailable {
+  return "unavailable" in index;
+}
+
 const MAX_ARCHIVE_PATH_INDEXES = 32;
 const MAX_ARCHIVE_PATH_INDEX_BUILDS = 32;
 const MAX_ARCHIVE_PATH_INDEX_GENERATION_RETRIES = 1;
@@ -19,8 +29,8 @@ function isArchiveScanAbsenceError(error: unknown): boolean {
 }
 
 export class GraphPathStateLoader {
-  private archivePathIndexes?: Map<string, ArchivePathIndex>;
-  private archivePathIndexBuilds = new Map<string, Promise<ArchivePathIndex | null>>();
+  private archivePathIndexes?: Map<string, ArchivePathIndexResult>;
+  private archivePathIndexBuilds = new Map<string, Promise<ArchivePathIndexResult | null>>();
   private archiveLstat: (filePath: string) => Promise<Stats> = lstat;
   private archiveRealpath: (filePath: string) => Promise<string> = realpath;
   private openArchiveDirectory: (directoryPath: string) => Promise<Dir> = opendir;
@@ -34,6 +44,7 @@ export class GraphPathStateLoader {
     const configuredStorageRoot = path.resolve(storage.dir);
     const storageRoot = await realpath(configuredStorageRoot).catch(() => null);
     if (!storageRoot || storageRoot !== configuredStorageRoot) return null;
+    const logicalId = path.basename(nodeId, path.extname(nodeId));
     const directRelativePaths = [nodeId, path.join("cold", nodeId)];
     let inactiveDirectMemory: MemoryFile | null = null;
     for (const relativePath of directRelativePaths) {
@@ -41,7 +52,7 @@ export class GraphPathStateLoader {
       if (!safePath) continue;
       if (typeof deadlineAtMs === "number" && Date.now() >= deadlineAtMs) return null;
       const memory = await storage.readMemoryByPath(safePath);
-      if (!memory) continue;
+      if (!memory || memory.frontmatter.id !== logicalId) continue;
       if (memory.frontmatter.status === undefined || memory.frontmatter.status === "active") return memory;
       inactiveDirectMemory ??= memory;
     }
@@ -50,11 +61,14 @@ export class GraphPathStateLoader {
       return null;
     }
     const archiveIndex = await this.getArchivePathIndex(storage, storageRoot, deadlineAtMs);
-    if (!archiveIndex || (typeof deadlineAtMs === "number" && Date.now() >= deadlineAtMs)) {
+    if (
+      !archiveIndex ||
+      isArchivePathIndexUnavailable(archiveIndex) ||
+      (typeof deadlineAtMs === "number" && Date.now() >= deadlineAtMs)
+    ) {
       return null;
     }
     const archivePaths = archiveIndex.pathsByBasename.get(path.basename(nodeId)) ?? [];
-    const logicalId = path.basename(nodeId, path.extname(nodeId));
     for (const archivePath of archivePaths) {
       if (typeof deadlineAtMs === "number" && Date.now() >= deadlineAtMs) return null;
       const memory = await storage.readMemoryByPath(archivePath);
@@ -94,7 +108,7 @@ export class GraphPathStateLoader {
     storage: StorageManager,
     storageRoot: string,
     deadlineAtMs: number | null | undefined,
-  ): Promise<ArchivePathIndex | null> {
+  ): Promise<ArchivePathIndexResult | null> {
     if (typeof deadlineAtMs === "number" && Date.now() >= deadlineAtMs) return null;
     if (!this.archivePathIndexes) this.archivePathIndexes = new Map();
     const archivePathIndexes = this.archivePathIndexes;
@@ -172,7 +186,7 @@ export class GraphPathStateLoader {
   private async buildArchivePathIndex(
     storageRoot: string,
     version: number,
-  ): Promise<ArchivePathIndex | null> {
+  ): Promise<ArchivePathIndexResult | null> {
     const pathsByBasename = new Map<string, string[]>();
     const archiveRoot = path.join(storageRoot, "archive");
     let archiveRootStatus: Stats;
@@ -240,13 +254,16 @@ export class GraphPathStateLoader {
       let directory: Dir;
       try {
         directory = await this.openArchiveDirectory(canonicalCurrent);
-      } catch {
+      } catch (error) {
+        if (isArchiveScanAbsenceError(error)) continue;
         return null;
       }
       try {
         for await (const entry of directory) {
           visitedEntryCount += 1;
-          if (visitedEntryCount > MAX_ARCHIVE_INDEX_ENTRIES) return null;
+          if (visitedEntryCount > MAX_ARCHIVE_INDEX_ENTRIES) {
+            return { version, unavailable: "oversized" };
+          }
           if (entry.isSymbolicLink()) continue;
           const entryPath = path.join(canonicalCurrent, entry.name);
           if (entry.isDirectory()) {
@@ -254,7 +271,9 @@ export class GraphPathStateLoader {
             continue;
           }
           if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
-          if (indexedPathCount >= MAX_ARCHIVE_INDEX_ENTRIES) return null;
+          if (indexedPathCount >= MAX_ARCHIVE_INDEX_ENTRIES) {
+            return { version, unavailable: "oversized" };
+          }
           let canonical: string;
           try {
             canonical = await this.archiveRealpath(entryPath);

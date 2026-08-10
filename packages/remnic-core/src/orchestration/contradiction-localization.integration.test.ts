@@ -701,6 +701,326 @@ test("clears a losing supersedes link and removes the raced anchor", async () =>
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+test("preserves an active cold anchor when a supersede race sees an inactive hot copy", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-contradiction-cold-race-"));
+  try {
+    const config = baseConfig(memoryDir, { contradictionAutoResolve: true });
+    const activeCold = {
+      path: path.join(memoryDir, "cold", "old.md"),
+      content: "Alice lives in Austin",
+      frontmatter: {
+        id: "old",
+        category: "fact",
+        created: "2026-08-01T00:00:00.000Z",
+        updated: "2026-08-01T00:00:00.000Z",
+        source: "test",
+        confidence: 0.9,
+        confidenceTier: "explicit",
+        tags: [],
+        status: "active",
+      },
+    } as unknown as MemoryFile;
+    const inactiveHot = {
+      ...activeCold,
+      path: path.join(memoryDir, "old.md"),
+      frontmatter: {
+        ...activeCold.frontmatter,
+        status: "superseded",
+        supersededBy: "other",
+      },
+    } as unknown as MemoryFile;
+    const losing = {
+      ...activeCold,
+      path: path.join(memoryDir, "new.md"),
+      content: "Alice lives in Boston",
+      frontmatter: {
+        ...activeCold.frontmatter,
+        id: "new",
+        supersedes: "old",
+      },
+    } as unknown as MemoryFile;
+    let clearCalls = 0;
+    const storage = {
+      dir: memoryDir,
+      getMemoryById: async (id: string) =>
+        id === "old" ? inactiveHot : id === "new" ? losing : null,
+      readAllMemories: async () => [inactiveHot, losing],
+      readAllColdMemories: async () => [activeCold],
+      supersedeMemory: async () => false,
+      writeMemoryFrontmatter: async () => {
+        clearCalls += 1;
+        return true;
+      },
+    } as unknown as StorageManager;
+    const coordinator = new ContradictionLinkingCoordinator({
+      getConfig: () => config,
+      isSearchAvailable: () => false,
+      searchAcrossNamespaces: async () => [],
+      extractMemoryIdsFromResults: () => [],
+      namespaceFromPath: () => "default",
+      storageForNamespace: async () => storage,
+      getExtraction: () => ({}) as ExtractionEngine,
+    });
+
+    const outcome = await coordinator.applyDeferredContradictionResolve(
+      {
+        supersededId: "old",
+        reason: "city changed",
+        supersededPath: activeCold.path,
+        supersededCreated: activeCold.frontmatter.created,
+        supersededTags: [],
+      },
+      storage,
+      "new",
+      false,
+    );
+
+    assert.equal(outcome, "supersede_failed");
+    assert.equal(activeCold.frontmatter.status, "active");
+    assert.equal(losing.frontmatter.supersedes, "old");
+    assert.equal(clearCalls, 0);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+test("preserves the anchor when the supersede race target is missing", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-contradiction-missing-race-"));
+  try {
+    const config = baseConfig(memoryDir, { contradictionAutoResolve: true });
+    const old = {
+      path: path.join(memoryDir, "old.md"),
+      content: "Alice lives in Austin",
+      frontmatter: {
+        id: "old",
+        category: "fact",
+        created: "2026-08-01T00:00:00.000Z",
+        updated: "2026-08-01T00:00:00.000Z",
+        source: "test",
+        confidence: 0.9,
+        confidenceTier: "explicit",
+        tags: [],
+        status: "active",
+      },
+    } as unknown as MemoryFile;
+    const losing = {
+      ...old,
+      path: path.join(memoryDir, "new.md"),
+      content: "Alice lives in Boston",
+      frontmatter: {
+        ...old.frontmatter,
+        id: "new",
+        supersedes: "old",
+      },
+    } as unknown as MemoryFile;
+    let clearCalls = 0;
+    const storage = {
+      dir: memoryDir,
+      getMemoryById: async (id: string) => (id === "old" ? old : id === "new" ? losing : null),
+      readAllMemories: async () => [],
+      readAllColdMemories: async () => [],
+      supersedeMemory: async () => false,
+      writeMemoryFrontmatter: async () => {
+        clearCalls += 1;
+        return true;
+      },
+    } as unknown as StorageManager;
+    const coordinator = new ContradictionLinkingCoordinator({
+      getConfig: () => config,
+      isSearchAvailable: () => false,
+      searchAcrossNamespaces: async () => [],
+      extractMemoryIdsFromResults: () => [],
+      namespaceFromPath: () => "default",
+      storageForNamespace: async () => storage,
+      getExtraction: () => ({}) as ExtractionEngine,
+    });
+
+    const outcome = await coordinator.applyDeferredContradictionResolve(
+      {
+        supersededId: "old",
+        reason: "city changed",
+        supersededPath: old.path,
+        supersededCreated: old.frontmatter.created,
+        supersededTags: [],
+      },
+      storage,
+      "new",
+      false,
+    );
+
+    assert.equal(outcome, "supersede_failed");
+    assert.equal(old.frontmatter.status, "active");
+    assert.equal(losing.frontmatter.supersedes, "old");
+    assert.equal(clearCalls, 0);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("clears the canonical active new-memory copy after a confirmed race", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-contradiction-new-copy-race-"));
+  try {
+    const config = baseConfig(memoryDir, { contradictionAutoResolve: true });
+    const inactiveTarget = {
+      path: path.join(memoryDir, "old.md"),
+      content: "Alice lives in Austin",
+      frontmatter: {
+        id: "old",
+        category: "fact",
+        created: "2026-08-01T00:00:00.000Z",
+        updated: "2026-08-01T00:00:00.000Z",
+        source: "test",
+        confidence: 0.9,
+        confidenceTier: "explicit",
+        tags: [],
+        status: "superseded",
+      },
+    } as unknown as MemoryFile;
+    const losingHot = {
+      ...inactiveTarget,
+      path: path.join(memoryDir, "new.md"),
+      content: "Alice lives in Boston",
+      frontmatter: {
+        ...inactiveTarget.frontmatter,
+        id: "new",
+        status: "superseded",
+        supersedes: "old",
+      },
+    } as unknown as MemoryFile;
+    const losingCold = {
+      ...losingHot,
+      path: path.join(memoryDir, "cold", "new.md"),
+      frontmatter: {
+        ...losingHot.frontmatter,
+        status: "active",
+      },
+    } as unknown as MemoryFile;
+    const clearedPaths: string[] = [];
+    const storage = {
+      dir: memoryDir,
+      getMemoryById: async (id: string) =>
+        id === "old" ? inactiveTarget : id === "new" ? losingHot : null,
+      readAllMemories: async () => [inactiveTarget, losingHot],
+      readAllColdMemories: async () => [losingCold],
+      supersedeMemory: async () => false,
+      writeMemoryFrontmatter: async (memory: MemoryFile) => {
+        clearedPaths.push(memory.path);
+        memory.frontmatter.supersedes = undefined;
+        return true;
+      },
+    } as unknown as StorageManager;
+    const coordinator = new ContradictionLinkingCoordinator({
+      getConfig: () => config,
+      isSearchAvailable: () => false,
+      searchAcrossNamespaces: async () => [],
+      extractMemoryIdsFromResults: () => [],
+      namespaceFromPath: () => "default",
+      storageForNamespace: async () => storage,
+      getExtraction: () => ({}) as ExtractionEngine,
+    });
+
+    const outcome = await coordinator.applyDeferredContradictionResolve(
+      {
+        supersededId: "old",
+        reason: "city changed",
+        supersededPath: inactiveTarget.path,
+        supersededCreated: inactiveTarget.frontmatter.created,
+        supersededTags: [],
+      },
+      storage,
+      "new",
+      false,
+    );
+
+    assert.equal(outcome, "lost_race");
+    assert.deepEqual(clearedPaths, [losingCold.path]);
+    assert.equal(losingHot.frontmatter.supersedes, "old");
+    assert.equal(losingCold.frontmatter.supersedes, undefined);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+test("preserves the anchor when the canonical new-memory copy is unreadable or inactive", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-contradiction-new-missing-race-"));
+  try {
+    const config = baseConfig(memoryDir, { contradictionAutoResolve: true });
+    const inactiveTarget = {
+      path: path.join(memoryDir, "old.md"),
+      content: "Alice lives in Austin",
+      frontmatter: {
+        id: "old",
+        category: "fact",
+        created: "2026-08-01T00:00:00.000Z",
+        updated: "2026-08-01T00:00:00.000Z",
+        source: "test",
+        confidence: 0.9,
+        confidenceTier: "explicit",
+        tags: [],
+        status: "superseded",
+      },
+    } as unknown as MemoryFile;
+    const inactiveLosing = {
+      ...inactiveTarget,
+      path: path.join(memoryDir, "new.md"),
+      content: "Alice lives in Boston",
+      frontmatter: {
+        ...inactiveTarget.frontmatter,
+        id: "new",
+        supersedes: "old",
+      },
+    } as unknown as MemoryFile;
+    let hotMemories: MemoryFile[] = [inactiveTarget];
+    let clearCalls = 0;
+    const storage = {
+      dir: memoryDir,
+      getMemoryById: async (id: string) => (id === "old" ? inactiveTarget : null),
+      readAllMemories: async () => hotMemories,
+      readAllColdMemories: async () => [],
+      supersedeMemory: async () => false,
+      writeMemoryFrontmatter: async () => {
+        clearCalls += 1;
+        return true;
+      },
+    } as unknown as StorageManager;
+    const coordinator = new ContradictionLinkingCoordinator({
+      getConfig: () => config,
+      isSearchAvailable: () => false,
+      searchAcrossNamespaces: async () => [],
+      extractMemoryIdsFromResults: () => [],
+      namespaceFromPath: () => "default",
+      storageForNamespace: async () => storage,
+      getExtraction: () => ({}) as ExtractionEngine,
+    });
+    const contradiction = {
+      supersededId: "old",
+      reason: "city changed",
+      supersededPath: inactiveTarget.path,
+      supersededCreated: inactiveTarget.frontmatter.created,
+      supersededTags: [],
+    };
+
+    const missingOutcome = await coordinator.applyDeferredContradictionResolve(
+      contradiction,
+      storage,
+      "new",
+      false,
+    );
+    hotMemories = [inactiveTarget, inactiveLosing];
+    const inactiveOutcome = await coordinator.applyDeferredContradictionResolve(
+      contradiction,
+      storage,
+      "new",
+      false,
+    );
+
+    assert.equal(missingOutcome, "supersede_failed");
+    assert.equal(inactiveOutcome, "supersede_failed");
+    assert.equal(inactiveTarget.frontmatter.status, "superseded");
+    assert.equal(inactiveLosing.frontmatter.supersedes, "old");
+    assert.equal(clearCalls, 0);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
 test("preserves the anchor when supersede I/O throws", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-contradiction-supersede-io-"));
   try {
