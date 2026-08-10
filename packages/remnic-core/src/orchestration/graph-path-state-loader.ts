@@ -8,6 +8,7 @@ interface ArchivePathIndex {
   version: string;
   pathsByBasename: Map<string, string[]>;
 }
+const MAX_ARCHIVE_PATH_INDEXES = 32;
 
 export class GraphPathStateLoader {
   private archivePathIndexes?: Map<string, ArchivePathIndex>;
@@ -19,8 +20,9 @@ export class GraphPathStateLoader {
     allowArchiveLookup: boolean,
   ): Promise<MemoryFile | null> {
     if (typeof deadlineAtMs === "number" && Date.now() >= deadlineAtMs) return null;
-    const storageRoot = await realpath(storage.dir).catch(() => path.resolve(storage.dir));
-    if (typeof deadlineAtMs === "number" && Date.now() >= deadlineAtMs) return null;
+    const configuredStorageRoot = path.resolve(storage.dir);
+    const storageRoot = await realpath(configuredStorageRoot).catch(() => null);
+    if (!storageRoot || storageRoot !== configuredStorageRoot) return null;
     const directRelativePaths = [nodeId, path.join("cold", nodeId)];
     for (const relativePath of directRelativePaths) {
       const safePath = await this.resolveContainedPath(storageRoot, relativePath);
@@ -85,7 +87,12 @@ export class GraphPathStateLoader {
     const archivePathIndexes = this.archivePathIndexes;
     const cacheKey = `${storageRoot}\0${version}`;
     const cached = archivePathIndexes.get(cacheKey);
-    if (cached) return cached;
+    if (cached) {
+      archivePathIndexes.delete(cacheKey);
+      archivePathIndexes.set(cacheKey, cached);
+      return cached;
+    }
+
     const index = await this.buildArchivePathIndex(storageRoot, version, deadlineAtMs);
     if (!index || (typeof deadlineAtMs === "number" && Date.now() >= deadlineAtMs)) {
       return null;
@@ -95,6 +102,11 @@ export class GraphPathStateLoader {
       if (key.startsWith(rootPrefix)) archivePathIndexes.delete(key);
     }
     archivePathIndexes.set(cacheKey, index);
+    while (archivePathIndexes.size > MAX_ARCHIVE_PATH_INDEXES) {
+      const oldestKey = archivePathIndexes.keys().next().value;
+      if (oldestKey === undefined) break;
+      archivePathIndexes.delete(oldestKey);
+    }
     return index;
   }
 

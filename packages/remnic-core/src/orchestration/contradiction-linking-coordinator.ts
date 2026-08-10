@@ -23,6 +23,7 @@ import type {
   QmdSearchResult,
 } from "../types.js";
 import { coerceBool } from "../connectors/coerce.js";
+import { isActiveMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 // StorageManager type comes from the package barrel (type-only) so this
 // module does not add a direct storage.ts import (ratchet #1533).
 import type { StorageManager } from "../index.js";
@@ -263,7 +264,8 @@ export class ContradictionLinkingCoordinator {
         anchorMemoryById?.get(candidate.id) ?? (await resultStorage.getMemoryById(candidate.id));
       if (
         !existingMemory ||
-        (candidate.source === "anchor" && existingMemory.frontmatter.status !== "active") ||
+        (candidate.source === "anchor" &&
+          !isActiveMemoryStatus(existingMemory.frontmatter.status)) ||
         (candidate.source === "search" &&
           (existingMemory.frontmatter.status === "superseded" ||
             existingMemory.frontmatter.status === "forgotten"))

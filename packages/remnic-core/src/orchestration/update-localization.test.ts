@@ -21,6 +21,7 @@ function memory(
     entityRef?: string;
     category?: string;
     status?: string;
+    omitStatus?: boolean;
     created?: string;
     attributes?: Record<string, string>;
     content?: string;
@@ -38,7 +39,9 @@ function memory(
       confidence: 0.9,
       confidenceTier: "explicit",
       tags: [],
-      status: (options.status ?? "active") as MemoryFile["frontmatter"]["status"],
+      ...(options.omitStatus
+        ? {}
+        : { status: (options.status ?? "active") as MemoryFile["frontmatter"]["status"] }),
       ...(options.entityRef ? { entityRef: options.entityRef } : {}),
       ...(options.attributes ? { structuredAttributes: options.attributes } : {}),
     },
@@ -103,9 +106,13 @@ test("skips anchor pass when the new fact has no entityRef", async () => {
 
 test("includes only active memories in the anchor pass", async () => {
   const statuses = ["superseded", "forgotten", "archived", "pending_review", "active"];
+  const legacy = memory("legacy", { entityRef: "person:alice", omitStatus: true });
   const result = await localizeUpdateCandidates(
     {
-      storage: storage(statuses.map((status) => memory(status, { entityRef: "person:alice", status }))),
+      storage: storage([
+        ...statuses.map((status) => memory(status, { entityRef: "person:alice", status })),
+        legacy,
+      ]),
       qmdSearch: search(),
     },
     { entityRef: "person:alice", category: "fact" },
@@ -113,7 +120,7 @@ test("includes only active memories in the anchor pass", async () => {
     options,
   );
 
-  assert.deepEqual(result.map((candidate) => candidate.id), ["active"]);
+  assert.deepEqual(result.map((candidate) => candidate.id), ["active", "legacy"]);
 });
 
 test("prefers an active cold copy over a superseded hot duplicate", async () => {
@@ -332,6 +339,24 @@ test("finds a contradiction from an anchor when QMD search misses it", async () 
   assert.equal(result?.supersededId, candidate.frontmatter.id);
   assert.equal(verificationCalls.length, 1);
 });
+
+test("verifies a legacy anchor with omitted status", async () => {
+  const legacyCandidate = memory("legacy-old", {
+    entityRef: "person:alice",
+    content: "Alice lives in Austin",
+    omitStatus: true,
+  });
+  const { coordinator } = coordinatorFixture({}, false, storage([legacyCandidate]));
+  const result = await coordinator.checkForContradiction(
+    "Alice lives in New York",
+    "fact",
+    "default",
+    { entityRef: "person:alice" },
+  );
+
+  assert.equal(result?.supersededId, legacyCandidate.frontmatter.id);
+});
+
 test("continues with anchors and warns when QMD is unavailable", async () => {
   const warns: string[] = [];
   initLogger({ info() {}, warn: (message) => warns.push(message), error() {}, debug() {} }, false, {

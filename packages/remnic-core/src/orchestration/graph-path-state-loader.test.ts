@@ -110,33 +110,96 @@ test("evicts prior archive indexes for the same storage root", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+test("bounds archive indexes across distinct storage roots", async () => {
+  const loader = new GraphPathStateLoader();
+  const internals = loader as unknown as LoaderInternals;
+  const roots: string[] = [];
+  internals.buildArchivePathIndex = async (storageRoot, version) => ({
+    version,
+    pathsByBasename: new Map([
+      ["node.md", [path.join(storageRoot, "archive", "node.md")]],
+    ]),
+  });
 
-test("keys archive indexes by canonical storage root after symlink retarget", async () => {
+  try {
+    for (let index = 0; index < 33; index += 1) {
+      const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-loader-bound-"));
+      roots.push(root);
+      const archivePath = path.join(root, "archive", "node.md");
+      const storage = fakeStorage(root, archivePath, memory(archivePath, String(index)));
+      const result = await loader.readNode(storage, "node.md", null, true);
+      assert.equal(result?.content, String(index));
+    }
+
+    assert.equal(internals.archivePathIndexes?.size, 32);
+  } finally {
+    await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })));
+  }
+});
+
+test("rejects a symlinked configured storage root before scanning its target", async () => {
   if (process.platform === "win32") return;
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-loader-symlink-"));
   try {
-    const physicalA = path.join(root, "a");
-    const physicalB = path.join(root, "b");
+    const target = path.join(root, "target");
     const link = path.join(root, "link");
-    const archiveA = path.join(physicalA, "archive", "2026-01-01", "node.md");
-    const archiveB = path.join(physicalB, "archive", "2026-01-01", "node.md");
-    await mkdir(path.dirname(archiveA), { recursive: true });
-    await mkdir(path.dirname(archiveB), { recursive: true });
-    await writeFile(archiveA, "a", "utf8");
-    await writeFile(archiveB, "b", "utf8");
-    await symlink(physicalA, link);
+    const directPath = path.join(target, "node.md");
+    const archivePath = path.join(target, "archive", "2026-01-01", "node.md");
+    await mkdir(path.dirname(archivePath), { recursive: true });
+    await writeFile(directPath, "direct", "utf8");
+    await writeFile(archivePath, "archive", "utf8");
+    await symlink(target, link);
+
+    let readCount = 0;
+    let versionCount = 0;
+    const storage = {
+      dir: link,
+      getCorpusScanVersion: async () => {
+        versionCount += 1;
+        return "v1";
+      },
+      readMemoryByPath: async () => {
+        readCount += 1;
+        return memory(directPath, "target");
+      },
+    } as unknown as StorageManager;
 
     const loader = new GraphPathStateLoader();
-    const storage = fakeStorage(link, archiveA, memory(archiveA, "a"));
-    const first = await loader.readNode(storage, "node.md", null, true);
-    assert.equal(first?.content, "a");
 
-    await rm(link);
-    await symlink(physicalB, link);
-    storage.readMemoryByPath = async (filePath: string) =>
-      filePath === archiveB ? memory(archiveB, "b") : null;
-    const second = await loader.readNode(storage, "node.md", null, true);
-    assert.equal(second?.content, "b");
+    assert.equal(await loader.readNode(storage, "node.md", null, true), null);
+    assert.equal(readCount, 0);
+    assert.equal(versionCount, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects a dangling symlinked configured storage root before scanning", async () => {
+  if (process.platform === "win32") return;
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-loader-dangling-"));
+  try {
+    const link = path.join(root, "link");
+    await symlink(path.join(root, "missing-target"), link);
+
+    let readCount = 0;
+    let versionCount = 0;
+    const storage = {
+      dir: link,
+      getCorpusScanVersion: async () => {
+        versionCount += 1;
+        return "v1";
+      },
+      readMemoryByPath: async () => {
+        readCount += 1;
+        return memory(path.join(link, "node.md"), "unexpected");
+      },
+    } as unknown as StorageManager;
+
+    const loader = new GraphPathStateLoader();
+
+    assert.equal(await loader.readNode(storage, "node.md", null, true), null);
+    assert.equal(readCount, 0);
+    assert.equal(versionCount, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

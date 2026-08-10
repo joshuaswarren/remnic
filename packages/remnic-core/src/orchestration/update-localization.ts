@@ -1,4 +1,5 @@
 import type { MemoryFile } from "../types.js";
+import { isActiveMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import { lookupAttributeByNormalizedKey, normalizeSupersessionKey } from "../temporal-supersession.js";
 
 export interface UpdateLocalizationStorage {
@@ -18,7 +19,10 @@ export function mergeMemorySnapshots(hot: MemoryFile[], cold: MemoryFile[]): Mem
       continue;
     }
     const existing = merged[existingIndex];
-    if (existing.frontmatter.status !== "active" && memory.frontmatter.status === "active") {
+    if (
+      !isActiveMemoryStatus(existing.frontmatter.status) &&
+      isActiveMemoryStatus(memory.frontmatter.status)
+    ) {
       merged[existingIndex] = memory;
     }
   }
@@ -118,7 +122,7 @@ export async function localizeUpdateCandidates(
     const cold = deps.storage.readAllColdMemories ? await deps.storage.readAllColdMemories() : [];
     const memories = mergeMemorySnapshots(hot, cold);
     for (const memory of memories) {
-      if (memory.frontmatter.status !== "active") continue;
+      if (!isActiveMemoryStatus(memory.frontmatter.status)) continue;
       const normalizedCandidateEntityRef = normalizeEntityRef(memory.frontmatter.entityRef);
       if (normalizedCandidateEntityRef !== normalizedAnchorEntityRef) continue;
       if (memory.frontmatter.category !== anchor.category) continue;
