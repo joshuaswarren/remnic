@@ -9,12 +9,12 @@ import type { MemoryFile } from "../types.js";
 import type { StorageManager } from "../index.js";
 
 type LoaderInternals = {
-  archivePathIndexes?: Map<string, { version: string; pathsByBasename: Map<string, string[]> }>;
+  archivePathIndexes?: Map<string, { version: number; pathsByBasename: Map<string, string[]> }>;
+  archivePathIndexBuilds?: Map<string, Promise<{ version: number; pathsByBasename: Map<string, string[]> } | null>>;
   buildArchivePathIndex: (
     storageRoot: string,
-    version: string,
-    deadlineAtMs: number | null | undefined,
-  ) => Promise<{ version: string; pathsByBasename: Map<string, string[]> } | null>;
+    version: number,
+  ) => Promise<{ version: number; pathsByBasename: Map<string, string[]> } | null>;
 };
 
 function memory(filePath: string, content: string, id = "node"): MemoryFile {
@@ -37,11 +37,13 @@ function fakeStorage(
   root: string,
   archivePath: string,
   result: MemoryFile,
-  versionRef: { value: string } = { value: "v1" },
+  archiveVersionRef: { value: number } = { value: 1 },
+  corpusVersionRef: { value: string } = { value: "hot:1:cold:1" },
 ): StorageManager {
   return {
     dir: root,
-    getCorpusScanVersion: async () => versionRef.value,
+    getArchiveMutationVersion: async () => archiveVersionRef.value,
+    getCorpusScanVersion: async () => corpusVersionRef.value,
     readMemoryByPath: async (filePath: string) =>
       filePath === archivePath ? result : null,
   } as unknown as StorageManager;
@@ -74,35 +76,112 @@ test("does not share a deadline-bound archive build with a later caller", async 
     const storage = fakeStorage(root, archivePath, result);
     const loader = new GraphPathStateLoader();
     const internals = loader as unknown as LoaderInternals;
-    internals.buildArchivePathIndex = async (_storageRoot, version, deadlineAtMs) => {
+    let builds = 0;
+    internals.buildArchivePathIndex = async (_storageRoot, version) => {
+      builds += 1;
       await new Promise((resolve) => setTimeout(resolve, 15));
-      if (typeof deadlineAtMs === "number" && Date.now() >= deadlineAtMs) return null;
       return { version, pathsByBasename: new Map([["node.md", [archivePath]]]) };
     };
-
     const timedOut = loader.readNode(storage, "node.md", Date.now() + 5, true);
     await new Promise((resolve) => setTimeout(resolve, 1));
     const successful = loader.readNode(storage, "node.md", Date.now() + 100, true);
     const [timedOutResult, successfulResult] = await Promise.all([timedOut, successful]);
 
     assert.equal(timedOutResult, null);
-
     assert.equal(successfulResult?.content, "success");
+    assert.equal((await loader.readNode(storage, "node.md", null, true))?.content, "success");
+    assert.equal(builds, 1);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
+test("ignores unrelated corpus version changes", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-loader-unrelated-"));
+  try {
+    const archivePath = path.join(root, "archive", "2026-01-01", "node.md");
+    const corpusVersionRef = { value: "hot:1:cold:1" };
+    const storage = fakeStorage(root, archivePath, memory(archivePath, "stable"), { value: 1 }, corpusVersionRef);
+    const loader = new GraphPathStateLoader();
+    const internals = loader as unknown as LoaderInternals;
+    let builds = 0;
+    internals.buildArchivePathIndex = async (_storageRoot, version) => {
+      builds += 1;
+      return { version, pathsByBasename: new Map([["node.md", [archivePath]]]) };
+    };
+
+    assert.equal((await loader.readNode(storage, "node.md", null, true))?.content, "stable");
+    corpusVersionRef.value = "hot:2:cold:3";
+    assert.equal((await loader.readNode(storage, "node.md", null, true))?.content, "stable");
+    assert.equal(builds, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("invalidates archive index when archive mutation version changes", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-loader-invalidate-"));
+  try {
+    const archivePath = path.join(root, "archive", "2026-01-01", "node.md");
+    const archiveVersionRef = { value: 1 };
+    const storage = fakeStorage(root, archivePath, memory(archivePath, "fresh"), archiveVersionRef);
+    const loader = new GraphPathStateLoader();
+    const internals = loader as unknown as LoaderInternals;
+    let builds = 0;
+    internals.buildArchivePathIndex = async (_storageRoot, version) => {
+      builds += 1;
+      return { version, pathsByBasename: new Map([["node.md", [archivePath]]]) };
+    };
+
+    assert.equal((await loader.readNode(storage, "node.md", null, true))?.content, "fresh");
+    archiveVersionRef.value = 2;
+    assert.equal((await loader.readNode(storage, "node.md", null, true))?.content, "fresh");
+    assert.equal(builds, 2);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("coalesces concurrent archive index builds for one key", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-loader-coalesce-"));
+  try {
+    const archivePath = path.join(root, "archive", "2026-01-01", "node.md");
+    const storage = fakeStorage(root, archivePath, memory(archivePath, "shared"));
+    const loader = new GraphPathStateLoader();
+    const internals = loader as unknown as LoaderInternals;
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let builds = 0;
+    internals.buildArchivePathIndex = async (_storageRoot, version) => {
+      builds += 1;
+      started.resolve();
+      await release.promise;
+      return { version, pathsByBasename: new Map([["node.md", [archivePath]]]) };
+    };
+
+    const first = loader.readNode(storage, "node.md", null, true);
+    await started.promise;
+    const second = loader.readNode(storage, "node.md", null, true);
+    release.resolve();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    assert.equal(firstResult?.content, "shared");
+    assert.equal(secondResult?.content, "shared");
+    assert.equal(builds, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("evicts prior archive indexes for the same storage root", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-loader-cache-"));
   try {
-    const versionRef = { value: "v1" };
+    const archiveVersionRef = { value: 1 };
     const archivePath = path.join(root, "archive", "2026-01-01", "node.md");
-    const storage = fakeStorage(root, archivePath, memory(archivePath, "unused"), versionRef);
+    const storage = fakeStorage(root, archivePath, memory(archivePath, "unused"), archiveVersionRef);
     const loader = new GraphPathStateLoader();
     const internals = loader as unknown as LoaderInternals;
 
     await loader.readNode(storage, "node.md", null, true);
-    versionRef.value = "v2";
+    archiveVersionRef.value = 2;
     await loader.readNode(storage, "node.md", null, true);
 
     assert.equal(internals.archivePathIndexes?.size, 1);
@@ -132,6 +211,55 @@ test("bounds archive indexes across distinct storage roots", async () => {
     }
 
     assert.equal(internals.archivePathIndexes?.size, 32);
+  } finally {
+    await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })));
+  }
+});
+
+test("bounds in-flight admission and coalesces same-key callers behind a full map", async () => {
+  const loader = new GraphPathStateLoader();
+  const internals = loader as unknown as LoaderInternals;
+  const roots: string[] = [];
+  const started = Array.from({ length: 34 }, () => Promise.withResolvers<void>());
+  const release = Array.from({ length: 34 }, () => Promise.withResolvers<void>());
+  let builds = 0;
+  internals.buildArchivePathIndex = async (storageRoot, version) => {
+    const buildIndex = builds++;
+    started[buildIndex]?.resolve();
+    await release[buildIndex]!.promise;
+    return {
+      version,
+      pathsByBasename: new Map([["node.md", [path.join(storageRoot, "archive", "node.md")]]]),
+    };
+  };
+
+  try {
+    const requests: Array<Promise<MemoryFile | null>> = [];
+    for (let index = 0; index < 32; index += 1) {
+      const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-loader-flight-"));
+      roots.push(root);
+      const archivePath = path.join(root, "archive", "node.md");
+      requests.push(loader.readNode(fakeStorage(root, archivePath, memory(archivePath, String(index))), "node.md", null, true));
+      await started[index]!.promise;
+    }
+
+    const targetRoot = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-loader-flight-target-"));
+    roots.push(targetRoot);
+    const targetPath = path.join(targetRoot, "archive", "node.md");
+    const targetStorage = fakeStorage(targetRoot, targetPath, memory(targetPath, "target"));
+    const firstTarget = loader.readNode(targetStorage, "node.md", null, true);
+    const secondTarget = loader.readNode(targetStorage, "node.md", null, true);
+    for (let tick = 0; tick < 4; tick += 1) await Promise.resolve();
+    assert.equal(builds, 32);
+
+    release[0]!.resolve();
+    await started[32]!.promise;
+    assert.equal(builds, 33);
+    release[32]!.resolve();
+    for (let index = 1; index < 34; index += 1) release[index]!.resolve();
+    const results = await Promise.all([...requests, firstTarget, secondTarget]);
+    assert.equal(results.at(-2)?.content, "target");
+    assert.equal(results.at(-1)?.content, "target");
   } finally {
     await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })));
   }

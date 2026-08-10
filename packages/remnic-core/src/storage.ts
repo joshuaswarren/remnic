@@ -79,6 +79,7 @@ import {
   deleteInFlightReadsForDir,
   clearInFlightReads,
 } from "./in-flight-reads.js";
+import * as archiveMutation from "./archive-mutation-version.js";
 import { rotateMarkdownFileToArchive } from "./hygiene.js";
 import { sanitizeMemoryContent } from "./sanitize.js";
 import { withholdToolScopedFromSharedNamespace } from "./tool-scoped-memory.js";
@@ -125,7 +126,6 @@ import {
 import {
   TombstoneStore,
   collectRetiredMemoriesForRebuild,
-  buildRetiredFactTombstoneInputs,
   type TombstoneStoreOptions,
   type TombstoneFileIo,
   type TombstoneReason,
@@ -133,6 +133,7 @@ import {
   type TombstoneStats,
 } from "./lifecycle/tombstones.js";
 import { supersessionKeysForFact } from "./temporal-supersession.js";
+import { runSupersessionSideEffects } from "./storage/supersession-side-effects.js";
 import type {
   AccessTrackingEntry,
   BufferState,
@@ -2401,15 +2402,19 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return this.readSharedVersion("memory-corpus", StorageManager.memoryCorpusVersionByDir);
   }
 
+  /**
+   * Bump only — NOT invalidateAllForDir (that would drop the very hot
+   * entry the write path just patched).
+   */
   protected bumpMemoryCorpusVersion(): void {
-    // Bump only — NOT invalidateAllForDir (that would drop the very hot
-    // entry the write path just patched).
     this.bumpSharedVersion("memory-corpus", StorageManager.memoryCorpusVersionByDir);
     // Drop the in-flight readAllMemories slot (#1902): a concurrent read
     // must not attach to a scan that began BEFORE this mutation. (The patch
     // path uses bumpMemoryCorpusVersionExclusive and clears the slot itself.)
     deleteInFlightReadsForDir(this.baseDir);
   }
+  getArchiveMutationVersion(): number { return archiveMutation.getArchiveMutationVersionForDir(this.baseDir); }
+
 
   /**
    * Corpus bump reporting whether THIS process's append was the only one
@@ -4569,16 +4574,21 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   invalidateMemoryCachesForTiers(tiers: Iterable<"hot" | "cold" | "archive">): void {
     let hotChanged = false;
     let coldChanged = false;
+    let archiveChanged = false;
     for (const tier of tiers) {
       if (tier === "cold") {
         coldChanged = true;
-      } else if (tier === "hot" || tier === "archive") {
+      } else if (tier === "archive") {
+        hotChanged = true;
+        archiveChanged = true;
+      } else if (tier === "hot") {
         hotChanged = true;
       }
     }
     if (hotChanged) {
       this.invalidateAllMemoriesCache();
     }
+    archiveMutation.bumpArchiveMutationIfChanged(this.baseDir, archiveChanged);
     if (coldChanged) {
       this.invalidateColdMemoriesCache();
     }
@@ -5168,12 +5178,16 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         let durable = false;
         try {
           if (destination?.frontmatter.id === current.frontmatter.id) {
-            await this.deleteManagedStorageFile(current.path);
+            await archiveMutation.recordArchiveDelete(this.baseDir, current.path, () =>
+              this.deleteManagedStorageFile(current.path)
+            );
             durable = true;
             this.invalidateAllMemoriesCache();
             updateProjectedMemoryPath(this.baseDir, current.frontmatter.id, projectedPath);
           } else {
-            await this.writeMemoryFileAtomic(targetPath, current);
+            await archiveMutation.recordArchiveWrite(this.baseDir, targetPath, () =>
+              this.writeMemoryFileAtomic(targetPath, current)
+            );
             if (memory.frontmatter.entityRef !== current.frontmatter.entityRef) {
               memory.frontmatter.entityRef = current.frontmatter.entityRef;
             }
@@ -5181,7 +5195,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
             const sourcePath = path.resolve(current.path);
             const destPath = path.resolve(targetPath);
             if (sourcePath !== destPath) {
-              await this.deleteManagedStorageFile(current.path);
+              await archiveMutation.recordArchiveDelete(this.baseDir, current.path, () =>
+                this.deleteManagedStorageFile(current.path)
+              );
               this.invalidateAllMemoriesCache();
               updateProjectedMemoryPath(this.baseDir, current.frontmatter.id, projectedPath);
             }
@@ -5250,7 +5266,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         // Snapshot a pre-existing destination (retried archive) so a repair
         // failure restores it instead of deleting the only archived copy (§14).
         const priorDest = await this.readStorageSecureFile(destPath).catch(() => null);
-        await this.writeStorageSecureFile(destPath, fileContent);
+        await archiveMutation.recordArchiveWrite(this.baseDir, destPath, () =>
+          this.writeStorageSecureFile(destPath, fileContent)
+        );
         if (typeof current.frontmatter.entityRef === "string") {
           try {
             await this.entityRefRepair.repair(
@@ -5261,17 +5279,28 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
               current.content
             );
           } catch (err) {
-            // Restore/remove the destination before reporting failure (§14):
-            // a retained fresh copy would surface the memory in BOTH scans.
             if (priorDest === null) {
-              await unlink(destPath).catch(() => undefined);
+              await archiveMutation.recordArchiveDelete(this.baseDir, destPath, () =>
+                unlink(destPath).then(
+                  () => true,
+                  () => false
+                )
+              );
             } else {
-              await this.writeStorageSecureFile(destPath, priorDest).catch(() => undefined);
+              await archiveMutation.recordArchiveDelete(this.baseDir, destPath, () =>
+                this.writeStorageSecureFile(destPath, priorDest).then(
+                  () => true,
+                  () => false
+                )
+              );
             }
             throw err;
           }
         }
-        if (!(await this.deleteManagedStorageFile(current.path))) return null;
+        const deleted = await archiveMutation.recordArchiveDelete(this.baseDir, current.path, () =>
+          this.deleteManagedStorageFile(current.path)
+        );
+        if (!deleted) return null;
         markDurable();
         markProjectedMemoryPathInvalid(this.baseDir, current.frontmatter.id);
         this.invalidateAllMemoriesCache();
@@ -5370,7 +5399,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (!memory) return false;
 
     return await this.runTombstoneBlockedInvalidation(memory, async (current, rebuildMarker, markDurable) => {
-      if (!(await this.deleteManagedStorageFile(current.path))) return false;
+      const deleted = await archiveMutation.recordArchiveDelete(this.baseDir, current.path, () =>
+        this.deleteManagedStorageFile(current.path)
+      );
+      if (!deleted) return false;
       markDurable();
       markProjectedMemoryPathInvalid(this.baseDir, id);
       this.invalidateAllMemoriesCache();
@@ -6999,8 +7031,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     let currentBefore = oldMemory;
     let updatedFm = oldMemory.frontmatter;
 
-    try {
-      const written = await this.withTombstoneBlockedMemoryPathLock(oldMemory.path, async (current) => {
+    const written = await this.withTombstoneBlockedMemoryPathLock(oldMemory.path, async (current) => {
         if (current?.frontmatter.id !== oldMemoryId) return false;
         if (
           current.frontmatter.supersededBy !== undefined ||
@@ -7027,63 +7058,36 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
           );
         }
         return true;
-      });
-      if (!written) return false;
-      if (this.isColdOrArchiveTierPath(currentBefore.path)) {
-        this.invalidateColdMemoriesCache();
-      }
-      // Bump the corpus sentinel before lifecycle I/O so caches cannot serve stale data.
-      this.bumpMemoryCorpusVersion();
-      await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.supersedeMemory", {
-        memoryId: oldMemoryId,
-        eventType: "superseded",
-        timestamp: now,
-        actor: "storage.supersedeMemory",
-        reasonCode: reason,
-        before: this.summarizeLifecycleState(currentBefore.frontmatter, currentBefore.path),
-        after: this.summarizeLifecycleState(updatedFm, currentBefore.path),
-        relatedMemoryIds: [newMemoryId],
-      });
-      this.bumpMemoryStatusVersion();
-      log.debug(`superseded memory ${oldMemoryId} by ${newMemoryId}: ${reason}`);
+      }).catch((err) => { log.error(`failed to supersede memory ${oldMemoryId}:`, err); return false; });
+    if (!written) return false;
+    await runSupersessionSideEffects({
+      oldMemoryId,
+      newMemoryId,
+      reason,
+      now,
+      currentBefore,
+      updatedFm,
+      citationTemplate: this.citationTemplate,
+      isColdOrArchiveTierPath: (memoryPath) => this.isColdOrArchiveTierPath(memoryPath),
+      invalidateColdMemoriesCache: () => this.invalidateColdMemoriesCache(),
+      bumpMemoryCorpusVersion: () => this.bumpMemoryCorpusVersion(),
+      appendLifecycleEvent: () =>
+        this.appendGeneratedMemoryLifecycleEventFailOpen("storage.supersedeMemory", {
+          memoryId: oldMemoryId,
+          eventType: "superseded",
+          timestamp: now,
+          actor: "storage.supersedeMemory",
+          reasonCode: reason,
+          before: this.summarizeLifecycleState(currentBefore.frontmatter, currentBefore.path),
+          after: this.summarizeLifecycleState(updatedFm, currentBefore.path),
+          relatedMemoryIds: [newMemoryId],
+        }),
+      bumpMemoryStatusVersion: () => this.bumpMemoryStatusVersion(),
+      appendTombstone: (input) => this.appendTombstone(input),
+      writeSealedMemory: (envelope, extras) => this.writeSealedMemory(envelope, extras),
+    });
 
-      // Emit one fact tombstone per derived supersession key.
-      if (currentBefore.frontmatter.category === "fact") {
-        for (const input of buildRetiredFactTombstoneInputs(
-          {
-            id: oldMemoryId,
-            content: stripCitationForTemplate(currentBefore.content, this.citationTemplate),
-            contentHash: currentBefore.frontmatter.contentHash,
-            entityRef: updatedFm.entityRef,
-            structuredAttributes: currentBefore.frontmatter.structuredAttributes,
-          },
-          {
-            reason: "contradiction_resolution",
-            createdBy: "contradiction_resolution",
-            createdAt: now,
-            supersessionKeysForFact,
-          }
-        )) {
-          await this.appendTombstone(input);
-        }
-      }
-
-      // Audit-trail correction — sealed even INSIDE the engine (#2022 review).
-      const auditBody = `Superseded: ${currentBefore.content}\n\nReason: ${reason}`;
-      const auditInput = {
-        content: auditBody,
-        category: "correction" as const,
-        confidence: 1.0,
-        tags: ["supersession", "auto-resolved"],
-      };
-      const auditEnvelope = composeMemoryEnvelope(auditInput, { source: "contradiction-detection" });
-      await this.writeSealedMemory(auditEnvelope, { lineage: [oldMemoryId, newMemoryId] });
-
-      return true;
-    } catch (err) {
-      log.error(`failed to supersede memory ${oldMemoryId}:`, err);
-      return false;
-    }
+    return true;
   }
 
   // ---------------------------------------------------------------------------

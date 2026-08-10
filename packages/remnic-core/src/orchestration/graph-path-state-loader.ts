@@ -5,13 +5,15 @@ import { readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 
 interface ArchivePathIndex {
-  version: string;
+  version: number;
   pathsByBasename: Map<string, string[]>;
 }
 const MAX_ARCHIVE_PATH_INDEXES = 32;
+const MAX_ARCHIVE_PATH_INDEX_BUILDS = 32;
 
 export class GraphPathStateLoader {
   private archivePathIndexes?: Map<string, ArchivePathIndex>;
+  private archivePathIndexBuilds = new Map<string, Promise<ArchivePathIndex | null>>();
 
   async readNode(
     storage: StorageManager,
@@ -81,44 +83,77 @@ export class GraphPathStateLoader {
     deadlineAtMs: number | null | undefined,
   ): Promise<ArchivePathIndex | null> {
     if (typeof deadlineAtMs === "number" && Date.now() >= deadlineAtMs) return null;
-    const version = await storage.getCorpusScanVersion();
+    const version = await storage.getArchiveMutationVersion();
     if (typeof deadlineAtMs === "number" && Date.now() >= deadlineAtMs) return null;
     if (!this.archivePathIndexes) this.archivePathIndexes = new Map();
     const archivePathIndexes = this.archivePathIndexes;
     const cacheKey = `${storageRoot}\0${version}`;
-    const cached = archivePathIndexes.get(cacheKey);
-    if (cached) {
-      archivePathIndexes.delete(cacheKey);
-      archivePathIndexes.set(cacheKey, cached);
-      return cached;
-    }
 
-    const index = await this.buildArchivePathIndex(storageRoot, version, deadlineAtMs);
-    if (!index || (typeof deadlineAtMs === "number" && Date.now() >= deadlineAtMs)) {
-      return null;
+    while (true) {
+      const cached = archivePathIndexes.get(cacheKey);
+      if (cached) {
+        archivePathIndexes.delete(cacheKey);
+        archivePathIndexes.set(cacheKey, cached);
+        return cached;
+      }
+
+      let build = this.archivePathIndexBuilds.get(cacheKey);
+      if (!build) {
+        if (this.archivePathIndexBuilds.size >= MAX_ARCHIVE_PATH_INDEX_BUILDS) {
+          const trackedBuilds = [...this.archivePathIndexBuilds.values()].map((pending) =>
+            pending.then(() => undefined, () => undefined)
+          );
+          const admitted = await this.waitForDeadline(Promise.race(trackedBuilds), deadlineAtMs);
+          if (admitted === null) return null;
+          continue;
+        }
+        build = this.buildArchivePathIndex(storageRoot, version)
+          .then((index) => {
+            if (!index) return null;
+            const rootPrefix = `${storageRoot}\0`;
+            for (const key of archivePathIndexes.keys()) {
+              if (key.startsWith(rootPrefix)) archivePathIndexes.delete(key);
+            }
+            archivePathIndexes.set(cacheKey, index);
+            while (archivePathIndexes.size > MAX_ARCHIVE_PATH_INDEXES) {
+              const oldestKey = archivePathIndexes.keys().next().value;
+              if (oldestKey === undefined) break;
+              archivePathIndexes.delete(oldestKey);
+            }
+            return index;
+          })
+          .finally(() => {
+            this.archivePathIndexBuilds.delete(cacheKey);
+          });
+        this.archivePathIndexBuilds.set(cacheKey, build);
+      }
+      return await this.waitForDeadline(build, deadlineAtMs);
     }
-    const rootPrefix = `${storageRoot}\0`;
-    for (const key of archivePathIndexes.keys()) {
-      if (key.startsWith(rootPrefix)) archivePathIndexes.delete(key);
+  }
+
+  private async waitForDeadline<T>(
+    promise: Promise<T>,
+    deadlineAtMs: number | null | undefined,
+  ): Promise<T | null> {
+    if (typeof deadlineAtMs !== "number") return promise;
+    const remainingMs = deadlineAtMs - Date.now();
+    if (remainingMs <= 0) return null;
+    const timeout = Promise.withResolvers<null>();
+    const timer = setTimeout(() => timeout.resolve(null), remainingMs);
+    try {
+      return await Promise.race([promise, timeout.promise]);
+    } finally {
+      clearTimeout(timer);
     }
-    archivePathIndexes.set(cacheKey, index);
-    while (archivePathIndexes.size > MAX_ARCHIVE_PATH_INDEXES) {
-      const oldestKey = archivePathIndexes.keys().next().value;
-      if (oldestKey === undefined) break;
-      archivePathIndexes.delete(oldestKey);
-    }
-    return index;
   }
 
   private async buildArchivePathIndex(
     storageRoot: string,
-    version: string,
-    deadlineAtMs: number | null | undefined,
+    version: number,
   ): Promise<ArchivePathIndex | null> {
     const pathsByBasename = new Map<string, string[]>();
     const pending = [path.join(storageRoot, "archive")];
     while (pending.length > 0) {
-      if (typeof deadlineAtMs === "number" && Date.now() >= deadlineAtMs) return null;
       const current = pending.pop();
       if (!current) break;
       let entries: Dirent[];
@@ -128,7 +163,6 @@ export class GraphPathStateLoader {
         continue;
       }
       for (const entry of entries) {
-        if (typeof deadlineAtMs === "number" && Date.now() >= deadlineAtMs) return null;
         if (entry.isSymbolicLink()) continue;
         const entryPath = path.join(current, entry.name);
         if (entry.isDirectory()) {

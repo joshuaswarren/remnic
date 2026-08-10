@@ -534,3 +534,212 @@ test("tier move: cold-to-hot move invalidates cold cache and cannot remain in re
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("archive mutation version ignores hot and cold writes", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-archive-version-"));
+  try {
+    resetStaticCaches();
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const initial = storage.getArchiveMutationVersion();
+
+    const { id } = await storage.writeMemory("fact", "archive version probe");
+    assert.equal(storage.getArchiveMutationVersion(), initial);
+
+    const coldInvalidator = storage as unknown as {
+      invalidateColdMemoriesCache: () => void;
+    };
+    coldInvalidator.invalidateColdMemoriesCache();
+    assert.equal(storage.getArchiveMutationVersion(), initial);
+
+    const memory = await storage.getMemoryById(id);
+    assert.ok(memory);
+    assert.ok(await storage.archiveMemory(memory));
+    assert.ok(storage.getArchiveMutationVersion() > initial);
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("archive version advances when a tier move commits archive write before source delete fails", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-archive-partial-move-"));
+  try {
+    resetStaticCaches();
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const { id } = await storage.writeMemory("fact", "archive move partial");
+    const memory = await storage.getMemoryById(id);
+    assert.ok(memory);
+    const targetPath = path.join(dir, "archive", "partial", path.basename(memory.path));
+    const initial = storage.getArchiveMutationVersion();
+    const internals = storage as unknown as {
+      deleteManagedStorageFile: (filePath: string) => Promise<boolean>;
+    };
+    const originalDelete = internals.deleteManagedStorageFile.bind(storage);
+    internals.deleteManagedStorageFile = async (filePath) => {
+      if (path.resolve(filePath) === path.resolve(memory.path)) {
+        throw new Error("forced archive source delete failure");
+      }
+      return originalDelete(filePath);
+    };
+    await assert.rejects(storage.moveMemoryToPath(memory, targetPath), /forced archive source delete failure/);
+    assert.ok(storage.getArchiveMutationVersion() > initial);
+    assert.ok((await readFile(targetPath, "utf8")).includes("archive move partial"));
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("archive version advances when archive write commits before source delete fails", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-archive-partial-archive-"));
+  try {
+    resetStaticCaches();
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const { id } = await storage.writeMemory("fact", "archive write partial");
+    const memory = await storage.getMemoryById(id);
+    assert.ok(memory);
+    const initial = storage.getArchiveMutationVersion();
+    const internals = storage as unknown as {
+      deleteManagedStorageFile: (filePath: string) => Promise<boolean>;
+    };
+    const originalDelete = internals.deleteManagedStorageFile.bind(storage);
+    internals.deleteManagedStorageFile = async (filePath) => {
+      if (path.resolve(filePath) === path.resolve(memory.path)) {
+        throw new Error("forced archive source delete failure");
+      }
+      return originalDelete(filePath);
+    };
+    const result = await storage.archiveMemory(memory, { at: new Date("2026-01-02T00:00:00.000Z") });
+    assert.equal(result, null);
+    assert.ok(storage.getArchiveMutationVersion() > initial);
+    assert.ok((await readFile(path.join(dir, "archive", "2026-01-02", path.basename(memory.path)), "utf8")).includes("archive write partial"));
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("archive version advances when invalidateMemory deletes an archive path", async () => {
+
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-archive-invalidate-"));
+  try {
+    resetStaticCaches();
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const { id } = await storage.writeMemory("fact", "archive invalidation");
+    const memory = await storage.getMemoryById(id);
+    assert.ok(memory);
+    const archivedPath = await storage.archiveMemory(memory, { at: new Date("2026-01-03T00:00:00.000Z") });
+    assert.ok(archivedPath);
+    const archived = (await storage.readArchivedMemories()).find((candidate) => candidate.frontmatter.id === id);
+    assert.ok(archived);
+    const internals = storage as unknown as {
+      readAllMemories: () => Promise<unknown[]>;
+    };
+    internals.readAllMemories = async () => [archived];
+    const initial = storage.getArchiveMutationVersion();
+    assert.equal(await storage.invalidateMemory(id), true);
+    assert.ok(storage.getArchiveMutationVersion() > initial);
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("invalidateMemory returns false without side effects when the target is already absent", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-invalidate-absent-"));
+  try {
+    resetStaticCaches();
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const { id } = await storage.writeMemory("fact", "already absent");
+    const memory = await storage.getMemoryById(id);
+    assert.ok(memory);
+    const initialStatus = storage.getMemoryStatusVersion();
+    await rm(memory.path);
+    assert.equal(await storage.invalidateMemory(id), false);
+    assert.equal(storage.getMemoryStatusVersion(), initialStatus);
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("archive generation advances once per archive file mutation", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-archive-version-delta-"));
+  try {
+    resetStaticCaches();
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const { id } = await storage.writeMemory("fact", "archive generation deltas");
+    const memory = await storage.getMemoryById(id);
+    assert.ok(memory);
+    const initial = storage.getArchiveMutationVersion();
+
+    const firstArchivePath = path.join(dir, "archive", "2026-01-06", path.basename(memory.path));
+    assert.equal(await storage.moveMemoryToPath(memory, firstArchivePath), true);
+    const afterHotToArchive = storage.getArchiveMutationVersion();
+    assert.equal(afterHotToArchive - initial, 1);
+
+    const archived = (await storage.readArchivedMemories()).find((candidate) => candidate.frontmatter.id === id);
+    assert.ok(archived);
+    const secondArchivePath = path.join(dir, "archive", "2026-01-07", path.basename(archived.path));
+    assert.equal(await storage.moveMemoryToPath(archived, secondArchivePath), true);
+    const afterArchiveToArchive = storage.getArchiveMutationVersion();
+    assert.equal(afterArchiveToArchive - afterHotToArchive, 2);
+
+    const movedArchive = (await storage.readArchivedMemories()).find((candidate) => candidate.frontmatter.id === id);
+    assert.ok(movedArchive);
+    assert.equal(await storage.moveMemoryToPath(movedArchive, storage.buildTierMemoryPath(movedArchive, "hot")), true);
+    assert.equal(storage.getArchiveMutationVersion() - afterArchiveToArchive, 1);
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("maintenance deletion keeps a non-matching archive memory", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-archive-maintenance-guard-"));
+  try {
+    resetStaticCaches();
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const { id } = await storage.writeMemory("fact", "archive maintenance guard");
+    const memory = await storage.getMemoryById(id);
+    assert.ok(memory);
+    assert.ok(await storage.archiveMemory(memory, { at: new Date("2026-01-05T00:00:00.000Z") }));
+    const archived = (await storage.readArchivedMemories()).find((candidate) => candidate.frontmatter.id === id);
+    assert.ok(archived);
+    const initial = storage.getArchiveMutationVersion();
+    assert.equal(await storage.deleteMemoryForMaintenance(archived, () => false), null);
+    assert.equal(storage.getArchiveMutationVersion(), initial);
+    assert.ok((await readFile(archived.path, "utf8")).includes("archive maintenance guard"));
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("archive version advances when maintenance deletes an archive path", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-archive-maintenance-delete-"));
+  try {
+    resetStaticCaches();
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const { id } = await storage.writeMemory("fact", "archive maintenance delete");
+    const memory = await storage.getMemoryById(id);
+    assert.ok(memory);
+    assert.ok(await storage.archiveMemory(memory, { at: new Date("2026-01-04T00:00:00.000Z") }));
+    const archived = (await storage.readArchivedMemories()).find((candidate) => candidate.frontmatter.id === id);
+    assert.ok(archived);
+    const initial = storage.getArchiveMutationVersion();
+    const removed = await storage.deleteMemoryForMaintenance(archived);
+    assert.ok(removed);
+    assert.equal(removed.frontmatter.id, id);
+    assert.ok(storage.getArchiveMutationVersion() > initial);
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

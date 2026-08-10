@@ -360,6 +360,53 @@ test("disabled boolean and parsed string false preserve output and skip corpus r
     await rm(root, { recursive: true, force: true });
   }
 });
+test("disabled graph path scoring excludes activation results that match seeds", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-seed-exclusion-"));
+  try {
+    const fixture = await createNamespace(root, "default");
+    const fakeIndex = {
+      spreadingActivation: async () => [
+        {
+          path: fixture.seedPath,
+          score: 1,
+          seed: fixture.seedPath,
+          hopDepth: 0,
+          decayedWeight: 1,
+          graphType: "entity" as const,
+          edgeConfidence: 1,
+        },
+        {
+          path: fixture.cleanPath,
+          score: 0.8,
+          seed: fixture.seedPath,
+          hopDepth: 1,
+          decayedWeight: 1,
+          graphType: "entity" as const,
+          edgeConfidence: 1,
+        },
+      ],
+    } as unknown as GraphIndex;
+    const coordinator = makeCoordinator(
+      makeConfig({ graphPathScoring: { enabled: false } }),
+      new Map([[fixture.name, fixture]]),
+      undefined,
+      new Map([[fixture.dir, fakeIndex]]),
+    );
+
+    const result = await expand(coordinator, [seedResult(fixture)], [fixture.name]);
+
+    assert.deepEqual(
+      result.expandedPaths.map((entry) => entry.path),
+      [path.join(fixture.dir, fixture.cleanPath)],
+    );
+    assert.equal(
+      result.merged.filter((item) => item.path.endsWith(fixture.seedPath)).length,
+      1,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("missing memory status defaults to active for path scoring", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-status-"));

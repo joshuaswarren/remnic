@@ -10,6 +10,7 @@ import { isErrnoCode } from "../utils/errno.js";
 import { pathMayCarryEntityRefs, requestEntityCanonicalIdReconcile } from "./entity-canonical-id-references.js";
 import { withRawEntityPageMutation } from "./entity-canonical-id-lock.js";
 import { readMaybeEncryptedFileFromChunks, writeMaybeEncryptedFileFromChunks } from "../secure-store/secure-fs.js";
+import * as archiveMutation from "../archive-mutation-version.js";
 import {
   buildExplicitCaptureDedupKey,
   buildCapturePathLockIdentity,
@@ -571,6 +572,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
         markDurable();
         deleted = current;
         const memoryDir = this.tombstoneBlockedCaptureIndexOptions().memoryDir;
+        archiveMutation.bumpArchiveMutationForPath(memoryDir, true, current.path);
         markProjectedMemoryPathInvalid(memoryDir, current.frontmatter.id);
         this.invalidateAllMemoriesCache();
         if (current.path.includes(`${path.sep}cold${path.sep}`)) {

@@ -381,6 +381,7 @@ export class GraphRecallCoordinator {
 
       if (!scoringEnabled) {
         for (const candidate of expanded.slice(0, perNamespaceExpandedCap)) {
+          if (seedSet.has(candidate.path)) continue;
           const memory = await readGraphNode(candidate.path, false);
           if (deadlineExpired()) break;
           if (!memory) continue;

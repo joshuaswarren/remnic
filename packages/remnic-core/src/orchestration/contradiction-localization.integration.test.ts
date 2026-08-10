@@ -683,6 +683,67 @@ test("supersedeMemory does not overwrite an already-superseded cold memory", asy
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+test("committed cold supersession returns true when correction audit fails", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-supersede-cold-audit-failure-"));
+  try {
+    const orchestrator = new Orchestrator(baseConfig(memoryDir, { tombstonesEnabled: false })) as unknown as {
+      getStorage: (namespace: string) => Promise<StorageManager>;
+    };
+    const storage = await orchestrator.getStorage("default");
+    await storage.ensureDirectories();
+    const { id } = await storage.writeMemory("fact", "Alice lives in Austin", {
+      entityRef: "person:alice",
+      source: "test",
+    });
+    const hot = (await storage.readAllMemories()).find((memory) => memory.frontmatter.id === id);
+    assert.ok(hot);
+    assert.equal((await storage.migrateMemoryToTier(hot, "cold")).changed, true);
+
+    storage.writeSealedMemory = async () => {
+      throw new Error("correction audit failed");
+    };
+
+    assert.equal(await storage.supersedeMemory(id, "replacement", "city changed"), true);
+    const cold = (await storage.readAllColdMemories()).find((memory) => memory.frontmatter.id === id);
+    assert.ok(cold);
+    assert.equal(cold.frontmatter.status, "superseded");
+    assert.equal(cold.frontmatter.supersededBy, "replacement");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("failed cold supersession mutation returns false and preserves the active file", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-supersede-cold-mutation-failure-"));
+  try {
+    const orchestrator = new Orchestrator(baseConfig(memoryDir, { tombstonesEnabled: false })) as unknown as {
+      getStorage: (namespace: string) => Promise<StorageManager>;
+    };
+    const storage = await orchestrator.getStorage("default");
+    await storage.ensureDirectories();
+    const { id } = await storage.writeMemory("fact", "Alice lives in Austin", {
+      entityRef: "person:alice",
+      source: "test",
+    });
+    const hot = (await storage.readAllMemories()).find((memory) => memory.frontmatter.id === id);
+    assert.ok(hot);
+    assert.equal((await storage.migrateMemoryToTier(hot, "cold")).changed, true);
+    const storageInternals = storage as unknown as {
+      writeTombstoneBlockedFrontmatter: (...args: readonly unknown[]) => Promise<void>;
+    };
+    storageInternals.writeTombstoneBlockedFrontmatter = async () => {
+      throw new Error("cold mutation failed");
+    };
+
+    assert.equal(await storage.supersedeMemory(id, "replacement", "city changed"), false);
+    const cold = (await storage.readAllColdMemories()).find((memory) => memory.frontmatter.id === id);
+    assert.ok(cold);
+    assert.equal(cold.frontmatter.status, "active");
+    assert.equal(cold.frontmatter.supersededBy, undefined);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
 
 test("anchor-only contradiction verifies an active cold anchor through deferred resolve", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-contradiction-cold-anchor-"));
