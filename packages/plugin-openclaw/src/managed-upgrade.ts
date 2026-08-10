@@ -69,8 +69,10 @@ export function describeErrorWithCause(error: unknown): string {
 }
 
 export class PublishedOpenclawPluginInstallError extends Error {
+  readonly managedRestoreNote?: string;
   readonly managedRollbackDir?: string;
   readonly managedRollbackTargetDir?: string;
+  readonly requiresHostManagedRestore: boolean;
   readonly rollbackDir?: string;
   readonly shouldRestoreBackup: boolean;
   readonly shouldRestoreConfig: boolean;
@@ -78,8 +80,10 @@ export class PublishedOpenclawPluginInstallError extends Error {
   constructor(
     message: string,
     options: ErrorOptions & {
+      managedRestoreNote?: string;
       managedRollbackDir?: string;
       managedRollbackTargetDir?: string;
+      requiresHostManagedRestore?: boolean;
       rollbackDir?: string;
       shouldRestoreBackup?: boolean;
       shouldRestoreConfig?: boolean;
@@ -87,8 +91,10 @@ export class PublishedOpenclawPluginInstallError extends Error {
   ) {
     super(message, options);
     this.name = "PublishedOpenclawPluginInstallError";
+    this.managedRestoreNote = options.managedRestoreNote;
     this.managedRollbackDir = options.managedRollbackDir;
     this.managedRollbackTargetDir = options.managedRollbackTargetDir;
+    this.requiresHostManagedRestore = options.requiresHostManagedRestore ?? false;
     this.rollbackDir = options.rollbackDir;
     this.shouldRestoreBackup = options.shouldRestoreBackup ?? false;
     this.shouldRestoreConfig = options.shouldRestoreConfig ?? false;
@@ -103,8 +109,9 @@ export function installPublishedOpenclawPlugin(
 ): {
   managedRollbackDir?: string;
   managedRollbackTargetDir?: string;
+  requiresHostManagedRestore: boolean;
   rollbackDir?: string;
-  rollbackManagedInstall: () => void;
+  rollbackManagedInstall: () => string | undefined;
   version?: string;
 } {
   const requestedSelector = assertRegistryPackageSpec(spec);
@@ -120,6 +127,7 @@ export function installPublishedOpenclawPlugin(
   let activeManagedRollbackTargetDir: string | undefined;
   let managedInstallStarted = false;
   let shouldRestoreBackup = false;
+  let managedRestoreNote: string | undefined;
 
   const readOpenclawHelp = (subcommand: "inspect" | "install"): string =>
     runOpenclawCommand(["plugins", subcommand, "--help"]);
@@ -220,34 +228,67 @@ export function installPublishedOpenclawPlugin(
   let previousManagedInstall: ManagedPluginInspection | undefined;
   let installSupportsForce = false;
   let inspectSupportsRuntime = false;
-  const rollbackManagedInstall = (): void => {
+  const rollbackManagedInstall = (): string | undefined => {
     const previousInstall = previousManagedInstall;
     const previousSource = previousInstall?.installSource;
     if (previousInstall && (previousSource === "npm" || previousSource === "clawhub")) {
-      if (!installSupportsForce) {
-        const currentInstall = inspectManagedPlugin(["plugins", "inspect", "--all", "--json"]);
-        if (currentInstall.installSource) {
-          runOpenclawCommand(["plugins", "uninstall", REMNIC_OPENCLAW_PLUGIN_ID, "--force"]);
-        }
-      }
       const previousSpec =
         previousSource === "npm"
           ? `@remnic/plugin-openclaw@${previousInstall.version}`
           : `clawhub:${previousInstall.installPackage}@${previousInstall.version}`;
       const previousPackageArg =
         installSupportsForce && previousSource === "npm" ? `npm:${previousSpec}` : previousSpec;
-      const restoreArgs = ["plugins", "install", previousPackageArg];
-      if (installSupportsForce) restoreArgs.push("--force");
-      runOpenclawCommand(restoreArgs);
-      const restoredPlugin = inspectInstalledPlugin(inspectSupportsRuntime);
-      if (
-        restoredPlugin.status !== "loaded" ||
-        restoredPlugin.installSource !== previousSource ||
-        restoredPlugin.version !== previousInstall.version
-      ) {
-        throw new Error("OpenClaw did not restore the previous managed plugin version.");
+
+      try {
+        if (!installSupportsForce) {
+          const currentInstall = inspectManagedPlugin(["plugins", "inspect", "--all", "--json"]);
+          if (currentInstall.installSource) {
+            runOpenclawCommand(["plugins", "uninstall", REMNIC_OPENCLAW_PLUGIN_ID, "--force"]);
+          }
+        }
+        const restoreArgs = ["plugins", "install", previousPackageArg];
+        if (installSupportsForce) restoreArgs.push("--force");
+        runOpenclawCommand(restoreArgs);
+        const restoredPlugin = inspectInstalledPlugin(inspectSupportsRuntime);
+        if (
+          restoredPlugin.status !== "loaded" ||
+          restoredPlugin.installSource !== previousSource ||
+          restoredPlugin.version !== previousInstall.version
+        ) {
+          throw new Error("OpenClaw did not restore the previous managed plugin version.");
+        }
+        return undefined;
+      } catch (registryRestoreError) {
+        if (!activeManagedRollbackDir) throw registryRestoreError;
+
+        try {
+          if (!installSupportsForce) {
+            const currentInstall = inspectManagedPlugin(["plugins", "inspect", "--all", "--json"]);
+            if (currentInstall.installSource) {
+              runOpenclawCommand(["plugins", "uninstall", REMNIC_OPENCLAW_PLUGIN_ID, "--force"]);
+            }
+          }
+          const localRestoreArgs = ["plugins", "install", activeManagedRollbackDir];
+          if (installSupportsForce) localRestoreArgs.push("--force");
+          runOpenclawCommand(localRestoreArgs);
+          const locallyRestoredPlugin = inspectInstalledPlugin(inspectSupportsRuntime);
+          if (
+            locallyRestoredPlugin.status !== "loaded" ||
+            locallyRestoredPlugin.installSource !== "path" ||
+            locallyRestoredPlugin.version !== previousInstall.version
+          ) {
+            throw new Error("OpenClaw did not re-register the preserved plugin copy.");
+          }
+          managedRestoreNote =
+            "OpenClaw re-registered the preserved plugin copy as a local path because the registry restore failed";
+          return managedRestoreNote;
+        } catch (localRestoreError) {
+          throw new AggregateError(
+            [registryRestoreError, localRestoreError],
+            "OpenClaw could not restore the previous registry install or re-register the preserved plugin copy."
+          );
+        }
       }
-      return;
     }
     const rollbackErrors: unknown[] = [];
     if (managedInstallStarted) {
@@ -271,6 +312,7 @@ export function installPublishedOpenclawPlugin(
     if (rollbackErrors.length > 1) {
       throw new AggregateError(rollbackErrors, "One or more managed plugin rollback steps failed.");
     }
+    return undefined;
   };
 
   try {
@@ -355,6 +397,8 @@ export function installPublishedOpenclawPlugin(
     return {
       managedRollbackDir: activeManagedRollbackDir,
       managedRollbackTargetDir: activeManagedRollbackTargetDir,
+      requiresHostManagedRestore:
+        previousManagedInstall?.installSource === "npm" || previousManagedInstall?.installSource === "clawhub",
       rollbackDir: activeRollbackDir,
       rollbackManagedInstall,
       version: inspectedPlugin.version,
@@ -375,8 +419,11 @@ export function installPublishedOpenclawPlugin(
     }
     throw new PublishedOpenclawPluginInstallError(`Failed to install published OpenClaw plugin from ${spec}.`, {
       cause: installFailure,
+      managedRestoreNote,
       managedRollbackDir: activeManagedRollbackDir,
       managedRollbackTargetDir: activeManagedRollbackTargetDir,
+      requiresHostManagedRestore:
+        previousManagedInstall?.installSource === "npm" || previousManagedInstall?.installSource === "clawhub",
       rollbackDir: activeRollbackDir,
       shouldRestoreBackup,
       shouldRestoreConfig: managedInstallStarted,

@@ -11952,12 +11952,17 @@ async function cmdOpenclawUpgrade(opts: OpenclawUpgradeOptions): Promise<void> {
       publishedInstallError?.managedRollbackTargetDir ??
       installResult?.managedRollbackTargetDir ??
       managedTargetDir;
-    const pluginRollbackDir =
-      managedRollbackDir && path.resolve(managedRollbackTargetDir) === path.resolve(pluginDir)
-        ? (rollbackDir ?? managedRollbackDir)
-        : rollbackDir;
+    const requiresHostManagedRestore =
+      publishedInstallError?.requiresHostManagedRestore ?? installResult?.requiresHostManagedRestore ?? false;
+    const managedRollbackSharesPluginDir =
+      managedRollbackDir && path.resolve(managedRollbackTargetDir) === path.resolve(pluginDir);
+    const pluginRollbackDir = managedRollbackSharesPluginDir
+      ? requiresHostManagedRestore
+        ? rollbackDir
+        : (rollbackDir ?? managedRollbackDir)
+      : rollbackDir;
     const shouldRestorePlugin = Boolean(
-      installResult || pluginRollbackDir || publishedInstallError?.shouldRestoreBackup
+      (installResult && !requiresHostManagedRestore) || pluginRollbackDir || publishedInstallError?.shouldRestoreBackup
     );
     const shouldRestoreConfig = Boolean(installResult || publishedInstallError?.shouldRestoreConfig);
     const shouldRollback = shouldRestorePlugin || shouldRestoreConfig || Boolean(managedRollbackDir);
@@ -11969,7 +11974,10 @@ async function cmdOpenclawUpgrade(opts: OpenclawUpgradeOptions): Promise<void> {
     }
 
     const rollbackErrors: unknown[] = [];
-    const rollbackNotes: string[] = [];
+    let usedLocalManagedRestore = Boolean(publishedInstallError?.managedRestoreNote);
+    const rollbackNotes: string[] = publishedInstallError?.managedRestoreNote
+      ? [publishedInstallError.managedRestoreNote]
+      : [];
     if (installResult) {
       if (shouldRestoreConfig) {
         try {
@@ -11984,7 +11992,11 @@ async function cmdOpenclawUpgrade(opts: OpenclawUpgradeOptions): Promise<void> {
         }
       }
       try {
-        installResult.rollbackManagedInstall();
+        const managedRestoreNote = installResult.rollbackManagedInstall();
+        if (managedRestoreNote) {
+          usedLocalManagedRestore = true;
+          rollbackNotes.push(managedRestoreNote);
+        }
       } catch (error) {
         rollbackErrors.push(error);
       }
@@ -11992,18 +12004,22 @@ async function cmdOpenclawUpgrade(opts: OpenclawUpgradeOptions): Promise<void> {
     try {
       rollbackNotes.push(
         ...rollbackOpenclawUpgrade({
-          configBackupPath: shouldRestoreConfig ? configBackupPath : undefined,
+          configBackupPath: shouldRestoreConfig && !usedLocalManagedRestore ? configBackupPath : undefined,
           configPath,
           pluginBackupDir: shouldRestorePlugin ? pluginBackupDir : undefined,
           pluginDir,
           rollbackDir: pluginRollbackDir,
-          removeConfigIfUnbacked: shouldRestoreConfig && !configExistedBefore,
+          removeConfigIfUnbacked: shouldRestoreConfig && !usedLocalManagedRestore && !configExistedBefore,
         })
       );
     } catch (error) {
       rollbackErrors.push(error);
     }
-    if (managedRollbackDir && path.resolve(managedRollbackTargetDir) !== path.resolve(pluginDir)) {
+    if (
+      managedRollbackDir &&
+      path.resolve(managedRollbackTargetDir) !== path.resolve(pluginDir) &&
+      !requiresHostManagedRestore
+    ) {
       try {
         rollbackNotes.push(
           ...rollbackOpenclawUpgrade({

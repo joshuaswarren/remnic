@@ -143,10 +143,21 @@ if (args[0] === "plugins" && args[1] === "uninstall") {
 
 
 if (args[0] === "plugins" && args[1] === "install") {
-  const installSource = args[2].startsWith("clawhub:") ? "clawhub" : "npm";
-  const installVersion = installSource === "clawhub"
-    ? process.env.OPENCLAW_CLAWHUB_RESTORE_VERSION
-    : args[2].slice(args[2].lastIndexOf("@") + 1);
+  const localSourcePath = require("node:path").isAbsolute(args[2]) ? args[2] : undefined;
+  const installSource = localSourcePath ? "path" : args[2].startsWith("clawhub:") ? "clawhub" : "npm";
+  const installVersion = localSourcePath
+    ? process.env.OPENCLAW_LOCAL_RESTORE_VERSION
+    : installSource === "clawhub"
+      ? process.env.OPENCLAW_CLAWHUB_RESTORE_VERSION
+      : args[2].slice(args[2].lastIndexOf("@") + 1);
+  if (
+    process.env.OPENCLAW_ROLLBACK_INSTALL_FAIL_BEFORE_MUTATION === "1" &&
+    !localSourcePath &&
+    installVersion === "9.24.0"
+  ) {
+    process.stderr.write("registry rollback unavailable\\n");
+    process.exit(26);
+  }
   const installPath = process.env.OPENCLAW_FORCE_USES_LEGACY_TARGET === "1"
     ? legacyPluginDir
     : process.env.OPENCLAW_NATIVE_DEFAULT_TARGET ||
@@ -169,11 +180,18 @@ if (args[0] === "plugins" && args[1] === "install") {
   }
   fs.mkdirSync(require("node:path").dirname(configPath), { recursive: true });
   fs.writeFileSync(configPath, JSON.stringify(config));
-  if (process.env.OPENCLAW_BREAK_CONFIG_AFTER_INSTALL === "1") {
+  if (
+    process.env.OPENCLAW_BREAK_CONFIG_AFTER_INSTALL === "1" &&
+    (!process.env.OPENCLAW_BREAK_CONFIG_VERSION || installVersion === process.env.OPENCLAW_BREAK_CONFIG_VERSION)
+  ) {
     fs.writeFileSync(configPath, "{");
   }
   fs.rmSync(installPath, { recursive: true, force: true });
-  fs.mkdirSync(installPath, { recursive: true });
+  if (localSourcePath) {
+    fs.cpSync(localSourcePath, installPath, { recursive: true });
+  } else {
+    fs.mkdirSync(installPath, { recursive: true });
+  }
   fs.writeFileSync(installPath + "/new-install-marker", "installed\\n");
   fs.writeFileSync(markerPath, installPath);
   fs.writeFileSync(
@@ -182,6 +200,7 @@ if (args[0] === "plugins" && args[1] === "install") {
       installPath,
       spec: args[2],
       source: installSource,
+      ...(localSourcePath ? { sourcePath: localSourcePath } : {}),
       ...(installSource === "clawhub"
         ? { clawhubPackage: process.env.OPENCLAW_CLAWHUB_PACKAGE }
         : {}),
@@ -200,9 +219,11 @@ if (args[0] === "plugins" && args[1] === "inspect") {
     ? JSON.parse(fs.readFileSync(process.env.OPENCLAW_MANAGED_INDEX, "utf8"))
     : undefined;
   const installPath = record?.installPath ?? "";
-  const loaded = installPath.length > 0 &&
-    fs.existsSync(installPath + "/new-install-marker") &&
-    process.env.FAIL_OPENCLAW_SMOKE !== "1";
+  const smokeFails =
+    process.env.FAIL_OPENCLAW_SMOKE === "1" &&
+    (!process.env.FAIL_OPENCLAW_SMOKE_VERSION || record?.version === process.env.FAIL_OPENCLAW_SMOKE_VERSION);
+  const loaded =
+    installPath.length > 0 && fs.existsSync(installPath + "/new-install-marker") && !smokeFails;
   const inspection = {
     plugin: { id: "openclaw-remnic", status: loaded ? "loaded" : "error", version: record?.version },
     install: record ? {
@@ -857,6 +878,7 @@ test("openclaw upgrade restores a tracked ClawHub install when replacement fails
       {
         ...fixture.env,
         FAIL_OPENCLAW_SMOKE: "1",
+        FAIL_OPENCLAW_SMOKE_VERSION: "9.50.0",
         OPENCLAW_CLAWHUB_PACKAGE: priorPackage,
         OPENCLAW_CLAWHUB_RESTORE_VERSION: "9.49.0",
       },
@@ -888,7 +910,11 @@ test("openclaw upgrade restores a tracked install when replacement fails verific
     const firstResult = runUpgrade(fixture, env);
     assert.equal(firstResult.status, 0, firstResult.stderr);
 
-    const secondResult = runUpgrade(fixture, { ...env, FAIL_OPENCLAW_SMOKE: "1" }, "9.50.0");
+    const secondResult = runUpgrade(
+      fixture,
+      { ...env, FAIL_OPENCLAW_SMOKE: "1", FAIL_OPENCLAW_SMOKE_VERSION: "9.50.0" },
+      "9.50.0"
+    );
     assert.notEqual(secondResult.status, 0);
     const index = JSON.parse(fs.readFileSync(fixture.managedIndexPath, "utf8"));
     assert.equal(index.spec, "@remnic/plugin-openclaw@9.49.0");
@@ -1055,7 +1081,7 @@ test("tracked rollback keeps a local copy when registry restore fails", () => {
   }
 });
 
-test("openclaw upgrade restores local managed files when registry rollback fails", () => {
+test("openclaw upgrade preserves coherent host state when registry rollback fails", () => {
   const fixture = createUpgradeFixture();
   fs.mkdirSync(fixture.managedInstallDir, { recursive: true });
   fs.writeFileSync(path.join(fixture.managedInstallDir, "old-managed-marker"), "present\n");
@@ -1071,11 +1097,31 @@ test("openclaw upgrade restores local managed files when registry rollback fails
   try {
     const result = runUpgrade(fixture, {
       ...fixture.env,
-      OPENCLAW_INSTALL_FAIL_AFTER_MUTATION: "1",
+      OPENCLAW_BREAK_CONFIG_AFTER_INSTALL: "1",
+      OPENCLAW_BREAK_CONFIG_VERSION: "9.49.0",
+      OPENCLAW_LOCAL_RESTORE_VERSION: "9.24.0",
+      OPENCLAW_ROLLBACK_INSTALL_FAIL_BEFORE_MUTATION: "1",
     });
 
     assert.notEqual(result.status, 0);
-    assert.equal(fs.readFileSync(path.join(fixture.managedInstallDir, "old-managed-marker"), "utf8"), "present\n");
+    assert.ok(fs.existsSync(fixture.managedIndexPath), result.stderr);
+    const index = JSON.parse(fs.readFileSync(fixture.managedIndexPath, "utf8")) as {
+      installPath?: string;
+      source?: string;
+      sourcePath?: string;
+      version?: string;
+    };
+    assert.equal(index.source, "path");
+    assert.equal(index.version, "9.24.0");
+    assert.ok(index.sourcePath);
+    assert.ok(index.installPath);
+    assert.equal(fs.readFileSync(path.join(index.installPath, "old-managed-marker"), "utf8"), "present\n");
+    assert.equal(fs.readFileSync(path.join(index.sourcePath, "old-managed-marker"), "utf8"), "present\n");
+    const config = JSON.parse(fs.readFileSync(fixture.configPath, "utf8")) as {
+      plugins?: { installs?: Record<string, { source?: string; spec?: string }> };
+    };
+    assert.equal(config.plugins?.installs?.["openclaw-remnic"]?.source, "path");
+    assert.equal(config.plugins?.installs?.["openclaw-remnic"]?.spec, index.sourcePath);
   } finally {
     fs.rmSync(fixture.root, { recursive: true, force: true });
   }

@@ -9,8 +9,10 @@ import {
 
 const cliPackageManifest = JSON.parse(
   fs.readFileSync(path.resolve(import.meta.dirname, "../package.json"), "utf8")
-) as { version: string };
-const CLI_TOOLING_PACKAGE_SPEC = `@remnic/plugin-openclaw@${cliPackageManifest.version}`;
+) as { peerDependencies?: Record<string, string> };
+const cliAdapterRange = cliPackageManifest.peerDependencies?.["@remnic/plugin-openclaw"];
+assert.ok(cliAdapterRange);
+const CLI_TOOLING_PACKAGE_SPEC = `@remnic/plugin-openclaw@${cliAdapterRange}`;
 
 const MANAGED_UPGRADE_SPECIFIER = "@remnic/" + "plugin-openclaw/managed-upgrade";
 

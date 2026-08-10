@@ -13,6 +13,7 @@ const SEMVER_CORE_SELECTOR = /^v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(
 const SEMVER_SUFFIX_SELECTOR =
   /^(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const DIST_TAG_SELECTOR = /^[A-Za-z][0-9A-Za-z._-]*$/;
+const CARET_SEMVER_RANGE_SELECTOR = /^\^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
 
 function isExactSemverSelector(selector: string): boolean {
   const core = selector.match(SEMVER_CORE_SELECTOR)?.[0];
@@ -34,20 +35,29 @@ export function buildOpenclawManagedUpgradePackageSpec(version = "latest"): stri
   return `${OPENCLAW_PLUGIN_PACKAGE}@${version}`;
 }
 
-function readCliVersion(): string {
+function readCliAdapterRange(): string {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   const manifestPath = path.resolve(moduleDir, "../package.json");
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as {
     name?: unknown;
-    version?: unknown;
+    peerDependencies?: unknown;
   };
   if (manifest.name !== "@remnic/cli") {
     throw new Error(`Invalid @remnic/cli package manifest at ${manifestPath}.`);
   }
-  if (typeof manifest.version !== "string" || !isExactSemverSelector(manifest.version)) {
-    throw new Error(`Invalid @remnic/cli package version ${JSON.stringify(manifest.version)}.`);
+  const peerDependencies =
+    manifest.peerDependencies &&
+    typeof manifest.peerDependencies === "object" &&
+    !Array.isArray(manifest.peerDependencies)
+      ? (manifest.peerDependencies as Record<string, unknown>)
+      : {};
+  const adapterRange = peerDependencies[OPENCLAW_PLUGIN_PACKAGE];
+  if (typeof adapterRange !== "string" || !CARET_SEMVER_RANGE_SELECTOR.test(adapterRange)) {
+    throw new Error(
+      `Invalid ${OPENCLAW_PLUGIN_PACKAGE} peer dependency ${JSON.stringify(adapterRange)} in ${manifestPath}.`
+    );
   }
-  return manifest.version;
+  return adapterRange;
 }
 
 function assertOpenclawManagedUpgradePackageSpec(packageSpec: string): void {
@@ -103,7 +113,7 @@ export async function loadOpenclawManagedUpgradeModule(
 
   const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-openclaw-upgrade-"));
   try {
-    const toolingPackageSpec = buildOpenclawManagedUpgradePackageSpec(readCliVersion());
+    const toolingPackageSpec = `${OPENCLAW_PLUGIN_PACKAGE}@${readCliAdapterRange()}`;
     const installArgs = [
       "install",
       "--ignore-scripts",
