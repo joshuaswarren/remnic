@@ -28,7 +28,7 @@ import type { GraphIndex } from "../graph.js";
 import type { GraphRecallExpandedEntry } from "../recall-state.js";
 import { clampGraphRecallExpandedEntries } from "../recall-state.js";
 import { scoreEvidencePathDetail, type PathNodeState } from "../graph-path-scoring.js";
-import { isValidAsOf } from "../temporal-validity.js";
+import { isValidAsOf, isValidityExpiredNow } from "../temporal-validity.js";
 import { inferMemoryStatus, toMemoryPathRel } from "../memory-lifecycle-ledger-utils.js";
 import { GraphPathStateLoader } from "./graph-path-state-loader.js";
 import { qmdCollectionPathParts } from "./qmd-result-resolver.js";
@@ -223,6 +223,14 @@ export class GraphRecallCoordinator {
     const effectiveAsOf = new Date(effectiveAsOfMs).toISOString();
     const isEligibleGraphCandidate = (memory: MemoryFile, storageDir: string): boolean => {
       if (hasHistoricalAsOf && !isValidAsOf(memory.frontmatter, effectiveAsOfMs)) {
+        return false;
+      }
+      if (
+        !hasHistoricalAsOf &&
+        config.temporalBiTemporal === true &&
+        config.temporalExpiredInInjection !== true &&
+        isValidityExpiredNow(memory.frontmatter, Date.now())
+      ) {
         return false;
       }
       const lifecyclePath = toMemoryPathRel(storageDir, memory.path);

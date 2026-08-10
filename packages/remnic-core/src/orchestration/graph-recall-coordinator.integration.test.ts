@@ -326,6 +326,81 @@ test("retains a superseded graph candidate at its historical asOf but not now", 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("fills the current-time graph cap after rejecting expired candidates", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-current-cap-"));
+  try {
+    const fixture = await createNamespace(root, "default");
+    const expired = [];
+    for (let index = 0; index < 8; index += 1) {
+      await fixture.storage.writeMemory("fact", `expired graph candidate ${index}`, {
+        source: "test",
+      });
+    }
+    const memories = (await fixture.storage.readAllMemories()).filter((memory) =>
+      memory.content.startsWith("expired graph candidate "),
+    );
+    assert.equal(memories.length, 8);
+    for (const memory of memories) {
+      const relativePath = path.relative(fixture.dir, memory.path).split(path.sep).join("/");
+      expired.push(relativePath);
+      assert.equal(
+        await fixture.storage.writeMemoryFrontmatter(memory, {
+          status: "active",
+          invalid_at: "2000-01-01T00:00:00.000Z",
+        }),
+        true,
+      );
+    }
+    const candidates = [
+      ...expired.map((candidatePath, index) => ({
+        path: candidatePath,
+        score: 1 - index / 1000,
+      })),
+      {
+        path: fixture.cleanPath,
+        score: 0.5,
+      },
+    ];
+    const fakeIndex = {
+      spreadingActivation: async () =>
+        candidates.map((candidate) => ({
+          ...candidate,
+          seed: fixture.seedPath,
+          hopDepth: 1,
+          decayedWeight: candidate.score,
+          graphType: "entity" as const,
+          edgeConfidence: 1,
+          activationPath: {
+            nodeIds: [fixture.seedPath, candidate.path],
+            edgeConfidences: [1],
+            graphTypes: ["entity"],
+          },
+        })),
+    } as unknown as GraphIndex;
+    const coordinator = makeCoordinator(
+      makeConfig({
+        temporalBiTemporal: true,
+        temporalExpiredInInjection: false,
+      }),
+      new Map([[fixture.name, fixture]]),
+      undefined,
+      new Map([[fixture.dir, fakeIndex]]),
+    );
+    const result = await coordinator.expandResultsViaGraph({
+      memoryResults: [seedResult(fixture)],
+      recallNamespaces: [fixture.name],
+      recallResultLimit: 1,
+    });
+
+    assert.deepEqual(
+      result.expandedPaths.map((entry) => entry.path),
+      [path.join(fixture.dir, fixture.cleanPath)],
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 test("excludes an archived graph candidate from historical expansion", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-historical-archived-"));
   try {

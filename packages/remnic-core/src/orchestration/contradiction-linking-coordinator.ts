@@ -401,9 +401,6 @@ export class ContradictionLinkingCoordinator {
           (memory) => memory.frontmatter.id === contradiction.supersededId,
         );
         if (!target) return "supersede_failed";
-        if (inferLocalizationMemoryStatus(target, storage.dir) === "active") {
-          return "supersede_failed";
-        }
         const losingMemory = mergedSnapshot.find(
           (memory) =>
             memory.frontmatter.id === newMemoryId &&
@@ -423,7 +420,9 @@ export class ContradictionLinkingCoordinator {
           );
           return "supersedes_clear_failed";
         }
-        return "lost_race";
+        return inferLocalizationMemoryStatus(target, storage.dir) === "active"
+          ? "supersede_failed"
+          : "lost_race";
       }
       if (oldMemory) {
         try {
