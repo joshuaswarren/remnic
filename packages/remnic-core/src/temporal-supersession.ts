@@ -26,16 +26,6 @@ export interface TemporalSupersessionStorage {
   readAllMemories(): Promise<MemoryFile[]>;
   readAllColdMemories(): Promise<MemoryFile[]>;
   readMemoryByPath(memoryPath: string): Promise<MemoryFile | null>;
-  writeMemoryFrontmatter(
-    memory: MemoryFile,
-    patch: Partial<MemoryFrontmatter>,
-    lifecycle?: {
-      actor?: string;
-      reasonCode?: string;
-      relatedMemoryIds?: string[];
-      correlationId?: string;
-    },
-  ): Promise<boolean>;
   writeMemoryFrontmatterIfUnchanged?: (
     memory: MemoryFile,
     patch: Partial<MemoryFrontmatter>,
@@ -432,7 +422,8 @@ async function ensureTemporalLifecycleEffect(args: {
   if (lifecycleEffect === undefined) return false;
   if (lifecycleEffect === true) return true;
   if (lifecycleEffect === false || args.memory.frontmatter.status !== "superseded") {
-    const wrote = await args.storage.writeMemoryFrontmatter(
+    if (!args.storage.writeMemoryFrontmatterIfUnchanged) return false;
+    const wrote = await args.storage.writeMemoryFrontmatterIfUnchanged(
       args.memory,
       {
         status: "superseded",
@@ -458,7 +449,6 @@ async function ensureTemporalLifecycleEffect(args: {
   }
   return true;
 }
-
 
 async function expireChildChunksForSupersededParent(args: {
   storage: TemporalSupersessionStorage;
@@ -671,6 +661,15 @@ export async function applyTemporalSupersession(args: {
   dependencyPropagationDelivery?: DependencyPropagationDeliveryPort;
 }): Promise<TemporalSupersessionResult> {
   const empty: TemporalSupersessionResult = { supersededIds: [], matchedKeys: [] };
+  const createdAtMs = typeof args.createdAt === "string" ? Date.parse(args.createdAt) : Number.NaN;
+  if (!Number.isFinite(createdAtMs)) {
+    log.warn(`temporal-supersession: refusing mutation with invalid createdAt: ${String(args.createdAt)}`);
+    return empty;
+  }
+  // Validate the caller's ordering anchor before any corpus scan or durable
+  // side-effect preparation.  A malformed timestamp must be a true no-op:
+  // otherwise a later monotonic clamp could manufacture a 1970 mutation and
+  // leave a prepared propagation job without a replayable temporal identity.
   if (!args.enabled) return empty;
   if (!args.entityRef) return empty;
   if (!args.structuredAttributes) return empty;

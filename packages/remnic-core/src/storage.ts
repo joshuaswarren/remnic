@@ -6896,7 +6896,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       .sort((a, b) => (a.frontmatter.chunkIndex ?? 0) - (b.frontmatter.chunkIndex ?? 0));
   }
 
-
   async supersedeMemory(
     oldMemoryId: string,
     newMemoryId: string,
@@ -6908,13 +6907,23 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       expectedSnapshot?: Pick<MemoryFile, "content" | "frontmatter"> & Partial<Pick<MemoryFile, "path">>;
     } = {},
   ): Promise<boolean> {
+    const matchesSupersession = (memory: MemoryFile): boolean =>
+      memory.frontmatter.status === "superseded" &&
+      memory.frontmatter.supersededBy === newMemoryId &&
+      (supersessionMetadata === undefined ||
+        (memory.frontmatter.supersessionCause === supersessionMetadata.supersessionCause &&
+          memory.frontmatter.invalidatedBy === supersessionMetadata.invalidatedBy));
+    const isExactReplay = (memory: MemoryFile): boolean =>
+      options.acceptExactReplay === true && matchesSupersession(memory);
     let oldMemory: MemoryFile | undefined;
     if (options.expectedSnapshot?.path) {
       const selected = await this.readMemoryByPath(options.expectedSnapshot.path);
+      if (!selected || selected.frontmatter.id !== oldMemoryId) {
+        return false;
+      }
       if (
-        !selected ||
-        selected.frontmatter.id !== oldMemoryId ||
-        invalidationCommitFingerprint(selected) !== invalidationCommitFingerprint(options.expectedSnapshot)
+        invalidationCommitFingerprint(selected) !== invalidationCommitFingerprint(options.expectedSnapshot) &&
+        !isExactReplay(selected)
       ) {
         return false;
       }
@@ -6929,7 +6938,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       if (
         oldMemory &&
         options.expectedSnapshot &&
-        invalidationCommitFingerprint(oldMemory) !== invalidationCommitFingerprint(options.expectedSnapshot)
+        invalidationCommitFingerprint(oldMemory) !== invalidationCommitFingerprint(options.expectedSnapshot) &&
+        !isExactReplay(oldMemory)
       ) {
         return false;
       }
@@ -6953,26 +6963,16 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
     const written = await this.withTombstoneBlockedMemoryPathLock(oldMemory.path, async (current) => {
         if (current?.frontmatter.id !== oldMemoryId) return false;
+        if (matchesSupersession(current)) {
+          currentBefore = current;
+          updatedFm = current.frontmatter;
+          return options.acceptExactReplay === true ? "exact-replay" : false;
+        }
         if (
           options.expectedSnapshot &&
           invalidationCommitFingerprint(current) !== invalidationCommitFingerprint(options.expectedSnapshot)
         ) {
           return false;
-        }
-        const metadataMatches =
-          supersessionMetadata === undefined ||
-          (
-            current.frontmatter.supersessionCause === supersessionMetadata.supersessionCause &&
-            current.frontmatter.invalidatedBy === supersessionMetadata.invalidatedBy
-          );
-        if (
-          current.frontmatter.status === "superseded" &&
-          current.frontmatter.supersededBy === newMemoryId &&
-          metadataMatches
-        ) {
-          currentBefore = current;
-          updatedFm = current.frontmatter;
-          return options.acceptExactReplay === true ? "exact-replay" : false;
         }
         if (
           current.frontmatter.supersededBy !== undefined ||

@@ -185,6 +185,35 @@ test("logExtractionQueueFailure names the right layer (task vs processor)", asyn
 });
 
 
+test("pauseAndDrain waits for accepted work after its observation timeout", async () => {
+  const coordinator = createCoordinator();
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const waitForIdle = coordinator.waitForIdle.bind(coordinator);
+  let waitCalls = 0;
+  let drainSettled = false;
+  coordinator.waitForIdle = async (timeoutMs?: number): Promise<boolean> => {
+    waitCalls += 1;
+    if (waitCalls === 1) return false;
+    return waitForIdle(timeoutMs);
+  };
+  coordinator.enqueue(async () => {
+    started.resolve();
+    await release.promise;
+  });
+  await started.promise;
+  const drain = coordinator.pauseAndDrain().then((result) => {
+    drainSettled = true;
+    return result;
+  });
+  await Promise.resolve();
+  assert.equal(drainSettled, false);
+  release.resolve();
+  assert.equal(await drain, true);
+  assert.equal(waitCalls, 2);
+  assert.equal(coordinator.isProcessing, false);
+});
+
 test("stopAccepting rejects new producers until resume", async () => {
   const coordinator = createCoordinator();
   coordinator.stopAccepting();

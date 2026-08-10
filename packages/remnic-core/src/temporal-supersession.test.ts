@@ -16,7 +16,7 @@ import {
   shouldSupersedeExisting,
   supersessionKeysForFact,
 } from "./temporal-supersession.js";
-import type { MemoryFile, MemoryFrontmatter } from "./types.js";
+import type { MemoryFile, MemoryFrontmatter, MemoryLifecycleEvent } from "./types.js";
 import type { TemporalSupersessionStorage } from "./temporal-supersession.js";
 import type { DependencyPropagationPreparationToken } from "./orchestration/dependency-propagation-delivery.js";
 import type { PropagationEvent } from "./orchestration/dependency-propagation.js";
@@ -325,6 +325,48 @@ test("applyTemporalSupersession: city update retires old fact, leaves unrelated 
   } finally {
     await cleanup();
   }
+});
+
+test("applyTemporalSupersession: invalid createdAt is a pre-mutation no-op", async () => {
+  let touched = false;
+  const storage = {
+    async readAllMemories(): Promise<MemoryFile[]> {
+      touched = true;
+      throw new Error("readAllMemories must not run");
+    },
+    async readAllColdMemories(): Promise<MemoryFile[]> {
+      touched = true;
+      throw new Error("readAllColdMemories must not run");
+    },
+    async readMemoryByPath(): Promise<MemoryFile | null> {
+      touched = true;
+      throw new Error("readMemoryByPath must not run");
+    },
+    async writeMemoryFrontmatter(): Promise<boolean> {
+      touched = true;
+      throw new Error("writeMemoryFrontmatter must not run");
+    },
+    async appendTombstone(): Promise<string | null> {
+      touched = true;
+      throw new Error("appendTombstone must not run");
+    },
+    async getMemoryTimeline(): Promise<MemoryLifecycleEvent[]> {
+      touched = true;
+      throw new Error("getMemoryTimeline must not run");
+    },
+  } as unknown as TemporalSupersessionStorage;
+
+  const result = await applyTemporalSupersession({
+    storage,
+    newMemoryId: "replacement",
+    entityRef: TEST_ENTITY,
+    structuredAttributes: { city: "NYC" },
+    createdAt: "not-a-timestamp",
+    enabled: true,
+  });
+
+  assert.deepEqual(result, { supersededIds: [], matchedKeys: [] });
+  assert.equal(touched, false, "invalid ordering input must not start mutation processing");
 });
 test("primary temporal replay refuses an adapter without a timeline", async () => {
   const { storage, cleanup } = await makeStorage("engram-temporal-required-timeline-");
@@ -2130,8 +2172,23 @@ test("applyTemporalSupersession: cold-only dedup replacement keeps propagation c
     assert.deepEqual(result.supersededIds, [staleId]);
     assert.equal(preparedEvents.length, 2);
     for (const preparedEvent of preparedEvents) {
+      assert.equal(preparedEvent.cause, "temporal_supersession");
+      assert.equal(preparedEvent.namespaceScope, "default");
       assert.equal(preparedEvent.replacementId, replacementId);
       assert.equal(preparedEvent.replacementContent, coldReplacement.content);
+      assert.equal(preparedEvent.oldMemory.frontmatter.id, staleId);
+      assert.equal(preparedEvent.oldMemory.content, stale!.content);
+      assert.ok(preparedEvent.temporalMutation, "temporal event must carry replay mutation data");
+      assert.deepEqual(preparedEvent.temporalMutation?.matchedKeys, [`${TEST_ENTITY}::city`]);
+      assert.ok(
+        preparedEvent.temporalMutation &&
+          Number.isFinite(Date.parse(preparedEvent.temporalMutation.supersededAt)),
+        "temporal event must carry a durable supersededAt",
+      );
+      assert.ok(
+        preparedEvent.temporalMutation?.invalidAt,
+        "temporal event must carry the invalidation bound for replay",
+      );
     }
   } finally {
     await cleanup();

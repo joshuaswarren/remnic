@@ -76,6 +76,27 @@ test("supersedeMemory uses the supplied tier path without corpus scans", async (
       ),
       true,
     );
+    // PRRT_kwDORJXyws6X3Ss5: a retry may still carry the original active
+    // snapshot after the first write committed. Exact replay must win over the
+    // snapshot fence, while a non-replay still retains semantic CAS behavior.
+    storage.readAllMemoryLifecycleEvents = async () => {
+      throw new Error("unexpected full lifecycle-ledger scan");
+    };
+    assert.equal(
+      await storage.supersedeMemory(
+        created.id,
+        "fact-replacement",
+        "dependency_propagation:contradiction",
+        { supersessionCause: "dependency", invalidatedBy: "support-source" },
+        { requireActive: true, acceptExactReplay: true, expectedSnapshot: snapshot },
+      ),
+      true,
+    );
+    // PRRT_kwDORJXyws6X3Ss9: replay detection uses the bounded per-memory
+    // timeline, not readAllMemoryLifecycleEvents().
+    const replayed = await storage.readMemoryByPath(snapshot.path);
+    assert.ok(replayed);
+    assert.equal(replayed.frontmatter.supersededBy, "fact-replacement");
     const current = await storage.readMemoryByPath(snapshot.path);
     assert.ok(current);
     assert.equal(current.frontmatter.status, "superseded");

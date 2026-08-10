@@ -740,6 +740,7 @@ export class Orchestrator {
   } = { detected: 0, queued: 0, autoApplied: 0, suppressedReasonCounts: {} };
 
   private _dependencyPropagationDelivery: DependencyPropagationDelivery | undefined;
+  private _dependencyPropagationRecovery: Promise<void> | null = null;
   private destroyed = false;
 
   private get dependencyPropagationDelivery(): DependencyPropagationDelivery {
@@ -955,29 +956,27 @@ export class Orchestrator {
    * commands should call it before returning to let Node exit naturally.
    */
   async destroy(): Promise<void> {
-    this.destroyed = true;
     this.abortDeferredInit();
     this.extractionQueueCoordinator.stopAccepting();
     if (this.wearablesAutoSyncHandle) {
-      // Aborts in-flight provider fetches and waits for the tick to
-      // settle, so nothing is writing or reindexing past destroy().
       await this.wearablesAutoSyncHandle.stop();
       this.wearablesAutoSyncHandle = null;
     }
     for (const svc of this.meetingsServiceByNamespace.values()) svc.dispose();
     await this.maintenanceScheduler.dispose();
+    await this._dependencyPropagationRecovery;
+    this._dependencyPropagationRecovery = null;
     const extractionDrainError = await drainExtractionAndShutdownDependencyPropagation(
       this.extractionQueueCoordinator,
       this._dependencyPropagationDelivery,
     );
+    this.destroyed = true;
     this._dependencyPropagationDelivery = undefined;
     await drainRecallWrites(this);
-    // Drain deferred hash-index retries before exit.
     await this.persistenceIndexCoordinator
       .drainContentHashReconcileRetries()
       .catch((err) => log.warn(`content-hash reconcile drain failed during destroy: ${err}`));
-    // Save buffered turns before flushing catalog touches. Preserve pending turns
-    // and rethrow a failed save after the remaining teardown.
+    // Save buffered turns before catalog flush; rethrow save failures after teardown.
     let bufferFlushError: unknown;
     try {
       await this.buffer.flushPendingSave({ throwOnFailure: true });
@@ -985,8 +984,7 @@ export class Orchestrator {
       bufferFlushError = err;
     }
     try {
-      // Issue #1903: flush any coalesced namespace-catalog touches before teardown
-      // so a long-lived host does not drop buffered read/write timestamps.
+      // Flush catalog touches before backend disposal.
       await this.namespaceCatalog.flushPendingTouches().catch(() => undefined);
       this.prioritizedEmbedding?.dispose();
       await this.namespaceSearchRouter.dispose();
@@ -1956,9 +1954,11 @@ export class Orchestrator {
     this.extractionQueueCoordinator.resumeAccepting();
     await this.orchestratorInitCoordinator.initialize();
     if (isDependencyPropagationEnabled(this.config)) {
-      void this.dependencyPropagationDelivery.recover().catch((err) => {
-        log.warn(`dependency propagation startup recovery failed: ${err}`);
-      });
+      this._dependencyPropagationRecovery = this.dependencyPropagationDelivery
+        .recover()
+        .catch((err) => {
+          log.warn(`dependency propagation startup recovery failed: ${err}`);
+        });
     }
   }
 

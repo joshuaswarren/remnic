@@ -235,6 +235,31 @@ test("failed proof rollback stays quarantined and fails closed", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+test("proof quarantine is instance-scoped and does not mask durable proof in another store", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-invalidation-proof-quarantine-instance-"));
+  try {
+    const writer = createDeletionRevisionStore(root);
+    const reader = createDeletionRevisionStore(root);
+    const memory = proofMemory("instance-scoped-quarantine");
+    await writer.recordCommittedInvalidation(memory);
+
+    const internal = writer as unknown as {
+      writeInvalidationCommitMetadata: (...args: unknown[]) => Promise<void>;
+    };
+    internal.writeInvalidationCommitMetadata = async () => {
+      throw new Error("synthetic proof rollback failure");
+    };
+
+    await assert.rejects(
+      writer.clearCommittedInvalidation(memory),
+      /synthetic proof rollback failure/,
+    );
+    assert.equal(await writer.hasCommittedInvalidation(memory), false);
+    assert.equal(await reader.hasCommittedInvalidation(memory), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 test("failed proof rollback quarantine stays bounded and fails closed after the cap", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-invalidation-proof-quarantine-cap-"));
   try {
@@ -254,9 +279,23 @@ test("failed proof rollback quarantine stays bounded and fails closed after the 
       internal.writeInvalidationCommitMetadata = originalWrite;
     }
 
+    const quarantinedBeforeOverflow = proofMemory("bounded-quarantine-0");
+    assert.equal(await store.hasCommittedInvalidation(quarantinedBeforeOverflow), false);
+
     const recordedAfterOverflow = proofMemory("recorded-after-quarantine-cap");
     await store.recordCommittedInvalidation(recordedAfterOverflow);
+    assert.equal(await store.hasCommittedInvalidation(recordedAfterOverflow), true);
+    internal.writeInvalidationCommitMetadata = async () => {
+      throw new Error("synthetic post-overflow rollback failure");
+    };
+    await assert.rejects(
+      store.clearCommittedInvalidation(recordedAfterOverflow),
+      /synthetic post-overflow rollback failure/,
+    );
     assert.equal(await store.hasCommittedInvalidation(recordedAfterOverflow), false);
+    internal.writeInvalidationCommitMetadata = originalWrite;
+    await store.recordCommittedInvalidation(recordedAfterOverflow);
+    assert.equal(await store.hasCommittedInvalidation(recordedAfterOverflow), true);
     assert.equal(internal.invalidationProofQuarantine.size, 1024);
   } finally {
     await rm(root, { recursive: true, force: true });

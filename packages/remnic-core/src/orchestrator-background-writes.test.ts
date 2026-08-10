@@ -95,6 +95,54 @@ test("disabled propagation does not construct the lazy delivery during initializ
   }
 });
 
+test("destroy waits for startup propagation recovery before shutdown", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-recovery-shutdown-"));
+  const orchestrator = new Orchestrator(
+    parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      dependencyPropagation: {
+        enabled: true,
+        linkTypes: ["supports"],
+        maxDependents: 10,
+        timeoutMs: 100,
+        dryRun: false,
+      },
+    }),
+  );
+  stubOrchestratorInit(orchestrator);
+  const recovery = Promise.withResolvers<void>();
+  let shutdown = false;
+  Reflect.set(orchestrator, "_dependencyPropagationDelivery", {
+    recover: () => recovery.promise,
+    shutdown: async () => {
+      shutdown = true;
+    },
+  });
+
+  let destroyPromise: Promise<void> | undefined;
+  try {
+    await orchestrator.initialize();
+    let destroySettled = false;
+    destroyPromise = orchestrator.destroy().then(() => {
+      destroySettled = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(destroySettled, false, "destroy must await startup recovery");
+    assert.equal(shutdown, false, "delivery must remain live during recovery");
+
+    recovery.resolve();
+    await destroyPromise;
+    assert.equal(shutdown, true);
+  } finally {
+    recovery.resolve();
+    await (destroyPromise ?? orchestrator.destroy());
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("enabled propagation recovery rejection does not block initialize", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-recovery-rejection-"));
   const orchestrator = new Orchestrator(
@@ -151,7 +199,11 @@ test("enabled propagation recovery tolerates a missing queue directory", async (
   const queueRoot = path.join(memoryDir, "state", "dependency-propagation");
   try {
     await orchestrator.initialize();
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    const recovery = (orchestrator as unknown as {
+      _dependencyPropagationRecovery: Promise<void> | null;
+    })._dependencyPropagationRecovery;
+    assert.ok(recovery, "enabled initialization must retain its recovery promise");
+    await recovery;
     await assert.rejects(() => stat(queueRoot), /ENOENT/);
   } finally {
     await orchestrator.destroy();
@@ -259,7 +311,7 @@ test("destroy continues cleanup when extraction drain times out", async () => {
     assert.equal(qmdDisposed, true, "later cleanup must run before the timeout is rethrown");
   } finally {
     extractionQueue.pauseAndDrain = async () => true;
-    if (!qmdDisposed) await orchestrator.destroy();
+    await orchestrator.destroy();
     await rm(memoryDir, { recursive: true, force: true });
   }
 });

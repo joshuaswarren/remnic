@@ -102,14 +102,24 @@ export class DeletionRevisionStore {
   private readonly options: DeletionRevisionStoreOptions;
   private readonly invalidationProofQuarantine = new Set<string>();
   private invalidationProofQuarantineFull = false;
+  private invalidationProofQuarantineFullAt: number | null = null;
 
   constructor(options: DeletionRevisionStoreOptions) {
     this.options = options;
   }
   private quarantineInvalidationProof(memoryId: string): void {
-    if (this.invalidationProofQuarantineFull || this.invalidationProofQuarantine.has(memoryId)) return;
+    if (this.invalidationProofQuarantineFull) {
+      const nextBoundary = Date.now() + 1;
+      this.invalidationProofQuarantineFullAt = Math.max(
+        this.invalidationProofQuarantineFullAt ?? 0,
+        nextBoundary,
+      );
+      return;
+    }
+    if (this.invalidationProofQuarantine.has(memoryId)) return;
     if (this.invalidationProofQuarantine.size >= INVALIDATION_PROOF_QUARANTINE_MAX_IDS) {
       this.invalidationProofQuarantineFull = true;
+      this.invalidationProofQuarantineFullAt = Date.now() + 1;
       return;
     }
     this.invalidationProofQuarantine.add(memoryId);
@@ -359,22 +369,27 @@ export class DeletionRevisionStore {
   }
 
   async hasCommittedInvalidation(memory: Pick<MemoryFile, "content" | "frontmatter">): Promise<boolean> {
-    if (this.invalidationProofQuarantineFull || this.invalidationProofQuarantine.has(memory.frontmatter.id)) return false;
+    const memoryId = memory.frontmatter.id;
     const fingerprint = invalidationCommitFingerprint(memory);
     return this.withDeletionRevisionLock(async () => {
-      if (this.invalidationProofQuarantineFull || this.invalidationProofQuarantine.has(memory.frontmatter.id)) return false;
-      const entry = (await this.readInvalidationCommitMetadata()).get(memory.frontmatter.id);
-      return entry?.fingerprint === fingerprint;
+      const entry = (await this.readInvalidationCommitMetadata()).get(memoryId);
+      if (entry?.fingerprint !== fingerprint) return false;
+      if (this.invalidationProofQuarantine.has(memoryId)) return false;
+      if (!this.invalidationProofQuarantineFull) return true;
+      const fullAt = this.invalidationProofQuarantineFullAt;
+      return fullAt !== null && entry.committedAt >= fullAt;
     });
   }
 
   async recordCommittedInvalidation(memory: MemoryFile): Promise<void> {
     const fingerprint = invalidationCommitFingerprint(memory);
     await this.withDeletionRevisionLock(async (lock) => {
+      const fullAt = this.invalidationProofQuarantineFullAt;
+      const committedAt = fullAt === null ? Date.now() : Math.max(Date.now(), fullAt + 1);
       const commits = await this.readInvalidationCommitMetadata();
       commits.set(memory.frontmatter.id, {
         fingerprint,
-        committedAt: Date.now(),
+        committedAt,
       });
       await this.writeInvalidationCommitMetadata(commits, lock);
       this.invalidationProofQuarantine.delete(memory.frontmatter.id);

@@ -82,7 +82,10 @@ export class ExtractionQueueCoordinator {
   /** Stop new producers and wait for all accepted work to finish. */
   async pauseAndDrain(timeoutMs: number = 60_000): Promise<boolean> {
     this.stopAccepting();
-    return this.waitForIdle(timeoutMs);
+    if (await this.waitForIdle(timeoutMs)) return true;
+    log.warn("extraction queue drain exceeded timeout; waiting for accepted work to settle");
+    await this.waitForIdle(Number.POSITIVE_INFINITY);
+    return true;
   }
 
   /**

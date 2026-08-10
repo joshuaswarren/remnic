@@ -24,6 +24,11 @@ type PropagationEvent = {
     | "consolidation_invalidate"
     | "consolidation_merge";
   namespaceScope: string;
+  temporalMutation?: {
+    supersededAt: string;
+    invalidAt?: string;
+    matchedKeys: string[];
+  };
 };
 
 type Verdict = {
@@ -752,14 +757,42 @@ test("merge recovery rejects a survivor edit made after preparation", async () =
     const fixtureValue = fixture([old, replacement]);
     let updateCalls = 0;
     const storage = fixtureValue.storage as unknown as {
-      updateMemoryIfUnchanged: () => Promise<boolean>;
-      invalidateMemory: () => Promise<boolean>;
+      updateMemoryIfUnchanged: (
+        expected: MemoryFile,
+        newContent: string,
+        options?: {
+          supersedes?: string;
+          lineage?: string[];
+          actor?: string;
+          sourceConnector?: string;
+        },
+      ) => Promise<boolean>;
+      invalidateMemory: (
+        id: string,
+        expectedSnapshot?: Pick<MemoryFile, "content" | "frontmatter"> &
+          Partial<Pick<MemoryFile, "path">>,
+        options?: { recordCommitProof?: boolean },
+      ) => Promise<boolean>;
     };
-    storage.updateMemoryIfUnchanged = async () => {
+    storage.updateMemoryIfUnchanged = async (
+      _expected: MemoryFile,
+      _newContent: string,
+      _options?: {
+        supersedes?: string;
+        lineage?: string[];
+        actor?: string;
+        sourceConnector?: string;
+      },
+    ) => {
       updateCalls += 1;
       return true;
     };
-    storage.invalidateMemory = async () => true;
+    storage.invalidateMemory = async (
+      _id: string,
+      _expectedSnapshot?: Pick<MemoryFile, "content" | "frontmatter"> &
+        Partial<Pick<MemoryFile, "path">>,
+      _options?: { recordCommitProof?: boolean },
+    ) => true;
     const delivery = new DependencyPropagationDelivery(deliveryOptions(queueRoot, fixtureValue).options);
     const token = await delivery.prepare(event(old, {
       cause: "consolidation_merge",
@@ -777,6 +810,129 @@ test("merge recovery rejects a survivor edit made after preparation", async () =
     assert.equal(old.frontmatter.status ?? "active", "active");
   });
 });
+test("temporal recovery replays unfinished child and tombstone effects after parent commit", async () => {
+  await withTempQueue(async (queueRoot) => {
+    const old = memory("old");
+    const child = memory("old-child");
+    child.frontmatter.parentId = old.frontmatter.id;
+    const replacement = memory("replacement");
+    const fixtureValue = fixture([old, child, replacement]);
+    const mutation = {
+      supersededAt: "2026-08-09T01:00:00.000Z",
+      matchedKeys: ["project-x::city"],
+    };
+    const propagationEvent = event(old, {
+      cause: "temporal_supersession",
+      replacementContent: replacement.content,
+      temporalMutation: mutation,
+    });
+    old.frontmatter.status = "superseded";
+    old.frontmatter.supersededBy = replacement.frontmatter.id;
+    old.frontmatter.supersededAt = mutation.supersededAt;
+    const lifecycleWrites: string[] = [];
+    const tombstoneKeys: string[] = [];
+    const storage = {
+      ...fixtureValue.storage,
+      async readAllColdMemories(): Promise<MemoryFile[]> {
+        return [];
+      },
+      async readMemoryByPath(memoryPath: string): Promise<MemoryFile | null> {
+        return [...fixtureValue.memories.values()].find((item) => item.path === memoryPath) ?? null;
+      },
+      async getMemoryTimeline(): Promise<never[]> {
+        return [];
+      },
+      async writeMemoryFrontmatterIfUnchanged(
+        current: MemoryFile,
+        patch: Partial<MemoryFile["frontmatter"]>,
+      ): Promise<boolean> {
+        lifecycleWrites.push(current.frontmatter.id);
+        Object.assign(current.frontmatter, patch);
+        return true;
+      },
+      async writeMemoryFrontmatter(): Promise<boolean> {
+        throw new Error("temporal repair must use snapshot CAS");
+      },
+      async appendTombstone(input: { supersessionKey?: string }): Promise<string> {
+        tombstoneKeys.push(input.supersessionKey ?? "content");
+        return `tombstone-${tombstoneKeys.length}`;
+      },
+      async hasExactTombstone(): Promise<boolean> {
+        return false;
+      },
+    } as unknown as StorageManager;
+    const delivery = new DependencyPropagationDelivery(
+      deliveryOptions(queueRoot, fixtureValue, {
+        getStorage: async () => storage,
+      }).options,
+    );
+    const token = await delivery.prepare(propagationEvent);
+    assert.ok(token);
+
+    await delivery.recover();
+
+    assert.equal(jobById(await delivery.listJobs(), token).status, "ready");
+    assert.equal(child.frontmatter.status, "superseded");
+    assert.deepEqual(lifecycleWrites, ["old", "old-child"]);
+    assert.deepEqual(tombstoneKeys, ["project-x::city"]);
+  });
+});
+test("temporal recovery retains a stale event when a newer mutation won", async () => {
+  await withTempQueue(async (queueRoot) => {
+    const old = memory("old");
+    const replacement = memory("replacement");
+    const fixtureValue = fixture([old, replacement]);
+    const propagationEvent = event(old, {
+      cause: "temporal_supersession",
+      replacementContent: replacement.content,
+      temporalMutation: {
+        supersededAt: "2026-08-09T01:00:00.000Z",
+        matchedKeys: ["project-x::city"],
+      },
+    });
+    const storage = {
+      ...fixtureValue.storage,
+      async readAllColdMemories(): Promise<MemoryFile[]> {
+        return [];
+      },
+      async readMemoryByPath(memoryPath: string): Promise<MemoryFile | null> {
+        return [...fixtureValue.memories.values()].find((item) => item.path === memoryPath) ?? null;
+      },
+      async getMemoryTimeline(): Promise<never[]> {
+        return [];
+      },
+      async writeMemoryFrontmatterIfUnchanged(
+        current: MemoryFile,
+        patch: Partial<MemoryFile["frontmatter"]>,
+      ): Promise<boolean> {
+        Object.assign(current.frontmatter, patch);
+        return true;
+      },
+      async appendTombstone(): Promise<string> {
+        return "tombstone-stale";
+      },
+      async hasExactTombstone(): Promise<boolean> {
+        return false;
+      },
+    } as unknown as StorageManager;
+    const delivery = new DependencyPropagationDelivery(
+      deliveryOptions(queueRoot, fixtureValue, {
+        getStorage: async () => storage,
+      }).options,
+    );
+    const token = await delivery.prepare(propagationEvent);
+    assert.ok(token);
+    Object.assign(old.frontmatter, {
+      status: "superseded",
+      supersededBy: replacement.frontmatter.id,
+      supersededAt: "2026-08-09T02:00:00.000Z",
+    });
+    await delivery.recover();
+    assert.equal(jobById(await delivery.listJobs(), token).status, "prepared");
+    assert.equal(old.frontmatter.supersededAt, "2026-08-09T02:00:00.000Z");
+  });
+});
+
 
 
 test("recovery retains a prepared invalidation when a missing source cannot prove commit", async () => {

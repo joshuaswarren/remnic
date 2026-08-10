@@ -769,15 +769,21 @@ export class DependencyPropagationDelivery {
 
     if (event.cause === "temporal_supersession") {
       if (!event.replacementId || !event.temporalMutation || !source) return false;
-      if (primaryApplied) return true;
-      const replacement = await this.findRecoverySource(storage, event.replacementId);
-      if (
-        event.replacementContent === null ||
-        !replacement ||
-        replacement.frontmatter.id !== event.replacementId ||
-        replacement.content !== event.replacementContent
-      ) return false;
-      if (!matchesPreparedSource(source, event.oldMemory)) return false;
+      const temporalPrimaryApplied =
+        primaryApplied &&
+        source.frontmatter.supersededAt === event.temporalMutation.supersededAt &&
+        (event.temporalMutation.invalidAt === undefined ||
+          source.frontmatter.invalid_at === event.temporalMutation.invalidAt);
+      if (!temporalPrimaryApplied) {
+        const replacement = await this.findRecoverySource(storage, event.replacementId);
+        if (
+          event.replacementContent === null ||
+          !replacement ||
+          replacement.frontmatter.id !== event.replacementId ||
+          replacement.content !== event.replacementContent
+        ) return false;
+        if (!matchesPreparedSource(source, event.oldMemory)) return false;
+      }
       return await applyTemporalSupersessionPrimaryMutation({
         storage: sourceStorage as unknown as TemporalSupersessionStorage,
         oldMemory: source,
