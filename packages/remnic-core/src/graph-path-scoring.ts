@@ -22,10 +22,11 @@ function isInvalidIntermediate(state: PathNodeState | undefined, asOfMs: number)
   if (!state || state.status === null) return false;
   if (!isValidAsOf({ ...state, status: state.status }, asOfMs)) return true;
 
-  const hasTemporalEnd =
-    (state.invalid_at?.trim().length ?? 0) > 0 ||
-    (state.status === "superseded" && (state.supersededAt?.trim().length ?? 0) > 0);
-  return state.status !== "active" && !hasTemporalEnd;
+  const hasSupersessionEnd =
+    state.status === "superseded" &&
+    ((state.invalid_at?.trim().length ?? 0) > 0 ||
+      (state.supersededAt?.trim().length ?? 0) > 0);
+  return state.status !== "active" && !hasSupersessionEnd;
 }
 
 export interface PathScoreDetail {

@@ -349,15 +349,24 @@ export class ContradictionLinkingCoordinator {
     // Capture links before the primary supersession. The propagation hook is
     // orchestration-owned, so its own supersessions cannot recurse.
     let oldMemory: MemoryFile | null = null;
-    try {
-      oldMemory = await storage.getMemoryById(contradiction.supersededId);
-      if (!oldMemory) {
-        oldMemory = (await storage.readAllColdMemories()).find(
+    if (coerceBool(config.dependencyPropagation?.enabled) === true) {
+      try {
+        const [hot, cold] = await Promise.all([
+          typeof storage.readAllMemories === "function"
+            ? storage.readAllMemories()
+            : storage.getMemoryById(contradiction.supersededId).then((memory) =>
+                memory ? [memory] : [],
+              ),
+          typeof storage.readAllColdMemories === "function"
+            ? storage.readAllColdMemories()
+            : Promise.resolve([]),
+        ]);
+        oldMemory = mergeMemorySnapshots(hot, cold, storage.dir).find(
           (memory) => memory.frontmatter.id === contradiction.supersededId,
         ) ?? null;
+      } catch (err) {
+        log.warn(`contradiction propagation snapshot failed for ${contradiction.supersededId}: ${err}`);
       }
-    } catch (err) {
-      log.warn(`contradiction propagation snapshot failed for ${contradiction.supersededId}: ${err}`);
     }
     try {
       const superseded = await storage.supersedeMemory(

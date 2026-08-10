@@ -783,6 +783,128 @@ test("preserves an active cold anchor when a supersede race sees an inactive hot
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+test("propagation snapshots the canonical active cold contradiction target", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-contradiction-propagation-cold-"));
+  try {
+    const config = baseConfig(memoryDir, {
+      contradictionAutoResolve: true,
+      dependencyPropagation: {
+        enabled: true,
+        linkTypes: ["supports"],
+        maxDependents: 10,
+        timeoutMs: 50,
+        dryRun: false,
+      },
+    });
+    const activeCold = {
+      path: path.join(memoryDir, "cold", "old.md"),
+      content: "canonical cold contradiction",
+      frontmatter: {
+        id: "old",
+        category: "fact",
+        created: "2026-08-01T00:00:00.000Z",
+        updated: "2026-08-01T00:00:00.000Z",
+        source: "test",
+        confidence: 0.9,
+        confidenceTier: "explicit",
+        tags: [],
+        status: "active",
+        links: [{ targetId: "dependent", linkType: "supports", strength: 0.9 }],
+      },
+    } as unknown as MemoryFile;
+    const inactiveHot = {
+      ...activeCold,
+      path: path.join(memoryDir, "old.md"),
+      content: "inactive hot duplicate",
+      frontmatter: {
+        ...activeCold.frontmatter,
+        status: "superseded",
+        supersededBy: "previous",
+        links: [],
+      },
+    } as unknown as MemoryFile;
+    const replacement = {
+      ...activeCold,
+      path: path.join(memoryDir, "new.md"),
+      content: "replacement contradiction",
+      frontmatter: {
+        ...activeCold.frontmatter,
+        id: "new",
+        links: [],
+      },
+    } as unknown as MemoryFile;
+    const dependent = {
+      ...activeCold,
+      path: path.join(memoryDir, "dependent.md"),
+      content: "dependent claim",
+      frontmatter: {
+        ...activeCold.frontmatter,
+        id: "dependent",
+        links: [],
+      },
+    } as unknown as MemoryFile;
+    let revalidationInput: {
+      superseded: { id: string; content: string };
+      dependents: Array<{ id: string; content: string }>;
+    } | null = null;
+    const storage = {
+      dir: memoryDir,
+      getMemoryById: async (id: string) =>
+        id === "old" ? inactiveHot : id === "new" ? replacement : id === "dependent" ? dependent : null,
+      readAllMemories: async () => [inactiveHot, replacement, dependent],
+      readAllColdMemories: async () => [activeCold],
+      supersedeMemory: async () => true,
+    } as unknown as StorageManager;
+    const extraction = {
+      revalidateDependents: async (
+        superseded: { id: string; content: string },
+        _replacement: { id: string; content: string } | null,
+        dependents: Array<{ id: string; content: string }>,
+      ) => {
+        revalidationInput = {
+          superseded,
+          dependents: dependents.map(({ id, content }) => ({ id, content })),
+        };
+        return {
+          verdicts: dependents.map((item) => ({
+            memoryId: item.id,
+            verdict: "still_valid" as const,
+          })),
+        };
+      },
+    } as unknown as ExtractionEngine;
+    const coordinator = new ContradictionLinkingCoordinator({
+      getConfig: () => config,
+      isSearchAvailable: () => false,
+      searchAcrossNamespaces: async () => [],
+      extractMemoryIdsFromResults: () => [],
+      namespaceFromPath: () => "default",
+      storageForNamespace: async () => storage,
+      getExtraction: () => extraction,
+    });
+
+    const outcome = await coordinator.applyDeferredContradictionResolve(
+      {
+        supersededId: "old",
+        reason: "city changed",
+        supersededPath: activeCold.path,
+        supersededCreated: activeCold.frontmatter.created,
+        supersededTags: [],
+      },
+      storage,
+      "new",
+      false,
+    );
+
+    assert.equal(outcome, "resolved");
+    assert.deepEqual(revalidationInput, {
+      superseded: { id: "old", content: "canonical cold contradiction" },
+      dependents: [{ id: "dependent", content: "dependent claim" }],
+    });
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
 test("preserves the anchor when the supersede race target is missing", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-contradiction-missing-race-"));
   try {

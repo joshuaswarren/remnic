@@ -109,6 +109,18 @@ test("treats a future invalidAt as valid", () => {
     1,
   );
 });
+test("penalizes inactive intermediate nodes with a future invalidAt", () => {
+  for (const status of ["rejected", "quarantined", "pending_review", "archived", "forgotten"] as const) {
+    const states = new Map([
+      [status, state(status, status, "2026-01-02T00:00:00.000Z")],
+    ]);
+    assert.equal(
+      score(activationPath(["seed", status, "candidate"], [1, 1]), states),
+      0.2,
+      `${status} intermediate node must remain invalid before invalidAt`,
+    );
+  }
+});
 
 test("keeps penalty one as a no-op", () => {
   const states = new Map([["mid", state("mid", "rejected")]]);
