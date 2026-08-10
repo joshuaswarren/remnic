@@ -16,10 +16,12 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
+import { httpProtocolForHost } from "../../packages/remnic-core/src/runtime/http-transport.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "../..");
 const CONNECTORS_SRC = path.join(ROOT, "packages/remnic-core/src/connectors/index.ts");
+const DAEMON_HEALTH_SRC = path.join(ROOT, "packages/remnic-core/src/runtime/daemon-health.ts");
 const TOKENS_SRC = path.join(ROOT, "packages/remnic-core/src/tokens.ts");
 
 // ── Source-level checks (no tsx import needed) ────────────────────────────
@@ -71,9 +73,22 @@ test("installConnector performs daemon health check for hermes", () => {
     "installConnector must call checkDaemonHealth",
   );
   assert.ok(
-    content.includes("/engram/v1/health"),
+    fs.readFileSync(DAEMON_HEALTH_SRC, "utf-8").includes("/engram/v1/health"),
     "health check must target /engram/v1/health",
   );
+});
+
+test("HTTP transport selection covers loopback forms and remote defaults", () => {
+  for (const host of [
+    "localhost", "service.localhost", "LOCALHOST.", "127.0.0.1", "127.0.0.1.",
+    "::1", "[::1]", "[::1].", "0:0:0:0:0:0:0:1", "::ffff:127.0.0.1", "::ffff:7f00:1",
+  ]) {
+    assert.equal(httpProtocolForHost(host), "http", host);
+  }
+  for (const host of ["memory.example.com", "192.0.2.10", "::ffff:c000:201", "127.999.0.1"]) {
+    assert.equal(httpProtocolForHost(host), "https", host);
+  }
+  assert.equal(httpProtocolForHost("memory.example.com", true), "http");
 });
 
 test("upsertHermesConfig is exported", () => {
@@ -200,6 +215,7 @@ test("upsertHermesConfig supports Hermes default root config.yaml layout", async
           host: "127.0.0.1",
           port: 4318,
           token: "remnic_hm_SYNTHETICROOTCONFIG",
+          allowInsecureHttp: true,
         });
 
         assert.equal(result.updated, true, "root config update must report updated");
@@ -210,6 +226,7 @@ test("upsertHermesConfig supports Hermes default root config.yaml layout", async
         assert.ok(written.includes("model:"), "existing root Hermes config must be preserved");
         assert.ok(written.includes("remnic:"), "root config must receive remnic block");
         assert.ok(written.includes("remnic_hm_SYNTHETICROOTCONFIG"), "root config must receive token");
+        assert.ok(written.includes("allow_insecure_http: true"), "root config must receive HTTP opt-in");
         assert.ok(
           !fs.existsSync(path.join(hermesDir, "profiles", "default", "config.yaml")),
           "default profile config must not be created when Hermes uses root config",
@@ -461,7 +478,7 @@ test("installConnector hermes succeeds against default root config.yaml layout",
 
         const install = mod.installConnector({
           connectorId: "hermes",
-          config: { host: "127.0.0.1", port: 4318 },
+          config: { host: "memory.example.com", port: 4318, allow_insecure_http: true },
         });
 
         assert.equal(install.status, "installed", install.message);
@@ -471,6 +488,7 @@ test("installConnector hermes succeeds against default root config.yaml layout",
         assert.ok(written.includes("memory:"), "existing Hermes root config must be preserved");
         assert.ok(written.includes("remnic:"), "install must write remnic block to root config");
         assert.ok(written.includes("remnic_hm_"), "install must write generated Hermes token to root config");
+        assert.ok(written.includes("allow_insecure_http: true"), "install must write remote HTTP opt-in");
         assert.ok(
           !fs.existsSync(path.join(hermesDir, "profiles", "default", "config.yaml")),
           "install must not require or create ~/.hermes/profiles/default/config.yaml",
@@ -958,28 +976,28 @@ test("checkDaemonHealth forwards the bearer token to the health probe", () => {
   // the connector just generated (or was configured with). Without it the
   // probe always returns 401 and reports the daemon as unreachable.
   const content = fs.readFileSync(CONNECTORS_SRC, "utf-8");
+  const healthContent = fs.readFileSync(DAEMON_HEALTH_SRC, "utf-8");
   assert.ok(
-    content.includes("authToken?: string"),
+    healthContent.includes("authToken?: string"),
     "checkDaemonHealth must accept an optional auth token",
   );
   assert.ok(
-    content.includes("REMNIC_HEALTH_TOKEN"),
+    healthContent.includes("REMNIC_HEALTH_TOKEN"),
     "checkDaemonHealth must expose the token via env var (not script interpolation)",
   );
   assert.ok(
-    content.includes("'authorization'") || content.includes('"authorization"'),
+    healthContent.includes("'authorization'") || healthContent.includes('"authorization"'),
     "health probe script must set an Authorization header",
   );
   assert.ok(
-    content.includes("'Bearer '") || content.includes('"Bearer "'),
+    healthContent.includes("'Bearer '") || healthContent.includes('"Bearer "'),
     "health probe script must use a Bearer scheme",
   );
   // installConnector must actually pass the generated token in.
   // In the new atomic flow, the call uses tokenEntry.token directly (no intermediate
   // healthToken variable — the variable was removed in the atomic refactor).
   assert.ok(
-    /checkDaemonHealth\(hermesHost, hermesPort, tokenEntry\.token\)/.test(content) ||
-    /checkDaemonHealth\(hermesHost, hermesPort, healthToken\)/.test(content),
+    /checkDaemonHealth\(\s*hermesHost,\s*hermesPort,\s*tokenEntry\.token,/.test(content),
     "installConnector must pass the connector token to checkDaemonHealth",
   );
 });
@@ -1286,7 +1304,7 @@ test("upsertHermesConfig in-place update: file ending with \\n gets exactly one 
 test("checkDaemonHealth: source uses exit code 2 for 401 to distinguish from other errors", () => {
   // Source-level check: the probe script must exit with a distinct code for 401
   // so checkDaemonHealth can detect a token-cache miss and retry vs. a real failure.
-  const content = fs.readFileSync(CONNECTORS_SRC, "utf-8");
+  const content = fs.readFileSync(DAEMON_HEALTH_SRC, "utf-8");
   // The script must differentiate 401 (exit 2) from other non-200 statuses (exit 1).
   assert.ok(
     content.includes("res.statusCode === 401 ? 2 : 1"),
@@ -1306,7 +1324,7 @@ test("checkDaemonHealth: source uses exit code 2 for 401 to distinguish from oth
 
 test("checkDaemonHealth: retries exactly once on 401 (source structure check)", () => {
   // Verify the retry-once structure exists in the source without running a live server.
-  const content = fs.readFileSync(CONNECTORS_SRC, "utf-8");
+  const content = fs.readFileSync(DAEMON_HEALTH_SRC, "utf-8");
   // There must be a single retry call after the 401 branch.
   const retryIdx = content.indexOf("const retry = launchProcessSync");
   assert.ok(retryIdx >= 0, "checkDaemonHealth must perform exactly one retry");
@@ -1688,7 +1706,7 @@ test("installConnector aborts before health probe when token generation fails (a
 
   // checkDaemonHealth must appear AFTER the committed guard (not before it).
   const committedGuardIdx = content.indexOf("committed && tokenEntry");
-  const probeIdx = content.indexOf("checkDaemonHealth(hermesHost");
+  const probeIdx = content.indexOf("checkDaemonHealth(", committedGuardIdx);
   assert.ok(
     committedGuardIdx >= 0 && probeIdx > committedGuardIdx,
     "checkDaemonHealth must appear after the committed && tokenEntry gate in source order",
@@ -1830,7 +1848,7 @@ test("checkDaemonHealth: strips brackets from IPv6 host before probing (source-l
   // but Node's http.get({ host }) requires the bare literal "::1". We verify
   // the strip logic is present in the source so that valid IPv6 daemons don't
   // get false-negative "Daemon not reachable" reports.
-  const content = fs.readFileSync(CONNECTORS_SRC, "utf-8");
+  const content = fs.readFileSync(DAEMON_HEALTH_SRC, "utf-8");
 
   // The bracket-stripping logic must be present.
   assert.ok(

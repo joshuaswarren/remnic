@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "remnic-hermes"
-version = "1.0.6"
+version = "1.0.7"
 description = "Remnic MemoryProvider plugin for Hermes Agent"
 readme = "README.md"
 license = "MIT"

@@ -1,10 +1,11 @@
 import OpenAI from "openai";
+import { isAbortError } from "./abort-error.js";
 import { log } from "./logger.js";
 import { delinearize } from "./delinearize.js";
 import { LocalLlmClient } from "./local-llm.js";
 import { shouldRunProactivePass } from "./proactive-contention.js";
 import { FallbackLlmClient, fallbackLlmRuntimeContextFromConfig, gatewayTaskChainOptions } from "./fallback-llm.js";
-import { revalidateDependentsViaLlm } from "./orchestration/dependency-revalidation.js";
+import { revalidateDependentsViaLlm, type RevalidationFastChatCompletion } from "./orchestration/dependency-revalidation.js";
 import {
   ExtractionResultSchema,
   ConsolidationResultSchema,
@@ -79,7 +80,6 @@ const CONSOLIDATION_RESPONSE_SCHEMA = `{
   "entityUpdates": [{"name": "person-jane-doe", "type": "person", "facts": ["Now leads the backend team", "Recently migrated the user service to TypeScript"]}]
 }`;
 
-
 function extractionEntityType(value: unknown): ExtractedEntityResult["type"] | undefined {
   const type = extractionText(value);
   if (
@@ -152,6 +152,7 @@ export class ExtractionEngine {
     localLlm?: LocalLlmClient,
     gatewayConfig?: GatewayConfig,
     modelRegistry?: ModelRegistry,
+    private readonly fastChatCompletion?: RevalidationFastChatCompletion,
   ) {
     this.profiler = profilerArg ?? new ProfilingCollector({ enabled: false, storageDir: "/tmp/engram-profiler-disabled", maxTraces: 0 });
     if (config.openaiApiKey) {
@@ -186,26 +187,14 @@ export class ExtractionEngine {
     }
   }
 
-  /**
-   * Whether LLM calls should be routed through the gateway model chain
-   * instead of the plugin's own local/OpenAI clients.
-   */
   private get useGatewayModelSource(): boolean {
     return this.config.modelSource === "gateway";
   }
 
-  /**
-   * Whether the local LLM path should be attempted.
-   * Disabled when gateway model source is active (gateway chain replaces local).
-   */
   private get shouldUseLocalLlm(): boolean {
     return resolveLocalLlmCapabilities(this.config).localLlm && !this.useGatewayModelSource;
   }
 
-  /**
-   * Whether the direct OpenAI client should be used.
-   * Disabled when gateway model source is active.
-   */
   private get shouldUseDirectClient(): boolean {
     return !this.useGatewayModelSource && this.client !== null;
   }
@@ -2453,29 +2442,55 @@ Respond with valid JSON matching this schema:
       reason?: string;
     }>;
   }> {
+    const complete: RevalidationFastChatCompletion = async (messages, options) => {
+      try {
+        const fast = await this.fastChatCompletion?.(messages, options);
+        if (fast) return fast;
+      } catch (error) {
+        if (isAbortError(error) || options.signal?.aborted) throw error;
+        log.warn(`dependency revalidation fast route failed: ${error}`);
+      }
+      if (this.shouldUseLocalLlm) {
+        try {
+          const local = await this.localLlm.chatCompletion(messages, options);
+          if (local || !this.config.localLlmFallback) return local;
+        } catch (error) {
+          if (!this.config.localLlmFallback) throw error;
+        }
+      }
+      if (!this.shouldUseDirectClient) {
+        return this.fallbackLlm.chatCompletion(messages, this.withGatewayAgent(options));
+      }
+      const client = this.client;
+      if (!client) return null;
+      if (!shouldAssumeOpenAiChatCompletions(client.baseURL ?? this.config.openaiBaseUrl)) {
+        const response = await client.chat.completions.create(
+          {
+            model: this.config.model,
+            messages,
+            max_tokens: options.maxTokens,
+          },
+          { signal: options.signal },
+        );
+        const content = response.choices[0]?.message?.content;
+        return typeof content === "string" ? { content } : null;
+      }
+      const response = await client.responses.create({
+        model: this.config.model,
+        instructions: messages.find((message) => message.role === "system")?.content,
+        input: messages.filter((message) => message.role !== "system").map((message) => message.content).join("\n\n"),
+        max_output_tokens: options.maxTokens,
+      }, { signal: options.signal });
+      return typeof response.output_text === "string" ? { content: response.output_text } : null;
+    };
     return revalidateDependentsViaLlm(
-      {
-        shouldUseLocalLlm: this.shouldUseLocalLlm,
-        shouldUseDirectClient: this.shouldUseDirectClient,
-        localLlm: this.localLlm,
-        fallbackLlm: this.fallbackLlm,
-        client: this.client,
-        config: this.config,
-        withGatewayAgent: this.withGatewayAgent.bind(this),
-        parseJsonObject: this.parseJsonObject,
-      },
+      { fastChatCompletion: complete, parseJsonObject: this.parseJsonObject },
       superseded,
       replacement,
       dependents,
-      signal,
+      { signal, timeoutMs: this.config.dependencyPropagation.timeoutMs },
     );
   }
-
-
-  /**
-   * Suggest links between a new memory and existing memories (Phase 3A).
-   * Called during extraction to build the knowledge graph.
-   */
   async suggestLinks(
     newMemory: { content: string; category: string },
     candidateMemories: Array<{ id: string; content: string; category: string }>,

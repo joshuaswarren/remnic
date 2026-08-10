@@ -24,6 +24,7 @@ import { SmartBuffer } from "./buffer.js";
 import { chunkContent, type ChunkingConfig } from "./chunking.js";
 import { semanticChunkContent, type SemanticChunkResult } from "./semantic-chunking.js";
 import { ExtractionEngine } from "./extraction.js";
+import type { RevalidationFastChatCompletion } from "./orchestration/dependency-revalidation.js";
 import { detectPassiveCorrections } from "./correction/passive-correction-detector.js";
 import { capturePassiveCorrections, type PassiveCaptureConfig } from "./correction/passive-capture.js";
 import { createCorrectionService } from "./correction/correction-access-wiring.js";
@@ -1684,6 +1685,7 @@ export class Orchestrator {
       this.localLlm,
       config.gatewayConfig,
       this.modelRegistry,
+      this.fastChatCompletion.bind(this),
     );
     this.lifecyclePolicyCoordinator = new LifecyclePolicyCoordinator({
       config,
@@ -1881,21 +1883,17 @@ export class Orchestrator {
     );
   }
 
-  /**
-   * Execute a fast-tier LLM chat completion.
-   * When gateway model source is active and fastGatewayAgentId is configured,
-   * routes through the gateway chain. Otherwise uses the local fast LLM.
-   */
+  /** Execute a fast-tier completion through the gateway when configured, otherwise the local fast LLM. */
   private async fastChatCompletion(
     messages: Array<{ role: string; content: string }>,
-    options: { temperature?: number; maxTokens?: number; timeoutMs?: number; operation?: string; priority?: "background" | "recall-critical" },
+    options: Parameters<RevalidationFastChatCompletion>[1],
   ): Promise<{ content: string } | null> {
     if (this._fastGatewayLlm && this.config.modelSource === "gateway") {
       const agentId =
         this.config.fastGatewayAgentId || this.config.gatewayAgentId || undefined;
       const result = await this._fastGatewayLlm.chatCompletion(
         messages as Array<{ role: "system" | "user" | "assistant"; content: string }>,
-        { temperature: options.temperature, maxTokens: options.maxTokens, timeoutMs: options.timeoutMs, agentId },
+        { ...options, agentId },
       );
       return result ? { content: result.content } : null;
     }

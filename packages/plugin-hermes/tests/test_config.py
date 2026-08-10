@@ -52,6 +52,36 @@ def test_from_hermes_config_resolves_client_id_and_namespace_alias():
     assert session.session_key == "session-1"
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (True, True),
+        (False, False),
+        ("true", True),
+        ("1", True),
+        ("yes", True),
+        ("on", True),
+        ("false", False),
+        ("0", False),
+        ("no", False),
+        ("off", False),
+    ],
+)
+def test_from_hermes_config_parses_allow_insecure_http(value, expected):
+    config = RemnicHermesConfig.from_hermes_config(
+        {"remnic": {"allow_insecure_http": value}}
+    )
+    assert config.allow_insecure_http is expected
+
+
+@pytest.mark.parametrize("value", [None, 2, "sometimes"])
+def test_from_hermes_config_rejects_invalid_allow_insecure_http(value):
+    with pytest.raises(ValueError, match="allow_insecure_http"):
+        RemnicHermesConfig.from_hermes_config(
+            {"remnic": {"allow_insecure_http": value}}
+        )
+
+
 @pytest.mark.parametrize("field", ["client_id", "namespace"])
 def test_from_hermes_config_rejects_non_string_client_identifiers(field):
     with pytest.raises(TypeError, match=field):

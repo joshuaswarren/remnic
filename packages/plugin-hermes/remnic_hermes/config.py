@@ -19,6 +19,7 @@ class RemnicHermesConfig:
     timeout: float = 30.0
     prefetch_wait_timeout: float = 2.0
     client_id: str = ""
+    allow_insecure_http: bool = False
 
     @classmethod
     def from_hermes_config(cls, config: dict[str, object]) -> RemnicHermesConfig:
@@ -48,6 +49,10 @@ class RemnicHermesConfig:
         if not isinstance(namespace_value, str):
             raise TypeError(f"remnic namespace must be a string, got {namespace_value!r}")
         client_id = client_id_value.strip() or namespace_value.strip()
+        allow_insecure_http = _parse_bool(
+            "allow_insecure_http",
+            section.get("allow_insecure_http", False),
+        )
         return cls(
             host=str(section.get("host", _read_compat_env("REMNIC_HOST", "ENGRAM_HOST", "127.0.0.1"))),
             port=int(section.get("port", _read_compat_env("REMNIC_PORT", "ENGRAM_PORT", "4318"))),
@@ -56,6 +61,7 @@ class RemnicHermesConfig:
             timeout=float(section.get("timeout", 30.0)),
             prefetch_wait_timeout=_parse_prefetch_wait_timeout(section.get("prefetch_wait_timeout", 2.0)),
             client_id=client_id,
+            allow_insecure_http=allow_insecure_http,
         )
 
 
@@ -75,6 +81,18 @@ def _parse_prefetch_wait_timeout(raw: object) -> float:
             f"remnic prefetch_wait_timeout must be a finite number >= 0, got {raw!r}"
         )
     return value
+
+
+def _parse_bool(field: str, raw: object) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        normalized = raw.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    raise ValueError(f"remnic {field} must be a boolean, got {raw!r}")
 
 
 def _read_compat_env(primary: str, legacy: str, default: str) -> str:

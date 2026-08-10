@@ -63,6 +63,22 @@ class TestProviderLifecycle:
                 "timeout from config must be forwarded to RemnicClient"
             )
 
+    def test_initialize_forwards_remote_http_opt_in(self):
+        provider = RemnicMemoryProvider(
+            {
+                "host": "memory.example.com",
+                "port": 4318,
+                "token": "test-token",
+                "allow_insecure_http": True,
+            }
+        )
+        with patch("remnic_hermes.provider.RemnicClient") as mock_client:
+            instance = mock_client.return_value
+            instance.health = AsyncMock()
+            provider.initialize("test-session")
+
+        assert mock_client.call_args.kwargs["allow_insecure_http"] is True
+
     def test_initialize_uses_default_timeout(self, provider):
         """initialize() passes the default timeout (30.0) when not configured."""
         with patch("remnic_hermes.provider.RemnicClient") as MockClient:

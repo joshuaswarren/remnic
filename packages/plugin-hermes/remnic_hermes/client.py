@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 from typing import Any
 from urllib.parse import quote
 
@@ -20,6 +21,27 @@ def _validate_header_value(field: str, value: str) -> str:
     if field in {"client_id", "namespace"} and len(value) > 256:
         raise ValueError(f"{field} must contain at most 256 characters")
     return value
+
+
+def _url_host_and_scheme(host: str, allow_insecure_http: bool) -> tuple[str, str]:
+    normalized_host = host.rstrip(".").removeprefix("[").removesuffix("]")
+    normalized_hostname = normalized_host.lower()
+    try:
+        address = ipaddress.ip_address(normalized_host)
+    except ValueError:
+        is_loopback = normalized_hostname == "localhost" or normalized_hostname.endswith(
+            ".localhost"
+        )
+        url_host = host
+    else:
+        is_loopback = address.is_loopback or bool(
+            address.version == 6
+            and address.ipv4_mapped
+            and address.ipv4_mapped.is_loopback
+        )
+        url_host = f"[{address.compressed}]" if address.version == 6 else address.compressed
+    scheme = "http" if is_loopback or allow_insecure_http else "https"
+    return url_host, scheme
 
 
 class RemnicClient:
@@ -41,13 +63,17 @@ class RemnicClient:
         namespace: str | None = None,
         session_key: str = "",
         timeout: float = 30.0,
+        allow_insecure_http: bool = False,
     ) -> None:
+        if not isinstance(allow_insecure_http, bool):
+            raise TypeError("allow_insecure_http must be a boolean")
         client_id = _validate_header_value("client_id", client_id)
         if namespace is not None:
             namespace = _validate_header_value("namespace", namespace)
         session_key = _validate_header_value("session_key", session_key)
-        self.base_url = f"http://{host}:{port}/engram/v1"
-        self.mcp_url = f"http://{host}:{port}/mcp"
+        url_host, scheme = _url_host_and_scheme(host, allow_insecure_http)
+        self.base_url = f"{scheme}://{url_host}:{port}/engram/v1"
+        self.mcp_url = f"{scheme}://{url_host}:{port}/mcp"
         self.token = token
         self.client_id = client_id
         self.namespace = namespace

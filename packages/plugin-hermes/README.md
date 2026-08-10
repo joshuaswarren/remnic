@@ -72,6 +72,7 @@ memory:
 remnic:
   host: "127.0.0.1"      # Remnic daemon host. Default: 127.0.0.1
   port: 4318             # Remnic daemon port. Default: 4318
+  allow_insecure_http: false  # Remote hosts use HTTPS. Set true only for an existing remote HTTP daemon.
   token: ""              # Auth token. Leave empty to auto-load from ~/.remnic/tokens.json.
   client_id: ""          # Printable ASCII daemon namespace of at most 256 characters without edge spaces. Leave empty for the daemon default.
   session_key: ""        # Printable ASCII session ID without edge spaces. Config input is trimmed. Auto-generated if not set.
@@ -82,6 +83,8 @@ remnic:
 A legacy `engram:` config block is also accepted during the Engram to Remnic transition. The plugin reads `remnic:` first and falls back to `engram:` when the `remnic:` key is absent, so existing configs continue working without edits.
 
 Set `client_id` to the daemon namespace that Hermes should use. Namespace values must contain at most 256 printable ASCII characters without edge spaces. `namespace` is an alias. A non-empty `client_id` takes precedence. If both are empty, the request omits its namespace and uses the daemon default. The legacy client identifier remains `hermes`.
+
+Loopback hosts use HTTP. Other hosts use HTTPS by default. Existing remote HTTP setups must set `allow_insecure_http: true` during migration.
 
 ### Environment variable overrides
 
