@@ -21,8 +21,10 @@ function assertInvalidated(result: Awaited<ReturnType<ExtractionEngine["revalida
   });
 }
 
-test("revalidation preserves the direct Responses API route for the legacy constructor", async () => {
-  const engine = new ExtractionEngine(parseConfig({ openaiApiKey: "fixture-key" }));
+test("revalidation keeps the official OpenAI base URL on the Responses API", async () => {
+  const engine = new ExtractionEngine(
+    parseConfig({ openaiApiKey: "fixture-key", openaiBaseUrl: "https://api.openai.com/v1" }),
+  );
   const signal = new AbortController().signal;
   let calls = 0;
   let request: Record<string, unknown> | undefined;
@@ -38,6 +40,7 @@ test("revalidation preserves the direct Responses API route for the legacy const
     },
   });
   assertInvalidated(await engine.revalidateDependents(superseded, replacement, dependents, signal));
+  assert.equal(calls, 1);
   assert.equal(request?.model, "gpt-5.5");
   assert.equal(request?.max_output_tokens, 1024);
   assert.match(String(request?.instructions), /revalidate dependent memory claims/i);
