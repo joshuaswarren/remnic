@@ -108,6 +108,7 @@ test("parseConfig applies graphPathScoring defaults for null values", () => {
     openaiApiKey: "sk-test",
     graphPathScoring: {
       enabled: null,
+      invalidNodePenalty: null,
       includePathInProvenance: null,
     },
   });

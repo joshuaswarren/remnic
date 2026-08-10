@@ -39,13 +39,21 @@ function extractLocalFunctionFixture(entryFunction = "parseFixtureLocalFunctionC
   });
 }
 
-test("local function parser reads bind literal calls once and reports unbound calls", () => {
+test("local function parser preserves sibling reads and deduplicates repeated diagnostics", () => {
   const { keys, unparseable } = extractLocalFunctionFixture();
   assert.ok(keys.includes("literal"), "literal key must bind through the local helper");
-  assert.equal(keys.filter((key) => key === "literal").length, 1, "duplicate literal calls must not revisit");
-  assert.equal(keys.some((key) => key === "variable" || key === "computed"), false);
-  const computedReads = unparseable.filter((entry) => entry.reason.includes("computed element access"));
-  assert.equal(computedReads.length, 1, JSON.stringify(unparseable));
+  assert.ok(keys.includes("sibling"), "sibling call arguments must still be traversed");
+  assert.ok(keys.includes("unhandled"), "unhandled local-function bodies must still be traversed");
+  assert.equal(
+    keys.includes("sibling.global"),
+    false,
+    "a shadowed top-level helper must not add false keys",
+  );
+  assert.equal(
+    unparseable.filter((entry) => entry.reason.includes("computed element access")).length,
+    2,
+    "repeated dynamic reads report one diagnostic per distinct construct",
+  );
 });
 
 test("local helper parameters shadow aliases without losing literal reads", () => {

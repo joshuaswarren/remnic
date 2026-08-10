@@ -1,3 +1,4 @@
+import type { Dirent } from "node:fs";
 import type { MemoryFile } from "../types.js";
 import type { StorageManager } from "../index.js";
 import { readdir, realpath } from "node:fs/promises";
@@ -37,15 +38,13 @@ export class GraphPathStateLoader {
     }
     const archivePaths = archiveIndex.pathsByBasename.get(path.basename(nodeId)) ?? [];
     const logicalId = path.basename(nodeId, path.extname(nodeId));
-    let newestFallback: MemoryFile | null = null;
     for (const archivePath of archivePaths) {
       if (typeof deadlineAtMs === "number" && Date.now() >= deadlineAtMs) return null;
       const memory = await storage.readMemoryByPath(archivePath);
       if (!memory) continue;
-      newestFallback ??= memory;
       if (memory.frontmatter.id === logicalId) return memory;
     }
-    return newestFallback;
+    return null;
   }
 
   private async resolveContainedPath(
@@ -82,7 +81,8 @@ export class GraphPathStateLoader {
     if (typeof deadlineAtMs === "number" && Date.now() >= deadlineAtMs) return null;
     const version = await storage.getCorpusScanVersion();
     if (typeof deadlineAtMs === "number" && Date.now() >= deadlineAtMs) return null;
-    const archivePathIndexes = this.archivePathIndexes ??= new Map();
+    if (!this.archivePathIndexes) this.archivePathIndexes = new Map();
+    const archivePathIndexes = this.archivePathIndexes;
     const cacheKey = `${storageRoot}\0${version}`;
     const cached = archivePathIndexes.get(cacheKey);
     if (cached) return cached;
@@ -109,7 +109,7 @@ export class GraphPathStateLoader {
       if (typeof deadlineAtMs === "number" && Date.now() >= deadlineAtMs) return null;
       const current = pending.pop();
       if (!current) break;
-      let entries;
+      let entries: Dirent[];
       try {
         entries = await readdir(current, { withFileTypes: true });
       } catch {
@@ -139,7 +139,15 @@ export class GraphPathStateLoader {
       }
     }
     for (const paths of pathsByBasename.values()) {
-      paths.sort((left, right) => right.localeCompare(left));
+      paths.sort((left, right) => {
+        const normalizedLeft = left.normalize("NFC");
+        const normalizedRight = right.normalize("NFC");
+        return normalizedRight < normalizedLeft
+          ? -1
+          : normalizedRight > normalizedLeft
+            ? 1
+            : 0;
+      });
     }
     return { version, pathsByBasename };
   }

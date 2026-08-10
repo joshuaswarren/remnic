@@ -18,7 +18,8 @@ function isInvalidIntermediate(state: PathNodeState | undefined, asOfMs: number)
   if (!state || state.status === null) return false;
   if (state.invalidAt !== null) {
     const invalidAtMs = Date.parse(state.invalidAt);
-    if (Number.isFinite(invalidAtMs)) return invalidAtMs <= asOfMs;
+    if (!Number.isFinite(invalidAtMs)) return false;
+    return invalidAtMs <= asOfMs;
   }
   return state.status !== "active";
 }

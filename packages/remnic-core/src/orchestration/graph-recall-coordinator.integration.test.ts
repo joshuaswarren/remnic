@@ -468,18 +468,18 @@ test("deadline stops remaining graph state reads", async () => {
     const reads: string[] = [];
     const originalNow = Date.now;
     let now = 1_000;
-    Date.now = () => now;
-    const originalReadMemoryByPath = fixture.storage.readMemoryByPath.bind(fixture.storage);
-    fixture.storage.readMemoryByPath = async (filePath: string) => {
-      reads.push(filePath);
-      if (reads.length === 1) now += 200;
-      return originalReadMemoryByPath(filePath);
-    };
-    const coordinator = makeCoordinator(
-      makeConfig(),
-      new Map([[fixture.name, fixture]]),
-    );
     try {
+      Date.now = () => now;
+      const originalReadMemoryByPath = fixture.storage.readMemoryByPath.bind(fixture.storage);
+      fixture.storage.readMemoryByPath = async (filePath: string) => {
+        reads.push(filePath);
+        if (reads.length === 1) now += 200;
+        return originalReadMemoryByPath(filePath);
+      };
+      const coordinator = makeCoordinator(
+        makeConfig(),
+        new Map([[fixture.name, fixture]]),
+      );
       await coordinator.expandResultsViaGraph({
         memoryResults: [seedResult(fixture)],
         recallNamespaces: [fixture.name],
@@ -609,6 +609,7 @@ test("caps graph path state reads at 200 candidates with deterministic output", 
         activationPath: {
           nodeIds: [fixture.seedPath, relativePath],
           edgeConfidences: [1],
+          graphTypes: ["entity"],
         },
       };
     });

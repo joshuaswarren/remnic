@@ -192,14 +192,48 @@ test("renderXrayText matches golden output for a full snapshot", () => {
 });
 
 test("renderers omit disabled graph path penalty and node fields", () => {
-  const text = renderXrayText(fullSnapshot());
-  const markdown = renderXrayMarkdown(fullSnapshot());
+  const snap = fullSnapshot();
+  const text = renderXrayText(snap);
+  const markdown = renderXrayMarkdown(snap);
+  assert.ok(text.includes("graph-path: mem-root -> mem-1"));
+  assert.ok(markdown.includes("**Graph path:** `mem-root` → `mem-1`"));
   for (const output of [text, markdown]) {
     assert.equal(output.includes("path-penalty"), false);
     assert.equal(output.includes("path-node-ids"), false);
     assert.equal(output.includes("Path penalty"), false);
     assert.equal(output.includes("Path node ids"), false);
   }
+});
+
+test("renderers emit path provenance fields when enabled", () => {
+  const snap = fullSnapshot();
+  const withPathProvenance: RecallXraySnapshot = {
+    ...snap,
+    results: [
+      {
+        ...snap.results[0],
+        pathPenaltyApplied: true,
+        pathNodeIds: ["activation-root", "activation-mid", "mem-1"],
+      },
+      ...snap.results.slice(1),
+    ],
+  };
+
+  const text = renderXrayText(withPathProvenance);
+  assert.ok(text.includes("    path-penalty: yes"));
+  assert.ok(
+    text.includes(
+      "    path-node-ids: activation-root -> activation-mid -> mem-1",
+    ),
+  );
+
+  const markdown = renderXrayMarkdown(withPathProvenance);
+  assert.ok(markdown.includes("- **Path penalty applied:** `yes`"));
+  assert.ok(
+    markdown.includes(
+      "- **Path node ids:** `activation-root` → `activation-mid` → `mem-1`",
+    ),
+  );
 });
 
 test("renderXrayText handles the minimal/empty case", () => {

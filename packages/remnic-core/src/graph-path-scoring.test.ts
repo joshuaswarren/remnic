@@ -66,6 +66,15 @@ test("treats null status as neutral even with invalidAt", () => {
  0.7 * 0.6,
  );
 });
+test("treats malformed invalidAt as neutral", () => {
+  const states = new Map([
+    ["entity-mid", state("entity-mid", "superseded", "not-a-date")],
+  ]);
+  assert.equal(
+    score(activationPath(["seed", "entity-mid", "candidate"], [0.7, 0.6]), states),
+    0.7 * 0.6,
+  );
+});
 
 test("treats an unknown intermediate id as neutral", () => {
   assert.equal(

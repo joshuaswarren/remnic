@@ -11,11 +11,7 @@ import {
   probeSalvageSurvivingFields,
   withReservedMarkerTag,
 } from "./extraction-envelope.js";
-import {
-  StorageManager,
-  ContentHashIndex,
-  normalizeAttributePairs,
-} from "../index.js";
+import { ContentHashIndex, normalizeAttributePairs, type StorageManager } from "../index.js";
 import { log } from "../logger.js";
 import { chunkContent, type ChunkingConfig } from "../chunking.js";
 import { semanticChunkContent, type SemanticChunkResult } from "../semantic-chunking.js";
@@ -35,6 +31,7 @@ import {
   type GraphConstructionCapabilitySet,
   type MemoryLifecycleCapabilitySet,
 } from "../capabilities.js";
+import { coerceBool } from "../connectors/coerce.js";
 import {
   applyTemporalSupersession,
   normalizeSupersessionKey,
@@ -207,7 +204,7 @@ export class ExtractionPersistCoordinator {
     const persistedIds: string[] = [];
     const memoryPathById = new Map<string, string>();
     const anchorSnapshots = new ExtractionAnchorSnapshot({
-      enabled: this.deps.config.contradictionLocalization?.anchorEnabled !== false,
+      enabled: coerceBool(this.deps.config.contradictionLocalization?.anchorEnabled) ?? true,
       candidateLimit: this.deps.config.contradictionLocalization?.anchorCandidates,
     });
     const supersessionOrderingAt = (validAt?: string): string =>

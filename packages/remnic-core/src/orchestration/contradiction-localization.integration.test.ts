@@ -11,6 +11,7 @@ import type { ExtractionEngine } from "../extraction.js";
 import type { ExtractionResult, MemoryFile, PluginConfig } from "../types.js";
 import type { StorageManager } from "../storage.js";
 import { ContradictionLinkingCoordinator } from "./contradiction-linking-coordinator.js";
+import { ExtractionAnchorSnapshot } from "./extraction-anchor-snapshot.js";
 
 function baseConfig(memoryDir: string, overrides: Record<string, unknown> = {}) {
   return parseConfig({
@@ -92,6 +93,50 @@ test("persistExtraction forwards ExtractedFact anchors to contradiction detectio
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("persistExtraction treats string false anchorEnabled as disabled", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-contradiction-anchor-false-"));
+  try {
+    const config = baseConfig(memoryDir);
+    const rawLocalization = config.contradictionLocalization as unknown as Record<string, unknown>;
+    rawLocalization.anchorEnabled = "false";
+    const orchestrator = new Orchestrator(config) as unknown as {
+      qmd: { isAvailable: () => boolean };
+      getStorage: (namespace: string) => Promise<StorageManager>;
+      persistExtraction: (result: ExtractionResult, storage: StorageManager, threadId: null) => Promise<unknown>;
+      contradictionLinkingCoordinator: ContradictionLinkingCoordinator;
+    };
+    orchestrator.qmd = { isAvailable: () => true };
+    const calls: unknown[][] = [];
+    orchestrator.contradictionLinkingCoordinator.checkForContradiction = async (...args: unknown[]) => {
+      calls.push(args);
+      return null;
+    };
+    const storage = await orchestrator.getStorage("default");
+    await storage.ensureDirectories();
+
+    await orchestrator.persistExtraction(
+      extractionResult({
+        category: "fact",
+        content: "Alice lives in New York",
+        confidence: 0.95,
+        tags: [],
+        entityRef: "person:alice",
+      }),
+      storage,
+      null,
+    );
+
+    const anchor = calls[0]?.[3];
+    assert.ok(anchor && typeof anchor === "object" && "storageSnapshot" in anchor);
+    const storageSnapshot =
+      anchor && typeof anchor === "object" && "storageSnapshot" in anchor ? anchor.storageSnapshot : "missing";
+    assert.equal(storageSnapshot, undefined);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("persistExtraction memoizes one anchor snapshot for all facts in one pass", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-contradiction-snapshot-"));
   try {
@@ -195,6 +240,42 @@ test("persistExtraction memoizes one anchor snapshot for all facts in one pass",
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
+});
+
+test("evicts a rejected anchor snapshot so the next call retries", async () => {
+  let hotReads = 0;
+  const replacement = {
+    path: "memories/replacement.md",
+    content: "replacement",
+    frontmatter: {
+      id: "replacement",
+      category: "fact",
+    },
+  } as unknown as MemoryFile;
+  const storage = {
+    dir: "/tmp/remnic-anchor-snapshot-test",
+    readAllMemories: async () => {
+      hotReads++;
+      if (hotReads === 1) throw new Error("transient snapshot read");
+      return [];
+    },
+    readAllColdMemories: async () => [],
+    readMemoryByPath: async () => replacement,
+  } as unknown as StorageManager;
+  const snapshots = new ExtractionAnchorSnapshot();
+
+  await assert.rejects(
+    snapshots.get(storage, "person:alice"),
+    /transient snapshot read/,
+  );
+  const retry = await snapshots.get(storage, "person:alice");
+  assert.deepEqual(retry, []);
+
+  await snapshots.replace(storage, "replacement", "fact", new Map([["replacement", "memories/replacement.md"]]));
+  assert.deepEqual(retry, [replacement]);
+  await snapshots.remove(storage, "replacement");
+  assert.deepEqual(retry, []);
+  assert.equal(hotReads, 2);
 });
 
 

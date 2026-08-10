@@ -33,6 +33,11 @@ export class ExtractionAnchorSnapshot {
       storage.readAllMemories(),
       storage.readAllColdMemories(),
     ]).then(([hot, cold]) => mergeMemorySnapshots(hot, cold));
+    void snapshot.catch(() => {
+      if (this.snapshots.get(storage) === snapshot) {
+        this.snapshots.delete(storage);
+      }
+    });
     this.snapshots.set(storage, snapshot);
     return snapshot;
   }

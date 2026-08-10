@@ -17,12 +17,12 @@ type LoaderInternals = {
   ) => Promise<{ version: string; pathsByBasename: Map<string, string[]> } | null>;
 };
 
-function memory(filePath: string, content: string): MemoryFile {
+function memory(filePath: string, content: string, id = "node"): MemoryFile {
   return {
     path: filePath,
     content,
     frontmatter: {
-      id: "node",
+      id,
       category: "fact",
       created: "2026-01-01T00:00:00.000Z",
       updated: "2026-01-01T00:00:00.000Z",
@@ -46,6 +46,25 @@ function fakeStorage(
       filePath === archivePath ? result : null,
   } as unknown as StorageManager;
 }
+
+test("does not return archive state when the memory id mismatches", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-loader-id-"));
+  try {
+    const archivePath = path.join(root, "archive", "2026-01-01", "node.md");
+    await mkdir(path.dirname(archivePath), { recursive: true });
+    await writeFile(archivePath, "archive", "utf8");
+    const storage = fakeStorage(
+      root,
+      archivePath,
+      memory(archivePath, "mismatch", "other"),
+    );
+    const loader = new GraphPathStateLoader();
+
+    assert.equal(await loader.readNode(storage, "node.md", null, true), null);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("does not share a deadline-bound archive build with a later caller", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-loader-timeout-"));
@@ -93,6 +112,7 @@ test("evicts prior archive indexes for the same storage root", async () => {
 });
 
 test("keys archive indexes by canonical storage root after symlink retarget", async () => {
+  if (process.platform === "win32") return;
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-loader-symlink-"));
   try {
     const physicalA = path.join(root, "a");

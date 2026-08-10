@@ -31,7 +31,7 @@ export function parseGraphPathScoringConfig(
     invalidNodePenalty <= 0 ||
     invalidNodePenalty > 1
   ) {
-    if (block.invalidNodePenalty !== undefined) {
+    if (block.invalidNodePenalty !== undefined && block.invalidNodePenalty !== null) {
       throw new Error(
         `graphPathScoring.invalidNodePenalty must be a number in (0,1]; got ${JSON.stringify(block.invalidNodePenalty)}`,
       );

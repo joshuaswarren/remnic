@@ -101,7 +101,6 @@ function functionName(fn: ts.Node): string {
   if ((ts.isFunctionDeclaration(fn) || ts.isFunctionExpression(fn)) && fn.name) return fn.name.text;
   return "";
 }
-
 /**
  * Record a loud unparseable construct with a stable, line-independent id
  * (`<relFile>#<hash(scope + reason + normalized construct text)>`). Keying by
@@ -121,7 +120,9 @@ function pushUnparseable(
   const pos = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
   const normalized = node.getText(sourceFile).replace(/\s+/g, " ").trim();
   const hash = createHash("sha1").update(`${scope}\u0000${reason}\u0000${normalized}`).digest("hex").slice(0, 12);
-  out.unparseable.push({ file, line: pos.line + 1, reason, id: `${file}#${hash}` });
+  const id = `${file}#${hash}`;
+  if (out.unparseable.some((entry) => entry.id === id)) return;
+  out.unparseable.push({ file, line: pos.line + 1, reason, id });
 }
 
 export function resolveStaticStringSet(
@@ -451,8 +452,8 @@ function extractParserKeys(
         );
       }
     }
-    // Register local function expressions before their bodies are visited.
-    // Their bodies are revisited at each distinct literal call site.
+    // Register parameterized local function expressions before their bodies are
+    // visited. Their bodies are revisited at each distinct literal call site.
     if (
       ts.isVariableDeclaration(node) &&
       ts.isIdentifier(node.name) &&
@@ -460,15 +461,14 @@ function extractParserKeys(
       (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
     ) {
       const localParameter = node.initializer.parameters[0]?.name;
-      if (!localParameter || !ts.isIdentifier(localParameter)) {
+      if (localParameter && ts.isIdentifier(localParameter)) {
+        localFunctions.set(node.name.text, {
+          fn: node.initializer,
+          literalBindings: new Set<string>(),
+          unboundVisited: false,
+        });
         return;
       }
-      localFunctions.set(node.name.text, {
-        fn: node.initializer,
-        literalBindings: new Set<string>(),
-        unboundVisited: false,
-      });
-      return;
     }
     // Alias creation: const X = <expr resolving to alias(+segments)>
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
@@ -609,28 +609,28 @@ function extractParserKeys(
         return;
       }
     }
+    let handledLocalFunctionCall = false;
     if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
       const localFunction = localFunctions.get(node.expression.text);
       const keyParameter = localFunction?.fn.parameters[0]?.name;
       if (localFunction && keyParameter && ts.isIdentifier(keyParameter)) {
+        handledLocalFunctionCall = true;
         const keyArgument = node.arguments[0];
         const hasLiteralBinding =
           keyArgument !== undefined &&
           ts.isStringLiteral(keyArgument);
         if (hasLiteralBinding) {
           const literalKey = keyArgument.text;
-          if (localFunction.literalBindings.has(literalKey)) return;
-          localFunction.literalBindings.add(literalKey);
-          visitLocalFunctionBody(localFunction, literalKey);
-          return;
-        }
-        if (!localFunction.unboundVisited) {
+          if (!localFunction.literalBindings.has(literalKey)) {
+            localFunction.literalBindings.add(literalKey);
+            visitLocalFunctionBody(localFunction, literalKey);
+          }
+        } else if (!localFunction.unboundVisited) {
           localFunction.unboundVisited = true;
           visitLocalFunctionBody(localFunction);
         }
       }
     }
-
 
     // Helper delegation: `helperFn(alias.sub, …)` — the helper reads keys
     // of the sub-block, so recurse into its body with the sub-path prefix
@@ -638,7 +638,13 @@ function extractParserKeys(
     // (`parseFusionSettings(raw.fusion)`), non-parse-named readers
     // (`buildRecallPipelineConfig(cfg)`), and helper chains
     // (`readLspField` → `parseLspConfig`) — review findings on #1990.
-    if (recursion && recursion.depth < 6 && ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+    if (
+      !handledLocalFunctionCall &&
+      recursion &&
+      recursion.depth < 6 &&
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression)
+    ) {
       const helperName = node.expression.text;
       // Key-name arguments passed as string literals bind to the helper's
       // params so `cfg[keyParam]` resolves (issue #1990 review). The literal
