@@ -1,16 +1,23 @@
 /**
  * Dependency propagation lifecycle subject for the scenario-matrix harness.
  *
- * The storage adapter isolates namespace snapshots in memory. The extraction
- * adapter calls the real LLM revalidation parser with deterministic completion.
+ * Each namespace uses a real StorageManager over an isolated temporary directory.
+ * ExtractionEngine uses its production revalidation route with deterministic completion.
  */
 
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
-import type { ExtractionEngine } from "../../extraction.js";
-import { propagateInvalidation, type PropagationEvent } from "../../orchestration/dependency-propagation.js";
-import { revalidateDependentsViaLlm } from "../../orchestration/dependency-revalidation.js";
-import type { StorageManager } from "../../storage.js";
+import { ExtractionEngine } from "../../extraction.js";
+import {
+  propagateInvalidation,
+  type PropagationEvent,
+  type PropagationResult,
+} from "../../orchestration/dependency-propagation.js";
+import type { RevalidationFastChatCompletion } from "../../orchestration/dependency-revalidation.js";
+import { StorageManager } from "../../storage.js";
 import type { MemoryFile, MemoryLinkType, PluginConfig } from "../../types.js";
 import {
   type LifecycleSubject,
@@ -20,23 +27,26 @@ import {
 
 const NOW = "2026-08-09T00:00:00.000Z";
 type NamespaceName = "alice" | "bob" | "default";
-type NamespaceStore = Map<string, MemoryFile>;
+type NamespaceDirectoryMap = Map<NamespaceName, string>;
+type NamespaceStorageMap = Map<NamespaceName, StorageManager>;
+type CompletionCall = {
+  messages: Parameters<RevalidationFastChatCompletion>[0];
+  options: Parameters<RevalidationFastChatCompletion>[1];
+};
 
 type PropagationState = {
-  stores: Map<NamespaceName, NamespaceStore>;
+  rootDir: string;
+  namespaceDirs: NamespaceDirectoryMap;
+  storages: NamespaceStorageMap;
   activeNamespace: NamespaceName;
   storage: StorageManager;
   extraction: ExtractionEngine;
   propagationCalls: PropagationEvent[];
+  propagationResults: PropagationResult[];
+  completionCalls: CompletionCall[];
   revalidationCalls: Array<{
     supersededId: string;
     dependentIds: string[];
-  }>;
-  supersedeCalls: Array<{
-    namespace: NamespaceName;
-    id: string;
-    replacementId: string;
-    reason: string;
   }>;
   lifecycleLabels: string[];
 };
@@ -49,7 +59,7 @@ function makeMemory(
   } = {},
 ): MemoryFile {
   return {
-    path: `/synthetic/${id}.md`,
+    path: `synthetic/${id}.md`,
     content: options.content ?? `claim for ${id}`,
     frontmatter: {
       id,
@@ -66,9 +76,12 @@ function makeMemory(
   } as unknown as MemoryFile;
 }
 
-function makeConfig(): PluginConfig {
+function makeConfig(memoryDir: string): PluginConfig {
   return {
-    memoryDir: "/synthetic/dependency-propagation",
+    memoryDir,
+    model: "synthetic-dependency-propagation",
+    modelSource: "plugin",
+    localLlmEnabled: false,
     dependencyPropagation: {
       enabled: true,
       linkTypes: ["supports", "follows"],
@@ -79,108 +92,97 @@ function makeConfig(): PluginConfig {
   } as unknown as PluginConfig;
 }
 
-function namespaceStore(namespace: NamespaceName): NamespaceStore {
+function namespaceMemories(namespace: NamespaceName): MemoryFile[] {
   const oldId = `${namespace}-old`;
   const dependentId = `${namespace}-dependent`;
   const grandchildId = `${namespace}-grandchild`;
-  return new Map([
-    [
-      oldId,
-      makeMemory(oldId, {
-        content: `supporting claim for ${namespace}`,
-        links: [{ targetId: dependentId, linkType: "supports" }],
-      }),
-    ],
-    [
-      dependentId,
-      makeMemory(dependentId, {
-        links: [{ targetId: oldId, linkType: "follows" }],
-      }),
-    ],
-    [
-      grandchildId,
-      makeMemory(grandchildId, {
-        links: [{ targetId: dependentId, linkType: "supports" }],
-      }),
-    ],
-  ]);
+  return [
+    makeMemory(oldId, {
+      content: `supporting claim for ${namespace}`,
+      links: [{ targetId: dependentId, linkType: "supports" }],
+    }),
+    makeMemory(dependentId, {
+      links: [{ targetId: oldId, linkType: "follows" }],
+    }),
+    makeMemory(grandchildId, {
+      links: [{ targetId: dependentId, linkType: "supports" }],
+    }),
+  ];
 }
 
-function activeStore(state: PropagationState): NamespaceStore {
-  const store = state.stores.get(state.activeNamespace);
-  assert.ok(store, `missing namespace store ${state.activeNamespace}`);
-  return store;
+function serializeFixture(memory: MemoryFile): string {
+  const links = (memory.frontmatter.links ?? [])
+    .map(
+      (link) =>
+        `  - targetId: ${link.targetId} linkType: ${link.linkType} strength: ${link.strength ?? 0.9}`,
+    )
+    .join("\n");
+  return [
+    "---",
+    `id: ${memory.frontmatter.id}`,
+    `category: ${memory.frontmatter.category}`,
+    `created: ${memory.frontmatter.created}`,
+    `updated: ${memory.frontmatter.updated}`,
+    `source: ${memory.frontmatter.source}`,
+    `confidence: ${memory.frontmatter.confidence}`,
+    `confidenceTier: ${memory.frontmatter.confidenceTier}`,
+    "tags: []",
+    `status: ${memory.frontmatter.status}`,
+    "links:",
+    links,
+    "---",
+    "",
+    memory.content,
+    "",
+  ].join("\n");
 }
 
-function makeStorage(state: PropagationState): StorageManager {
-  return {
-    async readAllMemories(): Promise<MemoryFile[]> {
-      return [...activeStore(state).values()];
-    },
-    async getMemoryById(id: string): Promise<MemoryFile | null> {
-      return activeStore(state).get(id) ?? null;
-    },
-    async supersedeMemory(id: string, replacementId: string, reason: string): Promise<boolean> {
-      state.supersedeCalls.push({
-        namespace: state.activeNamespace,
-        id,
-        replacementId,
-        reason,
-      });
-      const current = activeStore(state).get(id);
-      if (!current || current.frontmatter.status !== "active") return false;
-      current.frontmatter.status = "superseded";
-      current.frontmatter.supersededBy = replacementId;
-      return true;
-    },
-    async writeMemoryFrontmatter(
-      current: MemoryFile,
-      patch: Record<string, unknown>,
-    ): Promise<boolean> {
-      const stored = activeStore(state).get(current.frontmatter.id);
-      if (!stored) return false;
-      Object.assign(stored.frontmatter, patch);
-      return true;
-    },
-  } as unknown as StorageManager;
+async function persistFixtures(directory: string, memories: MemoryFile[]): Promise<void> {
+  const factsDir = path.join(directory, "facts", "2026-08-09");
+  await mkdir(factsDir, { recursive: true });
+  await Promise.all(
+    memories.map((memory) =>
+      writeFile(
+        path.join(factsDir, `${memory.frontmatter.id}.md`),
+        serializeFixture(memory),
+        "utf8",
+      ),
+    ),
+  );
 }
 
-function makeExtraction(state: PropagationState): ExtractionEngine {
-  const parseJsonObject = (raw: string | null): unknown => (raw === null ? null : JSON.parse(raw));
-  return {
-    async revalidateDependents(
-      superseded: { id: string; content: string },
-      replacement: { id: string; content: string } | null,
-      dependents: Array<{ id: string; category: string; content: string }>,
-      signal?: AbortSignal,
-    ) {
-      state.revalidationCalls.push({
-        supersededId: superseded.id,
-        dependentIds: dependents.map((dependent) => dependent.id),
-      });
-      return revalidateDependentsViaLlm(
-        {
-          fastChatCompletion: async (_messages, options) => {
-            if (options.signal?.aborted || signal?.aborted) return null;
-            return {
-              content: JSON.stringify({
-                verdicts: dependents.map((dependent) => ({
-                  memoryId: dependent.id,
-                  verdict: "invalidated",
-                  reason: "synthetic supporting claim changed",
-                })),
-              }),
-            };
-          },
-          parseJsonObject,
-        },
-        superseded,
-        replacement,
-        dependents,
-        { signal, timeoutMs: 500 },
-      );
-    },
-  } as unknown as ExtractionEngine;
+function activeStorage(state: PropagationState): StorageManager {
+  const storage = state.storages.get(state.activeNamespace);
+  assert.ok(storage, `missing namespace storage ${state.activeNamespace}`);
+  return storage;
+}
+
+function makeExtraction(
+  stateRef: { current?: PropagationState },
+  config: PluginConfig,
+): ExtractionEngine {
+  const fastCompletion: RevalidationFastChatCompletion = async (messages, options) => {
+    const state = stateRef.current;
+    assert.ok(state, "extraction state is not initialized");
+    state.completionCalls.push({ messages, options });
+    const userMessage = messages.find((message) => message.role === "user")?.content ?? "";
+    const supersededId = userMessage.match(/^SUPERSEDED MEMORY \(id: ([^)]+)\):$/m)?.[1] ?? "";
+    const dependentIds = [...userMessage.matchAll(/^\[\d+\] id: ([^ |]+) \| category:/gm)].map(
+      (match) => match[1]!,
+    );
+    state.revalidationCalls.push({ supersededId, dependentIds });
+    if (options.signal?.aborted) return null;
+    return {
+      content: JSON.stringify({
+        verdicts: dependentIds.map((memoryId) => ({
+          memoryId,
+          verdict: "invalidated",
+          reason: "synthetic supporting claim changed",
+        })),
+      }),
+    };
+  };
+  return new ExtractionEngine(config, undefined, undefined, undefined, undefined, fastCompletion);
 }
 
 function namespaceFor(row: MatrixRow): NamespaceName {
@@ -202,8 +204,8 @@ function causeFor(row: MatrixRow): PropagationEvent["cause"] {
   }
 }
 
-function eventFor(state: PropagationState, row: MatrixRow): PropagationEvent {
-  const old = activeStore(state).get(`${state.activeNamespace}-old`);
+async function eventFor(state: PropagationState, row: MatrixRow): Promise<PropagationEvent> {
+  const old = await activeStorage(state).getMemoryById(`${state.activeNamespace}-old`);
   assert.ok(old, `missing old memory for ${state.activeNamespace}`);
   return {
     oldMemory: {
@@ -219,90 +221,146 @@ function eventFor(state: PropagationState, row: MatrixRow): PropagationEvent {
 
 const subject: LifecycleSubject<PropagationState> = {
   async setup(row: MatrixRow): Promise<PropagationState> {
-    const stores = new Map<NamespaceName, NamespaceStore>([
-      ["alice", namespaceStore("alice")],
-      ["bob", namespaceStore("bob")],
-      ["default", namespaceStore("default")],
-    ]);
-    const state = {
-      stores,
-      activeNamespace: namespaceFor(row),
-      storage: undefined as unknown as StorageManager,
-      extraction: undefined as unknown as ExtractionEngine,
-      propagationCalls: [],
-      revalidationCalls: [],
-      supersedeCalls: [],
-      lifecycleLabels: [],
-    } satisfies Omit<PropagationState, "storage" | "extraction"> & {
-      storage: StorageManager;
-      extraction: ExtractionEngine;
-    };
-    state.storage = makeStorage(state);
-    state.extraction = makeExtraction(state);
-    return state;
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "remnic-dependency-propagation-"));
+    try {
+      const namespaceDirs: NamespaceDirectoryMap = new Map();
+      const storages: NamespaceStorageMap = new Map();
+      for (const namespace of ["alice", "bob", "default"] as const) {
+        const directory = path.join(rootDir, namespace);
+        await mkdir(directory, { recursive: true });
+        const storage = new StorageManager(directory);
+        await storage.ensureDirectories();
+        await persistFixtures(directory, namespaceMemories(namespace));
+        namespaceDirs.set(namespace, directory);
+        storages.set(namespace, storage);
+      }
+      const activeNamespace = namespaceFor(row);
+      const storage = storages.get(activeNamespace);
+      const memoryDir = namespaceDirs.get(activeNamespace);
+      assert.ok(storage, `missing namespace storage ${activeNamespace}`);
+      assert.ok(memoryDir, `missing namespace directory ${activeNamespace}`);
+      const stateRef: { current?: PropagationState } = {};
+      const state: PropagationState = {
+        rootDir,
+        namespaceDirs,
+        storages,
+        activeNamespace,
+        storage,
+        extraction: makeExtraction(stateRef, makeConfig(memoryDir)),
+        propagationCalls: [],
+        propagationResults: [],
+        completionCalls: [],
+        revalidationCalls: [],
+        lifecycleLabels: [],
+      };
+      stateRef.current = state;
+      return state;
+    } catch (error) {
+      await rm(rootDir, { recursive: true, force: true });
+      throw error;
+    }
   },
 
   async exercise(state: PropagationState, row: MatrixRow): Promise<void> {
     state.lifecycleLabels.push(row.dimensions.flush);
+    if (row.dimensions.restart) {
+      const directory = state.namespaceDirs.get(state.activeNamespace);
+      assert.ok(directory, `missing namespace directory ${state.activeNamespace}`);
+      state.storage = new StorageManager(directory);
+      state.storages.set(state.activeNamespace, state.storage);
+      const stateRef: { current?: PropagationState } = { current: state };
+      state.extraction = makeExtraction(stateRef, makeConfig(directory));
+    }
     const run = async (): Promise<void> => {
-      state.propagationCalls.push(eventFor(state, row));
-      await propagateInvalidation(
-        { storage: state.storage, extraction: state.extraction, config: makeConfig() },
-        state.propagationCalls.at(-1)!,
+      const event = await eventFor(state, row);
+      state.propagationCalls.push(event);
+      state.propagationResults.push(
+        await propagateInvalidation(
+          {
+            storage: state.storage,
+            extraction: state.extraction,
+            config: makeConfig(state.namespaceDirs.get(state.activeNamespace)!),
+          },
+          event,
+        ),
       );
     };
 
-    if (row.dimensions.restart) {
-      state.storage = makeStorage(state);
-      state.extraction = makeExtraction(state);
-    }
     await run();
     if (row.dimensions.dedupeOrReplay) await run();
   },
 
   async invariants(state: PropagationState, row: MatrixRow): Promise<void> {
     assert.equal(state.propagationCalls.length, row.dimensions.dedupeOrReplay ? 2 : 1);
+    assert.equal(state.propagationResults[0]?.route, "fast-completion");
+    assert.equal(state.propagationResults[0]?.dependentsFound, 1);
+    assert.equal(state.propagationResults[0]?.invalidated, 1);
+    if (row.dimensions.dedupeOrReplay) {
+      assert.equal(state.propagationResults[1]?.skipped, "no_dependents");
+      assert.equal(state.propagationResults[1]?.dependentsFound, 0);
+    }
     assert.equal(state.revalidationCalls.length, 1, "the real LLM revalidation path must run");
+    const revalidation = state.revalidationCalls[0];
+    assert.ok(revalidation, "missing revalidation call");
+    assert.equal(revalidation.supersededId, `${state.activeNamespace}-old`);
     assert.deepEqual(
-      state.revalidationCalls[0]?.dependentIds,
+      revalidation.dependentIds,
       [`${state.activeNamespace}-dependent`],
       "discovery must stay one-hop and namespace-scoped",
     );
+    assert.equal(state.completionCalls.length, 1);
+    const completion = state.completionCalls[0];
+    assert.ok(completion, "missing completion call");
+    assert.deepEqual(completion.messages.map((message) => message.role), ["system", "user"]);
+    assert.equal(
+      completion.messages[1]?.content,
+      `SUPERSEDED MEMORY (id: ${state.activeNamespace}-old):
+supporting claim for ${state.activeNamespace}
+
+REPLACEMENT (id: ${state.activeNamespace}-replacement):
+replacement claim for ${state.activeNamespace}
+
+DEPENDENTS TO REVALIDATE (return exactly one verdict per id):
+[1] id: ${state.activeNamespace}-dependent | category: fact
+claim for ${state.activeNamespace}-dependent`,
+    );
+    assert.match(completion.messages[0]?.content ?? "", /Never invent memory IDs/);
+    assert.equal(completion.options.temperature, 0.2);
+    assert.equal(completion.options.maxTokens, 1024);
+    assert.equal(completion.options.timeoutMs, 500);
+    assert.equal(completion.options.operation, "dependency_revalidation");
+    assert.equal(completion.options.priority, "background");
+    assert.ok(completion.options.signal instanceof AbortSignal);
+    assert.equal(completion.options.signal?.aborted, false);
     assert.equal(state.lifecycleLabels.length, 1);
     assert.equal(state.lifecycleLabels[0], row.dimensions.flush);
 
-    const active = activeStore(state);
-    assert.equal(active.get(`${state.activeNamespace}-dependent`)?.frontmatter.status, "superseded");
-    assert.equal(active.get(`${state.activeNamespace}-grandchild`)?.frontmatter.status, "active");
-    for (const [namespace, store] of state.stores) {
+    const active = await activeStorage(state).readAllMemories();
+    const dependent = active.find((memory) => memory.frontmatter.id === `${state.activeNamespace}-dependent`);
+    const grandchild = active.find((memory) => memory.frontmatter.id === `${state.activeNamespace}-grandchild`);
+    assert.equal(dependent?.frontmatter.status, "superseded");
+    assert.equal(dependent?.frontmatter.supersededBy, `${state.activeNamespace}-replacement`);
+    assert.equal(dependent?.frontmatter.supersessionCause, "dependency");
+    assert.equal(dependent?.frontmatter.invalidatedBy, `${state.activeNamespace}-old`);
+    assert.equal(grandchild?.frontmatter.status, "active");
+    for (const [namespace, storage] of state.storages) {
       if (namespace === state.activeNamespace) continue;
+      const memories = await storage.readAllMemories();
       assert.equal(
-        store.get(`${namespace}-dependent`)?.frontmatter.status,
+        memories.find((memory) => memory.frontmatter.id === `${namespace}-dependent`)?.frontmatter.status,
         "active",
         `dependent in ${namespace} must not be invalidated by ${state.activeNamespace}`,
       );
       assert.equal(
-        store.get(`${namespace}-grandchild`)?.frontmatter.status,
+        memories.find((memory) => memory.frontmatter.id === `${namespace}-grandchild`)?.frontmatter.status,
         "active",
         `grandchild in ${namespace} must remain untouched`,
       );
     }
-    assert.equal(
-      state.supersedeCalls.length,
-      1,
-      row.dimensions.dedupeOrReplay
-        ? "replay must produce one durable supersession effect"
-        : "one dependent must receive one durable supersession effect",
-    );
-    assert.equal(state.supersedeCalls[0]?.namespace, state.activeNamespace);
   },
 
   async teardown(state: PropagationState): Promise<void> {
-    state.stores.clear();
-    state.propagationCalls.length = 0;
-    state.revalidationCalls.length = 0;
-    state.supersedeCalls.length = 0;
-    state.lifecycleLabels.length = 0;
+    await rm(state.rootDir, { recursive: true, force: true });
   },
 };
 
