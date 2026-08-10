@@ -2484,17 +2484,11 @@ Respond with valid JSON matching this schema:
       return typeof response.output_text === "string" ? { content: response.output_text } : null;
     };
     return revalidateDependentsViaLlm(
-      {
-        fastChatCompletion: complete,
-        parseJsonObject: this.parseJsonObject,
-      },
+      { fastChatCompletion: complete, parseJsonObject: this.parseJsonObject },
       superseded,
       replacement,
       dependents,
-      {
-        signal,
-        timeoutMs: this.config.dependencyPropagation.timeoutMs,
-      },
+      { signal, timeoutMs: this.config.dependencyPropagation.timeoutMs },
     );
   }
   async suggestLinks(
