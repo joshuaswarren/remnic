@@ -706,7 +706,8 @@ test("consolidation invalidation recovery uses the exact cold snapshot", async (
       },
       async invalidateMemory(
         id: string,
-        snapshot?: Pick<MemoryFile, "content" | "frontmatter" | "path">,
+        snapshot?: Pick<MemoryFile, "content" | "frontmatter"> & Partial<Pick<MemoryFile, "path">>,
+        _options?: { recordCommitProof?: boolean },
       ): Promise<boolean> {
         assert.equal(id, old.frontmatter.id);
         assert.equal(snapshot?.path, old.path);
@@ -752,6 +753,12 @@ test("consolidation merge recovery uses exact cold and archive snapshots", async
       async updateMemoryIfUnchanged(
         expected: MemoryFile,
         content: string,
+        _options?: {
+          supersedes?: string;
+          lineage?: string[];
+          actor?: string;
+          sourceConnector?: string;
+        },
       ): Promise<boolean> {
         assert.equal(expected.path, replacement.path);
         assert.equal(content, rawReplacement);
@@ -759,7 +766,8 @@ test("consolidation merge recovery uses exact cold and archive snapshots", async
       },
       async invalidateMemory(
         id: string,
-        snapshot?: Pick<MemoryFile, "content" | "frontmatter" | "path">,
+        snapshot?: Pick<MemoryFile, "content" | "frontmatter"> & Partial<Pick<MemoryFile, "path">>,
+        _options?: { recordCommitProof?: boolean },
       ): Promise<boolean> {
         assert.equal(id, old.frontmatter.id);
         assert.equal(snapshot?.path, old.path);
@@ -973,7 +981,11 @@ test("recovery retains a prepared invalidation when a missing source cannot prov
     let invalidationCalls = 0;
     const storage = {
       ...fixtureValue.storage,
-      async invalidateMemory(): Promise<boolean> {
+      async invalidateMemory(
+        _id: string,
+        _snapshot?: Pick<MemoryFile, "content" | "frontmatter"> & Partial<Pick<MemoryFile, "path">>,
+        _options?: { recordCommitProof?: boolean },
+      ): Promise<boolean> {
         invalidationCalls += 1;
         return false;
       },
@@ -1013,7 +1025,11 @@ test("recovery readies a missing-source invalidation with an exact durable proof
         assert.equal(snapshot.frontmatter.id, old.frontmatter.id);
         return true;
       },
-      async invalidateMemory(): Promise<boolean> {
+      async invalidateMemory(
+        _id: string,
+        _snapshot?: Pick<MemoryFile, "content" | "frontmatter"> & Partial<Pick<MemoryFile, "path">>,
+        _options?: { recordCommitProof?: boolean },
+      ): Promise<boolean> {
         invalidationCalls += 1;
         return false;
       },
@@ -2209,7 +2225,12 @@ test("replayed merge refreshes survivor index visibility during recovery", async
       async updateMemoryIfUnchanged(
         expected: MemoryFile,
         content: string,
-        options?: { supersedes?: string; lineage?: string[] },
+        options?: {
+          supersedes?: string;
+          lineage?: string[];
+          actor?: string;
+          sourceConnector?: string;
+        },
       ): Promise<boolean> {
         const current = fixtureValue.memories.get(expected.frontmatter.id);
         if (!current) return false;
@@ -2224,7 +2245,11 @@ test("replayed merge refreshes survivor index visibility during recovery", async
         });
         return true;
       },
-      async invalidateMemory(id: string): Promise<boolean> {
+      async invalidateMemory(
+        id: string,
+        _snapshot?: Pick<MemoryFile, "content" | "frontmatter"> & Partial<Pick<MemoryFile, "path">>,
+        _options?: { recordCommitProof?: boolean },
+      ): Promise<boolean> {
         return fixtureValue.memories.delete(id);
       },
     } as unknown as StorageManager;
@@ -2243,9 +2268,6 @@ test("replayed merge refreshes survivor index visibility during recovery", async
     );
     await second.recover();
 
-    // The survivor (replacement) is the replayed MERGE target: its index
-    // visibility is refreshed via the injected reindex port, and the superseded
-    // source is deindexed — equivalent to a consolidation MERGE's inline effects.
     assert.deepEqual(replay.reindexCalls, ["replacement"], "recovery reindexes the survivor");
     assert.deepEqual(replay.deindexCalls, [["old"]], "recovery deindexes the superseded source");
     assert.equal(jobById(await second.listJobs(), jobId).status, "ready");
@@ -2266,7 +2288,8 @@ test("replayed invalidation removes stale index visibility during recovery", asy
       },
       async invalidateMemory(
         id: string,
-        snapshot?: Pick<MemoryFile, "content" | "frontmatter" | "path">,
+        snapshot?: Pick<MemoryFile, "content" | "frontmatter"> & Partial<Pick<MemoryFile, "path">>,
+        _options?: { recordCommitProof?: boolean },
       ): Promise<boolean> {
         assert.equal(id, old.frontmatter.id);
         assert.equal(snapshot?.path, old.path);

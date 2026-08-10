@@ -1085,8 +1085,12 @@ export class DependencyPropagationDelivery {
         }
       }
       const entries = [...latestByJobId.values()].sort((left, right) => {
-        if (left.job.updatedAt !== right.job.updatedAt) return right.job.updatedAt - left.job.updatedAt;
-        if (left.job.revision !== right.job.revision) return right.job.revision - left.job.revision;
+        if (left.job.updatedAt !== right.job.updatedAt) {
+          return right.job.updatedAt > left.job.updatedAt ? 1 : -1;
+        }
+        if (left.job.revision !== right.job.revision) {
+          return right.job.revision > left.job.revision ? 1 : -1;
+        }
         return compareByteStable(left.filePath, right.filePath);
       });
       const oldJobs = entries.slice(TERMINAL_RETENTION_COUNT);
