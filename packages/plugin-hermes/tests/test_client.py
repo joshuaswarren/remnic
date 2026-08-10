@@ -57,6 +57,48 @@ class TestClientNamespace:
             params={"namespace": "generalist"},
         )
 
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("client_id", "généraliste"),
+            ("namespace", "généraliste"),
+            ("session_key", "séance-1"),
+        ],
+    )
+    def test_rejects_non_ascii_header_values(self, field, value):
+        kwargs = {
+            "host": "127.0.0.1",
+            "port": 4318,
+            "token": "test-token",
+            "client_id": "hermes",
+        }
+        kwargs[field] = value
+
+        with (
+            patch("remnic_hermes.client.httpx.AsyncClient") as mock_async_client,
+            pytest.raises(ValueError, match=f"{field} must contain only ASCII characters"),
+        ):
+            RemnicClient(**kwargs)
+
+        mock_async_client.assert_not_called()
+
+    def test_rejects_non_ascii_session_update_without_changing_header(self):
+        with patch("remnic_hermes.client.httpx.AsyncClient") as mock_async_client:
+            http = mock_async_client.return_value
+            http.headers = {"X-Hermes-Session-Id": "session-1"}
+            client = RemnicClient(
+                host="127.0.0.1",
+                port=4318,
+                token="test-token",
+                client_id="hermes",
+                session_key="session-1",
+            )
+
+            with pytest.raises(ValueError, match="session_key must contain only ASCII characters"):
+                client.set_session_key("séance-2")
+
+        assert http.headers["X-Hermes-Session-Id"] == "session-1"
+
 
 class TestClientClose:
     @pytest.mark.asyncio

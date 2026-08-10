@@ -8,6 +8,16 @@ from urllib.parse import quote
 import httpx
 
 
+def _validate_header_value(field: str, value: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field} must be a string")
+    try:
+        value.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ValueError(f"{field} must contain only ASCII characters") from exc
+    return value
+
+
 class RemnicClient:
     """Typed async HTTP client for the Remnic daemon.
 
@@ -28,6 +38,10 @@ class RemnicClient:
         session_key: str = "",
         timeout: float = 30.0,
     ) -> None:
+        client_id = _validate_header_value("client_id", client_id)
+        if namespace is not None:
+            namespace = _validate_header_value("namespace", namespace)
+        session_key = _validate_header_value("session_key", session_key)
         self.base_url = f"http://{host}:{port}/engram/v1"
         self.mcp_url = f"http://{host}:{port}/mcp"
         self.token = token
@@ -51,6 +65,7 @@ class RemnicClient:
         )
 
     def set_session_key(self, session_key: str) -> None:
+        session_key = _validate_header_value("session_key", session_key)
         self.session_key = session_key
         if session_key:
             self._http.headers["X-Hermes-Session-Id"] = session_key
@@ -76,7 +91,6 @@ class RemnicClient:
         resp = await self._http.get(path, params=clean_params)
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
-
 
     async def _mcp_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         self._mcp_request_id += 1
