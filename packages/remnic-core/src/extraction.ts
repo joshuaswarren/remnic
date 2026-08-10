@@ -186,26 +186,14 @@ export class ExtractionEngine {
     }
   }
 
-  /**
-   * Whether LLM calls should be routed through the gateway model chain
-   * instead of the plugin's own local/OpenAI clients.
-   */
   private get useGatewayModelSource(): boolean {
     return this.config.modelSource === "gateway";
   }
 
-  /**
-   * Whether the local LLM path should be attempted.
-   * Disabled when gateway model source is active (gateway chain replaces local).
-   */
   private get shouldUseLocalLlm(): boolean {
     return resolveLocalLlmCapabilities(this.config).localLlm && !this.useGatewayModelSource;
   }
 
-  /**
-   * Whether the direct OpenAI client should be used.
-   * Disabled when gateway model source is active.
-   */
   private get shouldUseDirectClient(): boolean {
     return !this.useGatewayModelSource && this.client !== null;
   }
