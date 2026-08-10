@@ -79,7 +79,7 @@ import {
   deleteInFlightReadsForDir,
   clearInFlightReads,
 } from "./in-flight-reads.js";
-import * as archiveMutation from "./archive-mutation-version.js";
+import * as archive from "./archive-mutation-version.js";
 import { rotateMarkdownFileToArchive } from "./hygiene.js";
 import { sanitizeMemoryContent } from "./sanitize.js";
 import { withholdToolScopedFromSharedNamespace } from "./tool-scoped-memory.js";
@@ -2413,8 +2413,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     // path uses bumpMemoryCorpusVersionExclusive and clears the slot itself.)
     deleteInFlightReadsForDir(this.baseDir);
   }
-  getArchiveMutationVersion(): number { return archiveMutation.getArchiveMutationVersionForDir(this.baseDir); }
-
+  getArchiveMutationVersion(): number { return archive.getArchiveMutationVersionForDir(this.baseDir); }
 
   /**
    * Corpus bump reporting whether THIS process's append was the only one
@@ -4585,10 +4584,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         hotChanged = true;
       }
     }
-    if (hotChanged) {
-      this.invalidateAllMemoriesCache();
-    }
-    archiveMutation.bumpArchiveMutationIfChanged(this.baseDir, archiveChanged);
+    if (hotChanged) this.invalidateAllMemoriesCache();
+    archive.bumpArchiveMutationIfChanged(this.baseDir, archiveChanged);
     if (coldChanged) {
       this.invalidateColdMemoriesCache();
     }
@@ -5150,6 +5147,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     this.notifyCatalogWrite();
   }
   async moveMemoryToPath(memory: MemoryFile, targetPath: string): Promise<boolean> {
+    const { recordArchiveDelete, recordArchiveWrite } = archive;
     const changed = await this.withTombstoneBlockedMemoryPathLock(
       memory.path,
       async (current) => {
@@ -5178,16 +5176,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         let durable = false;
         try {
           if (destination?.frontmatter.id === current.frontmatter.id) {
-            await archiveMutation.recordArchiveDelete(this.baseDir, current.path, () =>
-              this.deleteManagedStorageFile(current.path)
-            );
+            await recordArchiveDelete(this.baseDir, current.path, () => this.deleteManagedStorageFile(current.path));
             durable = true;
             this.invalidateAllMemoriesCache();
             updateProjectedMemoryPath(this.baseDir, current.frontmatter.id, projectedPath);
           } else {
-            await archiveMutation.recordArchiveWrite(this.baseDir, targetPath, () =>
-              this.writeMemoryFileAtomic(targetPath, current)
-            );
+            await recordArchiveWrite(this.baseDir, targetPath, () => this.writeMemoryFileAtomic(targetPath, current));
             if (memory.frontmatter.entityRef !== current.frontmatter.entityRef) {
               memory.frontmatter.entityRef = current.frontmatter.entityRef;
             }
@@ -5195,9 +5189,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
             const sourcePath = path.resolve(current.path);
             const destPath = path.resolve(targetPath);
             if (sourcePath !== destPath) {
-              await archiveMutation.recordArchiveDelete(this.baseDir, current.path, () =>
-                this.deleteManagedStorageFile(current.path)
-              );
+              await recordArchiveDelete(this.baseDir, current.path, () => this.deleteManagedStorageFile(current.path));
               this.invalidateAllMemoriesCache();
               updateProjectedMemoryPath(this.baseDir, current.frontmatter.id, projectedPath);
             }
@@ -5244,6 +5236,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    * Returns the new file path on success, null on failure.
    */
   async archiveMemory(memory: MemoryFile, lifecycle?: MemoryLifecycleEventWriteOptions): Promise<string | null> {
+    const { recordArchiveDelete, recordArchiveWrite } = archive;
     const archiveCurrent = async (current: MemoryFile, markDurable: () => void): Promise<string | null> => {
       try {
         const now = lifecycle?.at ?? new Date();
@@ -5266,9 +5259,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         // Snapshot a pre-existing destination (retried archive) so a repair
         // failure restores it instead of deleting the only archived copy (§14).
         const priorDest = await this.readStorageSecureFile(destPath).catch(() => null);
-        await archiveMutation.recordArchiveWrite(this.baseDir, destPath, () =>
-          this.writeStorageSecureFile(destPath, fileContent)
-        );
+        await recordArchiveWrite(this.baseDir, destPath, () => this.writeStorageSecureFile(destPath, fileContent));
         if (typeof current.frontmatter.entityRef === "string") {
           try {
             await this.entityRefRepair.repair(
@@ -5280,14 +5271,14 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
             );
           } catch (err) {
             if (priorDest === null) {
-              await archiveMutation.recordArchiveDelete(this.baseDir, destPath, () =>
+              await recordArchiveDelete(this.baseDir, destPath, () =>
                 unlink(destPath).then(
                   () => true,
                   () => false
                 )
               );
             } else {
-              await archiveMutation.recordArchiveDelete(this.baseDir, destPath, () =>
+              await recordArchiveDelete(this.baseDir, destPath, () =>
                 this.writeStorageSecureFile(destPath, priorDest).then(
                   () => true,
                   () => false
@@ -5297,9 +5288,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
             throw err;
           }
         }
-        const deleted = await archiveMutation.recordArchiveDelete(this.baseDir, current.path, () =>
-          this.deleteManagedStorageFile(current.path)
-        );
+        const deleted = await recordArchiveDelete(this.baseDir, current.path, () =>
+          this.deleteManagedStorageFile(current.path));
         if (!deleted) return null;
         markDurable();
         markProjectedMemoryPathInvalid(this.baseDir, current.frontmatter.id);
@@ -5399,9 +5389,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (!memory) return false;
 
     return await this.runTombstoneBlockedInvalidation(memory, async (current, rebuildMarker, markDurable) => {
-      const deleted = await archiveMutation.recordArchiveDelete(this.baseDir, current.path, () =>
-        this.deleteManagedStorageFile(current.path)
-      );
+      const deleted = await archive.recordArchiveDelete(this.baseDir, current.path, () =>
+        this.deleteManagedStorageFile(current.path));
       if (!deleted) return false;
       markDurable();
       markProjectedMemoryPathInvalid(this.baseDir, id);
