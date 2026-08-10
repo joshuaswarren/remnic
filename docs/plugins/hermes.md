@@ -143,6 +143,7 @@ remnic:
   host: "127.0.0.1"
   port: 4318
   token: ""
+  client_id: ""
   session_key: ""
   timeout: 30.0
   prefetch_wait_timeout: 2.0
@@ -155,11 +156,14 @@ remnic:
 | `host` | string | `"127.0.0.1"` | Hostname or IP of the Remnic daemon. Overridden by `REMNIC_HOST` env var. |
 | `port` | integer | `4318` | TCP port of the Remnic daemon. Overridden by `REMNIC_PORT` env var. |
 | `token` | string | `""` | Auth token for the daemon. If empty, auto-loaded from the token store (see [Token bootstrap](#token-bootstrap)). |
-| `session_key` | string | `""` | Session identifier passed on every recall/observe call. If empty, auto-generated as `hermes-<12 random hex chars>` at startup. |
+| `client_id` | string | `""` | Printable ASCII daemon namespace selector with at most 256 characters and no edge spaces. The client sends a configured value as `X-Engram-Client-Id`, `X-Engram-Namespace`, and the REST `namespace` field. If empty, `namespace` is used. If both are empty, the request uses the daemon default while the legacy client identifier remains `"hermes"`. Added in 1.0.6 (issue #2310). |
+| `session_key` | string | `""` | Printable ASCII session identifier without edge spaces. Config input is trimmed. The client passes it on every recall/observe call. If empty, the plugin generates `hermes-<12 random hex chars>` at startup. |
 | `timeout` | float | `30.0` | HTTP request timeout in seconds applied to all daemon calls. |
 | `prefetch_wait_timeout` | float | `2.0` | Maximum seconds `prefetch()` blocks the turn waiting for a first-fetch recall (always additionally capped by `timeout`). Set `0` for pure fire-and-forget: prefetch only ever returns cached results and never waits. Invalid values (negative, non-numeric, NaN/inf) are rejected at load. Added in 1.0.5 (issue #1929). |
 
-No other fields are read. Fields documented elsewhere (such as `namespace`, `recall_top_k`, `recall_mode`, or `token_env`) do not exist in this implementation.
+`namespace` is accepted as an alias for `client_id`. A non-empty `client_id` takes precedence when both fields are set.
+
+No other fields are read. Fields documented elsewhere, such as `recall_top_k`, `recall_mode`, or `token_env`, do not exist in this implementation.
 
 ---
 
@@ -370,6 +374,7 @@ plugins:
 remnic:
   host: "127.0.0.1"
   port: 4318
+  client_id: "shared"
   session_key: "research"
 ```
 
@@ -381,12 +386,15 @@ plugins:
 remnic:
   host: "127.0.0.1"
   port: 4318
+  client_id: "shared"
   session_key: "coding"
 ```
 
-The `session_key` is passed on every `/recall` and `/observe` call, so the daemon can scope retrieval to sessions with matching keys. If `session_key` is omitted, the provider generates a random key (`hermes-<12hex>`) at startup; this means recall will only find memories from the same process lifetime unless you set a stable key.
+The `client_id` selects the daemon namespace for every request. Both examples use `shared`, so they can recall the same memories.
 
-To share memories across all profiles, omit `session_key` in both configs and rely on the Remnic daemon's global index.
+The `session_key` is passed on every `/recall` and `/observe` call. Different values keep each profile's session state separate.
+
+Set different `client_id` values to isolate profile namespaces. Set the same value when profiles should share one namespace.
 
 ---
 

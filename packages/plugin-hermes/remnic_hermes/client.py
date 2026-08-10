@@ -8,6 +8,20 @@ from urllib.parse import quote
 import httpx
 
 
+def _validate_header_value(field: str, value: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field} must be a string")
+    if (
+        value.startswith(" ")
+        or value.endswith(" ")
+        or any(ord(character) < 0x20 or ord(character) > 0x7E for character in value)
+    ):
+        raise ValueError(f"{field} must be printable ASCII without edge spaces")
+    if field in {"client_id", "namespace"} and len(value) > 256:
+        raise ValueError(f"{field} must contain at most 256 characters")
+    return value
+
+
 class RemnicClient:
     """Typed async HTTP client for the Remnic daemon.
 
@@ -24,25 +38,49 @@ class RemnicClient:
         port: int = 4318,
         token: str = "",
         client_id: str = "hermes",
+        namespace: str | None = None,
+        session_key: str = "",
         timeout: float = 30.0,
     ) -> None:
+        client_id = _validate_header_value("client_id", client_id)
+        if namespace is not None:
+            namespace = _validate_header_value("namespace", namespace)
+        session_key = _validate_header_value("session_key", session_key)
         self.base_url = f"http://{host}:{port}/engram/v1"
         self.mcp_url = f"http://{host}:{port}/mcp"
         self.token = token
         self.client_id = client_id
+        self.namespace = namespace
+        self.session_key = session_key
         self._mcp_request_id = 0
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "X-Engram-Client-Id": client_id,
+        }
+        if namespace:
+            headers["X-Engram-Namespace"] = namespace
+        if session_key:
+            headers["X-Hermes-Session-Id"] = session_key
         self._http = httpx.AsyncClient(
             base_url=self.base_url,
             timeout=timeout,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-                "X-Engram-Client-Id": client_id,
-            },
+            headers=headers,
         )
 
+    def set_session_key(self, session_key: str) -> None:
+        session_key = _validate_header_value("session_key", session_key)
+        self.session_key = session_key
+        if session_key:
+            self._http.headers["X-Hermes-Session-Id"] = session_key
+        else:
+            self._http.headers.pop("X-Hermes-Session-Id", None)
+
     async def _post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        resp = await self._http.post(path, json=payload)
+        request_payload = payload
+        if self.namespace and payload.get("namespace") is None:
+            request_payload = {**payload, "namespace": self.namespace}
+        resp = await self._http.post(path, json=request_payload)
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
@@ -52,6 +90,8 @@ class RemnicClient:
             for key, value in (params or {}).items()
             if value is not None
         }
+        if path != "/health" and self.namespace and "namespace" not in clean_params:
+            clean_params["namespace"] = self.namespace
         resp = await self._http.get(path, params=clean_params)
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
