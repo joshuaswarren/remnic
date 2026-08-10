@@ -81,8 +81,8 @@ interface ManagedPluginInspection {
   version?: string;
 }
 
-function isInstalledPluginStatus(status: unknown): boolean {
-  return status === "loaded" || status === "disabled";
+function isInstalledPluginStatus(status: unknown, allowDisabled: boolean): boolean {
+  return status === "loaded" || (allowDisabled && status === "disabled");
 }
 
 export interface OpenclawCommandOptions {
@@ -302,7 +302,7 @@ export function installPublishedOpenclawPlugin(
         runOpenclawCommand(restoreArgs);
         const restoredPlugin = inspectInstalledPlugin(inspectSupportsRuntime);
         if (
-          !isInstalledPluginStatus(restoredPlugin.status) ||
+          !isInstalledPluginStatus(restoredPlugin.status, previousInstall.status === "disabled") ||
           restoredPlugin.installSource !== previousSource ||
           restoredPlugin.version !== previousInstall.version
         ) {
@@ -324,7 +324,7 @@ export function installPublishedOpenclawPlugin(
           runOpenclawCommand(localRestoreArgs);
           const locallyRestoredPlugin = inspectInstalledPlugin(inspectSupportsRuntime);
           if (
-            !isInstalledPluginStatus(locallyRestoredPlugin.status) ||
+            !isInstalledPluginStatus(locallyRestoredPlugin.status, previousInstall.status === "disabled") ||
             locallyRestoredPlugin.installSource !== "path" ||
             locallyRestoredPlugin.version !== previousInstall.version
           ) {
@@ -432,7 +432,7 @@ export function installPublishedOpenclawPlugin(
       shouldRestoreBackup = true;
     }
 
-    if (!isInstalledPluginStatus(inspectedPlugin.status)) {
+    if (!isInstalledPluginStatus(inspectedPlugin.status, previousManagedInstall.status === "disabled")) {
       throw new Error(
         `OpenClaw reported plugin status ${JSON.stringify(inspectedPlugin.status ?? "missing")} ` +
           `for ${REMNIC_OPENCLAW_PLUGIN_ID} after the managed install.`

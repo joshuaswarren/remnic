@@ -164,6 +164,7 @@ export async function loadOpenclawManagedUpgradeModule(
       "install",
       "--ignore-scripts",
       "--no-save",
+      "--omit=peer",
       "--fund=false",
       "--prefix",
       temporaryRoot,

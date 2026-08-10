@@ -63,6 +63,26 @@ function writeMissingManagedUpgradeLoader(root: string): string {
   return loaderPath;
 }
 
+function writeFirstConfigRestoreFailureRequire(root: string): string {
+  const requirePath = path.join(root, "fail-first-config-restore.cjs");
+  fs.writeFileSync(
+    requirePath,
+    `const fs = require("node:fs");
+const originalCopyFileSync = fs.copyFileSync;
+let failed = false;
+fs.copyFileSync = function (sourcePath, targetPath, ...args) {
+  if (!failed && String(sourcePath).includes("/backups/") && String(sourcePath).endsWith("/openclaw.json")) {
+    failed = true;
+    throw new Error("transient config restore failure");
+  }
+  return originalCopyFileSync.call(this, sourcePath, targetPath, ...args);
+};
+`,
+    "utf8"
+  );
+  return requirePath;
+}
+
 function createUpgradeFixture(): UpgradeFixture {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-openclaw-managed-upgrade-"));
   const binDir = path.join(root, "bin");
@@ -222,7 +242,10 @@ if (args[0] === "plugins" && args[1] === "inspect") {
   const smokeFails =
     process.env.FAIL_OPENCLAW_SMOKE === "1" &&
     (!process.env.FAIL_OPENCLAW_SMOKE_VERSION || record?.version === process.env.FAIL_OPENCLAW_SMOKE_VERSION);
-  const runtimeDisabled = process.env.OPENCLAW_PLUGIN_DISABLED === "1";
+  const runtimeDisabled =
+    process.env.OPENCLAW_PLUGIN_DISABLED === "1" &&
+    (!process.env.OPENCLAW_PLUGIN_DISABLED_VERSION ||
+      record?.version === process.env.OPENCLAW_PLUGIN_DISABLED_VERSION);
   const loaded =
     installPath.length > 0 && fs.existsSync(installPath + "/new-install-marker") && !smokeFails;
   const healthy = loaded || runtimeDisabled;
@@ -493,6 +516,27 @@ test("openclaw upgrade preserves an intentionally disabled plugin", () => {
     assert.doesNotMatch(rollbackResult.stderr, /rollback steps failed|could not restore/i);
     assert.equal(restoredIndex.source, "npm");
     assert.equal(restoredIndex.version, "9.49.0");
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("openclaw upgrade rejects an unexpectedly disabled replacement", () => {
+  const fixture = createUpgradeFixture();
+  try {
+    const result = runUpgrade(
+      fixture,
+      {
+        ...fixture.env,
+        OPENCLAW_PLUGIN_DISABLED: "1",
+        OPENCLAW_PLUGIN_DISABLED_VERSION: "9.50.0",
+      },
+      "9.50.0"
+    );
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /plugin status "disabled"/);
+    assert.equal(fs.readFileSync(path.join(fixture.pluginDir, "old-install-marker"), "utf8"), "present\n");
   } finally {
     fs.rmSync(fixture.root, { recursive: true, force: true });
   }
@@ -1161,15 +1205,18 @@ test("openclaw upgrade preserves coherent host state when registry rollback fail
     })
   );
   try {
+    const configRestoreRequire = writeFirstConfigRestoreFailureRequire(fixture.root);
     const result = runUpgrade(fixture, {
       ...fixture.env,
       OPENCLAW_BREAK_CONFIG_AFTER_INSTALL: "1",
       OPENCLAW_BREAK_CONFIG_VERSION: "9.49.0",
       OPENCLAW_LOCAL_RESTORE_VERSION: "9.24.0",
       OPENCLAW_ROLLBACK_INSTALL_FAIL_BEFORE_MUTATION: "1",
+      NODE_OPTIONS: `${fixture.env.NODE_OPTIONS ?? ""} --require=${configRestoreRequire}`.trim(),
     });
 
     assert.notEqual(result.status, 0);
+    assert.doesNotMatch(result.stderr, /Automatic rollback also failed/);
     assert.ok(fs.existsSync(fixture.managedIndexPath), result.stderr);
     const index = JSON.parse(fs.readFileSync(fixture.managedIndexPath, "utf8")) as {
       installPath?: string;
@@ -1177,7 +1224,7 @@ test("openclaw upgrade preserves coherent host state when registry rollback fail
       sourcePath?: string;
       version?: string;
     };
-    assert.equal(index.source, "path");
+    assert.equal(index.source, "path", JSON.stringify({ index, stderr: result.stderr, stdout: result.stdout }));
     assert.equal(index.version, "9.24.0");
     assert.ok(index.sourcePath);
     assert.ok(index.installPath);

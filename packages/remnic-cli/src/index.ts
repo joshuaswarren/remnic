@@ -268,6 +268,7 @@ import {
   createOpenclawUpgradeRollbackFailure,
   runBestEffortGatewayRestart,
   rollbackOpenclawUpgrade,
+  restoreOpenclawConfigWithRetry,
 } from "./openclaw-upgrade-swap.js";
 import type { OpenclawCommandRunner } from "@remnic/plugin-openclaw/managed-upgrade";
 import {
@@ -11979,23 +11980,25 @@ async function cmdOpenclawUpgrade(opts: OpenclawUpgradeOptions): Promise<void> {
     }
 
     const rollbackErrors: unknown[] = [];
+    let pendingConfigRestoreError: unknown;
     let usedLocalManagedRestore = Boolean(publishedInstallError?.managedRestoreNote);
     const rollbackNotes: string[] = publishedInstallError?.managedRestoreNote
       ? [publishedInstallError.managedRestoreNote]
       : [];
-    if (installResult) {
-      if (shouldRestoreConfig) {
-        try {
-          rollbackOpenclawUpgrade({
-            configBackupPath,
-            configPath,
-            pluginDir,
-            removeConfigIfUnbacked: !configExistedBefore,
-          });
-        } catch {
-          rollbackNotes.push("The initial OpenClaw config restore failed; the final rollback retry succeeded");
-        }
+    if (installResult && shouldRestoreConfig) {
+      try {
+        const configRestoreNote = restoreOpenclawConfigWithRetry({
+          configBackupPath,
+          configPath,
+          pluginDir,
+          removeConfigIfUnbacked: !configExistedBefore,
+        });
+        if (configRestoreNote) rollbackNotes.push(configRestoreNote);
+      } catch (error) {
+        pendingConfigRestoreError = error;
       }
+    }
+    if (installResult) {
       try {
         const managedRestoreNote = installResult.rollbackManagedInstall();
         if (managedRestoreNote) {
@@ -12006,20 +12009,23 @@ async function cmdOpenclawUpgrade(opts: OpenclawUpgradeOptions): Promise<void> {
         rollbackErrors.push(error);
       }
     }
+    const finalRestoresConfig = shouldRestoreConfig && !usedLocalManagedRestore;
     try {
       rollbackNotes.push(
         ...rollbackOpenclawUpgrade({
-          configBackupPath: shouldRestoreConfig && !usedLocalManagedRestore ? configBackupPath : undefined,
+          configBackupPath: finalRestoresConfig ? configBackupPath : undefined,
           configPath,
           pluginBackupDir: shouldRestorePlugin ? pluginBackupDir : undefined,
           pluginDir,
           rollbackDir: pluginRollbackDir,
-          removeConfigIfUnbacked: shouldRestoreConfig && !usedLocalManagedRestore && !configExistedBefore,
-        })
+          removeConfigIfUnbacked: finalRestoresConfig && !configExistedBefore,
+        }),
       );
+      if (finalRestoresConfig) pendingConfigRestoreError = undefined;
     } catch (error) {
       rollbackErrors.push(error);
     }
+    if (pendingConfigRestoreError) rollbackErrors.push(pendingConfigRestoreError);
     if (
       managedRollbackDir &&
       path.resolve(managedRollbackTargetDir) !== path.resolve(pluginDir) &&

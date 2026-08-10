@@ -293,6 +293,20 @@ export function rollbackOpenclawUpgrade({
   return notes;
 }
 
+export function restoreOpenclawConfigWithRetry(options: RollbackOpenclawUpgradeOptions): string | undefined {
+  try {
+    rollbackOpenclawUpgrade(options);
+    return undefined;
+  } catch (initialRestoreError) {
+    try {
+      rollbackOpenclawUpgrade(options);
+      return "Restored OpenClaw config after a transient rollback failure";
+    } catch (retryRestoreError) {
+      throw new AggregateError([initialRestoreError, retryRestoreError], "OpenClaw config restore failed twice.");
+    }
+  }
+}
+
 export function createOpenclawUpgradeRollbackFailure(options: {
   failurePhase: string;
   installError: unknown;

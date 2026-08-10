@@ -123,6 +123,7 @@ test("managed upgrade loader installs the tooling adapter in an isolated tempora
       assert.ok(temporaryRoot);
       assert.deepEqual(args.slice(0, 2), ["install", "--ignore-scripts"]);
       assert.ok(args.includes(CLI_TOOLING_PACKAGE_SPEC));
+      assert.ok(args.includes("--omit=peer"));
       assert.ok(!args.includes("@remnic/plugin-openclaw@9.49.1"));
 
       writeManagedUpgradeFixture(temporaryRoot);
