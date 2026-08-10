@@ -351,26 +351,25 @@ test("unknown event fails open with continue", async () => {
 
 // ── #1443 review fixes ──────────────────────────────────────────────────────
 
-test("hooks.json: every event resolves via ${PLUGIN_ROOT} and uses powershell (#1443 review)", () => {
+const POSIX_HOOK_EVENTS = Object.freeze({
+  SessionStart: "session-start",
+  PostToolUse: "post-tool-observe",
+  UserPromptSubmit: "user-prompt-recall",
+  Stop: "session-end",
+  PreCompact: "pre-compact",
+});
+
+test("hooks.json: every POSIX event invokes the correct launcher event through sh", () => {
   const cfg = JSON.parse(
     fs.readFileSync(path.join(__dirname, "..", "hooks.json"), "utf8"),
   );
-  for (const event of ["SessionStart", "PostToolUse", "UserPromptSubmit", "Stop", "PreCompact"]) {
+  for (const [event, runnerEvent] of Object.entries(POSIX_HOOK_EVENTS)) {
     for (const matcher of cfg.hooks[event]) {
       for (const hook of matcher.hooks) {
-        // Codex runs plugin hooks from the session cwd via sh -lc / cmd /C and
-        // substitutes ${PLUGIN_ROOT} (openai/codex discovery.rs + command_runner.rs),
-        // so the path must be PLUGIN_ROOT-relative AND quoted — an unquoted path
-        // would word-split on a plugin root containing spaces (e.g.
-        // C:\Users\Jane Doe).
-        assert.ok(
-          hook.command.startsWith('"${PLUGIN_ROOT}/hooks/bin/'),
-          `${event}.command must resolve via a quoted \${PLUGIN_ROOT}, got: ${hook.command}`,
-        );
-        assert.match(
+        assert.equal(
           hook.command,
-          /^"\$\{PLUGIN_ROOT\}\/hooks\/bin\/remnic-codex-hook\.sh"\s/,
-          `${event}.command path must be wrapped in double quotes`,
+          `sh "\${PLUGIN_ROOT}/hooks/bin/remnic-codex-hook.sh" ${runnerEvent}`,
+          `${event}.command must invoke the matching runner event through sh`,
         );
         assert.ok(hook.commandWindows, `${event} must declare commandWindows`);
         assert.match(
@@ -378,8 +377,6 @@ test("hooks.json: every event resolves via ${PLUGIN_ROOT} and uses powershell (#
           /-File "\$\{PLUGIN_ROOT\}\\hooks\\bin\\remnic-codex-hook\.ps1"\s/,
           `${event}.commandWindows must pass a quoted \${PLUGIN_ROOT} -File path`,
         );
-        // Use `powershell` not `pwsh` so stock Windows 10/11 works without
-        // PowerShell 7 installed (#1443 review).
         assert.match(
           hook.commandWindows,
           /^powershell\b/,
@@ -389,6 +386,67 @@ test("hooks.json: every event resolves via ${PLUGIN_ROOT} and uses powershell (#
     }
   }
 });
+
+test(
+  "hooks.json: every POSIX command runs a packaged launcher without executable mode",
+  { skip: process.platform === "win32" },
+  async () => {
+    const home = mkHome();
+    try {
+      const pluginRoot = path.join(home, "plugin root");
+      const binDir = path.join(pluginRoot, "hooks", "bin");
+      fs.mkdirSync(binDir, { recursive: true });
+      for (const file of ["remnic-codex-hook.sh", "remnic-codex-hook.cjs"]) {
+        fs.copyFileSync(path.join(__dirname, file), path.join(binDir, file));
+      }
+      fs.chmodSync(path.join(binDir, "remnic-codex-hook.sh"), 0o644);
+
+      const cfg = JSON.parse(
+        fs.readFileSync(path.join(__dirname, "..", "hooks.json"), "utf8"),
+      );
+      const runCommand = (command, sessionId) => new Promise((resolve, reject) => {
+        const child = spawn("sh", ["-c", command], {
+          env: {
+            ...process.env,
+            HOME: home,
+            USERPROFILE: home,
+            XDG_STATE_HOME: path.join(home, "state"),
+            PLUGIN_ROOT: pluginRoot,
+            REMNIC_CODEX_MATERIALIZE: "0",
+            OPENCLAW_REMNIC_ACCESS_TOKEN: "",
+            OPENCLAW_ENGRAM_ACCESS_TOKEN: "",
+            REMNIC_AUTH_TOKEN: "",
+            ENGRAM_AUTH_TOKEN: "",
+            REMNIC_HOOK_TOKEN: "",
+            REMNIC_DAEMON_URL: "",
+            ENGRAM_DAEMON_URL: "",
+          },
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (data) => {
+          stdout += data;
+        });
+        child.stderr.on("data", (data) => {
+          stderr += data;
+        });
+        child.stdin.end(JSON.stringify({ session_id: sessionId, cwd: home }));
+        child.on("error", reject);
+        child.on("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
+      });
+
+      for (const [event, runnerEvent] of Object.entries(POSIX_HOOK_EVENTS)) {
+        const command = cfg.hooks[event][0].hooks[0].command;
+        const result = await runCommand(command, `${runnerEvent}-mode-test`);
+        assert.equal(result.exitCode, 0, `${event}: ${result.stderr}`);
+        assert.equal(JSON.parse(result.stdout).continue, true, event);
+      }
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  },
+);
 
 test("runner source: remnic→engram fallthrough is PATH-gated and Windows-shim aware (#1443 review)", () => {
   const src = fs.readFileSync(path.join(__dirname, "remnic-codex-hook.cjs"), "utf8");

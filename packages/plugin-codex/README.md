@@ -31,7 +31,7 @@ The package is **data + one small runtime materializer** (no runtime JS beyond t
 | File / dir | Purpose |
 |---|---|
 | `.codex-plugin/plugin.json` | Plugin manifest |
-| `hooks/hooks.json` + `hooks/bin/remnic-codex-hook.{cjs,sh,ps1}` | Codex session-lifecycle hooks (recall, observe, session-end, **pre-compact LCM flush**). A single cross-platform Node.js runner (`.cjs`) with thin POSIX (`.sh`) and Windows PowerShell (`.ps1`) launchers; `hooks.json` wires each event with both `command` and `commandWindows` so hooks work on macOS, Linux, and Windows. |
+| `hooks/hooks.json` + `hooks/bin/remnic-codex-hook.{cjs,sh,ps1}` | Codex session hooks for recall, observe, session end, and pre-compact LCM flush. `hooks.json` invokes the POSIX launcher through `sh`, so hooks still run when an install path does not preserve its executable mode. Windows uses the PowerShell launcher. |
 | `skills/` | `remnic-recall`, `remnic-remember`, `remnic-search`, `remnic-status`, `remnic-entities`, `remnic-memory-workflow` — invocable from Codex chats |
 | `memories_extensions/remnic/` | Codex phase-2 consolidation instructions — tells the Codex compactor sub-agent to treat Remnic's on-disk Markdown as an authoritative local memory source when it builds `MEMORY.md`. Local-only (no MCP, no network); runtime recall/observe still flow through the hooks above. |
 | `.mcp.json` | MCP server config pointing Codex at `http://localhost:4318/mcp` |
@@ -132,10 +132,10 @@ the foreground path reads it.
 
 Codex does not run non-managed command hooks until a human reviews and trusts
 them. The first time these hooks are enabled, Codex prints a startup warning
-directing you to run `/hooks` in the CLI; review the four Remnic entries
-(SessionStart / UserPromptSubmit / Stop / PreCompact) and approve them. Codex
-records trust against the current hook hash, so updates to `hooks.json` will
-re-trigger a review.
+directing you to run `/hooks` in the CLI. Review the five Remnic entries
+(SessionStart, PostToolUse, UserPromptSubmit, Stop, and PreCompact), then
+approve them. Codex records trust against the current hook hash, so updates
+to `hooks.json` will trigger a new review.
 
 For fleet / headless automation there is no non-interactive trust CLI today;
 pick one of:
