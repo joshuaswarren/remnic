@@ -3,6 +3,28 @@ import path from "node:path";
 
 export const REMNIC_OPENCLAW_PLUGIN_ID = "openclaw-remnic";
 const OPENCLAW_EXEC_TIMEOUT_MS = 120_000;
+const OPENCLAW_PLUGIN_PACKAGE = "@remnic/plugin-openclaw";
+const SEMVER_CORE_SELECTOR = /^v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)/;
+const SEMVER_SUFFIX_SELECTOR = /^(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+const DIST_TAG_SELECTOR = /^[A-Za-z][0-9A-Za-z._-]*$/;
+
+function isExactSemverSelector(selector: string): boolean {
+  const core = selector.match(SEMVER_CORE_SELECTOR)?.[0];
+  return Boolean(core && SEMVER_SUFFIX_SELECTOR.test(selector.slice(core.length)));
+}
+
+function assertRegistryPackageSpec(spec: string): void {
+  const prefix = `${OPENCLAW_PLUGIN_PACKAGE}@`;
+  const selector = spec.startsWith(prefix) ? spec.slice(prefix.length) : "";
+  const lowerSelector = selector.toLowerCase();
+  const archiveSelector = lowerSelector.endsWith(".tgz") || lowerSelector.endsWith(".tar.gz");
+  if (!selector || (!isExactSemverSelector(selector) && !DIST_TAG_SELECTOR.test(selector)) || archiveSelector) {
+    const renderedSpec = JSON.stringify(spec);
+    throw new Error(
+      `Invalid OpenClaw plugin package spec ${renderedSpec}. Use an exact semantic version or npm dist-tag.`
+    );
+  }
+}
 interface ManagedPluginInspection {
   installPath?: string;
   installPackage?: string;
@@ -83,6 +105,7 @@ export function installPublishedOpenclawPlugin(
   rollbackManagedInstall: () => void;
   version?: string;
 } {
+  assertRegistryPackageSpec(spec);
   assertDirectoryPathOrMissing(pluginDir, "OpenClaw plugin dir");
   assertDirectoryPathOrMissing(managedTargetDir, "Managed OpenClaw plugin dir");
   const rollbackSuffix = `${process.pid}-${Date.now()}`;
@@ -179,8 +202,7 @@ export function installPublishedOpenclawPlugin(
     activeManagedRollbackDir = managedRollbackDir;
     activeManagedRollbackTargetDir = managedTargetDir;
   };
-  const preserveManagedTarget = (): void => {
-    const targetDir = previousManagedInstall?.installPath?.trim() || managedTargetDir;
+  const preserveManagedTarget = (targetDir = previousManagedInstall?.installPath?.trim() || managedTargetDir): void => {
     assertDirectoryPathOrMissing(targetDir, "Tracked managed OpenClaw plugin dir");
     const targetRollbackDir =
       path.resolve(targetDir) === path.resolve(managedTargetDir)
@@ -277,6 +299,9 @@ export function installPublishedOpenclawPlugin(
     }
     if (previousSource === "npm" || previousSource === "clawhub") {
       preserveManagedTarget();
+    }
+    if (!previousSource && installSupportsForce && fs.existsSync(managedTargetDir)) {
+      preserveManagedTarget(managedTargetDir);
     }
     if ((previousSource === "npm" || previousSource === "clawhub") && !installSupportsForce) {
       managedInstallStarted = true;

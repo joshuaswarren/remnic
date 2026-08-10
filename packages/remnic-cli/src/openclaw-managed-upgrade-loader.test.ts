@@ -41,6 +41,36 @@ function writeManagedUpgradeFixture(temporaryRoot: string): void {
   );
 }
 
+const rejectedPackageSpecs = [
+  "@remnic/plugin-openclaw@npm:other-package",
+  "@remnic/plugin-openclaw@file:./plugin",
+  "@remnic/plugin-openclaw@https://example.com/plugin.tgz",
+  "@remnic/plugin-openclaw@./plugin.tgz",
+  "@remnic/plugin-openclaw@git+https://example.com/plugin.git",
+];
+
+test("managed upgrade loader rejects non-registry package selectors before loading", async () => {
+  for (const packageSpec of rejectedPackageSpecs) {
+    let importInvoked = false;
+    let npmInvoked = false;
+
+    await assert.rejects(
+      loadOpenclawManagedUpgradeModule(packageSpec, {
+        importModule: async () => {
+          importInvoked = true;
+          return {};
+        },
+        runNpmInstall: () => {
+          npmInvoked = true;
+        },
+      }),
+      /exact semantic version or npm dist-tag/
+    );
+    assert.equal(importInvoked, false, packageSpec);
+    assert.equal(npmInvoked, false, packageSpec);
+  }
+});
+
 test("managed upgrade loader uses an installed adapter without invoking npm", async () => {
   let npmInvoked = false;
   const expected = { REMNIC_OPENCLAW_PLUGIN_ID: "openclaw-remnic" };
@@ -123,6 +153,30 @@ test("managed upgrade loader removes its temporary project when npm fails", asyn
       },
     }),
     /npm install failed/
+  );
+
+  assert.ok(temporaryRoot);
+  assert.equal(fs.existsSync(temporaryRoot), false);
+});
+
+test("managed upgrade loader removes its temporary project when resolver import fails", async () => {
+  let temporaryRoot: string | undefined;
+
+  await assert.rejects(
+    loadOpenclawManagedUpgradeModule("@remnic/plugin-openclaw@9.49.1", {
+      importModule: async (specifier) => {
+        if (specifier === MANAGED_UPGRADE_SPECIFIER) {
+          throw missingModuleError("@remnic/plugin-openclaw");
+        }
+        throw new Error("resolver import failed");
+      },
+      runNpmInstall: (args) => {
+        temporaryRoot = args[args.indexOf("--prefix") + 1];
+        assert.ok(temporaryRoot);
+        writeManagedUpgradeFixture(temporaryRoot);
+      },
+    }),
+    /resolver import failed/
   );
 
   assert.ok(temporaryRoot);

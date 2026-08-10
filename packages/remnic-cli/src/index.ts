@@ -270,7 +270,10 @@ import {
   rollbackOpenclawUpgrade,
 } from "./openclaw-upgrade-swap.js";
 import type { OpenclawCommandRunner } from "@remnic/plugin-openclaw/managed-upgrade";
-import { loadOpenclawManagedUpgradeModule } from "./openclaw-managed-upgrade-loader.js";
+import {
+  buildOpenclawManagedUpgradePackageSpec,
+  loadOpenclawManagedUpgradeModule,
+} from "./openclaw-managed-upgrade-loader.js";
 import { expandTilde, resolveHomeDir } from "./path-utils.js";
 import {
   inspectLaunchdPlist,
@@ -11823,13 +11826,7 @@ async function cmdOpenclawUpgrade(opts: OpenclawUpgradeOptions): Promise<void> {
     ? resolveOpenclawLegacyPluginDir(opts.legacyPluginDirForBackup)
     : undefined;
   const fallbackMemoryDir = path.join(resolveHomeDir(), ".openclaw", "workspace", "memory", "local");
-  const packageSpec = `@remnic/plugin-openclaw@${opts.version ?? "latest"}`;
-  const {
-    assertDirectoryPathOrMissing,
-    describeErrorWithCause,
-    installPublishedOpenclawPlugin,
-    PublishedOpenclawPluginInstallError,
-  } = await loadOpenclawManagedUpgradeModule(packageSpec);
+  const packageSpec = buildOpenclawManagedUpgradePackageSpec(opts.version);
   const configExistedBefore = fs.existsSync(configPath);
 
   const existingConfig = readOpenclawConfig(configPath);
@@ -11837,11 +11834,6 @@ async function cmdOpenclawUpgrade(opts: OpenclawUpgradeOptions): Promise<void> {
   const preservedMemoryDir = opts.memoryDir
     ? path.resolve(expandTilde(opts.memoryDir))
     : resolveCurrentOpenclawMemoryDir(entries, slots, fallbackMemoryDir);
-  assertDirectoryPathOrMissing(pluginDir, "OpenClaw plugin dir");
-  assertDirectoryPathOrMissing(managedTargetDir, "Managed OpenClaw plugin dir");
-  if (legacyPluginDirForBackup) {
-    assertDirectoryPathOrMissing(legacyPluginDirForBackup, "Legacy OpenClaw plugin dir");
-  }
 
   console.log(`OpenClaw config: ${configPath}`);
   console.log(`Plugin dir:      ${pluginDir}`);
@@ -11882,6 +11874,18 @@ async function cmdOpenclawUpgrade(opts: OpenclawUpgradeOptions): Promise<void> {
       console.log("Upgrade cancelled.");
       return;
     }
+  }
+
+  const {
+    assertDirectoryPathOrMissing,
+    describeErrorWithCause,
+    installPublishedOpenclawPlugin,
+    PublishedOpenclawPluginInstallError,
+  } = await loadOpenclawManagedUpgradeModule(packageSpec);
+  assertDirectoryPathOrMissing(pluginDir, "OpenClaw plugin dir");
+  assertDirectoryPathOrMissing(managedTargetDir, "Managed OpenClaw plugin dir");
+  if (legacyPluginDirForBackup) {
+    assertDirectoryPathOrMissing(legacyPluginDirForBackup, "Legacy OpenClaw plugin dir");
   }
 
   const backupDir = createOpenclawUpgradeBackupDir();

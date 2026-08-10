@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   type OpenclawCommandRunner,
   PublishedOpenclawPluginInstallError,
@@ -42,6 +42,24 @@ interface UpgradeFixture {
 
 function writeExecutable(filePath: string, content: string): void {
   fs.writeFileSync(filePath, content, { mode: 0o755 });
+}
+
+function writeMissingManagedUpgradeLoader(root: string): string {
+  const loaderPath = path.join(root, "missing-managed-upgrade-loader.mjs");
+  fs.writeFileSync(
+    loaderPath,
+    `export async function resolve(specifier, context, nextResolve) {
+  if (specifier === "@remnic/plugin-openclaw/managed-upgrade") {
+    const error = new Error("Cannot find package '@remnic/plugin-openclaw' imported from test");
+    error.code = "ERR_MODULE_NOT_FOUND";
+    throw error;
+  }
+  return nextResolve(specifier, context);
+}
+`,
+    "utf8"
+  );
+  return loaderPath;
 }
 
 function createUpgradeFixture(): UpgradeFixture {
@@ -227,7 +245,12 @@ process.exit(2);
   };
 }
 
-function runUpgrade(fixture: UpgradeFixture, env: NodeJS.ProcessEnv = fixture.env, version = "9.49.0") {
+function runUpgradeWithFlags(
+  fixture: UpgradeFixture,
+  flags: string[],
+  env: NodeJS.ProcessEnv = fixture.env,
+  version = "9.49.0"
+) {
   return spawnSync(
     process.execPath,
     [
@@ -235,8 +258,7 @@ function runUpgrade(fixture: UpgradeFixture, env: NodeJS.ProcessEnv = fixture.en
       cliSource,
       "openclaw",
       "upgrade",
-      "--yes",
-      "--no-restart",
+      ...flags,
       "--version",
       version,
       "--config",
@@ -246,6 +268,10 @@ function runUpgrade(fixture: UpgradeFixture, env: NodeJS.ProcessEnv = fixture.en
     ],
     { encoding: "utf8", env, timeout: 30_000 }
   );
+}
+
+function runUpgrade(fixture: UpgradeFixture, env: NodeJS.ProcessEnv = fixture.env, version = "9.49.0") {
+  return runUpgradeWithFlags(fixture, ["--yes", "--no-restart"], env, version);
 }
 
 interface OpenclawCall {
@@ -262,6 +288,47 @@ function readCalls(logPath: string): OpenclawCall[] {
     .filter(Boolean)
     .map((line) => JSON.parse(line) as OpenclawCall);
 }
+
+test("openclaw upgrade dry-run does not load or install a missing adapter", () => {
+  const fixture = createUpgradeFixture();
+  const loaderPath = writeMissingManagedUpgradeLoader(fixture.root);
+  try {
+    const result = runUpgradeWithFlags(fixture, ["--dry-run", "--no-restart"], {
+      ...fixture.env,
+      NODE_OPTIONS: `${fixture.env.NODE_OPTIONS ?? ""} --experimental-loader=${pathToFileURL(loaderPath).href}`.trim(),
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /DRY RUN/);
+    assert.deepEqual(readCalls(fixture.npmLogPath), []);
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("managed upgrade rejects non-registry package selectors before invoking OpenClaw", () => {
+  const invalidSpecs = [
+    "@remnic/plugin-openclaw@npm:other-package",
+    "@remnic/plugin-openclaw@file:./plugin",
+    "@remnic/plugin-openclaw@https://example.com/plugin.tgz",
+    "@remnic/plugin-openclaw@./plugin.tgz",
+    "@remnic/plugin-openclaw@git+https://example.com/plugin.git",
+  ];
+
+  for (const spec of invalidSpecs) {
+    let commandInvoked = false;
+    assert.throws(
+      () =>
+        installPublishedOpenclawPlugin(spec, "/missing/plugin", "/missing/managed", () => {
+          commandInvoked = true;
+          return "";
+        }),
+      /exact semantic version or npm dist-tag/,
+      spec
+    );
+    assert.equal(commandInvoked, false, spec);
+  }
+});
 
 test("openclaw upgrade uses the host-managed npm project and verifies plugin load", () => {
   const fixture = createUpgradeFixture();
@@ -327,6 +394,50 @@ test("openclaw upgrade removes a managed install that fails after mutation", () 
     assert.equal(fs.readFileSync(path.join(fixture.pluginDir, "old-install-marker"), "utf8"), "present\n");
     assert.equal(fs.existsSync(fixture.managedIndexPath), false);
     assert.equal(fs.existsSync(fixture.managedInstallDir), false);
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("openclaw upgrade restores a same-target manual install when force install fails after mutation", () => {
+  const fixture = createUpgradeFixture();
+  const nativeTarget = path.join(fixture.root, ".openclaw", "extensions", "openclaw-remnic");
+  fs.mkdirSync(path.dirname(nativeTarget), { recursive: true });
+  fs.renameSync(fixture.pluginDir, nativeTarget);
+  try {
+    const result = runUpgrade(
+      { ...fixture, pluginDir: nativeTarget },
+      {
+        ...fixture.env,
+        OPENCLAW_INSTALL_FAIL_AFTER_MUTATION: "1",
+        OPENCLAW_LEGACY_PLUGIN_DIR: nativeTarget,
+        OPENCLAW_MANAGED_INSTALL_DIR: nativeTarget,
+      }
+    );
+
+    assert.notEqual(result.status, 0);
+    assert.equal(fs.readFileSync(path.join(nativeTarget, "old-install-marker"), "utf8"), "present\n");
+    assert.equal(fs.existsSync(path.join(nativeTarget, "new-install-marker")), false);
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("openclaw upgrade restores an untracked native target when force install fails after mutation", () => {
+  const fixture = createUpgradeFixture();
+  const nativeTarget = path.join(fixture.root, ".openclaw", "extensions", "openclaw-remnic");
+  fs.mkdirSync(nativeTarget, { recursive: true });
+  fs.writeFileSync(path.join(nativeTarget, "old-native-marker"), "present\n", "utf8");
+  try {
+    const result = runUpgrade(fixture, {
+      ...fixture.env,
+      OPENCLAW_INSTALL_FAIL_AFTER_MUTATION: "1",
+      OPENCLAW_MANAGED_INSTALL_DIR: nativeTarget,
+    });
+
+    assert.notEqual(result.status, 0);
+    assert.equal(fs.readFileSync(path.join(nativeTarget, "old-native-marker"), "utf8"), "present\n");
+    assert.equal(fs.existsSync(path.join(nativeTarget, "new-install-marker")), false);
   } finally {
     fs.rmSync(fixture.root, { recursive: true, force: true });
   }

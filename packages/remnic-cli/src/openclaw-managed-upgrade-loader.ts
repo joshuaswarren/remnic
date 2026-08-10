@@ -9,6 +9,37 @@ import { isSpecifierNotFoundError } from "./optional-module-loader.js";
 const MANAGED_UPGRADE_SPECIFIER = "@remnic/" + "plugin-openclaw/managed-upgrade";
 const OPENCLAW_PLUGIN_PACKAGE = "@remnic/" + "plugin-openclaw";
 const NPM_INSTALL_TIMEOUT_MS = 120_000;
+const SEMVER_CORE_SELECTOR = /^v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)/;
+const SEMVER_SUFFIX_SELECTOR = /^(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+const DIST_TAG_SELECTOR = /^[A-Za-z][0-9A-Za-z._-]*$/;
+
+function isExactSemverSelector(selector: string): boolean {
+  const core = selector.match(SEMVER_CORE_SELECTOR)?.[0];
+  return Boolean(core && SEMVER_SUFFIX_SELECTOR.test(selector.slice(core.length)));
+}
+
+function assertRegistrySelector(selector: string): void {
+  const lowerSelector = selector.toLowerCase();
+  const archiveSelector = lowerSelector.endsWith(".tgz") || lowerSelector.endsWith(".tar.gz");
+  if ((!isExactSemverSelector(selector) && !DIST_TAG_SELECTOR.test(selector)) || archiveSelector) {
+    throw new Error(
+      `Invalid OpenClaw plugin version ${JSON.stringify(selector)}. Use an exact semantic version or npm dist-tag.`
+    );
+  }
+}
+
+export function buildOpenclawManagedUpgradePackageSpec(version = "latest"): string {
+  assertRegistrySelector(version);
+  return `${OPENCLAW_PLUGIN_PACKAGE}@${version}`;
+}
+
+function assertOpenclawManagedUpgradePackageSpec(packageSpec: string): void {
+  const prefix = `${OPENCLAW_PLUGIN_PACKAGE}@`;
+  if (!packageSpec.startsWith(prefix)) {
+    throw new Error(`Invalid OpenClaw plugin package spec ${JSON.stringify(packageSpec)}.`);
+  }
+  assertRegistrySelector(packageSpec.slice(prefix.length));
+}
 
 type OpenclawManagedUpgradeModule = typeof ManagedUpgradeModule;
 
@@ -40,6 +71,7 @@ export async function loadOpenclawManagedUpgradeModule(
   packageSpec: string,
   hooks: OpenclawManagedUpgradeLoaderHooks = {}
 ): Promise<OpenclawManagedUpgradeModule> {
+  assertOpenclawManagedUpgradePackageSpec(packageSpec);
   const importModule = hooks.importModule ?? ((specifier: string) => import(specifier));
 
   try {

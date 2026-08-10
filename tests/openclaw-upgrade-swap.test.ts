@@ -278,6 +278,7 @@ test("rollbackOpenclawUpgrade reports config removal failure when the backup pat
     );
   } finally {
     fs.rmSync = rmSync;
+    fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
 
