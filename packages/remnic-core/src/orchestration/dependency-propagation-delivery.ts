@@ -13,6 +13,7 @@ import {
   type TemporalSupersessionStorage,
 } from "../temporal-supersession.js";
 import {
+  isDependencyPropagationEnabled,
   propagateInvalidation,
   type DependencyPropagationStorage,
   type PropagationEvent,
@@ -194,12 +195,7 @@ export class DependencyPropagationDelivery {
   }
   async prepare(event: PropagationEvent): Promise<DependencyPropagationPreparationToken | null> {
     if (this.stopped) return null;
-    if (
-      !this.config.dependencyPropagation.enabled ||
-      this.config.dependencyPropagation.maxDependents <= 0
-    ) {
-      return null;
-    }
+    if (!isDependencyPropagationEnabled(this.config)) return null;
     const reservationId = randomUUID();
     try {
       if (!isPropagationEvent(event)) throw new Error("invalid dependency propagation event");

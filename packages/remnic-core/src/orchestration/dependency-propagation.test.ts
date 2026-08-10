@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { findDependents, propagateInvalidation } from "./dependency-propagation.js";
+import {
+  findDependents,
+  isDependencyPropagationEnabled,
+  propagateInvalidation,
+} from "./dependency-propagation.js";
 import type { ExtractionEngine } from "../extraction.js";
 import type { MemoryFile, MemoryLinkType, PluginConfig } from "../types.js";
 import type { StorageManager } from "../storage.js";
@@ -86,6 +90,13 @@ function config(overrides: Record<string, unknown> = {}): PluginConfig {
 
   } as unknown as PluginConfig;
 }
+
+test("dependency propagation enable gate accepts only normalized true values and a positive limit", () => {
+  assert.equal(isDependencyPropagationEnabled(config()), true);
+  assert.equal(isDependencyPropagationEnabled(config({ dependencyPropagation: { enabled: "yes" } })), true);
+  assert.equal(isDependencyPropagationEnabled(config({ dependencyPropagation: { enabled: "disabled" } })), false);
+  assert.equal(isDependencyPropagationEnabled(config({ dependencyPropagation: { maxDependents: 0 } })), false);
+});
 
 function fixture(
   initial: MemoryFile[],

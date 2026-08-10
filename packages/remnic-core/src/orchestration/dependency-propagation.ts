@@ -15,7 +15,8 @@ import type {
 } from "../types.js";
 
 export function isDependencyPropagationEnabled(config: Pick<PluginConfig, "dependencyPropagation">): boolean {
-  return config.dependencyPropagation.enabled && config.dependencyPropagation.maxDependents > 0;
+  const parsed = propagationConfig(config);
+  return isEnabled(parsed.enabled) && parsed.maxDependents > 0;
 }
 
 export interface PropagationEvent {
@@ -66,7 +67,7 @@ export interface DependencyPropagationStorage {
   ): Promise<boolean>;
 }
 
-function propagationConfig(config: PluginConfig): DependencyPropagationConfig {
+function propagationConfig(config: Pick<PluginConfig, "dependencyPropagation">): DependencyPropagationConfig {
   return config.dependencyPropagation;
 }
 

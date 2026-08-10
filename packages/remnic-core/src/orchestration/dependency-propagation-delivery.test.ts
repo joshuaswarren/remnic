@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -159,6 +159,23 @@ function fixture(initial: MemoryFile[], verdicts: Verdict[] = []): Fixture {
     storageWrites,
   };
 }
+
+test("prepare rejects unsupported string enable values before creating queue state", async () => {
+  const queueRoot = await mkdtemp(path.join(os.tmpdir(), "remnic-propagation-disabled-"));
+  try {
+    const fixtureValue = fixture([memory("old")]);
+    const { options } = deliveryOptions(queueRoot, fixtureValue, {
+      config: config({ dependencyPropagation: { enabled: "disabled" } }),
+    });
+    const delivery = new DependencyPropagationDelivery(options);
+    const oldMemory = fixtureValue.memories.get("old");
+    assert.ok(oldMemory);
+    assert.equal(await delivery.prepare(event(oldMemory)), null);
+    assert.deepEqual(await readdir(queueRoot), []);
+  } finally {
+    await rm(queueRoot, { recursive: true, force: true });
+  }
+});
 
 function deliveryOptions(
   queueRoot: string,
