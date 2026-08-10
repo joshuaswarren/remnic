@@ -67,6 +67,9 @@ class TestClientNamespace:
             ("namespace", "bad\rvalue"),
             ("session_key", "bad\x00value"),
             ("namespace", "bad\x7fvalue"),
+            ("client_id", " leading"),
+            ("namespace", "trailing "),
+            ("session_key", " "),
         ],
     )
     def test_rejects_invalid_header_values(self, field, value):
@@ -80,7 +83,7 @@ class TestClientNamespace:
 
         with (
             patch("remnic_hermes.client.httpx.AsyncClient") as mock_async_client,
-            pytest.raises(ValueError, match=f"{field} must contain only printable ASCII characters"),
+            pytest.raises(ValueError, match=f"{field} must be printable ASCII without edge spaces"),
         ):
             RemnicClient(**kwargs)
 
@@ -100,7 +103,7 @@ class TestClientNamespace:
 
             with pytest.raises(
                 ValueError,
-                match="session_key must contain only printable ASCII characters",
+                match="session_key must be printable ASCII without edge spaces",
             ):
                 client.set_session_key("session-\n2")
 

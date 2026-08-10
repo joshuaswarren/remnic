@@ -11,8 +11,12 @@ import httpx
 def _validate_header_value(field: str, value: str) -> str:
     if not isinstance(value, str):
         raise TypeError(f"{field} must be a string")
-    if any(ord(character) < 0x20 or ord(character) > 0x7E for character in value):
-        raise ValueError(f"{field} must contain only printable ASCII characters")
+    if (
+        value.startswith(" ")
+        or value.endswith(" ")
+        or any(ord(character) < 0x20 or ord(character) > 0x7E for character in value)
+    ):
+        raise ValueError(f"{field} must be printable ASCII without edge spaces")
     return value
 
 
