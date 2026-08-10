@@ -67,6 +67,31 @@ test("does not return archive state when the memory id mismatches", async () => 
     await rm(root, { recursive: true, force: true });
   }
 });
+test("prefers an active cold direct path over an inactive hot duplicate", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-loader-duplicate-tier-"));
+  try {
+    const hotPath = path.join(root, "node.md");
+    const coldPath = path.join(root, "cold", "node.md");
+    await mkdir(path.dirname(coldPath), { recursive: true });
+    await writeFile(hotPath, "hot", "utf8");
+    await writeFile(coldPath, "cold", "utf8");
+    const hot = memory(hotPath, "inactive");
+    hot.frontmatter.status = "superseded";
+    const cold = memory(coldPath, "active");
+    cold.frontmatter.status = "active";
+    const storage = {
+      dir: root,
+      getArchiveMutationVersion: () => 1,
+      getCorpusScanVersion: async () => "hot:1:cold:1",
+      readMemoryByPath: async (filePath: string) =>
+        filePath === hotPath ? hot : filePath === coldPath ? cold : null,
+    } as unknown as StorageManager;
+
+    assert.equal((await new GraphPathStateLoader().readNode(storage, "node.md", null, true))?.content, "active");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("does not share a deadline-bound archive build with a later caller", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-loader-timeout-"));

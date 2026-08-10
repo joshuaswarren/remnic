@@ -27,13 +27,17 @@ export class GraphPathStateLoader {
     const storageRoot = await realpath(configuredStorageRoot).catch(() => null);
     if (!storageRoot || storageRoot !== configuredStorageRoot) return null;
     const directRelativePaths = [nodeId, path.join("cold", nodeId)];
+    let inactiveDirectMemory: MemoryFile | null = null;
     for (const relativePath of directRelativePaths) {
       const safePath = await this.resolveContainedPath(storageRoot, relativePath);
       if (!safePath) continue;
       if (typeof deadlineAtMs === "number" && Date.now() >= deadlineAtMs) return null;
       const memory = await storage.readMemoryByPath(safePath);
-      if (memory) return memory;
+      if (!memory) continue;
+      if (memory.frontmatter.status === undefined || memory.frontmatter.status === "active") return memory;
+      inactiveDirectMemory ??= memory;
     }
+    if (inactiveDirectMemory) return inactiveDirectMemory;
     if (!allowArchiveLookup || (typeof deadlineAtMs === "number" && Date.now() >= deadlineAtMs)) {
       return null;
     }

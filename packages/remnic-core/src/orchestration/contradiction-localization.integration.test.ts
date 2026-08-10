@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -679,6 +679,42 @@ test("supersedeMemory does not overwrite an already-superseded cold memory", asy
     assert.ok(cold);
     assert.equal(cold.frontmatter.status, "superseded");
     assert.equal(cold.frontmatter.supersededBy, "replacement-one");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+test("supersedeMemory skips an inactive hot duplicate and updates the active cold copy", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-supersede-duplicate-tier-"));
+  try {
+    const orchestrator = new Orchestrator(baseConfig(memoryDir, { tombstonesEnabled: false })) as unknown as {
+      getStorage: (namespace: string) => Promise<StorageManager>;
+    };
+    const storage = await orchestrator.getStorage("default");
+    await storage.ensureDirectories();
+    const { id } = await storage.writeMemory("fact", "Alice lives in Austin", { source: "test" });
+    const hot = (await storage.readAllMemories()).find((memory) => memory.frontmatter.id === id);
+    assert.ok(hot);
+    assert.equal((await storage.migrateMemoryToTier(hot, "cold")).changed, true);
+    const cold = (await storage.readAllColdMemories()).find((memory) => memory.frontmatter.id === id);
+    assert.ok(cold);
+
+    const hotPath = storage.buildTierMemoryPath(cold, "hot");
+    await mkdir(path.dirname(hotPath), { recursive: true });
+    await writeFile(hotPath, await readFile(cold.path));
+    const hotDuplicate = await storage.readMemoryByPath(hotPath);
+    assert.ok(hotDuplicate);
+    await storage.writeMemoryFrontmatter(hotDuplicate, {
+      status: "superseded",
+      supersededBy: "older-replacement",
+    });
+
+    assert.equal(await storage.supersedeMemory(id, "replacement", "city changed"), true);
+    const updatedCold = (await storage.readAllColdMemories()).find((memory) => memory.frontmatter.id === id);
+    assert.ok(updatedCold);
+    assert.equal(updatedCold.frontmatter.status, "superseded");
+    assert.equal(updatedCold.frontmatter.supersededBy, "replacement");
+    const unchangedHot = await storage.readMemoryByPath(hotPath);
+    assert.equal(unchangedHot?.frontmatter.supersededBy, "older-replacement");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

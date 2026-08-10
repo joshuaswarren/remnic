@@ -7010,9 +7010,17 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
   async supersedeMemory(oldMemoryId: string, newMemoryId: string, reason: string): Promise<boolean> {
     const memories = await this.readAllMemories();
-    let oldMemory = memories.find((m) => m.frontmatter.id === oldMemoryId);
+    let oldMemory = memories.find(
+      (memory) =>
+        memory.frontmatter.id === oldMemoryId &&
+        (memory.frontmatter.status === undefined || memory.frontmatter.status === "active"),
+    );
     if (!oldMemory) {
-      oldMemory = (await this.readAllColdMemories()).find((m) => m.frontmatter.id === oldMemoryId);
+      oldMemory = (await this.readAllColdMemories()).find(
+        (memory) =>
+          memory.frontmatter.id === oldMemoryId &&
+          (memory.frontmatter.status === undefined || memory.frontmatter.status === "active"),
+      );
     }
     if (!oldMemory) return false;
 
