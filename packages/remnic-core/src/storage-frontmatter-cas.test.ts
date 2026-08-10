@@ -35,6 +35,54 @@ test("writeMemoryFrontmatterIfUnchanged rejects a semantic concurrent change", a
     assert.notEqual(current.frontmatter.importance?.score, 0.9);
   });
 });
+test("supersedeMemory rejects a semantic change after snapshot lookup", async () => {
+  await withStorage(async (storage) => {
+    const created = await storage.writeMemory("fact", "The supersession source must remain stable.", { source: "test" });
+    const replacement = await storage.writeMemory("fact", "The replacement must remain stable.", { source: "test" });
+    const expected = await storage.getMemoryById(created.id);
+    assert.ok(expected);
+
+    const seams = storage as unknown as {
+      withTombstoneBlockedMemoryPathLock: (...args: never[]) => Promise<unknown>;
+    };
+    const originalLock = seams.withTombstoneBlockedMemoryPathLock.bind(storage);
+    let injected = false;
+    seams.withTombstoneBlockedMemoryPathLock = async (...args) => {
+      const [pathname, task, additionalPathnames] = args as unknown as [
+        string,
+        (current: unknown) => Promise<unknown>,
+        readonly string[] | undefined,
+      ];
+      if (!injected) {
+        injected = true;
+        seams.withTombstoneBlockedMemoryPathLock = originalLock;
+        assert.equal(
+          await storage.writeMemoryFrontmatter(expected, {
+            importance: { score: 0.4, level: "normal", reasons: ["concurrent"], keywords: [] },
+          }),
+          true,
+        );
+      }
+      return originalLock(pathname as never, task as never, additionalPathnames as never);
+    };
+
+    assert.equal(
+      await storage.supersedeMemory(
+        created.id,
+        replacement.id,
+        "dependency_propagation:contradiction",
+        { supersessionCause: "dependency", invalidatedBy: created.id },
+        { requireActive: true, acceptExactReplay: true, expectedSnapshot: expected },
+      ),
+      false,
+    );
+    const current = await storage.getMemoryById(created.id);
+    assert.ok(current);
+    assert.equal(current.frontmatter.status, "active");
+    assert.equal(current.frontmatter.supersededBy, undefined);
+    assert.equal(current.frontmatter.importance?.score, 0.4);
+  });
+});
 
 test("writeMemoryFrontmatterIfUnchanged preserves access-only updates", async () => {
   await withStorage(async (storage) => {

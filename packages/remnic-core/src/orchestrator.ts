@@ -122,10 +122,12 @@ import {
 } from "./orchestration/extraction-run.js";
 import { ConsolidationRunCoordinator } from "./orchestration/consolidation-run.js";
 import { ExtractionPersistCoordinator } from "./orchestration/extraction-persist.js";
+import { drainExtractionAndShutdownDependencyPropagation } from "./orchestration/extraction-shutdown.js";
 import {
   DependencyPropagationDelivery,
   type DependencyPropagationDeliveryPort,
 } from "./orchestration/dependency-propagation-delivery.js";
+import { isDependencyPropagationEnabled } from "./orchestration/dependency-propagation.js";
 import { RecallInternalCoordinator } from "./orchestration/recall-internal.js";
 import { RecallSearchPipelineCoordinator } from "./orchestration/recall-search-pipeline.js";
 import type { GraphRecallExpansionOptions, GraphRecallExpansionResult } from "./orchestration/graph-recall-seam.js";
@@ -961,33 +963,18 @@ export class Orchestrator {
     }
     for (const svc of this.meetingsServiceByNamespace.values()) svc.dispose();
     await this.maintenanceScheduler.dispose();
-    if (!await this.extractionQueueCoordinator.pauseAndDrain()) throw new Error("orchestrator.destroy: extraction queue did not drain before teardown");
-    try {
-      await this._dependencyPropagationDelivery?.shutdown();
-    } finally {
-      this._dependencyPropagationDelivery = undefined;
-    }
+    const extractionDrainError = await drainExtractionAndShutdownDependencyPropagation(
+      this.extractionQueueCoordinator,
+      this._dependencyPropagationDelivery,
+    );
+    this._dependencyPropagationDelivery = undefined;
     await drainRecallWrites(this);
-    // PR #2016 finding 3: drain any deferred lock-timeout hash-index retries so a
-    // short-lived writer's durable fact hash reaches disk before the process
-    // exits. The per-index background retry is unref'd (it never keeps a
-    // long-lived host alive), so a one-shot CLI could exit before it fires; this
-    // drives it to completion inline at the shutdown boundary. Best-effort.
+    // Drain deferred hash-index retries before exit.
     await this.persistenceIndexCoordinator
       .drainContentHashReconcileRetries()
       .catch((err) => log.warn(`content-hash reconcile drain failed during destroy: ${err}`));
-    // Issue #1909: persist any turns buffered within the debounce window BEFORE
-    // flushing catalog touches (review round 11 finding 2). The buffer save fires
-    // a coalesced namespace-catalog touch on an unref'd timer; flushing touches
-    // first would let that shutdown-time touch queue after the flush and be lost.
-    // Ordering it before flushPendingTouches folds the buffer-save's touch into
-    // the flush below so both settle before destroy() returns.
-    // Graceful-shutdown durability contract (review round 14): the flush runs
-    // with throwOnFailure so a failed buffer write is NOT silently swallowed.
-    // flushPendingSave keeps the save pending on failure (in-memory turns are
-    // retained), so we finish the rest of teardown in a finally block and then
-    // rethrow — the host learns buffered turns did not reach disk instead of
-    // destroy() reporting a clean shutdown and losing them on exit.
+    // Save buffered turns before flushing catalog touches. Preserve pending turns
+    // and rethrow a failed save after the remaining teardown.
     let bufferFlushError: unknown;
     try {
       await this.buffer.flushPendingSave({ throwOnFailure: true });
@@ -1010,6 +997,12 @@ export class Orchestrator {
           `orchestrator.destroy: buffer flush failed; pending turns retained in memory but not persisted: ${String(bufferFlushError)}`,
         );
         throw bufferFlushError;
+      }
+      if (extractionDrainError !== undefined) {
+        log.warn(
+          `orchestrator.destroy: extraction queue did not drain before teardown: ${String(extractionDrainError)}`,
+        );
+        throw extractionDrainError;
       }
     }
   }
@@ -1959,7 +1952,11 @@ export class Orchestrator {
   async initialize(): Promise<void> {
     this.extractionQueueCoordinator.resumeAccepting();
     await this.orchestratorInitCoordinator.initialize();
-    await this.dependencyPropagationDelivery.recover();
+    if (isDependencyPropagationEnabled(this.config)) {
+      void this.dependencyPropagationDelivery.recover().catch((err) => {
+        log.warn(`dependency propagation startup recovery failed: ${err}`);
+      });
+    }
   }
 
   private async deferredInitialize(signal: AbortSignal): Promise<void> {

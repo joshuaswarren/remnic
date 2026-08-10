@@ -1373,6 +1373,50 @@ test("a failed ready transition leaves one durable job without direct duplicate 
   });
 });
 
+test("auto-start recovers when the first prepared-job claim read fails", async () => {
+  await withTempQueue(async (queueRoot) => {
+    const scheduled: Array<{ run: () => Promise<void>; delayMs: number }> = [];
+    const old = memory("old", { links: [{ targetId: "dependent", linkType: "supports" }] });
+    const fixtureValue = fixture(
+      [old, memory("dependent"), memory("replacement", { content: "replacement claim" })],
+      [{ memoryId: "dependent", verdict: "still_valid" }],
+    );
+    const seed = new DependencyPropagationDelivery(deliveryOptions(queueRoot, fixtureValue).options);
+    const propagationEvent = event(old);
+    const jobId = await seed.prepare(propagationEvent);
+    assert.ok(jobId);
+    old.frontmatter.status = "superseded";
+    old.frontmatter.supersededBy = "replacement";
+
+    let queueReads = 0;
+    const recovered = new DependencyPropagationDelivery({
+      ...deliveryOptions(queueRoot, fixtureValue).options,
+      autoStart: true,
+      retryDelayMs: 5,
+      readQueueFile: async (filePath) => {
+        queueReads += 1;
+        if (queueReads === 2) throw new Error("temporary queue read failure");
+        return readFile(filePath, "utf8");
+      },
+      schedule: (run, delayMs) => {
+        scheduled.push({ run, delayMs });
+      },
+    });
+
+    await recovered.recover();
+
+    assert.equal(scheduled.length, 1);
+    assert.equal(scheduled[0]?.delayMs, 5);
+    await scheduled.shift()?.run();
+    assert.equal(scheduled.length, 1);
+    assert.equal(scheduled[0]?.delayMs, 0);
+    await scheduled.shift()?.run();
+
+    assert.equal(jobById(await recovered.listJobs(), jobId).status, "completed");
+    assert.equal(fixtureValue.extractionCalls.count, 1);
+  });
+});
+
 test("auto-start retries prepared-job recovery after a transient storage read failure", async () => {
   await withTempQueue(async (queueRoot) => {
     const scheduled: Array<{ run: () => Promise<void>; delayMs: number }> = [];
@@ -1433,7 +1477,11 @@ test("semantic job identity sorts links and separates changed links", async () =
         { targetId: "b", linkType: "supports" },
       ],
     });
-    const second = await delivery.prepare(event(reordered));
+    const reorderedFrontmatter = Object.fromEntries(
+      Object.entries(reordered.frontmatter).reverse(),
+    ) as MemoryFile["frontmatter"];
+    const reorderedKeys = { ...reordered, frontmatter: reorderedFrontmatter } as MemoryFile;
+    const second = await delivery.prepare(event(reorderedKeys));
     assert.ok(second);
     assert.equal(second.jobId, first.jobId);
     assert.equal(second.ownsPreparedJob, true);

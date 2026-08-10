@@ -35,6 +35,7 @@ import type {
   DependencyPropagationDeliveryPort,
   DependencyPropagationPreparationToken,
 } from "./dependency-propagation-delivery.js";
+import { canonicalize } from "./dependency-propagation-queue-state.js";
 import type { PropagationEvent } from "./dependency-propagation.js";
 import {
   resolveCapabilities,
@@ -151,7 +152,10 @@ function clonePropagationMemory(memory: MemoryFile): MemoryFile {
 }
 
 function sameMemorySnapshot(a: MemoryFile, b: MemoryFile): boolean {
-  return a.content === b.content && JSON.stringify(a.frontmatter) === JSON.stringify(b.frontmatter);
+  return (
+    a.content === b.content &&
+    JSON.stringify(canonicalize(a.frontmatter)) === JSON.stringify(canonicalize(b.frontmatter))
+  );
 }
 
 async function prepareCurrentDependencyPropagation(
@@ -198,9 +202,18 @@ async function cancelDependencyPropagation(
 async function deferDependencyPropagation(
   pending: PendingDependencyPropagation | null,
 ): Promise<void> {
-  if (!pending?.preparation) return;
+  if (!pending) return;
+  let token = pending.preparation;
+  if (token === null) {
+    try {
+      token = await pending.delivery.prepare(pending.event);
+    } catch (error) {
+      log.warn(`consolidation dependency propagation recovery preparation failed: ${error}`);
+    }
+  }
+  if (token === null) return;
   try {
-    await pending.delivery.deferPrepared(pending.preparation);
+    await pending.delivery.deferPrepared(token);
   } catch (error) {
     log.warn(`consolidation dependency propagation defer failed: ${error}`);
   }
@@ -227,20 +240,24 @@ async function classifyInvalidation(
     matchesCommitted?: (current: MemoryFile) => boolean;
   } = {},
 ): Promise<InvalidationCommitState> {
-  if (
-    options.checkInvalidationProof !== false &&
-    expectedSnapshot &&
-    storage.hasCommittedInvalidation
-  ) {
-    try {
-      if (await storage.hasCommittedInvalidation(expectedSnapshot)) return "committed";
-    } catch (error) {
-      log.warn(`consolidation invalidation proof read failed for ${memoryId}: ${error}`);
+  if (options.checkInvalidationProof !== false && expectedSnapshot) {
+    if (!storage.hasCommittedInvalidation) {
+      log.warn(`consolidation invalidation proof capability missing for ${memoryId}`);
+    } else {
+      try {
+        if (await storage.hasCommittedInvalidation(expectedSnapshot)) return "committed";
+      } catch (error) {
+        log.warn(`consolidation invalidation proof read failed for ${memoryId}: ${error}`);
+      }
     }
   }
   try {
     const current = await storage.getMemoryById(memoryId);
-    if (!current) return options.missingMeansCommitted === false ? "not-committed" : "committed";
+    if (!current) {
+      if (options.missingMeansCommitted === false) return "not-committed";
+      if (expectedSnapshot && !storage.hasCommittedInvalidation) return "unknown";
+      return "committed";
+    }
     if (options.matchesCommitted?.(current)) return "committed";
     if (expectedSnapshot && sameMemorySnapshot(current, expectedSnapshot)) {
       return "not-committed";
@@ -263,7 +280,7 @@ async function settleFailedConsolidationPropagation(
     if (token !== null) await cancelDependencyPropagation({ ...pending, preparation: token });
     return;
   }
-  if (token === null && commitState === "committed") {
+  if (token === null && (commitState === "committed" || commitState === "unknown")) {
     try {
       token = await pending.delivery.prepare(pending.event);
     } catch (error) {
@@ -277,14 +294,6 @@ async function settleFailedConsolidationPropagation(
       await pending.delivery.deferPrepared(token);
     } catch (error) {
       log.warn(`consolidation dependency propagation defer failed for ${memoryId}: ${error}`);
-    }
-    return;
-  }
-  if (commitState === "committed") {
-    try {
-      await pending.delivery.afterMutation(null, pending.event);
-    } catch (error) {
-      log.warn(`consolidation dependency propagation fallback failed for ${memoryId}: ${error}`);
     }
   }
 }
@@ -586,30 +595,7 @@ export class ConsolidationRunCoordinator {
                   },
                 );
               } catch (error) {
-                if (pending?.preparation === null) {
-                  const commitState = await classifyInvalidation(
-                    storage,
-                    item.existingId,
-                    survivorSnapshot,
-                    {
-                      checkInvalidationProof: false,
-                      missingMeansCommitted: false,
-                      matchesCommitted: (current) =>
-                        current.content === updatedContent &&
-                        current.frontmatter.supersedes === item.mergeWith &&
-                        Array.isArray(current.frontmatter.lineage) &&
-                        current.frontmatter.lineage.includes(item.existingId) &&
-                        current.frontmatter.lineage.includes(mergeWith),
-                    },
-                  );
-                  if (commitState === "committed") {
-                    await afterDependencyPropagationMutation(pending);
-                  } else if (commitState === "not-committed") {
-                    await cancelDependencyPropagation(pending);
-                  }
-                } else {
-                  await deferDependencyPropagation(pending);
-                }
+                await deferDependencyPropagation(pending);
                 throw error;
               }
               if (!didUpdate) {

@@ -146,7 +146,6 @@ export function validateJob(
     ...(lastError === undefined ? {} : { lastError: lastError as string }),
   };
 }
-
 export function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map((item) => canonicalize(item));
   if (isRecord(value)) {
@@ -160,6 +159,10 @@ export function canonicalize(value: unknown): unknown {
   return value === undefined ? null : value;
 }
 
+export function compareByteStable(left: string, right: string): number {
+  return Buffer.from(left, "utf8").compare(Buffer.from(right, "utf8"));
+}
+
 export function canonicalEvent(event: PropagationEvent): PropagationEvent {
   return canonicalize(event) as PropagationEvent;
 }
@@ -169,7 +172,7 @@ export function stableLinks(links: unknown): unknown {
   return [...links].sort((left, right) => {
     const leftKey = JSON.stringify(canonicalize(left));
     const rightKey = JSON.stringify(canonicalize(right));
-    return leftKey.localeCompare(rightKey);
+    return compareByteStable(leftKey, rightKey);
   });
 }
 

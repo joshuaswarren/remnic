@@ -19,6 +19,7 @@ import {
 } from "./dependency-propagation.js";
 import {
   canonicalEvent,
+  compareByteStable,
   eventJobId,
   isNotFound,
   isPropagationEvent,
@@ -26,7 +27,6 @@ import {
   matchesPreparedSource,
   validateJob,
 } from "./dependency-propagation-queue-state.js";
-
 export type DependencyPropagationJobStatus =
   | "prepared"
   | "ready"
@@ -437,7 +437,14 @@ export class DependencyPropagationDelivery {
     }
     for (const job of jobs) {
       if (job.status !== "prepared") continue;
-      const claimed = await this.claimPrepared(job);
+      let claimed: DependencyPropagationJob | null;
+      try {
+        claimed = await this.claimPrepared(job);
+      } catch (error) {
+        retryPreparedRecovery = true;
+        log.warn(`dependency propagation prepared-job claim failed: ${error}`);
+        continue;
+      }
       if (!claimed) continue;
       try {
         const storage = await this.getStorage(claimed.event.namespaceScope);
@@ -591,7 +598,7 @@ export class DependencyPropagationDelivery {
     return [...grouped.values()]
       .map((group) => chooseEntry(group)?.job)
       .filter((job): job is DependencyPropagationJob => job !== undefined)
-      .sort((left, right) => left.jobId.localeCompare(right.jobId));
+      .sort((left, right) => compareByteStable(left.jobId, right.jobId));
   }
 
   async shutdown(): Promise<void> {
@@ -718,7 +725,10 @@ export class DependencyPropagationDelivery {
     }
     try {
       const storage = (await this.getStorage(job.event.namespaceScope)) as DependencyPropagationRecoveryStorage;
-      if (!storage.clearCommittedInvalidation) return true;
+      if (!storage.clearCommittedInvalidation) {
+        log.warn("dependency propagation invalidation proof cleanup capability missing");
+        return false;
+      }
       await storage.clearCommittedInvalidation(job.event.oldMemory);
       return true;
     } catch (error) {
@@ -789,7 +799,7 @@ export class DependencyPropagationDelivery {
         event.replacementId,
         `dependency_propagation:${event.cause}`,
         undefined,
-        { requireActive: true, acceptExactReplay: true },
+        { requireActive: true, acceptExactReplay: true, expectedSnapshot: source },
       );
     }
 
@@ -824,7 +834,10 @@ export class DependencyPropagationDelivery {
       replacement !== null &&
       replacement.frontmatter.supersedes === event.oldMemory.frontmatter.id &&
       replacement.content === persistedReplacementContent;
-    if (!source) return mergeAlreadyApplied;
+    if (!source) {
+      if (!storage.hasCommittedInvalidation) return false;
+      return await storage.hasCommittedInvalidation(event.oldMemory);
+    }
     if (!replacement || !matchesPreparedSource(source, event.oldMemory)) return false;
     if (!mergeAlreadyApplied) {
       const updated = await storage.updateMemoryIfUnchanged(
@@ -935,7 +948,7 @@ export class DependencyPropagationDelivery {
       const entries = [...latestByJobId.values()].sort((left, right) => {
         if (left.job.updatedAt !== right.job.updatedAt) return right.job.updatedAt - left.job.updatedAt;
         if (left.job.revision !== right.job.revision) return right.job.revision - left.job.revision;
-        return left.filePath.localeCompare(right.filePath);
+        return compareByteStable(left.filePath, right.filePath);
       });
       const oldJobs = entries.slice(TERMINAL_RETENTION_COUNT);
       for (const entry of oldJobs) {
@@ -988,7 +1001,7 @@ export class DependencyPropagationDelivery {
       const jobs = [...candidates.values()]
         .map((group) => ({ group, current: chooseEntry(group) }))
         .filter((item): item is { group: JobEntry[]; current: JobEntry } => item.current !== undefined)
-        .sort((left, right) => left.current.job.jobId.localeCompare(right.current.job.jobId));
+        .sort((left, right) => compareByteStable(left.current.job.jobId, right.current.job.jobId));
       for (const item of jobs) {
         const current = item.current.job;
         const expiredLease =

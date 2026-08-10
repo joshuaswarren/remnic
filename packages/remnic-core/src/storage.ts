@@ -11,7 +11,7 @@ import {
   appendFile,
   open,
 } from "node:fs/promises";
-import { appendFileSync, createReadStream, mkdirSync, readFileSync, statSync, type Dirent } from "node:fs";
+import { appendFileSync, createReadStream, mkdirSync, readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { normalizeContent, computeContentHash } from "./content-hash.js";
 import { raceAbort } from "./abort-error.js";
@@ -23,6 +23,8 @@ import { log } from "./logger.js";
 import { createMemorySnapshot } from "./memory-snapshot.js";
 import { assertMemoryFrontmatterId, warnProjectionFallback } from "./storage-guards.js";
 import { MemoryReadStore } from "./storage/memory-read-store.js";
+import { hasSupersessionAudit } from "./storage/supersession-audit.js";
+import { runCommittedInvalidation } from "./storage/committed-invalidation.js";
 import { renderProfileWithLastUpdated } from "./storage/profile-header.js";
 import { readMaybeEncryptedLines, readMemoryActionEventRowsFromLines } from "./storage/secure-line-reader.js";
 import {
@@ -4869,10 +4871,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
                 );
               }
             } catch (err) {
-              // Re-throw store-locked errors — a locked encrypted store
-              // must fail loudly, not silently return an empty archive.
-              if (err instanceof SecureStoreLockedError) throw err;
-              // Skip other unreadable files (ENOENT, parse failures, etc.)
+              // Absence can race with an archive cleanup. Surface every other
+              // read or decryption failure instead of dropping archive data.
+              if (!isErrnoCode(err, "ENOENT")) throw err;
             }
           }
         }
@@ -5223,21 +5224,22 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       ) {
         return false;
       }
-      if (options?.recordCommitProof === true) await this.recordCommittedInvalidation(current);
-      const deleted = await archive.recordArchiveDelete(this.baseDir, current.path, () =>
-        this.deleteManagedStorageFile(current.path));
-      if (!deleted) {
-        if (options?.recordCommitProof === true) await this.clearCommittedInvalidation(current);
-        return false;
-      }
-      markDurable();
-      markProjectedMemoryPathInvalid(this.baseDir, id);
-      this.invalidateAllMemoriesCache();
-      if (this.isColdOrArchiveTierPath(current.path)) this.invalidateColdMemoriesCache();
-      await this.rebuildTombstoneBlockedCaptureAfterInvalidation(rebuildMarker);
-      this.bumpMemoryStatusVersion();
-      log.debug(`invalidated memory ${id}`);
-      return true;
+      return runCommittedInvalidation({
+        memoryId: id,
+        recordProof: options?.recordCommitProof === true ? () => this.recordCommittedInvalidation(current) : undefined,
+        clearProof: options?.recordCommitProof === true ? () => this.clearCommittedInvalidation(current) : undefined,
+        deleteMemory: () => archive.recordArchiveDelete(this.baseDir, current.path, () =>
+          this.deleteManagedStorageFile(current.path)),
+        afterDelete: async () => {
+          markDurable();
+          markProjectedMemoryPathInvalid(this.baseDir, id);
+          this.invalidateAllMemoriesCache();
+          if (this.isColdOrArchiveTierPath(current.path)) this.invalidateColdMemoriesCache();
+          await this.rebuildTombstoneBlockedCaptureAfterInvalidation(rebuildMarker);
+          this.bumpMemoryStatusVersion();
+          log.debug(`invalidated memory ${id}`);
+        },
+      });
     });
   }
 
@@ -6896,19 +6898,44 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       .sort((a, b) => (a.frontmatter.chunkIndex ?? 0) - (b.frontmatter.chunkIndex ?? 0));
   }
 
+
   async supersedeMemory(
     oldMemoryId: string,
     newMemoryId: string,
     reason: string,
     supersessionMetadata?: Pick<MemoryFrontmatter, "supersessionCause" | "invalidatedBy">,
-    options: { requireActive?: boolean; acceptExactReplay?: boolean } = {},
+    options: {
+      requireActive?: boolean;
+      acceptExactReplay?: boolean;
+      expectedSnapshot?: Pick<MemoryFile, "content" | "frontmatter"> & Partial<Pick<MemoryFile, "path">>;
+    } = {},
   ): Promise<boolean> {
-    const memories = [
-      ...(await this.readAllMemories()),
-      ...(await this.readAllColdMemories()),
-      ...(await this.readArchivedMemories()),
-    ];
-    const oldMemory = memories.find((memory) => memory.frontmatter.id === oldMemoryId);
+    let oldMemory: MemoryFile | undefined;
+    if (options.expectedSnapshot?.path) {
+      const selected = await this.readMemoryByPath(options.expectedSnapshot.path);
+      if (
+        !selected ||
+        selected.frontmatter.id !== oldMemoryId ||
+        invalidationCommitFingerprint(selected) !== invalidationCommitFingerprint(options.expectedSnapshot)
+      ) {
+        return false;
+      }
+      oldMemory = selected;
+    } else {
+      const memories = [
+        ...(await this.readAllMemories()),
+        ...(await this.readAllColdMemories()),
+        ...(await this.readArchivedMemories()),
+      ];
+      oldMemory = memories.find((memory) => memory.frontmatter.id === oldMemoryId);
+      if (
+        oldMemory &&
+        options.expectedSnapshot &&
+        invalidationCommitFingerprint(oldMemory) !== invalidationCommitFingerprint(options.expectedSnapshot)
+      ) {
+        return false;
+      }
+    }
     if (!oldMemory) return false;
 
     const operationId = createHash("sha256")
@@ -6928,6 +6955,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
     const written = await this.withTombstoneBlockedMemoryPathLock(oldMemory.path, async (current) => {
         if (current?.frontmatter.id !== oldMemoryId) return false;
+        if (
+          options.expectedSnapshot &&
+          invalidationCommitFingerprint(current) !== invalidationCommitFingerprint(options.expectedSnapshot)
+        ) {
+          return false;
+        }
         const metadataMatches =
           supersessionMetadata === undefined ||
           (
@@ -7073,18 +7106,14 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       }
 
       const auditBody = `Superseded: ${currentBefore.content}\n\nReason: ${reason}`;
-      const existingAudit = (await this.readAllMemories()).some(
-        (memory) =>
-          memory.frontmatter.category === "correction" &&
-          (
-            memory.frontmatter.sourceMemoryId === oldMemoryId ||
-            (
-              memory.frontmatter.sourceMemoryId === undefined &&
-              memory.frontmatter.lineage?.includes(oldMemoryId)
-            )
-          ) &&
-          memory.frontmatter.lineage?.includes(newMemoryId) &&
-          memory.content === auditBody,
+      const existingAudit = await hasSupersessionAudit(
+        {
+          correctionsDir: this.correctionsDir,
+          readMemoryByPath: (filePath) => this.readMemoryByPath(filePath),
+        },
+        oldMemoryId,
+        newMemoryId,
+        auditBody,
       );
       if (!existingAudit) {
         const auditInput = {

@@ -29,6 +29,18 @@ test("failure-semantics: readAllMemories on a fresh (empty) dir returns [] not n
     await cleanup();
   }
 });
+test("failure-semantics: readArchivedMemories surfaces archive readdir errors", async () => {
+  const { storage, baseDir, cleanup } = await makeStorage();
+  try {
+    await writeFile(path.join(baseDir, "archive"), "archive is not a directory", "utf-8");
+    await assert.rejects(
+      storage.readArchivedMemories(),
+      (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOTDIR",
+    );
+  } finally {
+    await cleanup();
+  }
+});
 
 test("failure-semantics: getMemoryById on empty store returns null (not throw)", async () => {
   const { storage, cleanup } = await makeStorage();

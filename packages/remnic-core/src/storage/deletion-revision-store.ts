@@ -5,6 +5,7 @@ import { resolveSafeStoragePath } from "../storage-paths.js";
 import type { MemoryFile } from "../types.js";
 import { isErrnoCode } from "../utils/errno.js";
 import { withHeldFileLock, type HeldFileLockController } from "../utils/serialize-mutations.js";
+import { log } from "../logger.js";
 
 type DeletionRevisionMetadata = {
   version: 1;
@@ -32,6 +33,7 @@ const DELETION_REVISION_MAX_MTIME_MS = 8_640_000_000_000_000;
 const DELETION_REVISION_LOCK_STALE_MS = 60_000;
 const DELETION_REVISION_LOCK_MAX_WAIT_MS = 120_000;
 const INVALIDATION_COMMIT_MAX_TIMESTAMP_MS = 8_640_000_000_000_000;
+const INVALIDATION_PROOF_QUARANTINE_MAX_IDS = 1024;
 
 function canonicalizeInvalidationEvidence(value: unknown): unknown {
   if (Array.isArray(value)) return value.map((item) => canonicalizeInvalidationEvidence(item));
@@ -93,18 +95,24 @@ function isValidDeletionRevisionPath(value: unknown): value is string {
 }
 
 function deletionRevisionPathIdentity(value: string): string {
-  return value
-    .normalize("NFC")
-    .toUpperCase()
-    .toLowerCase()
-    .replace(/\u00df/g, "ss");
+  return value.normalize("NFC").toUpperCase().toLowerCase();
 }
 
 export class DeletionRevisionStore {
   private readonly options: DeletionRevisionStoreOptions;
+  private readonly invalidationProofQuarantine = new Set<string>();
+  private invalidationProofQuarantineFull = false;
 
   constructor(options: DeletionRevisionStoreOptions) {
     this.options = options;
+  }
+  private quarantineInvalidationProof(memoryId: string): void {
+    if (this.invalidationProofQuarantineFull || this.invalidationProofQuarantine.has(memoryId)) return;
+    if (this.invalidationProofQuarantine.size >= INVALIDATION_PROOF_QUARANTINE_MAX_IDS) {
+      this.invalidationProofQuarantineFull = true;
+      return;
+    }
+    this.invalidationProofQuarantine.add(memoryId);
   }
   private async resolveConfiguredStoragePath(targetPath: string): Promise<string> {
     const baseDir = path.resolve(this.options.baseDir);
@@ -204,11 +212,20 @@ export class DeletionRevisionStore {
       const renameTarget = await this.resolveConfiguredStoragePath(this.options.deletionRevisionMetadataPath);
       await rename(temporaryPath, renameTarget);
     } finally {
-      if (handle !== null) await handle.close().catch(() => undefined);
-      const cleanupPath = await this.resolveConfiguredStoragePath(temporaryPath).catch(() => null);
+      if (handle !== null) {
+        await handle.close().catch((error: unknown) => {
+          log.warn("failed to close deletion revision metadata temporary file", error);
+        });
+      }
+      const cleanupPath = await this.resolveConfiguredStoragePath(temporaryPath).catch((error: unknown) => {
+        log.warn("failed to resolve deletion revision metadata temporary file for cleanup", error);
+        return null;
+      });
       if (cleanupPath !== null) {
         await unlink(cleanupPath).catch((error: unknown) => {
-          if (!isErrnoCode(error, "ENOENT")) throw error;
+          if (!isErrnoCode(error, "ENOENT")) {
+            log.warn("failed to clean up deletion revision metadata temporary file", error);
+          }
         });
       }
     }
@@ -304,6 +321,7 @@ export class DeletionRevisionStore {
     );
     const metadataDir = await this.resolveConfiguredStoragePath(path.dirname(metadataPath));
     let handle: FileHandle | null = null;
+    let renamed = false;
     try {
       await mkdir(metadataDir, { recursive: true });
       handle = await open(temporaryPath, "wx", 0o600);
@@ -316,20 +334,35 @@ export class DeletionRevisionStore {
       }
       const renameTarget = await this.resolveConfiguredStoragePath(this.options.invalidationCommitMetadataPath);
       await rename(temporaryPath, renameTarget);
+      renamed = true;
     } finally {
-      if (handle !== null) await handle.close().catch(() => undefined);
-      const cleanupPath = await this.resolveConfiguredStoragePath(temporaryPath).catch(() => null);
+      if (handle !== null) {
+        await handle.close().catch((error: unknown) => {
+          log.warn("failed to close invalidation commit metadata temporary file", error);
+        });
+      }
+      const cleanupPath = await this.resolveConfiguredStoragePath(temporaryPath).catch((error: unknown) => {
+        log.warn("failed to resolve invalidation commit metadata temporary file for cleanup", error);
+        return null;
+      });
       if (cleanupPath !== null) {
         await unlink(cleanupPath).catch((error: unknown) => {
-          if (!isErrnoCode(error, "ENOENT")) throw error;
+          if (!isErrnoCode(error, "ENOENT")) {
+            log.warn(
+              `failed to clean up invalidation commit metadata temporary file after ${renamed ? "commit" : "failure"}`,
+              error,
+            );
+          }
         });
       }
     }
   }
 
   async hasCommittedInvalidation(memory: Pick<MemoryFile, "content" | "frontmatter">): Promise<boolean> {
+    if (this.invalidationProofQuarantineFull || this.invalidationProofQuarantine.has(memory.frontmatter.id)) return false;
     const fingerprint = invalidationCommitFingerprint(memory);
     return this.withDeletionRevisionLock(async () => {
+      if (this.invalidationProofQuarantineFull || this.invalidationProofQuarantine.has(memory.frontmatter.id)) return false;
       const entry = (await this.readInvalidationCommitMetadata()).get(memory.frontmatter.id);
       return entry?.fingerprint === fingerprint;
     });
@@ -344,18 +377,27 @@ export class DeletionRevisionStore {
         committedAt: Date.now(),
       });
       await this.writeInvalidationCommitMetadata(commits, lock);
+      this.invalidationProofQuarantine.delete(memory.frontmatter.id);
     });
   }
 
   async clearCommittedInvalidation(memory: Pick<MemoryFile, "content" | "frontmatter">): Promise<void> {
+    const memoryId = memory.frontmatter.id;
+    this.quarantineInvalidationProof(memoryId);
     const fingerprint = invalidationCommitFingerprint(memory);
-    await this.withDeletionRevisionLock(async (lock) => {
-      const commits = await this.readInvalidationCommitMetadata();
-      const current = commits.get(memory.frontmatter.id);
-      if (current?.fingerprint !== fingerprint) return;
-      commits.delete(memory.frontmatter.id);
-      await this.writeInvalidationCommitMetadata(commits, lock);
-    });
+    let cleared = false;
+    try {
+      await this.withDeletionRevisionLock(async (lock) => {
+        const commits = await this.readInvalidationCommitMetadata();
+        const current = commits.get(memoryId);
+        if (current?.fingerprint !== fingerprint) return;
+        commits.delete(memoryId);
+        await this.writeInvalidationCommitMetadata(commits, lock);
+      });
+      cleared = true;
+    } finally {
+      if (cleared) this.invalidationProofQuarantine.delete(memoryId);
+    }
   }
 
   async recordReplicatedDeletionRevision(filePath: string, mtimeMs: number): Promise<void> {

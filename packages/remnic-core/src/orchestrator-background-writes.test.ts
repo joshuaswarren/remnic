@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -9,7 +9,12 @@ type ShutdownTestSurface = {
   extractionQueueCoordinator: { pauseAndDrain(): Promise<boolean> };
   dependencyPropagationDelivery: { shutdown(): Promise<void> };
 };
-
+function stubOrchestratorInit(orchestrator: Orchestrator): void {
+  const initCoordinator = (orchestrator as unknown as {
+    orchestratorInitCoordinator: { initialize: () => Promise<void> };
+  }).orchestratorInitCoordinator;
+  initCoordinator.initialize = async () => {};
+}
 
 test("destroy cancels maintenance and waits for tracked writes before disposing search backends", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-background-writes-"));
@@ -54,6 +59,102 @@ test("destroy cancels maintenance and waits for tracked writes before disposing 
   } finally {
     writeGate.resolve();
     await (destroyPromise ?? orchestrator.destroy());
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("disabled propagation does not construct the lazy delivery during initialize", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-disabled-propagation-"));
+  const orchestrator = new Orchestrator(
+    parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      knowledgeIndexEnabled: false,
+      identityContinuityEnabled: false,
+      transcriptEnabled: false,
+      hourlySummariesEnabled: false,
+      compoundingEnabled: false,
+    }),
+  );
+  stubOrchestratorInit(orchestrator);
+  const internals = orchestrator as unknown as {
+    _dependencyPropagationDelivery: unknown;
+    extractionPersistCoordinator: { dependencyPropagationDelivery: unknown };
+  };
+  try {
+    assert.equal(internals._dependencyPropagationDelivery, undefined);
+    assert.equal(internals.extractionPersistCoordinator.dependencyPropagationDelivery, undefined);
+    await orchestrator.initialize();
+    assert.equal(internals._dependencyPropagationDelivery, undefined);
+    assert.equal(internals.extractionPersistCoordinator.dependencyPropagationDelivery, undefined);
+  } finally {
+    await orchestrator.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("enabled propagation recovery rejection does not block initialize", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-recovery-rejection-"));
+  const orchestrator = new Orchestrator(
+    parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      dependencyPropagation: {
+        enabled: true,
+        linkTypes: ["supports"],
+        maxDependents: 10,
+        timeoutMs: 100,
+        dryRun: false,
+      },
+    }),
+  );
+  stubOrchestratorInit(orchestrator);
+  let recoverCalls = 0;
+  Reflect.set(orchestrator, "_dependencyPropagationDelivery", {
+    recover: async () => {
+      recoverCalls += 1;
+      throw new Error("synthetic recovery failure");
+    },
+    shutdown: async () => {},
+  });
+  try {
+    await orchestrator.initialize();
+    assert.equal(recoverCalls, 1);
+  } finally {
+    await orchestrator.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("enabled propagation recovery tolerates a missing queue directory", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-recovery-no-queue-"));
+  const orchestrator = new Orchestrator(
+    parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      dependencyPropagation: {
+        enabled: true,
+        linkTypes: ["supports"],
+        maxDependents: 10,
+        timeoutMs: 100,
+        dryRun: false,
+      },
+    }),
+  );
+  stubOrchestratorInit(orchestrator);
+  const queueRoot = path.join(memoryDir, "state", "dependency-propagation");
+  try {
+    await orchestrator.initialize();
+    await Promise.resolve();
+    await assert.rejects(() => stat(queueRoot), /ENOENT/);
+  } finally {
+    await orchestrator.destroy();
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
@@ -107,7 +208,7 @@ test("destroy drains consolidation producers before propagation delivery", async
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
-test("destroy keeps propagation delivery intact when extraction drain times out", async () => {
+test("destroy continues cleanup when extraction drain times out", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-destroy-propagation-timeout-"));
   const orchestrator = new Orchestrator(
     parseConfig({
@@ -122,14 +223,23 @@ test("destroy keeps propagation delivery intact when extraction drain times out"
       compoundingEnabled: false,
     }),
   );
-  const internals = orchestrator as unknown as ShutdownTestSurface;
+  const internals = orchestrator as unknown as ShutdownTestSurface & {
+    _dependencyPropagationDelivery: unknown;
+    qmd: { dispose?: () => void | Promise<void> };
+  };
   const extractionQueue = internals.extractionQueueCoordinator;
   const delivery = internals.dependencyPropagationDelivery;
   let shutdownCalls = 0;
+  let qmdDisposed = false;
   const originalShutdown = delivery.shutdown.bind(delivery);
+  const originalQmdDispose = internals.qmd.dispose?.bind(internals.qmd);
   delivery.shutdown = async () => {
     shutdownCalls += 1;
     await originalShutdown();
+  };
+  internals.qmd.dispose = async () => {
+    qmdDisposed = true;
+    await originalQmdDispose?.();
   };
   extractionQueue.pauseAndDrain = async () => false;
 
@@ -138,15 +248,12 @@ test("destroy keeps propagation delivery intact when extraction drain times out"
       orchestrator.destroy(),
       /extraction queue did not drain before teardown/,
     );
-    assert.equal(shutdownCalls, 0, "delivery must remain intact after a drain timeout");
-    assert.equal(internals.dependencyPropagationDelivery, delivery);
-
-    extractionQueue.pauseAndDrain = async () => true;
-    await orchestrator.destroy();
-    assert.equal(shutdownCalls, 1, "a later destroy retry must shut down delivery");
+    assert.equal(shutdownCalls, 1, "delivery shutdown must run after a drain timeout");
+    assert.equal(internals._dependencyPropagationDelivery, undefined);
+    assert.equal(qmdDisposed, true, "later cleanup must run before the timeout is rethrown");
   } finally {
     extractionQueue.pauseAndDrain = async () => true;
-    if (shutdownCalls === 0) await orchestrator.destroy();
+    if (!qmdDisposed) await orchestrator.destroy();
     await rm(memoryDir, { recursive: true, force: true });
   }
 });

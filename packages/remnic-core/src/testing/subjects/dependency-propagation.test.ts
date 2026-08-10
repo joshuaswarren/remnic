@@ -2,6 +2,7 @@
  * Dependency propagation lifecycle subject for the scenario-matrix harness.
  *
  * Each namespace uses a real StorageManager over an isolated temporary directory.
+ * DependencyPropagationDelivery uses the production durable queue and recovery path.
  * ExtractionEngine uses its production revalidation route with deterministic completion.
  */
 
@@ -12,10 +13,11 @@ import path from "node:path";
 
 import { ExtractionEngine } from "../../extraction.js";
 import {
-  propagateInvalidation,
-  type PropagationEvent,
-  type PropagationResult,
-} from "../../orchestration/dependency-propagation.js";
+  DependencyPropagationDelivery,
+  type DependencyPropagationJob,
+} from "../../orchestration/dependency-propagation-delivery.js";
+import type { PropagationEvent } from "../../orchestration/dependency-propagation.js";
+import { applyTemporalSupersessionPrimaryMutation } from "../../temporal-supersession.js";
 import type { RevalidationFastChatCompletion } from "../../orchestration/dependency-revalidation.js";
 import { StorageManager } from "../../storage.js";
 import type { MemoryFile, MemoryLinkType, PluginConfig } from "../../types.js";
@@ -26,6 +28,7 @@ import {
 } from "../lifecycle-matrix.js";
 
 const NOW = "2026-08-09T00:00:00.000Z";
+const TEMPORAL_SUPERSEDED_AT = "2026-08-09T00:00:01.000Z";
 type NamespaceName = "alice" | "bob" | "default";
 type NamespaceDirectoryMap = Map<NamespaceName, string>;
 type NamespaceStorageMap = Map<NamespaceName, StorageManager>;
@@ -36,19 +39,24 @@ type CompletionCall = {
 
 type PropagationState = {
   rootDir: string;
+  queueRoot: string;
   namespaceDirs: NamespaceDirectoryMap;
   storages: NamespaceStorageMap;
   activeNamespace: NamespaceName;
   storage: StorageManager;
   extraction: ExtractionEngine;
+  delivery: DependencyPropagationDelivery;
+  deliveries: DependencyPropagationDelivery[];
   propagationCalls: PropagationEvent[];
-  propagationResults: PropagationResult[];
   completionCalls: CompletionCall[];
   revalidationCalls: Array<{
     supersededId: string;
     dependentIds: string[];
   }>;
   lifecycleLabels: string[];
+  commitProofObserved: boolean;
+  recoveryCalled: boolean;
+  durableJobCount: number;
 };
 
 function makeMemory(
@@ -106,6 +114,9 @@ function namespaceMemories(namespace: NamespaceName): MemoryFile[] {
     }),
     makeMemory(grandchildId, {
       links: [{ targetId: dependentId, linkType: "supports" }],
+    }),
+    makeMemory(`${namespace}-replacement`, {
+      content: `replacement claim for ${namespace}`,
     }),
   ];
 }
@@ -167,8 +178,8 @@ function makeExtraction(
     state.completionCalls.push({ messages, options });
     const userMessage = messages.find((message) => message.role === "user")?.content ?? "";
     const supersededId = userMessage.match(/^SUPERSEDED MEMORY \(id: ([^)]+)\):$/m)?.[1] ?? "";
-    const dependentIds = [...userMessage.matchAll(/^\[\d+\] id: ([^ |]+) \| category:/gm)].map(
-      (match) => match[1]!,
+    const dependentIds = [...userMessage.matchAll(/^\[\d+\] id: ([^ |]+) \| category:/gm)].flatMap(
+      (match) => match[1] ? [match[1]] : [],
     );
     state.revalidationCalls.push({ supersededId, dependentIds });
     if (options.signal?.aborted) return null;
@@ -216,7 +227,87 @@ async function eventFor(state: PropagationState, row: MatrixRow): Promise<Propag
     replacementContent: `replacement claim for ${state.activeNamespace}`,
     cause: causeFor(row),
     namespaceScope: state.activeNamespace,
+    ...(row.dimensions.flush === "session_end"
+      ? {
+          temporalMutation: {
+            supersededAt: TEMPORAL_SUPERSEDED_AT,
+            matchedKeys: [],
+          },
+        }
+      : {}),
   };
+}
+
+function makeDelivery(
+  state: PropagationState,
+  extraction: ExtractionEngine,
+  workerId: string,
+): DependencyPropagationDelivery {
+  const memoryDir = state.namespaceDirs.get(state.activeNamespace);
+  assert.ok(memoryDir, `missing namespace directory ${state.activeNamespace}`);
+  return new DependencyPropagationDelivery({
+    queueRoot: state.queueRoot,
+    config: makeConfig(memoryDir),
+    extraction,
+    getStorage: async (namespace) => {
+      const storage = state.storages.get(namespace as NamespaceName);
+      assert.ok(storage, `missing namespace storage ${namespace}`);
+      return storage;
+    },
+    workerId,
+    autoStart: false,
+  });
+}
+
+async function applyPrimaryMutation(
+  state: PropagationState,
+  event: PropagationEvent,
+): Promise<void> {
+  const storage = activeStorage(state);
+  const oldId = event.oldMemory.frontmatter.id;
+  if (event.cause === "consolidation_invalidate") {
+    assert.equal(
+      await storage.invalidateMemory(oldId, event.oldMemory, { recordCommitProof: true }),
+      true,
+    );
+    state.commitProofObserved = await storage.hasCommittedInvalidation(event.oldMemory);
+    return;
+  }
+  if (event.cause === "contradiction") {
+    assert.ok(event.replacementId, "contradiction event requires a replacement");
+    assert.equal(
+      await storage.supersedeMemory(
+        oldId,
+        event.replacementId,
+        "synthetic primary contradiction",
+        undefined,
+        { expectedSnapshot: event.oldMemory },
+      ),
+      true,
+    );
+    return;
+  }
+  assert.equal(event.cause, "temporal_supersession");
+  assert.ok(event.replacementId);
+  assert.ok(event.temporalMutation);
+  const old = await storage.getMemoryById(oldId);
+  assert.ok(old, `missing temporal source ${oldId}`);
+  assert.equal(
+    await applyTemporalSupersessionPrimaryMutation({
+      storage,
+      oldMemory: old,
+      replacementId: event.replacementId,
+      mutation: event.temporalMutation,
+      allCandidates: await storage.readAllMemories(),
+    }),
+    true,
+  );
+}
+
+function jobById(jobs: DependencyPropagationJob[], jobId: string): DependencyPropagationJob {
+  const job = jobs.find((candidate) => candidate.jobId === jobId);
+  assert.ok(job, `missing durable job ${jobId}`);
+  return job;
 }
 
 const subject: LifecycleSubject<PropagationState> = {
@@ -242,18 +333,25 @@ const subject: LifecycleSubject<PropagationState> = {
       const stateRef: { current?: PropagationState } = {};
       const state: PropagationState = {
         rootDir,
+        queueRoot: path.join(rootDir, "dependency-propagation"),
         namespaceDirs,
         storages,
         activeNamespace,
         storage,
         extraction: makeExtraction(stateRef, makeConfig(memoryDir)),
+        delivery: undefined as unknown as DependencyPropagationDelivery,
+        deliveries: [],
         propagationCalls: [],
-        propagationResults: [],
         completionCalls: [],
         revalidationCalls: [],
         lifecycleLabels: [],
+        commitProofObserved: false,
+        recoveryCalled: false,
+        durableJobCount: 0,
       };
       stateRef.current = state;
+      state.delivery = makeDelivery(state, state.extraction, `lifecycle-${row.id}`);
+      state.deliveries.push(state.delivery);
       return state;
     } catch (error) {
       await rm(rootDir, { recursive: true, force: true });
@@ -263,42 +361,53 @@ const subject: LifecycleSubject<PropagationState> = {
 
   async exercise(state: PropagationState, row: MatrixRow): Promise<void> {
     state.lifecycleLabels.push(row.dimensions.flush);
-    if (row.dimensions.restart) {
+    const event = await eventFor(state, row);
+    state.propagationCalls.push(event);
+    const token = await state.delivery.prepare(event);
+    assert.ok(token, "delivery must durably prepare the propagation job");
+    if (row.dimensions.dedupeOrReplay) {
+      const duplicateToken = await state.delivery.prepare(event);
+      assert.ok(duplicateToken, "duplicate prepare must reserve the existing durable job");
+      assert.equal((await state.delivery.listJobs()).length, 1);
+      await applyPrimaryMutation(state, event);
+      await state.delivery.afterMutation(token, event);
+      await state.delivery.afterMutation(duplicateToken, event);
+      await state.delivery.runUntilIdle();
+    } else if (row.dimensions.restart) {
+      await applyPrimaryMutation(state, event);
       const directory = state.namespaceDirs.get(state.activeNamespace);
       assert.ok(directory, `missing namespace directory ${state.activeNamespace}`);
-      state.storage = new StorageManager(directory);
-      state.storages.set(state.activeNamespace, state.storage);
+      const reloadedStorage = new StorageManager(directory);
+      await reloadedStorage.ensureDirectories();
+      state.storage = reloadedStorage;
+      state.storages.set(state.activeNamespace, reloadedStorage);
       const stateRef: { current?: PropagationState } = { current: state };
       state.extraction = makeExtraction(stateRef, makeConfig(directory));
+      const recovered = makeDelivery(state, state.extraction, `lifecycle-${row.id}-reloaded`);
+      state.delivery = recovered;
+      state.deliveries.push(recovered);
+      state.recoveryCalled = true;
+      await recovered.recover();
+      await recovered.runUntilIdle();
+    } else {
+      await applyPrimaryMutation(state, event);
+      await state.delivery.afterMutation(token, event);
+      await state.delivery.runUntilIdle();
     }
-    const run = async (): Promise<void> => {
-      const event = await eventFor(state, row);
-      state.propagationCalls.push(event);
-      state.propagationResults.push(
-        await propagateInvalidation(
-          {
-            storage: state.storage,
-            extraction: state.extraction,
-            config: makeConfig(state.namespaceDirs.get(state.activeNamespace)!),
-          },
-          event,
-        ),
-      );
-    };
-
-    await run();
-    if (row.dimensions.dedupeOrReplay) await run();
+    const jobs = await state.delivery.listJobs();
+    state.durableJobCount = jobs.length;
   },
 
   async invariants(state: PropagationState, row: MatrixRow): Promise<void> {
-    assert.equal(state.propagationCalls.length, row.dimensions.dedupeOrReplay ? 2 : 1);
-    assert.equal(state.propagationResults[0]?.route, "fast-completion");
-    assert.equal(state.propagationResults[0]?.dependentsFound, 1);
-    assert.equal(state.propagationResults[0]?.invalidated, 1);
-    if (row.dimensions.dedupeOrReplay) {
-      assert.equal(state.propagationResults[1]?.skipped, "no_dependents");
-      assert.equal(state.propagationResults[1]?.dependentsFound, 0);
-    }
+    assert.equal(state.propagationCalls.length, 1);
+    assert.equal(state.durableJobCount, 1, "one durable job must represent the event");
+    const jobs = await state.delivery.listJobs();
+    assert.equal(jobs.length, 1);
+    const firstJob = jobs[0];
+    assert.ok(firstJob, "missing durable job");
+    const job = jobById(jobs, firstJob.jobId);
+    assert.equal(job.status, "completed");
+    assert.equal(job.attempts, 1);
     assert.equal(state.revalidationCalls.length, 1, "the real LLM revalidation path must run");
     const revalidation = state.revalidationCalls[0];
     assert.ok(revalidation, "missing revalidation call");
@@ -308,7 +417,7 @@ const subject: LifecycleSubject<PropagationState> = {
       [`${state.activeNamespace}-dependent`],
       "discovery must stay one-hop and namespace-scoped",
     );
-    assert.equal(state.completionCalls.length, 1);
+    assert.equal(state.completionCalls.length, 1, "one durable job must produce one completion");
     const completion = state.completionCalls[0];
     assert.ok(completion, "missing completion call");
     assert.deepEqual(completion.messages.map((message) => message.role), ["system", "user"]);
@@ -334,10 +443,32 @@ claim for ${state.activeNamespace}-dependent`,
     assert.equal(completion.options.signal?.aborted, false);
     assert.equal(state.lifecycleLabels.length, 1);
     assert.equal(state.lifecycleLabels[0], row.dimensions.flush);
+    if (row.dimensions.restart) {
+      assert.equal(state.deliveries.length, 2, "restart must create a second delivery");
+      assert.equal(state.recoveryCalled, true, "restart must call recovery");
+    } else {
+      assert.equal(state.deliveries.length, 1);
+    }
 
     const active = await activeStorage(state).readAllMemories();
+    const old = active.find((memory) => memory.frontmatter.id === `${state.activeNamespace}-old`);
     const dependent = active.find((memory) => memory.frontmatter.id === `${state.activeNamespace}-dependent`);
     const grandchild = active.find((memory) => memory.frontmatter.id === `${state.activeNamespace}-grandchild`);
+    if (row.dimensions.flush === "compaction") {
+      assert.equal(old, undefined, "consolidation invalidation must delete the source");
+      assert.equal(state.commitProofObserved, true, "consolidation must record an invalidation commit proof");
+      const propagation = state.propagationCalls[0];
+      assert.ok(propagation, "missing propagation event");
+      assert.equal(await activeStorage(state).hasCommittedInvalidation({
+        content: `supporting claim for ${state.activeNamespace}`,
+        frontmatter: {
+          ...propagation.oldMemory.frontmatter,
+        },
+      }), false, "completed delivery must clear the commit proof");
+    } else {
+      assert.equal(old?.frontmatter.status, "superseded");
+      assert.equal(old?.frontmatter.supersededBy, `${state.activeNamespace}-replacement`);
+    }
     assert.equal(dependent?.frontmatter.status, "superseded");
     assert.equal(dependent?.frontmatter.supersededBy, `${state.activeNamespace}-replacement`);
     assert.equal(dependent?.frontmatter.supersessionCause, "dependency");
@@ -346,6 +477,11 @@ claim for ${state.activeNamespace}-dependent`,
     for (const [namespace, storage] of state.storages) {
       if (namespace === state.activeNamespace) continue;
       const memories = await storage.readAllMemories();
+      assert.equal(
+        memories.find((memory) => memory.frontmatter.id === `${namespace}-old`)?.frontmatter.status,
+        "active",
+        `source in ${namespace} must remain active`,
+      );
       assert.equal(
         memories.find((memory) => memory.frontmatter.id === `${namespace}-dependent`)?.frontmatter.status,
         "active",
@@ -360,6 +496,7 @@ claim for ${state.activeNamespace}-dependent`,
   },
 
   async teardown(state: PropagationState): Promise<void> {
+    for (const delivery of state.deliveries) await delivery.shutdown();
     await rm(state.rootDir, { recursive: true, force: true });
   },
 };

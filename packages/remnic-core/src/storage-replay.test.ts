@@ -11,6 +11,7 @@ async function withStorage(run: (storage: StorageManager) => Promise<void>): Pro
   try {
     await run(new StorageManager(memoryDir));
   } finally {
+    StorageManager.clearAllStaticCaches();
     await rm(memoryDir, { recursive: true, force: true });
   }
 }
@@ -47,6 +48,37 @@ test("supersedeMemory replays an archived source", async () => {
     assert.ok(archived);
     assert.equal(archived.frontmatter.status, "superseded");
     assert.equal(archived.frontmatter.supersededBy, "fact-replacement");
+  });
+});
+test("supersedeMemory uses the supplied tier path without corpus scans", async () => {
+  await withStorage(async (storage) => {
+    const created = await storage.writeMemory("fact", "The exact path source is the old note.", { source: "test" });
+    const snapshot = await storage.getMemoryById(created.id);
+    assert.ok(snapshot);
+
+    storage.readAllMemories = async () => {
+      throw new Error("unexpected hot corpus scan");
+    };
+    storage.readAllColdMemories = async () => {
+      throw new Error("unexpected cold corpus scan");
+    };
+    storage.readArchivedMemories = async () => {
+      throw new Error("unexpected archive corpus scan");
+    };
+
+    assert.equal(
+      await storage.supersedeMemory(
+        created.id,
+        "fact-replacement",
+        "dependency_propagation:contradiction",
+        { supersessionCause: "dependency", invalidatedBy: "support-source" },
+        { requireActive: true, acceptExactReplay: true, expectedSnapshot: snapshot },
+      ),
+      true,
+    );
+    const current = await storage.readMemoryByPath(snapshot.path);
+    assert.ok(current);
+    assert.equal(current.frontmatter.status, "superseded");
   });
 });
 

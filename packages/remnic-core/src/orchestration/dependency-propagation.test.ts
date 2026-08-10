@@ -5,6 +5,7 @@ import { findDependents, propagateInvalidation } from "./dependency-propagation.
 import type { ExtractionEngine } from "../extraction.js";
 import type { MemoryFile, MemoryLinkType, PluginConfig } from "../types.js";
 import type { StorageManager } from "../storage.js";
+import { invalidationCommitFingerprint } from "../storage/deletion-revision-store.js";
 
 type Verdict = {
   memoryId: string;
@@ -30,7 +31,11 @@ type Fixture = {
       replacementId: string;
       reason: string;
       metadata?: Record<string, unknown>;
-      options: { requireActive?: boolean; acceptExactReplay?: boolean };
+      options: {
+        requireActive?: boolean;
+        acceptExactReplay?: boolean;
+        expectedSnapshot?: Pick<MemoryFile, "content" | "frontmatter"> & Partial<Pick<MemoryFile, "path">>;
+      };
     }>;
   };
 };
@@ -88,10 +93,10 @@ function fixture(
 ): Fixture {
   const memories = new Map(initial.map((item) => [item.frontmatter.id, item]));
   const calls: Fixture["calls"] = { revalidate: [], supersede: [] };
-
   const storage = {
+
     async readAllMemories(): Promise<MemoryFile[]> {
-      return [...memories.values()];
+      return structuredClone([...memories.values()]);
     },
     async getMemoryById(id: string): Promise<MemoryFile | null> {
       return memories.get(id) ?? null;
@@ -101,11 +106,21 @@ function fixture(
       replacementId: string,
       reason: string,
       metadata?: Record<string, unknown>,
-      options: { requireActive?: boolean; acceptExactReplay?: boolean } = {},
+      options: {
+        requireActive?: boolean;
+        acceptExactReplay?: boolean;
+        expectedSnapshot?: Pick<MemoryFile, "content" | "frontmatter"> & Partial<Pick<MemoryFile, "path">>;
+      } = {},
     ): Promise<boolean> {
       calls.supersede.push({ id, replacementId, reason, metadata, options });
       const current = memories.get(id);
       if (!current) return false;
+      if (
+        options.expectedSnapshot &&
+        invalidationCommitFingerprint(current) !== invalidationCommitFingerprint(options.expectedSnapshot)
+      ) {
+        return false;
+      }
       const exactReplay =
         current.frontmatter.status === "superseded" &&
         current.frontmatter.supersededBy === replacementId &&
@@ -308,6 +323,7 @@ test("invalidated verdict supersedes the dependent and persists dependency front
   const old = memory("old", { links: [{ targetId: "dep", linkType: "supports" }] });
   const dependent = memory("dep");
   const fixtureValue = fixture([old, dependent], [{ memoryId: "dep", verdict: "invalidated", reason: "claim lost support" }]);
+  const expectedSnapshot = structuredClone(dependent);
 
   const result = await propagateInvalidation(
     deps(fixtureValue),
@@ -333,12 +349,30 @@ test("invalidated verdict supersedes the dependent and persists dependency front
       replacementId: "replacement",
       reason: "dependency_propagation:contradiction",
       metadata: { supersessionCause: "dependency", invalidatedBy: "old" },
-      options: { requireActive: true, acceptExactReplay: true },
+      options: { requireActive: true, acceptExactReplay: true, expectedSnapshot },
     },
   ]);
   assert.equal(fixtureValue.memories.get("dep")?.frontmatter.status, "superseded");
   assert.equal(fixtureValue.memories.get("dep")?.frontmatter.supersessionCause, "dependency");
   assert.equal(fixtureValue.memories.get("dep")?.frontmatter.invalidatedBy, "old");
+});
+test("supersede fixture rejects a stale expected snapshot after concurrent mutation", async () => {
+  const old = memory("old", { links: [{ targetId: "dep", linkType: "supports" }] });
+  const dependent = memory("dep");
+  const fixtureValue = fixture([old, dependent], []);
+  const expectedSnapshot = structuredClone(dependent);
+  dependent.content = "concurrent update";
+
+  const superseded = await fixtureValue.storage.supersedeMemory(
+    "dep",
+    "replacement",
+    "dependency_propagation:contradiction",
+    { supersessionCause: "dependency", invalidatedBy: "old" },
+    { requireActive: true, expectedSnapshot },
+  );
+
+  assert.equal(superseded, false);
+  assert.equal(fixtureValue.memories.get("dep")?.frontmatter.status, "active");
 });
 
 test("still_valid and uncertain verdicts do not write", async () => {

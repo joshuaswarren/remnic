@@ -1909,3 +1909,59 @@ test("supersedeMemory active-state guard preserves a newer supersession", async 
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+test("supersedeMemory exact replay repairs a missing correction audit", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-supersede-audit-replay-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "test",
+    });
+    const oldMemory = await storage.writeMemory("fact", "The retired audit source.", { source: "test" });
+    const replacement = await storage.writeMemory("fact", "The replacement audit source.", { source: "test" });
+    const supersessionArgs = [
+      oldMemory.id,
+      replacement.id,
+      "dependency_propagation:contradiction",
+      { supersessionCause: "dependency", invalidatedBy: oldMemory.id },
+      { requireActive: true, acceptExactReplay: true },
+    ] as const;
+    const seams = storage as unknown as {
+      writeMemory: (...args: never[]) => Promise<unknown>;
+    };
+    const originalWriteMemory = seams.writeMemory.bind(storage);
+    let crash = true;
+    seams.writeMemory = async (...args) => {
+      if (crash) {
+        crash = false;
+        throw new Error("simulated audit crash");
+      }
+      return originalWriteMemory(...args);
+    };
+
+    assert.equal(await storage.supersedeMemory(...supersessionArgs), false);
+    assert.equal(
+      (await storage.readAllMemories()).filter(
+        (memory) =>
+          memory.frontmatter.category === "correction" &&
+          memory.content.includes("The retired audit source."),
+      ).length,
+      0,
+    );
+    assert.equal(await storage.supersedeMemory(...supersessionArgs), true);
+    assert.equal(
+      (await storage.readAllMemories()).filter(
+        (memory) =>
+          memory.frontmatter.category === "correction" &&
+          memory.content.includes("The retired audit source."),
+      ).length,
+      1,
+    );
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

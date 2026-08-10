@@ -10,6 +10,7 @@ function buildConfig(
   memoryDir: string,
   workspaceDir: string,
   nightlyGovernanceCronAutoRegister: boolean,
+  dependencyPropagationEnabled = false,
 ) {
   return parseConfig({
     openaiApiKey: "sk-test",
@@ -22,6 +23,13 @@ function buildConfig(
     knowledgeIndexEnabled: false,
     conversationIndexEnabled: false,
     localLlmEnabled: false,
+    dependencyPropagation: {
+      enabled: dependencyPropagationEnabled,
+      linkTypes: ["supports"],
+      maxDependents: 10,
+      timeoutMs: 100,
+      dryRun: false,
+    },
   });
 }
 
@@ -130,8 +138,9 @@ test("initialize triggers nightly governance cron auto-register when explicitly 
 test("abortDeferredInit stops deferred initialization before cron registration", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-abort-deferred-memory-"));
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "engram-abort-deferred-workspace-"));
+  let orchestrator: Orchestrator | undefined;
   try {
-    const orchestrator = new Orchestrator(buildConfig(memoryDir, workspaceDir, true));
+    orchestrator = new Orchestrator(buildConfig(memoryDir, workspaceDir, true, true));
     stubInitializeDependencies(orchestrator);
 
     let nightlyCalls = 0;
@@ -146,6 +155,7 @@ test("abortDeferredInit stops deferred initialization before cron registration",
 
     assert.equal(nightlyCalls, 0);
   } finally {
+    if (orchestrator) await orchestrator.destroy().catch(() => undefined);
     await rm(memoryDir, { recursive: true, force: true });
     await rm(workspaceDir, { recursive: true, force: true });
   }

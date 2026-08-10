@@ -234,19 +234,22 @@ function temporalSupersessionOperationKey(
         cause: "temporal_supersession",
         supersededAt: mutation.supersededAt,
         invalidAt: mutation.invalidAt ?? null,
-        matchedKeys: [...mutation.matchedKeys].sort(),
+        matchedKeys: [...mutation.matchedKeys].sort(compareByteStable),
       }),
     )
     .digest("hex");
 }
 type TemporalMemorySnapshot = Pick<MemoryFile, "content" | "frontmatter">;
+function compareByteStable(left: string, right: string): number {
+  return Buffer.from(left, "utf8").compare(Buffer.from(right, "utf8"));
+}
 
 function canonicalTemporalValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map((entry) => canonicalTemporalValue(entry));
   if (value && typeof value === "object") {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => left.localeCompare(right))
+        .sort(([left], [right]) => compareByteStable(left, right))
         .map(([key, entry]) => [key, canonicalTemporalValue(entry)]),
     );
   }
@@ -324,7 +327,7 @@ async function settleTemporalPropagationAfterPrimaryFailure(
     }
     return;
   }
-  if (token === null && commitState === "committed") {
+  if (token === null && (commitState === "committed" || commitState === "unknown")) {
     try {
       token = await pending.delivery.prepare(pending.event);
     } catch (error) {

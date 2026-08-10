@@ -411,8 +411,10 @@ export class ContradictionLinkingCoordinator {
         `contradiction dependency propagation skipped for ${contradiction.supersededId}: replacement content was not captured`,
       );
     }
+    const propagationEnabled =
+      config.dependencyPropagation.enabled && config.dependencyPropagation.maxDependents > 0;
     let delivery: DependencyPropagationDeliveryPort | null = null;
-    if (propagationEvent) {
+    if (propagationEvent && propagationEnabled) {
       try {
         delivery = this.getDependencyPropagationDelivery();
       } catch (err) {
@@ -421,10 +423,8 @@ export class ContradictionLinkingCoordinator {
         );
       }
     }
-    const propagationEnabled =
-      config.dependencyPropagation.enabled && config.dependencyPropagation.maxDependents > 0;
     let preparation: DependencyPropagationPreparationToken | null = null;
-    if (delivery && propagationEvent && propagationEnabled) {
+    if (delivery && propagationEvent) {
       try {
         preparation = await delivery.prepare(propagationEvent);
       } catch (err) {
@@ -463,7 +463,7 @@ export class ContradictionLinkingCoordinator {
         }
         return;
       }
-      if (token === null && commitState === true && delivery && propagationEvent) {
+      if (commitState === null && token === null && delivery && propagationEvent) {
         try {
           token = await delivery.prepare(propagationEvent);
         } catch (err) {

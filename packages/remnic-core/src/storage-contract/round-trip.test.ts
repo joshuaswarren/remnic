@@ -200,6 +200,32 @@ test("round-trip: invalidation commit proof survives restart and rejects a chang
     await cleanup();
   }
 });
+test("round-trip: a post-delete failure retains the committed invalidation proof", async () => {
+  const { storage, cleanup } = await makeStorage();
+  try {
+    const { id } = await storage.writeMemory("fact", "proof survives post-delete failure");
+    const snapshot = await storage.getMemoryById(id);
+    assert.ok(snapshot);
+    const managedStorage = storage as unknown as {
+      deleteManagedStorageFile: (filePath: string) => Promise<boolean>;
+      rebuildTombstoneBlockedCaptureAfterInvalidation: (ownedMarker?: string) => Promise<void>;
+    };
+    const originalDelete = managedStorage.deleteManagedStorageFile;
+    managedStorage.deleteManagedStorageFile = async (filePath) => originalDelete.call(storage, filePath);
+    managedStorage.rebuildTombstoneBlockedCaptureAfterInvalidation = async () => {
+      throw new Error("synthetic post-delete failure");
+    };
+
+    assert.equal(
+      await storage.invalidateMemory(id, snapshot, { recordCommitProof: true }),
+      false,
+    );
+    assert.equal(await storage.readMemoryByPath(snapshot.path), null);
+    assert.equal(await storage.hasCommittedInvalidation(snapshot), true);
+  } finally {
+    await cleanup();
+  }
+});
 
 test("round-trip: dependency propagation queue rejects symlinks in root, parent, and target paths", async () => {
   const { storage, baseDir, cleanup } = await makeStorage("remnic-dependency-queue-symlink-");

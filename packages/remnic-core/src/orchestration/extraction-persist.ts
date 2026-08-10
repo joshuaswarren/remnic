@@ -84,6 +84,7 @@ import { decideSemanticDedup, type SemanticDedupDecision, type SemanticDedupHit 
 import { selectRouteRule, type RouteRule, type RoutingEngineOptions } from "../routing/engine.js";
 import { ThreadingManager } from "../threading.js";
 import { NamespaceStorageRouter } from "../namespaces/storage.js";
+import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
 import type { SearchBackend } from "../search/port.js";
 import { inferIntentFromText } from "../intent.js";
 import type {
@@ -103,7 +104,8 @@ import {
   shouldPromoteToShared,
 } from "./extraction-persist-promotion.js";
 import type { ExtractionPersistDeps } from "./extraction-persist-deps.js";
-import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
+import type { DependencyPropagationDeliveryPort } from "./dependency-propagation-delivery.js";
+import { isDependencyPropagationEnabled } from "./dependency-propagation.js";
 import {
   buildMemoryPathById,
   appendMemoryToGraphContext,
@@ -114,14 +116,16 @@ import { persistConstructedHarmonicRecords } from "./harmonic-construction-persi
 import { ExtractionAnchorSnapshot } from "./extraction-anchor-snapshot.js";
 
 
-
-
 export class ExtractionPersistCoordinator {
   constructor(
     private readonly deps: ExtractionPersistDeps,
   ) {}
   private get config(): PluginConfig {
     return this.deps.config;
+  }
+  private get dependencyPropagationDelivery(): DependencyPropagationDeliveryPort | undefined {
+    if (!isDependencyPropagationEnabled(this.config)) return undefined;
+    return this.deps.getDependencyPropagationDelivery();
   }
 
   async persistExtraction(
@@ -500,7 +504,7 @@ export class ExtractionPersistCoordinator {
                 structuredAttributes: { ...targetSurvivingAttrs },
                 createdAt: supersessionOrderingAt(options.validAt),
                 enabled: !(options.eventTimeSource === "extracted" && !options.validAt),
-                dependencyPropagationDelivery: this.deps.getDependencyPropagationDelivery(),
+                dependencyPropagationDelivery: this.dependencyPropagationDelivery,
                 namespaceScope: this.deps.storageDirNamespace(targetStorage.dir),
               });
             } catch (profileSupersessionErr) {
@@ -801,7 +805,7 @@ export class ExtractionPersistCoordinator {
                   createdAt: supersessionOrderingAt(options.validAt),
                   useCallerTimestamp: true,
                   enabled: !(options.eventTimeSource === "extracted" && !options.validAt),
-                  dependencyPropagationDelivery: this.deps.getDependencyPropagationDelivery(),
+                  dependencyPropagationDelivery: this.dependencyPropagationDelivery,
                   namespaceScope: this.deps.storageDirNamespace(sharedStorage.dir),
                 });
                 // Catalog touch (issue #1499 — codex P2 NElSf): this dedup branch
@@ -925,7 +929,7 @@ export class ExtractionPersistCoordinator {
               structuredAttributes: { ...sharedSurvivingAttrs },
               createdAt: supersessionOrderingAt(options.validAt),
               enabled: !(options.eventTimeSource === "extracted" && !options.validAt),
-              dependencyPropagationDelivery: this.deps.getDependencyPropagationDelivery(),
+              dependencyPropagationDelivery: this.dependencyPropagationDelivery,
               namespaceScope: this.deps.storageDirNamespace(sharedStorage.dir),
             });
           } catch (sharedSupersessionErr) {
@@ -2361,7 +2365,7 @@ export class ExtractionPersistCoordinator {
                 createdAt: supersessionOrderingAt(biTemporal?.validFrom ?? sourceContext?.validAt),
                 enabled: lifecycleCaps.temporalSupersession &&
                   !(biTemporal && !biTemporal.validFrom),
-                dependencyPropagationDelivery: this.deps.getDependencyPropagationDelivery(),
+                dependencyPropagationDelivery: this.dependencyPropagationDelivery,
                 namespaceScope: this.deps.storageDirNamespace(targetStorage.dir),
               });
               for (const supersededId of temporalSupersession.supersededIds) {
@@ -2642,7 +2646,7 @@ export class ExtractionPersistCoordinator {
             createdAt: supersessionOrderingAt(biTemporal?.validFrom ?? sourceContext?.validAt),
             enabled: lifecycleCaps.temporalSupersession &&
               !(biTemporal && !biTemporal.validFrom),
-            dependencyPropagationDelivery: this.deps.getDependencyPropagationDelivery(),
+            dependencyPropagationDelivery: this.dependencyPropagationDelivery,
             namespaceScope: this.deps.storageDirNamespace(targetStorage.dir),
           });
           for (const supersededId of temporalSupersession.supersededIds) {

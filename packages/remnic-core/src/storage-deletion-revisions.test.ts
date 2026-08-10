@@ -213,3 +213,52 @@ test("managed deletion and write reject a symlinked storage-file parent before o
     await rm(outside, { recursive: true, force: true });
   }
 });
+test("failed proof rollback stays quarantined and fails closed", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-invalidation-proof-quarantine-"));
+  try {
+    const store = createDeletionRevisionStore(root);
+    const memory = proofMemory("quarantine-memory");
+    await store.recordCommittedInvalidation(memory);
+    const internal = store as unknown as {
+      writeInvalidationCommitMetadata: (...args: unknown[]) => Promise<void>;
+    };
+    internal.writeInvalidationCommitMetadata = async () => {
+      throw new Error("synthetic proof rollback failure");
+    };
+
+    await assert.rejects(
+      store.clearCommittedInvalidation(memory),
+      /synthetic proof rollback failure/,
+    );
+    assert.equal(await store.hasCommittedInvalidation(memory), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+test("failed proof rollback quarantine stays bounded and fails closed after the cap", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-invalidation-proof-quarantine-cap-"));
+  try {
+    const store = createDeletionRevisionStore(root);
+    const internal = store as unknown as {
+      invalidationProofQuarantine: Set<string>;
+      writeInvalidationCommitMetadata: (...args: unknown[]) => Promise<void>;
+    };
+    const originalWrite = internal.writeInvalidationCommitMetadata;
+    for (let index = 0; index <= 1024; index += 1) {
+      const memory = proofMemory(`bounded-quarantine-${index}`);
+      await store.recordCommittedInvalidation(memory);
+      internal.writeInvalidationCommitMetadata = async () => {
+        throw new Error("synthetic proof rollback failure");
+      };
+      await assert.rejects(store.clearCommittedInvalidation(memory), /synthetic proof rollback failure/);
+      internal.writeInvalidationCommitMetadata = originalWrite;
+    }
+
+    const recordedAfterOverflow = proofMemory("recorded-after-quarantine-cap");
+    await store.recordCommittedInvalidation(recordedAfterOverflow);
+    assert.equal(await store.hasCommittedInvalidation(recordedAfterOverflow), false);
+    assert.equal(internal.invalidationProofQuarantine.size, 1024);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

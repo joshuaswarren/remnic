@@ -14,6 +14,10 @@ import type {
   PluginConfig,
 } from "../types.js";
 
+export function isDependencyPropagationEnabled(config: Pick<PluginConfig, "dependencyPropagation">): boolean {
+  return config.dependencyPropagation.enabled && config.dependencyPropagation.maxDependents > 0;
+}
+
 export interface PropagationEvent {
   /** Snapshot captured before the primary supersession or deletion. */
   oldMemory: { content: string; frontmatter: MemoryFrontmatter };
@@ -54,7 +58,11 @@ export interface DependencyPropagationStorage {
     replacementId: string,
     reason: string,
     metadata?: Pick<MemoryFrontmatter, "supersessionCause" | "invalidatedBy">,
-    options?: { requireActive?: boolean; acceptExactReplay?: boolean },
+    options?: {
+      requireActive?: boolean;
+      acceptExactReplay?: boolean;
+      expectedSnapshot?: Pick<MemoryFile, "content" | "frontmatter"> & Partial<Pick<MemoryFile, "path">>;
+    },
   ): Promise<boolean>;
 }
 
@@ -289,7 +297,11 @@ export async function propagateInvalidation(
               supersessionCause: "dependency",
               invalidatedBy: event.oldMemory.frontmatter.id,
             },
-            { requireActive: true, acceptExactReplay: true },
+            {
+              requireActive: true,
+              acceptExactReplay: true,
+              expectedSnapshot: dependent,
+            },
           );
         const superseded = deps.writeFence ? await deps.writeFence(write) : await write();
         if (superseded !== true) continue;

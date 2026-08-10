@@ -57,10 +57,14 @@ function propagationConfig(): PluginConfig {
     },
   } as unknown as PluginConfig;
 }
+type TombstoneInput = Parameters<StorageManager["appendTombstone"]>[0];
+
 
 type TriggerStorage = {
   memories: Map<string, MemoryFile>;
   supersedeCalls: Array<{ id: string; replacementId: string; reason: string }>;
+  tombstoneInputs: TombstoneInput[];
+  tombstoneIds: Array<string | null>;
   frontmatterCalls: Array<{ id: string; patch: Record<string, unknown> }>;
   invalidateCalls: string[];
   order: string[];
@@ -159,6 +163,8 @@ function makeStorage(
   } = {},
 ): TriggerStorage {
   const memories = new Map(initial.map((item) => [item.frontmatter.id, item]));
+  const tombstoneInputs: TombstoneInput[] = [];
+  const tombstoneIds: Array<string | null> = [];
   const supersedeCalls: TriggerStorage["supersedeCalls"] = [];
   const frontmatterCalls: TriggerStorage["frontmatterCalls"] = [];
   const invalidateCalls: string[] = [];
@@ -175,6 +181,8 @@ function makeStorage(
   const storage = {
     memories,
     supersedeCalls,
+    tombstoneInputs,
+    tombstoneIds,
     frontmatterCalls,
     invalidateCalls,
     order,
@@ -202,7 +210,23 @@ function makeStorage(
     async readProfile(): Promise<string> {
       return "";
     },
-    async appendTombstone(): Promise<void> {},
+    async appendTombstone(input: TombstoneInput): Promise<string | null> {
+      const recordedInput = structuredClone(input);
+      const returnedId = `synthetic-tombstone-${input.sourceMemoryId}`;
+      tombstoneInputs.push(recordedInput);
+      tombstoneIds.push(returnedId);
+      return returnedId;
+    },
+    async hasExactTombstone(input: TombstoneInput): Promise<boolean> {
+      return tombstoneInputs.some((existing) =>
+        existing.sourceMemoryId === input.sourceMemoryId &&
+        existing.contentHash === input.contentHash &&
+        existing.entityRef === input.entityRef &&
+        existing.supersessionKey === input.supersessionKey &&
+        existing.createdAt === input.createdAt &&
+        existing.operationKey === input.operationKey
+      );
+    },
     async mergeFragmentedEntities(): Promise<number> {
       return 0;
     },
@@ -300,7 +324,16 @@ function makeStorage(
       return true;
     },
   } as unknown as StorageManager;
-  return { memories, supersedeCalls, frontmatterCalls, invalidateCalls, order, storage };
+  return {
+    memories,
+    supersedeCalls,
+    tombstoneInputs,
+    tombstoneIds,
+    frontmatterCalls,
+    invalidateCalls,
+    order,
+    storage,
+  };
 }
 
 
@@ -569,6 +602,23 @@ test("temporal supersession propagates to a dependent after the old fact is reti
   assert.equal(fixture.memories.get("dependent")?.frontmatter.invalidatedBy, "old");
   assert.equal(revalidateCalls.length, 1);
   assertReadyAfterMutation(fixture.order, "temporal_supersession", "frontmatter:old");
+  assert.equal(fixture.tombstoneInputs.length, 1);
+  assert.deepEqual(fixture.tombstoneIds, ["synthetic-tombstone-old"]);
+  const tombstone = fixture.tombstoneInputs[0];
+  assert.equal(tombstone.reason, "supersession");
+  assert.equal(tombstone.createdBy, "supersession");
+  assert.equal(tombstone.sourceMemoryId, "old");
+  assert.equal(tombstone.rawContent, old.content);
+  assert.equal(tombstone.entityRef, "project-a");
+  assert.equal(tombstone.supersessionKey, "project-a::city");
+  assert.equal(tombstone.createdAt, "2026-08-09T00:00:00.000Z");
+  assert.match(tombstone.operationKey ?? "", /^[a-f0-9]{64}:tombstone:project-a::city$/);
+
+  const replay = await (applyTemporalSupersession as unknown as (args: typeof temporalArgs) => Promise<{
+    supersededIds: string[];
+  }>)(temporalArgs);
+  assert.deepEqual(replay.supersededIds, []);
+  assert.equal(fixture.tombstoneInputs.length, 1);
 });
 test("temporal supersession defers prepared recovery after a committed false mutation", async () => {
   const old = makeMemory("old", {
@@ -621,6 +671,8 @@ test("temporal supersession defers prepared recovery after a committed false mut
   assert.equal(fixture.memories.get("old")?.frontmatter.status, "superseded");
   assert.ok(fixture.order.includes("defer:temporal_supersession"));
   assert.equal(fixture.order.includes("cancel:temporal_supersession"), false);
+  assert.equal(fixture.tombstoneInputs.length, 0);
+  assert.deepEqual(fixture.tombstoneIds, []);
 });
 
 test("consolidation INVALIDATE captures links before deletion with query-aware indexing disabled", async () => {
@@ -1192,7 +1244,7 @@ test("consolidation cancels a prepared propagation when the pre-primary source r
   assert.equal(revalidateCalls.length, 0);
 });
 
-test("consolidation directly propagates a committed MERGE survivor after a null-token update failure", async () => {
+test("consolidation defers merge propagation when the survivor write throws after commit", async () => {
   const doomed = makeMemory("doomed", { links: [{ targetId: "dependent", linkType: "supports" }] });
   const replacement = makeMemory("replacement", { content: "old replacement claim" });
   const dependent = makeMemory("dependent");
@@ -1214,7 +1266,6 @@ test("consolidation directly propagates a committed MERGE survivor after a null-
     extraction,
     config,
     fixture.order,
-    { prepareReturnsNull: true },
   );
 
   await assert.rejects(
@@ -1223,14 +1274,13 @@ test("consolidation directly propagates a committed MERGE survivor after a null-
   );
 
   assert.equal(fixture.memories.get("replacement")?.content, "merged claim");
-  assert.equal(fixture.memories.get("dependent")?.frontmatter.invalidatedBy, "doomed");
-  assert.deepEqual(fixture.order.slice(0, 4), [
+  assert.equal(fixture.memories.get("dependent")?.frontmatter.invalidatedBy, undefined);
+  assert.deepEqual(fixture.order.slice(0, 3), [
     "prepare:consolidation_merge",
     "update:replacement",
-    "afterMutation:consolidation_merge",
-    "ready:consolidation_merge",
+    "defer:consolidation_merge",
   ]);
-  assert.equal(fixture.order.includes("defer:consolidation_merge"), false);
+  assert.equal(fixture.order.includes("afterMutation:consolidation_merge"), false);
   assert.equal(fixture.order.includes("invalidate:doomed"), false);
-  assert.equal(revalidateCalls.length, 1);
+  assert.equal(revalidateCalls.length, 0);
 });
