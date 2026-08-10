@@ -207,6 +207,9 @@ function makeStorage(
     async readMemoryByPath(memoryPath: string): Promise<MemoryFile | null> {
       return [...memories.values()].find((memory) => memory.path === memoryPath) ?? null;
     },
+    async getMemoryTimeline(): Promise<[]> {
+      return [];
+    },
     async readProfile(): Promise<string> {
       return "";
     },
@@ -767,6 +770,32 @@ test("consolidation INVALIDATE does not delete after a concurrent source update"
   assert.equal(revalidateCalls.length, 0);
   assert.equal(fixture.order.includes("afterMutation:consolidation_invalidate"), false);
 });
+test("consolidation INVALIDATE preserves mutation semantics when propagation is disabled", async () => {
+  const doomed = makeMemory("doomed", { links: [{ targetId: "dependent", linkType: "supports" }] });
+  const dependent = makeMemory("dependent");
+  const fillers = ["filler-a", "filler-b", "filler-c"].map((id) => makeMemory(id));
+  const fixture = makeStorage([doomed, dependent, ...fillers], {
+    mutateBeforeInvalidateIds: ["doomed"],
+  });
+  const revalidateCalls: unknown[] = [];
+  const extraction = makeConsolidationExtraction(revalidateCalls, {
+    existingId: "doomed",
+    action: "INVALIDATE",
+    reason: "duplicate",
+  });
+  const config = propagationConfig();
+  config.dependencyPropagation.enabled = false;
+  const delivery = makeSyntheticImmediateDelivery(fixture.storage, extraction, config, fixture.order);
+  const coordinator = makeConsolidationCoordinator(fixture, extraction, config, delivery);
+
+  await coordinator.run();
+
+  assert.equal(fixture.memories.has("doomed"), false);
+  assert.equal(fixture.invalidateCalls[0], "doomed");
+  assert.equal(revalidateCalls.length, 0);
+  assert.equal(fixture.order.some((entry) => entry.startsWith("prepare:")), false);
+});
+
 
 test("consolidation INVALIDATE deletes after an access-only source update", async () => {
   const doomed = makeMemory("doomed", { links: [{ targetId: "dependent", linkType: "supports" }] });
@@ -865,6 +894,35 @@ test("consolidation MERGE prepares before update and invalidation, then marks re
   assert.ok(fixture.order.indexOf("prepare:consolidation_merge") < fixture.order.indexOf("update:replacement"));
   assert.ok(fixture.order.indexOf("update:replacement") < fixture.order.indexOf("invalidate:doomed"));
 });
+test("consolidation MERGE preserves mutation semantics when propagation is disabled", async () => {
+  const doomed = makeMemory("doomed", { links: [{ targetId: "dependent", linkType: "supports" }] });
+  const replacement = makeMemory("replacement", { content: "original replacement" });
+  const dependent = makeMemory("dependent");
+  const fillers = ["filler-a", "filler-b", "filler-c"].map((id) => makeMemory(id));
+  const fixture = makeStorage([doomed, replacement, dependent, ...fillers], {
+    mutateBeforeInvalidateIds: ["doomed"],
+  });
+  const revalidateCalls: unknown[] = [];
+  const extraction = makeConsolidationExtraction(revalidateCalls, {
+    existingId: "replacement",
+    action: "MERGE",
+    mergeWith: "doomed",
+    updatedContent: "merged claim",
+    reason: "duplicate",
+  });
+  const config = propagationConfig();
+  config.dependencyPropagation.enabled = false;
+  const delivery = makeSyntheticImmediateDelivery(fixture.storage, extraction, config, fixture.order);
+  const coordinator = makeConsolidationCoordinator(fixture, extraction, config, delivery);
+
+  await coordinator.run();
+
+  assert.equal(fixture.memories.has("doomed"), false);
+  assert.equal(fixture.memories.get("replacement")?.content, "merged claim");
+  assert.equal(revalidateCalls.length, 0);
+  assert.equal(fixture.order.some((entry) => entry.startsWith("prepare:")), false);
+});
+
 
 test("consolidation MERGE cancels propagation when source invalidation did not commit", async () => {
   const doomed = makeMemory("doomed", { links: [{ targetId: "dependent", linkType: "supports" }] });

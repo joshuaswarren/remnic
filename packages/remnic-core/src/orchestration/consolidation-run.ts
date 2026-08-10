@@ -482,6 +482,9 @@ export class ConsolidationRunCoordinator {
       for (const item of result.items) {
         switch (item.action) {
           case "INVALIDATE": {
+            const propagationEnabled =
+              config.dependencyPropagation.enabled &&
+              config.dependencyPropagation.maxDependents > 0;
             const prepared = await prepareCurrentDependencyPropagation(
               storage,
               this.deps.getDependencyPropagationDelivery,
@@ -493,11 +496,11 @@ export class ConsolidationRunCoordinator {
                 cause: "consolidation_invalidate",
                 namespaceScope: this.deps.storageDirNamespace(storage.dir),
               }),
-              config.dependencyPropagation.enabled &&
-                config.dependencyPropagation.maxDependents > 0,
+              propagationEnabled,
             );
             const propagationOld = prepared?.source ?? null;
             const pending = prepared?.pending ?? null;
+            const expectedSnapshot = pending ? propagationOld : null;
             const toInvalidate = resolveIndexingCapabilities(config).queryAwareIndexing
               ? propagationOld
               : null;
@@ -506,11 +509,11 @@ export class ConsolidationRunCoordinator {
             try {
               didInvalidate = await storage.invalidateMemory(
                 item.existingId,
-                propagationOld ?? undefined,
+                expectedSnapshot ?? undefined,
                 { recordCommitProof },
               );
             } catch (error) {
-              const commitState = await classifyInvalidation(storage, item.existingId, propagationOld);
+              const commitState = await classifyInvalidation(storage, item.existingId, expectedSnapshot);
               await settleFailedConsolidationPropagation(
                 pending,
                 commitState,
@@ -519,7 +522,7 @@ export class ConsolidationRunCoordinator {
               throw error;
             }
             if (!didInvalidate) {
-              const commitState = await classifyInvalidation(storage, item.existingId, propagationOld);
+              const commitState = await classifyInvalidation(storage, item.existingId, expectedSnapshot);
               await settleFailedConsolidationPropagation(
                 pending,
                 commitState,
@@ -559,12 +562,9 @@ export class ConsolidationRunCoordinator {
             if (item.updatedContent && item.mergeWith) {
               const updatedContent = item.updatedContent;
               const mergeWith = item.mergeWith;
-              const survivorBefore = allMemories.find(
-                (memory) => memory.frontmatter.id === item.existingId,
-              );
-              const survivorSnapshot = survivorBefore
-                ? clonePropagationMemory(survivorBefore)
-                : null;
+              const propagationEnabled =
+                config.dependencyPropagation.enabled &&
+                config.dependencyPropagation.maxDependents > 0;
               const prepared = await prepareCurrentDependencyPropagation(
                 storage,
                 this.deps.getDependencyPropagationDelivery,
@@ -576,11 +576,11 @@ export class ConsolidationRunCoordinator {
                   cause: "consolidation_merge",
                   namespaceScope: this.deps.storageDirNamespace(storage.dir),
                 }),
-                config.dependencyPropagation.enabled &&
-                  config.dependencyPropagation.maxDependents > 0,
+                propagationEnabled,
               );
               const propagationOld = prepared?.source ?? null;
               const pending = prepared?.pending ?? null;
+              const expectedSnapshot = pending ? propagationOld : null;
               const toMergeInvalidate = resolveIndexingCapabilities(config).queryAwareIndexing
                 ? propagationOld
                 : null;
@@ -610,11 +610,11 @@ export class ConsolidationRunCoordinator {
               try {
                 didInvalidate = await storage.invalidateMemory(
                   item.mergeWith,
-                  propagationOld ?? undefined,
+                  expectedSnapshot ?? undefined,
                   { recordCommitProof: pending?.preparation?.ownsPreparedJob === true },
                 );
               } catch (error) {
-                const commitState = await classifyInvalidation(storage, item.mergeWith, propagationOld);
+                const commitState = await classifyInvalidation(storage, item.mergeWith, expectedSnapshot);
                 await settleFailedConsolidationPropagation(
                   pending,
                   commitState,
@@ -623,7 +623,7 @@ export class ConsolidationRunCoordinator {
                 throw error;
               }
               if (!didInvalidate) {
-                const commitState = await classifyInvalidation(storage, item.mergeWith, propagationOld);
+                const commitState = await classifyInvalidation(storage, item.mergeWith, expectedSnapshot);
                 await settleFailedConsolidationPropagation(
                   pending,
                   commitState,

@@ -151,7 +151,7 @@ test("enabled propagation recovery tolerates a missing queue directory", async (
   const queueRoot = path.join(memoryDir, "state", "dependency-propagation");
   try {
     await orchestrator.initialize();
-    await Promise.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
     await assert.rejects(() => stat(queueRoot), /ENOENT/);
   } finally {
     await orchestrator.destroy();
@@ -200,10 +200,16 @@ test("destroy drains consolidation producers before propagation delivery", async
   try {
     await orchestrator.destroy();
     assert.deepEqual(order.slice(0, 3), ["scheduler", "extraction", "delivery"]);
-    const replacement = (orchestrator as unknown as { dependencyPropagationDelivery: { shutdown(): Promise<void> } })
-      .dependencyPropagationDelivery;
-    assert.notEqual(replacement, delivery, "destroy must clear the delivery singleton");
-    await replacement.shutdown();
+    const internals = orchestrator as unknown as {
+      _dependencyPropagationDelivery: unknown;
+      dependencyPropagationDelivery: unknown;
+    };
+    assert.equal(internals._dependencyPropagationDelivery, undefined);
+    assert.throws(
+      () => internals.dependencyPropagationDelivery,
+      /orchestrator has been destroyed/,
+      "destroyed orchestrators must not recreate delivery",
+    );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

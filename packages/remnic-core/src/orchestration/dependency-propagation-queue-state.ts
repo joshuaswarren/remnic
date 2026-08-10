@@ -122,10 +122,17 @@ export function validateJob(
   const leaseOwner = value.leaseOwner;
   const leaseExpiresAt = value.leaseExpiresAt;
   const lastError = value.lastError;
+  const preparedReplacementFingerprint = value.preparedReplacementFingerprint;
   if (nextAttemptAt !== undefined && !isFiniteNumber(nextAttemptAt)) return null;
   if (leaseOwner !== undefined && typeof leaseOwner !== "string") return null;
   if (leaseExpiresAt !== undefined && !isFiniteNumber(leaseExpiresAt)) return null;
   if (lastError !== undefined && typeof lastError !== "string") return null;
+  if (
+    preparedReplacementFingerprint !== undefined &&
+    (typeof preparedReplacementFingerprint !== "string" || preparedReplacementFingerprint.length === 0)
+  ) {
+    return null;
+  }
   if (status === "retryable" && nextAttemptAt === undefined) return null;
   if (status === "leased" && (typeof leaseOwner !== "string" || leaseExpiresAt === undefined)) return null;
   return {
@@ -144,6 +151,9 @@ export function validateJob(
     ...(leaseOwner === undefined ? {} : { leaseOwner: leaseOwner as string }),
     ...(leaseExpiresAt === undefined ? {} : { leaseExpiresAt: leaseExpiresAt as number }),
     ...(lastError === undefined ? {} : { lastError: lastError as string }),
+    ...(preparedReplacementFingerprint === undefined
+      ? {}
+      : { preparedReplacementFingerprint: preparedReplacementFingerprint as string }),
   };
 }
 export function canonicalize(value: unknown): unknown {

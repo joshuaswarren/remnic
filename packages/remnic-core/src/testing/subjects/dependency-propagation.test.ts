@@ -496,8 +496,12 @@ claim for ${state.activeNamespace}-dependent`,
   },
 
   async teardown(state: PropagationState): Promise<void> {
-    for (const delivery of state.deliveries) await delivery.shutdown();
-    await rm(state.rootDir, { recursive: true, force: true });
+    try {
+      for (const delivery of state.deliveries) await delivery.shutdown();
+    } finally {
+      StorageManager.clearAllStaticCaches();
+      await rm(state.rootDir, { recursive: true, force: true });
+    }
   },
 };
 

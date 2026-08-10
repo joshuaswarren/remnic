@@ -449,6 +449,41 @@ test("recovery requires an exact persisted contradiction replacement before repl
     });
   }
 });
+test("recovery checks a committed source before prepared replacement bytes", async () => {
+  await withTempQueue(async (queueRoot) => {
+    const old = memory("old", { links: [{ targetId: "dependent", linkType: "supports" }] });
+    const replacement = memory("replacement", { content: "replacement at prepare" });
+    const fixtureValue = fixture(
+      [old, replacement, memory("dependent")],
+      [{ memoryId: "dependent", verdict: "still_valid" }],
+    );
+    let llmReplacement: { id: string; content: string } | null = null;
+    fixtureValue.extraction = {
+      async revalidateDependents(
+        _old: unknown,
+        currentReplacement: { id: string; content: string } | null,
+      ): Promise<{ verdicts: Verdict[] }> {
+        llmReplacement = currentReplacement;
+        return { verdicts: [{ memoryId: "dependent", verdict: "still_valid" }] };
+      },
+    } as unknown as ExtractionEngine;
+    const delivery = new DependencyPropagationDelivery(deliveryOptions(queueRoot, fixtureValue).options);
+    const token = await delivery.prepare(event(old, { replacementContent: replacement.content }));
+    assert.ok(token);
+
+    old.frontmatter.status = "superseded";
+    old.frontmatter.supersededBy = "replacement";
+    replacement.content = "replacement after commit";
+    await delivery.recover();
+    assert.equal(jobById(await delivery.listJobs(), token).status, "ready");
+
+    await delivery.runUntilIdle();
+    assert.deepEqual(llmReplacement, {
+      id: "replacement",
+      content: "replacement after commit",
+    });
+  });
+});
 test("a ready job re-reads the current replacement content before LLM revalidation", async () => {
   await withTempQueue(async (queueRoot) => {
     const old = memory("old", { links: [{ targetId: "dependent", linkType: "supports" }] });
@@ -691,6 +726,38 @@ test("consolidation merge recovery uses exact cold and archive snapshots", async
     await delivery.recover();
 
     assert.equal(jobById(await delivery.listJobs(), token).status, "ready");
+  });
+});
+test("merge recovery rejects a survivor edit made after preparation", async () => {
+  await withTempQueue(async (queueRoot) => {
+    const old = memory("old");
+    const replacement = memory("replacement", { content: "survivor before merge" });
+    const fixtureValue = fixture([old, replacement]);
+    let updateCalls = 0;
+    const storage = fixtureValue.storage as unknown as {
+      updateMemoryIfUnchanged: () => Promise<boolean>;
+      invalidateMemory: () => Promise<boolean>;
+    };
+    storage.updateMemoryIfUnchanged = async () => {
+      updateCalls += 1;
+      return true;
+    };
+    storage.invalidateMemory = async () => true;
+    const delivery = new DependencyPropagationDelivery(deliveryOptions(queueRoot, fixtureValue).options);
+    const token = await delivery.prepare(event(old, {
+      cause: "consolidation_merge",
+      replacementContent: "survivor after merge",
+    }));
+    assert.ok(token);
+    assert.match(jobById(await delivery.listJobs(), token).preparedReplacementFingerprint ?? "", /^[0-9a-f]{64}$/);
+
+    replacement.content = "survivor concurrent edit";
+    await delivery.recover();
+
+    const retained = jobById(await delivery.listJobs(), token);
+    assert.equal(retained.status, "prepared");
+    assert.equal(updateCalls, 0);
+    assert.equal(old.frontmatter.status ?? "active", "active");
   });
 });
 
@@ -1338,6 +1405,46 @@ test("shutdown waits for an active manual propagation run", async () => {
     await shuttingDown;
     assert.equal(shutdownComplete, true);
     assert.equal(jobById(await delivery.listJobs(), jobId).status, "completed");
+  });
+});
+test("shutdown waits for an overlapping recovery run", async () => {
+  await withTempQueue(async (queueRoot) => {
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const old = memory("old", { links: [{ targetId: "dependent", linkType: "supports" }] });
+    const fixtureValue = fixture(
+      [old, memory("dependent"), memory("replacement", { content: "replacement claim" })],
+      [{ memoryId: "dependent", verdict: "still_valid" }],
+    );
+    let blocked = true;
+    const delivery = new DependencyPropagationDelivery({
+      ...deliveryOptions(queueRoot, fixtureValue).options,
+      getStorage: async () => {
+        if (blocked) {
+          blocked = false;
+          started.resolve();
+          await release.promise;
+        }
+        return fixtureValue.storage;
+      },
+    });
+    const token = await delivery.prepare(event(old));
+    assert.ok(token);
+
+    const recovering = delivery.recover();
+    await started.promise;
+    let shutdownComplete = false;
+    const shuttingDown = delivery.shutdown().then(() => {
+      shutdownComplete = true;
+    });
+    await Promise.resolve();
+    assert.equal(shutdownComplete, false);
+
+    release.resolve();
+    await recovering;
+    await shuttingDown;
+    assert.equal(shutdownComplete, true);
+    assert.equal(jobById(await delivery.listJobs(), token).status, "completed");
   });
 });
 

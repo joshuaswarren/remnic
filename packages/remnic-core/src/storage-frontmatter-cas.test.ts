@@ -7,10 +7,12 @@ import test from "node:test";
 import { StorageManager } from "./storage.js";
 
 async function withStorage(run: (storage: StorageManager) => Promise<void>): Promise<void> {
+  StorageManager.clearAllStaticCaches();
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-frontmatter-cas-"));
   try {
     await run(new StorageManager(memoryDir));
   } finally {
+    StorageManager.clearAllStaticCaches();
     await rm(memoryDir, { recursive: true, force: true });
   }
 }
@@ -81,6 +83,37 @@ test("supersedeMemory rejects a semantic change after snapshot lookup", async ()
     assert.equal(current.frontmatter.status, "active");
     assert.equal(current.frontmatter.supersededBy, undefined);
     assert.equal(current.frontmatter.importance?.score, 0.4);
+  });
+});
+
+test("supersedeMemory uses a bounded memory timeline lookup", async () => {
+  await withStorage(async (storage) => {
+    const created = await storage.writeMemory("fact", "The bounded supersession source.", { source: "test" });
+    const replacement = await storage.writeMemory("fact", "The bounded supersession replacement.", { source: "test" });
+    const seams = storage as unknown as {
+      getMemoryTimeline: (memoryId: string, limit?: number) => Promise<unknown[]>;
+      readAllMemoryLifecycleEvents: () => Promise<never>;
+    };
+    let timelineCalls = 0;
+    seams.getMemoryTimeline = async (memoryId, limit) => {
+      timelineCalls++;
+      assert.equal(memoryId, created.id);
+      assert.equal(limit, 200);
+      return [];
+    };
+    seams.readAllMemoryLifecycleEvents = async () => {
+      throw new Error("supersession must not scan the full lifecycle ledger");
+    };
+
+    assert.equal(
+      await storage.supersedeMemory(created.id, replacement.id, "dependency_propagation:bounded"),
+      true,
+    );
+    assert.equal(timelineCalls, 1);
+    const current = await storage.getMemoryById(created.id);
+    assert.ok(current);
+    assert.equal(current.frontmatter.status, "superseded");
+    assert.equal(current.frontmatter.supersededBy, replacement.id);
   });
 });
 

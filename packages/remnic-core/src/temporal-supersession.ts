@@ -65,7 +65,7 @@ export interface TemporalSupersessionStorage {
     createdAt?: string;
     operationKey?: string;
   }) => Promise<boolean>;
-  getMemoryTimeline?: (memoryId: string, limit?: number) => Promise<MemoryLifecycleEvent[]>;
+  getMemoryTimeline: (memoryId: string, limit?: number) => Promise<MemoryLifecycleEvent[]>;
   isTombstonesEnabled?: () => boolean;
 }
 
@@ -361,8 +361,7 @@ async function hasTemporalLifecycleEffect(args: {
   operationKey: string;
   reasonCode: string;
   relatedMemoryIds: string[];
-}): Promise<boolean | undefined> {
-  if (!args.storage.getMemoryTimeline) return undefined;
+}): Promise<boolean> {
   const events = await args.storage.getMemoryTimeline(args.memoryId, 200);
   return events.some((event) => {
     if (
@@ -530,6 +529,10 @@ export async function applyTemporalSupersessionPrimaryMutation(args: {
   allCandidates?: MemoryFile[];
 }): Promise<boolean> {
   const { storage, oldMemory, replacementId, mutation } = args;
+  if (typeof storage.getMemoryTimeline !== "function") {
+    log.warn("temporal-supersession: required memory timeline adapter is missing");
+    return false;
+  }
   const operationKey = temporalSupersessionOperationKey(
     oldMemory.frontmatter.id,
     replacementId,
@@ -672,6 +675,10 @@ export async function applyTemporalSupersession(args: {
   if (!args.entityRef) return empty;
   if (!args.structuredAttributes) return empty;
   if (Object.keys(args.structuredAttributes).length === 0) return empty;
+  if (typeof args.storage.getMemoryTimeline !== "function") {
+    log.warn("temporal-supersession: required memory timeline adapter is missing");
+    return empty;
+  }
 
   const newKeys = supersessionKeysForFact({
     entityRef: args.entityRef,

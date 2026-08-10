@@ -26,7 +26,7 @@ import {
   RECALL_NON_MEMORY_DIRS,
   categoryDirName,
 } from "../utils/category-dir.js";
-import { makeStorage } from "./harness.js";
+import { makeStorage, rawMemoryMarkdown } from "./harness.js";
 
 /**
  * The singular category keys writeMemory accepts, minus "entity" (entities use
@@ -239,11 +239,14 @@ test("round-trip: dependency propagation queue rejects symlinks in root, parent,
     await symlink(baseDir, rootLink, "dir");
     const storageWithSymlinkRoot = storage as unknown as { baseDir: string };
     const originalBaseDir = storageWithSymlinkRoot.baseDir;
-    storageWithSymlinkRoot.baseDir = rootLink;
-    const rootQueuePath = path.join(rootLink, "state", "dependency-propagation", "ready", "job.json");
-    await assert.rejects(() => storage.readDependencyPropagationQueueFile(rootQueuePath));
-    await assert.rejects(() => storage.writeDependencyPropagationQueueFile(rootQueuePath, payload));
-    storageWithSymlinkRoot.baseDir = originalBaseDir;
+    try {
+      storageWithSymlinkRoot.baseDir = rootLink;
+      const rootQueuePath = path.join(rootLink, "state", "dependency-propagation", "ready", "job.json");
+      await assert.rejects(() => storage.readDependencyPropagationQueueFile(rootQueuePath));
+      await assert.rejects(() => storage.writeDependencyPropagationQueueFile(rootQueuePath, payload));
+    } finally {
+      storageWithSymlinkRoot.baseDir = originalBaseDir;
+    }
 
     await mkdir(parentTarget, { recursive: true });
     await symlink(parentTarget, parentLink, "dir");
@@ -315,6 +318,28 @@ test("round-trip: readMemoryByPath returns null for a non-existent path", async 
       `${baseDir}/facts/2026-01-01/nonexistent.md`,
     );
     assert.equal(result, null);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("round-trip: archive fallback skips a bad file and returns readable siblings", async () => {
+  const { storage, baseDir, cleanup } = await makeStorage("remnic-archive-fallback-");
+  try {
+    const archiveDir = path.join(baseDir, "archive", "2026-08-10");
+    await mkdir(archiveDir, { recursive: true });
+    await writeFile(
+      path.join(archiveDir, "readable.md"),
+      rawMemoryMarkdown("archived-readable", "fact", "readable archive content"),
+      "utf-8",
+    );
+    await writeFile(path.join(archiveDir, "broken.md"), "not markdown", "utf-8");
+
+    const archived = await storage.readArchivedMemories();
+    assert.deepEqual(
+      archived.map((memory) => memory.frontmatter.id),
+      ["archived-readable"],
+    );
   } finally {
     await cleanup();
   }

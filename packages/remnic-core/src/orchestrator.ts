@@ -740,8 +740,10 @@ export class Orchestrator {
   } = { detected: 0, queued: 0, autoApplied: 0, suppressedReasonCounts: {} };
 
   private _dependencyPropagationDelivery: DependencyPropagationDelivery | undefined;
+  private destroyed = false;
 
   private get dependencyPropagationDelivery(): DependencyPropagationDelivery {
+    if (this.destroyed) throw new Error("orchestrator has been destroyed");
     if (!this._dependencyPropagationDelivery) {
       this._dependencyPropagationDelivery = new DependencyPropagationDelivery({
         queueRoot: path.join(this.config.memoryDir, "state", "dependency-propagation"),
@@ -953,6 +955,7 @@ export class Orchestrator {
    * commands should call it before returning to let Node exit naturally.
    */
   async destroy(): Promise<void> {
+    this.destroyed = true;
     this.abortDeferredInit();
     this.extractionQueueCoordinator.stopAccepting();
     if (this.wearablesAutoSyncHandle) {

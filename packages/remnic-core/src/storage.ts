@@ -4421,22 +4421,17 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     clearInFlightReads();
     StorageManager.questionsCache.clear();
     StorageManager.coldMemoriesCache.clear(); // also wipe the cold-scan TTL cache
-    // Also clear the module-level memory-cache layers (hot-memories result cache
-    // + entity/derived/QMD layers) so the reset seam is authoritative for tests
-    // that write files directly (issue #1902).
+    StorageManager.artifactWriteVersionByDir.clear();
+    StorageManager.memoryStatusVersionByDir.clear();
+    StorageManager.memoryCorpusVersionByDir.clear();
+    StorageManager.entityMutationVersionByDir.clear();
+    StorageManager.coldWriteVersionByDir.clear();
     clearMemoryCache();
-    // Reset the hot-cache config statics to construction defaults so each test
-    // starts from a clean slate (issue #1902). resetStaticCaches() runs before
-    // every contract test; without this the per-dir maps and the first-writer
-    // process-wide seed would leak across tests.
     StorageManager.hotMemoriesCacheDefaultByDir.clear();
     StorageManager.hotMemoriesCacheTtlByDir.clear();
     StorageManager.hotMemoriesCacheDefault = true;
     StorageManager.hotMemoriesCacheTtlMs = 60_000;
     StorageManager.hotMemoriesCacheProcessDefaultSeeded = false;
-    // Reset the #1904 scope-invalidation gate so a legacy-mode (=false) test
-    // dir cannot leak its setting into a later test constructing over a reused
-    // temp path.
     StorageManager.scopedCacheInvalidationByDir.clear();
   }
 
@@ -4871,9 +4866,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
                 );
               }
             } catch (err) {
-              // Absence can race with an archive cleanup. Surface every other
-              // read or decryption failure instead of dropping archive data.
-              if (!isErrnoCode(err, "ENOENT")) throw err;
+              // A bad archive member must not hide readable siblings. A locked
+              // secure store remains authoritative even for one member.
+              if (err instanceof SecureStoreLockedError) throw err;
+              if (!isErrnoCode(err, "ENOENT")) {
+                log.warn(`skipping unreadable archived memory ${fullPath}: ${err}`);
+              }
             }
           }
         }
@@ -7039,7 +7037,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
       let lifecycleEvents: MemoryLifecycleEvent[] = [];
       try {
-        lifecycleEvents = await this.readAllMemoryLifecycleEvents();
+        lifecycleEvents = await this.getMemoryTimeline(oldMemoryId, 200);
       } catch (error) {
         log.warn(`supersession lifecycle replay check failed for ${oldMemoryId}: ${error}`);
       }

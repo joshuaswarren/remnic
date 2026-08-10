@@ -17,6 +17,7 @@ import {
   supersessionKeysForFact,
 } from "./temporal-supersession.js";
 import type { MemoryFile, MemoryFrontmatter } from "./types.js";
+import type { TemporalSupersessionStorage } from "./temporal-supersession.js";
 import type { DependencyPropagationPreparationToken } from "./orchestration/dependency-propagation-delivery.js";
 import type { PropagationEvent } from "./orchestration/dependency-propagation.js";
 const TEST_ENTITY = "project-x";
@@ -321,6 +322,41 @@ test("applyTemporalSupersession: city update retires old fact, leaves unrelated 
 
     const newFm = await readFrontmatterById(storage, newCity);
     assert.equal(newFm?.status ?? "active", "active");
+  } finally {
+    await cleanup();
+  }
+});
+test("primary temporal replay refuses an adapter without a timeline", async () => {
+  const { storage, cleanup } = await makeStorage("engram-temporal-required-timeline-");
+  try {
+    const oldId = await writeFact(
+      storage,
+      "project X is based in Austin",
+      TEST_ENTITY,
+      { city: "Austin" },
+    );
+    const old = await storage.getMemoryById(oldId);
+    assert.ok(old);
+    const missingTimeline = new Proxy(storage, {
+      get(target, property, receiver) {
+        if (property === "getMemoryTimeline") return undefined;
+        return Reflect.get(target, property, receiver);
+      },
+    }) as unknown as TemporalSupersessionStorage;
+
+    const applied = await applyTemporalSupersessionPrimaryMutation({
+      storage: missingTimeline,
+      oldMemory: old,
+      replacementId: "replacement",
+      mutation: {
+        supersededAt: "2026-08-09T00:00:00.000Z",
+        matchedKeys: ["project-x::city"],
+      },
+    });
+
+    assert.equal(applied, false);
+    const unchanged = await storage.getMemoryById(oldId);
+    assert.equal(unchanged?.frontmatter.status ?? "active", "active");
   } finally {
     await cleanup();
   }
