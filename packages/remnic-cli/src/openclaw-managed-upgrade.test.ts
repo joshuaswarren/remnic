@@ -222,10 +222,16 @@ if (args[0] === "plugins" && args[1] === "inspect") {
   const smokeFails =
     process.env.FAIL_OPENCLAW_SMOKE === "1" &&
     (!process.env.FAIL_OPENCLAW_SMOKE_VERSION || record?.version === process.env.FAIL_OPENCLAW_SMOKE_VERSION);
+  const runtimeDisabled = process.env.OPENCLAW_PLUGIN_DISABLED === "1";
   const loaded =
     installPath.length > 0 && fs.existsSync(installPath + "/new-install-marker") && !smokeFails;
+  const healthy = loaded || runtimeDisabled;
   const inspection = {
-    plugin: { id: "openclaw-remnic", status: loaded ? "loaded" : "error", version: record?.version },
+    plugin: {
+      id: "openclaw-remnic",
+      status: runtimeDisabled ? "disabled" : loaded ? "loaded" : "error",
+      version: record?.version,
+    },
     install: record ? {
       installPath,
       source: record.source,
@@ -233,7 +239,7 @@ if (args[0] === "plugins" && args[1] === "inspect") {
       spec: record.spec,
       version: record.version,
     } : undefined,
-    diagnostics: loaded ? [] : [{ level: "error", message: "managed plugin load failed" }],
+    diagnostics: healthy ? [] : [{ level: "error", message: "managed plugin load failed" }],
   };
   process.stdout.write(JSON.stringify(args.includes("--all") ? [inspection] : inspection));
   process.exit(0);
@@ -272,7 +278,8 @@ function runUpgradeWithFlags(
   flags: string[],
   env: NodeJS.ProcessEnv = fixture.env,
   version = "9.49.0",
-  includePluginDir = true
+  includePluginDir = true,
+  includeConfig = true
 ) {
   return spawnSync(
     process.execPath,
@@ -284,8 +291,7 @@ function runUpgradeWithFlags(
       ...flags,
       "--version",
       version,
-      "--config",
-      fixture.configPath,
+      ...(includeConfig ? ["--config", fixture.configPath] : []),
       ...(includePluginDir ? ["--plugin-dir", fixture.pluginDir] : []),
     ],
     { encoding: "utf8", env, timeout: 30_000 }
@@ -445,6 +451,30 @@ test("openclaw upgrade uses the host-managed npm project and verifies plugin loa
       version: "9.49.0",
       spec: "npm:@remnic/plugin-openclaw@9.49.0",
     });
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("openclaw upgrade preserves an intentionally disabled plugin", () => {
+  const fixture = createUpgradeFixture();
+  const config = JSON.parse(fs.readFileSync(fixture.configPath, "utf8")) as {
+    plugins: { entries: Record<string, { enabled?: boolean }> };
+  };
+  config.plugins.entries["openclaw-remnic"].enabled = false;
+  fs.writeFileSync(fixture.configPath, JSON.stringify(config));
+  try {
+    const result = runUpgrade(fixture, {
+      ...fixture.env,
+      OPENCLAW_PLUGIN_DISABLED: "1",
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const updatedConfig = JSON.parse(fs.readFileSync(fixture.configPath, "utf8")) as {
+      plugins?: { entries?: Record<string, { enabled?: boolean }> };
+    };
+    assert.equal(updatedConfig.plugins?.entries?.["openclaw-remnic"]?.enabled, false);
+    assert.equal(fs.readFileSync(path.join(fixture.managedInstallDir, "new-install-marker"), "utf8"), "installed\n");
   } finally {
     fs.rmSync(fixture.root, { recursive: true, force: true });
   }
@@ -656,21 +686,37 @@ test("openclaw upgrade does not treat a custom config directory as an install ro
   }
 });
 
-test("openclaw upgrade honors OPENCLAW_STATE_DIR for the native install target", () => {
+test("openclaw upgrade resolves all defaults from OPENCLAW_STATE_DIR", () => {
   const fixture = createUpgradeFixture();
   const stateDir = path.join(fixture.root, "state");
+  const stateConfigPath = path.join(stateDir, "openclaw.json");
   const nativeTarget = path.join(stateDir, "extensions", "openclaw-remnic");
+  const expectedMemoryDir = path.join(stateDir, "workspace", "memory", "local");
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.renameSync(fixture.configPath, stateConfigPath);
+  const config = JSON.parse(fs.readFileSync(stateConfigPath, "utf8")) as {
+    plugins: { entries: Record<string, { config?: Record<string, unknown> }> };
+  };
+  config.plugins.entries["openclaw-remnic"].config = {};
+  fs.writeFileSync(stateConfigPath, JSON.stringify(config));
   fs.mkdirSync(path.dirname(nativeTarget), { recursive: true });
   fs.renameSync(fixture.pluginDir, nativeTarget);
   try {
-    const result = runUpgradeUsingDefaultPluginDir(fixture, {
-      ...fixture.env,
-      OPENCLAW_STATE_DIR: stateDir,
-      OPENCLAW_INSPECT_RUNTIME: "0",
-      OPENCLAW_INSTALL_FORCE: "0",
-      OPENCLAW_NATIVE_DEFAULT_TARGET: nativeTarget,
-    });
-    const backupRoot = path.join(fixture.root, ".openclaw", "backups");
+    const result = runUpgradeWithFlags(
+      fixture,
+      ["--yes", "--no-restart"],
+      {
+        ...fixture.env,
+        OPENCLAW_STATE_DIR: stateDir,
+        OPENCLAW_INSPECT_RUNTIME: "0",
+        OPENCLAW_INSTALL_FORCE: "0",
+        OPENCLAW_NATIVE_DEFAULT_TARGET: nativeTarget,
+      },
+      "9.49.0",
+      false,
+      false
+    );
+    const backupRoot = path.join(stateDir, "backups");
     const backupDirs = fs.readdirSync(backupRoot);
     assert.equal(backupDirs.length, 1);
     const pluginBackupMarker = path.join(
@@ -681,11 +727,13 @@ test("openclaw upgrade honors OPENCLAW_STATE_DIR for the native install target",
       "old-install-marker"
     );
 
-    assert.equal(fs.readFileSync(pluginBackupMarker, "utf8"), "present\n");
-
     assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, new RegExp(`OpenClaw config:\\s+${stateConfigPath.replaceAll("\\", "\\\\")}`));
+    assert.match(result.stdout, new RegExp(`Memory dir:\\s+${expectedMemoryDir.replaceAll("\\", "\\\\")}`));
+    assert.equal(fs.readFileSync(pluginBackupMarker, "utf8"), "present\n");
     assert.equal(fs.existsSync(path.join(nativeTarget, "old-install-marker")), false);
     assert.equal(fs.readFileSync(path.join(nativeTarget, "new-install-marker"), "utf8"), "installed\n");
+    assert.ok(readCalls(fixture.openclawLogPath).every((call) => call.configPath === stateConfigPath));
   } finally {
     fs.rmSync(fixture.root, { recursive: true, force: true });
   }

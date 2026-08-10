@@ -135,6 +135,45 @@ test("managed upgrade loader installs the tooling adapter in an isolated tempora
   assert.equal(fs.existsSync(temporaryRoot), false);
 });
 
+test("managed upgrade loader keeps a successful load when temporary cleanup fails", async () => {
+  let temporaryRoot: string | undefined;
+  const originalRmSync = fs.rmSync;
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(" "));
+  try {
+    fs.rmSync = ((targetPath: fs.PathLike, options?: fs.RmDirOptions) => {
+      const renderedPath = String(targetPath);
+      if (renderedPath.includes("remnic-openclaw-upgrade-")) {
+        temporaryRoot = renderedPath;
+        throw Object.assign(new Error("temporary cleanup unavailable"), { code: "EBUSY" });
+      }
+      return originalRmSync(targetPath, options);
+    }) as typeof fs.rmSync;
+
+    const actual = await loadOpenclawManagedUpgradeModule("@remnic/plugin-openclaw@9.49.1", {
+      importModule: async (specifier) => {
+        if (specifier === MANAGED_UPGRADE_SPECIFIER) throw missingModuleError("@remnic/plugin-openclaw");
+        return import(specifier);
+      },
+      runNpmInstall: (args) => {
+        const prefixIndex = args.indexOf("--prefix");
+        const installRoot = args[prefixIndex + 1];
+        assert.ok(installRoot);
+        writeManagedUpgradeFixture(installRoot);
+      },
+    });
+
+    assert.equal(actual.REMNIC_OPENCLAW_PLUGIN_ID, "openclaw-remnic");
+    assert.ok(temporaryRoot);
+    assert.match(warnings.join("\n"), /Could not remove temporary managed upgrade project/);
+  } finally {
+    fs.rmSync = originalRmSync;
+    console.warn = originalWarn;
+    if (temporaryRoot) originalRmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
 test("managed upgrade loader replaces an installed adapter without the managed upgrade export", async () => {
   let temporaryRoot: string | undefined;
 

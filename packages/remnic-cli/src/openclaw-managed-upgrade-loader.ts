@@ -164,8 +164,6 @@ export async function loadOpenclawManagedUpgradeModule(
       "install",
       "--ignore-scripts",
       "--no-save",
-      "--no-package-lock",
-      "--audit=false",
       "--fund=false",
       "--prefix",
       temporaryRoot,
@@ -177,6 +175,11 @@ export async function loadOpenclawManagedUpgradeModule(
     fs.writeFileSync(resolverPath, `export * from ${JSON.stringify(MANAGED_UPGRADE_SPECIFIER)};\n`, "utf8");
     return (await importModule(pathToFileURL(resolverPath).href)) as OpenclawManagedUpgradeModule;
   } finally {
-    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+    try {
+      fs.rmSync(temporaryRoot, { recursive: true, force: true });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.warn(`Could not remove temporary managed upgrade project at ${temporaryRoot}: ${detail}`);
+    }
   }
 }

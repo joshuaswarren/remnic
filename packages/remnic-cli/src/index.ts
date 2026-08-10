@@ -4274,7 +4274,7 @@ export function resolveMemoryDir(): string {
     const home = resolveHomeDir();
     const standalonePath = path.join(home, ".remnic", "memory");
     const legacyStandalonePath = path.join(home, ".engram", "memory");
-    const openclawPath = path.join(home, ".openclaw", "workspace", "memory", "local");
+    const openclawPath = path.join(resolveOpenclawStateDir(), "workspace", "memory", "local");
     if (fs.existsSync(standalonePath)) return standalonePath;
     if (fs.existsSync(legacyStandalonePath)) return legacyStandalonePath;
     return openclawPath;
@@ -4350,12 +4350,19 @@ function resolveFlagStrict(args: string[], flag: string): string | undefined {
  */
 const REMNIC_OPENCLAW_LEGACY_PLUGIN_ID = "openclaw-engram";
 
+function resolveOpenclawStateDir(): string {
+  const configuredStateDir = process.env.OPENCLAW_STATE_DIR?.trim();
+  return configuredStateDir
+    ? path.resolve(expandTilde(configuredStateDir))
+    : path.join(resolveHomeDir(), ".openclaw");
+}
+
 // Primary env var takes precedence; legacy env var is checked as fallback.
 // This matches the priority convention in readCompatEnv() (primary > legacy > default).
 const DEFAULT_OPENCLAW_CONFIG_PATHS_FOR_DOCTOR = [
   process.env.OPENCLAW_CONFIG_PATH,
   process.env.OPENCLAW_ENGRAM_CONFIG_PATH,
-  path.join(resolveHomeDir(), ".openclaw", "openclaw.json"),
+  path.join(resolveOpenclawStateDir(), "openclaw.json"),
 ].filter(Boolean) as string[];
 
 function resolveOpenclawConfigPath(cliPath?: string): string {
@@ -4373,7 +4380,7 @@ function resolveOpenclawConfigPath(cliPath?: string): string {
   for (const candidate of DEFAULT_OPENCLAW_CONFIG_PATHS_FOR_DOCTOR) {
     if (fs.existsSync(candidate)) return candidate;
   }
-  return path.join(resolveHomeDir(), ".openclaw", "openclaw.json");
+  return path.join(resolveOpenclawStateDir(), "openclaw.json");
 }
 
 function readOpenclawConfig(configPath: string): Record<string, unknown> {
@@ -4509,14 +4516,12 @@ function resolveOpenclawPluginDir(cliPath?: string): string {
 }
 
 function resolveOpenclawManagedPluginDir(): string {
-  const stateDir = process.env.OPENCLAW_STATE_DIR?.trim();
-  const installRoot = stateDir ? path.resolve(expandTilde(stateDir)) : path.join(resolveHomeDir(), ".openclaw");
-  return path.join(installRoot, "extensions", REMNIC_OPENCLAW_PLUGIN_ID);
+  return path.join(resolveOpenclawStateDir(), "extensions", REMNIC_OPENCLAW_PLUGIN_ID);
 }
 
 function resolveOpenclawLegacyPluginDir(cliPath?: string): string {
   if (cliPath) return path.resolve(expandTilde(cliPath));
-  return path.join(resolveHomeDir(), ".openclaw", "extensions", REMNIC_OPENCLAW_LEGACY_PLUGIN_ID);
+  return path.join(resolveOpenclawStateDir(), "extensions", REMNIC_OPENCLAW_LEGACY_PLUGIN_ID);
 }
 
 function formatOpenclawUpgradeStamp(now = new Date()): string {
@@ -11621,7 +11626,7 @@ async function cmdBinary(rest: string[]): Promise<void> {
 
 async function cmdOpenclawInstall(opts: OpenclawInstallOptions): Promise<void> {
   const configPath = resolveOpenclawConfigPath(opts.configPath);
-  const fallbackMemoryDir = path.join(resolveHomeDir(), ".openclaw", "workspace", "memory", "local");
+  const fallbackMemoryDir = path.join(resolveOpenclawStateDir(), "workspace", "memory", "local");
 
   console.log(`OpenClaw config: ${configPath}`);
 
@@ -11825,7 +11830,7 @@ async function cmdOpenclawUpgrade(opts: OpenclawUpgradeOptions): Promise<void> {
   const legacyPluginDirForBackup = opts.legacyPluginDirForBackup
     ? resolveOpenclawLegacyPluginDir(opts.legacyPluginDirForBackup)
     : undefined;
-  const fallbackMemoryDir = path.join(resolveHomeDir(), ".openclaw", "workspace", "memory", "local");
+  const fallbackMemoryDir = path.join(resolveOpenclawStateDir(), "workspace", "memory", "local");
   const packageSpec = buildOpenclawManagedUpgradePackageSpec(opts.version);
   const configExistedBefore = fs.existsSync(configPath);
 
@@ -11842,7 +11847,7 @@ async function cmdOpenclawUpgrade(opts: OpenclawUpgradeOptions): Promise<void> {
   }
   console.log(`Memory dir:      ${preservedMemoryDir}`);
   console.log(`Package spec:    ${packageSpec}`);
-  console.log(`Backup root:     ${path.join(resolveHomeDir(), ".openclaw", "backups")}`);
+  console.log(`Backup root:     ${path.join(resolveOpenclawStateDir(), "backups")}`);
 
   const plannedActions = [
     `backup openclaw.json and the existing ${REMNIC_OPENCLAW_PLUGIN_ID} extension`,
@@ -12094,7 +12099,8 @@ async function cmdOpenclawMigrateEngram(opts: OpenclawUpgradeOptions): Promise<v
 }
 
 function createOpenclawUpgradeBackupDir(): string {
-  const backupsRoot = path.join(resolveHomeDir(), ".openclaw", "backups"); fs.mkdirSync(backupsRoot, { recursive: true });
+  const backupsRoot = path.join(resolveOpenclawStateDir(), "backups");
+  fs.mkdirSync(backupsRoot, { recursive: true });
   return fs.mkdtempSync(path.join(backupsRoot, `remnic-openclaw-upgrade-${formatOpenclawUpgradeStamp()}-`));
 }
 
@@ -13422,15 +13428,15 @@ Run 'remnic capsule <subcommand> --help' for subcommand details.`);
              @remnic/plugin-openclaw while backing up the legacy extension.
 
              Sets plugins.entries["${REMNIC_OPENCLAW_PLUGIN_ID}"] and plugins.slots.memory
-             in ~/.openclaw/openclaw.json (or $OPENCLAW_CONFIG_PATH).
+             in $OPENCLAW_STATE_DIR/openclaw.json, ~/.openclaw/openclaw.json, or $OPENCLAW_CONFIG_PATH.
 
 Options:
   --yes / -y / --force    Skip interactive prompts, assume Y
   --dry-run               Print resulting config diff without writing
-  --memory-dir <path>     Override default memory dir (~/.openclaw/workspace/memory/local)
+  --memory-dir <path>     Override the OpenClaw state-root memory dir
   --config <path>         Override OpenClaw config path
   --version <tag>         Upgrade @remnic/plugin-openclaw from a specific npm tag/version
-  --plugin-dir <path>     Override OpenClaw extension dir (~/.openclaw/extensions/openclaw-remnic)
+  --plugin-dir <path>     Override the OpenClaw state-root extension dir
   --legacy-plugin-dir <path>
                           Override legacy extension dir backed up by migrate-engram
   --no-restart            Skip the final launchctl kickstart after upgrade`);

@@ -80,6 +80,7 @@ interface ManagedPluginInspection {
   status?: unknown;
   version?: string;
 }
+
 export interface OpenclawCommandOptions {
   timeoutMs: number;
 }
@@ -427,7 +428,7 @@ export function installPublishedOpenclawPlugin(
       shouldRestoreBackup = true;
     }
 
-    if (inspectedPlugin.status !== "loaded") {
+    if (inspectedPlugin.status !== "loaded" && inspectedPlugin.status !== "disabled") {
       throw new Error(
         `OpenClaw reported plugin status ${JSON.stringify(inspectedPlugin.status ?? "missing")} ` +
           `for ${REMNIC_OPENCLAW_PLUGIN_ID} after the managed install.`
