@@ -58,6 +58,8 @@ Core type checks pass. The focused replay suite passes 170 tests.
 
 The entity hardening gate passes. The lifecycle coverage suite passes 41 tests.
 
-The full core suite exposed one rebase regression in the active-state lock guard. Its focused regression test now passes.
+The complete second package shard passes 722 tests, with 17 skips and no failures.
 
-`preflight:quick` needs a clean sequential rerun. The earlier run overlapped a core build and read changing `dist` output.
+The archive replay test and the active-state race regression both pass after the rebase fix.
+
+The final sequential `preflight:quick` run passes.

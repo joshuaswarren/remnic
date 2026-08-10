@@ -6952,6 +6952,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       }
     }
     if (!oldMemory) return false;
+    const requireActiveAtWrite =
+      options.requireActive === true ||
+      inferMemoryStatus(oldMemory.frontmatter, toMemoryPathRel(this.baseDir, oldMemory.path)) === "active";
 
     const operationId = createHash("sha256")
       .update(
@@ -6984,7 +6987,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         }
         if (
           current.frontmatter.supersededBy !== undefined ||
-          inferMemoryStatus(current.frontmatter, toMemoryPathRel(this.baseDir, current.path)) !== "active"
+          (requireActiveAtWrite &&
+            inferMemoryStatus(current.frontmatter, toMemoryPathRel(this.baseDir, current.path)) !== "active")
         ) {
           return false;
         }
