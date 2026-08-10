@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   type OpenclawCommandRunner,
   PublishedOpenclawPluginInstallError,
+  describeErrorWithCause,
   installPublishedOpenclawPlugin,
 } from "@remnic/plugin-openclaw/managed-upgrade";
 import { restoreDirectoryFromRollback } from "./openclaw-upgrade-swap.js";
@@ -327,6 +328,46 @@ test("managed upgrade rejects non-registry package selectors before invoking Ope
       spec
     );
     assert.equal(commandInvoked, false, spec);
+  }
+});
+
+test("managed upgrade rejects a loaded plugin that does not match an exact requested version", () => {
+  const fixture = createUpgradeFixture();
+  const inspection = JSON.stringify({
+    plugin: { id: "openclaw-remnic", status: "loaded" },
+    install: {
+      installPath: fixture.pluginDir,
+      source: "npm",
+      spec: "npm:@remnic/plugin-openclaw@9.49.0",
+      version: "9.49.0",
+    },
+  });
+
+  try {
+    assert.throws(
+      () =>
+        installPublishedOpenclawPlugin(
+          "@remnic/plugin-openclaw@9.50.0",
+          fixture.pluginDir,
+          fixture.managedInstallDir,
+          (args) => {
+            if (args.includes("--help")) return "Usage: install npm:<spec> --force --runtime --json\n";
+            if (args.includes("--all")) return `[${inspection}]`;
+            if (args[1] === "inspect") return inspection;
+            return "";
+          }
+        ),
+      (error) => {
+        assert.ok(error instanceof PublishedOpenclawPluginInstallError);
+        assert.match(
+          describeErrorWithCause(error),
+          /reported plugin version "9\.49\.0".*requested exact version "9\.50\.0"/
+        );
+        return true;
+      }
+    );
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
   }
 });
 

@@ -13,7 +13,7 @@ function isExactSemverSelector(selector: string): boolean {
   return Boolean(core && SEMVER_SUFFIX_SELECTOR.test(selector.slice(core.length)));
 }
 
-function assertRegistryPackageSpec(spec: string): void {
+function assertRegistryPackageSpec(spec: string): string {
   const prefix = `${OPENCLAW_PLUGIN_PACKAGE}@`;
   const selector = spec.startsWith(prefix) ? spec.slice(prefix.length) : "";
   const lowerSelector = selector.toLowerCase();
@@ -24,6 +24,7 @@ function assertRegistryPackageSpec(spec: string): void {
       `Invalid OpenClaw plugin package spec ${renderedSpec}. Use an exact semantic version or npm dist-tag.`
     );
   }
+  return selector;
 }
 interface ManagedPluginInspection {
   installPath?: string;
@@ -105,7 +106,7 @@ export function installPublishedOpenclawPlugin(
   rollbackManagedInstall: () => void;
   version?: string;
 } {
-  assertRegistryPackageSpec(spec);
+  const requestedSelector = assertRegistryPackageSpec(spec);
   assertDirectoryPathOrMissing(pluginDir, "OpenClaw plugin dir");
   assertDirectoryPathOrMissing(managedTargetDir, "Managed OpenClaw plugin dir");
   const rollbackSuffix = `${process.pid}-${Date.now()}`;
@@ -341,6 +342,12 @@ export function installPublishedOpenclawPlugin(
       throw new Error(
         `OpenClaw reported plugin status ${JSON.stringify(inspectedPlugin.status ?? "missing")} ` +
           `for ${REMNIC_OPENCLAW_PLUGIN_ID} after the managed install.`
+      );
+    }
+    if (isExactSemverSelector(requestedSelector) && inspectedPlugin.version !== requestedSelector.replace(/^v/, "")) {
+      throw new Error(
+        `OpenClaw reported plugin version ${JSON.stringify(inspectedPlugin.version ?? "missing")} ` +
+          `after installing requested exact version ${JSON.stringify(requestedSelector)}.`
       );
     }
 
