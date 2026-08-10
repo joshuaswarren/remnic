@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import type { Dir, Dirent, Stats } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -15,6 +16,9 @@ type LoaderInternals = {
     storageRoot: string,
     version: number,
   ) => Promise<{ version: number; pathsByBasename: Map<string, string[]> } | null>;
+  openArchiveDirectory?: (directoryPath: string) => Promise<Dir>;
+  archiveLstat?: (filePath: string) => Promise<Stats>;
+  archiveRealpath?: (filePath: string) => Promise<string>;
 };
 
 function memory(filePath: string, content: string, id = "node"): MemoryFile {
@@ -527,5 +531,84 @@ test("does not publish a partial index after the visited-entry cap", async () =>
     assert.equal(internals.archivePathIndexes?.size ?? 0, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("aborts archive build on async iterator errors without publishing partial paths", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-loader-iterator-error-"));
+  try {
+    const archiveRoot = path.join(root, "archive");
+    const archivePath = path.join(archiveRoot, "node.md");
+    await mkdir(archiveRoot, { recursive: true });
+    await writeFile(archivePath, "archive", "utf8");
+    const storage = fakeStorage(root, archivePath, memory(archivePath, "partial"));
+    const loader = new GraphPathStateLoader();
+    const internals = loader as unknown as LoaderInternals;
+    let openCalls = 0;
+    internals.openArchiveDirectory = async () => {
+      openCalls += 1;
+      return {
+        async *[Symbol.asyncIterator]() {
+          yield {
+            name: "node.md",
+            isSymbolicLink: () => false,
+            isDirectory: () => false,
+            isFile: () => true,
+          } as Dirent;
+          throw new Error("injected iterator error");
+        },
+      } as unknown as Dir;
+    };
+
+    assert.equal(await loader.readNode(storage, "node.md", null, true), null);
+    assert.equal(internals.archivePathIndexes?.size ?? 0, 0);
+    assert.equal(await loader.readNode(storage, "node.md", null, true), null);
+    assert.equal(openCalls, 2);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("does not cache partial indexes after injected archive lstat or realpath errors", async () => {
+  const failurePoints = ["root-lstat", "root-realpath", "nested-lstat", "nested-realpath", "file-realpath"] as const;
+  for (const failurePoint of failurePoints) {
+    const root = await mkdtemp(path.join(os.tmpdir(), `remnic-graph-loader-${failurePoint}-`));
+    try {
+      const archiveRoot = path.join(root, "archive");
+      const nestedRoot = path.join(archiveRoot, "nested");
+      const archivePath =
+        failurePoint === "nested-lstat" || failurePoint === "nested-realpath"
+          ? path.join(nestedRoot, "node.md")
+          : path.join(archiveRoot, "node.md");
+      await mkdir(failurePoint.startsWith("nested") ? nestedRoot : archiveRoot, { recursive: true });
+      await writeFile(archivePath, "archive", "utf8");
+      const storage = fakeStorage(root, archivePath, memory(archivePath, "partial"));
+      const loader = new GraphPathStateLoader();
+      const internals = loader as unknown as LoaderInternals;
+      internals.archiveLstat = async (filePath) => {
+        if (
+          (failurePoint === "root-lstat" && filePath === archiveRoot) ||
+          (failurePoint === "nested-lstat" && filePath === nestedRoot)
+        ) {
+          throw Object.assign(new Error(`injected ${failurePoint}`), { code: "EIO" });
+        }
+        return lstat(filePath);
+      };
+      internals.archiveRealpath = async (filePath) => {
+        if (
+          (failurePoint === "root-realpath" && filePath === archiveRoot) ||
+          (failurePoint === "nested-realpath" && filePath === nestedRoot) ||
+          (failurePoint === "file-realpath" && filePath === archivePath)
+        ) {
+          throw Object.assign(new Error(`injected ${failurePoint}`), { code: "EIO" });
+        }
+        return realpath(filePath);
+      };
+
+      assert.equal(await loader.readNode(storage, "node.md", null, true), null, failurePoint);
+      assert.equal(internals.archivePathIndexes?.size ?? 0, 0, failurePoint);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   }
 });

@@ -456,7 +456,11 @@ export abstract class TombstoneBlockedCaptureIndexHost {
       : before.content === incoming.content && isDeepStrictEqual(before.frontmatter, incoming.frontmatter);
   }
 
-  private async invalidateAfterOfflineSyncMutation(filePath: string, ownedMarker?: string): Promise<void> {
+  private async invalidateAfterOfflineSyncMutation(
+    filePath: string,
+    ownedMarker?: string,
+    archiveChanged = true
+  ): Promise<void> {
     this.invalidateAllMemoriesCache();
     this.invalidateKnowledgeIndexCache();
     this.markFactHashIndexNotAuthoritative();
@@ -467,6 +471,8 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     if (filePath.includes(`${path.sep}artifacts${path.sep}`)) {
       this.bumpArtifactWriteVersion();
     }
+    const memoryDir = this.tombstoneBlockedCaptureIndexOptions().memoryDir;
+    archiveMutation.bumpArchiveMutationForPath(memoryDir, archiveChanged, filePath);
     this.bumpMemoryStatusVersion();
   }
 
@@ -592,7 +598,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
   protected async runTombstoneBlockedOfflineSyncMutation(
     target: string,
     after: MemoryFile | null,
-    write: () => Promise<void>,
+    write: () => Promise<boolean | void>,
     coordinate = false,
     streamedIdentity?: StreamedOfflineSyncIdentity
   ): Promise<void> {
@@ -628,7 +634,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
         const marker = affectsBlockedIndex ? await this.getTombstoneBlockedCaptureIndex().prepareWrite() : undefined;
         let durable = false;
         try {
-          await write();
+          const changed = await write();
           durable = true;
           if (marker) {
             try {
@@ -638,7 +644,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
               log.warn(`storage.offlineSyncFile committed write marker failed: ${err}`);
             }
           }
-          await this.invalidateAfterOfflineSyncMutation(target, marker);
+          await this.invalidateAfterOfflineSyncMutation(target, marker, changed !== false);
         } catch (err) {
           if (marker && !durable) {
             try {
@@ -903,7 +909,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     const stateDir = this.tombstoneBlockedCaptureIndexOptions().stateDir;
     await withRawEntityPageMutation(path.dirname(stateDir), target, async () => {
       await this.runTombstoneBlockedOfflineSyncMutation(target, null, async () => {
-        await this.deleteManagedStorageFile(target, deletionMtimeMs);
+        return await this.deleteManagedStorageFile(target, deletionMtimeMs);
       });
     });
   }

@@ -743,3 +743,93 @@ test("archive version advances when maintenance deletes an archive path", async 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("archive mutation version advances once for an offline archive write", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-archive-write-"));
+  try {
+    resetStaticCaches();
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const archivePath = path.join(dir, "archive", "2026-01-08", "offline-write.md");
+    const content = [
+      "---",
+      "id: offline-archive-write",
+      "category: fact",
+      "---",
+      "offline archive write",
+    ].join("\n");
+    const initial = storage.getArchiveMutationVersion();
+
+    await storage.writeOfflineSyncFile(archivePath, Buffer.from(content));
+
+    assert.equal(storage.getArchiveMutationVersion() - initial, 1);
+
+    const hotPath = path.join(dir, "facts", "offline-hot-write.md");
+    const beforeHot = storage.getArchiveMutationVersion();
+    await storage.writeOfflineSyncFile(
+      hotPath,
+      Buffer.from(["---", "id: offline-hot-write", "category: fact", "---", "offline hot write"].join("\n")),
+    );
+    assert.equal(storage.getArchiveMutationVersion() - beforeHot, 0);
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("archive mutation version advances once for an offline chunked archive write", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-archive-chunks-"));
+  try {
+    resetStaticCaches();
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const archivePath = path.join(dir, "archive", "2026-01-09", "offline-chunks.md");
+    const content = Buffer.from(
+      ["---", "id: offline-archive-chunks", "category: fact", "---", "offline chunked archive write"].join("\n"),
+    );
+    const initial = storage.getArchiveMutationVersion();
+
+    await storage.writeOfflineSyncFileChunks(
+      archivePath,
+      (async function* () {
+        yield content.subarray(0, 17);
+        yield content.subarray(17);
+      })(),
+    );
+
+    assert.equal(storage.getArchiveMutationVersion() - initial, 1);
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("archive mutation version advances once for an offline archive delete", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-archive-delete-"));
+  try {
+    resetStaticCaches();
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const archivePath = path.join(dir, "archive", "2026-01-10", "offline-delete.md");
+    const content = [
+      "---",
+      "id: offline-archive-delete",
+      "category: fact",
+      "---",
+      "offline archive delete",
+    ].join("\n");
+    await storage.writeOfflineSyncFile(archivePath, Buffer.from(content));
+    const initial = storage.getArchiveMutationVersion();
+
+    await storage.deleteOfflineSyncFile(archivePath);
+
+    assert.equal(storage.getArchiveMutationVersion() - initial, 1);
+    const statusBeforeRetry = storage.getMemoryStatusVersion();
+    await storage.deleteOfflineSyncFile(archivePath);
+    assert.equal(storage.getArchiveMutationVersion() - initial, 1);
+    assert.ok(storage.getMemoryStatusVersion() > statusBeforeRetry);
+  } finally {
+    resetStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
