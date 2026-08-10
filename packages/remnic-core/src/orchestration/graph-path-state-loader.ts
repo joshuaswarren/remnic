@@ -1,7 +1,7 @@
-import type { Dirent } from "node:fs";
+import type { Dir, Dirent } from "node:fs";
 import type { MemoryFile } from "../types.js";
 import type { StorageManager } from "../index.js";
-import { readdir, realpath } from "node:fs/promises";
+import { lstat, opendir, realpath } from "node:fs/promises";
 import path from "node:path";
 
 interface ArchivePathIndex {
@@ -11,6 +11,7 @@ interface ArchivePathIndex {
 const MAX_ARCHIVE_PATH_INDEXES = 32;
 const MAX_ARCHIVE_PATH_INDEX_BUILDS = 32;
 const MAX_ARCHIVE_PATH_INDEX_GENERATION_RETRIES = 1;
+const MAX_ARCHIVE_INDEX_ENTRIES = 100_000;
 
 export class GraphPathStateLoader {
   private archivePathIndexes?: Map<string, ArchivePathIndex>;
@@ -166,36 +167,81 @@ export class GraphPathStateLoader {
     version: number,
   ): Promise<ArchivePathIndex | null> {
     const pathsByBasename = new Map<string, string[]>();
-    const pending = [path.join(storageRoot, "archive")];
+    const archiveRoot = path.join(storageRoot, "archive");
+    const archiveRootStatus = await lstat(archiveRoot).catch(() => null);
+    if (
+      !archiveRootStatus ||
+      !archiveRootStatus.isDirectory() ||
+      archiveRootStatus.isSymbolicLink()
+    ) {
+      return { version, pathsByBasename };
+    }
+    const canonicalArchiveRoot = await realpath(archiveRoot).catch(() => null);
+    if (!canonicalArchiveRoot) return { version, pathsByBasename };
+    const archiveRelative = path.relative(storageRoot, canonicalArchiveRoot);
+    if (
+      archiveRelative.length > 0 &&
+      (archiveRelative.startsWith("..") || path.isAbsolute(archiveRelative))
+    ) {
+      return { version, pathsByBasename };
+    }
+    const pending = [canonicalArchiveRoot];
+    let indexedPathCount = 0;
+    let visitedEntryCount = 1;
     while (pending.length > 0) {
       const current = pending.pop();
       if (!current) break;
-      let entries: Dirent[];
+      const currentStatus = await lstat(current).catch(() => null);
+      if (
+        !currentStatus ||
+        !currentStatus.isDirectory() ||
+        currentStatus.isSymbolicLink()
+      ) {
+        continue;
+      }
+      const canonicalCurrent = await realpath(current).catch(() => null);
+      if (!canonicalCurrent) continue;
+      const currentRelative = path.relative(storageRoot, canonicalCurrent);
+      if (
+        currentRelative.length > 0 &&
+        (currentRelative.startsWith("..") || path.isAbsolute(currentRelative))
+      ) {
+        continue;
+      }
+      let directory: Dir;
       try {
-        entries = await readdir(current, { withFileTypes: true });
+        directory = await opendir(canonicalCurrent);
       } catch {
         continue;
       }
-      for (const entry of entries) {
-        if (entry.isSymbolicLink()) continue;
-        const entryPath = path.join(current, entry.name);
-        if (entry.isDirectory()) {
-          pending.push(entryPath);
-          continue;
+      try {
+        for await (const entry of directory) {
+          visitedEntryCount += 1;
+          if (visitedEntryCount > MAX_ARCHIVE_INDEX_ENTRIES) return null;
+          if (entry.isSymbolicLink()) continue;
+          const entryPath = path.join(canonicalCurrent, entry.name);
+          if (entry.isDirectory()) {
+            pending.push(entryPath);
+            continue;
+          }
+          if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+          if (indexedPathCount >= MAX_ARCHIVE_INDEX_ENTRIES) return null;
+          const canonical = await realpath(entryPath).catch(() => null);
+          if (!canonical) continue;
+          const relative = path.relative(storageRoot, canonical);
+          if (
+            relative.length > 0 &&
+            (relative.startsWith("..") || path.isAbsolute(relative))
+          ) {
+            continue;
+          }
+          const paths = pathsByBasename.get(entry.name);
+          if (paths) paths.push(canonical);
+          else pathsByBasename.set(entry.name, [canonical]);
+          indexedPathCount += 1;
         }
-        if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
-        const canonical = await realpath(entryPath).catch(() => null);
-        if (!canonical) continue;
-        const relative = path.relative(storageRoot, canonical);
-        if (
-          relative.length > 0 &&
-          (relative.startsWith("..") || path.isAbsolute(relative))
-        ) {
-          continue;
-        }
-        const paths = pathsByBasename.get(entry.name);
-        if (paths) paths.push(canonical);
-        else pathsByBasename.set(entry.name, [canonical]);
+      } catch {
+        continue;
       }
     }
     for (const paths of pathsByBasename.values()) {

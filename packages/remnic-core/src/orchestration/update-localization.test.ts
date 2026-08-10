@@ -25,10 +25,12 @@ function memory(
     created?: string;
     attributes?: Record<string, string>;
     content?: string;
+    path?: string;
+    archivedAt?: string;
   } = {},
 ): MemoryFile {
   return {
-    path: `/synthetic/${id}.md`,
+    path: options.path ?? `/synthetic/${id}.md`,
     content: options.content ?? `content for ${id}`,
     frontmatter: {
       id,
@@ -39,6 +41,7 @@ function memory(
       confidence: 0.9,
       confidenceTier: "explicit",
       tags: [],
+      ...(options.archivedAt ? { archivedAt: options.archivedAt } : {}),
       ...(options.omitStatus
         ? {}
         : { status: (options.status ?? "active") as MemoryFile["frontmatter"]["status"] }),
@@ -48,8 +51,13 @@ function memory(
   } as unknown as MemoryFile;
 }
 
-function storage(memories: MemoryFile[], coldMemories: MemoryFile[] = []): StorageManager {
+function storage(
+  memories: MemoryFile[],
+  coldMemories: MemoryFile[] = [],
+  memoryDir?: string,
+): StorageManager {
   return {
+    dir: memoryDir,
     readAllMemories: async () => memories,
     readAllColdMemories: async () => coldMemories,
     getMemoryById: async (id: string) => memories.find((entry) => entry.frontmatter.id === id) ?? null,
@@ -123,12 +131,64 @@ test("includes only active memories in the anchor pass", async () => {
   assert.deepEqual(result.map((candidate) => candidate.id), ["active", "legacy"]);
 });
 
-test("prefers an active cold copy over a superseded hot duplicate", async () => {
+test("excludes active raw status when archivedAt infers a non-active anchor", async () => {
+  const result = await localizeUpdateCandidates(
+    {
+      storage: storage([
+        memory("archived-at", {
+          entityRef: "person:alice",
+          archivedAt: "2026-08-08T00:00:00.000Z",
+        }),
+        memory("legacy", { entityRef: "person:alice", omitStatus: true }),
+      ]),
+      qmdSearch: search(),
+    },
+    { entityRef: "person:alice", category: "fact" },
+    "incoming",
+    options,
+  );
+
+  assert.deepEqual(result.map((candidate) => candidate.id), ["legacy"]);
+});
+
+test("excludes absent raw status when archive path infers a non-active anchor", async () => {
+  const result = await localizeUpdateCandidates(
+    {
+      storage: storage(
+        [
+          memory("archive-path", {
+            entityRef: "person:alice",
+            omitStatus: true,
+            path: "/synthetic/archive/archive-path.md",
+          }),
+          memory("legacy", { entityRef: "person:alice", omitStatus: true }),
+        ],
+        [],
+        "/synthetic",
+      ),
+      qmdSearch: search(),
+    },
+    { entityRef: "person:alice", category: "fact" },
+    "incoming",
+    options,
+  );
+
+  assert.deepEqual(result.map((candidate) => candidate.id), ["legacy"]);
+});
+
+test("prefers a valid cold copy over a hot copy with inferred archived status", async () => {
   const id = "duplicate";
   const result = await localizeUpdateCandidates(
     {
       storage: storage(
-        [memory(id, { entityRef: "person:alice", status: "superseded", content: "hot copy" })],
+        [
+          memory(id, {
+            entityRef: "person:alice",
+            status: "active",
+            archivedAt: "2026-08-08T00:00:00.000Z",
+            content: "hot archived copy",
+          }),
+        ],
         [memory(id, { entityRef: "person:alice", status: "active", content: "cold copy" })],
       ),
       qmdSearch: search(),
@@ -608,7 +668,7 @@ test("scores anchor candidates with missing attributes as zero when the incoming
   assert.equal(result[0]?.score, 1);
   assert.equal(result[1]?.score, 0);
 });
-test("preserves search candidates with pending_review status in enabled mode", async () => {
+test("excludes search candidates with pending_review status in enabled mode", async () => {
   const candidate = memory("pending", { status: "pending_review" });
   const extraction = {
     verifyContradiction: async () => ({
@@ -640,7 +700,7 @@ test("preserves search candidates with pending_review status in enabled mode", a
   });
 
   const result = await coordinator.checkForContradiction("incoming", "fact", "default");
-  assert.equal(result?.supersededId, "pending");
+  assert.equal(result, null);
 });
 
 test("forwards the new content and search limit to QMD", async () => {

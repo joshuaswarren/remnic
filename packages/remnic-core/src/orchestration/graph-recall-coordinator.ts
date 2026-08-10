@@ -222,12 +222,16 @@ export class GraphRecallCoordinator {
         ? options.asOfMs
         : Date.now();
     const effectiveAsOf = new Date(effectiveAsOfMs).toISOString();
-    const isEligibleGraphCandidate = (memory: MemoryFile): boolean =>
-      !memory.frontmatter.status ||
-      memory.frontmatter.status === "active" ||
-      (memory.frontmatter.status === "superseded" &&
-        hasHistoricalAsOf &&
-        isValidAsOf(memory.frontmatter, effectiveAsOfMs));
+    const isEligibleGraphCandidate = (memory: MemoryFile): boolean => {
+      if (hasHistoricalAsOf && !isValidAsOf(memory.frontmatter, effectiveAsOfMs)) {
+        return false;
+      }
+      return (
+        !memory.frontmatter.status ||
+        memory.frontmatter.status === "active" ||
+        (memory.frontmatter.status === "superseded" && hasHistoricalAsOf)
+      );
+    };
     const deadlineExpired = (): boolean =>
       typeof options.deadlineAtMs === "number" &&
       Date.now() >= options.deadlineAtMs;
@@ -320,6 +324,7 @@ export class GraphRecallCoordinator {
       200,
       perNamespaceExpandedCap + Math.max(8, perNamespaceExpandedCap * 4),
     );
+    const graphCandidateScanLimit = hasHistoricalAsOf ? 200 : graphPathStateLoadLimit;
     const seedPaths: string[] = [];
     const seedResults: QmdSearchResult[] = [];
     const expandedPaths: GraphRecallExpandedEntry[] = [];
@@ -390,7 +395,11 @@ export class GraphRecallCoordinator {
       if (deadlineExpired()) break;
 
       if (!scoringEnabled) {
-        for (const candidate of expanded.slice(0, perNamespaceExpandedCap)) {
+        let eligibleCount = 0;
+        const disabledScanLimit = hasHistoricalAsOf
+          ? graphCandidateScanLimit
+          : perNamespaceExpandedCap;
+        for (const candidate of expanded.slice(0, disabledScanLimit)) {
           if (seedSet.has(candidate.path)) continue;
           const memory = await readGraphNode(candidate.path, false);
           if (deadlineExpired()) break;
@@ -421,6 +430,8 @@ export class GraphRecallCoordinator {
             graphType: candidate.graphType,
             edgeConfidence: candidate.edgeConfidence,
           });
+          eligibleCount += 1;
+          if (eligibleCount >= perNamespaceExpandedCap) break;
         }
         continue;
       }
@@ -452,7 +463,7 @@ export class GraphRecallCoordinator {
         result: QmdSearchResult;
         entry: GraphRecallExpandedEntry;
       }> = [];
-      for (const candidate of expanded.slice(0, graphPathStateLoadLimit)) {
+      for (const candidate of expanded.slice(0, graphCandidateScanLimit)) {
         if (deadlineExpired()) break;
         if (seedSet.has(candidate.path)) continue;
         const memory = await readGraphNode(candidate.path, true);

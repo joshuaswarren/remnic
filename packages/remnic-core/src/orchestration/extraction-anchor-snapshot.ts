@@ -45,7 +45,7 @@ export class ExtractionAnchorSnapshot {
     const snapshot = Promise.all([
       storage.readAllMemories(),
       storage.readAllColdMemories(),
-    ]).then(([hot, cold]) => mergeMemorySnapshots(hot, cold));
+    ]).then(([hot, cold]) => mergeMemorySnapshots(hot, cold, storage.dir));
     this.snapshots.set(storage, snapshot);
     return this.failOpenRead(storage, snapshot);
   }

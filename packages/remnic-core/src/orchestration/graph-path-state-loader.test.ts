@@ -93,29 +93,28 @@ test("prefers an active cold direct path over an inactive hot duplicate", async 
   }
 });
 
-test("does not share a deadline-bound archive build with a later caller", async () => {
+test("does not poison a shared archive build with a short caller deadline", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-loader-timeout-"));
   try {
-    const archivePath = path.join(root, "archive", "2026-01-01", "node.md");
-    const result = memory(archivePath, "success");
-    const storage = fakeStorage(root, archivePath, result);
+    const archiveRoot = path.join(root, "archive");
+    const archivePath = path.join(archiveRoot, "node.md");
+    await mkdir(archiveRoot, { recursive: true });
+    await writeFile(archivePath, "archive", "utf8");
+    await Promise.all(
+      Array.from({ length: 4096 }, (_, index) =>
+        writeFile(path.join(archiveRoot, `noise-${index}.txt`), "noise", "utf8"),
+      ),
+    );
+    const storage = fakeStorage(root, archivePath, memory(archivePath, "success"));
     const loader = new GraphPathStateLoader();
-    const internals = loader as unknown as LoaderInternals;
-    let builds = 0;
-    internals.buildArchivePathIndex = async (_storageRoot, version) => {
-      builds += 1;
-      await new Promise((resolve) => setTimeout(resolve, 15));
-      return { version, pathsByBasename: new Map([["node.md", [archivePath]]]) };
-    };
-    const timedOut = loader.readNode(storage, "node.md", Date.now() + 5, true);
-    await new Promise((resolve) => setTimeout(resolve, 1));
-    const successful = loader.readNode(storage, "node.md", Date.now() + 100, true);
+
+    const timedOut = loader.readNode(storage, "node.md", Date.now() + 1, true);
+    await Promise.resolve();
+    const successful = loader.readNode(storage, "node.md", Date.now() + 2_000, true);
     const [timedOutResult, successfulResult] = await Promise.all([timedOut, successful]);
 
     assert.equal(timedOutResult, null);
     assert.equal(successfulResult?.content, "success");
-    assert.equal((await loader.readNode(storage, "node.md", null, true))?.content, "success");
-    assert.equal(builds, 1);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -303,6 +302,7 @@ test("evicts prior archive indexes for the same storage root", async () => {
   try {
     const archiveVersionRef = { value: 1 };
     const archivePath = path.join(root, "archive", "2026-01-01", "node.md");
+    await mkdir(path.dirname(archivePath), { recursive: true });
     const storage = fakeStorage(root, archivePath, memory(archivePath, "unused"), archiveVersionRef);
     const loader = new GraphPathStateLoader();
     const internals = loader as unknown as LoaderInternals;
@@ -455,6 +455,76 @@ test("rejects a dangling symlinked configured storage root before scanning", asy
     assert.equal(await loader.readNode(storage, "node.md", null, true), null);
     assert.equal(readCount, 0);
     assert.equal(versionCount, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+test("rejects a symlinked archive root before enumerating its target", async () => {
+  if (process.platform === "win32") return;
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-loader-archive-symlink-"));
+  try {
+    const storageRoot = path.join(root, "storage");
+    const externalArchiveRoot = path.join(root, "external-archive");
+    const archiveRoot = path.join(storageRoot, "archive");
+    const externalArchivePath = path.join(externalArchiveRoot, "node.md");
+    await mkdir(storageRoot, { recursive: true });
+    await mkdir(externalArchiveRoot, { recursive: true });
+    await writeFile(externalArchivePath, "external", "utf8");
+    await symlink(externalArchiveRoot, archiveRoot);
+
+    const storage = {
+      dir: storageRoot,
+      getArchiveMutationVersion: () => 1,
+      readMemoryByPath: async (filePath: string) =>
+        filePath === externalArchivePath ? memory(externalArchivePath, "external") : null,
+    } as unknown as StorageManager;
+    const loader = new GraphPathStateLoader();
+    const internals = loader as unknown as LoaderInternals;
+    const buildArchivePathIndex = internals.buildArchivePathIndex;
+    let builds = 0;
+    internals.buildArchivePathIndex = async (rootPath, version) => {
+      builds += 1;
+      return buildArchivePathIndex.call(loader, rootPath, version);
+    };
+
+    assert.equal(await loader.readNode(storage, "node.md", null, true), null);
+    assert.equal(await loader.readNode(storage, "node.md", null, true), null);
+    assert.equal(builds, 1);
+    assert.equal(internals.archivePathIndexes?.size ?? 0, 1);
+    const cachedIndex = [...(internals.archivePathIndexes?.values() ?? [])][0];
+    assert.equal(cachedIndex?.pathsByBasename.size, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("does not publish a partial index after the visited-entry cap", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-loader-path-cap-"));
+  try {
+    const archiveRoot = path.join(root, "archive");
+    const deepRoot = path.join(archiveRoot, "deep");
+    await mkdir(deepRoot, { recursive: true });
+    const noiseCount = 100_001;
+    for (let start = 0; start < noiseCount; start += 1_000) {
+      const end = Math.min(start + 1_000, noiseCount);
+      await Promise.all(
+        Array.from({ length: end - start }, (_, offset) => {
+          const index = start + offset;
+          return writeFile(path.join(deepRoot, `noise-${index}.txt`), "noise", "utf8");
+        }),
+      );
+    }
+
+    const storage = {
+      dir: root,
+      getArchiveMutationVersion: () => 1,
+      readMemoryByPath: async () => null,
+    } as unknown as StorageManager;
+    const loader = new GraphPathStateLoader();
+    const internals = loader as unknown as LoaderInternals;
+
+    assert.equal(await loader.readNode(storage, "missing.md", null, true), null);
+    assert.equal(internals.archivePathIndexes?.size ?? 0, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

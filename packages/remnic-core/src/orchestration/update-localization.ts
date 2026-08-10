@@ -1,13 +1,18 @@
-import type { MemoryFile } from "../types.js";
-import { isActiveMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
+import type { MemoryFile, MemoryStatus } from "../types.js";
+import { inferMemoryStatus, isActiveMemoryStatus, toMemoryPathRel } from "../memory-lifecycle-ledger-utils.js";
 import { lookupAttributeByNormalizedKey, normalizeSupersessionKey } from "../temporal-supersession.js";
 
 export interface UpdateLocalizationStorage {
+  dir?: string;
   readAllMemories(): Promise<MemoryFile[]>;
   readAllColdMemories?: () => Promise<MemoryFile[]>;
 }
 
-export function mergeMemorySnapshots(hot: MemoryFile[], cold: MemoryFile[]): MemoryFile[] {
+export function mergeMemorySnapshots(
+  hot: MemoryFile[],
+  cold: MemoryFile[],
+  storageDir?: string,
+): MemoryFile[] {
   const merged: MemoryFile[] = [];
   const indexById = new Map<string, number>();
   for (const memory of [...hot, ...cold]) {
@@ -20,8 +25,8 @@ export function mergeMemorySnapshots(hot: MemoryFile[], cold: MemoryFile[]): Mem
     }
     const existing = merged[existingIndex];
     if (
-      !isActiveMemoryStatus(existing.frontmatter.status) &&
-      isActiveMemoryStatus(memory.frontmatter.status)
+      !isActiveMemoryStatus(inferLocalizationMemoryStatus(existing, storageDir)) &&
+      isActiveMemoryStatus(inferLocalizationMemoryStatus(memory, storageDir))
     ) {
       merged[existingIndex] = memory;
     }
@@ -104,6 +109,14 @@ function toAnchorCandidate(memory: MemoryFile, anchor: UpdateAnchor): LocalizedC
   };
 }
 
+export function inferLocalizationMemoryStatus(
+  memory: MemoryFile,
+  storageDir?: string,
+): MemoryStatus {
+  const pathRel = storageDir ? toMemoryPathRel(storageDir, memory.path) : memory.path;
+  return inferMemoryStatus(memory.frontmatter, pathRel);
+}
+
 export async function localizeUpdateCandidates(
   deps: UpdateLocalizationDeps,
   anchor: UpdateAnchor,
@@ -120,9 +133,9 @@ export async function localizeUpdateCandidates(
   if (normalizedAnchorEntityRef !== undefined && anchorLimit > 0) {
     const hot = await deps.storage.readAllMemories();
     const cold = deps.storage.readAllColdMemories ? await deps.storage.readAllColdMemories() : [];
-    const memories = mergeMemorySnapshots(hot, cold);
+    const memories = mergeMemorySnapshots(hot, cold, deps.storage.dir);
     for (const memory of memories) {
-      if (!isActiveMemoryStatus(memory.frontmatter.status)) continue;
+      if (inferLocalizationMemoryStatus(memory, deps.storage.dir) !== "active") continue;
       const normalizedCandidateEntityRef = normalizeEntityRef(memory.frontmatter.entityRef);
       if (normalizedCandidateEntityRef !== normalizedAnchorEntityRef) continue;
       if (memory.frontmatter.category !== anchor.category) continue;

@@ -398,6 +398,39 @@ test("disables anchor snapshot reuse after a rejected read", async () => {
   assert.equal(hotReads, 1);
 });
 
+test("anchor snapshot prefers an active cold copy over a path-archived hot duplicate", async () => {
+  const storageDir = "/tmp/remnic-anchor-snapshot-archive-duplicate";
+  const hot = {
+    path: path.join(storageDir, "archive", "duplicate.md"),
+    content: "hot archived",
+    frontmatter: {
+      id: "duplicate",
+      category: "fact",
+      created: "2026-08-01T00:00:00.000Z",
+      updated: "2026-08-01T00:00:00.000Z",
+      status: "active",
+      archivedAt: "2026-08-08T00:00:00.000Z",
+    },
+  } as unknown as MemoryFile;
+  const cold = {
+    path: path.join(storageDir, "cold", "duplicate.md"),
+    content: "cold active",
+    frontmatter: {
+      ...hot.frontmatter,
+      status: "active",
+      archivedAt: undefined,
+    },
+  } as unknown as MemoryFile;
+  const storage = {
+    dir: storageDir,
+    readAllMemories: async () => [hot],
+    readAllColdMemories: async () => [cold],
+  } as unknown as StorageManager;
+  const snapshots = new ExtractionAnchorSnapshot();
+
+  assert.deepEqual(await snapshots.get(storage, "person:alice"), [cold]);
+});
+
 test("isolates anchor snapshot failures per storage", async () => {
   const snapshots = new ExtractionAnchorSnapshot();
   const failedStorage = {
@@ -1167,4 +1200,101 @@ test("anchor-only contradiction flows through deferred resolve and supersedes th
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
+});
+async function assertQmdCandidateStatusIsNotSupersedable(
+  status: "pending_review" | "rejected" | "quarantined" | "active",
+  options: { archivedAt?: string; archivePath?: string; omitStatus?: boolean } = {},
+): Promise<void> {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), `remnic-contradiction-qmd-${status}-`));
+  try {
+    const config = baseConfig(memoryDir) as PluginConfig;
+    const candidate = {
+      path: options.archivePath
+        ? path.join(memoryDir, options.archivePath)
+        : `/synthetic/default/${status}.md`,
+      content: "Alice lives in Austin",
+      frontmatter: {
+        id: `candidate-${status}`,
+        category: "fact",
+        created: "2026-08-01T00:00:00.000Z",
+        updated: "2026-08-01T00:00:00.000Z",
+        source: "test",
+        confidence: 0.9,
+        confidenceTier: "explicit",
+        tags: [],
+        ...(options.omitStatus ? {} : { status }),
+        ...(options.archivedAt ? { archivedAt: options.archivedAt } : {}),
+      },
+    } as unknown as MemoryFile;
+    const storage = {
+      dir: memoryDir,
+      readAllMemories: async () => [],
+      readAllColdMemories: async () => [],
+      getMemoryById: async (id: string) => (id === candidate.frontmatter.id ? candidate : null),
+    } as never as StorageManager;
+    let verificationCalls = 0;
+    const extraction = {
+      verifyContradiction: async () => {
+        verificationCalls++;
+        return {
+          isContradiction: true,
+          confidence: 0.99,
+          reasoning: "city changed",
+          whichIsNewer: "second",
+        };
+      },
+    } as unknown as ExtractionEngine;
+    const coordinator = new ContradictionLinkingCoordinator({
+      getConfig: () => config,
+      isSearchAvailable: () => true,
+      searchAcrossNamespaces: async () => [
+        {
+          docid: candidate.path,
+          path: candidate.path,
+          snippet: candidate.content,
+          score: 0.99,
+        },
+      ],
+      extractMemoryIdsFromResults: () => [candidate.frontmatter.id],
+      namespaceFromPath: () => "default",
+      storageForNamespace: async () => storage,
+      getExtraction: () => extraction,
+    });
+
+    const contradiction = await coordinator.checkForContradiction(
+      "Alice lives in New York",
+      "fact",
+      "default",
+    );
+
+    assert.equal(contradiction, null);
+    assert.equal(verificationCalls, 0);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+}
+
+test("QMD contradiction candidates in pending_review are not eligible for supersession", async () => {
+  await assertQmdCandidateStatusIsNotSupersedable("pending_review");
+});
+
+test("QMD contradiction candidates in rejected are not eligible for supersession", async () => {
+  await assertQmdCandidateStatusIsNotSupersedable("rejected");
+});
+
+test("QMD contradiction candidates in quarantined are not eligible for supersession", async () => {
+  await assertQmdCandidateStatusIsNotSupersedable("quarantined");
+});
+
+test("QMD active candidates with archivedAt are not eligible for supersession", async () => {
+  await assertQmdCandidateStatusIsNotSupersedable("active", {
+    archivedAt: "2026-08-08T00:00:00.000Z",
+  });
+});
+
+test("QMD candidates under archive paths are not eligible without raw status", async () => {
+  await assertQmdCandidateStatusIsNotSupersedable("active", {
+    archivePath: "archive/archived.md",
+    omitStatus: true,
+  });
 });

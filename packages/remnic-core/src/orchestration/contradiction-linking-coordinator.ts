@@ -23,7 +23,6 @@ import type {
   QmdSearchResult,
 } from "../types.js";
 import { coerceBool } from "../connectors/coerce.js";
-import { isActiveMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 // StorageManager type comes from the package barrel (type-only) so this
 // module does not add a direct storage.ts import (ratchet #1533).
 import type { StorageManager } from "../index.js";
@@ -31,7 +30,11 @@ import type { ExtractionEngine } from "../extraction.js";
 import { log } from "../logger.js";
 import { resolveIndexingCapabilities } from "../capabilities.js";
 import { deindexMemoryAsync } from "../temporal-index.js";
-import { localizeUpdateCandidates, mergeMemorySnapshots } from "./update-localization.js";
+import {
+  inferLocalizationMemoryStatus,
+  localizeUpdateCandidates,
+  mergeMemorySnapshots,
+} from "./update-localization.js";
 import { propagateInvalidation } from "./dependency-propagation.js";
 
 /** Result type of {@link ContradictionLinkingCoordinator.checkForContradiction}. */
@@ -141,10 +144,7 @@ export class ContradictionLinkingCoordinator {
         const resultStorage = await this.storageForNamespace(resultNamespace);
         const existingMemory = await resultStorage.getMemoryById(memoryId);
         if (!existingMemory) continue;
-        if (
-          existingMemory.frontmatter.status === "superseded" ||
-          existingMemory.frontmatter.status === "forgotten"
-        ) continue;
+        if (inferLocalizationMemoryStatus(existingMemory, resultStorage.dir) !== "active") continue;
         const verification = await this.getExtraction().verifyContradiction(
           { content, category },
           {
@@ -203,7 +203,7 @@ export class ContradictionLinkingCoordinator {
           ? resultStorage.readAllColdMemories()
           : Promise.resolve([]),
       ]);
-      anchorSnapshot = mergeMemorySnapshots(hot, cold);
+      anchorSnapshot = mergeMemorySnapshots(hot, cold, resultStorage.dir);
     }
     const anchorMemoryById = anchorSnapshot
       ? new Map(anchorSnapshot.map((memory) => [memory.frontmatter.id, memory]))
@@ -212,6 +212,7 @@ export class ContradictionLinkingCoordinator {
       {
         storage: anchorSnapshot
           ? {
+              dir: resultStorage.dir,
               readAllMemories: async () => anchorSnapshot ?? [],
               readAllColdMemories: async () => [],
             }
@@ -237,8 +238,7 @@ export class ContradictionLinkingCoordinator {
               anchorMemoryById?.get(memoryId) ?? (await resultStorage.getMemoryById(memoryId));
             if (
               !existingMemory ||
-              existingMemory.frontmatter.status === "superseded" ||
-              existingMemory.frontmatter.status === "forgotten"
+              inferLocalizationMemoryStatus(existingMemory, resultStorage.dir) !== "active"
             ) continue;
             hits.push({
               id: memoryId,
@@ -264,11 +264,7 @@ export class ContradictionLinkingCoordinator {
         anchorMemoryById?.get(candidate.id) ?? (await resultStorage.getMemoryById(candidate.id));
       if (
         !existingMemory ||
-        (candidate.source === "anchor" &&
-          !isActiveMemoryStatus(existingMemory.frontmatter.status)) ||
-        (candidate.source === "search" &&
-          (existingMemory.frontmatter.status === "superseded" ||
-            existingMemory.frontmatter.status === "forgotten"))
+        inferLocalizationMemoryStatus(existingMemory, resultStorage.dir) !== "active"
       ) continue;
       const verification = await this.getExtraction().verifyContradiction(
         { content, category },

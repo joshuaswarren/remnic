@@ -14,6 +14,7 @@ import type { PluginConfig, QmdSearchResult } from "../types.js";
 import { StorageManager } from "../storage.js";
 
 const AS_OF = "2026-01-01T00:00:00.000Z";
+const HISTORICAL_VALID_AT = "2025-01-01T00:00:00.000Z";
 
 type NamespaceFixture = {
   name: string;
@@ -73,16 +74,32 @@ async function createNamespace(
   const dir = path.join(root, name);
   const storage = new StorageManager(dir);
   await storage.ensureDirectories();
-  await storage.writeMemory("fact", `${name} seed`, { source: "test" });
+  await storage.writeMemory("fact", `${name} seed`, {
+    source: "test",
+    validAt: HISTORICAL_VALID_AT,
+  });
   await storage.writeMemory("fact", `${name} intermediate`, {
     source: "test",
     status: intermediateStatus,
+    validAt:
+      intermediateStatus === "superseded"
+        ? "2026-02-01T00:00:00.000Z"
+        : HISTORICAL_VALID_AT,
   });
-  await storage.writeMemory("fact", `${name} clean`, { source: "test" });
+  await storage.writeMemory("fact", `${name} clean`, {
+    source: "test",
+    validAt: HISTORICAL_VALID_AT,
+  });
   if (includeSecondClean) {
-    await storage.writeMemory("fact", `${name} second clean`, { source: "test" });
+    await storage.writeMemory("fact", `${name} second clean`, {
+      source: "test",
+      validAt: HISTORICAL_VALID_AT,
+    });
   }
-  await storage.writeMemory("fact", `${name} stale`, { source: "test" });
+  await storage.writeMemory("fact", `${name} stale`, {
+    source: "test",
+    validAt: HISTORICAL_VALID_AT,
+  });
   const paths = await storage.collectActiveMemoryPaths();
   const memories = await storage.readAllMemories();
   const find = (text: string): string => {
@@ -184,6 +201,64 @@ async function expand(
     recallResultLimit,
     asOf: AS_OF,
   });
+}
+
+async function createHistoricalCapCandidates(
+  fixture: NamespaceFixture,
+  futureCount = 45,
+): Promise<{ candidatePaths: string[]; validPath: string }> {
+  await Promise.all(
+    Array.from({ length: futureCount + 1 }, (_, index) =>
+      fixture.storage.writeMemory("fact", `historical scan candidate ${index}`, {
+        source: "test",
+      }),
+    ),
+  );
+  const memories = (await fixture.storage.readAllMemories()).filter((memory) =>
+    memory.content.startsWith("historical scan candidate "),
+  );
+  assert.equal(memories.length, futureCount + 1);
+  const candidatePaths: string[] = [];
+  for (let index = 0; index <= futureCount; index += 1) {
+    const memory = memories.find(
+      (candidate) => candidate.content === `historical scan candidate ${index}`,
+    );
+    assert.ok(memory);
+    candidatePaths.push(path.relative(fixture.dir, memory.path).split(path.sep).join("/"));
+    assert.equal(
+      await fixture.storage.writeMemoryFrontmatter(memory, {
+        status: "active",
+        valid_at: index === futureCount ? HISTORICAL_VALID_AT : "2026-02-01T00:00:00.000Z",
+      }),
+      true,
+    );
+  }
+  const validPath = candidatePaths[futureCount];
+  assert.ok(validPath);
+  return { candidatePaths, validPath };
+}
+
+function makeHistoricalCapGraphIndex(
+  fixture: NamespaceFixture,
+  candidatePaths: string[],
+): GraphIndex {
+  return {
+    spreadingActivation: async () =>
+      candidatePaths.map((candidatePath, index) => ({
+        path: candidatePath,
+        score: 1 - index / 1000,
+        seed: fixture.seedPath,
+        hopDepth: 1,
+        decayedWeight: 1,
+        graphType: "entity" as const,
+        edgeConfidence: 1,
+        activationPath: {
+          nodeIds: [fixture.seedPath, candidatePath],
+          edgeConfidences: [1],
+          graphTypes: ["entity"],
+        },
+      })),
+  } as unknown as GraphIndex;
 }
 
 test("real coordinator demotes stale paths before the namespace cap and repeats deterministically", async () => {
@@ -566,8 +641,14 @@ test("memoizes shared missing graph path state within one namespace expansion", 
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-state-cache-"));
   try {
     const fixture = await createNamespace(root, "default");
-    await fixture.storage.writeMemory("fact", "default cache first", { source: "test" });
-    await fixture.storage.writeMemory("fact", "default cache second", { source: "test" });
+    await fixture.storage.writeMemory("fact", "default cache first", {
+      source: "test",
+      validAt: HISTORICAL_VALID_AT,
+    });
+    await fixture.storage.writeMemory("fact", "default cache second", {
+      source: "test",
+      validAt: HISTORICAL_VALID_AT,
+    });
     const memories = await fixture.storage.readAllMemories();
     const firstMemory = memories.find((memory) => memory.content === "default cache first");
     const secondMemory = memories.find((memory) => memory.content === "default cache second");
@@ -805,12 +886,152 @@ test("rejects symlink graph nodes before reading outside storage", async () => {
   }
 });
 
+test("filters active candidates that start after historical asOf before the expansion cap", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-historical-cap-"));
+  try {
+    const fixture = await createNamespace(root, "default");
+    await Promise.all(
+      Array.from({ length: 9 }, (_, index) =>
+        fixture.storage.writeMemory("fact", `historical cap candidate ${index}`, {
+          source: "test",
+        }),
+      ),
+    );
+    const memories = (await fixture.storage.readAllMemories()).filter((memory) =>
+      memory.content.startsWith("historical cap candidate "),
+    );
+    assert.equal(memories.length, 9);
+    const candidatePaths: string[] = [];
+    for (const memory of memories) {
+      const relativePath = path.relative(fixture.dir, memory.path).split(path.sep).join("/");
+      candidatePaths.push(relativePath);
+      assert.equal(
+        await fixture.storage.writeMemoryFrontmatter(memory, {
+          status: "active",
+          valid_at: "2025-01-01T00:00:00.000Z",
+        }),
+        true,
+      );
+    }
+    const invalidPath = candidatePaths[0];
+    assert.ok(invalidPath);
+    const invalidMemory = memories[0];
+    assert.ok(invalidMemory);
+    assert.equal(
+      await fixture.storage.writeMemoryFrontmatter(invalidMemory, {
+        valid_at: "2026-02-01T00:00:00.000Z",
+      }),
+      true,
+    );
+
+    const fakeIndex = {
+      spreadingActivation: async () =>
+        candidatePaths.map((candidatePath, index) => ({
+          path: candidatePath,
+          score: 1 - index / 1000,
+          seed: fixture.seedPath,
+          hopDepth: 1,
+          decayedWeight: 1,
+          graphType: "entity" as const,
+          edgeConfidence: 1,
+          activationPath: {
+            nodeIds: [fixture.seedPath, candidatePath],
+            edgeConfidences: [1],
+            graphTypes: ["entity"],
+          },
+        })),
+    } as unknown as GraphIndex;
+    const coordinator = makeCoordinator(
+      makeConfig(),
+      new Map([[fixture.name, fixture]]),
+      undefined,
+      new Map([[fixture.dir, fakeIndex]]),
+    );
+
+    const result = await expand(coordinator, [seedResult(fixture)], [fixture.name], 1);
+
+    assert.equal(result.expandedPaths.length, 8);
+    assert.equal(
+      result.expandedPaths.some((entry) => entry.path.endsWith(invalidPath)),
+      false,
+    );
+    for (const candidatePath of candidatePaths.slice(1)) {
+      assert.equal(
+        result.expandedPaths.some((entry) => entry.path.endsWith(candidatePath)),
+        true,
+      );
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("scans the historical candidate window before the enabled expansion cap", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-historical-enabled-cap-"));
+  try {
+    const fixture = await createNamespace(root, "default");
+    const { candidatePaths, validPath } = await createHistoricalCapCandidates(fixture);
+    const fakeIndex = makeHistoricalCapGraphIndex(fixture, candidatePaths);
+    const readCount = { count: 0 };
+    const originalRead = fixture.storage.readMemoryByPath.bind(fixture.storage);
+    fixture.storage.readMemoryByPath = async (filePath: string) => {
+      readCount.count += 1;
+      return originalRead(filePath);
+    };
+    const coordinator = makeCoordinator(
+      makeConfig(),
+      new Map([[fixture.name, fixture]]),
+      undefined,
+      new Map([[fixture.dir, fakeIndex]]),
+    );
+
+    const result = await expand(coordinator, [seedResult(fixture)], [fixture.name], 1);
+
+    assert.equal(result.expandedPaths.length, 1);
+    assert.equal(result.expandedPaths[0]?.path.endsWith(validPath), true);
+    assert.ok(readCount.count <= 200);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("scans the historical candidate window before the disabled expansion cap", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-historical-disabled-cap-"));
+  try {
+    const fixture = await createNamespace(root, "default");
+    const { candidatePaths, validPath } = await createHistoricalCapCandidates(fixture);
+    const fakeIndex = makeHistoricalCapGraphIndex(fixture, candidatePaths);
+    const readCount = { count: 0 };
+    const originalRead = fixture.storage.readMemoryByPath.bind(fixture.storage);
+    fixture.storage.readMemoryByPath = async (filePath: string) => {
+      readCount.count += 1;
+      return originalRead(filePath);
+    };
+    const coordinator = makeCoordinator(
+      makeConfig({ graphPathScoring: { enabled: false } }),
+      new Map([[fixture.name, fixture]]),
+      undefined,
+      new Map([[fixture.dir, fakeIndex]]),
+    );
+
+    const result = await expand(coordinator, [seedResult(fixture)], [fixture.name], 1);
+
+    assert.equal(result.expandedPaths.length, 1);
+    assert.equal(result.expandedPaths[0]?.path.endsWith(validPath), true);
+    assert.ok(readCount.count <= 200);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("caps graph path state reads at 200 candidates with deterministic output", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-read-cap-"));
   try {
     const fixture = await createNamespace(root, "default", "active");
     for (let index = 0; index < 250; index += 1) {
-      await fixture.storage.writeMemory("fact", `bounded-${index}`);
+      await fixture.storage.writeMemory("fact", `bounded-${index}`, {
+        validAt: HISTORICAL_VALID_AT,
+      });
     }
     const memories = (await fixture.storage.readAllMemories()).filter((memory) =>
       memory.content.startsWith("bounded-"),
