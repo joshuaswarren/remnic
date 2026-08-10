@@ -250,7 +250,8 @@ function runUpgradeWithFlags(
   fixture: UpgradeFixture,
   flags: string[],
   env: NodeJS.ProcessEnv = fixture.env,
-  version = "9.49.0"
+  version = "9.49.0",
+  includePluginDir = true
 ) {
   return spawnSync(
     process.execPath,
@@ -264,8 +265,7 @@ function runUpgradeWithFlags(
       version,
       "--config",
       fixture.configPath,
-      "--plugin-dir",
-      fixture.pluginDir,
+      ...(includePluginDir ? ["--plugin-dir", fixture.pluginDir] : []),
     ],
     { encoding: "utf8", env, timeout: 30_000 }
   );
@@ -273,6 +273,13 @@ function runUpgradeWithFlags(
 
 function runUpgrade(fixture: UpgradeFixture, env: NodeJS.ProcessEnv = fixture.env, version = "9.49.0") {
   return runUpgradeWithFlags(fixture, ["--yes", "--no-restart"], env, version);
+}
+function runUpgradeUsingDefaultPluginDir(
+  fixture: UpgradeFixture,
+  env: NodeJS.ProcessEnv = fixture.env,
+  version = "9.49.0"
+) {
+  return runUpgradeWithFlags(fixture, ["--yes", "--no-restart"], env, version, false);
 }
 
 interface OpenclawCall {
@@ -314,6 +321,8 @@ test("managed upgrade rejects non-registry package selectors before invoking Ope
     "@remnic/plugin-openclaw@https://example.com/plugin.tgz",
     "@remnic/plugin-openclaw@./plugin.tgz",
     "@remnic/plugin-openclaw@git+https://example.com/plugin.git",
+    "@remnic/plugin-openclaw@1.2.3-01",
+    "@remnic/plugin-openclaw@1.2.3-1.01",
   ];
 
   for (const spec of invalidSpecs) {
@@ -633,13 +642,25 @@ test("openclaw upgrade honors OPENCLAW_STATE_DIR for the native install target",
   fs.mkdirSync(path.dirname(nativeTarget), { recursive: true });
   fs.renameSync(fixture.pluginDir, nativeTarget);
   try {
-    const result = runUpgrade(fixture, {
+    const result = runUpgradeUsingDefaultPluginDir(fixture, {
       ...fixture.env,
       OPENCLAW_STATE_DIR: stateDir,
       OPENCLAW_INSPECT_RUNTIME: "0",
       OPENCLAW_INSTALL_FORCE: "0",
       OPENCLAW_NATIVE_DEFAULT_TARGET: nativeTarget,
     });
+    const backupRoot = path.join(fixture.root, ".openclaw", "backups");
+    const backupDirs = fs.readdirSync(backupRoot);
+    assert.equal(backupDirs.length, 1);
+    const pluginBackupMarker = path.join(
+      backupRoot,
+      backupDirs[0],
+      "extensions",
+      "openclaw-remnic",
+      "old-install-marker"
+    );
+
+    assert.equal(fs.readFileSync(pluginBackupMarker, "utf8"), "present\n");
 
     assert.equal(result.status, 0, result.stderr);
     assert.equal(fs.existsSync(path.join(nativeTarget, "old-install-marker")), false);

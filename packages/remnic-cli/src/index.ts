@@ -4505,7 +4505,7 @@ function resolveCurrentOpenclawMemoryDir(
 
 function resolveOpenclawPluginDir(cliPath?: string): string {
   if (cliPath) return path.resolve(expandTilde(cliPath));
-  return path.join(resolveHomeDir(), ".openclaw", "extensions", REMNIC_OPENCLAW_PLUGIN_ID);
+  return resolveOpenclawManagedPluginDir();
 }
 
 function resolveOpenclawManagedPluginDir(): string {

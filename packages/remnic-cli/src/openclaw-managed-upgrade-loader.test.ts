@@ -2,7 +2,15 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { loadOpenclawManagedUpgradeModule } from "./openclaw-managed-upgrade-loader.js";
+import {
+  buildOpenclawManagedUpgradePackageSpec,
+  loadOpenclawManagedUpgradeModule,
+} from "./openclaw-managed-upgrade-loader.js";
+
+const cliPackageManifest = JSON.parse(
+  fs.readFileSync(path.resolve(import.meta.dirname, "../package.json"), "utf8")
+) as { version: string };
+const CLI_TOOLING_PACKAGE_SPEC = `@remnic/plugin-openclaw@${cliPackageManifest.version}`;
 
 const MANAGED_UPGRADE_SPECIFIER = "@remnic/" + "plugin-openclaw/managed-upgrade";
 
@@ -47,6 +55,8 @@ const rejectedPackageSpecs = [
   "@remnic/plugin-openclaw@https://example.com/plugin.tgz",
   "@remnic/plugin-openclaw@./plugin.tgz",
   "@remnic/plugin-openclaw@git+https://example.com/plugin.git",
+  "@remnic/plugin-openclaw@1.2.3-01",
+  "@remnic/plugin-openclaw@1.2.3-1.01",
 ];
 
 test("managed upgrade loader rejects non-registry package selectors before loading", async () => {
@@ -70,6 +80,11 @@ test("managed upgrade loader rejects non-registry package selectors before loadi
     assert.equal(npmInvoked, false, packageSpec);
   }
 });
+test("managed upgrade loader preserves valid SemVer identifier forms", () => {
+  for (const version of ["1.2.3-0", "1.2.3-rc.1", "1.2.3+build.01", "1.2.3-rc.1+build.01"]) {
+    assert.equal(buildOpenclawManagedUpgradePackageSpec(version), `@remnic/plugin-openclaw@${version}`);
+  }
+});
 
 test("managed upgrade loader uses an installed adapter without invoking npm", async () => {
   let npmInvoked = false;
@@ -89,7 +104,7 @@ test("managed upgrade loader uses an installed adapter without invoking npm", as
   assert.equal(npmInvoked, false);
 });
 
-test("managed upgrade loader installs the target adapter in an isolated temporary project", async () => {
+test("managed upgrade loader installs the tooling adapter in an isolated temporary project", async () => {
   let temporaryRoot: string | undefined;
   const importedSpecifiers: string[] = [];
 
@@ -105,7 +120,8 @@ test("managed upgrade loader installs the target adapter in an isolated temporar
       temporaryRoot = args[prefixIndex + 1];
       assert.ok(temporaryRoot);
       assert.deepEqual(args.slice(0, 2), ["install", "--ignore-scripts"]);
-      assert.ok(args.includes("@remnic/plugin-openclaw@9.49.1"));
+      assert.ok(args.includes(CLI_TOOLING_PACKAGE_SPEC));
+      assert.ok(!args.includes("@remnic/plugin-openclaw@9.49.1"));
 
       writeManagedUpgradeFixture(temporaryRoot);
     },
@@ -129,7 +145,8 @@ test("managed upgrade loader replaces an installed adapter without the managed u
       const prefixIndex = args.indexOf("--prefix");
       temporaryRoot = args[prefixIndex + 1];
       assert.ok(temporaryRoot);
-      assert.ok(args.includes("@remnic/plugin-openclaw@9.49.1"));
+      assert.ok(args.includes(CLI_TOOLING_PACKAGE_SPEC));
+      assert.ok(!args.includes("@remnic/plugin-openclaw@9.49.1"));
       writeManagedUpgradeFixture(temporaryRoot);
     },
   });

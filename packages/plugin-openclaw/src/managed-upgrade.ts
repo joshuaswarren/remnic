@@ -4,8 +4,9 @@ import path from "node:path";
 export const REMNIC_OPENCLAW_PLUGIN_ID = "openclaw-remnic";
 const OPENCLAW_EXEC_TIMEOUT_MS = 120_000;
 const OPENCLAW_PLUGIN_PACKAGE = "@remnic/plugin-openclaw";
-const SEMVER_CORE_SELECTOR = /^v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)/;
-const SEMVER_SUFFIX_SELECTOR = /^(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+const SEMVER_CORE_SELECTOR = /^v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?=$|[-+])/;
+const SEMVER_SUFFIX_SELECTOR =
+  /^(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const DIST_TAG_SELECTOR = /^[A-Za-z][0-9A-Za-z._-]*$/;
 
 function isExactSemverSelector(selector: string): boolean {
