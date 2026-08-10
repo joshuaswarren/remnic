@@ -142,6 +142,7 @@ memory:
 remnic:
   host: "127.0.0.1"
   port: 4318
+  allow_insecure_http: false
   token: ""
   client_id: ""
   session_key: ""
@@ -155,6 +156,7 @@ remnic:
 |-------|------|---------|-------------|
 | `host` | string | `"127.0.0.1"` | Hostname or IP of the Remnic daemon. Overridden by `REMNIC_HOST` env var. |
 | `port` | integer | `4318` | TCP port of the Remnic daemon. Overridden by `REMNIC_PORT` env var. |
+| `allow_insecure_http` | boolean | `false` | Use HTTP for a non-loopback host. Loopback hosts always use HTTP. Other hosts use HTTPS unless this explicit compatibility option is `true`. |
 | `token` | string | `""` | Auth token for the daemon. If empty, auto-loaded from the token store (see [Token bootstrap](#token-bootstrap)). |
 | `client_id` | string | `""` | Printable ASCII daemon namespace selector with at most 256 characters and no edge spaces. The client sends a configured value as `X-Engram-Client-Id`, `X-Engram-Namespace`, and the REST `namespace` field. If empty, `namespace` is used. If both are empty, the request uses the daemon default while the legacy client identifier remains `"hermes"`. Added in 1.0.6 (issue #2310). |
 | `session_key` | string | `""` | Printable ASCII session identifier without edge spaces. Config input is trimmed. The client passes it on every recall/observe call. If empty, the plugin generates `hermes-<12 random hex chars>` at startup. |
@@ -162,6 +164,8 @@ remnic:
 | `prefetch_wait_timeout` | float | `2.0` | Maximum seconds `prefetch()` blocks the turn waiting for a first-fetch recall (always additionally capped by `timeout`). Set `0` for pure fire-and-forget: prefetch only ever returns cached results and never waits. Invalid values (negative, non-numeric, NaN/inf) are rejected at load. Added in 1.0.5 (issue #1929). |
 
 `namespace` is accepted as an alias for `client_id`. A non-empty `client_id` takes precedence when both fields are set.
+
+Remote HTTP users must set `allow_insecure_http: true` before upgrading. Remove this option after the daemon serves HTTPS.
 
 No other fields are read. Fields documented elsewhere, such as `recall_top_k`, `recall_mode`, or `token_env`, do not exist in this implementation.
 
@@ -233,7 +237,7 @@ The token loader searches for `connector: "hermes"` first, then `connector: "ope
 
 ### `initialize`
 
-Called when the plugin loads. Creates an `httpx.AsyncClient` pointed at `http://<host>:<port>/engram/v1` and issues a `GET /health` request. A failed health check is swallowed and treated as non-fatal — the daemon may become available later in the session. If the client is not initialized (daemon was never reachable), all subsequent hook methods return early without errors.
+Called when the plugin loads. Creates an `httpx.AsyncClient` for the daemon and issues a `GET /health` request. Loopback hosts use HTTP. Remote hosts use HTTPS unless `allow_insecure_http` is `true`. A failed health check is non-fatal because the daemon can become available later. If the client is not initialized, later hook methods return without errors.
 
 Note: the HTTP base path currently uses `/engram/v1` because the Remnic daemon exposes a legacy surface during the v1.x compat window. This will change to `/remnic/v1` once the daemon ships the dual-path rollout.
 

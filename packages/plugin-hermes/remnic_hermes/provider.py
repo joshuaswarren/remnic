@@ -142,6 +142,7 @@ class RemnicMemoryProvider(HermesMemoryProvider):  # type: ignore[misc]
         self._port = cfg.port
         self._token = cfg.token
         self._timeout = cfg.timeout
+        self._allow_insecure_http = cfg.allow_insecure_http
         self._namespace = cfg.client_id or None
         self._client_id = cfg.client_id or "hermes"
         self._configured_session_key = bool(cfg.session_key)
@@ -180,6 +181,7 @@ class RemnicMemoryProvider(HermesMemoryProvider):  # type: ignore[misc]
             namespace=self._namespace,
             session_key=self._session_key,
             timeout=self._timeout,
+            allow_insecure_http=self._allow_insecure_http,
         )
 
         try:
