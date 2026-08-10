@@ -45,6 +45,43 @@ test("revalidation preserves the direct Responses API route for the legacy const
   assert.equal(requestOptions?.signal, signal);
 });
 
+test("revalidation keeps custom OpenAI-compatible endpoints on chat completions", async () => {
+  const engine = new ExtractionEngine(
+    parseConfig({
+      openaiApiKey: "fixture-key",
+      openaiBaseUrl: "https://inference.example.test/v1",
+    }),
+  );
+  const signal = new AbortController().signal;
+  let chatRequest: Record<string, unknown> | undefined;
+  let chatOptions: { signal?: AbortSignal } | undefined;
+  let responsesCalls = 0;
+  Reflect.set(engine, "client", {
+    chat: {
+      completions: {
+        async create(body: Record<string, unknown>, options: { signal?: AbortSignal }) {
+          chatRequest = body;
+          chatOptions = options;
+          return { choices: [{ message: response }] };
+        },
+      },
+    },
+    responses: {
+      async create() {
+        responsesCalls += 1;
+        throw new Error("custom endpoint does not implement /responses");
+      },
+    },
+  });
+
+  assertInvalidated(await engine.revalidateDependents(superseded, replacement, dependents, signal));
+  assert.equal(responsesCalls, 0);
+  assert.equal(chatRequest?.model, "gpt-5.5");
+  assert.equal(chatRequest?.max_tokens, 1024);
+  assert.ok(Array.isArray(chatRequest?.messages));
+  assert.equal(chatOptions?.signal, signal);
+});
+
 test("revalidation falls back to the direct route when the injected fast route is unavailable", async () => {
   const engine = new ExtractionEngine(
     parseConfig({ openaiApiKey: "fixture-key" }),

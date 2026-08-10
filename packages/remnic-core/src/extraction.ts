@@ -2469,6 +2469,18 @@ Respond with valid JSON matching this schema:
       }
       const client = this.client;
       if (!client) return null;
+      if (this.config.openaiBaseUrl) {
+        const response = await client.chat.completions.create(
+          {
+            model: this.config.model,
+            messages,
+            max_tokens: options.maxTokens,
+          },
+          { signal: options.signal },
+        );
+        const content = response.choices[0]?.message?.content;
+        return typeof content === "string" ? { content } : null;
+      }
       const response = await client.responses.create({
         model: this.config.model,
         instructions: messages.find((message) => message.role === "system")?.content,
