@@ -12,10 +12,10 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 import { generateToken, revokeToken, buildTokenEntry, commitTokenEntry, loadTokenStore, saveTokenStore } from "../tokens.js";
-import { launchProcessSync } from "../runtime/child-process.js";
-import { mergeEnv, readEnvVar, resolveHomeDir } from "../runtime/env.js";
+import { checkDaemonHealth } from "../runtime/daemon-health.js";
+import { readEnvVar, resolveHomeDir } from "../runtime/env.js";
 import { expandTildePath } from "../utils/path.js";
-import { coerceInstallExtension } from "./coerce.js";
+import { coerceBool, coerceInstallExtension } from "./coerce.js";
 import {
   assertConfigComponentsNotSymlinked,
   hermesShimPath,
@@ -988,10 +988,12 @@ export function installConnector(options: InstallOptions): InstallResult {
   let hermesSavedProfile: string | undefined;
   let hermesSavedHost: string | undefined;
   let hermesSavedPort: number | undefined;
+  let hermesSavedAllowInsecureHttp: boolean | undefined;
   // Resolved values (used both in resolvedConfig and in the YAML update below)
   let hermesResolvedProfile: string | undefined;
   let hermesResolvedHost: string | undefined;
   let hermesResolvedPort: number | undefined;
+  let hermesResolvedAllowInsecureHttp = false;
   if (options.connectorId === "hermes") {
     if (fs.existsSync(configPath)) {
       try {
@@ -1022,6 +1024,9 @@ export function installConnector(options: InstallOptions): InstallResult {
             // Invalid saved port — fall through to default
           }
         }
+        if (prev?.allow_insecure_http != null) {
+          hermesSavedAllowInsecureHttp = coerceBool(prev.allow_insecure_http, "allow_insecure_http");
+        }
       } catch {
         // Could not read existing config — fall through to defaults
       }
@@ -1030,6 +1035,7 @@ export function installConnector(options: InstallOptions): InstallResult {
     // and applied in the sanitization block below (single point of validation).
     hermesResolvedProfile = hermesSavedProfile ?? "default";
     hermesResolvedHost = hermesSavedHost ?? "127.0.0.1";
+    hermesResolvedAllowInsecureHttp = hermesSavedAllowInsecureHttp ?? false;
 
     // Issue C: wrap sanitizeHermesPort (and profile/host) in try-catch so
     // that invalid user-supplied values return a clean error result.
@@ -1070,6 +1076,17 @@ export function installConnector(options: InstallOptions): InstallResult {
           message: `Invalid Hermes config: ${err instanceof Error ? err.message : String(err)}`,
         };
       }
+    }
+    if (options.config?.allow_insecure_http !== undefined) {
+      const allowInsecureHttp = coerceBool(options.config.allow_insecure_http, "allow_insecure_http");
+      if (allowInsecureHttp === undefined) {
+        return {
+          connectorId: options.connectorId,
+          status: "error",
+          message: "Invalid Hermes config: allow_insecure_http must be true or false",
+        };
+      }
+      hermesResolvedAllowInsecureHttp = allowInsecureHttp;
     }
   }
 
@@ -1182,6 +1199,7 @@ export function installConnector(options: InstallOptions): InstallResult {
       profile: hermesResolvedProfile,
       host: hermesResolvedHost,
       port: hermesResolvedPort,
+      allow_insecure_http: hermesResolvedAllowInsecureHttp,
     } : {}),
   };
 
@@ -1260,6 +1278,7 @@ export function installConnector(options: InstallOptions): InstallResult {
         host: hermesHost,
         port: hermesPort,
         token: tokenEntry.token,
+        allowInsecureHttp: hermesResolvedAllowInsecureHttp,
       });
     } catch (err) {
       // upsertHermesConfig threw — old token preserved, connector.json unchanged.
@@ -1458,6 +1477,7 @@ export function installConnector(options: InstallOptions): InstallResult {
             host: hermesHost,
             port: hermesPort,
             token: tokenEntry.token,
+            allowInsecureHttp: hermesResolvedAllowInsecureHttp,
           });
           if (refresh.updated) {
             hermesPriorConfigMutations.push({ mutatedPath: priorConfigPath, priorContent: beforeRefresh });
@@ -1756,7 +1776,12 @@ export function installConnector(options: InstallOptions): InstallResult {
     // (we returned early on failure above) but the explicit guard is kept for
     // clarity and future robustness.
     if (committed && tokenEntry) {
-      const daemonOk = checkDaemonHealth(hermesHost, hermesPort, tokenEntry.token);
+      const daemonOk = checkDaemonHealth(
+        hermesHost,
+        hermesPort,
+        tokenEntry.token,
+        hermesResolvedAllowInsecureHttp,
+      );
       if (daemonOk) {
         notes.push("Daemon health check: OK");
       } else {
@@ -2883,6 +2908,7 @@ export function upsertHermesConfig(opts: {
   host: string;
   port: number;
   token: string;
+  allowInsecureHttp?: boolean;
 }): HermesConfigResult {
   return upsertHermesConfigAt(hermesConfigPath(opts.profile), opts);
 }
@@ -2895,7 +2921,7 @@ export function upsertHermesConfig(opts: {
  */
 function upsertHermesConfigAt(
   cfgPath: string,
-  opts: { host: string; port: number; token: string },
+  opts: { host: string; port: number; token: string; allowInsecureHttp?: boolean },
 ): HermesConfigResult {
   // Symlinked components below the Hermes root must not redirect the
   // token-bearing write (Codex P1 on PR #1938, round 19).
@@ -2907,6 +2933,7 @@ function upsertHermesConfigAt(
   // that could break out of the scalar context.
   const safeHost = sanitizeHermesHost(opts.host);
   const safePort = sanitizeHermesPort(opts.port);
+  const allowInsecureHttp = opts.allowInsecureHttp ?? false;
   // Token is generated by randomBytes + a fixed alphabetic prefix, so it's
   // already safe for YAML scalar interpolation. We still guard against an
   // unexpectedly malformed token reaching this function.
@@ -2928,6 +2955,7 @@ function upsertHermesConfigAt(
     `  host: "${safeHost}"`,
     `  port: ${safePort}`,
     `  token: "${opts.token}"`,
+    `  allow_insecure_http: ${allowInsecureHttp}`,
   ].join("\n");
 
   if (!fs.existsSync(cfgPath)) {
@@ -2973,7 +3001,7 @@ function upsertHermesConfigAt(
   let blockWritten = false;
 
   // Track which sub-keys we've emitted
-  const written = { host: false, port: false, token: false };
+  const written = { host: false, port: false, token: false, allowInsecureHttp: false };
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -2993,13 +3021,14 @@ function upsertHermesConfigAt(
         if (!written.host) newLines.push(`  host: "${safeHost}"`);
         if (!written.port) newLines.push(`  port: ${safePort}`);
         if (!written.token) newLines.push(`  token: "${opts.token}"`);
+        if (!written.allowInsecureHttp) newLines.push(`  allow_insecure_http: ${allowInsecureHttp}`);
         blockWritten = true;
         inRemnicBlock = false;
         newLines.push(line);
         continue;
       }
 
-      // Replace host/port/token lines; preserve other sub-keys
+      // Replace managed transport fields and preserve other sub-keys.
       if (/^\s+host:/.test(line)) {
         newLines.push(`  host: "${safeHost}"`);
         written.host = true;
@@ -3009,6 +3038,9 @@ function upsertHermesConfigAt(
       } else if (/^\s+token:/.test(line)) {
         newLines.push(`  token: "${opts.token}"`);
         written.token = true;
+      } else if (/^\s+allow_insecure_http:/.test(line)) {
+        newLines.push(`  allow_insecure_http: ${allowInsecureHttp}`);
+        written.allowInsecureHttp = true;
       } else {
         newLines.push(line);
       }
@@ -3023,6 +3055,7 @@ function upsertHermesConfigAt(
     if (!written.host) newLines.push(`  host: "${safeHost}"`);
     if (!written.port) newLines.push(`  port: ${safePort}`);
     if (!written.token) newLines.push(`  token: "${opts.token}"`);
+    if (!written.allowInsecureHttp) newLines.push(`  allow_insecure_http: ${allowInsecureHttp}`);
   }
 
   // Always write exactly one trailing newline, matching the create and append paths.
@@ -3205,111 +3238,6 @@ function removeHermesConfigFile(cfgPath: string): HermesConfigResult {
   // where a rewrite with default umask temporarily widens permissions.
   writeSecretFileSync(cfgPath, newLines.length > 0 ? newLines.join("\n") + "\n" : "");
   return { updated: true, skipped: false, configPath: cfgPath };
-}
-
-// ── Daemon health check (synchronous, non-fatal) ────────────────────────────
-
-/**
- * Probe exit-code contract (used by checkDaemonHealth):
- *   0 — HTTP 200 (healthy)
- *   2 — HTTP 401 (token cache miss: retry after TTL)
- *   1 — any other HTTP status or network error
- */
-const HEALTH_EXIT_OK = 0;
-const HEALTH_EXIT_UNAUTHORIZED = 2;
-
-/**
- * Ping /engram/v1/health synchronously.
- * Returns true if the daemon responds with HTTP 200, false otherwise.
- * Uses a synchronous helper to run a one-liner Node script so that the existing
- * installConnector() flow does not need to become async.
- *
- * Data (host, port, token) are passed via environment variables — NOT
- * interpolated into the script string — to prevent injection from
- * user-supplied config values.
- *
- * /engram/v1/health is protected by bearer auth in the access HTTP server,
- * so the caller must pass the connector token (or the configured server
- * token) or the probe will always return 401 and report the daemon as
- * unreachable even when it is running.
- *
- * 401 handling: the daemon caches valid tokens with a 5-second TTL
- * (getAllValidTokensCached). A freshly-rotated token may not appear in the
- * cache for up to 5 s after rotation. We tolerate a single 401 by sleeping
- * one cache TTL (6000 ms = 5 s TTL + 1 s buffer) and retrying exactly once.
- */
-function checkDaemonHealth(host: string, port: number, authToken?: string): boolean {
-  try {
-    // Validate port: must be an integer in [1, 65535].
-    // This guards against user config supplying a non-numeric string.
-    const safePort = Math.trunc(Number(port));
-    if (!Number.isFinite(safePort) || safePort < 1 || safePort > 65535) {
-      return false;
-    }
-    // Finding 7 fix: Node's http.get({ host }) expects an unbracketed IPv6
-    // literal (e.g. "::1"), but sanitizeHermesHost permits bracketed form
-    // "[::1]" (required for URL contexts). Strip the brackets here so that
-    // http.get receives the bare address and doesn't fail to connect.
-    // IPv4 and hostname strings are unaffected (no brackets to strip).
-    const bareHost = host.startsWith("[") && host.endsWith("]")
-      ? host.slice(1, -1)
-      : host;
-
-    // Data (host, port, token) are passed via env vars, never interpolated
-    // into the script string, preventing any code-injection from malformed
-    // config values.
-    // Exit codes: 0 = 200 OK, 2 = 401 Unauthorized, 1 = other error.
-    const script = [
-      "const http = require('http');",
-      "const env = process['env'];",
-      "const headers = {};",
-      "if (env.REMNIC_HEALTH_TOKEN) {",
-      "  headers['authorization'] = 'Bearer ' + env.REMNIC_HEALTH_TOKEN;",
-      "}",
-      "const req = http.get({",
-      "  host: env.REMNIC_HEALTH_HOST,",
-      "  port: parseInt(env.REMNIC_HEALTH_PORT, 10),",
-      "  path: '/engram/v1/health',",
-      "  headers,",
-      "  timeout: 3000,",
-      "}, (res) => { process.exit(res.statusCode === 200 ? 0 : res.statusCode === 401 ? 2 : 1); });",
-      "req.on('error', () => process.exit(1));",
-      "req.on('timeout', () => { req.destroy(); process.exit(1); });",
-    ].join("\n");
-    const env: NodeJS.ProcessEnv = mergeEnv({
-      REMNIC_HEALTH_HOST: bareHost,
-      REMNIC_HEALTH_PORT: String(safePort),
-    });
-    if (authToken) {
-      env.REMNIC_HEALTH_TOKEN = authToken;
-    }
-    const processPath = process.execPath;
-    const launchOptions = { timeout: 4000, env };
-    const result = launchProcessSync(processPath, ["-e", script], launchOptions);
-
-    if (result.status === HEALTH_EXIT_OK) {
-      return true;
-    }
-
-    if (result.status === HEALTH_EXIT_UNAUTHORIZED) {
-      // The daemon's token cache (5 s TTL) has not yet picked up the freshly
-      // rotated token. Sleep one TTL + buffer and retry exactly once.
-      console.error(
-        "[remnic/connectors] health probe got 401 — retrying after token cache TTL...",
-      );
-      // Synchronous sleep without making the caller async.
-      launchProcessSync(processPath, ["-e", "setTimeout(() => {}, 6000)"], {
-        timeout: 7000,
-        env: {},
-      });
-      const retry = launchProcessSync(processPath, ["-e", script], launchOptions);
-      return retry.status === HEALTH_EXIT_OK;
-    }
-
-    return false;
-  } catch {
-    return false;
-  }
 }
 
 // ── Doctor ────────────────────────────────────────────────────────────────────

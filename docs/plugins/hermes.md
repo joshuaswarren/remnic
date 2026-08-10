@@ -237,7 +237,7 @@ The token loader searches for `connector: "hermes"` first, then `connector: "ope
 
 ### `initialize`
 
-Called when the plugin loads. Creates an `httpx.AsyncClient` pointed at `http://<host>:<port>/engram/v1` and issues a `GET /health` request. A failed health check is swallowed and treated as non-fatal — the daemon may become available later in the session. If the client is not initialized (daemon was never reachable), all subsequent hook methods return early without errors.
+Called when the plugin loads. Creates an `httpx.AsyncClient` for the daemon and issues a `GET /health` request. Loopback hosts use HTTP. Remote hosts use HTTPS unless `allow_insecure_http` is `true`. A failed health check is non-fatal because the daemon can become available later. If the client is not initialized, later hook methods return without errors.
 
 Note: the HTTP base path currently uses `/engram/v1` because the Remnic daemon exposes a legacy surface during the v1.x compat window. This will change to `/remnic/v1` once the daemon ships the dual-path rollout.
 
