@@ -500,8 +500,7 @@ export class ExtractionPersistCoordinator {
                 structuredAttributes: { ...targetSurvivingAttrs },
                 createdAt: supersessionOrderingAt(options.validAt),
                 enabled: !(options.eventTimeSource === "extracted" && !options.validAt),
-                extraction: this.deps.getExtraction(),
-                config: this.config,
+                dependencyPropagationDelivery: this.deps.getDependencyPropagationDelivery(),
                 namespaceScope: this.deps.storageDirNamespace(targetStorage.dir),
               });
             } catch (profileSupersessionErr) {
@@ -800,10 +799,9 @@ export class ExtractionPersistCoordinator {
                   entityRef: sharedPromotionEnvelope.entityRef,
                   structuredAttributes: { ...sharedSurvivingAttrs },
                   createdAt: supersessionOrderingAt(options.validAt),
-                  enabled: !(options.eventTimeSource === "extracted" && !options.validAt),
                   useCallerTimestamp: true,
-                  extraction: this.deps.getExtraction(),
-                  config: this.config,
+                  enabled: !(options.eventTimeSource === "extracted" && !options.validAt),
+                  dependencyPropagationDelivery: this.deps.getDependencyPropagationDelivery(),
                   namespaceScope: this.deps.storageDirNamespace(sharedStorage.dir),
                 });
                 // Catalog touch (issue #1499 — codex P2 NElSf): this dedup branch
@@ -927,8 +925,7 @@ export class ExtractionPersistCoordinator {
               structuredAttributes: { ...sharedSurvivingAttrs },
               createdAt: supersessionOrderingAt(options.validAt),
               enabled: !(options.eventTimeSource === "extracted" && !options.validAt),
-              extraction: this.deps.getExtraction(),
-              config: this.config,
+              dependencyPropagationDelivery: this.deps.getDependencyPropagationDelivery(),
               namespaceScope: this.deps.storageDirNamespace(sharedStorage.dir),
             });
           } catch (sharedSupersessionErr) {
@@ -2358,14 +2355,13 @@ export class ExtractionPersistCoordinator {
                 structuredAttributes: parentWriteEnvelope.rawStructuredAttributes
                   ? { ...parentWriteEnvelope.rawStructuredAttributes }
                   : undefined,
-                createdAt: supersessionOrderingAt(biTemporal?.validFrom ?? sourceContext?.validAt),
                 // #1578 r3: an extracted end-only bound (validFrom absent) is
                 // historical, not a new authoritative state — never let it
                 // supersede a later active fact (codex P1 on :15534).
+                createdAt: supersessionOrderingAt(biTemporal?.validFrom ?? sourceContext?.validAt),
                 enabled: lifecycleCaps.temporalSupersession &&
                   !(biTemporal && !biTemporal.validFrom),
-                extraction: this.deps.getExtraction(),
-                config: this.config,
+                dependencyPropagationDelivery: this.deps.getDependencyPropagationDelivery(),
                 namespaceScope: this.deps.storageDirNamespace(targetStorage.dir),
               });
               for (const supersededId of temporalSupersession.supersededIds) {
@@ -2646,8 +2642,7 @@ export class ExtractionPersistCoordinator {
             createdAt: supersessionOrderingAt(biTemporal?.validFrom ?? sourceContext?.validAt),
             enabled: lifecycleCaps.temporalSupersession &&
               !(biTemporal && !biTemporal.validFrom),
-            extraction: this.deps.getExtraction(),
-            config: this.config,
+            dependencyPropagationDelivery: this.deps.getDependencyPropagationDelivery(),
             namespaceScope: this.deps.storageDirNamespace(targetStorage.dir),
           });
           for (const supersededId of temporalSupersession.supersededIds) {

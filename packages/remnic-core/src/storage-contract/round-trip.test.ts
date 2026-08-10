@@ -12,12 +12,13 @@
  */
 
 import assert from "node:assert/strict";
-import { utimes } from "node:fs/promises";
+import { mkdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { MemoryCategory } from "../types.js";
 import test from "node:test";
 
 import { StorageManager } from "../storage.js";
+import { SecureStoreLockedError } from "../secure-store/secure-fs.js";
 import {
   ALL_CATEGORY_DIRS,
   ALL_CATEGORY_KEYS,
@@ -136,6 +137,136 @@ test("round-trip: invalidateMemory returns false for a non-existent id (not a th
   try {
     const result = await storage.invalidateMemory("does-not-exist-12345");
     assert.equal(result, false);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("round-trip: invalidation does not record commit proof by default", async () => {
+  const { storage, cleanup } = await makeStorage();
+  try {
+    const { id } = await storage.writeMemory("fact", "proof source");
+    const snapshot = await storage.getMemoryById(id);
+    assert.ok(snapshot);
+
+    assert.equal(await storage.invalidateMemory(id), true);
+    assert.equal(await storage.hasCommittedInvalidation(snapshot), false);
+    const explicitOff = await storage.writeMemory("fact", "proof source with explicit off");
+    const explicitSnapshot = await storage.getMemoryById(explicitOff.id);
+    assert.ok(explicitSnapshot);
+    assert.equal(
+      await storage.invalidateMemory(explicitOff.id, undefined, { recordCommitProof: false }),
+      true,
+    );
+    assert.equal(await storage.hasCommittedInvalidation(explicitSnapshot), false);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("round-trip: invalidation commit proof survives restart and rejects a changed snapshot", async () => {
+  const { storage, baseDir, cleanup } = await makeStorage();
+  try {
+    const { id } = await storage.writeMemory("fact", "proof source", {
+      tags: ["proof"],
+    });
+    const snapshot = await storage.getMemoryById(id);
+    assert.ok(snapshot);
+
+    assert.equal(await storage.invalidateMemory(id, undefined, { recordCommitProof: true }), true);
+    assert.equal(await storage.hasCommittedInvalidation(snapshot), true);
+
+    const restarted = new StorageManager(baseDir);
+    assert.equal(await restarted.hasCommittedInvalidation(snapshot), true);
+    assert.equal(
+      await restarted.hasCommittedInvalidation({
+        ...snapshot,
+        frontmatter: {
+          ...snapshot.frontmatter,
+          accessCount: 99,
+          lastAccessed: "2026-08-09T12:00:00.000Z",
+        },
+      }),
+      true,
+    );
+    assert.equal(
+      await restarted.hasCommittedInvalidation({
+        ...snapshot,
+        content: "changed source",
+      }),
+      false,
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+test("round-trip: dependency propagation queue rejects symlinks in root, parent, and target paths", async () => {
+  const { storage, baseDir, cleanup } = await makeStorage("remnic-dependency-queue-symlink-");
+  const rootLink = path.join(path.dirname(baseDir), `${path.basename(baseDir)}-root-link`);
+  const parentTarget = path.join(path.dirname(baseDir), `${path.basename(baseDir)}-parent-target`);
+  const parentLink = path.join(baseDir, "queue-parent-link");
+  const targetFile = path.join(path.dirname(baseDir), `${path.basename(baseDir)}-target.json`);
+  const targetLink = path.join(baseDir, "queue-target-link.json");
+  const payload = JSON.stringify({ value: "synthetic" });
+  try {
+    await symlink(baseDir, rootLink, "dir");
+    const storageWithSymlinkRoot = storage as unknown as { baseDir: string };
+    const originalBaseDir = storageWithSymlinkRoot.baseDir;
+    storageWithSymlinkRoot.baseDir = rootLink;
+    const rootQueuePath = path.join(rootLink, "state", "dependency-propagation", "ready", "job.json");
+    await assert.rejects(() => storage.readDependencyPropagationQueueFile(rootQueuePath));
+    await assert.rejects(() => storage.writeDependencyPropagationQueueFile(rootQueuePath, payload));
+    storageWithSymlinkRoot.baseDir = originalBaseDir;
+
+    await mkdir(parentTarget, { recursive: true });
+    await symlink(parentTarget, parentLink, "dir");
+    const parentQueuePath = path.join(parentLink, "job.json");
+    await assert.rejects(() => storage.readDependencyPropagationQueueFile(parentQueuePath));
+    await assert.rejects(() => storage.writeDependencyPropagationQueueFile(parentQueuePath, payload));
+
+    await writeFile(targetFile, payload, "utf8");
+    await symlink(targetFile, targetLink);
+    await assert.rejects(() => storage.readDependencyPropagationQueueFile(targetLink));
+    await assert.rejects(() => storage.writeDependencyPropagationQueueFile(targetLink, payload));
+  } finally {
+    await rm(rootLink, { recursive: true, force: true });
+    await rm(parentLink, { recursive: true, force: true });
+    await rm(parentTarget, { recursive: true, force: true });
+    await rm(targetLink, { force: true });
+    await rm(targetFile, { force: true });
+    await cleanup();
+  }
+});
+
+test("dependency propagation queue storage encrypts payload and fails closed while locked", async () => {
+  const { storage, baseDir, cleanup } = await makeStorage("remnic-dependency-queue-storage-");
+  const queuePath = path.join(baseDir, "state", "dependency-propagation", "ready", "job.json");
+  const payload = JSON.stringify({ secret: "synthetic queue payload" });
+  const key = Buffer.alloc(32, 37);
+  try {
+    storage.setSecureStoreRequired(true);
+    storage.setSecureStoreKey(key);
+    await storage.writeDependencyPropagationQueueFile(queuePath, payload);
+
+    const raw = await readFile(queuePath, "utf8");
+    assert.doesNotMatch(raw, /synthetic queue payload/);
+
+    const unlocked = new StorageManager(baseDir);
+    unlocked.setSecureStoreRequired(true);
+    unlocked.setSecureStoreKey(key);
+    assert.equal(await unlocked.readDependencyPropagationQueueFile(queuePath), payload);
+
+    const locked = new StorageManager(baseDir);
+    locked.setSecureStoreRequired(true);
+    await assert.rejects(
+      () => locked.readDependencyPropagationQueueFile(queuePath),
+      SecureStoreLockedError,
+    );
+    await assert.rejects(
+      () => locked.writeDependencyPropagationQueueFile(queuePath, payload),
+      SecureStoreLockedError,
+    );
   } finally {
     await cleanup();
   }

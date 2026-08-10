@@ -12,12 +12,12 @@ import type { RouteRule, RoutingEngineOptions } from "../routing/engine.js";
 import type { SearchBackend } from "../search/port.js";
 import type { ThreadingManager } from "../threading.js";
 import type { MemoryFile, MemoryLink, PluginConfig } from "../types.js";
-
+import type { DependencyPropagationDeliveryPort } from "./dependency-propagation-delivery.js";
 export interface ExtractionPersistDeps {
   config: PluginConfig;
   getStorageRouter: () => NamespaceStorageRouter;
   getThreading: () => ThreadingManager;
-  getExtraction: () => ExtractionEngine;
+  getDependencyPropagationDelivery: () => DependencyPropagationDeliveryPort;
   getLocalLlm: () => LocalLlmClient;
   getQmd: () => SearchBackend;
   getJudgeVerdictCache: () => Map<string, JudgeVerdict>;

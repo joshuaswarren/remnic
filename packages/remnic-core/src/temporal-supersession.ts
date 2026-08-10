@@ -12,12 +12,62 @@
  * cached `readAllMemories()` path so cost is amortized with the rest of the
  * write pipeline.
  */
-import type { MemoryFile, MemoryFrontmatter, PluginConfig } from "./types.js";
-import type { ExtractionEngine } from "./extraction.js";
-import type { StorageManager } from "./storage.js";
+import type { MemoryFile, MemoryFrontmatter, MemoryLifecycleEvent } from "./types.js";
+
+import { createHash } from "node:crypto";
 import { log } from "./logger.js";
 import { effectiveValidAt } from "./temporal-validity.js";
-import { propagateInvalidation } from "./orchestration/dependency-propagation.js";
+import type {
+  DependencyPropagationDeliveryPort,
+  DependencyPropagationPreparationToken,
+} from "./orchestration/dependency-propagation-delivery.js";
+import type { PropagationEvent } from "./orchestration/dependency-propagation.js";
+export interface TemporalSupersessionStorage {
+  readAllMemories(): Promise<MemoryFile[]>;
+  readAllColdMemories(): Promise<MemoryFile[]>;
+  readMemoryByPath(memoryPath: string): Promise<MemoryFile | null>;
+  writeMemoryFrontmatter(
+    memory: MemoryFile,
+    patch: Partial<MemoryFrontmatter>,
+    lifecycle?: {
+      actor?: string;
+      reasonCode?: string;
+      relatedMemoryIds?: string[];
+      correlationId?: string;
+    },
+  ): Promise<boolean>;
+  writeMemoryFrontmatterIfUnchanged?: (
+    memory: MemoryFile,
+    patch: Partial<MemoryFrontmatter>,
+    lifecycle?: {
+      actor?: string;
+      reasonCode?: string;
+      relatedMemoryIds?: string[];
+      correlationId?: string;
+    },
+  ) => Promise<boolean>;
+  appendTombstone(input: {
+    reason: "supersession";
+    createdBy: "supersession";
+    sourceMemoryId: string;
+    rawContent: string;
+    entityRef?: string;
+    supersessionKey?: string;
+    createdAt?: string;
+    contentHash?: string;
+    operationKey?: string;
+  }): Promise<string | null>;
+  hasExactTombstone?: (input: {
+    sourceMemoryId: string;
+    contentHash?: string;
+    entityRef?: string;
+    supersessionKey?: string;
+    createdAt?: string;
+    operationKey?: string;
+  }) => Promise<boolean>;
+  getMemoryTimeline?: (memoryId: string, limit?: number) => Promise<MemoryLifecycleEvent[]>;
+  isTombstonesEnabled?: () => boolean;
+}
 
 /**
  * Shared normalization for supersession key components.
@@ -171,15 +221,252 @@ export function shouldSupersedeExisting(args: {
 function normalizeValue(v: string): string {
   return v.trim().toLowerCase();
 }
+function temporalSupersessionOperationKey(
+  sourceMemoryId: string,
+  replacementId: string,
+  mutation: TemporalSupersessionMutation,
+): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        sourceMemoryId,
+        replacementId,
+        cause: "temporal_supersession",
+        supersededAt: mutation.supersededAt,
+        invalidAt: mutation.invalidAt ?? null,
+        matchedKeys: [...mutation.matchedKeys].sort(),
+      }),
+    )
+    .digest("hex");
+}
+type TemporalMemorySnapshot = Pick<MemoryFile, "content" | "frontmatter">;
+
+function canonicalTemporalValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((entry) => canonicalTemporalValue(entry));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, canonicalTemporalValue(entry)]),
+    );
+  }
+  return value;
+}
+
+function temporalSnapshotKey(memory: TemporalMemorySnapshot): string {
+  return JSON.stringify(
+    canonicalTemporalValue({
+      content: memory.content,
+      frontmatter: memory.frontmatter,
+    }),
+  );
+}
+
+function temporalMutationPatch(
+  replacementId: string,
+  mutation: TemporalSupersessionMutation,
+): Partial<MemoryFrontmatter> {
+  return {
+    status: "superseded",
+    supersededBy: replacementId,
+    supersededAt: mutation.supersededAt,
+    updated: mutation.supersededAt,
+    ...(mutation.invalidAt ? { invalid_at: mutation.invalidAt } : {}),
+  };
+}
+
+type TemporalPrimaryCommitState = "committed" | "not-committed" | "unknown";
+
+async function classifyTemporalPrimaryMutation(args: {
+  storage: TemporalSupersessionStorage;
+  path: string;
+  before: TemporalMemorySnapshot;
+  patch: Partial<MemoryFrontmatter>;
+}): Promise<TemporalPrimaryCommitState> {
+  let current: MemoryFile | null;
+  try {
+    current = await args.storage.readMemoryByPath(args.path);
+  } catch {
+    return "unknown";
+  }
+  if (!current) return "unknown";
+  const beforeKey = temporalSnapshotKey(args.before);
+  const committedKey = temporalSnapshotKey({
+    content: args.before.content,
+    frontmatter: { ...args.before.frontmatter, ...args.patch },
+  });
+  const currentKey = temporalSnapshotKey(current);
+  if (currentKey === committedKey) return "committed";
+  if (currentKey === beforeKey) return "not-committed";
+  return "unknown";
+}
+type PreparedTemporalPropagation = {
+  delivery: DependencyPropagationDeliveryPort;
+  event: PropagationEvent;
+  token: DependencyPropagationPreparationToken | null;
+};
+
+async function settleTemporalPropagationAfterPrimaryFailure(
+  pending: PreparedTemporalPropagation,
+  commitState: TemporalPrimaryCommitState,
+  memoryId: string,
+): Promise<void> {
+  let token = pending.token;
+  if (commitState === "not-committed") {
+    if (token !== null) {
+      try {
+        await pending.delivery.cancel(token);
+      } catch (error) {
+        log.warn(
+          `temporal-supersession: dependency propagation cancellation failed for ${memoryId}: ${error}`,
+        );
+      }
+    }
+    return;
+  }
+  if (token === null && commitState === "committed") {
+    try {
+      token = await pending.delivery.prepare(pending.event);
+    } catch (error) {
+      log.warn(
+        `temporal-supersession: dependency propagation recovery preparation failed for ${memoryId}: ${error}`,
+      );
+    }
+  }
+  if (token !== null) {
+    try {
+      await pending.delivery.deferPrepared(token);
+    } catch (error) {
+      log.warn(`temporal-supersession: dependency propagation defer failed for ${memoryId}: ${error}`);
+    }
+    return;
+  }
+  if (commitState === "committed") {
+    try {
+      await pending.delivery.afterMutation(null, pending.event);
+    } catch (error) {
+      log.warn(`temporal-supersession: dependency propagation fallback failed for ${memoryId}: ${error}`);
+    }
+  }
+}
+
+
+async function hasTemporalLifecycleEffect(args: {
+  storage: TemporalSupersessionStorage;
+  memoryId: string;
+  timestamp: string;
+  operationKey: string;
+  reasonCode: string;
+  relatedMemoryIds: string[];
+}): Promise<boolean | undefined> {
+  if (!args.storage.getMemoryTimeline) return undefined;
+  const events = await args.storage.getMemoryTimeline(args.memoryId, 200);
+  return events.some((event) => {
+    if (
+      event.memoryId !== args.memoryId ||
+      (event.eventType !== "superseded" && event.eventType !== "updated") ||
+      event.timestamp !== args.timestamp ||
+      event.after?.status !== "superseded"
+    ) {
+      return false;
+    }
+    if (event.correlationId !== undefined) return event.correlationId === args.operationKey;
+    // Rows written before correlation IDs existed can be replayed only with
+    // their complete legacy identity. New rows always take the exact branch.
+    return (
+      event.reasonCode === args.reasonCode &&
+      Array.isArray(event.relatedMemoryIds) &&
+      event.relatedMemoryIds.length === args.relatedMemoryIds.length &&
+      event.relatedMemoryIds.every((memoryId, index) => memoryId === args.relatedMemoryIds[index])
+    );
+  });
+}
+
+async function hasTemporalTombstoneEffect(args: {
+  storage: TemporalSupersessionStorage;
+  oldMemory: MemoryFile;
+  supersessionKey?: string;
+  operationKey: string;
+  createdAt: string;
+}): Promise<boolean> {
+  if (!args.storage.hasExactTombstone) return false;
+  return args.storage.hasExactTombstone({
+    sourceMemoryId: args.oldMemory.frontmatter.id,
+    ...(args.oldMemory.frontmatter.contentHash
+      ? { contentHash: args.oldMemory.frontmatter.contentHash }
+      : {}),
+    ...(args.oldMemory.frontmatter.entityRef
+      ? { entityRef: args.oldMemory.frontmatter.entityRef }
+      : {}),
+    ...(args.supersessionKey ? { supersessionKey: args.supersessionKey } : {}),
+    createdAt: args.createdAt,
+    operationKey: args.operationKey,
+  });
+}
+
+
+async function ensureTemporalLifecycleEffect(args: {
+  storage: TemporalSupersessionStorage;
+  memory: MemoryFile;
+  replacementId: string;
+  mutation: TemporalSupersessionMutation;
+  operationKey: string;
+  child?: boolean;
+}): Promise<boolean> {
+  const reasonCode = args.child
+    ? "structured-attribute-update-child-chunk"
+    : "structured-attribute-update";
+  const relatedMemoryIds = args.child
+    ? [args.replacementId, args.memory.frontmatter.parentId ?? ""].filter(Boolean)
+    : [args.replacementId];
+  const lifecycleEffect = await hasTemporalLifecycleEffect({
+    storage: args.storage,
+    memoryId: args.memory.frontmatter.id,
+    timestamp: args.mutation.supersededAt,
+    operationKey: args.operationKey,
+    reasonCode,
+    relatedMemoryIds,
+  });
+  if (lifecycleEffect === undefined) return false;
+  if (lifecycleEffect === true) return true;
+  if (lifecycleEffect === false || args.memory.frontmatter.status !== "superseded") {
+    const wrote = await args.storage.writeMemoryFrontmatter(
+      args.memory,
+      {
+        status: "superseded",
+        supersededBy: args.replacementId,
+        supersededAt: args.mutation.supersededAt,
+        updated: args.mutation.supersededAt,
+        ...(args.mutation.invalidAt && !args.memory.frontmatter.invalid_at
+          ? { invalid_at: args.mutation.invalidAt }
+          : {}),
+      },
+      {
+        actor: "temporal-supersession",
+        reasonCode: args.child
+          ? "structured-attribute-update-child-chunk"
+          : "structured-attribute-update",
+        relatedMemoryIds: args.child
+          ? [args.replacementId, args.memory.frontmatter.parentId ?? ""].filter(Boolean)
+          : [args.replacementId],
+        correlationId: args.operationKey,
+      },
+    );
+    return wrote;
+  }
+  return true;
+}
+
 
 async function expireChildChunksForSupersededParent(args: {
-  storage: StorageManager;
+  storage: TemporalSupersessionStorage;
   allCandidates: MemoryFile[];
   parentId: string;
   newMemoryId: string;
   supersededAt: string;
   invalidAt?: string;
-}): Promise<void> {
+  operationKey: string;
+}): Promise<boolean> {
   const processedChunkIds = new Set<string>();
   const chunks = args.allCandidates.filter(
     (candidate) => candidate.frontmatter.parentId === args.parentId,
@@ -194,31 +481,157 @@ async function expireChildChunksForSupersededParent(args: {
       if (!freshChunk) continue;
       processedChunkIds.add(chunkKey);
       const freshStatus = freshChunk.frontmatter.status ?? "active";
-      if (freshStatus !== "active" || freshChunk.frontmatter.supersededBy) continue;
-
-      await args.storage.writeMemoryFrontmatter(
-        freshChunk,
-        {
-          status: "superseded",
-          supersededBy: args.newMemoryId,
+      if (
+        freshStatus !== "active" &&
+        !(
+          freshStatus === "superseded" &&
+          freshChunk.frontmatter.supersededBy === args.newMemoryId
+        )
+      ) {
+        continue;
+      }
+      const completed = await ensureTemporalLifecycleEffect({
+        storage: args.storage,
+        memory: freshChunk,
+        replacementId: args.newMemoryId,
+        mutation: {
           supersededAt: args.supersededAt,
-          updated: args.supersededAt,
-          ...(args.invalidAt && !freshChunk.frontmatter.invalid_at
-            ? { invalid_at: args.invalidAt }
-            : {}),
+          ...(args.invalidAt ? { invalidAt: args.invalidAt } : {}),
+          matchedKeys: [],
         },
-        {
-          actor: "temporal-supersession",
-          reasonCode: "structured-attribute-update-child-chunk",
-          relatedMemoryIds: [args.newMemoryId, args.parentId],
-        },
-      );
+        operationKey: `${args.operationKey}:child:${freshChunk.frontmatter.id}`,
+        child: true,
+      });
+      if (!completed) return false;
     } catch (err) {
       log.warn(
         `temporal-supersession: failed to expire child chunk ${chunk.frontmatter.id} for parent ${args.parentId}: ${err}`,
       );
+      return false;
     }
   }
+  return true;
+}
+
+export interface TemporalSupersessionMutation {
+  supersededAt: string;
+  invalidAt?: string;
+  matchedKeys: string[];
+}
+
+export async function applyTemporalSupersessionPrimaryMutation(args: {
+  storage: TemporalSupersessionStorage;
+  oldMemory: MemoryFile;
+  replacementId: string;
+  mutation: TemporalSupersessionMutation;
+  allCandidates?: MemoryFile[];
+}): Promise<boolean> {
+  const { storage, oldMemory, replacementId, mutation } = args;
+  const operationKey = temporalSupersessionOperationKey(
+    oldMemory.frontmatter.id,
+    replacementId,
+    mutation,
+  );
+  const alreadyApplied =
+    oldMemory.frontmatter.status === "superseded" &&
+    oldMemory.frontmatter.supersededBy === replacementId &&
+    oldMemory.frontmatter.supersededAt === mutation.supersededAt &&
+    (mutation.invalidAt === undefined || oldMemory.frontmatter.invalid_at === mutation.invalidAt);
+  const lifecycleEffect = alreadyApplied
+    ? await hasTemporalLifecycleEffect({
+        storage,
+        memoryId: oldMemory.frontmatter.id,
+        timestamp: mutation.supersededAt,
+        operationKey,
+        reasonCode: "structured-attribute-update",
+        relatedMemoryIds: [replacementId],
+      })
+    : undefined;
+  if (alreadyApplied && lifecycleEffect === undefined) return false;
+  if (!alreadyApplied || lifecycleEffect === false) {
+    if (!storage.writeMemoryFrontmatterIfUnchanged) return false;
+    const wrote = await storage.writeMemoryFrontmatterIfUnchanged(
+      oldMemory,
+      temporalMutationPatch(replacementId, mutation),
+      {
+        actor: "temporal-supersession",
+        reasonCode: "structured-attribute-update",
+        relatedMemoryIds: [replacementId],
+        correlationId: operationKey,
+      },
+    );
+    if (!wrote) return false;
+  }
+
+  let allCandidates = args.allCandidates;
+  if (!allCandidates) {
+    let hotMemories: MemoryFile[];
+    let coldMemories: MemoryFile[];
+    try {
+      hotMemories = await storage.readAllMemories();
+    } catch (error) {
+      log.warn(`temporal-supersession: recovery hot-memory scan failed: ${error}`);
+      return false;
+    }
+    try {
+      coldMemories = await storage.readAllColdMemories();
+    } catch (error) {
+      log.warn(`temporal-supersession: recovery cold-memory scan failed: ${error}`);
+      return false;
+    }
+    allCandidates = [...hotMemories, ...coldMemories];
+  }
+  const childrenCompleted = await expireChildChunksForSupersededParent({
+    storage,
+    allCandidates,
+    parentId: oldMemory.frontmatter.id,
+    newMemoryId: replacementId,
+    supersededAt: mutation.supersededAt,
+    invalidAt: mutation.invalidAt ?? oldMemory.frontmatter.invalid_at,
+    operationKey,
+  });
+  if (!childrenCompleted) return false;
+
+  const keysToTombstone =
+    mutation.matchedKeys.length > 0 ? mutation.matchedKeys : [undefined];
+  for (const key of keysToTombstone) {
+    const tombstoneOperationKey = `${operationKey}:tombstone:${key ?? "content"}`;
+    if (
+      await hasTemporalTombstoneEffect({
+        storage,
+        oldMemory,
+        supersessionKey: key,
+        operationKey: tombstoneOperationKey,
+        createdAt: mutation.supersededAt,
+      })
+    ) {
+      continue;
+    }
+    try {
+      const tombstoneId = await storage.appendTombstone({
+        reason: "supersession",
+        createdBy: "supersession",
+        sourceMemoryId: oldMemory.frontmatter.id,
+        ...(oldMemory.frontmatter.contentHash
+          ? { contentHash: oldMemory.frontmatter.contentHash }
+          : {}),
+        rawContent: oldMemory.content,
+        ...(oldMemory.frontmatter.entityRef ? { entityRef: oldMemory.frontmatter.entityRef } : {}),
+        ...(key ? { supersessionKey: key } : {}),
+        createdAt: mutation.supersededAt,
+        operationKey: tombstoneOperationKey,
+      });
+      if (tombstoneId === null && storage.isTombstonesEnabled?.() !== false) {
+        return false;
+      }
+    } catch (error) {
+      log.warn(
+        `temporal-supersession: tombstone emit failed for ${oldMemory.frontmatter.id}${key ? ` (key=${key})` : ""} : ${error}`,
+      );
+      return false;
+    }
+  }
+  return true;
 }
 
 export interface TemporalSupersessionResult {
@@ -232,7 +645,7 @@ export interface TemporalSupersessionResult {
  * on disk, and supersession is a best-effort hygiene step.
  */
 export async function applyTemporalSupersession(args: {
-  storage: StorageManager;
+  storage: TemporalSupersessionStorage;
   newMemoryId: string;
   entityRef?: string;
   structuredAttributes?: Record<string, string>;
@@ -246,10 +659,10 @@ export async function applyTemporalSupersession(args: {
    * stale relative to the incoming promotion event (PR #402 Finding Uyui).
    */
   useCallerTimestamp?: boolean;
-  /** Optional orchestration dependencies for one-hop propagation. */
-  extraction?: ExtractionEngine;
-  config?: PluginConfig;
+  /** Namespace used by the dependency propagation worker. */
   namespaceScope?: string;
+  /** Optional durable delivery for one-hop propagation. */
+  dependencyPropagationDelivery?: DependencyPropagationDeliveryPort;
 }): Promise<TemporalSupersessionResult> {
   const empty: TemporalSupersessionResult = { supersededIds: [], matchedKeys: [] };
   if (!args.enabled) return empty;
@@ -335,6 +748,11 @@ export async function applyTemporalSupersession(args: {
   // supersessions — the P1 finding is precisely that stale cold facts leak
   // when hot has no hits.
   const allCandidates: MemoryFile[] = [...hotMemories, ...coldMemories];
+  // Resolve the replacement from the combined hot and cold snapshot. A
+  // hash-dedup promotion can point at a cold-only memory, and replay needs its
+  // captured content rather than a null replacement payload.
+  const replacementMemory =
+    allCandidates.find((memory) => memory.frontmatter.id === args.newMemoryId) ?? newMemoryFile;
 
   for (const memory of allCandidates) {
     if (memory.frontmatter.id === args.newMemoryId) continue;
@@ -371,6 +789,14 @@ export async function applyTemporalSupersession(args: {
       continue;
     }
 
+    let preparedPropagation: {
+      delivery: DependencyPropagationDeliveryPort;
+      event: PropagationEvent;
+      token: DependencyPropagationPreparationToken | null;
+    } | null = null;
+    let primaryPath: string | null = null;
+    let primaryBefore: TemporalMemorySnapshot | null = null;
+    let primaryPatch: Partial<MemoryFrontmatter> | null = null;
     try {
       // CAS-style re-read immediately before the write.  `readAllMemories()`
       // is a snapshot — with concurrent writers, another run may have already
@@ -405,6 +831,11 @@ export async function applyTemporalSupersession(args: {
         );
         continue;
       }
+      primaryPath = fresh.path;
+      primaryBefore = {
+        content: fresh.content,
+        frontmatter: { ...fresh.frontmatter },
+      };
 
       // Finding 2 fix: the `supersededAt` / `updated` timestamps written to the
       // old fact must never run backwards relative to its own persisted
@@ -446,99 +877,119 @@ export async function applyTemporalSupersession(args: {
         if (args.useCallerTimestamp) {
           invalidAtPatch = persistedCreatedAt;
         } else {
-          const newValidAt = newMemoryFile?.frontmatter.valid_at?.trim();
+          const newValidAt = replacementMemory?.frontmatter.valid_at?.trim();
           invalidAtPatch =
             newValidAt && newValidAt.length > 0 ? newValidAt : persistedCreatedAt;
         }
       }
-      const wrote = await args.storage.writeMemoryFrontmatter(
-        fresh,
-        {
-          status: "superseded",
-          supersededBy: args.newMemoryId,
-          supersededAt,
-          updated: supersededAt,
-          ...(invalidAtPatch ? { invalid_at: invalidAtPatch } : {}),
-        },
-        {
-          actor: "temporal-supersession",
-          reasonCode: "structured-attribute-update",
-          relatedMemoryIds: [args.newMemoryId],
-        },
-      );
-      if (wrote) {
-        supersededIds.push(memory.frontmatter.id);
-        for (const key of decision.matchedKeys) matchedKeys.add(key);
-        await expireChildChunksForSupersededParent({
-          storage: args.storage,
-          allCandidates,
-          parentId: fresh.frontmatter.id,
-          newMemoryId: args.newMemoryId,
-          supersededAt,
-          invalidAt: invalidAtPatch ?? fresh.frontmatter.invalid_at,
-        });
-        // Issue #1579 — emit a tombstone for the superseded memory so it
-        // cannot resurrect through re-extraction / import / consolidation /
-        // dreams / pattern-reinforcement. The supersession key is the first
-        // matched key (the write-time supersession identity). Best-effort:
-        // a tombstone append failure is logged but never fails supersession
-        // (gotcha #13).
-        // Issue #1579 thread ObteS: persist ALL matched supersession keys, not
-        // just the first. A later paraphrased re-observation may derive the
-        // same entity but place the tombstoned attribute at a different
-        // position in structuredAttributes; without an entry for every matched
-        // key, the keyed tier would miss and the fact could resurrect as
-        // active. Pass the canonical contentHash from the retired memory's
-        // frontmatter so the tombstone's exact tier matches re-extraction
-        // (review: citation-hash alignment). The rawContent is the stored body;
-        // the StorageManager.appendTombstone chokepoint strips citation
-        // annotations for the normalized-text tier.
-        const keysToTombstone =
-          decision.matchedKeys.length > 0 ? decision.matchedKeys : [undefined];
-        for (const key of keysToTombstone) {
-          try {
-            await args.storage.appendTombstone({
-              reason: "supersession",
-              createdBy: "supersession",
-              sourceMemoryId: fresh.frontmatter.id,
-              ...(fresh.frontmatter.contentHash
-                ? { contentHash: fresh.frontmatter.contentHash }
-                : {}),
-              rawContent: fresh.content,
-              ...(fresh.frontmatter.entityRef ? { entityRef: fresh.frontmatter.entityRef } : {}),
-              ...(key ? { supersessionKey: key } : {}),
-              createdAt: supersededAt,
-            });
-          } catch (tombErr) {
-            log.warn(
-              `temporal-supersession: tombstone emit failed for ${fresh.frontmatter.id}${key ? ` (key=${key})` : ""} : ${tombErr}`,
-            );
-          }
-        }
-        if (args.extraction && args.config && args.namespaceScope) {
-          try {
-            await propagateInvalidation(
-              {
-                storage: args.storage,
-                extraction: args.extraction,
-                config: args.config,
+      const mutation: TemporalSupersessionMutation = {
+        supersededAt,
+        ...(invalidAtPatch ? { invalidAt: invalidAtPatch } : {}),
+        matchedKeys: decision.matchedKeys,
+      };
+      primaryPatch = temporalMutationPatch(args.newMemoryId, mutation);
+      const propagationEvent: PropagationEvent | null =
+        args.dependencyPropagationDelivery && args.namespaceScope
+          ? {
+              oldMemory: {
+                content: fresh.content,
+                frontmatter: {
+                  ...fresh.frontmatter,
+                  ...(fresh.frontmatter.links
+                    ? { links: fresh.frontmatter.links.map((link) => ({ ...link })) }
+                    : {}),
+                },
               },
-              {
-                oldMemory: fresh,
-                replacementId: args.newMemoryId,
-                replacementContent: newMemoryFile?.content ?? null,
-                cause: "temporal_supersession",
-                namespaceScope: args.namespaceScope,
-              },
-            );
-          } catch (propagationErr) {
-            log.warn(
-              `temporal-supersession: dependency propagation failed for ${fresh.frontmatter.id}: ${propagationErr}`,
-            );
-          }
+              replacementId: args.newMemoryId,
+              replacementContent: replacementMemory?.content ?? null,
+              cause: "temporal_supersession",
+              namespaceScope: args.namespaceScope,
+              temporalMutation: mutation,
+            }
+          : null;
+      if (propagationEvent && args.dependencyPropagationDelivery) {
+        preparedPropagation = {
+          delivery: args.dependencyPropagationDelivery,
+          event: propagationEvent,
+          token: null,
+        };
+        try {
+          preparedPropagation.token =
+            await args.dependencyPropagationDelivery.prepare(propagationEvent);
+        } catch (prepareErr) {
+          log.warn(
+            `temporal-supersession: dependency propagation preparation failed for ${fresh.frontmatter.id}: ${prepareErr}`,
+          );
         }
       }
+      const wrote = await applyTemporalSupersessionPrimaryMutation({
+        storage: args.storage,
+        oldMemory: fresh,
+        replacementId: args.newMemoryId,
+        mutation,
+        allCandidates,
+      });
+      if (!wrote) {
+        const commitState = await classifyTemporalPrimaryMutation({
+          storage: args.storage,
+          path: fresh.path,
+          before: primaryBefore,
+          patch: primaryPatch,
+        });
+        if (preparedPropagation) {
+          await settleTemporalPropagationAfterPrimaryFailure(
+            preparedPropagation,
+            commitState,
+            fresh.frontmatter.id,
+          );
+          if (commitState !== "not-committed") {
+            log.warn(
+              `temporal-supersession: retaining dependency propagation recovery for ${fresh.frontmatter.id} after ${commitState} primary mutation`,
+            );
+          }
+        }
+        preparedPropagation = null;
+        continue;
+      }
+      if (preparedPropagation) {
+        const completedPropagation = preparedPropagation;
+        preparedPropagation = null;
+        try {
+          await completedPropagation.delivery.afterMutation(
+            completedPropagation.token,
+            completedPropagation.event,
+          );
+        } catch (afterMutationErr) {
+          log.warn(
+            `temporal-supersession: dependency propagation delivery failed for ${memory.frontmatter.id}: ${afterMutationErr}`,
+          );
+        }
+      }
+      supersededIds.push(memory.frontmatter.id);
+      for (const key of decision.matchedKeys) matchedKeys.add(key);
     } catch (err) {
+      let commitState: TemporalPrimaryCommitState = "unknown";
+      if (primaryPath && primaryBefore && primaryPatch) {
+        commitState = await classifyTemporalPrimaryMutation({
+          storage: args.storage,
+          path: primaryPath,
+          before: primaryBefore,
+          patch: primaryPatch,
+        });
+      }
+      if (preparedPropagation) {
+        await settleTemporalPropagationAfterPrimaryFailure(
+          preparedPropagation,
+          commitState,
+          memory.frontmatter.id,
+        );
+        if (commitState !== "not-committed") {
+          log.warn(
+            `temporal-supersession: retaining dependency propagation recovery for ${memory.frontmatter.id} after ${commitState} primary mutation`,
+          );
+        }
+      }
+      preparedPropagation = null;
       log.warn(
         `temporal-supersession: failed to mark ${memory.frontmatter.id} superseded: ${err}`,
       );

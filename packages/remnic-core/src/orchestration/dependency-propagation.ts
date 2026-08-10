@@ -6,7 +6,6 @@
  */
 import type { ExtractionEngine } from "../extraction.js";
 import { log } from "../logger.js";
-import type { StorageManager } from "../index.js";
 import type {
   DependencyPropagationConfig,
   MemoryFile,
@@ -26,6 +25,11 @@ export interface PropagationEvent {
     | "consolidation_invalidate"
     | "consolidation_merge";
   namespaceScope: string;
+  temporalMutation?: {
+    supersededAt: string;
+    invalidAt?: string;
+    matchedKeys: string[];
+  };
 }
 
 export interface PropagationResult {
@@ -36,6 +40,22 @@ export interface PropagationResult {
   skipped: "disabled" | "no_dependents" | "llm_error" | "timeout" | null;
   route: "fast-completion" | null;
   durationMs: number;
+}
+
+export type DependencyPropagationWriteFence = <T>(
+  write: () => Promise<T>,
+) => Promise<T | undefined>;
+
+export interface DependencyPropagationStorage {
+  readAllMemories(): Promise<MemoryFile[]>;
+  getMemoryById(id: string): Promise<MemoryFile | null>;
+  supersedeMemory(
+    id: string,
+    replacementId: string,
+    reason: string,
+    metadata?: Pick<MemoryFrontmatter, "supersessionCause" | "invalidatedBy">,
+    options?: { requireActive?: boolean; acceptExactReplay?: boolean },
+  ): Promise<boolean>;
 }
 
 function propagationConfig(config: PluginConfig): DependencyPropagationConfig {
@@ -142,7 +162,12 @@ function isTimeoutError(error: unknown, signal: AbortSignal): boolean {
  * constructs another storage or scans a different namespace.
  */
 export async function propagateInvalidation(
-  deps: { storage: StorageManager; extraction: ExtractionEngine; config: PluginConfig },
+  deps: {
+    storage: DependencyPropagationStorage;
+    extraction: ExtractionEngine;
+    config: PluginConfig;
+    writeFence?: DependencyPropagationWriteFence;
+  },
   event: PropagationEvent,
 ): Promise<PropagationResult> {
   const startedAt = Date.now();
@@ -255,19 +280,19 @@ export async function propagateInvalidation(
       }
       try {
         const replacementId = event.replacementId ?? event.oldMemory.frontmatter.id;
-        const superseded = await deps.storage.supersedeMemory(
-          dependent.frontmatter.id,
-          replacementId,
-          `dependency_propagation:${event.cause}`,
-        );
-        if (!superseded) continue;
-        const current = await deps.storage.getMemoryById(dependent.frontmatter.id);
-        if (current) {
-          await deps.storage.writeMemoryFrontmatter(current, {
-            supersessionCause: "dependency",
-            invalidatedBy: event.oldMemory.frontmatter.id,
-          });
-        }
+        const write = () =>
+          deps.storage.supersedeMemory(
+            dependent.frontmatter.id,
+            replacementId,
+            `dependency_propagation:${event.cause}`,
+            {
+              supersessionCause: "dependency",
+              invalidatedBy: event.oldMemory.frontmatter.id,
+            },
+            { requireActive: true, acceptExactReplay: true },
+          );
+        const superseded = deps.writeFence ? await deps.writeFence(write) : await write();
+        if (superseded !== true) continue;
         invalidated += 1;
       } catch (error) {
         log.warn(`dependency propagation write failed for ${dependent.frontmatter.id}: ${error}`);

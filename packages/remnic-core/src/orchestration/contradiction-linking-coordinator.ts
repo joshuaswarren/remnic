@@ -34,7 +34,11 @@ import {
   localizeUpdateCandidates,
   mergeMemorySnapshots,
 } from "./update-localization.js";
-import { propagateInvalidation } from "./dependency-propagation.js";
+import type { PropagationEvent } from "./dependency-propagation.js";
+import type {
+  DependencyPropagationDeliveryPort,
+  DependencyPropagationPreparationToken,
+} from "./dependency-propagation-delivery.js";
 
 /** Result type of {@link ContradictionLinkingCoordinator.checkForContradiction}. */
 export interface ContradictionResult {
@@ -93,6 +97,8 @@ export class ContradictionLinkingCoordinator {
     namespace: string,
   ) => Promise<StorageManager>;
   private readonly getExtraction: () => ExtractionEngine;
+  private readonly storageDirNamespace: (storageDir: string) => string;
+  private readonly getDependencyPropagationDelivery: () => DependencyPropagationDeliveryPort;
 
   constructor(options: {
     getConfig: () => PluginConfig;
@@ -107,6 +113,8 @@ export class ContradictionLinkingCoordinator {
     namespaceFromPath: (p: string) => string;
     storageForNamespace: (namespace: string) => Promise<StorageManager>;
     getExtraction: () => ExtractionEngine;
+    storageDirNamespace: (storageDir: string) => string;
+    getDependencyPropagationDelivery: () => DependencyPropagationDeliveryPort;
   }) {
     this.getConfig = options.getConfig;
     this.isSearchAvailable = options.isSearchAvailable;
@@ -115,6 +123,8 @@ export class ContradictionLinkingCoordinator {
     this.namespaceFromPath = options.namespaceFromPath;
     this.storageForNamespace = options.storageForNamespace;
     this.getExtraction = options.getExtraction;
+    this.storageDirNamespace = options.storageDirNamespace;
+    this.getDependencyPropagationDelivery = options.getDependencyPropagationDelivery;
   }
 
   /**
@@ -346,35 +356,172 @@ export class ContradictionLinkingCoordinator {
       return postWriteGuard ? "blocked" : "not_attempted";
     }
 
-    // Capture links before the primary supersession. The propagation hook is
-    // orchestration-owned, so its own supersessions cannot recurse.
-    let oldMemory: MemoryFile | null = null;
-    if (coerceBool(config.dependencyPropagation?.enabled) === true) {
-      try {
-        const [hot, cold] = await Promise.all([
-          typeof storage.readAllMemories === "function"
-            ? storage.readAllMemories()
-            : storage.getMemoryById(contradiction.supersededId).then((memory) =>
-                memory ? [memory] : [],
-              ),
-          typeof storage.readAllColdMemories === "function"
-            ? storage.readAllColdMemories()
-            : Promise.resolve([]),
-        ]);
-        oldMemory = mergeMemorySnapshots(hot, cold, storage.dir).find(
-          (memory) => memory.frontmatter.id === contradiction.supersededId,
-        ) ?? null;
-      } catch (err) {
-        log.warn(`contradiction propagation snapshot failed for ${contradiction.supersededId}: ${err}`);
+    // Capture propagation inputs before the primary supersession. The
+    // propagation hook is orchestration-owned, so its own supersessions cannot
+    // recurse.
+    let oldMemory: PropagationEvent["oldMemory"] | null = null;
+    let replacementContent: string | null = null;
+    let propagationEvent: PropagationEvent | null = null;
+    try {
+      const captured = await storage.getMemoryById(contradiction.supersededId);
+      if (captured) {
+        oldMemory = {
+          content: captured.content,
+          frontmatter: {
+            ...captured.frontmatter,
+            ...(captured.frontmatter.tags
+              ? { tags: [...captured.frontmatter.tags] }
+              : {}),
+            ...(captured.frontmatter.links
+              ? { links: captured.frontmatter.links.map((link) => ({ ...link })) }
+              : {}),
+          },
+        };
       }
+    } catch (err) {
+      log.warn(
+        `contradiction propagation snapshot failed for ${contradiction.supersededId}: ${err}`,
+      );
     }
     try {
-      const superseded = await storage.supersedeMemory(
+      replacementContent =
+        (await storage.getMemoryById(newMemoryId))?.content ?? null;
+    } catch (err) {
+      log.warn(
+        `contradiction replacement snapshot failed for ${newMemoryId}: ${err}`,
+      );
+    }
+
+    if (oldMemory && replacementContent !== null) {
+      try {
+        propagationEvent = {
+          oldMemory,
+          replacementId: newMemoryId,
+          replacementContent,
+          cause: "contradiction",
+          namespaceScope: this.storageDirNamespace(storage.dir),
+        };
+      } catch (err) {
+        log.warn(
+          `contradiction dependency propagation event failed for ${contradiction.supersededId}: ${err}`,
+        );
+      }
+    } else if (oldMemory) {
+      log.warn(
+        `contradiction dependency propagation skipped for ${contradiction.supersededId}: replacement content was not captured`,
+      );
+    }
+    let delivery: DependencyPropagationDeliveryPort | null = null;
+    if (propagationEvent) {
+      try {
+        delivery = this.getDependencyPropagationDelivery();
+      } catch (err) {
+        log.warn(
+          `contradiction dependency propagation delivery unavailable for ${contradiction.supersededId}: ${err}`,
+        );
+      }
+    }
+    const propagationEnabled =
+      config.dependencyPropagation.enabled && config.dependencyPropagation.maxDependents > 0;
+    let preparation: DependencyPropagationPreparationToken | null = null;
+    if (delivery && propagationEvent && propagationEnabled) {
+      try {
+        preparation = await delivery.prepare(propagationEvent);
+      } catch (err) {
+        log.warn(
+          `contradiction dependency propagation prepare failed for ${contradiction.supersededId}: ${err}`,
+        );
+      }
+    }
+    const supersessionCommitted = async (): Promise<boolean | null> => {
+      try {
+        const current = await storage.getMemoryById(contradiction.supersededId);
+        if (!current) return null;
+        return (
+          current.frontmatter.status === "superseded" &&
+          current.frontmatter.supersededBy === newMemoryId
+        );
+      } catch (err) {
+        log.warn(
+          `contradiction supersession state read failed for ${contradiction.supersededId}: ${err}`,
+        );
+        return null;
+      }
+    };
+
+    const settleFailedPropagation = async (commitState: boolean | null): Promise<void> => {
+      let token = preparation;
+      if (commitState === false) {
+        if (token !== null) {
+          try {
+            await delivery?.cancel(token);
+          } catch (err) {
+            log.warn(
+              `contradiction dependency propagation cancel failed for ${contradiction.supersededId}: ${err}`,
+            );
+          }
+        }
+        return;
+      }
+      if (token === null && commitState === true && delivery && propagationEvent) {
+        try {
+          token = await delivery.prepare(propagationEvent);
+        } catch (err) {
+          log.warn(
+            `contradiction dependency propagation recovery prepare failed for ${contradiction.supersededId}: ${err}`,
+          );
+        }
+      }
+      if (token !== null) {
+        try {
+          await delivery?.deferPrepared(token);
+        } catch (err) {
+          log.warn(
+            `contradiction dependency propagation defer failed for ${contradiction.supersededId}: ${err}`,
+          );
+        }
+        return;
+      }
+      if (commitState === true && delivery && propagationEvent) {
+        try {
+          await delivery.afterMutation(null, propagationEvent);
+        } catch (err) {
+          log.warn(
+            `contradiction dependency propagation fallback failed for ${contradiction.supersededId}: ${err}`,
+          );
+        }
+      }
+    };
+    const readyPreparedPropagation = async (): Promise<void> => {
+      if (!delivery || !propagationEvent || !propagationEnabled) return;
+      let token = preparation;
+      if (token === null) {
+        try {
+          token = await delivery.prepare(propagationEvent);
+        } catch (err) {
+          log.warn(
+            `contradiction dependency propagation recovery prepare failed for ${contradiction.supersededId}: ${err}`,
+          );
+        }
+      }
+      try {
+        await delivery.afterMutation(token, propagationEvent);
+      } catch (err) {
+        log.warn(
+          `contradiction dependency propagation failed for ${contradiction.supersededId}: ${err}`,
+        );
+      }
+    };
+
+    let commitState: boolean | null = false;
+    try {
+      const committed = await storage.supersedeMemory(
         contradiction.supersededId,
         newMemoryId,
         contradiction.reason,
       );
-      if (!superseded) {
+      commitState = committed ? true : await supersessionCommitted();
+      if (commitState !== true) {
         let mergedSnapshot: MemoryFile[];
         try {
           const [hot, cold] = await Promise.all([
@@ -395,79 +542,75 @@ export class ContradictionLinkingCoordinator {
           log.warn(
             `contradiction auto-resolve race check failed for ${contradiction.supersededId}: ${err}`,
           );
+          await settleFailedPropagation(commitState);
           return "supersede_failed";
         }
         const target = mergedSnapshot.find(
           (memory) => memory.frontmatter.id === contradiction.supersededId,
         );
-        if (!target) return "supersede_failed";
+        if (!target) {
+          await settleFailedPropagation(commitState);
+          return "supersede_failed";
+        }
         const losingMemory = mergedSnapshot.find(
           (memory) =>
             memory.frontmatter.id === newMemoryId &&
             inferLocalizationMemoryStatus(memory, storage.dir) === "active",
         );
-        if (!losingMemory) return "supersede_failed";
+        if (!losingMemory) {
+          await settleFailedPropagation(commitState);
+          return "supersede_failed";
+        }
         try {
           if (losingMemory.frontmatter.supersedes === contradiction.supersededId) {
             const cleared = await storage.writeMemoryFrontmatter(losingMemory, {
               supersedes: undefined,
             });
-            if (cleared === false) return "supersedes_clear_failed";
+            if (cleared === false) {
+              await settleFailedPropagation(commitState);
+              return "supersedes_clear_failed";
+            }
           }
         } catch (err) {
           log.warn(
             `contradiction auto-resolve losing supersedes clear failed for ${newMemoryId}: ${err}`,
           );
+          await settleFailedPropagation(commitState);
           return "supersedes_clear_failed";
         }
-        return inferLocalizationMemoryStatus(target, storage.dir) === "active"
+        const outcome = inferLocalizationMemoryStatus(target, storage.dir) === "active"
           ? "supersede_failed"
           : "lost_race";
+        await settleFailedPropagation(commitState);
+        return outcome;
       }
-      if (oldMemory) {
-        try {
-          await propagateInvalidation(
-            {
-              storage,
-              extraction: this.getExtraction(),
-              config,
-            },
-            {
-              oldMemory,
-              replacementId: newMemoryId,
-              replacementContent: (await storage.getMemoryById(newMemoryId))?.content ?? null,
-              cause: "contradiction",
-              namespaceScope: this.namespaceFromPath(storage.dir),
-            },
-          );
-        } catch (err) {
-          log.warn(`contradiction dependency propagation failed for ${contradiction.supersededId}: ${err}`);
-        }
-      }
-
-      if (
-        resolveIndexingCapabilities(config).queryAwareIndexing &&
-        contradiction.supersededPath
-      ) {
-        try {
-          await deindexMemoryAsync(
-            config.memoryDir,
-            contradiction.supersededPath,
-            contradiction.supersededCreated,
-            contradiction.supersededTags,
-          );
-        } catch (err) {
-          log.warn(
-            `contradiction auto-resolve deindex failed for ${contradiction.supersededId}: ${err}`,
-          );
-        }
-      }
-      return "resolved";
     } catch (err) {
+      commitState = await supersessionCommitted();
       log.warn(
         `contradiction auto-resolve supersede failed for ${contradiction.supersededId}: ${err}`,
       );
       return "supersede_failed";
+    }
+    if (commitState === false) {
+      await settleFailedPropagation(commitState);
+      return;
+    }
+    if (commitState === null) {
+      await settleFailedPropagation(commitState);
+      return;
+    }
+    await readyPreparedPropagation();
+
+    if (
+      resolveIndexingCapabilities(config).queryAwareIndexing &&
+      contradiction.supersededPath
+    ) {
+      await deindexMemoryAsync(
+        config.memoryDir,
+        contradiction.supersededPath,
+        contradiction.supersededCreated,
+        contradiction.supersededTags,
+      );
     }
   }
 

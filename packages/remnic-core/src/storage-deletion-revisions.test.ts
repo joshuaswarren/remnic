@@ -1,9 +1,30 @@
 import * as assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
+import { DeletionRevisionStore } from "./storage/deletion-revision-store.js";
+import type { MemoryFile } from "./types.js";
 import { StorageManager } from "./storage.js";
+
+function createDeletionRevisionStore(baseDir: string): DeletionRevisionStore {
+  const metadataDir = path.join(baseDir, ".offline-sync");
+  return new DeletionRevisionStore({
+    baseDir,
+    deletionRevisionMetadataPath: path.join(metadataDir, "deletion-revisions.v1.json"),
+    invalidationCommitMetadataPath: path.join(metadataDir, "invalidation-commits.v1.json"),
+    deletionRevisionLockPath: path.join(metadataDir, "deletion-revisions.v1.json.lock"),
+    assertManagedStoragePath: (filePath) => path.resolve(filePath),
+  });
+}
+
+function proofMemory(id = "memory-1"): MemoryFile {
+  return {
+    path: `facts/${id}.md`,
+    content: "proof source",
+    frontmatter: { id },
+  } as MemoryFile;
+}
 
 test("storage persists the actual revision time for a successful path deletion", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-deletion-revision-"));
@@ -87,5 +108,108 @@ test("storage merges a known replicated deletion revision for an already-absent 
     assert.equal((await storage.readDeletionRevisions()).get(relativePath), 2000);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("deletion revision and proof stores reject a symlinked storage root", async () => {
+  const outside = await mkdtemp(path.join(os.tmpdir(), "remnic-symlink-root-outside-"));
+  const rootLink = path.join(path.dirname(outside), `${path.basename(outside)}-link`);
+  try {
+    await symlink(outside, rootLink, "dir");
+    const store = createDeletionRevisionStore(rootLink);
+
+    await assert.rejects(store.readDeletionRevisions(), /must not pass through a symlink/);
+    await assert.rejects(store.recordCommittedInvalidation(proofMemory()), /must not pass through a symlink/);
+    await assert.rejects(
+      lstat(path.join(outside, ".offline-sync")),
+      (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT",
+    );
+  } finally {
+    await rm(rootLink, { force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("deletion revision and proof stores reject a symlinked metadata parent before outside writes", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-symlink-parent-root-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "remnic-symlink-parent-outside-"));
+  try {
+    await symlink(outside, path.join(root, ".offline-sync"), "dir");
+    const store = createDeletionRevisionStore(root);
+
+    await assert.rejects(
+      store.recordReplicatedDeletionRevision(path.join(root, "facts", "deleted.md"), 2000),
+      /must not pass through a symlink/,
+    );
+    await assert.rejects(store.recordCommittedInvalidation(proofMemory()), /must not pass through a symlink/);
+    await assert.rejects(
+      lstat(path.join(outside, "deletion-revisions.v1.json")),
+      (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT",
+    );
+    await assert.rejects(
+      lstat(path.join(outside, "invalidation-commits.v1.json")),
+      (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("deletion revision and proof stores reject symlinked metadata targets before outside reads or writes", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-symlink-target-root-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "remnic-symlink-target-outside-"));
+  const deletionSentinel = path.join(outside, "deletion-sentinel");
+  const proofSentinel = path.join(outside, "proof-sentinel");
+  try {
+    const metadataDir = path.join(root, ".offline-sync");
+    await mkdir(metadataDir, { recursive: true });
+    await writeFile(deletionSentinel, "deletion sentinel");
+    await writeFile(proofSentinel, "proof sentinel");
+    await symlink(deletionSentinel, path.join(metadataDir, "deletion-revisions.v1.json"));
+    await symlink(proofSentinel, path.join(metadataDir, "invalidation-commits.v1.json"));
+    const store = createDeletionRevisionStore(root);
+
+    await assert.rejects(store.readDeletionRevisions(), /must not pass through a symlink/);
+    await assert.rejects(
+      store.recordCommittedInvalidation(proofMemory()),
+      /must not pass through a symlink/,
+    );
+    assert.equal(await readFile(deletionSentinel, "utf8"), "deletion sentinel");
+    assert.equal(await readFile(proofSentinel, "utf8"), "proof sentinel");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("managed deletion and write reject a symlinked storage-file parent before outside access", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-symlink-file-root-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "remnic-symlink-file-outside-"));
+  const outsideDeleted = path.join(outside, "deleted.md");
+  const outsideWritten = path.join(outside, "written.md");
+  try {
+    await writeFile(outsideDeleted, "must remain");
+    await symlink(outside, path.join(root, "facts"), "dir");
+    const store = createDeletionRevisionStore(root);
+
+    await assert.rejects(
+      store.deleteManagedStorageFile(path.join(root, "facts", "deleted.md")),
+      /must not pass through a symlink/,
+    );
+    await assert.rejects(
+      store.writeManagedStorageFile(path.join(root, "facts", "written.md"), async () => {
+        await writeFile(outsideWritten, "must not write");
+      }),
+      /must not pass through a symlink/,
+    );
+    assert.equal(await readFile(outsideDeleted, "utf8"), "must remain");
+    await assert.rejects(
+      lstat(outsideWritten),
+      (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
   }
 });

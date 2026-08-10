@@ -1593,3 +1593,319 @@ test("lag tracker failures do not drop valid fallback timeline rows (#2119 revie
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("supersedeMemory commits dependency metadata atomically and treats an exact replay as idempotent", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-supersede-metadata-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "test",
+    });
+    const oldMemory = await storage.writeMemory("fact", "The original supporting claim.", {
+      source: "test",
+    });
+    const replacement = await storage.writeMemory("fact", "The replacement supporting claim.", {
+      source: "test",
+    });
+    const supersessionArgs = [
+      oldMemory.id,
+      replacement.id,
+      "dependency_propagation:contradiction",
+      { supersessionCause: "dependency", invalidatedBy: oldMemory.id },
+      { requireActive: true, acceptExactReplay: true },
+    ] as const;
+
+    assert.equal(await storage.supersedeMemory(...supersessionArgs), true);
+
+    const superseded = await storage.getMemoryById(oldMemory.id);
+    assert.equal(superseded?.frontmatter.status, "superseded");
+    assert.equal(superseded?.frontmatter.supersededBy, replacement.id);
+    assert.equal(superseded?.frontmatter.supersessionCause, "dependency");
+    assert.equal(superseded?.frontmatter.invalidatedBy, oldMemory.id);
+    const lifecycleEventCount = (await storage.readAllMemoryLifecycleEvents()).filter(
+      (event) => event.memoryId === oldMemory.id && event.eventType === "superseded",
+    ).length;
+    const memoryCount = (await storage.readAllMemories()).length;
+    const tombstoneCount = (await storage.getTombstoneStats())?.count;
+
+    assert.equal(await storage.supersedeMemory(...supersessionArgs), true);
+    assert.equal(
+      (await storage.readAllMemoryLifecycleEvents()).filter(
+        (event) => event.memoryId === oldMemory.id && event.eventType === "superseded",
+      ).length,
+      lifecycleEventCount,
+    );
+    assert.equal((await storage.readAllMemories()).length, memoryCount);
+    assert.equal((await storage.getTombstoneStats())?.count, tombstoneCount);
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+test("supersedeMemory exact replay restores post-frontmatter effects after a lifecycle crash", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-supersede-replay-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "test",
+    });
+    const oldMemory = await storage.writeMemory("fact", "The retired claim.", { source: "test" });
+    const replacement = await storage.writeMemory("fact", "The surviving claim.", { source: "test" });
+    const supersessionArgs = [
+      oldMemory.id,
+      replacement.id,
+      "dependency_propagation:contradiction",
+      { supersessionCause: "dependency", invalidatedBy: oldMemory.id },
+      { requireActive: true, acceptExactReplay: true },
+    ] as const;
+    const originalAppend = (storage as unknown as {
+      appendGeneratedMemoryLifecycleEventFailOpen: (...args: unknown[]) => Promise<void>;
+    }).appendGeneratedMemoryLifecycleEventFailOpen;
+    let crash = true;
+    (storage as unknown as {
+      appendGeneratedMemoryLifecycleEventFailOpen: (...args: unknown[]) => Promise<void>;
+    }).appendGeneratedMemoryLifecycleEventFailOpen = async (...args) => {
+      if (crash) {
+        crash = false;
+        throw new Error("simulated lifecycle crash");
+      }
+      return originalAppend.apply(storage, args);
+    };
+    const corpusBeforeReplay = storage.getMemoryCorpusVersion();
+    const statusBeforeReplay = storage.getMemoryStatusVersion();
+
+
+    assert.equal(await storage.supersedeMemory(...supersessionArgs), false);
+    assert.equal(await storage.supersedeMemory(...supersessionArgs), true);
+    assert.equal(
+      (await storage.readAllMemoryLifecycleEvents()).filter(
+        (event) => event.memoryId === oldMemory.id && event.eventType === "superseded",
+      ).length,
+      1,
+    );
+    assert.equal(
+      (await storage.readAllMemories()).filter(
+        (memory) => memory.frontmatter.category === "correction" && memory.content.includes("The retired claim."),
+      ).length,
+      1,
+    );
+    assert.equal((await storage.getTombstoneStats())?.count, 1);
+    assert.equal(storage.getMemoryCorpusVersion() > corpusBeforeReplay, true);
+    assert.equal(storage.getMemoryStatusVersion() > statusBeforeReplay, true);
+    const counts = {
+      lifecycle: (await storage.readAllMemoryLifecycleEvents()).length,
+      memories: (await storage.readAllMemories()).length,
+      tombstones: (await storage.getTombstoneStats())?.count ?? 0,
+    };
+    assert.equal(await storage.supersedeMemory(...supersessionArgs), true);
+    assert.deepEqual(
+      {
+        lifecycle: (await storage.readAllMemoryLifecycleEvents()).length,
+        memories: (await storage.readAllMemories()).length,
+        tombstones: (await storage.getTombstoneStats())?.count ?? 0,
+      },
+      counts,
+    );
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("supersedeMemory replay repairs every post-frontmatter phase exactly once", async () => {
+  type Phase = "entity" | "corpus" | "lifecycle" | "status" | "tombstone" | "audit";
+  const phases: Phase[] = ["entity", "corpus", "lifecycle", "status", "tombstone", "audit"];
+
+  for (const phase of phases) {
+    const memoryDir = await mkdtemp(path.join(os.tmpdir(), `remnic-supersede-${phase}-`));
+    try {
+      const storage = new StorageManager(memoryDir);
+      await storage.ensureDirectories();
+      storage.setTombstonesConfig({
+        enabled: true,
+        semanticMatch: false,
+        semanticThreshold: 0.9,
+        namespace: "test",
+      });
+      const oldMemory = await storage.writeMemory("fact", `Retired claim for ${phase}.`, {
+        source: "test",
+        ...(phase === "entity" ? { entityRef: "person-test" } : {}),
+      });
+      const replacement = await storage.writeMemory("fact", `Surviving claim for ${phase}.`, {
+        source: "test",
+      });
+      const supersessionArgs = [
+        oldMemory.id,
+        replacement.id,
+        "dependency_propagation:contradiction",
+        { supersessionCause: "dependency", invalidatedBy: oldMemory.id },
+        { requireActive: true, acceptExactReplay: true },
+      ] as const;
+      let crash = true;
+      let phaseCalls = 0;
+      const failOnce = <T extends (...args: never[]) => unknown>(original: T): T =>
+        ((...args: never[]) => {
+          phaseCalls += 1;
+          if (crash) {
+            crash = false;
+            throw new Error(`simulated ${phase} crash`);
+          }
+          return original(...args);
+        }) as T;
+      if (phase === "entity") {
+        const seams = storage as unknown as {
+          entityRefRepair: { repair: (...args: never[]) => Promise<void> };
+        };
+        seams.entityRefRepair.repair = failOnce(seams.entityRefRepair.repair.bind(seams.entityRefRepair));
+      } else if (phase === "corpus") {
+        const seams = storage as unknown as { bumpMemoryCorpusVersion: () => void };
+        seams.bumpMemoryCorpusVersion = failOnce(seams.bumpMemoryCorpusVersion.bind(storage));
+      } else if (phase === "lifecycle") {
+        const seams = storage as unknown as {
+          appendGeneratedMemoryLifecycleEventFailOpen: (...args: never[]) => Promise<void>;
+        };
+        seams.appendGeneratedMemoryLifecycleEventFailOpen = failOnce(
+          seams.appendGeneratedMemoryLifecycleEventFailOpen.bind(storage),
+        );
+      } else if (phase === "status") {
+        const seams = storage as unknown as { bumpMemoryStatusVersion: () => void };
+        seams.bumpMemoryStatusVersion = failOnce(seams.bumpMemoryStatusVersion.bind(storage));
+      } else if (phase === "tombstone") {
+        const seams = storage as unknown as {
+          appendTombstone: (...args: never[]) => Promise<string | null>;
+        };
+        seams.appendTombstone = failOnce(seams.appendTombstone.bind(storage));
+      } else {
+        const seams = storage as unknown as {
+          writeMemory: (...args: never[]) => Promise<unknown>;
+        };
+        const originalWriteMemory = seams.writeMemory.bind(storage);
+        seams.writeMemory = async (...args) => {
+          phaseCalls += 1;
+          if (crash) {
+            crash = false;
+            throw new Error(`simulated ${phase} crash`);
+          }
+          return originalWriteMemory(...args);
+        };
+      }
+
+      assert.equal(await storage.supersedeMemory(...supersessionArgs), false, phase);
+      assert.equal(await storage.supersedeMemory(...supersessionArgs), true, phase);
+      assert.equal(phaseCalls >= 2, true, phase);
+      assert.equal(
+        (await storage.readAllMemoryLifecycleEvents()).filter(
+          (event) => event.memoryId === oldMemory.id && event.eventType === "superseded",
+        ).length,
+        1,
+        phase,
+      );
+      assert.equal(
+        (await storage.readAllMemories()).filter(
+          (memory) =>
+            memory.frontmatter.category === "correction" &&
+            memory.content.includes(`Retired claim for ${phase}.`),
+        ).length,
+        1,
+        phase,
+      );
+      assert.equal((await storage.getTombstoneStats())?.count, 1, phase);
+      const counts = {
+        lifecycle: (await storage.readAllMemoryLifecycleEvents()).length,
+        memories: (await storage.readAllMemories()).length,
+        tombstones: (await storage.getTombstoneStats())?.count ?? 0,
+      };
+      assert.equal(await storage.supersedeMemory(...supersessionArgs), true, phase);
+      assert.deepEqual(
+        {
+          lifecycle: (await storage.readAllMemoryLifecycleEvents()).length,
+          memories: (await storage.readAllMemories()).length,
+          tombstones: (await storage.getTombstoneStats())?.count ?? 0,
+        },
+        counts,
+        phase,
+      );
+    } finally {
+      StorageManager.clearAllStaticCaches();
+      await rm(memoryDir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("hasExactTombstone proves every durable replay discriminator", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-exact-tombstone-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    storage.setTombstonesConfig({
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      namespace: "test",
+    });
+    const input = {
+      reason: "contradiction_resolution" as const,
+      createdBy: "contradiction_resolution" as const,
+      sourceMemoryId: "retired-memory",
+      rawContent: "Retired content",
+      contentHash: "hash-retired",
+      entityRef: "person-test",
+      supersessionKey: "person-test::state",
+      createdAt: "2026-08-09T00:00:00.000Z",
+      operationKey: "operation-1:tombstone:state",
+    };
+    assert.equal(await storage.appendTombstone(input) !== null, true);
+    assert.equal(await storage.hasExactTombstone(input), true);
+    assert.equal(
+      await storage.hasExactTombstone({ ...input, supersessionKey: "person-test::other" }),
+      false,
+    );
+    assert.equal(await storage.hasExactTombstone({ ...input, sourceMemoryId: "other-memory" }), false);
+    assert.equal(await storage.hasExactTombstone({ ...input, operationKey: "operation-2" }), false);
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("supersedeMemory active-state guard preserves a newer supersession", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-supersede-cas-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    const dependent = await storage.writeMemory("fact", "A dependent claim.", { source: "test" });
+    const newerReplacement = await storage.writeMemory("fact", "A newer correction.", {
+      source: "test",
+    });
+
+    assert.equal(
+      await storage.supersedeMemory(dependent.id, newerReplacement.id, "newer correction"),
+      true,
+    );
+    assert.equal(
+      await storage.supersedeMemory(
+        dependent.id,
+        "stale-propagation-replacement",
+        "dependency_propagation:contradiction",
+        { supersessionCause: "dependency", invalidatedBy: "old-support" },
+        { requireActive: true },
+      ),
+      false,
+    );
+
+    const preserved = await storage.getMemoryById(dependent.id);
+    assert.equal(preserved?.frontmatter.supersededBy, newerReplacement.id);
+    assert.equal(preserved?.frontmatter.supersessionCause, undefined);
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

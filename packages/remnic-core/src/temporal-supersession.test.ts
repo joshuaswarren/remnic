@@ -8,6 +8,7 @@ import { StorageManager, normalizeAttributePairs } from "./storage.js";
 import { sanitizeMemoryContent } from "./sanitize.js";
 import {
   applyTemporalSupersession,
+  applyTemporalSupersessionPrimaryMutation,
   computeSupersessionKey,
   lookupAttributeByNormalizedKey,
   normalizeSupersessionKey,
@@ -15,8 +16,9 @@ import {
   shouldSupersedeExisting,
   supersessionKeysForFact,
 } from "./temporal-supersession.js";
-import type { MemoryFrontmatter } from "./types.js";
-
+import type { MemoryFile, MemoryFrontmatter } from "./types.js";
+import type { DependencyPropagationPreparationToken } from "./orchestration/dependency-propagation-delivery.js";
+import type { PropagationEvent } from "./orchestration/dependency-propagation.js";
 const TEST_ENTITY = "project-x";
 
 async function makeStorage(prefix = "engram-temporal-supersession-"): Promise<{
@@ -2035,6 +2037,70 @@ test("applyTemporalSupersession: hash-dedup path — supersedes older conflictin
     await cleanup();
   }
 });
+test("applyTemporalSupersession: cold-only dedup replacement keeps propagation content replayable", async () => {
+  const { storage, cleanup } = await makeStorage("engram-cold-dedup-replay-");
+  try {
+    const staleId = await writeFact(storage, "entity lives in Austin", TEST_ENTITY, { city: "Austin" });
+    storage.invalidateAllMemoriesCacheForDir();
+    const stale = (await storage.readAllMemories()).find((memory) => memory.frontmatter.id === staleId);
+    assert.ok(stale);
+    await storage.writeMemoryFrontmatter(stale, {
+      created: "2026-01-01T00:00:00.000Z",
+      updated: "2026-01-01T00:00:00.000Z",
+    });
+    storage.invalidateAllMemoriesCacheForDir();
+    const replacementId = await writeFact(
+      storage,
+      "entity relocated to NYC",
+      TEST_ENTITY,
+      { city: "NYC" },
+    );
+    const coldPath = await migrateFactToCold(storage, replacementId);
+    const coldReplacement = await storage.readMemoryByPath(coldPath);
+    assert.ok(coldReplacement);
+
+    const preparedEvents: PropagationEvent[] = [];
+    const delivery = {
+      async prepare(event: PropagationEvent): Promise<DependencyPropagationPreparationToken> {
+        preparedEvents.push(event);
+        return {
+          jobId: "cold-dedup-replay",
+          revision: 0,
+          ownsPreparedJob: true,
+          reservationId: "cold-dedup-replay-reservation",
+        };
+      },
+      async afterMutation(
+        _token: DependencyPropagationPreparationToken | null,
+        event: PropagationEvent,
+      ): Promise<void> {
+        preparedEvents.push(event);
+      },
+      async cancel(_token: DependencyPropagationPreparationToken | null): Promise<void> {},
+      async deferPrepared(_token: DependencyPropagationPreparationToken | null): Promise<void> {},
+    };
+
+    const result = await applyTemporalSupersession({
+      storage,
+      newMemoryId: replacementId,
+      entityRef: TEST_ENTITY,
+      structuredAttributes: { city: "NYC" },
+      createdAt: new Date().toISOString(),
+      enabled: true,
+      namespaceScope: "default",
+      dependencyPropagationDelivery: delivery,
+    });
+
+    assert.deepEqual(result.supersededIds, [staleId]);
+    assert.equal(preparedEvents.length, 2);
+    for (const preparedEvent of preparedEvents) {
+      assert.equal(preparedEvent.replacementId, replacementId);
+      assert.equal(preparedEvent.replacementContent, coldReplacement.content);
+    }
+  } finally {
+    await cleanup();
+  }
+});
 
 // ─── Regression: Finding UvU1 — hash-dedup path must use current write time ──
 //
@@ -2768,4 +2834,274 @@ test("normalizeAttributePairs + sanitizeMemoryContent: normalizedIncoming uses s
   } finally {
     await cleanup();
   }
+});
+function recoveryMemory(id: string, parentId?: string): MemoryFile {
+  return {
+    path: `/synthetic/temporal/${id}.md`,
+    content: `content-${id}`,
+    frontmatter: {
+      id,
+      category: "fact",
+      created: "2026-01-01T00:00:00.000Z",
+      updated: "2026-01-01T00:00:00.000Z",
+      source: "synthetic",
+      confidence: 0.9,
+      confidenceTier: "explicit",
+      tags: [],
+      status: "active",
+      ...(parentId ? { parentId } : {}),
+    },
+  } as MemoryFile;
+}
+
+function recoveryStorage(options: {
+  parent: MemoryFile;
+  child: MemoryFile;
+  replacement: MemoryFile;
+  failHot?: boolean;
+  failCold?: boolean;
+  crashAfterParentWrite?: boolean;
+  durableTombstones?: Set<string>;
+}) {
+  const lifecycleEvents: Array<{
+    eventId: string;
+    memoryId: string;
+    eventType: "superseded" | "updated";
+    timestamp: string;
+    actor: string;
+    ruleVersion: string;
+    relatedMemoryIds: string[];
+    after: { status: "superseded" };
+    correlationId?: string;
+  }> = [];
+  const durableTombstones = options.durableTombstones ?? new Set<string>();
+  const tombstoneKeys = new Set<string>();
+  const writes: string[] = [];
+  const tombstones: string[] = [];
+  let crashAfterParentWrite = options.crashAfterParentWrite ?? false;
+  const storage = {
+    async readAllMemories(): Promise<MemoryFile[]> {
+      if (options.failHot) throw new Error("hot scan unavailable");
+      return [options.parent, options.child, options.replacement];
+    },
+    async readAllColdMemories(): Promise<MemoryFile[]> {
+      if (options.failCold) throw new Error("cold scan unavailable");
+      return [];
+    },
+    async readMemoryByPath(memoryPath: string): Promise<MemoryFile | null> {
+      return [options.parent, options.child, options.replacement].find(
+        (memory) => memory.path === memoryPath,
+      ) ?? null;
+    },
+    async writeMemoryFrontmatter(
+      memory: MemoryFile,
+      patch: Partial<MemoryFrontmatter>,
+      lifecycle?: {
+        actor?: string;
+        reasonCode?: string;
+        relatedMemoryIds?: string[];
+        correlationId?: string;
+      },
+    ): Promise<boolean> {
+      Object.assign(memory.frontmatter, patch);
+      writes.push(memory.frontmatter.id);
+      if (memory.frontmatter.id === options.parent.frontmatter.id && crashAfterParentWrite) {
+        crashAfterParentWrite = false;
+        throw new Error("crash after parent frontmatter write");
+      }
+      lifecycleEvents.push({
+        eventId: `event-${lifecycleEvents.length + 1}`,
+        memoryId: memory.frontmatter.id,
+        eventType: memory.frontmatter.status === "superseded" ? "superseded" : "updated",
+        timestamp: lifecycle?.reasonCode?.includes("structured")
+          ? (memory.frontmatter.supersededAt ?? memory.frontmatter.updated)
+          : memory.frontmatter.updated,
+        actor: lifecycle?.actor ?? "synthetic",
+        ruleVersion: "synthetic",
+        relatedMemoryIds: lifecycle?.relatedMemoryIds ?? [],
+        after: { status: "superseded" },
+        ...(lifecycle?.correlationId ? { correlationId: lifecycle.correlationId } : {}),
+      });
+      return true;
+    },
+    async writeMemoryFrontmatterIfUnchanged(
+      memory: MemoryFile,
+      patch: Partial<MemoryFrontmatter>,
+      lifecycle?: {
+        actor?: string;
+        reasonCode?: string;
+        relatedMemoryIds?: string[];
+        correlationId?: string;
+      },
+    ): Promise<boolean> {
+      return storage.writeMemoryFrontmatter(memory, patch, lifecycle);
+    },
+    async appendTombstone(input: {
+      sourceMemoryId: string;
+      supersessionKey?: string;
+      operationKey?: string;
+    }): Promise<string> {
+      const key = input.supersessionKey ?? "content";
+      tombstoneKeys.add(key);
+      durableTombstones.add(
+        `${input.sourceMemoryId}|${key}|${input.operationKey ?? ""}`,
+      );
+      tombstones.push(key);
+      return `tombstone-${tombstones.length}`;
+    },
+    async hasExactTombstone(input: {
+      sourceMemoryId: string;
+      supersessionKey?: string;
+      operationKey?: string;
+    }): Promise<boolean> {
+      return durableTombstones.has(
+        `${input.sourceMemoryId}|${input.supersessionKey ?? "content"}|${input.operationKey ?? ""}`,
+      );
+    },
+    async getMemoryTimeline(memoryId: string) {
+      return lifecycleEvents.filter((event) => event.memoryId === memoryId);
+    },
+    async getTombstoneStore() {
+      return {
+        lookup(query: { supersessionKey?: string }): unknown | null {
+          return tombstoneKeys.has(query.supersessionKey ?? "content") ? { tombstoneId: "existing" } : null;
+        },
+      };
+    },
+    isTombstonesEnabled: () => true,
+  };
+  return { storage, lifecycleEvents, writes, tombstones };
+}
+
+test("primary temporal recovery retains the prepared work when the hot scan fails", async () => {
+  const parent = recoveryMemory("old");
+  const child = recoveryMemory("old-child", "old");
+  const replacement = recoveryMemory("new");
+  const fixture = recoveryStorage({ parent, child, replacement, failHot: true });
+  const mutation = {
+    supersededAt: "2026-02-01T00:00:00.000Z",
+    matchedKeys: ["project-x::city"],
+  };
+
+  const completed = await applyTemporalSupersessionPrimaryMutation({
+    storage: fixture.storage,
+    oldMemory: parent,
+    replacementId: replacement.frontmatter.id,
+    mutation,
+  });
+
+  assert.equal(completed, false);
+  assert.equal(parent.frontmatter.status, "superseded");
+  assert.equal(child.frontmatter.status, "active");
+  assert.deepEqual(fixture.tombstones, []);
+});
+
+test("primary temporal recovery retains the prepared work when the cold scan fails", async () => {
+  const parent = recoveryMemory("old");
+  const child = recoveryMemory("old-child", "old");
+  const replacement = recoveryMemory("new");
+  const fixture = recoveryStorage({ parent, child, replacement, failCold: true });
+
+  const completed = await applyTemporalSupersessionPrimaryMutation({
+    storage: fixture.storage,
+    oldMemory: parent,
+    replacementId: replacement.frontmatter.id,
+    mutation: {
+      supersededAt: "2026-02-01T00:00:00.000Z",
+      matchedKeys: ["project-x::city"],
+    },
+  });
+
+  assert.equal(completed, false);
+  assert.equal(parent.frontmatter.status, "superseded");
+  assert.equal(child.frontmatter.status, "active");
+  assert.deepEqual(fixture.tombstones, []);
+});
+
+test("primary temporal recovery replays the parent ledger, child expiry, and tombstone exactly once", async () => {
+  const parent = recoveryMemory("old");
+  const child = recoveryMemory("old-child", "old");
+  const replacement = recoveryMemory("new");
+  const fixture = recoveryStorage({
+    parent,
+    child,
+    replacement,
+    crashAfterParentWrite: true,
+  });
+  const mutation = {
+    supersededAt: "2026-02-01T00:00:00.000Z",
+    matchedKeys: ["project-x::city"],
+  };
+  const input = {
+    storage: fixture.storage,
+    oldMemory: parent,
+    replacementId: replacement.frontmatter.id,
+    mutation,
+  };
+
+  await assert.rejects(applyTemporalSupersessionPrimaryMutation(input));
+  assert.equal(parent.frontmatter.status, "superseded");
+  assert.equal(child.frontmatter.status, "active");
+
+  assert.equal(await applyTemporalSupersessionPrimaryMutation(input), true);
+  assert.equal(await applyTemporalSupersessionPrimaryMutation(input), true);
+  assert.equal(child.frontmatter.status, "superseded");
+  assert.deepEqual(fixture.writes, ["old", "old", "old-child"]);
+  assert.deepEqual(fixture.tombstones, ["project-x::city"]);
+  assert.equal(
+    fixture.lifecycleEvents.filter((event) => event.memoryId === "old").length,
+    1,
+  );
+  assert.equal(
+    fixture.lifecycleEvents.filter((event) => event.memoryId === "old-child").length,
+    1,
+  );
+});
+
+test("primary temporal recovery keeps both tombstones across a restart", async () => {
+  const parent = recoveryMemory("old");
+  parent.frontmatter.entityRef = TEST_ENTITY;
+  parent.frontmatter.contentHash = "hash-old";
+  const child = recoveryMemory("old-child", "old");
+  const replacement = recoveryMemory("new");
+  const durableTombstones = new Set<string>();
+  const mutation = {
+    supersededAt: "2026-02-01T00:00:00.000Z",
+    matchedKeys: ["project-x::city", "project-x::tool"],
+  };
+
+  const first = recoveryStorage({
+    parent,
+    child,
+    replacement,
+    durableTombstones,
+  });
+  assert.equal(
+    await applyTemporalSupersessionPrimaryMutation({
+      storage: first.storage,
+      oldMemory: parent,
+      replacementId: replacement.frontmatter.id,
+      mutation,
+      allCandidates: [child],
+    }),
+    true,
+  );
+  assert.deepEqual(first.tombstones.sort(), ["project-x::city", "project-x::tool"]);
+
+  const restarted = recoveryStorage({
+    parent,
+    child,
+    replacement,
+    durableTombstones,
+  });
+  assert.equal(
+    await applyTemporalSupersessionPrimaryMutation({
+      storage: restarted.storage,
+      oldMemory: parent,
+      replacementId: replacement.frontmatter.id,
+      mutation,
+    }),
+    true,
+  );
+  assert.deepEqual(restarted.tombstones, []);
 });

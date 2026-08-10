@@ -183,3 +183,13 @@ test("logExtractionQueueFailure names the right layer (task vs processor)", asyn
     ),
   );
 });
+
+
+test("stopAccepting rejects new producers until resume", async () => {
+  const coordinator = createCoordinator();
+  coordinator.stopAccepting();
+  assert.equal(coordinator.enqueue(async () => {}), false);
+  coordinator.resumeAccepting();
+  assert.equal(coordinator.enqueue(async () => {}), true);
+  assert.equal(await coordinator.pauseAndDrain(), true);
+});

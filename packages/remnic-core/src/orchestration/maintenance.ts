@@ -126,7 +126,8 @@ export class MaintenanceScheduler {
   // ── Consolidation scheduling state ──
   private nonZeroExtractionsSinceConsolidation = 0;
   private lastConsolidationRunAtMs = 0;
-  private consolidationInFlight = false;
+  private consolidationRunPromise: Promise<unknown> | null = null;
+  private disposed = false;
 
   // ── QMD maintenance scheduling state ──
   private qmdMaintenanceTimer: NodeJS.Timeout | null = null;
@@ -442,15 +443,17 @@ export class MaintenanceScheduler {
     ) {
       return;
     }
-    if (this.consolidationInFlight) return;
+    if (this.disposed || this.consolidationRunPromise) return;
 
-    this.consolidationInFlight = true;
     this.lastConsolidationRunAtMs = now;
     this.nonZeroExtractionsSinceConsolidation = 0;
-    runConsolidation()
-      .catch((err) => log.error("background consolidation failed", err))
+    this.consolidationRunPromise = Promise.resolve()
+      .then(runConsolidation)
+      .catch((err) => {
+        log.error("background consolidation failed", err);
+      })
       .finally(() => {
-        this.consolidationInFlight = false;
+        this.consolidationRunPromise = null;
       });
   }
 
@@ -458,7 +461,7 @@ export class MaintenanceScheduler {
    *  the orchestrator's waitForConsolidationIdle can poll idle state without
    *  owning the cadence state (issue #1526 PR1). */
   isConsolidationInFlight(): boolean {
-    return this.consolidationInFlight;
+    return this.consolidationRunPromise !== null;
   }
 
   /** Whether a debounced QMD maintenance pass is armed and waiting for the
@@ -1174,6 +1177,8 @@ export class MaintenanceScheduler {
    * teardown. Async: awaits the scheduler's abort+drain before resolving.
    */
   async dispose(): Promise<void> {
+    this.disposed = true;
+    const consolidationDrain = this.consolidationRunPromise;
     // The registrar latches teardown first (so a draining tick's onRun cannot
     // re-arm QMD maintenance) and aborts+drains the sync. Capture its drain and
     // await it last so the rest of teardown runs while the aborted tick unwinds.
@@ -1190,5 +1195,6 @@ export class MaintenanceScheduler {
       this.qmdMaintenanceTimer = null;
     }
     this.qmdMaintenancePending = false;
+    if (consolidationDrain) await consolidationDrain;
   }
 }
