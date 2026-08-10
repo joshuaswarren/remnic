@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${PLUGIN_ROOT}/hooks/bin/remnic-codex-hook.sh\" session-start",
+            "command": "sh \"${PLUGIN_ROOT}/hooks/bin/remnic-codex-hook.sh\" session-start",
             "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}\\hooks\\bin\\remnic-codex-hook.ps1\" session-start",
             "timeout": 45
           }
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${PLUGIN_ROOT}/hooks/bin/remnic-codex-hook.sh\" post-tool-observe",
+            "command": "sh \"${PLUGIN_ROOT}/hooks/bin/remnic-codex-hook.sh\" post-tool-observe",
             "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}\\hooks\\bin\\remnic-codex-hook.ps1\" post-tool-observe",
             "timeout": 10
           }
@@ -32,7 +32,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${PLUGIN_ROOT}/hooks/bin/remnic-codex-hook.sh\" user-prompt-recall",
+            "command": "sh \"${PLUGIN_ROOT}/hooks/bin/remnic-codex-hook.sh\" user-prompt-recall",
             "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}\\hooks\\bin\\remnic-codex-hook.ps1\" user-prompt-recall",
             "timeout": 20
           }
@@ -45,7 +45,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${PLUGIN_ROOT}/hooks/bin/remnic-codex-hook.sh\" session-end",
+            "command": "sh \"${PLUGIN_ROOT}/hooks/bin/remnic-codex-hook.sh\" session-end",
             "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}\\hooks\\bin\\remnic-codex-hook.ps1\" session-end",
             "timeout": 30
           }
@@ -58,7 +58,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${PLUGIN_ROOT}/hooks/bin/remnic-codex-hook.sh\" pre-compact",
+            "command": "sh \"${PLUGIN_ROOT}/hooks/bin/remnic-codex-hook.sh\" pre-compact",
             "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}\\hooks\\bin\\remnic-codex-hook.ps1\" pre-compact",
             "timeout": 90
           }
