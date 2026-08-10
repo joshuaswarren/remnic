@@ -1,17 +1,12 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { readFile, unlink } from "node:fs/promises";
 import path from "node:path";
 
 import type { ExtractionEngine } from "../extraction.js";
 import { log } from "../logger.js";
 import { resolveSafeStoragePath } from "../storage-paths.js";
-import type { MemoryFile, PluginConfig } from "../types.js";
-import { sanitizeMemoryContent } from "../sanitize.js";
+import type { PluginConfig } from "../types.js";
 import { listJsonFilesStrict, withJsonStoreMutationLock, writeJsonFileAtomic } from "../json-store.js";
-import {
-  applyTemporalSupersessionPrimaryMutation,
-  type TemporalSupersessionStorage,
-} from "../temporal-supersession.js";
 import {
   isDependencyPropagationEnabled,
   propagateInvalidation,
@@ -20,15 +15,19 @@ import {
 } from "./dependency-propagation.js";
 import {
   canonicalEvent,
-  canonicalize,
   compareByteStable,
   eventJobId,
   isNotFound,
   isPropagationEvent,
   JOB_STATES,
-  matchesPreparedSource,
   validateJob,
 } from "./dependency-propagation-queue-state.js";
+import {
+  memoryFingerprint,
+  readCurrentReplacementEvent,
+  replayPrimaryMutation,
+  type DependencyPropagationRecoveryStorage,
+} from "./dependency-propagation-recovery-replay.js";
 export type DependencyPropagationJobStatus =
   | "prepared"
   | "ready"
@@ -118,29 +117,6 @@ type JobEntry = {
   job: DependencyPropagationJob;
   filePath: string;
 };
-type DependencyPropagationRecoveryStorage = DependencyPropagationStorage & {
-  readAllColdMemories?: () => Promise<MemoryFile[]>;
-  readArchivedMemories?: () => Promise<MemoryFile[]>;
-  hasCommittedInvalidation?: (memory: Pick<MemoryFile, "content" | "frontmatter">) => Promise<boolean>;
-  clearCommittedInvalidation?: (
-    memory: Pick<MemoryFile, "content" | "frontmatter">,
-  ) => Promise<void>;
-  invalidateMemory?: (
-    id: string,
-    snapshot?: Pick<MemoryFile, "content" | "frontmatter"> & Partial<Pick<MemoryFile, "path">>,
-    options?: { recordCommitProof?: boolean },
-  ) => Promise<boolean>;
-  updateMemoryIfUnchanged?: (
-    expected: MemoryFile,
-    content: string,
-    options?: {
-      supersedes?: string;
-      lineage?: string[];
-      actor?: string;
-      sourceConnector?: string;
-    },
-  ) => Promise<boolean>;
-};
 const DEFAULT_RETRY_DELAY_MS = 1_000;
 const DEFAULT_LEASE_MS = 60_000;
 const DEFAULT_MAX_ATTEMPTS = 3;
@@ -158,10 +134,6 @@ class QueueJobTooLargeError extends Error {
 function formatStoredError(error: unknown): string {
   const text = String(error);
   return text.length > MAX_STORED_ERROR_LENGTH ? text.slice(0, MAX_STORED_ERROR_LENGTH) : text;
-}
-function memoryFingerprint(memory: Pick<MemoryFile, "content" | "frontmatter">): string {
-  const { accessCount: _accessCount, lastAccessed: _lastAccessed, ...frontmatter } = memory.frontmatter;
-  return createHash("sha256").update(JSON.stringify(canonicalize({ content: memory.content, frontmatter }))).digest("hex");
 }
 
 function chooseEntry(entries: JobEntry[]): JobEntry | undefined {
@@ -593,7 +565,7 @@ export class DependencyPropagationDelivery {
     try {
       const storage = await this.getStorage(claimed.event.namespaceScope);
       const replayed = await this.withCurrentLease(claimed, () =>
-        this.replayPrimaryMutation(
+        replayPrimaryMutation(
           storage,
           claimed.event,
           claimed.preparedReplacementFingerprint,
@@ -821,41 +793,6 @@ export class DependencyPropagationDelivery {
     return entries;
   }
 
-  private async findRecoverySource(
-    storage: DependencyPropagationRecoveryStorage,
-    sourceId: string,
-  ): Promise<MemoryFile | null> {
-    const hot = await storage.getMemoryById(sourceId);
-    if (hot?.frontmatter.id === sourceId) return hot;
-    if (storage.readAllColdMemories) {
-      const cold = await storage.readAllColdMemories();
-      const coldMatch = cold.find((memory) => memory.frontmatter.id === sourceId);
-      if (coldMatch) return coldMatch;
-    }
-    if (storage.readArchivedMemories) {
-      const archived = await storage.readArchivedMemories();
-      const archivedMatch = archived.find((memory) => memory.frontmatter.id === sourceId);
-      if (archivedMatch) return archivedMatch;
-    }
-    return null;
-  }
-  private async readCurrentReplacementEvent(
-    storage: DependencyPropagationStorage,
-    event: PropagationEvent,
-  ): Promise<PropagationEvent | null> {
-    if (event.replacementId === null) return event;
-    const replacement = await this.findRecoverySource(
-      storage as DependencyPropagationRecoveryStorage,
-      event.replacementId,
-    );
-    if (!replacement) return null;
-    return {
-      ...event,
-      replacementContent: replacement.content,
-    };
-  }
-
-
   private async clearCommittedInvalidationProof(job: DependencyPropagationJob): Promise<boolean> {
     if (
       job.event.cause !== "consolidation_invalidate" &&
@@ -875,124 +812,6 @@ export class DependencyPropagationDelivery {
       log.warn(`dependency propagation invalidation proof cleanup failed: ${error}`);
       return false;
     }
-  }
-
-  private async replayPrimaryMutation(
-    sourceStorage: DependencyPropagationStorage,
-    event: PropagationEvent,
-    preparedReplacementFingerprint?: string,
-  ): Promise<boolean> {
-    const storage = sourceStorage as DependencyPropagationRecoveryStorage;
-    const source = await this.findRecoverySource(storage, event.oldMemory.frontmatter.id);
-    const primaryApplied =
-      source?.frontmatter.status === "superseded" &&
-      source.frontmatter.supersededBy === event.replacementId;
-
-    if (event.cause === "temporal_supersession") {
-      if (!event.replacementId || !event.temporalMutation || !source) return false;
-      const temporalPrimaryApplied =
-        primaryApplied &&
-        source.frontmatter.supersededAt === event.temporalMutation.supersededAt &&
-        (event.temporalMutation.invalidAt === undefined ||
-          source.frontmatter.invalid_at === event.temporalMutation.invalidAt);
-      if (!temporalPrimaryApplied) {
-        const replacement = await this.findRecoverySource(storage, event.replacementId);
-        if (
-          event.replacementContent === null ||
-          !replacement ||
-          replacement.frontmatter.id !== event.replacementId ||
-          replacement.content !== event.replacementContent
-        ) return false;
-        if (!matchesPreparedSource(source, event.oldMemory)) return false;
-      }
-      return await applyTemporalSupersessionPrimaryMutation({
-        storage: sourceStorage as unknown as TemporalSupersessionStorage,
-        oldMemory: source,
-        replacementId: event.replacementId,
-        mutation: event.temporalMutation,
-      });
-    }
-
-    if (event.cause === "contradiction") {
-      if (!event.replacementId || !source) return false;
-      if (primaryApplied) return true;
-      const replacement = await this.findRecoverySource(storage, event.replacementId);
-      if (
-        event.replacementContent === null ||
-        !replacement ||
-        replacement.frontmatter.id !== event.replacementId ||
-        replacement.content !== event.replacementContent
-      ) return false;
-      if (!matchesPreparedSource(source, event.oldMemory)) return false;
-      return await storage.supersedeMemory(
-        event.oldMemory.frontmatter.id,
-        event.replacementId,
-        `dependency_propagation:${event.cause}`,
-        undefined,
-        { requireActive: true, acceptExactReplay: true, expectedSnapshot: source },
-      );
-    }
-
-    if (event.cause === "consolidation_invalidate") {
-      if (!source) {
-        return storage.hasCommittedInvalidation
-          ? await storage.hasCommittedInvalidation(event.oldMemory)
-          : false;
-      }
-      if (!storage.invalidateMemory || !matchesPreparedSource(source, event.oldMemory)) return false;
-      return await storage.invalidateMemory(source.frontmatter.id, source, {
-        recordCommitProof: true,
-      });
-    }
-
-    if (
-      !event.replacementId ||
-      event.replacementContent === null ||
-      !storage.updateMemoryIfUnchanged
-    ) {
-      return false;
-    }
-    const replacement = await this.findRecoverySource(storage, event.replacementId);
-    const persistedReplacementContent = sanitizeMemoryContent(event.replacementContent).text;
-    if (
-      replacement &&
-      replacement.frontmatter.supersedes === event.oldMemory.frontmatter.id &&
-      replacement.content !== persistedReplacementContent
-    ) {
-      return false;
-    }
-    const mergeAlreadyApplied =
-      replacement !== null &&
-      replacement.frontmatter.supersedes === event.oldMemory.frontmatter.id &&
-      replacement.content === persistedReplacementContent;
-    if (!source) {
-      if (!storage.hasCommittedInvalidation) return false;
-      return await storage.hasCommittedInvalidation(event.oldMemory);
-    }
-    if (
-      preparedReplacementFingerprint &&
-      source &&
-      !mergeAlreadyApplied &&
-      (!replacement || memoryFingerprint(replacement) !== preparedReplacementFingerprint)
-    ) {
-      return false;
-    }
-    if (!replacement || !matchesPreparedSource(source, event.oldMemory)) return false;
-    if (!mergeAlreadyApplied) {
-      const updated = await storage.updateMemoryIfUnchanged(
-        replacement,
-        event.replacementContent,
-        {
-          supersedes: event.oldMemory.frontmatter.id,
-          lineage: [event.replacementId, event.oldMemory.frontmatter.id],
-        },
-      );
-      if (!updated) return false;
-    }
-    if (!storage.invalidateMemory) return false;
-    return await storage.invalidateMemory(source.frontmatter.id, source, {
-      recordCommitProof: true,
-    });
   }
 
   private async retainPreparedJob(job: DependencyPropagationJob, error: unknown): Promise<boolean> {
@@ -1180,7 +999,7 @@ export class DependencyPropagationDelivery {
     heartbeat.unref();
     try {
       const storage = await this.getStorage(job.event.namespaceScope);
-      const currentEvent = await this.readCurrentReplacementEvent(storage, job.event);
+      const currentEvent = await readCurrentReplacementEvent(storage, job.event);
       if (currentEvent === null) {
         await this.finishAttempt(job, new Error("persisted replacement is missing"));
         return;

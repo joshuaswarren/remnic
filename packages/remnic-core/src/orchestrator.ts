@@ -128,6 +128,7 @@ import {
   type DependencyPropagationDeliveryPort,
 } from "./orchestration/dependency-propagation-delivery.js";
 import { isDependencyPropagationEnabled } from "./orchestration/dependency-propagation.js";
+import { createDependencyPropagationReplayReconciliation } from "./orchestration/dependency-propagation-replay-reconciliation.js";
 import { RecallInternalCoordinator } from "./orchestration/recall-internal.js";
 import { RecallSearchPipelineCoordinator } from "./orchestration/recall-search-pipeline.js";
 import type { GraphRecallExpansionOptions, GraphRecallExpansionResult } from "./orchestration/graph-recall-seam.js";
@@ -356,7 +357,6 @@ import {
   recencyWindowFromPrompt,
   extractTagsFromPrompt,
   resolvePromptTagPrefilterAsync,
-  deindexMemoriesBatchAsync,
 } from "./temporal-index.js";
 import { GraphIndex } from "./graph.js";
 import {
@@ -378,7 +378,6 @@ import { resolveNamespaceCapabilities,
   resolveCapabilities,
   resolveGraphConstructionCapabilities,
   resolveMemoryLifecycleCapabilities,
-  resolveIndexingCapabilities,
   resolveCreationMemoryCapabilities,
   type CapabilitySet,
   type GraphConstructionCapabilitySet,
@@ -755,32 +754,7 @@ export class Orchestrator {
         readQueueFile: (filePath) => this.storage.readDependencyPropagationQueueFile(filePath),
         writeQueueFile: (filePath, content) => this.storage.writeDependencyPropagationQueueFile(filePath, content),
         autoStart: true,
-        replayReconciliation: {
-          reindex: async (event, survivorId) => {
-            if (event.cause !== "consolidation_merge") return;
-            const storage = await this.getStorage(event.namespaceScope);
-            await this.indexPersistedMemory(storage, survivorId);
-          },
-          deindex: async (event, memoryIds) => {
-            if (
-              event.cause !== "consolidation_merge" &&
-              event.cause !== "consolidation_invalidate"
-            ) {
-              return;
-            }
-            await Promise.all(
-              memoryIds.map((memoryId) => this.embeddingFallback.removeFromIndex(memoryId)),
-            );
-            if (!resolveIndexingCapabilities(this.config).queryAwareIndexing) return;
-            if (!event.oldMemory.path || !event.oldMemory.frontmatter.created) return;
-            const storage = await this.getStorage(event.namespaceScope);
-            await deindexMemoriesBatchAsync(storage.dir, [{
-              path: event.oldMemory.path,
-              createdAt: event.oldMemory.frontmatter.created,
-              tags: event.oldMemory.frontmatter.tags ?? [],
-            }]);
-          },
-        },
+        replayReconciliation: createDependencyPropagationReplayReconciliation({ getStorage: (namespace) => this.getStorage(namespace), indexPersistedMemory: (storage, memoryId) => this.indexPersistedMemory(storage, memoryId), removeFromIndex: (memoryId) => this.embeddingFallback.removeFromIndex(memoryId), config: this.config }),
       });
     }
     return this._dependencyPropagationDelivery;
