@@ -79,7 +79,6 @@ const CONSOLIDATION_RESPONSE_SCHEMA = `{
   "entityUpdates": [{"name": "person-jane-doe", "type": "person", "facts": ["Now leads the backend team", "Recently migrated the user service to TypeScript"]}]
 }`;
 
-
 function extractionEntityType(value: unknown): ExtractedEntityResult["type"] | undefined {
   const type = extractionText(value);
   if (
@@ -2454,12 +2453,33 @@ Respond with valid JSON matching this schema:
       reason?: string;
     }>;
   }> {
-    if (!this.fastChatCompletion) {
-      throw new Error("fast completion is not configured for dependency revalidation");
-    }
+    const complete: RevalidationFastChatCompletion = async (messages, options) => {
+      const fast = await this.fastChatCompletion?.(messages, options);
+      if (fast) return fast;
+      if (this.shouldUseLocalLlm) {
+        try {
+          const local = await this.localLlm.chatCompletion(messages, options);
+          if (local || !this.config.localLlmFallback) return local;
+        } catch (error) {
+          if (!this.config.localLlmFallback) throw error;
+        }
+      }
+      if (!this.shouldUseDirectClient) {
+        return this.fallbackLlm.chatCompletion(messages, this.withGatewayAgent(options));
+      }
+      const client = this.client;
+      if (!client) return null;
+      const response = await client.responses.create({
+        model: this.config.model,
+        instructions: messages.find((message) => message.role === "system")?.content,
+        input: messages.filter((message) => message.role !== "system").map((message) => message.content).join("\n\n"),
+        max_output_tokens: options.maxTokens,
+      }, { signal: options.signal });
+      return typeof response.output_text === "string" ? { content: response.output_text } : null;
+    };
     return revalidateDependentsViaLlm(
       {
-        fastChatCompletion: this.fastChatCompletion,
+        fastChatCompletion: complete,
         parseJsonObject: this.parseJsonObject,
       },
       superseded,
@@ -2471,12 +2491,6 @@ Respond with valid JSON matching this schema:
       },
     );
   }
-
-
-  /**
-   * Suggest links between a new memory and existing memories (Phase 3A).
-   * Called during extraction to build the knowledge graph.
-   */
   async suggestLinks(
     newMemory: { content: string; category: string },
     candidateMemories: Array<{ id: string; content: string; category: string }>,

@@ -12,7 +12,7 @@ export interface RevalidationVerdict {
 }
 
 export type RevalidationFastChatCompletion = (
-  messages: Array<{ role: string; content: string }>,
+  messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
   options: {
     temperature?: number;
     maxTokens?: number;

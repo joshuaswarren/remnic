@@ -93,3 +93,27 @@ test("revalidation normalizes one verdict per dependent for one, five, and ten d
     assert.equal(calls.length, 1);
   }
 });
+
+test("revalidation rejects empty completion output", async () => {
+  for (const content of [null, "", "   "]) {
+    const deps: RevalidationDeps = {
+      fastChatCompletion: async () => content === null ? null : { content },
+      parseJsonObject: (raw) => JSON.parse(raw ?? "null") as unknown,
+    };
+    await assert.rejects(
+      revalidateDependentsViaLlm(deps, superseded, replacement, dependents(1)),
+      /no dependency revalidation output/,
+    );
+  }
+});
+
+test("revalidation defaults invalid verdict enums to uncertain", async () => {
+  const requested = dependents(1);
+  const result = await revalidateDependentsViaLlm(
+    makeDeps({ verdicts: [{ memoryId: requested[0]!.id, verdict: "approved" }] }, []),
+    superseded,
+    replacement,
+    requested,
+  );
+  assert.deepEqual(result.verdicts, [{ memoryId: requested[0]!.id, verdict: "uncertain" }]);
+});

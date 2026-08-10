@@ -79,7 +79,7 @@ function config(overrides: Record<string, unknown> = {}): PluginConfig {
 
 function fixture(
   initial: MemoryFile[],
-  verdicts: Verdict[] | Error | ((signal?: AbortSignal) => Promise<never>),
+  verdicts: Verdict[] | Error | ((signal?: AbortSignal) => Promise<{ verdicts: Verdict[] }>),
 ): Fixture {
   const memories = new Map(initial.map((item) => [item.frontmatter.id, item]));
   const calls: Fixture["calls"] = { revalidate: [], supersede: [], frontmatter: [] };
@@ -474,6 +474,27 @@ test("a completion that ignores AbortSignal returns at the shared deadline", asy
   } finally {
     t.mock.timers.reset();
   }
+});
+
+test("a zero timeout disables the deadline", async () => {
+  const old = memory("old", { links: [{ targetId: "dep", linkType: "supports" }] });
+  const fixtureValue = fixture([old, memory("dep")], () =>
+    new Promise((resolve) => setTimeout(() => resolve({
+      verdicts: [{ memoryId: "dep", verdict: "invalidated" }],
+    }), 5)),
+  );
+  const result = await propagateInvalidation(
+    deps(fixtureValue, { dependencyPropagation: { timeoutMs: 0 } }),
+    {
+      oldMemory: old,
+      replacementId: "new",
+      replacementContent: "replacement",
+      cause: "contradiction",
+      namespaceScope: "namespace-a",
+    },
+  );
+  assert.equal(result.invalidated, 1);
+  assert.equal(result.skipped, null);
 });
 
 test("dryRun computes invalidation verdicts without writing", async () => {

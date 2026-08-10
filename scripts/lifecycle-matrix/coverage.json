@@ -175,6 +175,8 @@
     "packages/remnic-core/src/orchestration/extraction-envelope.ts": "extraction-lifecycle",
     "packages/remnic-core/src/orchestration/extraction-queue-coordinator.ts": "extraction-lifecycle",
     "packages/remnic-core/src/orchestration/extraction-watermark.ts": "extraction-lifecycle",
+    "packages/remnic-core/src/orchestration/dependency-propagation.ts": "extraction-lifecycle",
+    "packages/remnic-core/src/orchestration/dependency-revalidation.ts": "extraction-lifecycle",
     "packages/remnic-core/src/orchestration/harmonic-construction-persist.ts": "extraction-lifecycle",
     "packages/remnic-core/src/orchestration/turn-ingestion.ts": "extraction-lifecycle",
     "packages/remnic-core/src/orchestration/session-context.ts": "extraction-lifecycle",
