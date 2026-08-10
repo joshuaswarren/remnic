@@ -39,6 +39,7 @@ export class ExtractionQueueCoordinator {
   private readonly queue: Array<() => Promise<void>> = [];
   /** Whether the serial drain loop is currently running. */
   private processing = false;
+  private accepting = true;
 
   /** Current queue depth (idle-wait + test seam). */
   get length(): number {
@@ -55,7 +56,8 @@ export class ExtractionQueueCoordinator {
    * the production entry point — the orchestrator's `queueBufferedExtraction`
    * builds each task closure and hands it here.
    */
-  enqueue(task: () => Promise<void>): void {
+  enqueue(task: () => Promise<void>): boolean {
+    if (!this.accepting) return false;
     this.queue.push(task);
     if (!this.processing) {
       this.processing = true;
@@ -64,6 +66,26 @@ export class ExtractionQueueCoordinator {
         this.processing = false;
       });
     }
+    return true;
+  }
+
+  /** Stop new producers from entering the queue. */
+  stopAccepting(): void {
+    this.accepting = false;
+  }
+
+  /** Resume producer acceptance after an orchestrator re-initializes. */
+  resumeAccepting(): void {
+    this.accepting = true;
+  }
+
+  /** Stop new producers and wait for all accepted work to finish. */
+  async pauseAndDrain(timeoutMs: number = 60_000): Promise<boolean> {
+    this.stopAccepting();
+    if (await this.waitForIdle(timeoutMs)) return true;
+    log.warn("extraction queue drain exceeded timeout; waiting for accepted work to settle");
+    await this.waitForIdle(Number.POSITIVE_INFINITY);
+    return true;
   }
 
   /**

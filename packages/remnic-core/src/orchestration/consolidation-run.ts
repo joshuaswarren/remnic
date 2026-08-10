@@ -20,8 +20,7 @@
  * identity consolidation, recall section config, fast LLM) arrives as
  * injectable delegates.
  *
- * Behavior-preserving move from orchestrator.ts. No logic changes — the
- * orchestrator keeps a thin delegating method so existing call sites
+ * The orchestrator keeps a thin delegating method so existing call sites
  * (runConsolidationNow, maintenance scheduler) and tests continue to work.
  */
 
@@ -32,7 +31,12 @@ import { applyCommitmentLedgerLifecycle } from "../commitment-ledger.js";
 import { recordDreamsPhaseRun } from "../maintenance/dreams-ledger.js";
 import { deindexMemoriesBatchAsync } from "../temporal-index-batch.js";
 import { isActiveMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
-import { propagateInvalidation } from "./dependency-propagation.js";
+import type {
+  DependencyPropagationDeliveryPort,
+  DependencyPropagationPreparationToken,
+} from "./dependency-propagation-delivery.js";
+import { canonicalize } from "./dependency-propagation-queue-state.js";
+import type { PropagationEvent } from "./dependency-propagation.js";
 import {
   resolveCapabilities,
   resolveConsolidationCapabilities,
@@ -73,11 +77,13 @@ export interface ConsolidationRunCoordinatorDeps {
   getStorageRouter: () => NamespaceStorageRouter;
   getNamespaceCatalog?: () => NamespaceCatalog;
   getExtraction: () => ExtractionEngine;
+  storageDirNamespace: (storageDir: string) => string;
   embeddingFallback: EmbeddingFallback;
   tmtBuilder: TmtBuilder;
   consolidationObservers: Set<
     (observation: ConsolidationObservation) => Promise<void> | void
   >;
+  getDependencyPropagationDelivery: () => DependencyPropagationDeliveryPort;
   getAccessTrackingBuffer: () => Map<
     string,
     { count: number; lastAccessed: string }
@@ -112,6 +118,185 @@ type HarmonicStore = {
   memoryDir: string;
   abstractionNodeStoreDir?: string;
 };
+
+type PendingDependencyPropagation = {
+  delivery: DependencyPropagationDeliveryPort;
+  event: PropagationEvent;
+  preparation: DependencyPropagationPreparationToken | null;
+};
+
+async function prepareDependencyPropagation(
+  getDelivery: () => DependencyPropagationDeliveryPort,
+  event: PropagationEvent,
+  enabled: boolean,
+): Promise<PendingDependencyPropagation | null> {
+  if (!enabled) return null;
+  let delivery: DependencyPropagationDeliveryPort;
+  try {
+    delivery = getDelivery();
+  } catch (error) {
+    log.warn(`consolidation dependency propagation getter failed: ${error}`);
+    return null;
+  }
+  let preparation: DependencyPropagationPreparationToken | null = null;
+  try {
+    preparation = await delivery.prepare(event);
+  } catch (error) {
+    log.warn(`consolidation dependency propagation preparation failed: ${error}`);
+  }
+  return { delivery, event, preparation };
+}
+
+function clonePropagationMemory(memory: MemoryFile): MemoryFile {
+  return structuredClone(memory);
+}
+
+function sameMemorySnapshot(a: MemoryFile, b: MemoryFile): boolean {
+  return (
+    a.content === b.content &&
+    JSON.stringify(canonicalize(a.frontmatter)) === JSON.stringify(canonicalize(b.frontmatter))
+  );
+}
+
+async function prepareCurrentDependencyPropagation(
+  storage: StorageManager,
+  getDelivery: () => DependencyPropagationDeliveryPort,
+  sourceId: string,
+  buildEvent: (source: MemoryFile) => PropagationEvent,
+  enabled: boolean,
+): Promise<{ source: MemoryFile; pending: PendingDependencyPropagation | null } | null> {
+  const loaded = await storage.getMemoryById(sourceId);
+  if (!loaded) return null;
+  let source = clonePropagationMemory(loaded);
+  let pending = await prepareDependencyPropagation(getDelivery, buildEvent(source), enabled);
+  if (!pending) return { source, pending: null };
+  let latest: MemoryFile | null;
+  try {
+    latest = await storage.getMemoryById(sourceId);
+  } catch (error) {
+    await cancelDependencyPropagation(pending);
+    throw error;
+  }
+  if (!latest) {
+    await cancelDependencyPropagation(pending);
+    return null;
+  }
+  if (!sameMemorySnapshot(source, latest)) {
+    await cancelDependencyPropagation(pending);
+    source = clonePropagationMemory(latest);
+    pending = await prepareDependencyPropagation(getDelivery, buildEvent(source), enabled);
+  }
+  return { source, pending };
+}
+async function cancelDependencyPropagation(
+  pending: PendingDependencyPropagation,
+): Promise<void> {
+  if (!pending.preparation?.ownsPreparedJob) return;
+  try {
+    await pending.delivery.cancel(pending.preparation);
+  } catch (error) {
+    log.warn(`consolidation dependency propagation cancellation failed: ${error}`);
+  }
+}
+
+async function deferDependencyPropagation(
+  pending: PendingDependencyPropagation | null,
+): Promise<void> {
+  if (!pending) return;
+  let token = pending.preparation;
+  if (token === null) {
+    try {
+      token = await pending.delivery.prepare(pending.event);
+    } catch (error) {
+      log.warn(`consolidation dependency propagation recovery preparation failed: ${error}`);
+    }
+  }
+  if (token === null) return;
+  try {
+    await pending.delivery.deferPrepared(token);
+  } catch (error) {
+    log.warn(`consolidation dependency propagation defer failed: ${error}`);
+  }
+}
+
+async function afterDependencyPropagationMutation(
+  pending: PendingDependencyPropagation,
+): Promise<void> {
+  try {
+    await pending.delivery.afterMutation(pending.preparation, pending.event);
+  } catch (error) {
+    log.warn(`consolidation dependency propagation delivery failed: ${error}`);
+  }
+}
+type InvalidationCommitState = "committed" | "not-committed" | "unknown";
+
+async function classifyInvalidation(
+  storage: StorageManager,
+  memoryId: string,
+  expectedSnapshot: MemoryFile | null,
+  options: {
+    checkInvalidationProof?: boolean;
+    missingMeansCommitted?: boolean;
+    matchesCommitted?: (current: MemoryFile) => boolean;
+  } = {},
+): Promise<InvalidationCommitState> {
+  if (options.checkInvalidationProof !== false && expectedSnapshot) {
+    if (!storage.hasCommittedInvalidation) {
+      log.warn(`consolidation invalidation proof capability missing for ${memoryId}`);
+    } else {
+      try {
+        if (await storage.hasCommittedInvalidation(expectedSnapshot)) return "committed";
+      } catch (error) {
+        log.warn(`consolidation invalidation proof read failed for ${memoryId}: ${error}`);
+      }
+    }
+  }
+  try {
+    const current = await storage.getMemoryById(memoryId);
+    if (!current) {
+      if (options.missingMeansCommitted === false) return "not-committed";
+      if (expectedSnapshot && !storage.hasCommittedInvalidation) return "unknown";
+      return "committed";
+    }
+    if (options.matchesCommitted?.(current)) return "committed";
+    if (expectedSnapshot && sameMemorySnapshot(current, expectedSnapshot)) {
+      return "not-committed";
+    }
+    return "unknown";
+  } catch (error) {
+    log.warn(`consolidation invalidation state read failed for ${memoryId}: ${error}`);
+    return "unknown";
+  }
+}
+
+async function settleFailedConsolidationPropagation(
+  pending: PendingDependencyPropagation | null,
+  commitState: InvalidationCommitState,
+  memoryId: string,
+): Promise<void> {
+  if (!pending) return;
+  let token = pending.preparation;
+  if (commitState === "not-committed") {
+    if (token !== null) await cancelDependencyPropagation({ ...pending, preparation: token });
+    return;
+  }
+  if (token === null && (commitState === "committed" || commitState === "unknown")) {
+    try {
+      token = await pending.delivery.prepare(pending.event);
+    } catch (error) {
+      log.warn(
+        `consolidation dependency propagation recovery preparation failed for ${memoryId}: ${error}`,
+      );
+    }
+  }
+  if (token !== null) {
+    try {
+      await pending.delivery.deferPrepared(token);
+    } catch (error) {
+      log.warn(`consolidation dependency propagation defer failed for ${memoryId}: ${error}`);
+    }
+  }
+}
 
 type HarmonicCatalogCursor = {
   nextStorageDir?: string;
@@ -286,66 +471,75 @@ export class ConsolidationRunCoordinator {
     const profile = await storage.readProfile();
     const result = await this.deps.getExtraction().consolidate(recent, older, profile);
 
-    // Build a lookup map from the already-loaded corpus to avoid repeated
-    // readAllMemories() scans inside getMemoryById for pre-action deindex reads.
-    const memoryLookup = resolveIndexingCapabilities(config).queryAwareIndexing
-      ? new Map(allMemories.map((m) => [m.frontmatter.id, m]))
-      : null;
-
     // Collect deindex entries from INVALIDATE/MERGE actions and de-index them in
-    // one batch, instead of a full index read-modify-write per memory. The
-    // queryAwareIndexing guard is preserved: memoryLookup is null when it is
-    // disabled, so toInvalidate/toMergeInvalidate stay null and nothing is
-    // collected. The flush runs in `finally` so memories already invalidated on
-    // disk are still de-indexed if a later iteration throws; it runs exactly once
-    // (normal completion or throw) and any loop error still propagates after it.
+    // one batch, instead of a full index read-modify-write per memory. The flush
+    // runs in `finally` so memories already invalidated on disk are still
+    // de-indexed if a later iteration throws; it runs exactly once and any loop
+    // error still propagates after it.
     const itemsDeindexBatch: Array<{ path: string; createdAt: string; tags: string[] }> = [];
 
     try {
       for (const item of result.items) {
         switch (item.action) {
           case "INVALIDATE": {
-            // Capture path/frontmatter before invalidation for index cleanup
-            const toInvalidate = resolveIndexingCapabilities(config).queryAwareIndexing
-              ? (memoryLookup?.get(item.existingId) ?? null)
-              : null;
-            // Always capture the full pre-delete snapshot for propagation.
-            const propagationOld = allMemories.find(
-              (memory) => memory.frontmatter.id === item.existingId,
+            const propagationEnabled =
+              config.dependencyPropagation.enabled &&
+              config.dependencyPropagation.maxDependents > 0;
+            const prepared = await prepareCurrentDependencyPropagation(
+              storage,
+              this.deps.getDependencyPropagationDelivery,
+              item.existingId,
+              (propagationOld) => ({
+                oldMemory: propagationOld,
+                replacementId: null,
+                replacementContent: null,
+                cause: "consolidation_invalidate",
+                namespaceScope: this.deps.storageDirNamespace(storage.dir),
+              }),
+              propagationEnabled,
             );
-            if (await storage.invalidateMemory(item.existingId)) {
-              invalidated += 1;
-              memoryItemMutated = true;
-              await this.deps.embeddingFallback.removeFromIndex(item.existingId);
-              if (propagationOld) {
-                try {
-                  await propagateInvalidation(
-                    {
-                      storage,
-                      extraction: this.deps.getExtraction(),
-                      config,
-                    },
-                    {
-                      oldMemory: propagationOld,
-                      replacementId: null,
-                      replacementContent: null,
-                      cause: "consolidation_invalidate",
-                      namespaceScope: config.defaultNamespace,
-                    },
-                  );
-                } catch (propagationErr) {
-                  log.warn(
-                    `consolidation dependency propagation failed for ${item.existingId}: ${propagationErr}`,
-                  );
-                }
-              }
-              if (toInvalidate?.path && toInvalidate.frontmatter?.created) {
-                itemsDeindexBatch.push({
-                  path: toInvalidate.path,
-                  createdAt: toInvalidate.frontmatter.created,
-                  tags: toInvalidate.frontmatter.tags ?? [],
-                });
-              }
+            const propagationOld = prepared?.source ?? null;
+            const pending = prepared?.pending ?? null;
+            const expectedSnapshot = pending ? propagationOld : null;
+            const toInvalidate = resolveIndexingCapabilities(config).queryAwareIndexing
+              ? propagationOld
+              : null;
+            const recordCommitProof = pending?.preparation?.ownsPreparedJob === true;
+            let didInvalidate: boolean;
+            try {
+              didInvalidate = await storage.invalidateMemory(
+                item.existingId,
+                expectedSnapshot ?? undefined,
+                { recordCommitProof },
+              );
+            } catch (error) {
+              const commitState = await classifyInvalidation(storage, item.existingId, expectedSnapshot);
+              await settleFailedConsolidationPropagation(
+                pending,
+                commitState,
+                item.existingId,
+              );
+              throw error;
+            }
+            if (!didInvalidate) {
+              const commitState = await classifyInvalidation(storage, item.existingId, expectedSnapshot);
+              await settleFailedConsolidationPropagation(
+                pending,
+                commitState,
+                item.existingId,
+              );
+              break;
+            }
+            invalidated += 1;
+            memoryItemMutated = true;
+            if (pending) await afterDependencyPropagationMutation(pending);
+            await this.deps.embeddingFallback.removeFromIndex(item.existingId);
+            if (toInvalidate?.path && toInvalidate.frontmatter?.created) {
+              itemsDeindexBatch.push({
+                path: toInvalidate.path,
+                createdAt: toInvalidate.frontmatter.created,
+                tags: toInvalidate.frontmatter.tags ?? [],
+              });
             }
             break;
           }
@@ -366,63 +560,87 @@ export class ConsolidationRunCoordinator {
             break;
           case "MERGE":
             if (item.updatedContent && item.mergeWith) {
-              await storage.updateMemory(
-                item.existingId,
-                item.updatedContent,
-                {
-                  supersedes: item.mergeWith,
-                  lineage: [item.existingId, item.mergeWith],
-                },
+              const updatedContent = item.updatedContent;
+              const mergeWith = item.mergeWith;
+              const propagationEnabled =
+                config.dependencyPropagation.enabled &&
+                config.dependencyPropagation.maxDependents > 0;
+              const prepared = await prepareCurrentDependencyPropagation(
+                storage,
+                this.deps.getDependencyPropagationDelivery,
+                item.mergeWith,
+                (propagationOld) => ({
+                  oldMemory: propagationOld,
+                  replacementId: item.existingId,
+                  replacementContent: updatedContent,
+                  cause: "consolidation_merge",
+                  namespaceScope: this.deps.storageDirNamespace(storage.dir),
+                }),
+                propagationEnabled,
               );
+              const propagationOld = prepared?.source ?? null;
+              const pending = prepared?.pending ?? null;
+              const expectedSnapshot = pending ? propagationOld : null;
+              const toMergeInvalidate = resolveIndexingCapabilities(config).queryAwareIndexing
+                ? propagationOld
+                : null;
+              let didUpdate: boolean;
+              try {
+                didUpdate = await storage.updateMemory(
+                  item.existingId,
+                  updatedContent,
+                  {
+                    supersedes: item.mergeWith,
+                    lineage: [item.existingId, item.mergeWith],
+                  },
+                );
+              } catch (error) {
+                await deferDependencyPropagation(pending);
+                throw error;
+              }
+              if (!didUpdate) {
+                if (pending) await cancelDependencyPropagation(pending);
+                break;
+              }
               memoryItemMutated = true;
               await this.deps.indexPersistedMemory(storage, item.existingId);
               // updateMemory() only changes content/updated/supersedes/lineage — path, created, and tags
               // are preserved, so the temporal/tag index entry for the survivor is already correct.
-              // Capture before invalidation for index cleanup
-              const toMergeInvalidate = resolveIndexingCapabilities(config).queryAwareIndexing
-                ? (memoryLookup?.get(item.mergeWith) ?? null)
-                : null;
-              // Capture the doomed memory before invalidation, independent of
-              // queryAwareIndexing and its optional lookup map.
-              const propagationOld = allMemories.find(
-                (memory) => memory.frontmatter.id === item.mergeWith,
-              );
-              if (await storage.invalidateMemory(item.mergeWith)) {
-                invalidated += 1;
-                merged += 1;
-                await this.deps.embeddingFallback.removeFromIndex(item.mergeWith);
-                if (propagationOld) {
-                  try {
-                    await propagateInvalidation(
-                      {
-                        storage,
-                        extraction: this.deps.getExtraction(),
-                        config,
-                      },
-                      {
-                        oldMemory: propagationOld,
-                        replacementId: item.existingId,
-                        replacementContent: item.updatedContent,
-                        cause: "consolidation_merge",
-                        namespaceScope: config.defaultNamespace,
-                      },
-                    );
-                  } catch (propagationErr) {
-                    log.warn(
-                      `consolidation dependency propagation failed for ${item.mergeWith}: ${propagationErr}`,
-                    );
-                  }
-                }
-                if (
-                  toMergeInvalidate?.path &&
-                  toMergeInvalidate.frontmatter?.created
-                ) {
-                  itemsDeindexBatch.push({
-                    path: toMergeInvalidate.path,
-                    createdAt: toMergeInvalidate.frontmatter.created,
-                    tags: toMergeInvalidate.frontmatter.tags ?? [],
-                  });
-                }
+              let didInvalidate: boolean;
+              try {
+                didInvalidate = await storage.invalidateMemory(
+                  item.mergeWith,
+                  expectedSnapshot ?? undefined,
+                  { recordCommitProof: pending?.preparation?.ownsPreparedJob === true },
+                );
+              } catch (error) {
+                const commitState = await classifyInvalidation(storage, item.mergeWith, expectedSnapshot);
+                await settleFailedConsolidationPropagation(
+                  pending,
+                  commitState,
+                  item.mergeWith,
+                );
+                throw error;
+              }
+              if (!didInvalidate) {
+                const commitState = await classifyInvalidation(storage, item.mergeWith, expectedSnapshot);
+                await settleFailedConsolidationPropagation(
+                  pending,
+                  commitState,
+                  item.mergeWith,
+                );
+                break;
+              }
+              invalidated += 1;
+              merged += 1;
+              if (pending) await afterDependencyPropagationMutation(pending);
+              await this.deps.embeddingFallback.removeFromIndex(item.mergeWith);
+              if (toMergeInvalidate?.path && toMergeInvalidate.frontmatter?.created) {
+                itemsDeindexBatch.push({
+                  path: toMergeInvalidate.path,
+                  createdAt: toMergeInvalidate.frontmatter.created,
+                  tags: toMergeInvalidate.frontmatter.tags ?? [],
+                });
               }
             }
             break;

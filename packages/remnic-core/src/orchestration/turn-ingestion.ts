@@ -727,7 +727,7 @@ export class TurnIngestionCoordinator {
       scheduleQueueWaitTimeout();
     }
 
-    this.deps.extractionQueueCoordinator.enqueue(async () => {
+    const accepted = this.deps.extractionQueueCoordinator.enqueue(async () => {
       if (settled) return;
       if (
         typeof extractionDeadlineMs === "number" &&
@@ -761,6 +761,10 @@ export class TurnIngestionCoordinator {
         }
       }
     });
+    if (!accepted) {
+      settleTask(new Error("extraction queue is stopped"));
+      return;
+    }
 
     log.debug(`queued extraction from ${reason}`);
   }

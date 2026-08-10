@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { findDependents, propagateInvalidation } from "./dependency-propagation.js";
+import {
+  findDependents,
+  isDependencyPropagationEnabled,
+  propagateInvalidation,
+} from "./dependency-propagation.js";
 import type { ExtractionEngine } from "../extraction.js";
 import type { MemoryFile, MemoryLinkType, PluginConfig } from "../types.js";
 import type { StorageManager } from "../storage.js";
+import { invalidationCommitFingerprint } from "../storage/deletion-revision-store.js";
 
 type Verdict = {
   memoryId: string;
@@ -25,8 +30,17 @@ type Fixture = {
   extraction: ExtractionEngine;
   calls: {
     revalidate: RevalidationCall[];
-    supersede: Array<{ id: string; replacementId: string; reason: string }>;
-    frontmatter: Array<{ id: string; patch: Record<string, unknown> }>;
+    supersede: Array<{
+      id: string;
+      replacementId: string;
+      reason: string;
+      metadata?: Record<string, unknown>;
+      options: {
+        requireActive?: boolean;
+        acceptExactReplay?: boolean;
+        expectedSnapshot?: Pick<MemoryFile, "content" | "frontmatter"> & Partial<Pick<MemoryFile, "path">>;
+      };
+    }>;
   };
 };
 
@@ -77,36 +91,63 @@ function config(overrides: Record<string, unknown> = {}): PluginConfig {
   } as unknown as PluginConfig;
 }
 
+test("dependency propagation enable gate accepts only normalized true values and a positive limit", () => {
+  assert.equal(isDependencyPropagationEnabled(config()), true);
+  assert.equal(isDependencyPropagationEnabled(config({ dependencyPropagation: { enabled: "yes" } })), true);
+  assert.equal(isDependencyPropagationEnabled(config({ dependencyPropagation: { enabled: "disabled" } })), false);
+  assert.equal(isDependencyPropagationEnabled(config({ dependencyPropagation: { maxDependents: 0 } })), false);
+});
+
 function fixture(
   initial: MemoryFile[],
   verdicts: Verdict[] | Error | ((signal?: AbortSignal) => Promise<{ verdicts: Verdict[] }>),
 ): Fixture {
   const memories = new Map(initial.map((item) => [item.frontmatter.id, item]));
-  const calls: Fixture["calls"] = { revalidate: [], supersede: [], frontmatter: [] };
-
+  const calls: Fixture["calls"] = { revalidate: [], supersede: [] };
   const storage = {
+
     async readAllMemories(): Promise<MemoryFile[]> {
-      return [...memories.values()];
+      return structuredClone([...memories.values()]);
     },
     async getMemoryById(id: string): Promise<MemoryFile | null> {
       return memories.get(id) ?? null;
     },
-    async supersedeMemory(id: string, replacementId: string, reason: string): Promise<boolean> {
-      calls.supersede.push({ id, replacementId, reason });
+    async supersedeMemory(
+      id: string,
+      replacementId: string,
+      reason: string,
+      metadata?: Record<string, unknown>,
+      options: {
+        requireActive?: boolean;
+        acceptExactReplay?: boolean;
+        expectedSnapshot?: Pick<MemoryFile, "content" | "frontmatter"> & Partial<Pick<MemoryFile, "path">>;
+      } = {},
+    ): Promise<boolean> {
+      calls.supersede.push({ id, replacementId, reason, metadata, options });
       const current = memories.get(id);
       if (!current) return false;
-      current.frontmatter.status = "superseded";
-      current.frontmatter.supersededBy = replacementId;
-      return true;
-    },
-    async writeMemoryFrontmatter(
-      current: MemoryFile,
-      patch: Record<string, unknown>,
-    ): Promise<boolean> {
-      calls.frontmatter.push({ id: current.frontmatter.id, patch });
-      const stored = memories.get(current.frontmatter.id);
-      if (!stored) return false;
-      Object.assign(stored.frontmatter, patch);
+      if (
+        options.expectedSnapshot &&
+        invalidationCommitFingerprint(current) !== invalidationCommitFingerprint(options.expectedSnapshot)
+      ) {
+        return false;
+      }
+      const exactReplay =
+        current.frontmatter.status === "superseded" &&
+        current.frontmatter.supersededBy === replacementId &&
+        current.frontmatter.supersessionCause === metadata?.supersessionCause &&
+        current.frontmatter.invalidatedBy === metadata?.invalidatedBy;
+      if (exactReplay) return options.acceptExactReplay === true;
+      if (
+        options.requireActive === true &&
+        (current.frontmatter.status ?? "active") !== "active"
+      ) {
+        return false;
+      }
+      Object.assign(current.frontmatter, metadata, {
+        status: "superseded",
+        supersededBy: replacementId,
+      });
       return true;
     },
   } as unknown as StorageManager;
@@ -293,6 +334,7 @@ test("invalidated verdict supersedes the dependent and persists dependency front
   const old = memory("old", { links: [{ targetId: "dep", linkType: "supports" }] });
   const dependent = memory("dep");
   const fixtureValue = fixture([old, dependent], [{ memoryId: "dep", verdict: "invalidated", reason: "claim lost support" }]);
+  const expectedSnapshot = structuredClone(dependent);
 
   const result = await propagateInvalidation(
     deps(fixtureValue),
@@ -317,17 +359,31 @@ test("invalidated verdict supersedes the dependent and persists dependency front
       id: "dep",
       replacementId: "replacement",
       reason: "dependency_propagation:contradiction",
-    },
-  ]);
-  assert.deepEqual(fixtureValue.calls.frontmatter, [
-    {
-      id: "dep",
-      patch: { supersessionCause: "dependency", invalidatedBy: "old" },
+      metadata: { supersessionCause: "dependency", invalidatedBy: "old" },
+      options: { requireActive: true, acceptExactReplay: true, expectedSnapshot },
     },
   ]);
   assert.equal(fixtureValue.memories.get("dep")?.frontmatter.status, "superseded");
   assert.equal(fixtureValue.memories.get("dep")?.frontmatter.supersessionCause, "dependency");
   assert.equal(fixtureValue.memories.get("dep")?.frontmatter.invalidatedBy, "old");
+});
+test("supersede fixture rejects a stale expected snapshot after concurrent mutation", async () => {
+  const old = memory("old", { links: [{ targetId: "dep", linkType: "supports" }] });
+  const dependent = memory("dep");
+  const fixtureValue = fixture([old, dependent], []);
+  const expectedSnapshot = structuredClone(dependent);
+  dependent.content = "concurrent update";
+
+  const superseded = await fixtureValue.storage.supersedeMemory(
+    "dep",
+    "replacement",
+    "dependency_propagation:contradiction",
+    { supersessionCause: "dependency", invalidatedBy: "old" },
+    { requireActive: true, expectedSnapshot },
+  );
+
+  assert.equal(superseded, false);
+  assert.equal(fixtureValue.memories.get("dep")?.frontmatter.status, "active");
 });
 
 test("still_valid and uncertain verdicts do not write", async () => {
@@ -356,7 +412,6 @@ test("still_valid and uncertain verdicts do not write", async () => {
   assert.equal(result.stillValid, 1);
   assert.equal(result.uncertain, 1);
   assert.equal(fixtureValue.calls.supersede.length, 0);
-  assert.equal(fixtureValue.calls.frontmatter.length, 0);
 });
 
 test("unknown, missing, and garbage verdicts default to uncertain and drop unknown ids", async () => {
@@ -412,7 +467,6 @@ test("LLM errors skip the event and perform zero writes", async () => {
   assert.equal(typeof result.durationMs, "number");
   assert.equal(result.skipped, "llm_error");
   assert.equal(fixtureValue.calls.supersede.length, 0);
-  assert.equal(fixtureValue.calls.frontmatter.length, 0);
 });
 
 test("LLM timeout aborts the batch and performs zero writes", async () => {
@@ -439,7 +493,6 @@ test("LLM timeout aborts the batch and performs zero writes", async () => {
   assert.equal(typeof result.durationMs, "number");
   assert.equal(result.skipped, "timeout");
   assert.equal(fixtureValue.calls.supersede.length, 0);
-  assert.equal(fixtureValue.calls.frontmatter.length, 0);
 });
 
 test("a completion that ignores AbortSignal returns at the shared deadline", async (t) => {
@@ -470,7 +523,6 @@ test("a completion that ignores AbortSignal returns at the shared deadline", asy
     assert.equal(result.route, "fast-completion");
     assert.equal(result.durationMs, 20);
     assert.equal(fixtureValue.calls.supersede.length, 0);
-    assert.equal(fixtureValue.calls.frontmatter.length, 0);
   } finally {
     t.mock.timers.reset();
   }
@@ -515,7 +567,6 @@ test("dryRun computes invalidation verdicts without writing", async () => {
   assert.equal(result.invalidated, 1);
   assert.equal(fixtureValue.calls.revalidate.length, 1);
   assert.equal(fixtureValue.calls.supersede.length, 0);
-  assert.equal(fixtureValue.calls.frontmatter.length, 0);
   assert.equal(fixtureValue.memories.get("dep")?.frontmatter.status, "active");
 });
 

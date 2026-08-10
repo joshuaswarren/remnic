@@ -3,11 +3,12 @@ import {
   type TombstoneCreatedBy,
   type TombstoneReason,
 } from "../lifecycle/tombstones.js";
-import { supersessionKeysForFact } from "../temporal-supersession.js";
+import { log } from "../logger.js";
 import { stripCitationForTemplate } from "../source-attribution.js";
+import { supersessionKeysForFact } from "../temporal-supersession.js";
 import type { MemoryFile, MemoryFrontmatter } from "../types.js";
 import { composeMemoryEnvelope, type SealedMemoryEnvelope } from "../write-envelope.js";
-import { log } from "../logger.js";
+import { hasSupersessionAudit } from "./supersession-audit.js";
 
 type TombstoneInput = {
   reason: TombstoneReason;
@@ -16,6 +17,7 @@ type TombstoneInput = {
   rawContent: string;
   entityRef?: string;
   supersessionKey?: string;
+  operationKey?: string;
   createdAt?: string;
   contentHash?: string;
 };
@@ -25,40 +27,45 @@ export interface SupersessionSideEffectOptions {
   newMemoryId: string;
   reason: string;
   now: string;
+  operationId: string;
+  exactReplay: boolean;
   currentBefore: MemoryFile;
   updatedFm: MemoryFrontmatter;
   citationTemplate: string;
+  correctionsDir: string;
+  readMemoryByPath: (filePath: string) => Promise<MemoryFile | null>;
   isColdOrArchiveTierPath: (memoryPath: string) => boolean;
   invalidateColdMemoriesCache: () => void;
+  invalidateAllMemoriesCache: () => void;
   bumpMemoryCorpusVersion: () => void;
   appendLifecycleEvent: () => Promise<void>;
   bumpMemoryStatusVersion: () => void;
+  hasExactTombstone: (input: TombstoneInput) => Promise<boolean>;
   appendTombstone: (input: TombstoneInput) => Promise<string | null>;
-  writeSealedMemory: (envelope: SealedMemoryEnvelope, extras: { lineage: [string, string] }) => Promise<unknown>;
+  writeSealedMemory: (
+    envelope: SealedMemoryEnvelope,
+    extras: { lineage: [string, string]; sourceMemoryId: string }
+  ) => Promise<unknown>;
 }
 
-export async function runSupersessionSideEffects(options: SupersessionSideEffectOptions): Promise<void> {
+export async function runSupersessionSideEffects(options: SupersessionSideEffectOptions): Promise<boolean> {
   const {
     oldMemoryId,
     newMemoryId,
     reason,
     now,
+    operationId,
+    exactReplay,
     currentBefore,
     updatedFm,
     citationTemplate,
-    isColdOrArchiveTierPath,
-    invalidateColdMemoriesCache,
-    bumpMemoryCorpusVersion,
-    appendLifecycleEvent,
-    bumpMemoryStatusVersion,
-    appendTombstone,
-    writeSealedMemory,
   } = options;
   try {
-    if (isColdOrArchiveTierPath(currentBefore.path)) invalidateColdMemoriesCache();
-    bumpMemoryCorpusVersion();
-    await appendLifecycleEvent();
-    bumpMemoryStatusVersion();
+    if (options.isColdOrArchiveTierPath(currentBefore.path)) options.invalidateColdMemoriesCache();
+    if (exactReplay) options.invalidateAllMemoriesCache();
+    else options.bumpMemoryCorpusVersion();
+    await options.appendLifecycleEvent();
+    options.bumpMemoryStatusVersion();
     log.debug(`superseded memory ${oldMemoryId} by ${newMemoryId}: ${reason}`);
 
     if (currentBefore.frontmatter.category === "fact") {
@@ -75,23 +82,43 @@ export async function runSupersessionSideEffects(options: SupersessionSideEffect
           createdBy: "contradiction_resolution",
           createdAt: now,
           supersessionKeysForFact,
-        },
+        }
       )) {
-        await appendTombstone(input);
+        const exactInput = { ...input, operationKey: operationId };
+        const exists = (await options.hasExactTombstone(exactInput)) || (await options.hasExactTombstone(input));
+        if (!exists) await options.appendTombstone(exactInput);
       }
     }
 
-    const auditEnvelope = composeMemoryEnvelope(
+    const auditBody = `Superseded: ${currentBefore.content}\n\nReason: ${reason}`;
+    const auditExists = await hasSupersessionAudit(
       {
-        content: `Superseded: ${currentBefore.content}\n\nReason: ${reason}`,
-        category: "correction",
-        confidence: 1.0,
-        tags: ["supersession", "auto-resolved"],
+        correctionsDir: options.correctionsDir,
+        readMemoryByPath: options.readMemoryByPath,
       },
-      { source: "contradiction-detection" },
+      oldMemoryId,
+      newMemoryId,
+      auditBody
     );
-    await writeSealedMemory(auditEnvelope, { lineage: [oldMemoryId, newMemoryId] });
+    if (!auditExists) {
+      const auditEnvelope = composeMemoryEnvelope(
+        {
+          content: auditBody,
+          category: "correction",
+          confidence: 1,
+          tags: ["supersession", "auto-resolved"],
+        },
+        { source: "contradiction-detection" }
+      );
+      await options.writeSealedMemory(auditEnvelope, {
+        lineage: [oldMemoryId, newMemoryId],
+        sourceMemoryId: oldMemoryId,
+      });
+    }
+    options.invalidateAllMemoriesCache();
+    return true;
   } catch (err) {
-    log.error(`failed to supersede memory ${oldMemoryId}:`, err);
+    log.error(`supersession side effects failed for ${oldMemoryId}:`, err);
+    return false;
   }
 }

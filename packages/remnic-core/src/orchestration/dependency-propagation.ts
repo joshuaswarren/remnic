@@ -6,7 +6,6 @@
  */
 import type { ExtractionEngine } from "../extraction.js";
 import { log } from "../logger.js";
-import type { StorageManager } from "../index.js";
 import type {
   DependencyPropagationConfig,
   MemoryFile,
@@ -15,9 +14,14 @@ import type {
   PluginConfig,
 } from "../types.js";
 
+export function isDependencyPropagationEnabled(config: Pick<PluginConfig, "dependencyPropagation">): boolean {
+  const parsed = propagationConfig(config);
+  return isEnabled(parsed.enabled) && parsed.maxDependents > 0;
+}
+
 export interface PropagationEvent {
   /** Snapshot captured before the primary supersession or deletion. */
-  oldMemory: { content: string; frontmatter: MemoryFrontmatter };
+  oldMemory: { content: string; frontmatter: MemoryFrontmatter; path?: string };
   replacementId: string | null;
   replacementContent: string | null;
   cause:
@@ -26,6 +30,11 @@ export interface PropagationEvent {
     | "consolidation_invalidate"
     | "consolidation_merge";
   namespaceScope: string;
+  temporalMutation?: {
+    supersededAt: string;
+    invalidAt?: string;
+    matchedKeys: string[];
+  };
 }
 
 export interface PropagationResult {
@@ -38,7 +47,27 @@ export interface PropagationResult {
   durationMs: number;
 }
 
-function propagationConfig(config: PluginConfig): DependencyPropagationConfig {
+export type DependencyPropagationWriteFence = <T>(
+  write: () => Promise<T>,
+) => Promise<T | undefined>;
+
+export interface DependencyPropagationStorage {
+  readAllMemories(): Promise<MemoryFile[]>;
+  getMemoryById(id: string): Promise<MemoryFile | null>;
+  supersedeMemory(
+    id: string,
+    replacementId: string,
+    reason: string,
+    metadata?: Pick<MemoryFrontmatter, "supersessionCause" | "invalidatedBy">,
+    options?: {
+      requireActive?: boolean;
+      acceptExactReplay?: boolean;
+      expectedSnapshot?: Pick<MemoryFile, "content" | "frontmatter"> & Partial<Pick<MemoryFile, "path">>;
+    },
+  ): Promise<boolean>;
+}
+
+function propagationConfig(config: Pick<PluginConfig, "dependencyPropagation">): DependencyPropagationConfig {
   return config.dependencyPropagation;
 }
 
@@ -142,7 +171,12 @@ function isTimeoutError(error: unknown, signal: AbortSignal): boolean {
  * constructs another storage or scans a different namespace.
  */
 export async function propagateInvalidation(
-  deps: { storage: StorageManager; extraction: ExtractionEngine; config: PluginConfig },
+  deps: {
+    storage: DependencyPropagationStorage;
+    extraction: ExtractionEngine;
+    config: PluginConfig;
+    writeFence?: DependencyPropagationWriteFence;
+  },
   event: PropagationEvent,
 ): Promise<PropagationResult> {
   const startedAt = Date.now();
@@ -255,19 +289,23 @@ export async function propagateInvalidation(
       }
       try {
         const replacementId = event.replacementId ?? event.oldMemory.frontmatter.id;
-        const superseded = await deps.storage.supersedeMemory(
-          dependent.frontmatter.id,
-          replacementId,
-          `dependency_propagation:${event.cause}`,
-        );
-        if (!superseded) continue;
-        const current = await deps.storage.getMemoryById(dependent.frontmatter.id);
-        if (current) {
-          await deps.storage.writeMemoryFrontmatter(current, {
-            supersessionCause: "dependency",
-            invalidatedBy: event.oldMemory.frontmatter.id,
-          });
-        }
+        const write = () =>
+          deps.storage.supersedeMemory(
+            dependent.frontmatter.id,
+            replacementId,
+            `dependency_propagation:${event.cause}`,
+            {
+              supersessionCause: "dependency",
+              invalidatedBy: event.oldMemory.frontmatter.id,
+            },
+            {
+              requireActive: true,
+              acceptExactReplay: true,
+              expectedSnapshot: dependent,
+            },
+          );
+        const superseded = deps.writeFence ? await deps.writeFence(write) : await write();
+        if (superseded !== true) continue;
         invalidated += 1;
       } catch (error) {
         log.warn(`dependency propagation write failed for ${dependent.frontmatter.id}: ${error}`);

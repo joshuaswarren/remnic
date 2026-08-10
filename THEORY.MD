@@ -1,33 +1,65 @@
-# Theory: Codex hooks without executable mode
+# Theory: Durable Dependency Revalidation
 
 ## Problem
 
-Codex runs Remnic hooks from commands in `hooks.json`.
+Remnic stores dependency links, but old lifecycle paths treated them as write-only metadata.
 
-The source launcher uses executable mode `0755`. Some install paths do not
-preserve this mode. Direct startup then fails with `Permission denied`. Remnic
-cannot recall or observe.
+When support memory becomes invalid, a dependent claim can remain active and recallable.
+
+The primary mutation and the dependent revalidation must also survive different crash windows.
 
 ## Operating theory
 
-The hook command must start its own process. Package file metadata cannot
-control runtime behavior.
+Dependency propagation is an orchestration task. Storage changes one memory atomically. The extraction engine judges dependent claims.
 
-Each POSIX command must invoke `sh`. It must quote the `${PLUGIN_ROOT}` path.
-This works with readable package modes, including mode `0644`. Windows keeps
-its PowerShell command.
+Each trigger captures the source before mutation. It prepares a durable job before the source changes.
 
-## Current strategy
+After the primary mutation commits, the job becomes ready. A worker scans one namespace snapshot and one-hop link neighborhood.
 
-Use `sh` for every POSIX event. Keep event names, matchers, timeouts, and
-Windows commands unchanged.
+The worker revalidates all bounded dependents in one LLM call. `still_valid` keeps the memory active. `invalidated` supersedes it.
 
-A manifest test checks every event. A runtime test copies the launcher, sets
-mode `0644`, and runs it through `sh`.
+Malformed, missing, or uncertain verdicts preserve active memory. This keeps the failure mode fail-open for user data.
+
+## Durable state model
+
+The queue uses explicit `prepared`, `ready`, `leased`, `retryable`, and terminal states.
+
+Preparation records the exact source snapshot and replacement identity. Reservations prevent one caller from canceling another caller's job.
+
+Recovery first proves whether the primary mutation committed. It replays missing primary effects only from the captured snapshot.
+
+Recovered consolidation work also repairs index visibility. It uses the captured source path for deindex and gates temporal index work by capability.
+
+The queue writes with atomic JSON replacement. Write failures return no preparation token, so callers do not report false durability.
+
+## Trigger coverage
+
+Contradiction resolution captures the active hot or cold source before supersession.
+
+Temporal supersession prepares before mutation and retries preparation when a transient survivor lookup fails.
+
+Consolidation invalidate and merge paths prepare before mutation. Merge recovery verifies the survivor fingerprint before replay.
+
+Startup recovery scans durable jobs. Shutdown drains extraction first, then waits for propagation work.
+
+## Rebase integration
+
+Current `main` moved supersession side effects and recovery work into focused modules.
+
+The branch now uses those boundaries instead of restoring old monolithic code.
+
+Supersession remains active-only under the file lock. Exact replay repairs missing lifecycle, tombstone, audit, and cache effects.
+
+The final branch must preserve the storage ratchet. `storage.ts` and `orchestrator.ts` stay below their enforced line limits.
 
 ## Verification state
 
-The manifest test failed against the direct startup commands.
+Core type checks pass. The focused replay suite passes 170 tests.
 
-All 49 Codex hook tests pass. A copied launcher with mode `0644` starts and
-returns valid hook JSON.
+The entity hardening gate passes. The lifecycle coverage suite passes 41 tests.
+
+The complete second package shard passes 722 tests, with 17 skips and no failures.
+
+The archive replay test and the active-state race regression both pass after the rebase fix.
+
+The final sequential `preflight:quick` run passes.

@@ -12,12 +12,13 @@
  */
 
 import assert from "node:assert/strict";
-import { utimes } from "node:fs/promises";
+import { mkdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { MemoryCategory } from "../types.js";
 import test from "node:test";
 
 import { StorageManager } from "../storage.js";
+import { SecureStoreLockedError } from "../secure-store/secure-fs.js";
 import {
   ALL_CATEGORY_DIRS,
   ALL_CATEGORY_KEYS,
@@ -25,7 +26,7 @@ import {
   RECALL_NON_MEMORY_DIRS,
   categoryDirName,
 } from "../utils/category-dir.js";
-import { makeStorage } from "./harness.js";
+import { makeStorage, rawMemoryMarkdown } from "./harness.js";
 
 /**
  * The singular category keys writeMemory accepts, minus "entity" (entities use
@@ -141,6 +142,165 @@ test("round-trip: invalidateMemory returns false for a non-existent id (not a th
   }
 });
 
+test("round-trip: invalidation does not record commit proof by default", async () => {
+  const { storage, cleanup } = await makeStorage();
+  try {
+    const { id } = await storage.writeMemory("fact", "proof source");
+    const snapshot = await storage.getMemoryById(id);
+    assert.ok(snapshot);
+
+    assert.equal(await storage.invalidateMemory(id), true);
+    assert.equal(await storage.hasCommittedInvalidation(snapshot), false);
+    const explicitOff = await storage.writeMemory("fact", "proof source with explicit off");
+    const explicitSnapshot = await storage.getMemoryById(explicitOff.id);
+    assert.ok(explicitSnapshot);
+    assert.equal(
+      await storage.invalidateMemory(explicitOff.id, undefined, { recordCommitProof: false }),
+      true,
+    );
+    assert.equal(await storage.hasCommittedInvalidation(explicitSnapshot), false);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("round-trip: invalidation commit proof survives restart and rejects a changed snapshot", async () => {
+  const { storage, baseDir, cleanup } = await makeStorage();
+  try {
+    const { id } = await storage.writeMemory("fact", "proof source", {
+      tags: ["proof"],
+    });
+    const snapshot = await storage.getMemoryById(id);
+    assert.ok(snapshot);
+
+    assert.equal(await storage.invalidateMemory(id, undefined, { recordCommitProof: true }), true);
+    assert.equal(await storage.hasCommittedInvalidation(snapshot), true);
+
+    const restarted = new StorageManager(baseDir);
+    assert.equal(await restarted.hasCommittedInvalidation(snapshot), true);
+    assert.equal(
+      await restarted.hasCommittedInvalidation({
+        ...snapshot,
+        frontmatter: {
+          ...snapshot.frontmatter,
+          accessCount: 99,
+          lastAccessed: "2026-08-09T12:00:00.000Z",
+        },
+      }),
+      true,
+    );
+    assert.equal(
+      await restarted.hasCommittedInvalidation({
+        ...snapshot,
+        content: "changed source",
+      }),
+      false,
+    );
+  } finally {
+    await cleanup();
+  }
+});
+test("round-trip: a post-delete failure retains the committed invalidation proof", async () => {
+  const { storage, cleanup } = await makeStorage();
+  try {
+    const { id } = await storage.writeMemory("fact", "proof survives post-delete failure");
+    const snapshot = await storage.getMemoryById(id);
+    assert.ok(snapshot);
+    const managedStorage = storage as unknown as {
+      deleteManagedStorageFile: (filePath: string) => Promise<boolean>;
+      rebuildTombstoneBlockedCaptureAfterInvalidation: (ownedMarker?: string) => Promise<void>;
+    };
+    const originalDelete = managedStorage.deleteManagedStorageFile;
+    managedStorage.deleteManagedStorageFile = async (filePath) => originalDelete.call(storage, filePath);
+    managedStorage.rebuildTombstoneBlockedCaptureAfterInvalidation = async () => {
+      throw new Error("synthetic post-delete failure");
+    };
+
+    assert.equal(
+      await storage.invalidateMemory(id, snapshot, { recordCommitProof: true }),
+      false,
+    );
+    assert.equal(await storage.readMemoryByPath(snapshot.path), null);
+    assert.equal(await storage.hasCommittedInvalidation(snapshot), true);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("round-trip: dependency propagation queue rejects symlinks in root, parent, and target paths", async () => {
+  const { storage, baseDir, cleanup } = await makeStorage("remnic-dependency-queue-symlink-");
+  const rootLink = path.join(path.dirname(baseDir), `${path.basename(baseDir)}-root-link`);
+  const parentTarget = path.join(path.dirname(baseDir), `${path.basename(baseDir)}-parent-target`);
+  const parentLink = path.join(baseDir, "queue-parent-link");
+  const targetFile = path.join(path.dirname(baseDir), `${path.basename(baseDir)}-target.json`);
+  const targetLink = path.join(baseDir, "queue-target-link.json");
+  const payload = JSON.stringify({ value: "synthetic" });
+  try {
+    await symlink(baseDir, rootLink, "dir");
+    const storageWithSymlinkRoot = storage as unknown as { baseDir: string };
+    const originalBaseDir = storageWithSymlinkRoot.baseDir;
+    try {
+      storageWithSymlinkRoot.baseDir = rootLink;
+      const rootQueuePath = path.join(rootLink, "state", "dependency-propagation", "ready", "job.json");
+      await assert.rejects(() => storage.readDependencyPropagationQueueFile(rootQueuePath));
+      await assert.rejects(() => storage.writeDependencyPropagationQueueFile(rootQueuePath, payload));
+    } finally {
+      storageWithSymlinkRoot.baseDir = originalBaseDir;
+    }
+
+    await mkdir(parentTarget, { recursive: true });
+    await symlink(parentTarget, parentLink, "dir");
+    const parentQueuePath = path.join(parentLink, "job.json");
+    await assert.rejects(() => storage.readDependencyPropagationQueueFile(parentQueuePath));
+    await assert.rejects(() => storage.writeDependencyPropagationQueueFile(parentQueuePath, payload));
+
+    await writeFile(targetFile, payload, "utf8");
+    await symlink(targetFile, targetLink);
+    await assert.rejects(() => storage.readDependencyPropagationQueueFile(targetLink));
+    await assert.rejects(() => storage.writeDependencyPropagationQueueFile(targetLink, payload));
+  } finally {
+    await rm(rootLink, { recursive: true, force: true });
+    await rm(parentLink, { recursive: true, force: true });
+    await rm(parentTarget, { recursive: true, force: true });
+    await rm(targetLink, { force: true });
+    await rm(targetFile, { force: true });
+    await cleanup();
+  }
+});
+
+test("dependency propagation queue storage encrypts payload and fails closed while locked", async () => {
+  const { storage, baseDir, cleanup } = await makeStorage("remnic-dependency-queue-storage-");
+  const queuePath = path.join(baseDir, "state", "dependency-propagation", "ready", "job.json");
+  const payload = JSON.stringify({ secret: "synthetic queue payload" });
+  const key = Buffer.alloc(32, 37);
+  try {
+    storage.setSecureStoreRequired(true);
+    storage.setSecureStoreKey(key);
+    await storage.writeDependencyPropagationQueueFile(queuePath, payload);
+
+    const raw = await readFile(queuePath, "utf8");
+    assert.doesNotMatch(raw, /synthetic queue payload/);
+
+    const unlocked = new StorageManager(baseDir);
+    unlocked.setSecureStoreRequired(true);
+    unlocked.setSecureStoreKey(key);
+    assert.equal(await unlocked.readDependencyPropagationQueueFile(queuePath), payload);
+
+    const locked = new StorageManager(baseDir);
+    locked.setSecureStoreRequired(true);
+    await assert.rejects(
+      () => locked.readDependencyPropagationQueueFile(queuePath),
+      SecureStoreLockedError,
+    );
+    await assert.rejects(
+      () => locked.writeDependencyPropagationQueueFile(queuePath, payload),
+      SecureStoreLockedError,
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
 test("round-trip: getMemoryById returns null for a non-existent id", async () => {
   const { storage, cleanup } = await makeStorage();
   try {
@@ -158,6 +318,28 @@ test("round-trip: readMemoryByPath returns null for a non-existent path", async 
       `${baseDir}/facts/2026-01-01/nonexistent.md`,
     );
     assert.equal(result, null);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("round-trip: archive fallback skips a bad file and returns readable siblings", async () => {
+  const { storage, baseDir, cleanup } = await makeStorage("remnic-archive-fallback-");
+  try {
+    const archiveDir = path.join(baseDir, "archive", "2026-08-10");
+    await mkdir(archiveDir, { recursive: true });
+    await writeFile(
+      path.join(archiveDir, "readable.md"),
+      rawMemoryMarkdown("archived-readable", "fact", "readable archive content"),
+      "utf-8",
+    );
+    await writeFile(path.join(archiveDir, "broken.md"), "not markdown", "utf-8");
+
+    const archived = await storage.readArchivedMemories();
+    assert.deepEqual(
+      archived.map((memory) => memory.frontmatter.id),
+      ["archived-readable"],
+    );
   } finally {
     await cleanup();
   }

@@ -122,6 +122,13 @@ import {
 } from "./orchestration/extraction-run.js";
 import { ConsolidationRunCoordinator } from "./orchestration/consolidation-run.js";
 import { ExtractionPersistCoordinator } from "./orchestration/extraction-persist.js";
+import { drainExtractionAndShutdownDependencyPropagation } from "./orchestration/extraction-shutdown.js";
+import {
+  DependencyPropagationDelivery,
+  type DependencyPropagationDeliveryPort,
+} from "./orchestration/dependency-propagation-delivery.js";
+import { isDependencyPropagationEnabled } from "./orchestration/dependency-propagation.js";
+import { createDependencyPropagationReplayReconciliation } from "./orchestration/dependency-propagation-replay-reconciliation.js";
 import { RecallInternalCoordinator } from "./orchestration/recall-internal.js";
 import { RecallSearchPipelineCoordinator } from "./orchestration/recall-search-pipeline.js";
 import type { GraphRecallExpansionOptions, GraphRecallExpansionResult } from "./orchestration/graph-recall-seam.js";
@@ -371,7 +378,6 @@ import { resolveNamespaceCapabilities,
   resolveCapabilities,
   resolveGraphConstructionCapabilities,
   resolveMemoryLifecycleCapabilities,
-  resolveIndexingCapabilities,
   resolveCreationMemoryCapabilities,
   type CapabilitySet,
   type GraphConstructionCapabilitySet,
@@ -733,26 +739,30 @@ export class Orchestrator {
     suppressedReasonCounts: Record<string, number>;
   } = { detected: 0, queued: 0, autoApplied: 0, suppressedReasonCounts: {} };
 
-  /**
-   * Background serial extraction queue coordinator (issue #1526 — moved
-   * from inline `extractionQueue`/`queueProcessing` fields). Owns queue
-   * state + scheduling + the serial drain + failure classification; the
-   * orchestrator builds each task closure in `queueBufferedExtraction` and
-   * hands it to `enqueue`.
-   */
+  private _dependencyPropagationDelivery: DependencyPropagationDelivery | undefined;
+  private _dependencyPropagationRecovery: Promise<void> | null = null;
+  private destroyed = false;
+
+  private get dependencyPropagationDelivery(): DependencyPropagationDelivery {
+    if (this.destroyed) throw new Error("orchestrator has been destroyed");
+    if (!this._dependencyPropagationDelivery) {
+      this._dependencyPropagationDelivery = new DependencyPropagationDelivery({
+        queueRoot: path.join(this.config.memoryDir, "state", "dependency-propagation"),
+        config: this.config,
+        extraction: this.extraction,
+        getStorage: (namespace) => this.getStorage(namespace),
+        readQueueFile: (filePath) => this.storage.readDependencyPropagationQueueFile(filePath),
+        writeQueueFile: (filePath, content) => this.storage.writeDependencyPropagationQueueFile(filePath, content),
+        autoStart: true,
+        replayReconciliation: createDependencyPropagationReplayReconciliation({ getStorage: (namespace) => this.getStorage(namespace), indexPersistedMemory: (storage, memoryId) => this.indexPersistedMemory(storage, memoryId), removeFromIndex: (memoryId) => this.embeddingFallback.removeFromIndex(memoryId), config: this.config }),
+      });
+    }
+    return this._dependencyPropagationDelivery;
+  }
+
   readonly extractionQueueCoordinator: ExtractionQueueCoordinator;
-  /**
-   * Extraction-run pipeline coordinator (issue #1526 seam 15). Owns
-   * `runExtraction` + dedupe fingerprint helpers + processed-fingerprint
-   * recording. The orchestrator delegates and injects its own methods.
-   */
   private _extractionRunCoordinator: ExtractionRunCoordinator | undefined;
 
-  /**
-   * Lazy getter: creates the ExtractionRunCoordinator on first access using
-   * the orchestrator's live field references. Supports Object.create(prototype)
-   * tests that set fields post-construction without invoking the constructor.
-   */
   private get extractionRunCoordinator(): ExtractionRunCoordinator {
     if (!this._extractionRunCoordinator) {
       this._extractionRunCoordinator = new ExtractionRunCoordinator({
@@ -779,15 +789,6 @@ export class Orchestrator {
     }
     return this._extractionRunCoordinator;
   }
-  /**
-   * Consolidation-run coordinator (issue #1526 seam 17). Owns
-   * the full consolidation maintenance pass (LLM merge/invalidate/update,
-   * entity merge, commitment/TTL cleanup, lifecycle policy, compression
-   * guideline learning, tier migration, fact archival, semantic consolidation,
-   * identity consolidation, profile consolidation, summarization, topic
-   * extraction, TMT rebuild). The orchestrator delegates and injects
-   * its own methods + coordinators.
-   */
   private _consolidationRunCoordinator: ConsolidationRunCoordinator | undefined;
   private get consolidationRunCoordinator(): ConsolidationRunCoordinator {
     if (!this._consolidationRunCoordinator) {
@@ -797,6 +798,8 @@ export class Orchestrator {
         getStorageRouter: () => this.storageRouter,
         getNamespaceCatalog: () => this.namespaceCatalog,
         getExtraction: () => this.extraction,
+        storageDirNamespace: (storageDir) => this.storageDirNamespace(storageDir),
+        getDependencyPropagationDelivery: () => this.dependencyPropagationDelivery,
         embeddingFallback: this.embeddingFallback,
         tmtBuilder: this.tmtBuilder,
         consolidationObservers: this.consolidationObservers,
@@ -816,11 +819,6 @@ export class Orchestrator {
     return this._consolidationRunCoordinator;
   }
 
-  /**
-   * Extraction-persist coordinator (issue #1526 seam 16). Owns the
-   * `persistExtraction` pipeline. Lazy: created on first access so
-   * Object.create(prototype) tests that set fields post-construction work.
-   */
   private _extractionPersistCoordinator: ExtractionPersistCoordinator | undefined;
 
   private get extractionPersistCoordinator(): ExtractionPersistCoordinator {
@@ -829,8 +827,8 @@ export class Orchestrator {
         config: this.config,
         getStorageRouter: () => this.storageRouter,
         getThreading: () => this.threading,
+        getDependencyPropagationDelivery: () => this.dependencyPropagationDelivery,
         getLocalLlm: () => this.localLlm,
-        getExtraction: () => this.extraction,
         getQmd: () => this.qmd,
         getJudgeVerdictCache: () => this.judgeVerdictCache,
         getJudgeDeferCounts: () => this.judgeDeferCounts,
@@ -960,36 +958,26 @@ export class Orchestrator {
    */
   async destroy(): Promise<void> {
     this.abortDeferredInit();
+    this.extractionQueueCoordinator.stopAccepting();
     if (this.wearablesAutoSyncHandle) {
-      // Aborts in-flight provider fetches and waits for the tick to
-      // settle, so nothing is writing or reindexing past destroy().
       await this.wearablesAutoSyncHandle.stop();
       this.wearablesAutoSyncHandle = null;
     }
     for (const svc of this.meetingsServiceByNamespace.values()) svc.dispose();
     await this.maintenanceScheduler.dispose();
+    await this._dependencyPropagationRecovery;
+    this._dependencyPropagationRecovery = null;
+    const extractionDrainError = await drainExtractionAndShutdownDependencyPropagation(
+      this.extractionQueueCoordinator,
+      this._dependencyPropagationDelivery,
+    );
+    this.destroyed = true;
+    this._dependencyPropagationDelivery = undefined;
     await drainRecallWrites(this);
-    // PR #2016 finding 3: drain any deferred lock-timeout hash-index retries so a
-    // short-lived writer's durable fact hash reaches disk before the process
-    // exits. The per-index background retry is unref'd (it never keeps a
-    // long-lived host alive), so a one-shot CLI could exit before it fires; this
-    // drives it to completion inline at the shutdown boundary. Best-effort.
     await this.persistenceIndexCoordinator
       .drainContentHashReconcileRetries()
       .catch((err) => log.warn(`content-hash reconcile drain failed during destroy: ${err}`));
-    // Issue #1909: persist any turns buffered within the debounce window BEFORE
-    // flushing catalog touches (review round 11 finding 2). The buffer save fires
-    // a coalesced namespace-catalog touch on an unref'd timer; flushing touches
-    // first would let that shutdown-time touch queue after the flush and be lost.
-    // Ordering it before flushPendingTouches folds the buffer-save's touch into
-    // the flush below so both settle before destroy() returns.
-    //
-    // Graceful-shutdown durability contract (review round 14): the flush runs
-    // with throwOnFailure so a failed buffer write is NOT silently swallowed.
-    // flushPendingSave keeps the save pending on failure (in-memory turns are
-    // retained), so we finish the rest of teardown in a finally block and then
-    // rethrow — the host learns buffered turns did not reach disk instead of
-    // destroy() reporting a clean shutdown and losing them on exit.
+    // Save buffered turns before catalog flush; rethrow save failures after teardown.
     let bufferFlushError: unknown;
     try {
       await this.buffer.flushPendingSave({ throwOnFailure: true });
@@ -997,8 +985,7 @@ export class Orchestrator {
       bufferFlushError = err;
     }
     try {
-      // Issue #1903: flush any coalesced namespace-catalog touches before teardown
-      // so a long-lived host does not drop buffered read/write timestamps.
+      // Flush catalog touches before backend disposal.
       await this.namespaceCatalog.flushPendingTouches().catch(() => undefined);
       this.prioritizedEmbedding?.dispose();
       await this.namespaceSearchRouter.dispose();
@@ -1012,6 +999,12 @@ export class Orchestrator {
           `orchestrator.destroy: buffer flush failed; pending turns retained in memory but not persisted: ${String(bufferFlushError)}`,
         );
         throw bufferFlushError;
+      }
+      if (extractionDrainError !== undefined) {
+        log.warn(
+          `orchestrator.destroy: extraction queue did not drain before teardown: ${String(extractionDrainError)}`,
+        );
+        throw extractionDrainError;
       }
     }
   }
@@ -1297,7 +1290,6 @@ export class Orchestrator {
     );
   }
 
-
   invalidateLiveContentHashIndex(): void {
     this.contentHashIndex = null;
     this.contentHashIndexesByStorageDir.clear();
@@ -1551,6 +1543,8 @@ export class Orchestrator {
       namespaceFromPath: (p) => this.namespaceFromPath(p),
       storageForNamespace: (namespace) => this.storageRouter.storageFor(namespace),
       getExtraction: () => this.extraction,
+      storageDirNamespace: (storageDir) => this.storageDirNamespace(storageDir),
+      getDependencyPropagationDelivery: () => this.dependencyPropagationDelivery,
     });
     this.modelRegistry = new ModelRegistry(config.memoryDir);
     this.graphRecallCoordinator = new GraphRecallCoordinator({
@@ -1957,8 +1951,15 @@ export class Orchestrator {
   }
 
   async initialize(): Promise<void> {
-    return this.orchestratorInitCoordinator.initialize(
-    );
+    this.extractionQueueCoordinator.resumeAccepting();
+    await this.orchestratorInitCoordinator.initialize();
+    if (isDependencyPropagationEnabled(this.config)) {
+      this._dependencyPropagationRecovery = this.dependencyPropagationDelivery
+        .recover()
+        .catch((err) => {
+          log.warn(`dependency propagation startup recovery failed: ${err}`);
+        });
+    }
   }
 
   private async deferredInitialize(signal: AbortSignal): Promise<void> {

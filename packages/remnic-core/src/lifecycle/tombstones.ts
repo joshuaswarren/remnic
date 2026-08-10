@@ -79,6 +79,8 @@ export interface TombstoneEntry {
   entityRef?: string;
   /** Structured-attribute supersession key when one existed. */
   supersessionKey?: string;
+  /** Stable operation identity for crash-recovery replay. */
+  operationKey?: string;
   /** Namespace scope (rule 42). */
   namespace: string;
   createdAt: string;
@@ -233,6 +235,7 @@ export function parseTombstoneLine(line: string): TombstoneEntry | null {
     createdAt: e.createdAt,
     createdBy: e.createdBy,
   };
+  if (typeof e.operationKey === "string") out.operationKey = e.operationKey;
   if (typeof e.entityRef === "string") out.entityRef = e.entityRef;
   if (typeof e.supersessionKey === "string") out.supersessionKey = e.supersessionKey;
   if (typeof e.revokes === "string") out.revokes = e.revokes;
@@ -453,6 +456,7 @@ export class TombstoneStore {
     rawContent: string;
     entityRef?: string;
     supersessionKey?: string;
+    operationKey?: string;
     createdAt?: string;
     /**
      * Pre-computed canonical contentHash from the retired memory's frontmatter.
@@ -475,6 +479,7 @@ export class TombstoneStore {
       normalizedText: this.options.normalizeText(input.rawContent),
       ...(input.entityRef ? { entityRef: input.entityRef } : {}),
       ...(input.supersessionKey ? { supersessionKey: input.supersessionKey } : {}),
+      ...(input.operationKey ? { operationKey: input.operationKey } : {}),
       namespace: this.namespace,
       createdAt,
       createdBy: input.createdBy,
@@ -644,6 +649,31 @@ export class TombstoneStore {
     }
     return null;
   }
+  async hasExactEntry(input: {
+    sourceMemoryId: string;
+    contentHash?: string;
+    entityRef?: string;
+    supersessionKey?: string;
+    createdAt?: string;
+    operationKey?: string;
+  }): Promise<boolean> {
+    if (!this.options.enabled) return false;
+    await this.ensureFreshAgainstDisk();
+    await this.load();
+    return this.entries.some(
+      (entry) =>
+        entry.kind === "tombstone" &&
+        !this.revokedIds.has(entry.id) &&
+        entry.namespace === this.namespace &&
+        entry.sourceMemoryId === input.sourceMemoryId &&
+        (input.contentHash === undefined || entry.contentHash === input.contentHash) &&
+        (input.entityRef === undefined || entry.entityRef === input.entityRef) &&
+        (input.supersessionKey === undefined || entry.supersessionKey === input.supersessionKey) &&
+        (input.createdAt === undefined || entry.createdAt === input.createdAt) &&
+        (input.operationKey === undefined || entry.operationKey === input.operationKey),
+    );
+  }
+
 
   /** Aggregate stats for the doctor / x-ray surfaces. */
   stats(): TombstoneStats {
