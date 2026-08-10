@@ -1,5 +1,6 @@
 import test from "node:test";
 import type { QmdSearchResult } from "../src/types.js";
+import type { GraphIndex } from "../src/graph.js";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
@@ -155,6 +156,172 @@ test("recallInternal writes graph recall snapshot in graph_mode", async (t) => {
   assert.equal(snapshot.mode, "graph_mode");
   assert.equal(snapshot.seedCount, 1);
   assert.equal(snapshot.expandedCount, 1);
+});
+test("graph path scoring infers archived state for legacy intermediate nodes", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-graph-recall-path-state-"));
+  const cfg = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: true,
+    qmdCollection: "engram-test",
+    qmdMaxResults: 3,
+    graphRecallEnabled: true,
+    multiGraphMemoryEnabled: true,
+    graphPathScoring: { enabled: true, invalidNodePenalty: 0.2 },
+    graphExpansionActivationWeight: 0,
+    graphExpansionBlendMin: 0,
+    graphExpansionBlendMax: 1,
+    verbatimArtifactsEnabled: false,
+  });
+  const orchestrator = new Orchestrator(cfg);
+  const { id: seedId } = await orchestrator.storage.writeMemory("fact", "path state seed");
+  const seedMemory = await orchestrator.storage.getMemoryById(seedId);
+  assert.ok(seedMemory);
+  const seedPath = graphPathRelativeToStorage(memoryDir, seedMemory.path);
+  assert.ok(seedPath);
+
+  const cases = [
+    {
+      id: "legacy-archived-intermediate",
+      expectedPenalty: true,
+      relativePath: "archive/2026-07-25/legacy-archived-intermediate.md",
+      frontmatter: [
+        "id: legacy-archived-intermediate",
+        "category: fact",
+        "created: 2026-07-25T00:00:00.000Z",
+        "updated: 2026-07-25T00:00:00.000Z",
+        "source: test",
+        "confidence: 0.9",
+        "confidenceTier: explicit",
+      ],
+    },
+    {
+      id: "active-with-archived-at",
+      expectedPenalty: true,
+      relativePath: "facts/2026-07-25/active-with-archived-at.md",
+      frontmatter: [
+        "id: active-with-archived-at",
+        "category: fact",
+        "created: 2026-07-25T00:00:00.000Z",
+        "updated: 2026-07-25T00:00:00.000Z",
+        "archivedAt: 2026-07-25T01:00:00.000Z",
+        "source: test",
+        "confidence: 0.9",
+        "confidenceTier: explicit",
+        "status: active",
+      ],
+    },
+    {
+      id: "active-in-archive-path",
+      expectedPenalty: true,
+      relativePath: "archive/2026-07-25/active-in-archive-path.md",
+      frontmatter: [
+        "id: active-in-archive-path",
+        "category: fact",
+        "created: 2026-07-25T00:00:00.000Z",
+        "updated: 2026-07-25T00:00:00.000Z",
+        "source: test",
+        "confidence: 0.9",
+        "confidenceTier: explicit",
+        "status: active",
+      ],
+    },
+    {
+      id: "malformed-status-with-invalid-at",
+      relativePath: "facts/2026-07-25/malformed-status-with-invalid-at.md",
+      expectedPenalty: false,
+      frontmatter: [
+        "id: malformed-status-with-invalid-at",
+        "category: fact",
+        "created: 2026-07-25T00:00:00.000Z",
+        "updated: 2026-07-25T00:00:00.000Z",
+        "invalid_at: 2026-08-01T00:00:00.000Z",
+        "source: test",
+        "confidence: 0.9",
+        "confidenceTier: explicit",
+        "status: malformed",
+      ],
+    },
+  ] as const;
+  const candidates: Array<{
+    id: string;
+    intermediatePath: string;
+    candidatePath: string;
+    expectedPenalty: boolean;
+  }> = [];
+  for (const item of cases) {
+    const intermediatePath = path.join(memoryDir, item.relativePath);
+    await mkdir(path.dirname(intermediatePath), { recursive: true });
+    await writeFile(
+      intermediatePath,
+      ["---", ...item.frontmatter, "---", "", `${item.id} intermediate`].join("\n"),
+      "utf-8",
+    );
+    const { id: candidateId } = await orchestrator.storage.writeMemory(
+      "fact",
+      `${item.id} candidate`,
+    );
+    const candidateMemory = await orchestrator.storage.getMemoryById(candidateId);
+    assert.ok(candidateMemory);
+    const candidatePath = graphPathRelativeToStorage(memoryDir, candidateMemory.path);
+    assert.ok(candidatePath);
+    candidates.push({
+      id: item.id,
+      expectedPenalty: item.expectedPenalty,
+      intermediatePath: item.relativePath,
+      candidatePath,
+    });
+  }
+  type GraphIndexSeam = Pick<GraphIndex, "spreadingActivation">;
+  const orchestratorInternals = orchestrator as unknown as {
+    graphIndexes: Map<string, GraphIndexSeam>;
+  };
+  const graphIndexes = orchestratorInternals.graphIndexes;
+  graphIndexes.set(memoryDir, {
+    spreadingActivation: async () =>
+      candidates.map((item) => ({
+        path: item.candidatePath,
+        score: 0.8,
+        seed: seedPath,
+        hopDepth: 2,
+        decayedWeight: 0.7,
+        graphType: "entity" as const,
+        edgeConfidence: 1,
+        activationPath: {
+          nodeIds: [seedPath, item.intermediatePath, item.candidatePath],
+          edgeConfidences: [1, 1],
+          graphTypes: ["entity", "entity"] as const,
+        },
+      })),
+  });
+
+  const result = await orchestrator.expandResultsViaGraph({
+    memoryResults: [
+      {
+        docid: seedMemory.frontmatter.id,
+        path: seedPath,
+        namespace: "default",
+        snippet: "path state seed",
+        score: 0.9,
+      },
+    ],
+    recallNamespaces: ["default"],
+    recallResultLimit: 3,
+    asOf: "2026-08-30T00:00:00.000Z",
+  });
+
+  const expectedPenaltyByPath = new Map(
+    candidates.map((item) => [item.candidatePath, item.expectedPenalty]),
+  );
+  assert.equal(result.expandedPaths.length, cases.length);
+  for (const item of result.expandedPaths) {
+    const expectedPenalty = expectedPenaltyByPath.get(
+      graphPathRelativeToStorage(memoryDir, item.path) ?? item.path,
+    );
+    assert.equal(item.pathPenaltyApplied, expectedPenalty, item.path);
+    assert.equal(item.score, expectedPenalty ? 0.18000000000000002 : 0.9);
+  }
 });
 test("recallInternal keeps malformed and empty historical dates on current-time graph scoring", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-graph-recall-as-of-"));

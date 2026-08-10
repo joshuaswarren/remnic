@@ -29,6 +29,7 @@ import type { GraphRecallExpandedEntry } from "../recall-state.js";
 import { clampGraphRecallExpandedEntries } from "../recall-state.js";
 import { scoreEvidencePathDetail, type PathNodeState } from "../graph-path-scoring.js";
 import { isValidAsOf } from "../temporal-validity.js";
+import { inferMemoryStatus, toMemoryPathRel } from "../memory-lifecycle-ledger-utils.js";
 import { GraphPathStateLoader } from "./graph-path-state-loader.js";
 import { qmdCollectionPathParts } from "./qmd-result-resolver.js";
 import { log } from "../logger.js";
@@ -126,12 +127,10 @@ const KNOWN_PATH_NODE_STATUSES: Record<string, true> = {
   forgotten: true,
 };
 
-function normalizePathNodeStatus(value: unknown): PathNodeState["status"] {
-  if (value === undefined) return "active";
+function normalizeInferredPathNodeStatus(value: unknown): PathNodeState["status"] {
   if (typeof value !== "string" || KNOWN_PATH_NODE_STATUSES[value] !== true) return null;
   return value as Exclude<PathNodeState["status"], null>;
 }
-
 
 // ---------------------------------------------------------------------------
 // Coordinator
@@ -438,10 +437,12 @@ export class GraphRecallCoordinator {
       const nodeStates = new Map<string, PathNodeState>();
       const addState = (memory: MemoryFile): PathNodeState => {
         const relativePath = graphPathRelativeToStorage(storage.dir, memory.path);
-        const rawStatus: unknown = memory.frontmatter.status;
+        const lifecyclePath = toMemoryPathRel(storage.dir, memory.path);
         const state: PathNodeState = {
           id: memory.frontmatter.id,
-          status: normalizePathNodeStatus(rawStatus),
+          status: normalizeInferredPathNodeStatus(
+            inferMemoryStatus(memory.frontmatter, lifecyclePath),
+          ),
           created: memory.frontmatter.created,
           valid_at: memory.frontmatter.valid_at,
           invalid_at: memory.frontmatter.invalid_at,
