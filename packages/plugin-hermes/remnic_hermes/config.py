@@ -18,6 +18,7 @@ class RemnicHermesConfig:
     session_key: str = ""
     timeout: float = 30.0
     prefetch_wait_timeout: float = 2.0
+    client_id: str = ""
 
     @classmethod
     def from_hermes_config(cls, config: dict[str, object]) -> RemnicHermesConfig:
@@ -40,13 +41,21 @@ class RemnicHermesConfig:
         if not token:
             token = _load_token_from_file()
 
+        client_id_value = section.get("client_id", "")
+        namespace_value = section.get("namespace", "")
+        if not isinstance(client_id_value, str):
+            raise TypeError(f"remnic client_id must be a string, got {client_id_value!r}")
+        if not isinstance(namespace_value, str):
+            raise TypeError(f"remnic namespace must be a string, got {namespace_value!r}")
+        client_id = client_id_value.strip() or namespace_value.strip()
         return cls(
             host=str(section.get("host", _read_compat_env("REMNIC_HOST", "ENGRAM_HOST", "127.0.0.1"))),
             port=int(section.get("port", _read_compat_env("REMNIC_PORT", "ENGRAM_PORT", "4318"))),
             token=token,
-            session_key=str(section.get("session_key", "")),
+            session_key=str(section.get("session_key", "")).strip(),
             timeout=float(section.get("timeout", 30.0)),
             prefetch_wait_timeout=_parse_prefetch_wait_timeout(section.get("prefetch_wait_timeout", 2.0)),
+            client_id=client_id,
         )
 
 

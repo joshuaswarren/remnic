@@ -1,7 +1,8 @@
 """Tests for the RemnicClient HTTP methods."""
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
 from remnic_hermes import EngramClient
 from remnic_hermes.client import RemnicClient
@@ -23,6 +24,130 @@ class TestClientInit:
 
     def test_client_id(self, client):
         assert client.client_id == "hermes"
+
+
+class TestClientNamespace:
+    @pytest.mark.asyncio
+    async def test_namespace_header_and_rest_default(self):
+        response = MagicMock()
+        response.json.return_value = {"memory": {"id": "fact-1"}}
+
+        with patch("remnic_hermes.client.httpx.AsyncClient") as MockAsyncClient:
+            http = MockAsyncClient.return_value
+            http.headers = {}
+            http.get = AsyncMock(return_value=response)
+            client = RemnicClient(
+                host="127.0.0.1",
+                port=4318,
+                token="test-token",
+                client_id="hermes",
+                namespace="generalist",
+                session_key="session-1",
+            )
+            await client.memory_get("fact-1")
+            client.set_session_key("session-2")
+
+        headers = MockAsyncClient.call_args.kwargs["headers"]
+        assert headers["X-Engram-Client-Id"] == "hermes"
+        assert headers["X-Engram-Namespace"] == "generalist"
+        assert headers["X-Hermes-Session-Id"] == "session-1"
+        assert http.headers["X-Hermes-Session-Id"] == "session-2"
+        http.get.assert_awaited_once_with(
+            "/memories/fact-1",
+            params={"namespace": "generalist"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_configured_namespace_replaces_null_rest_override(self):
+        response = MagicMock()
+        response.json.return_value = {"memory": {"id": "fact-1"}}
+
+        with patch("remnic_hermes.client.httpx.AsyncClient") as mock_async_client:
+            http = mock_async_client.return_value
+            http.post = AsyncMock(return_value=response)
+            client = RemnicClient(
+                host="127.0.0.1",
+                port=4318,
+                token="test-token",
+                client_id="hermes",
+                namespace="generalist",
+            )
+            await client.store("content", namespace=None)
+
+        http.post.assert_awaited_once_with(
+            "/memories",
+            json={"content": "content", "namespace": "generalist"},
+        )
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("client_id", "généraliste"),
+            ("namespace", "généraliste"),
+            ("session_key", "séance-1"),
+            ("client_id", "bad\nvalue"),
+            ("namespace", "bad\rvalue"),
+            ("session_key", "bad\x00value"),
+            ("namespace", "bad\x7fvalue"),
+            ("client_id", " leading"),
+            ("namespace", "trailing "),
+            ("session_key", " "),
+        ],
+    )
+    def test_rejects_invalid_header_values(self, field, value):
+        kwargs = {
+            "host": "127.0.0.1",
+            "port": 4318,
+            "token": "test-token",
+            "client_id": "hermes",
+        }
+        kwargs[field] = value
+
+        with (
+            patch("remnic_hermes.client.httpx.AsyncClient") as mock_async_client,
+            pytest.raises(ValueError, match=f"{field} must be printable ASCII without edge spaces"),
+        ):
+            RemnicClient(**kwargs)
+
+        mock_async_client.assert_not_called()
+
+    @pytest.mark.parametrize("field", ["client_id", "namespace"])
+    def test_rejects_namespace_identifiers_over_daemon_limit(self, field):
+        kwargs = {
+            "host": "127.0.0.1",
+            "port": 4318,
+            "token": "test-token",
+            "client_id": "hermes",
+        }
+        kwargs[field] = "a" * 257
+
+        with (
+            patch("remnic_hermes.client.httpx.AsyncClient") as mock_async_client,
+            pytest.raises(ValueError, match=f"{field} must contain at most 256 characters"),
+        ):
+            RemnicClient(**kwargs)
+
+        mock_async_client.assert_not_called()
+
+    def test_rejects_invalid_session_update_without_changing_header(self):
+        with patch("remnic_hermes.client.httpx.AsyncClient") as mock_async_client:
+            http = mock_async_client.return_value
+            http.headers = {"X-Hermes-Session-Id": "session-1"}
+            client = RemnicClient(
+                host="127.0.0.1",
+                port=4318,
+                token="test-token",
+                client_id="hermes",
+                session_key="session-1",
+            )
+
+            with pytest.raises(
+                ValueError,
+                match="session_key must be printable ASCII without edge spaces",
+            ):
+                client.set_session_key("session-\n2")
+
+        assert http.headers["X-Hermes-Session-Id"] == "session-1"
 
 
 class TestClientClose:
