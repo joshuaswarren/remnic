@@ -4,14 +4,60 @@ import path from "node:path";
 export const REMNIC_OPENCLAW_PLUGIN_ID = "openclaw-remnic";
 const OPENCLAW_EXEC_TIMEOUT_MS = 120_000;
 const OPENCLAW_PLUGIN_PACKAGE = "@remnic/plugin-openclaw";
-const SEMVER_CORE_SELECTOR = /^v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?=$|[-+])/;
-const SEMVER_SUFFIX_SELECTOR =
-  /^(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const DIST_TAG_SELECTOR = /^[A-Za-z][0-9A-Za-z._-]*$/;
 
+function semanticVersionCoreLength(selector: string): number {
+  let cursor = selector.startsWith("v") ? 1 : 0;
+  for (let part = 0; part < 3; part += 1) {
+    const partStart = cursor;
+    while (cursor < selector.length) {
+      const code = selector.charCodeAt(cursor);
+      if (code < 48 || code > 57) break;
+      cursor += 1;
+    }
+    if (cursor === partStart || (cursor - partStart > 1 && selector.charCodeAt(partStart) === 48)) return -1;
+    if (part < 2) {
+      if (selector.charCodeAt(cursor) !== 46) return -1;
+      cursor += 1;
+    }
+  }
+  return cursor;
+}
+
+function areSemverIdentifiersValid(value: string, start: number, end: number, rejectLeadingZeroes: boolean): boolean {
+  if (start >= end) return false;
+  let identifierStart = start;
+  let numeric = true;
+  for (let cursor = start; cursor <= end; cursor += 1) {
+    const code = value.charCodeAt(cursor);
+    if (cursor === end || code === 46) {
+      if (cursor === identifierStart) return false;
+      if (rejectLeadingZeroes && numeric && cursor - identifierStart > 1 && value.charCodeAt(identifierStart) === 48) {
+        return false;
+      }
+      identifierStart = cursor + 1;
+      numeric = true;
+      continue;
+    }
+    const alphanumeric = (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+    if (!alphanumeric && code !== 45) return false;
+    if (code < 48 || code > 57) numeric = false;
+  }
+  return true;
+}
+
 function isExactSemverSelector(selector: string): boolean {
-  const core = selector.match(SEMVER_CORE_SELECTOR)?.[0];
-  return Boolean(core && SEMVER_SUFFIX_SELECTOR.test(selector.slice(core.length)));
+  const coreLength = semanticVersionCoreLength(selector);
+  if (coreLength < 0) return false;
+  if (coreLength === selector.length) return true;
+  const suffixMarker = selector[coreLength];
+  if (suffixMarker === "-") {
+    const plusIndex = selector.indexOf("+", coreLength + 1);
+    const prereleaseEnd = plusIndex < 0 ? selector.length : plusIndex;
+    if (!areSemverIdentifiersValid(selector, coreLength + 1, prereleaseEnd, true)) return false;
+    return plusIndex < 0 || areSemverIdentifiersValid(selector, plusIndex + 1, selector.length, false);
+  }
+  return suffixMarker === "+" && areSemverIdentifiersValid(selector, coreLength + 1, selector.length, false);
 }
 
 function assertRegistryPackageSpec(spec: string): string {
