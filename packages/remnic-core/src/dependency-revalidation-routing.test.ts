@@ -87,7 +87,7 @@ test("revalidation uses the client's effective custom base URL", async () => {
   assert.equal(chatOptions?.signal, signal);
 });
 
-test("revalidation falls back to the direct route when the injected fast route is unavailable", async () => {
+test("revalidation falls back to the direct route when the injected fast route rejects", async () => {
   const engine = new ExtractionEngine(
     parseConfig({ openaiApiKey: "fixture-key", openaiBaseUrl: "https://api.openai.com/v1" }),
     undefined,
@@ -107,7 +107,7 @@ test("revalidation falls back to the direct route when the injected fast route i
     fastCalls += 1;
     fastMessages = messages;
     fastOptions = options;
-    return null;
+    throw new Error("fast route unavailable");
   });
   Reflect.set(engine, "client", {
     baseURL: "https://api.openai.com/v1",

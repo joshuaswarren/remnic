@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { isAbortError } from "./abort-error.js";
 import { log } from "./logger.js";
 import { delinearize } from "./delinearize.js";
 import { LocalLlmClient } from "./local-llm.js";
@@ -2442,8 +2443,13 @@ Respond with valid JSON matching this schema:
     }>;
   }> {
     const complete: RevalidationFastChatCompletion = async (messages, options) => {
-      const fast = await this.fastChatCompletion?.(messages, options);
-      if (fast) return fast;
+      try {
+        const fast = await this.fastChatCompletion?.(messages, options);
+        if (fast) return fast;
+      } catch (error) {
+        if (isAbortError(error) || options.signal?.aborted) throw error;
+        log.warn(`dependency revalidation fast route failed: ${error}`);
+      }
       if (this.shouldUseLocalLlm) {
         try {
           const local = await this.localLlm.chatCompletion(messages, options);
