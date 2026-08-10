@@ -239,6 +239,15 @@ test("orders equal scores by id and remains deterministic across invocations", a
   assert.deepEqual(first, second);
   assert.deepEqual(first.map((candidate) => candidate.id), ["a", "b", "c", "d"]);
 });
+test("orders candidates with unequal scores by descending score", async () => {
+  const result = await localizeUpdateCandidates(
+    { storage: storage([]), qmdSearch: search(hit("low", 1), hit("high", 3), hit("mid", 2)) },
+    { category: "fact" },
+    "incoming",
+    { ...options, anchorCandidates: 0 },
+  );
+  assert.deepEqual(result.map((candidate) => candidate.id), ["high", "mid", "low"]);
+});
 
 test("surfaces QMD failures separately from an empty search", async () => {
   const anchorDeps = {

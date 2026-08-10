@@ -15,10 +15,16 @@ export function parseFixtureLocalFunctionConfig(value: unknown): Rec {
     const key = raw.unhandled;
     return key;
   };
+  const registered = (key: string, fallback = raw.registeredDefault): unknown => {
+    void key;
+    return fallback;
+  };
+  void registered;
   const dynamicName = value as string;
+  const duplicateName = value as string;
   return {
     literal: read("literal", raw[dynamicName]),
-    duplicate: read("literal", raw[dynamicName]),
+    duplicate: read("literal", raw[duplicateName]),
     sibling: read("literal", raw.sibling),
     variable: read(variableName),
     computed: read(computedName),

@@ -70,7 +70,7 @@ function normalizeEntityRef(value: unknown): string | undefined {
 function compareCandidates(left: LocalizedCandidate, right: LocalizedCandidate): number {
   const leftScore = Number.isFinite(left.score) ? left.score : Number.NEGATIVE_INFINITY;
   const rightScore = Number.isFinite(right.score) ? right.score : Number.NEGATIVE_INFINITY;
-  if (leftScore !== rightScore) return rightScore - leftScore;
+  if (leftScore !== rightScore) return leftScore > rightScore ? -1 : 1;
   return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
 }
 

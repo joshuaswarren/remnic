@@ -115,6 +115,23 @@ export function blendGraphExpandedRecallScore(options: {
   return Math.max(minBound, Math.min(maxBound, blended));
 }
 
+const KNOWN_PATH_NODE_STATUSES: Record<string, true> = {
+  active: true,
+  pending_review: true,
+  rejected: true,
+  quarantined: true,
+  superseded: true,
+  archived: true,
+  forgotten: true,
+};
+
+function normalizePathNodeStatus(value: unknown): PathNodeState["status"] {
+  if (value === undefined) return "active";
+  if (typeof value !== "string" || KNOWN_PATH_NODE_STATUSES[value] !== true) return null;
+  return value as Exclude<PathNodeState["status"], null>;
+}
+
+
 // ---------------------------------------------------------------------------
 // Coordinator
 // ---------------------------------------------------------------------------
@@ -332,6 +349,21 @@ export class GraphRecallCoordinator {
         ...seedRelativePaths.map((rel) => path.join(storage.dir, rel)),
       );
       const seedSet = new Set(seedRelativePaths);
+      const nodeMemoryCache = new Map<string, MemoryFile | null>();
+      const readGraphNode = async (
+        nodeId: string,
+        allowArchiveLookup: boolean,
+      ): Promise<MemoryFile | null> => {
+        if (nodeMemoryCache.has(nodeId)) return nodeMemoryCache.get(nodeId) ?? null;
+        const memory = await this.graphPathStateLoader.readNode(
+          storage,
+          nodeId,
+          options.deadlineAtMs,
+          allowArchiveLookup,
+        );
+        nodeMemoryCache.set(nodeId, memory);
+        return memory;
+      };
       const scoringEnabled = config.graphPathScoring.enabled;
       const expanded = await this.graphIndexFor(storage).spreadingActivation(
         seedRelativePaths,
@@ -349,14 +381,7 @@ export class GraphRecallCoordinator {
 
       if (!scoringEnabled) {
         for (const candidate of expanded.slice(0, perNamespaceExpandedCap)) {
-          if (deadlineExpired()) break;
-          if (seedSet.has(candidate.path)) continue;
-          const memory = await this.graphPathStateLoader.readNode(
-            storage,
-            candidate.path,
-            options.deadlineAtMs,
-            false,
-          );
+          const memory = await readGraphNode(candidate.path, false);
           if (deadlineExpired()) break;
           if (!memory) continue;
           if (/(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(memory.path)) continue;
@@ -391,10 +416,12 @@ export class GraphRecallCoordinator {
       const nodeStates = new Map<string, PathNodeState>();
       const addState = (memory: MemoryFile): PathNodeState => {
         const relativePath = graphPathRelativeToStorage(storage.dir, memory.path);
+        const rawStatus: unknown = memory.frontmatter.status;
+        const rawInvalidAt: unknown = memory.frontmatter.invalid_at;
         const state: PathNodeState = {
           id: memory.frontmatter.id,
-          status: memory.frontmatter.status ?? "active",
-          invalidAt: memory.frontmatter.invalid_at ?? null,
+          status: normalizePathNodeStatus(rawStatus),
+          invalidAt: typeof rawInvalidAt === "string" ? rawInvalidAt : null,
         };
         const add = (key: string): void => {
           if (!nodeStates.has(key)) nodeStates.set(key, state);
@@ -414,12 +441,7 @@ export class GraphRecallCoordinator {
       for (const candidate of expanded.slice(0, graphPathStateLoadLimit)) {
         if (deadlineExpired()) break;
         if (seedSet.has(candidate.path)) continue;
-        const memory = await this.graphPathStateLoader.readNode(
-          storage,
-          candidate.path,
-          options.deadlineAtMs,
-          true,
-        );
+        const memory = await readGraphNode(candidate.path, true);
         if (deadlineExpired()) break;
         if (!memory) continue;
         if (/(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(memory.path)) continue;
@@ -428,12 +450,7 @@ export class GraphRecallCoordinator {
         if (candidate.activationPath) {
           for (const nodeId of candidate.activationPath.nodeIds.slice(1, -1)) {
             if (deadlineExpired()) break;
-            const intermediate = await this.graphPathStateLoader.readNode(
-              storage,
-              nodeId,
-              options.deadlineAtMs,
-              true,
-            );
+            const intermediate = await readGraphNode(nodeId, true);
             if (deadlineExpired()) break;
             if (!intermediate) {
               log.debug(`graph path scoring missing intermediate memory state: ${nodeId}`);
@@ -493,8 +510,8 @@ export class GraphRecallCoordinator {
         });
       }
       scoredExpanded.sort((a, b) => {
-        const scoreDelta = b.result.score - a.result.score;
-        return scoreDelta !== 0 ? scoreDelta : a.result.path.localeCompare(b.result.path);
+        if (a.result.score !== b.result.score) return a.result.score > b.result.score ? -1 : 1;
+        return a.result.path < b.result.path ? -1 : a.result.path > b.result.path ? 1 : 0;
       });
       for (const item of scoredExpanded.slice(0, perNamespaceExpandedCap)) {
         expandedResults.push(item.result);

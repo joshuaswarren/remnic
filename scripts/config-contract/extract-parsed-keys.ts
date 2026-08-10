@@ -248,6 +248,9 @@ function extractParserKeys(
     aliases.delete(keyParameter.text);
     const previousBinding = literalBindings.get(keyParameter.text);
     if (literalKey !== undefined) literalBindings.set(keyParameter.text, literalKey);
+    for (const parameter of localFunction.fn.parameters) {
+      if (parameter.initializer) visit(parameter.initializer);
+    }
     visit(localFunction.fn.body);
     if (previousBinding === undefined) {
       literalBindings.delete(keyParameter.text);

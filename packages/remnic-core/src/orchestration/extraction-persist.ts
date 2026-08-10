@@ -2036,14 +2036,16 @@ export class ExtractionPersistCoordinator {
         faithfulnessEnforceStatus !== "pending_review"
       ) {
         const targetNamespace = this.deps.storageDirNamespace(targetStorage.dir);
+        const candidateEntityRef: unknown = fact.entityRef;
+        const factEntityRef = typeof candidateEntityRef === "string" ? candidateEntityRef : undefined;
         contradiction = await this.deps.checkForContradiction(
           fact.content,
           writeCategory,
           targetNamespace,
           {
-            entityRef: fact.entityRef,
+            entityRef: factEntityRef,
             structuredAttributes: fact.structuredAttributes,
-            storageSnapshot: await anchorSnapshots.get(targetStorage, fact.entityRef),
+            storageSnapshot: await anchorSnapshots.get(targetStorage, factEntityRef),
           },
         );
         if (contradiction) {

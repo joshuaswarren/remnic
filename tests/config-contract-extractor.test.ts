@@ -39,11 +39,12 @@ function extractLocalFunctionFixture(entryFunction = "parseFixtureLocalFunctionC
   });
 }
 
-test("local function parser preserves sibling reads and deduplicates repeated diagnostics", () => {
+test("local function parser preserves sibling reads, registered subtrees, and duplicate literal arguments", () => {
   const { keys, unparseable } = extractLocalFunctionFixture();
   assert.ok(keys.includes("literal"), "literal key must bind through the local helper");
   assert.ok(keys.includes("sibling"), "sibling call arguments must still be traversed");
   assert.ok(keys.includes("unhandled"), "unhandled local-function bodies must still be traversed");
+  assert.ok(keys.includes("registeredDefault"), "registered local-function subtrees must not be dropped");
   assert.equal(
     keys.includes("sibling.global"),
     false,
@@ -51,8 +52,8 @@ test("local function parser preserves sibling reads and deduplicates repeated di
   );
   assert.equal(
     unparseable.filter((entry) => entry.reason.includes("computed element access")).length,
-    2,
-    "repeated dynamic reads report one diagnostic per distinct construct",
+    3,
+    "literal duplicate and unbound local calls must traverse their distinct dynamic reads",
   );
 });
 

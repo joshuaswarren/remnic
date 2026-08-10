@@ -389,7 +389,73 @@ test("missing memory status defaults to active for path scoring", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+test("malformed intermediate status remains neutral for path scoring", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-malformed-status-"));
+  try {
+    const fixture = await createNamespace(root, "default", "superseded");
+    const originalReadMemoryByPath = fixture.storage.readMemoryByPath.bind(fixture.storage);
+    fixture.storage.readMemoryByPath = async (filePath: string) => {
+      const memory = await originalReadMemoryByPath(filePath);
+      if (!memory || !memory.path.endsWith(fixture.intermediatePath)) return memory;
+      return {
+        ...memory,
+        frontmatter: {
+          ...memory.frontmatter,
+          status: "malformed" as never,
+          invalid_at: AS_OF,
+        },
+      };
+    };
+    const result = await expand(
+      makeCoordinator(makeConfig(), new Map([[fixture.name, fixture]])),
+      [seedResult(fixture)],
+      [fixture.name],
+    );
+    const stale = result.expandedPaths.find((entry) => entry.path.endsWith(fixture.stalePath));
+    assert.equal(stale?.pathPenaltyApplied, false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
+test("memoizes shared missing graph path state within one namespace expansion", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-state-cache-"));
+  try {
+    const fixture = await createNamespace(root, "default");
+    await fixture.storage.writeMemory("fact", "default cache first", { source: "test" });
+    await fixture.storage.writeMemory("fact", "default cache second", { source: "test" });
+    const memories = await fixture.storage.readAllMemories();
+    const firstMemory = memories.find((memory) => memory.content === "default cache first");
+    const secondMemory = memories.find((memory) => memory.content === "default cache second");
+    assert.ok(firstMemory);
+    assert.ok(secondMemory);
+    const firstPath = path.relative(fixture.dir, firstMemory.path).split(path.sep).join("/");
+    const secondPath = path.relative(fixture.dir, secondMemory.path).split(path.sep).join("/");
+    const sharedMissingNode = "shared-missing-node";
+    await appendEdge(fixture.dir, fixture.seedPath, sharedMissingNode);
+    await appendEdge(fixture.dir, sharedMissingNode, firstPath);
+    await appendEdge(fixture.dir, sharedMissingNode, secondPath);
+
+    const missingPath = path.join(fixture.dir, sharedMissingNode);
+    let missingReads = 0;
+    const originalReadMemoryByPath = fixture.storage.readMemoryByPath.bind(fixture.storage);
+    fixture.storage.readMemoryByPath = async (filePath: string) => {
+      if (filePath === missingPath) missingReads += 1;
+      return originalReadMemoryByPath(filePath);
+    };
+    const result = await expand(
+      makeCoordinator(makeConfig(), new Map([[fixture.name, fixture]])),
+      [seedResult(fixture)],
+      [fixture.name],
+      2,
+    );
+    assert.ok(result.expandedPaths.some((entry) => entry.path.endsWith(firstPath)));
+    assert.ok(result.expandedPaths.some((entry) => entry.path.endsWith(secondPath)));
+    assert.equal(missingReads, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 test("provenance ids are optional while penalty boolean remains enabled", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-path-provenance-"));
   try {

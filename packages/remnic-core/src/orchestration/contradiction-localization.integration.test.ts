@@ -93,6 +93,48 @@ test("persistExtraction forwards ExtractedFact anchors to contradiction detectio
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+test("persistExtraction keeps malformed fact entityRef out of anchor lookup", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-contradiction-anchor-invalid-ref-"));
+  try {
+    const orchestrator = new Orchestrator(baseConfig(memoryDir)) as unknown as {
+      qmd: { isAvailable: () => boolean };
+      getStorage: (namespace: string) => Promise<StorageManager>;
+      persistExtraction: (result: ExtractionResult, storage: StorageManager, threadId: null) => Promise<unknown>;
+      contradictionLinkingCoordinator: ContradictionLinkingCoordinator;
+    };
+    orchestrator.qmd = { isAvailable: () => true };
+    const calls: unknown[][] = [];
+    orchestrator.contradictionLinkingCoordinator.checkForContradiction = async (...args: unknown[]) => {
+      calls.push(args);
+      return null;
+    };
+    const storage = await orchestrator.getStorage("default");
+    await storage.ensureDirectories();
+
+    await orchestrator.persistExtraction(
+      extractionResult({
+        category: "fact",
+        content: "Alice lives in New York",
+        confidence: 0.95,
+        tags: [],
+        entityRef: 42,
+      }),
+      storage,
+      null,
+    );
+
+    assert.equal(calls.length, 1);
+    const anchor = calls[0]?.[3] as {
+      entityRef?: unknown;
+      storageSnapshot?: unknown;
+    };
+    assert.equal(anchor.entityRef, undefined);
+    assert.equal(anchor.storageSnapshot, undefined);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 
 test("persistExtraction treats string false anchorEnabled as disabled", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-contradiction-anchor-false-"));
