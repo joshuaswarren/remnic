@@ -7013,13 +7013,13 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     let oldMemory = memories.find(
       (memory) =>
         memory.frontmatter.id === oldMemoryId &&
-        (memory.frontmatter.status === undefined || memory.frontmatter.status === "active"),
+        inferMemoryStatus(memory.frontmatter, toMemoryPathRel(this.baseDir, memory.path)) === "active",
     );
     if (!oldMemory) {
       oldMemory = (await this.readAllColdMemories()).find(
         (memory) =>
           memory.frontmatter.id === oldMemoryId &&
-          (memory.frontmatter.status === undefined || memory.frontmatter.status === "active"),
+          inferMemoryStatus(memory.frontmatter, toMemoryPathRel(this.baseDir, memory.path)) === "active",
       );
     }
     if (!oldMemory) return false;
@@ -7032,7 +7032,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         if (current?.frontmatter.id !== oldMemoryId) return false;
         if (
           current.frontmatter.supersededBy !== undefined ||
-          (current.frontmatter.status !== undefined && current.frontmatter.status !== "active")
+          inferMemoryStatus(current.frontmatter, toMemoryPathRel(this.baseDir, current.path)) !== "active"
         ) {
           return false;
         }

@@ -24,7 +24,7 @@ import { _pairKey, _contentHash } from "./contradiction-judge.js";
 import { executeResolution, isValidResolutionVerb } from "./resolution.js";
 import { ACTIVE_STATUSES, runContradictionScan } from "./contradiction-scan.js";
 import { parseConfig } from "../config.js";
-import type { StorageManager } from "../storage.js";
+import { StorageManager } from "../storage.js";
 import { sealedWriteToLegacyArgs, type SealedMemoryEnvelope } from "../write-envelope.js";
 import type { MemoryCategory, MemoryFile, MemoryFrontmatter } from "../types.js";
 
@@ -1775,6 +1775,91 @@ test("executeResolution merge supersedes both sources to a verified merged memor
     assert.equal(storage.memories.get("mem-b-002")?.frontmatter.status, "superseded");
     assert.equal(storage.memories.get("mem-b-002")?.frontmatter.supersededBy, "mem-merged-003");
     assert.equal(readPair(dir, written.pairId)?.resolution, "merge");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("supersedeMemory chooses the canonically active cold duplicate over an archived hot duplicate", async () => {
+  const { dir, cleanup } = await makeTempDir("contradiction-storage-");
+  try {
+    const hotPath = path.join(dir, "facts", "duplicate-hot.md");
+    const coldPath = path.join(dir, "cold", "facts", "duplicate-cold.md");
+    const hotContent = `---
+id: duplicate-memory
+category: fact
+created: 2026-05-17T00:00:00.000Z
+updated: 2026-05-17T00:00:00.000Z
+status: active
+archivedAt: 2026-05-17T00:01:00.000Z
+---
+
+duplicate content
+`;
+    const coldContent = hotContent.replace("archivedAt: 2026-05-17T00:01:00.000Z\n", "");
+    await mkdir(path.dirname(hotPath), { recursive: true });
+    await mkdir(path.dirname(coldPath), { recursive: true });
+    await writeFile(hotPath, hotContent, "utf8");
+    await writeFile(coldPath, coldContent, "utf8");
+
+    const storage = new StorageManager(dir);
+    assert.equal(await storage.supersedeMemory("duplicate-memory", "replacement-memory", "regression"), true);
+
+    const hot = await storage.readMemoryByPath(hotPath);
+    const cold = await storage.readMemoryByPath(coldPath);
+    assert.equal(hot?.frontmatter.status, "active");
+    assert.equal(hot?.frontmatter.supersededBy, undefined);
+    assert.equal(cold?.frontmatter.status, "superseded");
+    assert.equal(cold?.frontmatter.supersededBy, "replacement-memory");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("supersedeMemory refuses a target that becomes archived before the locked write", async () => {
+  const { dir, cleanup } = await makeTempDir("contradiction-storage-race-");
+  try {
+    const memoryPath = path.join(dir, "facts", "race-memory.md");
+    const activeContent = `---
+id: race-memory
+category: fact
+created: 2026-05-17T00:00:00.000Z
+updated: 2026-05-17T00:00:00.000Z
+status: active
+---
+
+race content
+`;
+    const archivedContent = activeContent.replace(
+      "status: active\n",
+      "status: active\narchivedAt: 2026-05-17T00:01:00.000Z\n",
+    );
+    await mkdir(path.dirname(memoryPath), { recursive: true });
+    await writeFile(memoryPath, activeContent, "utf8");
+
+    const storage = new StorageManager(dir);
+    const privateStorage = storage as unknown as {
+      withTombstoneBlockedMemoryPathLock: <T>(
+        pathname: string,
+        task: (current: MemoryFile | null) => Promise<T>,
+      ) => Promise<T>;
+    };
+    const originalLock = privateStorage.withTombstoneBlockedMemoryPathLock;
+    privateStorage.withTombstoneBlockedMemoryPathLock = async (pathname, task) => {
+      await writeFile(pathname, archivedContent, "utf8");
+      return task(await storage.readMemoryByPath(pathname));
+    };
+
+    try {
+      assert.equal(await storage.supersedeMemory("race-memory", "replacement-memory", "race"), false);
+    } finally {
+      privateStorage.withTombstoneBlockedMemoryPathLock = originalLock;
+    }
+
+    const raced = await storage.readMemoryByPath(memoryPath);
+    assert.equal(raced?.frontmatter.status, "active");
+    assert.equal(raced?.frontmatter.archivedAt, "2026-05-17T00:01:00.000Z");
+    assert.equal(raced?.frontmatter.supersededBy, undefined);
   } finally {
     await cleanup();
   }

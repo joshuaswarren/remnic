@@ -4,6 +4,7 @@ import type { StorageManager } from "../index.js";
 import { lstat, opendir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { isErrnoCode } from "../utils/errno.js";
+import { inferMemoryStatus, toMemoryPathRel } from "../memory-lifecycle-ledger-utils.js";
 
 interface ArchivePathIndex {
   version: number;
@@ -53,7 +54,11 @@ export class GraphPathStateLoader {
       if (typeof deadlineAtMs === "number" && Date.now() >= deadlineAtMs) return null;
       const memory = await storage.readMemoryByPath(safePath);
       if (!memory || memory.frontmatter.id !== logicalId) continue;
-      if (memory.frontmatter.status === undefined || memory.frontmatter.status === "active") return memory;
+      const inferredStatus = inferMemoryStatus(
+        memory.frontmatter,
+        toMemoryPathRel(storageRoot, safePath),
+      );
+      if (inferredStatus === "active") return memory;
       inactiveDirectMemory ??= memory;
     }
     if (inactiveDirectMemory) return inactiveDirectMemory;

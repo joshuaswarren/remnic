@@ -127,6 +127,42 @@ test("prefers an active cold direct path over an inactive hot duplicate", async 
     await rm(root, { recursive: true, force: true });
   }
 });
+test("prefers a canonically active cold copy over a raw-active archived direct duplicate", async () => {
+  for (const scenario of ["archivedAt", "archive-path"] as const) {
+    const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-loader-canonical-active-"));
+    try {
+      const relativeNodePath =
+        scenario === "archive-path" ? path.join("archive", "2026-01-01", "node.md") : "node.md";
+      const hotPath = path.join(root, relativeNodePath);
+      const coldPath = path.join(root, "cold", relativeNodePath);
+      await mkdir(path.dirname(hotPath), { recursive: true });
+      await mkdir(path.dirname(coldPath), { recursive: true });
+      await writeFile(hotPath, "hot", "utf8");
+      await writeFile(coldPath, "cold", "utf8");
+      const hot = memory(hotPath, "raw-active");
+      hot.frontmatter.status = "active";
+      if (scenario === "archivedAt") {
+        hot.frontmatter.archivedAt = "2026-01-01T01:00:00.000Z";
+      }
+      const cold = memory(coldPath, "canonical-active");
+      cold.frontmatter.status = "active";
+      const storage = {
+        dir: root,
+        getArchiveMutationVersion: () => 1,
+        getCorpusScanVersion: async () => "hot:1:cold:1",
+        readMemoryByPath: async (filePath: string) =>
+          filePath === hotPath ? hot : filePath === coldPath ? cold : null,
+      } as unknown as StorageManager;
+
+      assert.equal(
+        (await new GraphPathStateLoader().readNode(storage, relativeNodePath, null, true))?.content,
+        "canonical-active",
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
 
 test("does not poison a shared archive build with a short caller deadline", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-graph-loader-timeout-"));
