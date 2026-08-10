@@ -14,7 +14,8 @@ The hook command must start its own process. Package file metadata cannot
 control runtime behavior.
 
 Each POSIX command must invoke `sh`. It must quote the `${PLUGIN_ROOT}` path.
-This works with all package modes. Windows keeps its PowerShell command.
+This works with readable package modes, including mode `0644`. Windows keeps
+its PowerShell command.
 
 ## Current strategy
 

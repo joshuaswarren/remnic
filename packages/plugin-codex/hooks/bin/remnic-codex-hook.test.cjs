@@ -351,24 +351,25 @@ test("unknown event fails open with continue", async () => {
 
 // ── #1443 review fixes ──────────────────────────────────────────────────────
 
-test("hooks.json: every POSIX event invokes the launcher through sh", () => {
+const POSIX_HOOK_EVENTS = Object.freeze({
+  SessionStart: "session-start",
+  PostToolUse: "post-tool-observe",
+  UserPromptSubmit: "user-prompt-recall",
+  Stop: "session-end",
+  PreCompact: "pre-compact",
+});
+
+test("hooks.json: every POSIX event invokes the correct launcher event through sh", () => {
   const cfg = JSON.parse(
     fs.readFileSync(path.join(__dirname, "..", "hooks.json"), "utf8"),
   );
-  const events = [
-    "SessionStart",
-    "PostToolUse",
-    "UserPromptSubmit",
-    "Stop",
-    "PreCompact",
-  ];
-  for (const event of events) {
+  for (const [event, runnerEvent] of Object.entries(POSIX_HOOK_EVENTS)) {
     for (const matcher of cfg.hooks[event]) {
       for (const hook of matcher.hooks) {
-        assert.match(
+        assert.equal(
           hook.command,
-          /^sh "\$\{PLUGIN_ROOT\}\/hooks\/bin\/remnic-codex-hook\.sh"\s/,
-          `${event}.command must invoke the quoted \${PLUGIN_ROOT} launcher through sh`,
+          `sh "\${PLUGIN_ROOT}/hooks/bin/remnic-codex-hook.sh" ${runnerEvent}`,
+          `${event}.command must invoke the matching runner event through sh`,
         );
         assert.ok(hook.commandWindows, `${event} must declare commandWindows`);
         assert.match(
@@ -387,7 +388,7 @@ test("hooks.json: every POSIX event invokes the launcher through sh", () => {
 });
 
 test(
-  "hooks.json: POSIX command runs a packaged launcher without executable mode",
+  "hooks.json: every POSIX command runs a packaged launcher without executable mode",
   { skip: process.platform === "win32" },
   async () => {
     const home = mkHome();
@@ -403,41 +404,44 @@ test(
       const cfg = JSON.parse(
         fs.readFileSync(path.join(__dirname, "..", "hooks.json"), "utf8"),
       );
-      const command = cfg.hooks.SessionStart[0].hooks[0].command;
-      const child = spawn("sh", ["-c", command], {
-        env: {
-          ...process.env,
-          HOME: home,
-          USERPROFILE: home,
-          XDG_STATE_HOME: path.join(home, "state"),
-          PLUGIN_ROOT: pluginRoot,
-          REMNIC_CODEX_MATERIALIZE: "0",
-          OPENCLAW_REMNIC_ACCESS_TOKEN: "",
-          OPENCLAW_ENGRAM_ACCESS_TOKEN: "",
-          REMNIC_AUTH_TOKEN: "",
-          ENGRAM_AUTH_TOKEN: "",
-          REMNIC_HOOK_TOKEN: "",
-          REMNIC_DAEMON_URL: "",
-          ENGRAM_DAEMON_URL: "",
-        },
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-      let stdout = "";
-      let stderr = "";
-      child.stdout.on("data", (data) => {
-        stdout += data;
-      });
-      child.stderr.on("data", (data) => {
-        stderr += data;
-      });
-      child.stdin.end(JSON.stringify({ session_id: "mode-test", cwd: home }));
-      const exitCode = await new Promise((resolve, reject) => {
+      const runCommand = (command, sessionId) => new Promise((resolve, reject) => {
+        const child = spawn("sh", ["-c", command], {
+          env: {
+            ...process.env,
+            HOME: home,
+            USERPROFILE: home,
+            XDG_STATE_HOME: path.join(home, "state"),
+            PLUGIN_ROOT: pluginRoot,
+            REMNIC_CODEX_MATERIALIZE: "0",
+            OPENCLAW_REMNIC_ACCESS_TOKEN: "",
+            OPENCLAW_ENGRAM_ACCESS_TOKEN: "",
+            REMNIC_AUTH_TOKEN: "",
+            ENGRAM_AUTH_TOKEN: "",
+            REMNIC_HOOK_TOKEN: "",
+            REMNIC_DAEMON_URL: "",
+            ENGRAM_DAEMON_URL: "",
+          },
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (data) => {
+          stdout += data;
+        });
+        child.stderr.on("data", (data) => {
+          stderr += data;
+        });
+        child.stdin.end(JSON.stringify({ session_id: sessionId, cwd: home }));
         child.on("error", reject);
-        child.on("close", resolve);
+        child.on("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
       });
 
-      assert.equal(exitCode, 0, stderr);
-      assert.equal(JSON.parse(stdout).continue, true);
+      for (const [event, runnerEvent] of Object.entries(POSIX_HOOK_EVENTS)) {
+        const command = cfg.hooks[event][0].hooks[0].command;
+        const result = await runCommand(command, `${runnerEvent}-mode-test`);
+        assert.equal(result.exitCode, 0, `${event}: ${result.stderr}`);
+        assert.equal(JSON.parse(result.stdout).continue, true, event);
+      }
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }
