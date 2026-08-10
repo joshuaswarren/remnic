@@ -34,6 +34,8 @@ export interface PropagationResult {
   stillValid: number;
   uncertain: number;
   skipped: "disabled" | "no_dependents" | "llm_error" | "timeout" | null;
+  route: "fast-completion" | null;
+  durationMs: number;
 }
 
 function propagationConfig(config: PluginConfig): DependencyPropagationConfig {
@@ -96,8 +98,13 @@ export function findDependents(
     });
 }
 
-function emptyResult(skipped: PropagationResult["skipped"]): PropagationResult {
-  return { dependentsFound: 0, invalidated: 0, stillValid: 0, uncertain: 0, skipped };
+function emptyResult(
+  skipped: PropagationResult["skipped"],
+  durationMs: number,
+  route: PropagationResult["route"] = null,
+  dependentsFound = 0,
+): PropagationResult {
+  return { dependentsFound, invalidated: 0, stillValid: 0, uncertain: 0, skipped, route, durationMs };
 }
 
 function logResult(event: PropagationEvent, result: PropagationResult): void {
@@ -111,6 +118,8 @@ function logResult(event: PropagationEvent, result: PropagationResult): void {
       stillValid: result.stillValid,
       uncertain: result.uncertain,
       skipped: result.skipped,
+      route: result.route,
+      durationMs: result.durationMs,
     })}`,
   );
 }
@@ -136,16 +145,17 @@ export async function propagateInvalidation(
   deps: { storage: StorageManager; extraction: ExtractionEngine; config: PluginConfig },
   event: PropagationEvent,
 ): Promise<PropagationResult> {
+  const startedAt = Date.now();
   const config = propagationConfig(deps.config);
   if (!isEnabled(config.enabled)) {
-    const result = emptyResult("disabled");
+    const result = emptyResult("disabled", Date.now() - startedAt);
     logResult(event, result);
     return result;
   }
 
   const maxDependents = config.maxDependents;
   if (maxDependents <= 0) {
-    const result = emptyResult("no_dependents");
+    const result = emptyResult("no_dependents", Date.now() - startedAt);
     logResult(event, result);
     return result;
   }
@@ -155,7 +165,7 @@ export async function propagateInvalidation(
     memories = await deps.storage.readAllMemories();
   } catch (error) {
     log.warn(`dependency propagation discovery failed for ${event.oldMemory.frontmatter.id}: ${error}`);
-    const result = emptyResult("llm_error");
+    const result = emptyResult("llm_error", Date.now() - startedAt);
     logResult(event, result);
     return result;
   }
@@ -171,46 +181,67 @@ export async function propagateInvalidation(
   const dependents = discovered.slice(0, Math.max(0, Math.floor(maxDependents)));
 
   if (dependents.length === 0) {
-    const result = emptyResult("no_dependents");
+    const result = emptyResult("no_dependents", Date.now() - startedAt);
     logResult(event, result);
     return result;
   }
 
   const controller = new AbortController();
   const timeoutMs = config.timeoutMs;
-  const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0
-    ? setTimeout(() => controller.abort(new PropagationTimeoutError()), timeoutMs)
+  let timedOut = false;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => {
+          timedOut = true;
+          const error = new PropagationTimeoutError();
+          controller.abort(error);
+          reject(error);
+        }, timeoutMs);
+      })
     : undefined;
+  const revalidation = Promise.resolve().then(() => deps.extraction.revalidateDependents(
+    { id: event.oldMemory.frontmatter.id, content: event.oldMemory.content },
+    event.replacementId && event.replacementContent !== null
+      ? { id: event.replacementId, content: event.replacementContent }
+      : null,
+    dependents.map((memory) => ({
+      id: memory.frontmatter.id,
+      category: memory.frontmatter.category,
+      content: memory.content,
+    })),
+    controller.signal,
+  ));
 
   let verdicts: Array<{ memoryId: string; verdict: "still_valid" | "invalidated" | "uncertain"; reason?: string }>;
   try {
-    const response = await deps.extraction.revalidateDependents(
-      { id: event.oldMemory.frontmatter.id, content: event.oldMemory.content },
-      event.replacementId && event.replacementContent !== null
-        ? { id: event.replacementId, content: event.replacementContent }
-        : null,
-      dependents.map((memory) => ({
-        id: memory.frontmatter.id,
-        category: memory.frontmatter.category,
-        content: memory.content,
-      })),
-      controller.signal,
-    );
-    verdicts = response.verdicts;
-    if (controller.signal.aborted) {
-      if (timeout !== undefined) clearTimeout(timeout);
-      const result = emptyResult("timeout");
+    const response = deadline
+      ? await Promise.race([revalidation, deadline])
+      : await revalidation;
+    if (timedOut || controller.signal.aborted) {
+      const result = emptyResult(
+        "timeout",
+        Date.now() - startedAt,
+        "fast-completion",
+        dependents.length,
+      );
       logResult(event, result);
       return result;
     }
+    verdicts = response.verdicts;
   } catch (error) {
-    const result = emptyResult(isTimeoutError(error, controller.signal) ? "timeout" : "llm_error");
+    const result = emptyResult(
+      timedOut || isTimeoutError(error, controller.signal) ? "timeout" : "llm_error",
+      Date.now() - startedAt,
+      "fast-completion",
+      dependents.length,
+    );
     log.warn(`dependency propagation revalidation failed for ${event.oldMemory.frontmatter.id}: ${error}`);
     logResult(event, result);
-    if (timeout !== undefined) clearTimeout(timeout);
     return result;
+  } finally {
+    clearTimeout(timeout!);
   }
-  if (timeout !== undefined) clearTimeout(timeout);
 
   let invalidated = 0;
   let stillValid = 0;
@@ -257,6 +288,8 @@ export async function propagateInvalidation(
     stillValid,
     uncertain,
     skipped: null,
+    route: "fast-completion",
+    durationMs: Date.now() - startedAt,
   };
   logResult(event, result);
   return result;
