@@ -1290,7 +1290,6 @@ export class Orchestrator {
     );
   }
 
-
   invalidateLiveContentHashIndex(): void {
     this.contentHashIndex = null;
     this.contentHashIndexesByStorageDir.clear();

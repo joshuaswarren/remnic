@@ -34,7 +34,11 @@ import {
   localizeUpdateCandidates,
   mergeMemorySnapshots,
 } from "./update-localization.js";
-import type { PropagationEvent } from "./dependency-propagation.js";
+import {
+  isDependencyPropagationEnabled,
+  propagateInvalidation,
+  type PropagationEvent,
+} from "./dependency-propagation.js";
 import type {
   DependencyPropagationDeliveryPort,
   DependencyPropagationPreparationToken,
@@ -113,8 +117,8 @@ export class ContradictionLinkingCoordinator {
     namespaceFromPath: (p: string) => string;
     storageForNamespace: (namespace: string) => Promise<StorageManager>;
     getExtraction: () => ExtractionEngine;
-    storageDirNamespace: (storageDir: string) => string;
-    getDependencyPropagationDelivery: () => DependencyPropagationDeliveryPort;
+    storageDirNamespace?: (storageDir: string) => string;
+    getDependencyPropagationDelivery?: () => DependencyPropagationDeliveryPort;
   }) {
     this.getConfig = options.getConfig;
     this.isSearchAvailable = options.isSearchAvailable;
@@ -123,8 +127,12 @@ export class ContradictionLinkingCoordinator {
     this.namespaceFromPath = options.namespaceFromPath;
     this.storageForNamespace = options.storageForNamespace;
     this.getExtraction = options.getExtraction;
-    this.storageDirNamespace = options.storageDirNamespace;
-    this.getDependencyPropagationDelivery = options.getDependencyPropagationDelivery;
+    this.storageDirNamespace = options.storageDirNamespace ?? (() => "default");
+    this.getDependencyPropagationDelivery =
+      options.getDependencyPropagationDelivery ??
+      (() => {
+        throw new Error("dependency propagation delivery is unavailable");
+      });
   }
 
   /**
@@ -363,7 +371,20 @@ export class ContradictionLinkingCoordinator {
     let replacementContent: string | null = null;
     let propagationEvent: PropagationEvent | null = null;
     try {
-      const captured = await storage.getMemoryById(contradiction.supersededId);
+      const [hot, cold] = await Promise.all([
+        typeof storage.readAllMemories === "function"
+          ? storage.readAllMemories()
+          : Promise.resolve([]),
+        typeof storage.readAllColdMemories === "function"
+          ? storage.readAllColdMemories()
+          : Promise.resolve([]),
+      ]);
+      const memories = mergeMemorySnapshots(hot, cold, storage.dir);
+      const captured = memories.find(
+        (memory) =>
+          memory.frontmatter.id === contradiction.supersededId &&
+          inferLocalizationMemoryStatus(memory, storage.dir) === "active",
+      );
       if (captured) {
         oldMemory = {
           content: captured.content,
@@ -376,19 +397,16 @@ export class ContradictionLinkingCoordinator {
               ? { links: captured.frontmatter.links.map((link) => ({ ...link })) }
               : {}),
           },
+          path: captured.path,
         };
       }
+      replacementContent =
+        memories.find((memory) => memory.frontmatter.id === newMemoryId)?.content ??
+        (await storage.getMemoryById(newMemoryId))?.content ??
+        null;
     } catch (err) {
       log.warn(
         `contradiction propagation snapshot failed for ${contradiction.supersededId}: ${err}`,
-      );
-    }
-    try {
-      replacementContent =
-        (await storage.getMemoryById(newMemoryId))?.content ?? null;
-    } catch (err) {
-      log.warn(
-        `contradiction replacement snapshot failed for ${newMemoryId}: ${err}`,
       );
     }
 
@@ -411,8 +429,7 @@ export class ContradictionLinkingCoordinator {
         `contradiction dependency propagation skipped for ${contradiction.supersededId}: replacement content was not captured`,
       );
     }
-    const propagationEnabled =
-      config.dependencyPropagation.enabled && config.dependencyPropagation.maxDependents > 0;
+    const propagationEnabled = isDependencyPropagationEnabled(config);
     let delivery: DependencyPropagationDeliveryPort | null = null;
     if (propagationEvent && propagationEnabled) {
       try {
@@ -493,7 +510,14 @@ export class ContradictionLinkingCoordinator {
       }
     };
     const readyPreparedPropagation = async (): Promise<void> => {
-      if (!delivery || !propagationEvent || !propagationEnabled) return;
+      if (!propagationEvent || !propagationEnabled) return;
+      if (!delivery) {
+        await propagateInvalidation(
+          { storage, extraction: this.getExtraction(), config },
+          propagationEvent,
+        );
+        return;
+      }
       let token = preparation;
       if (token === null) {
         try {
@@ -521,7 +545,7 @@ export class ContradictionLinkingCoordinator {
         contradiction.reason,
       );
       commitState = committed ? true : await supersessionCommitted();
-      if (commitState !== true) {
+      if (!committed || commitState !== true) {
         let mergedSnapshot: MemoryFile[];
         try {
           const [hot, cold] = await Promise.all([
@@ -581,7 +605,11 @@ export class ContradictionLinkingCoordinator {
         const outcome = inferLocalizationMemoryStatus(target, storage.dir) === "active"
           ? "supersede_failed"
           : "lost_race";
-        await settleFailedPropagation(commitState);
+        if (commitState === true) {
+          await readyPreparedPropagation();
+        } else {
+          await settleFailedPropagation(commitState);
+        }
         return outcome;
       }
     } catch (err) {
@@ -589,15 +617,10 @@ export class ContradictionLinkingCoordinator {
       log.warn(
         `contradiction auto-resolve supersede failed for ${contradiction.supersededId}: ${err}`,
       );
-      return "supersede_failed";
-    }
-    if (commitState === false) {
-      await settleFailedPropagation(commitState);
-      return;
-    }
-    if (commitState === null) {
-      await settleFailedPropagation(commitState);
-      return;
+      if (commitState !== true) {
+        await settleFailedPropagation(commitState);
+        return "supersede_failed";
+      }
     }
     await readyPreparedPropagation();
 
@@ -605,13 +628,20 @@ export class ContradictionLinkingCoordinator {
       resolveIndexingCapabilities(config).queryAwareIndexing &&
       contradiction.supersededPath
     ) {
-      await deindexMemoryAsync(
-        config.memoryDir,
-        contradiction.supersededPath,
-        contradiction.supersededCreated,
-        contradiction.supersededTags,
-      );
+      try {
+        await deindexMemoryAsync(
+          config.memoryDir,
+          contradiction.supersededPath,
+          contradiction.supersededCreated,
+          contradiction.supersededTags,
+        );
+      } catch (err) {
+        log.warn(
+          `contradiction auto-resolve deindex failed for ${contradiction.supersededId}: ${err}`,
+        );
+      }
     }
+    return "resolved";
   }
 
   // ---------------------------------------------------------------------------

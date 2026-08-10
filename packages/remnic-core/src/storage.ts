@@ -6934,7 +6934,14 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         ...(await this.readAllColdMemories()),
         ...(await this.readArchivedMemories()),
       ];
-      oldMemory = memories.find((memory) => memory.frontmatter.id === oldMemoryId);
+      const candidates = memories.filter((memory) => memory.frontmatter.id === oldMemoryId);
+      oldMemory =
+        candidates.find(
+          (memory) =>
+            inferMemoryStatus(memory.frontmatter, toMemoryPathRel(this.baseDir, memory.path)) === "active",
+        ) ??
+        candidates.find(isExactReplay) ??
+        candidates[0];
       if (
         oldMemory &&
         options.expectedSnapshot &&
@@ -6961,7 +6968,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     let updatedFm = oldMemory.frontmatter;
     let exactReplay = false;
 
-    const written = await this.withTombstoneBlockedMemoryPathLock(oldMemory.path, async (current) => {
+    try {
+      const written = await this.withTombstoneBlockedMemoryPathLock(oldMemory.path, async (current) => {
         if (current?.frontmatter.id !== oldMemoryId) return false;
         if (matchesSupersession(current)) {
           currentBefore = current;
@@ -6976,10 +6984,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         }
         if (
           current.frontmatter.supersededBy !== undefined ||
-          (
-            options.requireActive !== false &&
-            inferMemoryStatus(current.frontmatter, toMemoryPathRel(this.baseDir, current.path)) !== "active"
-          )
+          inferMemoryStatus(current.frontmatter, toMemoryPathRel(this.baseDir, current.path)) !== "active"
         ) {
           return false;
         }
@@ -7023,112 +7028,68 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
           { onFailRestore: currentBefore },
         );
       }
-      if (exactReplay) {
-        this.invalidateAllMemoriesCache();
-      } else {
-        this.bumpMemoryCorpusVersion();
-      }
       const supersededAt = updatedFm.supersededAt ?? initialNow;
       const beforeState = this.summarizeLifecycleState(
         currentBefore.frontmatter,
         currentBefore.path,
       );
       const afterState = this.summarizeLifecycleState(updatedFm, currentBefore.path);
-
-      let lifecycleEvents: MemoryLifecycleEvent[] = [];
-      try {
-        lifecycleEvents = await this.getMemoryTimeline(oldMemoryId, 200);
-      } catch (error) {
-        log.warn(`supersession lifecycle replay check failed for ${oldMemoryId}: ${error}`);
-      }
-      if (
-        !lifecycleEvents.some(
-          (event) =>
-            event.memoryId === oldMemoryId &&
-            event.eventType === "superseded" &&
-            (
-              event.correlationId === operationId ||
-              (
-                event.correlationId === undefined &&
-                event.reasonCode === reason &&
-                event.timestamp === supersededAt &&
-                event.relatedMemoryIds?.includes(newMemoryId)
-              )
-            ),
-        )
-      ) {
-        await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.supersedeMemory", {
-          memoryId: oldMemoryId,
-          eventType: "superseded",
-          timestamp: supersededAt,
-          actor: "storage.supersedeMemory",
-          reasonCode: reason,
-          before: exactReplay
-            ? { ...beforeState, status: "active" }
-            : beforeState,
-          after: afterState,
-          relatedMemoryIds: [newMemoryId],
-          correlationId: operationId,
-        });
-      }
-      this.bumpMemoryStatusVersion();
-      log.debug(`superseded memory ${oldMemoryId} by ${newMemoryId}: ${reason}`);
-
-      // #1579 — every contradiction verb (keep-a/keep-b/merge) funnels here,
-      // so emitting covers each exactly once (rule 22); facts only. One
-      // tombstone PER derived supersession key (thread Oci-Y) so a
-      // paraphrased re-write is caught on the keyed tier.
-      if (currentBefore.frontmatter.category === "fact") {
-        for (const input of buildRetiredFactTombstoneInputs(
-          {
-            id: oldMemoryId,
-            content: stripCitationForTemplate(currentBefore.content, this.citationTemplate),
-            contentHash: currentBefore.frontmatter.contentHash,
-            entityRef: updatedFm.entityRef,
-            structuredAttributes: currentBefore.frontmatter.structuredAttributes,
-          },
-          {
-            reason: "contradiction_resolution",
-            createdBy: "contradiction_resolution",
-            createdAt: supersededAt,
-            supersessionKeysForFact,
-          }
-        )) {
-          const exactInput = { ...input, operationKey: operationId };
-          let alreadyPresent = await this.hasExactTombstone(exactInput);
-          if (!alreadyPresent) {
-            alreadyPresent = await this.hasExactTombstone(input);
-          }
-          if (!alreadyPresent) await this.appendTombstone(exactInput);
-        }
-      }
-
-      const auditBody = `Superseded: ${currentBefore.content}\n\nReason: ${reason}`;
-      const existingAudit = await hasSupersessionAudit(
-        {
-          correctionsDir: this.correctionsDir,
-          readMemoryByPath: (filePath) => this.readMemoryByPath(filePath),
-        },
+      const sideEffectsComplete = await runSupersessionSideEffects({
         oldMemoryId,
         newMemoryId,
-        auditBody,
-      );
-      if (!existingAudit) {
-        const auditInput = {
-          content: auditBody,
-          category: "correction" as const,
-          confidence: 1.0,
-          tags: ["supersession", "auto-resolved"],
-        };
-        const auditEnvelope = composeMemoryEnvelope(auditInput, { source: "contradiction-detection" });
-        await this.writeSealedMemory(auditEnvelope, {
-          lineage: [oldMemoryId, newMemoryId],
-          sourceMemoryId: oldMemoryId,
-        });
-      }
-      this.invalidateAllMemoriesCache();
+        reason,
+        now: supersededAt,
+        operationId,
+        exactReplay,
+        currentBefore,
+        updatedFm,
+        citationTemplate: this.citationTemplate,
+        correctionsDir: this.correctionsDir,
+        readMemoryByPath: (filePath) => this.readMemoryByPath(filePath),
+        isColdOrArchiveTierPath: (memoryPath) => this.isColdOrArchiveTierPath(memoryPath),
+        invalidateColdMemoriesCache: () => this.invalidateColdMemoriesCache(),
+        invalidateAllMemoriesCache: () => this.invalidateAllMemoriesCache(),
+        bumpMemoryCorpusVersion: () => this.bumpMemoryCorpusVersion(),
+        appendLifecycleEvent: async () => {
+          let lifecycleEvents: MemoryLifecycleEvent[] = [];
+          try {
+            lifecycleEvents = await this.getMemoryTimeline(oldMemoryId, 200);
+          } catch (error) {
+            log.warn(`supersession lifecycle replay check failed for ${oldMemoryId}: ${error}`);
+          }
+          if (
+            lifecycleEvents.some(
+              (event) =>
+                event.memoryId === oldMemoryId &&
+                event.eventType === "superseded" &&
+                (event.correlationId === operationId ||
+                  (event.correlationId === undefined &&
+                    event.reasonCode === reason &&
+                    event.timestamp === supersededAt &&
+                    event.relatedMemoryIds?.includes(newMemoryId))),
+            )
+          ) {
+            return;
+          }
+          await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.supersedeMemory", {
+            memoryId: oldMemoryId,
+            eventType: "superseded",
+            timestamp: supersededAt,
+            actor: "storage.supersedeMemory",
+            reasonCode: reason,
+            before: exactReplay ? { ...beforeState, status: "active" } : beforeState,
+            after: afterState,
+            relatedMemoryIds: [newMemoryId],
+            correlationId: operationId,
+          });
+        },
+        bumpMemoryStatusVersion: () => this.bumpMemoryStatusVersion(),
+        hasExactTombstone: (input) => this.hasExactTombstone(input),
+        appendTombstone: (input) => this.appendTombstone(input),
+        writeSealedMemory: (envelope, extras) => this.writeSealedMemory(envelope, extras),
+      });
+      return sideEffectsComplete || options.acceptExactReplay !== true;
 
-      return true;
     } catch (err) {
       log.error(`failed to supersede memory ${oldMemoryId}:`, err);
       return false;
