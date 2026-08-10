@@ -25,6 +25,54 @@ class TestClientInit:
     def test_client_id(self, client):
         assert client.client_id == "hermes"
 
+    @pytest.mark.parametrize(
+        ("host", "url_host"),
+        [
+            ("localhost", "localhost"),
+            ("api.localhost", "api.localhost"),
+            ("LOCALHOST", "LOCALHOST"),
+            ("api.LOCALHOST.", "api.LOCALHOST."),
+            ("127.0.0.1", "127.0.0.1"),
+            ("::1", "[::1]"),
+            ("::ffff:127.0.0.1", "[::ffff:127.0.0.1]"),
+        ],
+    )
+    def test_loopback_hosts_use_http(self, host, url_host):
+        with patch("remnic_hermes.client.httpx.AsyncClient"):
+            client = RemnicClient(host=host, port=4318, token="test-token")
+
+        assert client.base_url == f"http://{url_host}:4318/engram/v1"
+        assert client.mcp_url == f"http://{url_host}:4318/mcp"
+
+    @pytest.mark.parametrize("host", ["memory.example.com", "192.0.2.10", "2001:db8::10"])
+    def test_remote_hosts_use_https_by_default(self, host):
+        with patch("remnic_hermes.client.httpx.AsyncClient"):
+            client = RemnicClient(host=host, port=4318, token="test-token")
+
+        assert client.base_url.startswith("https://")
+        assert client.mcp_url.startswith("https://")
+
+    def test_remote_http_requires_explicit_opt_in(self):
+        with patch("remnic_hermes.client.httpx.AsyncClient"):
+            client = RemnicClient(
+                host="memory.example.com",
+                port=4318,
+                token="test-token",
+                allow_insecure_http=True,
+            )
+
+        assert client.base_url == "http://memory.example.com:4318/engram/v1"
+        assert client.mcp_url == "http://memory.example.com:4318/mcp"
+
+    @pytest.mark.parametrize("value", [None, 1, "true"])
+    def test_remote_http_opt_in_requires_boolean(self, value):
+        with pytest.raises(TypeError, match="allow_insecure_http must be a boolean"):
+            RemnicClient(
+                host="memory.example.com",
+                token="test-token",
+                allow_insecure_http=value,
+            )
+
 
 class TestClientNamespace:
     @pytest.mark.asyncio
