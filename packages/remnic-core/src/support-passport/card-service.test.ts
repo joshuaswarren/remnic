@@ -271,6 +271,63 @@ test("editing a pending card creates one replacement draft and rejects the old d
   }
 });
 
+test("editing an active replacement keeps the original active predecessor", async () => {
+  const subject = await makeSubject();
+  try {
+    const draft = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Lighting",
+      statement: "Dim bright lights when you can.",
+      category: "sensory",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const active = await subject.service.approveCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+    });
+    const firstReplacement = await subject.service.replaceCard({
+      principal: "owner:alice",
+      cardId: active.cardId,
+      expectedRevision: active.revision,
+      title: "Softer lighting",
+      statement: "Use softer lighting when you can.",
+      category: "sensory",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const editedReplacement = await subject.service.replaceCard({
+      principal: "owner:alice",
+      cardId: firstReplacement.cardId,
+      expectedRevision: firstReplacement.revision,
+      title: "Softer lighting",
+      statement: "Use soft lighting and avoid glare when you can.",
+      category: "sensory",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+
+    const storedReplacement = await subject.aliceStorage.getMemoryById(editedReplacement.cardId);
+    assert.equal(storedReplacement?.frontmatter.supersedes, active.cardId);
+    assert.equal(
+      storedReplacement?.frontmatter.structuredAttributes?.["support-passport-replaces-draft-id"],
+      firstReplacement.cardId
+    );
+    const approved = await subject.service.approveCard({
+      principal: "owner:alice",
+      cardId: editedReplacement.cardId,
+      expectedRevision: editedReplacement.revision,
+    });
+    assert.equal(approved.status, "active");
+    assert.equal((await subject.aliceStorage.getMemoryById(active.cardId))?.frontmatter.status, "superseded");
+    assert.equal((await subject.aliceStorage.getMemoryById(firstReplacement.cardId))?.frontmatter.status, "rejected");
+    assert.deepEqual(
+      (await subject.service.listCards({ principal: "owner:alice" })).map((card) => card.cardId),
+      [editedReplacement.cardId]
+    );
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("an interrupted pending-draft replacement recovers to one approvable draft", async () => {
   const subject = await makeSubject();
   try {
@@ -308,7 +365,11 @@ test("an interrupted pending-draft replacement recovers to one approvable draft"
     const beforeRecovery = await subject.aliceStorage.readAllMemories();
     const replacement = beforeRecovery.find((memory) => memory.frontmatter.id !== draft.cardId);
     assert.ok(replacement);
-    assert.equal(replacement.frontmatter.supersedes, draft.cardId);
+    assert.equal(replacement.frontmatter.supersedes, undefined);
+    assert.equal(
+      replacement.frontmatter.structuredAttributes?.["support-passport-replaces-draft-id"],
+      draft.cardId
+    );
     assert.equal(replacement.frontmatter.status, "pending_review");
 
     const recovered = await subject.service.listCards({ principal: "owner:alice" });
@@ -641,7 +702,15 @@ test("concurrent draft creation cannot exceed the 100-card limit", async () => {
     assert.equal(rejection.reason.code, "invalid_input");
 
     subject.aliceStorage.readAllMemories = originalRead;
-    assert.equal((await originalRead()).length, 2);
+    const recoveryCard = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Recovery card",
+      statement: "This verifies that the owner lock remains usable.",
+      category: "other",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    assert.ok(recoveryCard.cardId);
+    assert.equal((await originalRead()).length, 3);
   } finally {
     await subject.cleanup();
   }
