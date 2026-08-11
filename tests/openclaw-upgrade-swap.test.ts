@@ -159,6 +159,34 @@ test("rollbackOpenclawUpgrade restores plugin and config from rollback artifacts
   assert.ok(notes.some((note) => note.includes("Restored OpenClaw config from backup")));
 });
 
+test("rollbackOpenclawUpgrade does not hide config restore failures after plugin restoration", async () => {
+  const tmp = await makeTmpDir();
+  const pluginDir = path.join(tmp, "extensions", "openclaw-remnic");
+  const rollbackDir = path.join(tmp, "rollback");
+  const configPath = path.join(tmp, "openclaw.json");
+  const configBackupPath = path.join(tmp, "backups", "openclaw.json");
+  const validConfig = '{"plugins":{"slots":{"memory":"openclaw-remnic"}}}\n';
+
+  writeMarker(pluginDir, "new-plugin");
+  writeMarker(rollbackDir, "old-plugin");
+  fs.mkdirSync(configPath, { recursive: true });
+  fs.mkdirSync(path.dirname(configBackupPath), { recursive: true });
+  fs.writeFileSync(configBackupPath, validConfig, "utf8");
+
+  assert.throws(
+    () =>
+      rollbackOpenclawUpgrade({
+        configBackupPath,
+        configPath,
+        pluginDir,
+        rollbackDir,
+      }),
+    /Failed to restore OpenClaw config from backup at /,
+  );
+  assert.equal(readMarker(pluginDir), "old-plugin");
+  assert.equal(fs.readFileSync(configBackupPath, "utf8"), validConfig);
+});
+
 test("rollbackOpenclawUpgrade falls back to the durable backup when rollback restore fails", async () => {
   const tmp = await makeTmpDir();
   const pluginDir = path.join(tmp, "extensions", "openclaw-remnic");
