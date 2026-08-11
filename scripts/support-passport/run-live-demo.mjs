@@ -24,7 +24,12 @@ import {
   receiptStatusSequence,
   sha256,
 } from "./receipt-schema.mjs";
-import { readCleanCommitSha, runCleanupSteps, waitForResult } from "./live-demo-runtime.mjs";
+import {
+  readCleanCommitSha,
+  runCleanupSteps,
+  validateOutputDirectory,
+  waitForResult,
+} from "./live-demo-runtime.mjs";
 import { validateReceiptConsistency } from "./verify-receipt.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -289,6 +294,7 @@ function restoreEnvironment(name, previous) {
 async function run(options) {
   const outputDir = path.resolve(expandTildePath(options.output));
   const receiptPath = path.join(outputDir, "receipt.json");
+  await validateOutputDirectory(outputDir);
   if (await fileExists(receiptPath)) throw new DemoFailure("The output directory already contains receipt.json.");
 
   const sourceMemories = await readJson(

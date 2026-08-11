@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { expandTildePath } from "@remnic/core";
 import {
   EXPECTED_STATUS_SEQUENCE,
   ExpectedPublicCardsFixtureSchema,
@@ -56,8 +57,12 @@ function assertNoPrivateFixtureText(receipt, sourceMemories, expectedPublicCards
   }
 }
 
+export function resolveReceiptPath(receiptPath) {
+  return path.resolve(expandTildePath(receiptPath));
+}
+
 export async function validateReceiptConsistency(options) {
-  const receipt = SupportPassportReceiptSchema.parse(await readJson(path.resolve(options.receiptPath)));
+  const receipt = SupportPassportReceiptSchema.parse(await readJson(resolveReceiptPath(options.receiptPath)));
   const sourceMemories = SourceMemoriesFixtureSchema.parse(
     await readJson(path.join(repoRoot, "fixtures/support-passport/source-memories.json"))
   );

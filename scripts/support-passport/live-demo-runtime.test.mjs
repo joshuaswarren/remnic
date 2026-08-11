@@ -6,9 +6,24 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
-import { readCleanCommitSha, runCleanupSteps, waitForResult } from "./live-demo-runtime.mjs";
+import {
+  readCleanCommitSha,
+  runCleanupSteps,
+  validateOutputDirectory,
+  waitForResult,
+} from "./live-demo-runtime.mjs";
 
 const execFileAsync = promisify(execFile);
+
+test("validateOutputDirectory rejects an existing file before a demo run", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-live-demo-output-"));
+  t.after(async () => rm(root, { recursive: true, force: true }));
+  await validateOutputDirectory(path.join(root, "missing"));
+  await validateOutputDirectory(root);
+  const filePath = path.join(root, "receipt-target");
+  await writeFile(filePath, "not a directory\n");
+  await assert.rejects(validateOutputDirectory(filePath), /output path must be a directory/);
+});
 
 test("waitForResult polls until an asynchronous result is durable", async () => {
   let clock = 0;

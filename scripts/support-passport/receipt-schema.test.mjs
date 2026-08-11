@@ -9,7 +9,7 @@ import {
   computeFixtureHash,
   computeResponseHashChain,
 } from "./receipt-schema.mjs";
-import { validateReceiptConsistency } from "./verify-receipt.mjs";
+import { resolveReceiptPath, validateReceiptConsistency } from "./verify-receipt.mjs";
 
 const fixturesDir = path.resolve(import.meta.dirname, "../../fixtures/support-passport");
 
@@ -72,6 +72,10 @@ test("the receipt validator accepts a strict self-consistency record", async () 
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("the receipt validator expands a leading tilde", () => {
+  assert.equal(resolveReceiptPath("~/receipt.json"), path.join(os.homedir(), "receipt.json"));
 });
 
 test("the receipt validator rejects response-hash and fixture drift", async () => {

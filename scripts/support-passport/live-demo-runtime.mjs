@@ -1,3 +1,17 @@
+import { lstat } from "node:fs/promises";
+
+export async function validateOutputDirectory(outputDir) {
+  try {
+    const metadata = await lstat(outputDir);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+      throw new Error("The output path must be a directory.");
+    }
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+}
+
 export async function waitForResult(
   read,
   {
