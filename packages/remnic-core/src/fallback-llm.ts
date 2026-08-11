@@ -194,6 +194,7 @@ export class FallbackLlmClient {
     const runChain = async (
       runOptions: FallbackLlmOptions,
     ): Promise<FallbackLlmResponse | null> => {
+      let lastRejectedResponse: FallbackLlmResponse | null = null;
       // Try each model in the chain
       for (let i = 0; i < models.length; i++) {
         if (runOptions.signal?.aborted) {
@@ -211,6 +212,7 @@ export class FallbackLlmClient {
               usage: result.usage,
             };
             if (runOptions.acceptResponse && !runOptions.acceptResponse(response)) {
+              lastRejectedResponse = response;
               log.debug(`fallback LLM: ${model.modelString} returned rejected output, trying next...`);
               continue;
             }
@@ -234,7 +236,7 @@ export class FallbackLlmClient {
       }
 
       log.warn(`fallback LLM: all ${models.length} models in chain failed`);
-      return null;
+      return lastRejectedResponse;
     };
 
     if (typeof options.timeoutMs === "number") {

@@ -231,7 +231,7 @@ export function buildSupportPassportDirectGatewayConfig(
     models: {
       providers: {
         [providerId]: {
-          baseUrl,
+          baseUrl: normalizedBaseUrl,
           apiKey: config.openaiApiKey,
           api,
           models: [{ id: config.model, name: config.model }],

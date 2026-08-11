@@ -435,6 +435,58 @@ test("gateway model chains continue after invalid structured output", { concurre
   }
 });
 
+test("gateway model chains report invalid output when every model response is rejected", { concurrency: false }, async () => {
+  const originalFetch = globalThis.fetch;
+  const models: string[] = [];
+  globalThis.fetch = (async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string };
+    models.push(body.model);
+    return new Response(
+      JSON.stringify({ choices: [{ message: { content: JSON.stringify({ cards: [] }) } }] }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+  }) as typeof fetch;
+  try {
+    const adapter = createSupportPassportModelAdapter(
+      parseConfig({
+        modelSource: "gateway",
+        openaiApiKey: false,
+        gatewayConfig: {
+          agents: { defaults: { model: { primary: "gateway/primary", fallbacks: ["gateway/fallback"] } } },
+          models: {
+            providers: {
+              gateway: {
+                baseUrl: "https://models.example.test/v1",
+                apiKey: "test-key",
+                api: "openai-completions",
+                models: [
+                  { id: "primary", name: "primary" },
+                  { id: "fallback", name: "fallback" },
+                ],
+              },
+            },
+          },
+        },
+      })
+    );
+
+    await assert.rejects(
+      adapter.draftCards({
+        consent: true,
+        memories: [{ memoryId: "memory-1", content: "Tell me before plans change." }],
+      }),
+      (error: unknown) =>
+        error instanceof SupportPassportError &&
+        error.code === "model_output_invalid" &&
+        "metadata" in error &&
+        (error.metadata as { modelUsed?: string }).modelUsed === "gateway/fallback"
+    );
+    assert.deepEqual(models, ["primary", "fallback"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("direct OpenAI models use the existing Responses API transport", () => {
   const config = buildSupportPassportDirectGatewayConfig({
     openaiApiKey: "test-key",
@@ -456,6 +508,7 @@ test("direct OpenAI route detection ignores repeated trailing slashes", () => {
     model: "test-model",
   });
   assert.equal(config?.models?.providers?.["remnic-direct"]?.api, "openai-responses");
+  assert.equal(config?.models?.providers?.["remnic-direct"]?.baseUrl, "https://api.openai.com/v1");
 });
 
 test("direct compatible APIs keep their configured fallback transport", () => {
