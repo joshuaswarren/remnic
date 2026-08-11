@@ -59,7 +59,7 @@ export class SupportPassportGrantService {
       namespace: owner.namespace,
       principal: parsed.data.principal,
       cards: parsed.data.cards,
-      durationSeconds: parsed.data.durationSeconds,
+      expiresAt: parsed.data.expiresAt,
     });
     return SupportPassportCreatedGrantSchema.parse({
       grant: this.ownerGrant(created.state),
