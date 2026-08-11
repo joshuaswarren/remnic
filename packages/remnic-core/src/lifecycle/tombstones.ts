@@ -41,7 +41,7 @@
 // ---------------------------------------------------------------------------
 
 import { serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
-import { computeLegacyContentHash, normalizeLegacyContent } from "../content-hash.js";
+import { isUnambiguousLegacyContentHash } from "../content-hash.js";
 
 /** Why a tombstone was emitted. */
 export type TombstoneReason =
@@ -73,15 +73,15 @@ export interface TombstoneEntry {
   reason: TombstoneReason;
   /** The memory that was retired. */
   sourceMemoryId: string;
-  /** sha256 of the retired memory's normalized content. */
+  /** sha256 of the retired identity; explicit contentHashSource may define it. */
   contentHash: string;
-  /** The normalized form used for the hash and normalized lookup tier. */
+  /** Current body hash retained alongside an ambiguous or explicit primary hash. */
+  currentContentHashAlias?: string;
+  /** Current normalized body used by the normalized lookup tier. */
   normalizedText: string;
-  /** Legacy pre-Unicode exact identity retained for migration aliases. */
-  legacyContentHash?: string;
-  /** Legacy pre-Unicode normalized identity retained for migration aliases. */
-  legacyNormalizedText?: string;
-  /** Version of the normalizer that produced contentHash/normalizedText. */
+  /** Version at which migration was attempted but the source was unavailable. */
+  legacyMigrationAttemptedVersion?: number;
+  /** Version of the current body identity fields. */
   normalizerVersion?: number;
   entityRef?: string;
   /** Structured-attribute supersession key when one existed. */
@@ -113,16 +113,12 @@ export interface TombstoneMatch {
  * remains for direct/unit callers; `lookup` checks the union of both. */
 export interface TombstoneLookupQuery {
   contentHash?: string;
-  /** Legacy pre-Unicode exact identity alias. */
-  legacyContentHash?: string;
   normalizedText?: string;
-  /** Legacy pre-Unicode normalized identity alias. */
-  legacyNormalizedText?: string;
   entityRef?: string;
   /** Single supersession key (direct/unit callers). */
   supersessionKey?: string;
   /** All derived supersession keys (write chokepoint). The keyed tier is
-   *  checked for each; the first active match wins. */
+   * checked for each; the first active match wins. */
   supersessionKeys?: string[];
   namespace: string;
 }
@@ -258,8 +254,15 @@ export function parseTombstoneLine(line: string): TombstoneEntry | null {
     createdAt: e.createdAt,
     createdBy: e.createdBy,
   };
-  if (typeof e.legacyContentHash === "string") out.legacyContentHash = e.legacyContentHash;
-  if (typeof e.legacyNormalizedText === "string") out.legacyNormalizedText = e.legacyNormalizedText;
+  if (typeof e.currentContentHashAlias === "string") {
+    out.currentContentHashAlias = e.currentContentHashAlias;
+  }
+  if (
+    typeof e.legacyMigrationAttemptedVersion === "number" &&
+    Number.isInteger(e.legacyMigrationAttemptedVersion)
+  ) {
+    out.legacyMigrationAttemptedVersion = e.legacyMigrationAttemptedVersion;
+  }
   if (typeof e.normalizerVersion === "number" && Number.isInteger(e.normalizerVersion)) {
     out.normalizerVersion = e.normalizerVersion;
   }
@@ -307,6 +310,10 @@ export class TombstoneStore {
     private readonly options: TombstoneStoreOptions,
     private readonly io: TombstoneFileIo,
   ) {
+    const limit = this.options.legacyMigrationLimit;
+    if (limit !== undefined && (!Number.isFinite(limit) || !Number.isInteger(limit) || limit < 0)) {
+      throw new Error("legacyMigrationLimit must be a finite non-negative integer");
+    }
     this.lockStaleMs = this.options.lockStaleMs ?? 30_000;
     this.lockMaxWaitMs = this.options.lockMaxWaitMs ?? 5_000;
     this.lockHeartbeatMs =
@@ -402,20 +409,16 @@ export class TombstoneStore {
     entries: TombstoneEntry[];
     corruptedLines: number;
   }): Promise<{ entries: TombstoneEntry[]; corruptedLines: number }> {
-    const configuredLimit = this.options.legacyMigrationLimit;
-    const limit = Math.max(
-      0,
-      Math.floor(
-        configuredLimit === undefined || !Number.isFinite(configuredLimit)
-          ? DEFAULT_LEGACY_MIGRATION_LIMIT
-          : configuredLimit
-      )
-    );
+    const limit = this.options.legacyMigrationLimit ?? DEFAULT_LEGACY_MIGRATION_LIMIT;
     if (limit === 0 || !this.options.sourceContentsForMemoryIds) return initial;
     const sourceMemoryIds: string[] = [];
     const requested = new Set<string>();
     for (const entry of initial.entries) {
-      if (entry.kind !== "tombstone" || entry.normalizerVersion === TOMBSTONE_NORMALIZER_VERSION) {
+      if (
+        entry.kind !== "tombstone" ||
+        entry.normalizerVersion === TOMBSTONE_NORMALIZER_VERSION ||
+        entry.legacyMigrationAttemptedVersion === TOMBSTONE_NORMALIZER_VERSION
+      ) {
         continue;
       }
       if (requested.has(entry.sourceMemoryId)) continue;
@@ -440,37 +443,40 @@ export class TombstoneStore {
           if (
             entry.kind !== "tombstone" ||
             entry.normalizerVersion === TOMBSTONE_NORMALIZER_VERSION ||
+            entry.legacyMigrationAttemptedVersion === TOMBSTONE_NORMALIZER_VERSION ||
             !requested.has(entry.sourceMemoryId) ||
             migratedCount >= limit
           ) {
             return entry;
           }
           const source = sourceContents.get(entry.sourceMemoryId);
-          if (source === undefined) return entry;
           changed = true;
           migratedCount += 1;
+          if (source === undefined) {
+            return {
+              ...entry,
+              legacyMigrationAttemptedVersion: TOMBSTONE_NORMALIZER_VERSION,
+            };
+          }
           const currentHash = this.options.hashContent(source);
           const currentNormalizedText = this.options.normalizeText(source);
-          const legacyHash = computeLegacyContentHash(source);
-          const legacyNormalizedText = normalizeLegacyContent(source);
-          const legacyIdentityMatches = entry.contentHash === currentHash || entry.contentHash === legacyHash;
-          return legacyIdentityMatches
-            ? {
-                ...entry,
-                normalizerVersion: TOMBSTONE_NORMALIZER_VERSION,
-                contentHash: currentHash,
-                normalizedText: currentNormalizedText,
-                ...(entry.contentHash === currentHash
-                  ? {}
-                  : { legacyContentHash: legacyHash, legacyNormalizedText }),
-              }
-            : {
-                ...entry,
-                normalizerVersion: TOMBSTONE_NORMALIZER_VERSION,
-                normalizedText: currentNormalizedText,
-                legacyContentHash: legacyHash,
-                legacyNormalizedText,
-              };
+          const legacyIdentityIsSafe = isUnambiguousLegacyContentHash(
+            source,
+            entry.contentHash,
+            currentNormalizedText,
+          );
+          const migratedEntry: TombstoneEntry = {
+            ...entry,
+            normalizerVersion: TOMBSTONE_NORMALIZER_VERSION,
+            normalizedText: currentNormalizedText,
+          };
+          if (entry.contentHash === currentHash) return migratedEntry;
+          if (legacyIdentityIsSafe) {
+            migratedEntry.contentHash = currentHash;
+          } else {
+            migratedEntry.currentContentHashAlias = currentHash;
+          }
+          return migratedEntry;
         });
         if (!changed) return latest;
         const serialized =
@@ -515,11 +521,10 @@ export class TombstoneStore {
     // mismatch, and misses its own still-active tombstone (resurrection).
     const ns = entry.namespace;
     if (entry.contentHash) this.byHash.set(`${ns}\0${entry.contentHash}`, entry.id);
-    if (entry.legacyContentHash) this.byHash.set(`${ns}\0${entry.legacyContentHash}`, entry.id);
-    if (entry.normalizedText) this.byNormalized.set(`${ns}\0${entry.normalizedText}`, entry.id);
-    if (entry.legacyNormalizedText) {
-      this.byNormalized.set(`${ns}\0${entry.legacyNormalizedText}`, entry.id);
+    if (entry.currentContentHashAlias) {
+      this.byHash.set(`${ns}\0${entry.currentContentHashAlias}`, entry.id);
     }
+    if (entry.normalizedText) this.byNormalized.set(`${ns}\0${entry.normalizedText}`, entry.id);
     if (entry.entityRef && entry.supersessionKey) {
       this.byKey.set(keyedTierKey(ns, entry.entityRef, entry.supersessionKey), entry.id);
     }
@@ -605,21 +610,18 @@ export class TombstoneStore {
     const createdAt = input.createdAt ?? new Date().toISOString();
     const id = newTombstoneId();
     const currentHash = this.options.hashContent(input.rawContent);
-    const legacyHash = computeLegacyContentHash(input.rawContent);
+    const currentNormalizedText = this.options.normalizeText(input.rawContent);
     const entry: TombstoneEntry = {
       id,
+      ...(input.contentHash && input.contentHash !== currentHash
+        ? { currentContentHashAlias: currentHash }
+        : {}),
       kind: "tombstone",
       reason: input.reason,
       sourceMemoryId: input.sourceMemoryId,
       contentHash: input.contentHash ?? currentHash,
-      normalizedText: this.options.normalizeText(input.rawContent),
+      normalizedText: currentNormalizedText,
       normalizerVersion: TOMBSTONE_NORMALIZER_VERSION,
-      ...(legacyHash !== currentHash
-        ? {
-            legacyContentHash: legacyHash,
-            legacyNormalizedText: normalizeLegacyContent(input.rawContent),
-          }
-        : {}),
       ...(input.entityRef ? { entityRef: input.entityRef } : {}),
       ...(input.supersessionKey ? { supersessionKey: input.supersessionKey } : {}),
       ...(input.operationKey ? { operationKey: input.operationKey } : {}),
@@ -751,9 +753,8 @@ export class TombstoneStore {
     // the backing file is shared. The namespace equality check below is kept
     // as defense-in-depth.
     const ns = query.namespace;
-    for (const contentHash of [query.contentHash, query.legacyContentHash]) {
-      if (!contentHash) continue;
-      const id = this.byHash.get(`${ns}\0${contentHash}`);
+    if (query.contentHash) {
+      const id = this.byHash.get(`${ns}\0${query.contentHash}`);
       if (id && !this.revokedIds.has(id)) {
         const entry = this.byId.get(id);
         if (entry && entry.namespace === ns) {
@@ -762,9 +763,8 @@ export class TombstoneStore {
       }
     }
     // Tier 2: normalized text.
-    for (const normalizedText of [query.normalizedText, query.legacyNormalizedText]) {
-      if (!normalizedText) continue;
-      const id = this.byNormalized.get(`${ns}\0${normalizedText}`);
+    if (query.normalizedText) {
+      const id = this.byNormalized.get(`${ns}\0${query.normalizedText}`);
       if (id && !this.revokedIds.has(id)) {
         const entry = this.byId.get(id);
         if (entry && entry.namespace === ns) {
@@ -907,26 +907,24 @@ export class TombstoneStore {
         }
         const rebuilt: TombstoneEntry[] = retiredMemories.map((m) => {
           const currentHash = this.options.hashContent(m.rawContent);
-          const legacyHash = computeLegacyContentHash(m.rawContent);
+          const currentNormalizedText = this.options.normalizeText(m.rawContent);
           const persistedHash = m.contentHash;
+          const legacyIdentityIsSafe =
+            persistedHash !== undefined &&
+            isUnambiguousLegacyContentHash(m.rawContent, persistedHash, currentNormalizedText);
           const preserveOverride =
-            persistedHash !== undefined && persistedHash !== currentHash && persistedHash !== legacyHash;
+            persistedHash !== undefined && persistedHash !== currentHash && !legacyIdentityIsSafe;
           return {
             id:
               existingBySource.get(`${m.memoryId}\u{0000}${m.supersessionKey ?? ""}`) ??
               newTombstoneId(),
+            ...(preserveOverride ? { currentContentHashAlias: currentHash } : {}),
             kind: "tombstone" as const,
             reason: m.reason,
             sourceMemoryId: m.memoryId,
             contentHash: preserveOverride ? persistedHash : currentHash,
-            normalizedText: this.options.normalizeText(m.rawContent),
+            normalizedText: currentNormalizedText,
             normalizerVersion: TOMBSTONE_NORMALIZER_VERSION,
-            ...(legacyHash !== currentHash
-              ? {
-                  legacyContentHash: legacyHash,
-                  legacyNormalizedText: normalizeLegacyContent(m.rawContent),
-                }
-              : {}),
             ...(m.entityRef ? { entityRef: m.entityRef } : {}),
             ...(m.supersessionKey ? { supersessionKey: m.supersessionKey } : {}),
             namespace: this.namespace,
@@ -1068,8 +1066,6 @@ export function applyTombstoneResurrectionGate(
   },
   query: {
     normalizedText: string;
-    legacyContentHash?: string;
-    legacyNormalizedText?: string;
     supersessionKeys: string[];
     namespace: string;
   },
@@ -1078,9 +1074,7 @@ export function applyTombstoneResurrectionGate(
   if (!(fm.status === undefined || fm.status === "active" || fm.status === "pending_review")) return null;
   const match = store.lookup({
     contentHash: fm.contentHash,
-    legacyContentHash: query.legacyContentHash,
     normalizedText: query.normalizedText,
-    legacyNormalizedText: query.legacyNormalizedText,
     ...(fm.entityRef ? { entityRef: fm.entityRef } : {}),
     ...(query.supersessionKeys.length > 0 ? { supersessionKeys: query.supersessionKeys } : {}),
     namespace: query.namespace,

@@ -33,6 +33,24 @@ export function computeLegacyContentHash(content: string): string {
   return createHash("sha256").update(normalizeLegacyContent(content)).digest("hex");
 }
 
+/**
+ * Return true only when a persisted legacy hash can be proved to identify the
+ * same body under the current normalizer. Empty or changed legacy forms are
+ * ambiguous and must not be promoted to a current identity.
+ */
+export function isUnambiguousLegacyContentHash(
+  content: string,
+  contentHash: string,
+  currentNormalizedText: string = normalizeContent(content),
+): boolean {
+  const legacyNormalizedText = normalizeLegacyContent(content);
+  return (
+    legacyNormalizedText.length > 0 &&
+    legacyNormalizedText === currentNormalizedText &&
+    createHash("sha256").update(legacyNormalizedText).digest("hex") === contentHash
+  );
+}
+
 /** Normalize content and compute SHA-256 hash. */
 export function computeContentHash(content: string): string {
   return createHash("sha256").update(normalizeContent(content)).digest("hex");

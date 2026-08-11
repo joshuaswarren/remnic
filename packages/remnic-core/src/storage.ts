@@ -15,7 +15,7 @@ import { appendFileSync, createReadStream, mkdirSync, readFileSync, statSync } f
 import { createHash } from "node:crypto";
 import {
   computeContentHash,
-  computeLegacyContentHash,
+  isUnambiguousLegacyContentHash,
   normalizeContent,
 } from "./content-hash.js";
 import { raceAbort } from "./abort-error.js";
@@ -3039,7 +3039,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         if (found.size < requested.size) collectMatches(await this.collectColdMemoryPaths());
         const contents = new Map<string, string>();
         for (const memory of await this.readParsedMemoriesFromPaths(matchingPaths, 50)) {
-          contents.set(memory.frontmatter.id, stripCitationForTemplate(stripAttributesSuffix(memory.content), this.citationTemplate));
+          contents.set(memory.frontmatter.id, stripCitationForTemplate(memory.content, this.citationTemplate));
         }
         return contents;
       },
@@ -3412,7 +3412,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (
       !persistedHash ||
       persistedHash === currentHash ||
-      persistedHash === computeLegacyContentHash(canonicalContent)
+      isUnambiguousLegacyContentHash(canonicalContent, persistedHash)
     ) {
       return currentHash;
     }
@@ -3809,10 +3809,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     let tombstoneBlocked = false;
     let gateRef: string | undefined;
     let statusBeforeBlock: MemoryFrontmatter["status"];
-    // Closure so the post-persist repair can RE-RUN it when a journal move
-    // changed the final entityRef: a verdict is only valid for the ref it was
-    // computed under, so reset and re-evaluate (parked mappings fall BACK to
-    // the legacy claimant; entity-independent tiers re-block in the lookup).
+    // Re-run after journal moves that change the final entityRef.
     const applyTombstoneGate = async (): Promise<void> => {
       if (tombstoneBlocked) {
         if (fm.entityRef === gateRef) return;
@@ -3821,11 +3818,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         delete fm.blockedBy;
         delete fm.tombstoneBlockTier;
       }
-      // Status semantics (thread ObteQ: pending_review candidates included,
-      // terminal statuses respected) live in applyTombstoneResurrectionGate.
       if (category !== "fact" || factHashSourceForTombstone === null) return;
       const statusBefore = fm.status;
-      const match = await this.entityRefRepair.gate(fm, factHashSourceForTombstone, options.structuredAttributes);
+      const match = await this.entityRefRepair.gate(fm, sanitized.text, options.structuredAttributes);
       if (match) {
         gateRef = fm.entityRef;
         statusBeforeBlock = statusBefore;

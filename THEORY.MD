@@ -1,65 +1,65 @@
-# Theory: Durable Dependency Revalidation
+# Theory: Safe Unicode Identity Migration
 
 ## Problem
 
-Remnic stores dependency links, but old lifecycle paths treated them as write-only metadata.
+Remnic used an ASCII-only normalizer for content hashes and duplicate checks.
 
-When support memory becomes invalid, a dependent claim can remain active and recallable.
+That normalizer erased CJK and other non-ASCII text. Distinct facts could share the empty-string hash.
 
-The primary mutation and the dependent revalidation must also survive different crash windows.
+Equivalent Unicode forms could also miss each other without canonical composition.
+
+Changing the normalizer fixes new writes but makes persisted identities stale.
+
+Tombstones and fact-hash indexes must migrate without trusting lossy legacy aliases.
 
 ## Operating theory
 
-Dependency propagation is an orchestration task. Storage changes one memory atomically. The extraction engine judges dependent claims.
+NFC normalization makes canonically equivalent Unicode text stable.
 
-Each trigger captures the source before mutation. It prepares a durable job before the source changes.
+Unicode letter, mark, and number classes retain meaningful text across scripts.
 
-After the primary mutation commits, the job becomes ready. A worker scans one namespace snapshot and one-hop link neighborhood.
+Legacy hashes are evidence only when the old and current normalized text are equal and non-empty.
 
-The worker revalidates all bounded dependents in one LLM call. `still_valid` keeps the memory active. `invalidated` supersedes it.
+An empty or changed legacy form cannot identify Unicode content safely.
 
-Malformed, missing, or uncertain verdicts preserve active memory. This keeps the failure mode fail-open for user data.
+The system preserves ambiguous persisted identities but does not query them as aliases for new content.
 
-## Durable state model
+## Migration strategy
 
-The queue uses explicit `prepared`, `ready`, `leased`, `retryable`, and terminal states.
+The tombstone store upgrades bounded legacy entries from known source memories.
 
-Preparation records the exact source snapshot and replacement identity. Reservations prevent one caller from canceling another caller's job.
+It records the migration version when a source is unavailable. Later loads do not repeat the same failed scan.
 
-Recovery first proves whether the primary mutation committed. It replays missing primary effects only from the captured snapshot.
+The migration preserves an explicit `contentHashSource` identity as the primary hash.
 
-Recovered consolidation work also repairs index visibility. It uses the captured source path for deindex and gates temporal index work by capability.
+It also stores current body hash and normalized aliases when the source body is known.
 
-The queue writes with atomic JSON replacement. Write failures return no preparation token, so callers do not report false durability.
+Source reconstruction retains persisted structured attributes because default writes include them in the content identity.
 
-## Trigger coverage
+The fact-hash index rebuild treats legacy hashes as authoritative only when the current body proves the same identity.
 
-Contradiction resolution captures the active hot or cold source before supersession.
+Ambiguous legacy hashes never suppress a current Unicode write.
 
-Temporal supersession prepares before mutation and retries preparation when a transient survivor lookup fails.
+Entity repair re-runs the tombstone gate with the final entity reference and structured attributes.
 
-Consolidation invalidate and merge paths prepare before mutation. Merge recovery verifies the survivor fingerprint before replay.
+## Deduplication strategy
 
-Startup recovery scans durable jobs. Shutdown drains extraction first, then waits for propagation work.
+Duplicate comparison tokenizes Unicode letters, marks, and numbers.
 
-## Rebase integration
+It supports scripts without whitespace, including Japanese and Korean.
 
-Current `main` moved supersession side effects and recovery work into focused modules.
+Only punctuation embedded between letters or numbers separates a phrase identity.
 
-The branch now uses those boundaries instead of restoring old monolithic code.
-
-Supersession remains active-only under the file lock. Exact replay repairs missing lifecycle, tombstone, audit, and cache effects.
-
-The final branch must preserve the storage ratchet. `storage.ts` and `orchestrator.ts` stay below their enforced line limits.
+Terminal sentence punctuation remains compatible with normalized exact matches.
 
 ## Verification state
 
-Core type checks pass. The focused replay suite passes 170 tests.
+The focused migration and non-resurrection suite passes 90 tests.
 
-The entity hardening gate passes. The lifecycle coverage suite passes 41 tests.
+The core type check passes.
 
-The complete second package shard passes 722 tests, with 17 skips and no failures.
+`preflight:quick` and `test:entity-hardening` pass after the final migration-source fix.
 
-The archive replay test and the active-state race regression both pass after the rebase fix.
+The complete workspace suite passes 18,422 tests, with 43 skips.
 
-The final sequential `preflight:quick` run passes.
+An adversarial branch review found no remaining branch-introduced defect.

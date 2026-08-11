@@ -11,7 +11,6 @@
  * leave disk in the state peers/caches were told about.
  */
 import { unlink } from "node:fs/promises";
-import { computeLegacyContentHash, normalizeLegacyContent } from "../content-hash.js";
 import { log } from "../logger.js";
 import type { MemoryFile, MemoryFrontmatter } from "../types.js";
 import * as entityRefs from "./entity-canonical-id-references.js";
@@ -61,7 +60,7 @@ export class EntityRefRepair {
    */
   async gate(
     fm: MemoryFrontmatter,
-    hashSource: string,
+    canonicalBody: string,
     structuredAttributes?: Record<string, string>,
   ): Promise<TombstoneMatch | null> {
     if (!this.deps.tombstonesEnabled()) return null;
@@ -74,9 +73,7 @@ export class EntityRefRepair {
           ? supersessionKeysForFact({ entityRef: fm.entityRef, structuredAttributes })
           : [];
       const match = applyTombstoneResurrectionGate(store, fm, {
-        normalizedText: ContentHashIndex.normalizeContent(hashSource),
-        legacyContentHash: computeLegacyContentHash(hashSource),
-        legacyNormalizedText: normalizeLegacyContent(hashSource),
+        normalizedText: ContentHashIndex.normalizeContent(canonicalBody),
         supersessionKeys,
         namespace: this.deps.tombstonesNamespace(),
       });
@@ -112,7 +109,7 @@ export class EntityRefRepair {
         frontmatter: fm,
         rewrite: async () => {
           if (opts.regateFact && fm.category === "fact") {
-            await this.gate(fm, body, undefined);
+            await this.gate(fm, body, fm.structuredAttributes);
           }
           // Blocked-capture surface: a repair rewrite of a tombstone-blocked
           // record must keep TombstoneBlockedCaptureIndex consistent.

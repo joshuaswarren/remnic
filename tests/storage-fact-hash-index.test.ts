@@ -243,61 +243,47 @@ test("rebuild preserves an explicit contentHashSource override", async () => {
   }
 });
 
-test("restart migration republishes the current hash for a Unicode fact", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-fact-hash-unicode-restart-"));
-  const unicodeFact = "利用者は紅茶を好む。";
-  const legacyNormalized = unicodeFact
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  const staleFrontmatterHash = createHash("sha256").update(legacyNormalized).digest("hex");
-  const currentHash = ContentHashIndex.computeHash(unicodeFact);
-
+test("rebuild preserves an ambiguous pure-CJK contentHashSource instead of claiming the body hash", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-fact-hash-cjk-override-rebuild-"));
+  const body = "保存された本文は紅茶についてです。";
+  const override = "外部の識別子は珈琲についてです。";
+  const legacyBody = body.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  const legacyOverride = override.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  const legacyHash = createHash("sha256").update(legacyOverride).digest("hex");
+  const bodyHash = ContentHashIndex.computeHash(body);
   try {
     const factsDir = path.join(dir, "facts", "2026-08-11");
     await mkdir(factsDir, { recursive: true });
     await writeFile(
-      path.join(factsDir, "unicode-legacy.md"),
+      path.join(factsDir, "ambiguous-override.md"),
       [
         "---",
-        "id: unicode-legacy",
+        "id: ambiguous-override",
         "category: fact",
         "created: 2026-08-11T00:00:00.000Z",
         "updated: 2026-08-11T00:00:00.000Z",
-        `contentHash: ${staleFrontmatterHash}`,
+        `contentHash: ${legacyHash}`,
         "---",
         "",
-        unicodeFact,
+        body,
         "",
       ].join("\n"),
       "utf8",
     );
-    const stateDir = path.join(dir, "state");
-    await mkdir(stateDir, { recursive: true });
-    await writeFile(path.join(stateDir, "fact-hashes.txt"), `${staleFrontmatterHash}\n`, "utf8");
 
-    const restarted = new StorageManager(dir);
-    assert.equal(await restarted.hasFactContentHash(unicodeFact), true);
+    assert.equal(legacyBody, legacyOverride);
+    assert.equal(legacyBody, "");
 
-    const republished = await readFile(path.join(stateDir, "fact-hashes.txt"), "utf8");
-    assert.notEqual(currentHash, staleFrontmatterHash);
-    assert.match(republished, /^# remnic-content-hash-index:v2\n/u);
-    assert.match(republished, new RegExp(`^${currentHash}$`, "m"));
-    assert.doesNotMatch(republished, new RegExp(`^${staleFrontmatterHash}$`, "m"));
-    const secondRestart = new StorageManager(dir);
-    assert.equal(
-      await secondRestart.hasFactContentHash(unicodeFact),
-      true,
-      "the current Unicode hash must survive a second restart",
-    );
-    const republishedAgain = await readFile(path.join(stateDir, "fact-hashes.txt"), "utf8");
-    assert.match(republishedAgain, new RegExp(`^${currentHash}$`, "m"));
-    assert.doesNotMatch(republishedAgain, new RegExp(`^${staleFrontmatterHash}$`, "m"));
+    const storage = new StorageManager(dir);
+    assert.equal(await storage.hasFactContentHash(body), false);
+    const rebuilt = await readFile(path.join(dir, "state", "fact-hashes.txt"), "utf8");
+    assert.match(rebuilt, new RegExp(`^${legacyHash}$`, "mu"));
+    assert.doesNotMatch(rebuilt, new RegExp(`^${bodyHash}$`, "mu"));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
 
 test("rebuild from disk: fact written without contentHashSource uses body hash via frontmatter.contentHash", async () => {
   // NOTE: StorageManager.writeMemory always sets contentHash in frontmatter

@@ -8,7 +8,9 @@ import { statSync } from "node:fs";
 import path from "node:path";
 import {
   computeContentHash as computeHash,
+  computeLegacyContentHash,
   normalizeContent,
+  normalizeLegacyContent,
 } from "../content-hash.js";
 import {
   TombstoneStore,
@@ -230,15 +232,170 @@ describe("TombstoneStore — Unicode normalizer migration", () => {
     const query = {
       namespace: "default",
       contentHash: override,
-      legacyContentHash: createHash("sha256").update(legacyNormalize(source)).digest("hex"),
       normalizedText: normalizeContent(source),
-      legacyNormalizedText: legacyNormalize(source),
     };
     assert.equal(store.lookup(query)?.matchedTier, "exact");
 
     const restarted = new TombstoneStore(filePath, "default", options, makeIo());
     await restarted.load();
     assert.equal(restarted.lookup(query)?.matchedTier, "exact");
+  });
+});
+
+describe("TombstoneStore — Unicode migration safety", () => {
+  it("does not cross-block unrelated pure-CJK tombstones through an empty legacy alias", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "tomb-cjk-alias-safety-"));
+    const filePath = path.join(dir, "tombstones.jsonl");
+    const first = "利用者は紅茶を好む。";
+    const unrelated = "利用者は珈琲を好む。";
+    const legacyHash = computeLegacyContentHash(first);
+    await writeFile(
+      filePath,
+      `${JSON.stringify({
+        id: "tomb-cjk-first",
+        kind: "tombstone",
+        reason: "correction",
+        sourceMemoryId: "fact-cjk-first",
+        contentHash: legacyHash,
+        normalizedText: normalizeLegacyContent(first),
+        namespace: "default",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        createdBy: "user_correction",
+      })}\n`,
+      "utf8",
+    );
+    const store = new TombstoneStore(
+      filePath,
+      "default",
+      {
+        enabled: true,
+        semanticMatch: false,
+        semanticThreshold: 0.9,
+        hashContent: computeHash,
+        normalizeText: normalizeContent,
+        sourceContentsForMemoryIds: async () =>
+          new Map<string, string>([["fact-cjk-first", first]]),
+      },
+      makeIo(),
+    );
+    await store.load();
+    assert.equal(
+      store.lookup({ namespace: "default", contentHash: computeHash(first) })?.matchedTier,
+      "exact",
+    );
+    assert.equal(
+      store.lookup({
+        namespace: "default",
+        contentHash: computeHash(unrelated),
+      }),
+      null,
+    );
+  });
+
+  it("blocks the same pure-CJK body without cross-blocking an unrelated body", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "tomb-cjk-override-safety-"));
+    const filePath = path.join(dir, "tombstones.jsonl");
+    const source = "東京の会社は紅茶を好む。";
+    await writeFile(
+      filePath,
+      `${JSON.stringify({
+        id: "tomb-cjk-override",
+        kind: "tombstone",
+        reason: "correction",
+        sourceMemoryId: "fact-cjk-override",
+        contentHash: computeLegacyContentHash(source),
+        normalizedText: normalizeLegacyContent(source),
+        namespace: "default",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        createdBy: "user_correction",
+      })}\n`,
+      "utf8",
+    );
+    const store = new TombstoneStore(
+      filePath,
+      "default",
+      {
+        enabled: true,
+        semanticMatch: false,
+        semanticThreshold: 0.9,
+        hashContent: computeHash,
+        normalizeText: normalizeContent,
+        sourceContentsForMemoryIds: async () =>
+          new Map<string, string>([["fact-cjk-override", source]]),
+      },
+      makeIo(),
+    );
+    await store.load();
+    assert.equal(
+      store.lookup({ namespace: "default", normalizedText: normalizeContent(source) })?.matchedTier,
+      "normalized",
+    );
+    assert.equal(
+      store.lookup({ namespace: "default", normalizedText: normalizeContent("大阪の会社は珈琲を好む。") }),
+      null,
+    );
+  });
+
+  it("rejects invalid legacy migration limits and accepts zero", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "tomb-migration-limit-"));
+    const options = {
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      hashContent: computeHash,
+      normalizeText: normalizeContent,
+    };
+    for (const limit of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      assert.throws(
+        () => new TombstoneStore(path.join(dir, `${String(limit)}.jsonl`), "default", { ...options, legacyMigrationLimit: limit }, makeIo()),
+        /legacyMigrationLimit must be a finite non-negative integer/,
+      );
+    }
+    assert.doesNotThrow(
+      () => new TombstoneStore(path.join(dir, "zero.jsonl"), "default", { ...options, legacyMigrationLimit: 0 }, makeIo()),
+    );
+  });
+
+  it("marks a missing migration source once and skips the request after restart", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "tomb-migration-missing-source-"));
+    const filePath = path.join(dir, "tombstones.jsonl");
+    await writeFile(
+      filePath,
+      `${JSON.stringify({
+        id: "tomb-missing-source",
+        kind: "tombstone",
+        reason: "correction",
+        sourceMemoryId: "fact-missing-source",
+        contentHash: computeLegacyContentHash("missing source"),
+        normalizedText: normalizeLegacyContent("missing source"),
+        namespace: "default",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        createdBy: "user_correction",
+      })}\n`,
+      "utf8",
+    );
+    let requests = 0;
+    const options = {
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      hashContent: computeHash,
+      normalizeText: normalizeContent,
+      sourceContentsForMemoryIds: async () => {
+        requests += 1;
+        return new Map<string, string>();
+      },
+    };
+    const first = new TombstoneStore(filePath, "default", options, makeIo());
+    await first.load();
+    assert.equal(requests, 1);
+    const persisted = JSON.parse(await readFile(filePath, "utf8").then((text) => text.trim())) as {
+      legacyMigrationAttemptedVersion?: number;
+    };
+    assert.equal(persisted.legacyMigrationAttemptedVersion, 2);
+    const restarted = new TombstoneStore(filePath, "default", options, makeIo());
+    await restarted.load();
+    assert.equal(requests, 1);
   });
 });
 

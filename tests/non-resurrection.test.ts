@@ -20,9 +20,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { StorageManager } from "../src/storage.ts";
 import { computeSupersessionKey } from "../packages/remnic-core/src/temporal-supersession.ts";
+import { computeLegacyContentHash, normalizeLegacyContent } from "../packages/remnic-core/src/content-hash.ts";
 
 const NAMESPACE = "test";
 
@@ -400,6 +401,52 @@ test("#1579 doctor visibility: getTombstoneStats reports the active count", asyn
     assert.equal(stats!.count, 2);
     assert.equal(stats!.revoked, 0);
     assert.ok(stats!.loaded);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("legacy migration preserves structured attributes in the retired content identity", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-tombstone-attributes-"));
+  const content = "利用者は紅茶を好む。";
+  const attributes = { region: "東京" };
+  try {
+    const seed = new StorageManager(dir);
+    await seed.ensureDirectories();
+    const { id: sourceMemoryId } = await seed.writeMemory("fact", content, {
+      source: "test",
+      structuredAttributes: attributes,
+    });
+    const retired = await readBack(seed, sourceMemoryId);
+    assert.match(retired.content, /\[Attributes:/);
+
+    await writeFile(
+      path.join(dir, "state", "tombstones.jsonl"),
+      `${JSON.stringify({
+        id: "tomb-legacy-attributes",
+        kind: "tombstone",
+        reason: "supersession",
+        createdBy: "supersession",
+        sourceMemoryId,
+        contentHash: computeLegacyContentHash(retired.content),
+        normalizedText: normalizeLegacyContent(retired.content),
+        namespace: NAMESPACE,
+        createdAt: "2026-08-11T00:00:00.000Z",
+      })}\n`,
+      "utf8",
+    );
+
+    const restarted = new StorageManager(dir);
+    enableTombstones(restarted);
+    const result = await restarted.writeMemory("fact", content, {
+      source: "extraction",
+      structuredAttributes: attributes,
+    });
+    assert.equal(result.tombstoneBlocked, true);
+    assertBlocked(await readBack(restarted, result.id), "exact");
+
+    const migrated = await readFile(path.join(dir, "state", "tombstones.jsonl"), "utf8");
+    assert.match(migrated, /"normalizerVersion":2/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
