@@ -16,6 +16,7 @@ import {
   SupportPassportRevokeGrantInputSchema,
 } from "./grant-contracts.js";
 import type { SupportPassportGrantStore } from "./grant-store.js";
+import { withSupportPassportOwnerLock } from "./owner-lock.js";
 
 export interface SupportPassportGrantServiceDependencies {
   grantStore: SupportPassportGrantStore;
@@ -45,26 +46,32 @@ export class SupportPassportGrantService {
     const parsed = SupportPassportCreateGrantInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
     const owner = await this.resolveOwner(parsed.data.principal);
-    for (const cardRef of parsed.data.cards) {
-      const memory = await owner.storage.getMemoryById(cardRef.cardId);
-      const stored = memory ? projectSupportPassportCard(memory) : null;
-      if (!stored || stored.card.status !== "active") {
-        throw new SupportPassportError("invalid_card_status", "Only approved support cards can be shared.", 409);
+    return await withSupportPassportOwnerLock(
+      owner.storage,
+      { namespace: owner.namespace, principal: parsed.data.principal },
+      async () => {
+      for (const cardRef of parsed.data.cards) {
+        const memory = await owner.storage.getMemoryById(cardRef.cardId);
+        const stored = memory ? projectSupportPassportCard(memory) : null;
+        if (!stored || stored.card.status !== "active") {
+          throw new SupportPassportError("invalid_card_status", "Only approved support cards can be shared.", 409);
+        }
+        if (stored.card.revision !== cardRef.revision) {
+          throw new SupportPassportError("revision_conflict", "A support card changed after it was selected.", 409);
+        }
       }
-      if (stored.card.revision !== cardRef.revision) {
-        throw new SupportPassportError("revision_conflict", "A support card changed after it was selected.", 409);
+      const created = await this.grantStore.create({
+        namespace: owner.namespace,
+        principal: parsed.data.principal,
+        cards: parsed.data.cards,
+        expiresAt: parsed.data.expiresAt,
+      });
+      return SupportPassportCreatedGrantSchema.parse({
+        grant: this.ownerGrant(created.state),
+        secret: created.secret,
+      });
       }
-    }
-    const created = await this.grantStore.create({
-      namespace: owner.namespace,
-      principal: parsed.data.principal,
-      cards: parsed.data.cards,
-      expiresAt: parsed.data.expiresAt,
-    });
-    return SupportPassportCreatedGrantSchema.parse({
-      grant: this.ownerGrant(created.state),
-      secret: created.secret,
-    });
+    );
   }
 
   async listGrants(input: { principal: string }): Promise<SupportPassportOwnerGrant[]> {
