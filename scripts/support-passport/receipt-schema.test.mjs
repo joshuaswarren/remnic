@@ -9,7 +9,7 @@ import {
   computeFixtureHash,
   computeResponseHashChain,
 } from "./receipt-schema.mjs";
-import { verifyReceipt } from "./verify-receipt.mjs";
+import { validateReceiptConsistency } from "./verify-receipt.mjs";
 
 const fixturesDir = path.resolve(import.meta.dirname, "../../fixtures/support-passport");
 
@@ -21,7 +21,6 @@ async function fixtureHash() {
 
 function modelCall(route = "direct") {
   return {
-    model: route === "direct" ? "gpt-test" : "local/test-model",
     route,
     transport: route === "direct" ? "openai-responses" : "local-compatible",
     outputSchemaVersion: 1,
@@ -44,6 +43,7 @@ async function validReceipt() {
   };
   return {
     schemaVersion: 1,
+    validationScope: "self_consistency_only",
     fixtureHash: await fixtureHash(),
     commitSha: "a".repeat(40),
     generatedAt: "2026-08-11T12:01:00.000Z",
@@ -62,31 +62,31 @@ async function validReceipt() {
   };
 }
 
-test("the receipt verifier accepts a strict private proof", async () => {
+test("the receipt validator accepts a strict self-consistency record", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "support-passport-receipt-test-"));
   try {
     const receiptPath = path.join(directory, "receipt.json");
     await writeFile(receiptPath, JSON.stringify(await validReceipt()), "utf8");
-    const receipt = await verifyReceipt({ receiptPath, requireOpenAi: true });
+    const receipt = await validateReceiptConsistency({ receiptPath });
     assert.equal(receipt.finalResult, "passed");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test("the receipt verifier rejects response-hash and fixture drift", async () => {
+test("the receipt validator rejects response-hash and fixture drift", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "support-passport-receipt-test-"));
   try {
     const receiptPath = path.join(directory, "receipt.json");
     const receipt = await validReceipt();
     receipt.responses.deniedRead.bodySha256 = "9".repeat(64);
     await writeFile(receiptPath, JSON.stringify(receipt), "utf8");
-    await assert.rejects(() => verifyReceipt({ receiptPath }), /response hash chain/);
+    await assert.rejects(() => validateReceiptConsistency({ receiptPath }), /response hash chain/);
 
     receipt.responseHashChain = computeResponseHashChain(receipt.responses);
     receipt.fixtureHash = "0".repeat(64);
     await writeFile(receiptPath, JSON.stringify(receipt), "utf8");
-    await assert.rejects(() => verifyReceipt({ receiptPath }), /fixture hash/);
+    await assert.rejects(() => validateReceiptConsistency({ receiptPath }), /fixture hash/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -95,6 +95,13 @@ test("the receipt verifier rejects response-hash and fixture drift", async () =>
 test("the receipt schema rejects private or unplanned fields", async () => {
   const receipt = await validReceipt();
   assert.equal(SupportPassportReceiptSchema.safeParse({ ...receipt, prompt: "private" }).success, false);
+  assert.equal(
+    SupportPassportReceiptSchema.safeParse({
+      ...receipt,
+      modelCalls: { ...receipt.modelCalls, draft: { ...receipt.modelCalls.draft, model: "/private/model" } },
+    }).success,
+    false
+  );
   assert.equal(
     SupportPassportReceiptSchema.safeParse({
       ...receipt,

@@ -38,7 +38,8 @@ What Helps Me adds one complete owner-to-helper flow to Remnic:
 4. The owner edits and approves each card separately.
 5. The owner shares exact card versions for a limited time.
 6. The helper reads the chosen cards and asks a grounded question.
-7. The owner selects **Stop sharing**, which locks the next helper request.
+7. The owner selects **Stop sharing**, which locks the next helper request and
+   open helper views within one polling interval.
 
 Cards use Remnic's normal memory store and lifecycle. The grant store keeps only
 a secret hash. The helper never gets a namespace, source memory, path, search
@@ -87,10 +88,11 @@ provider-neutral model calls, strict public routes, and the browser flow. It
 also checked the interface at four widths and ran Axe against owner, helper, and
 locked states.
 
-The live proof runner starts a fresh Remnic server and performs the full flow
-over HTTP. Its strict receipt includes hashes, status codes, model route, model
-name, schema version, token counts, and latency. It excludes notes, cards,
-prompts, answers, tokens, secrets, and local paths.
+The live runner starts a fresh standalone Remnic server and performs the full
+flow over HTTP. Its strict receipt includes hashes, status codes, model route,
+schema version, token counts, and latency. It excludes notes, cards, prompts,
+answers, tokens, secrets, raw model IDs, and local paths. The receipt declares
+that it is a self-reported consistency record, not independent attestation.
 
 ## How to run the project
 
@@ -107,19 +109,21 @@ npm run demo:support-passport:replay
 Open the printed loopback URL. The permanent `Synthetic replay` banner marks
 the boundary. The replay uses no account, credential, or private data.
 
-Run the real server and configured model route:
+Run the real standalone server with a local, direct, or compatible model route:
 
 ```bash
 npm run demo:support-passport:live -- \
   --config ./remnic.config.json \
   --output ./tmp/support-passport-demo
-npm run demo:support-passport:verify -- \
+npm run demo:support-passport:validate-receipt -- \
   --receipt ./tmp/support-passport-demo/receipt.json
 ```
 
-The model config can select direct OpenAI, a local endpoint, a compatible
-remote endpoint, or an OpenClaw gateway chain. Add `--require-openai` only when
-the receipt must prove the official OpenAI Responses transport.
+The standalone runner does not boot OpenClaw or load its plugin entry. For an
+OpenClaw gateway run, enable the feature in the existing plugin, keep
+`modelSource: "gateway"`, and use the browser flow on that host. The feature
+uses the host's existing model chain and provider auth. No OpenAI API key is
+required. The receipt validator checks self-consistency only.
 
 ## Two model jobs
 
@@ -158,12 +162,12 @@ The six-layer stack keeps each review boundary clear:
 
 | Layer | Commit range | New work |
 |---|---|---|
-| Cards | `0110199..1b65b5e` | Support card contract, storage, owner review, and lifecycle. |
-| Grants | `1b65b5e..6b91c5b` | Revocable, exact-version share grants and race-safe state. |
-| Models | `6b91c5b..7fabffc` | Local, gateway, direct, and compatible model routes with strict output. |
-| API | `7fabffc..ea6c0b3` | Owner HTTP and MCP routes plus the public helper boundary. |
-| UI | `ea6c0b3..332fe1b` | Responsive owner and helper browser app with accessibility checks. |
-| Demo | `332fe1b..HEAD` | Walkthrough, live runner, receipt verifier, docs, and submission entry. |
+| Cards | `0110199..0f7e752` | Support card contract, storage, owner review, and lifecycle. |
+| Grants | `0f7e752..d4a815a` | Revocable, exact-version share grants and race-safe state. |
+| Models | `d4a815a..72c04fe` | Local, gateway, direct, and compatible model routes with strict output. |
+| API | `72c04fe..bd4f527` | Owner HTTP and MCP routes plus the public helper boundary. |
+| UI | `bd4f527..2632996` | Responsive owner and helper browser app with accessibility checks. |
+| Demo | `2632996..HEAD` | Walkthrough, live runner, receipt validator, docs, and submission entry. |
 
 The full submission diff is `011019911cc361bf702bddbead686ea07479d328..HEAD`.
 The older Relay entry remains in [HACKATHON.md](../../HACKATHON.md).
@@ -177,16 +181,15 @@ The provider-neutral route tests run local and OpenClaw gateway calls with
 direct OpenAI disabled. The OpenClaw bridge test also runs the real public HTTP
 surface. These tests require no OpenAI API key.
 
-The live runner and receipt verifier are complete. A maintainer can create an
-optional environment-specific receipt with any configured Remnic model route.
-The entry does not treat an OpenAI receipt as a completion requirement.
+The standalone live runner and receipt consistency validator are complete. The
+entry has no OpenAI-specific completion requirement.
 
 ## Submission checklist
 
 - [x] Build the complete owner and helper flow.
 - [x] Record a short walkthrough with synthetic data.
 - [x] Add the repository, video, summary, model jobs, and prior-work boundary.
-- [x] Scan the public product and proof files for private data.
+- [x] Scan the public product and run-record files for private data.
 - [x] Prove local and gateway routes while direct OpenAI is disabled.
 - [ ] Get the correct organizer announcement and verify the entry fields.
 - [ ] Upload or link the final video on the verified submission surface.

@@ -1003,7 +1003,7 @@
     "demo:support-passport:replay": "node scripts/support-passport/serve-replay.mjs",
     "demo:support-passport:capture": "node scripts/support-passport/capture-demo.mjs",
     "demo:support-passport:live": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx scripts/support-passport/run-live-demo.mjs",
-    "demo:support-passport:verify": "node scripts/support-passport/verify-receipt.mjs",
+    "demo:support-passport:validate-receipt": "node scripts/support-passport/verify-receipt.mjs",
     "demo:coding-agent-memory": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx examples/coding-agent-memory-demo/demo.mts",
     "test:coding-agent-memory-demo": "node examples/coding-agent-memory-demo/smoke-test.mjs",
     "test:release-smoke": "pnpm run build && node scripts/check-release-artifacts.mjs",

@@ -15,14 +15,10 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "../..");
 
 function parseArgs(argv) {
-  const result = { requireOpenAi: false };
+  const result = {};
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--") continue;
-    if (arg === "--require-openai") {
-      result.requireOpenAi = true;
-      continue;
-    }
     if (arg === "--receipt") {
       const value = argv[index + 1];
       if (!value || value.startsWith("--")) throw new Error("--receipt requires a file");
@@ -60,7 +56,7 @@ function assertNoPrivateFixtureText(receipt, sourceMemories, expectedPublicCards
   }
 }
 
-export async function verifyReceipt(options) {
+export async function validateReceiptConsistency(options) {
   const receipt = SupportPassportReceiptSchema.parse(await readJson(path.resolve(options.receiptPath)));
   const sourceMemories = SourceMemoriesFixtureSchema.parse(
     await readJson(path.join(repoRoot, "fixtures/support-passport/source-memories.json"))
@@ -93,30 +89,20 @@ export async function verifyReceipt(options) {
   }
   assertNoPrivateFixtureText(receipt, sourceMemories, expectedPublicCards);
 
-  if (options.requireOpenAi) {
-    for (const call of Object.values(receipt.modelCalls)) {
-      if (call.route !== "direct" || call.transport !== "openai-responses") {
-        throw new Error("The receipt does not prove the direct OpenAI Responses route");
-      }
-      if (Object.values(call.usage).some((count) => count === null)) {
-        throw new Error("The OpenAI proof requires complete token counts");
-      }
-    }
-  }
-
   return receipt;
 }
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  const receipt = await verifyReceipt(options);
-  console.log(`Verified support passport receipt for commit ${receipt.commitSha}.`);
-  console.log(`Verified model routes: ${receipt.modelCalls.draft.route}, ${receipt.modelCalls.answer.route}.`);
+  const receipt = await validateReceiptConsistency(options);
+  console.log(`Validated receipt self-consistency for commit ${receipt.commitSha}.`);
+  console.log(`Recorded model routes: ${receipt.modelCalls.draft.route}, ${receipt.modelCalls.answer.route}.`);
+  console.log("This receipt is a self-reported run record, not independent attestation.");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().catch((error) => {
-    console.error(`Receipt verification failed: ${error instanceof Error ? error.message : "unknown error"}`);
+    console.error(`Receipt consistency validation failed: ${error instanceof Error ? error.message : "unknown error"}`);
     process.exitCode = 1;
   });
 }

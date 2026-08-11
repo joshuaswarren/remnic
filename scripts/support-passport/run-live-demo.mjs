@@ -24,7 +24,7 @@ import {
   receiptStatusSequence,
   sha256,
 } from "./receipt-schema.mjs";
-import { verifyReceipt } from "./verify-receipt.mjs";
+import { validateReceiptConsistency } from "./verify-receipt.mjs";
 
 const execFileAsync = promisify(execFile);
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -73,26 +73,21 @@ class DemoFailure extends Error {
 
 function usage() {
   return `Usage:
-  npm run demo:support-passport:live -- --output <directory> [--config <file>] [--require-openai]
+  npm run demo:support-passport:live -- --output <directory> [--config <file>]
 
 Options:
   --output <directory>  Write receipt.json here. Existing receipts are never replaced.
-  --config <file>       Reuse a Remnic local, direct, or gateway model configuration.
-  --require-openai      Require the direct OpenAI Responses route for both model calls.
+  --config <file>       Reuse a standalone Remnic local, direct, or compatible model configuration.
   --help                Show this help.`;
 }
 
 function parseArgs(argv) {
-  const options = { requireOpenAi: false, help: false };
+  const options = { help: false };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--") continue;
     if (arg === "--help") {
       options.help = true;
-      continue;
-    }
-    if (arg === "--require-openai") {
-      options.requireOpenAi = true;
       continue;
     }
     if (arg === "--output" || arg === "--config") {
@@ -192,7 +187,7 @@ async function requestJson(url, init, expectedStatus, label) {
     body,
     rawBody,
     response,
-    proof: { status: response.status, bodySha256: sha256(rawBody) },
+    receiptEntry: { status: response.status, bodySha256: sha256(rawBody) },
   };
 }
 
@@ -248,7 +243,6 @@ function transportFor(audit, config) {
 
 function receiptModelCall(audit, config) {
   return {
-    model: audit.modelUsed,
     route: audit.route,
     transport: transportFor(audit, config),
     outputSchemaVersion: audit.outputSchemaVersion,
@@ -329,7 +323,7 @@ async function run(options) {
   const previousLegacyMemoryDir = process.env.ENGRAM_MEMORY_DIR;
   let server;
   let receiptWritten = false;
-  let receiptVerified = false;
+  let receiptValidated = false;
 
   try {
     process.env.REMNIC_MEMORY_DIR = memoryDir;
@@ -530,17 +524,18 @@ async function run(options) {
 
     const audits = await readSuccessfulModelAudits(memoryDir);
     const responses = {
-      draft: draftedRequest.proof,
-      edit: editedRequest.proof,
-      approve: approvedRequest.proof,
-      grant: grantRequest.proof,
-      helperRead: helperReadRequest.proof,
-      helperAsk: helperAskRequest.proof,
-      revoke: revokeRequest.proof,
-      deniedRead: deniedReadRequest.proof,
+      draft: draftedRequest.receiptEntry,
+      edit: editedRequest.receiptEntry,
+      approve: approvedRequest.receiptEntry,
+      grant: grantRequest.receiptEntry,
+      helperRead: helperReadRequest.receiptEntry,
+      helperAsk: helperAskRequest.receiptEntry,
+      revoke: revokeRequest.receiptEntry,
+      deniedRead: deniedReadRequest.receiptEntry,
     };
     const receipt = SupportPassportReceiptSchema.parse({
       schemaVersion: 1,
+      validationScope: "self_consistency_only",
       fixtureHash: computeFixtureHash(sourceMemories, expectedPublicCards),
       commitSha,
       generatedAt: new Date().toISOString(),
@@ -570,6 +565,8 @@ async function run(options) {
       expectedCard.statement,
       expectedPublicCards.question,
       answer.answer,
+      audits.draft.modelUsed,
+      audits.answer.modelUsed,
     ]);
 
     await mkdir(outputDir, { recursive: true, mode: 0o700 });
@@ -579,15 +576,15 @@ async function run(options) {
       mode: 0o600,
     });
     receiptWritten = true;
-    await verifyReceipt({ receiptPath, requireOpenAi: options.requireOpenAi });
-    receiptVerified = true;
-    console.log(`Saved and verified receipt.json for commit ${commitSha}.`);
+    await validateReceiptConsistency({ receiptPath });
+    receiptValidated = true;
+    console.log(`Saved receipt.json and validated its self-consistency for commit ${commitSha}.`);
   } finally {
     if (server) await server.stop();
     restoreEnvironment("REMNIC_MEMORY_DIR", previousMemoryDir);
     restoreEnvironment("ENGRAM_MEMORY_DIR", previousLegacyMemoryDir);
     await rm(tempRoot, { recursive: true, force: true });
-    if (receiptWritten && !receiptVerified) await rm(receiptPath, { force: true });
+    if (receiptWritten && !receiptValidated) await rm(receiptPath, { force: true });
   }
 }
 
@@ -600,7 +597,7 @@ async function main() {
   await run(options);
 }
 
-main().catch((error) => {
-  console.error(`Live demo failed: ${error instanceof DemoFailure ? error.message : "unexpected internal error"}`);
+main().catch(() => {
+  console.error("Live demo failed. Review the last completed step and the selected Remnic configuration.");
   process.exitCode = 1;
 });

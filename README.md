@@ -24,7 +24,8 @@ helper can see it.
 [Watch the synthetic walkthrough](docs/hackathons/assets/what-helps-me/demo.webm)
 or read the [full Build for Good entry](docs/hackathons/build-for-good-2026.md).
 The walkthrough always shows a **Synthetic replay** banner. It is not live-call
-proof. The separate receipt command below proves the real server and model flow.
+proof. The separate live runner exercises the real standalone server and model
+flow. Its receipt validator checks internal consistency, not independent proof.
 
 ### What we built
 
@@ -36,9 +37,9 @@ proof. The separate receipt command below proves the real server and model flow.
 - Immediate **Stop sharing** controls. Every helper request checks durable grant
   state again.
 - A provider-neutral model path. It uses Remnic's existing direct OpenAI,
-  OpenAI-compatible local, and OpenClaw gateway routes.
-- A strict live receipt that proves draft, approval, sharing, question,
-  revocation, and the final locked read without storing private text or secrets.
+  OpenAI-compatible local and remote, and OpenClaw gateway routes.
+- A strict live run record for draft, approval, sharing, question, revocation,
+  and the final locked read. It stores no private text, secrets, or raw model IDs.
 
 The framing comes from [NHS England's health and care passport guidance](https://www.england.nhs.uk/long-read/health-and-care-passports-implementation-guidance/).
 The NHS guidance says the person owns the passport, chooses its contents, and
@@ -68,8 +69,8 @@ The model is the scribe. The person is the author.
 
 Codex traced Remnic's existing memory, model, HTTP, MCP, and browser contracts.
 It then built the feature as a six-layer PR stack. Codex also wrote adversarial
-tests, checked WCAG states at four widths, and built the privacy-safe live
-receipt. The owner approval and revocation rules remain deterministic core
+tests, checked WCAG states at four widths, and built the privacy-safe live run
+record. The owner approval and revocation rules remain deterministic core
 code. A model cannot bypass them.
 
 ### How to run the project
@@ -87,15 +88,18 @@ npm run demo:support-passport:replay
 Open the printed loopback URL. The replay uses synthetic data and labels itself
 on every screen.
 
-Run the live proof with any configured Remnic model route:
+Run the standalone live flow with a local, direct, or compatible model route:
 
 ```bash
 npm run demo:support-passport:live -- \
   --config ./remnic.config.json \
   --output ./tmp/support-passport-demo
-npm run demo:support-passport:verify -- \
+npm run demo:support-passport:validate-receipt -- \
   --receipt ./tmp/support-passport-demo/receipt.json
 ```
+
+The validator checks the self-reported receipt schema and hash consistency. It
+does not convert that receipt into independent attestation.
 
 For an existing OpenClaw install, keep the current gateway providers and auth.
 Enable only the feature and gateway route in `openclaw.json`:
@@ -119,10 +123,10 @@ Enable only the feature and gateway route in `openclaw.json`:
 Open `/remnic/ui/what-helps-me/` on the configured Remnic HTTP origin. Remnic
 uses the OpenClaw gateway model chain and its existing provider auth.
 
-Do not pass `--require-openai` for local or OpenClaw runs. That optional flag
-exists only when evidence must prove the official OpenAI Responses transport.
-Manual cards and sharing need no model. Draft and question requests return an
-honest `503 provider_unavailable` when no model route is configured.
+The standalone live runner does not boot an OpenClaw host. Use the real browser
+flow above to exercise an existing OpenClaw gateway setup. No OpenAI API key is
+required. Manual cards and sharing need no model. Draft and question requests
+return `503 provider_unavailable` when no model route is configured.
 <!-- END BUILD FOR GOOD 2026 HIGHLIGHT -->
 
 <!-- BEGIN OPENAI BUILD WEEK 2026 HIGHLIGHT — temporary submission section -->

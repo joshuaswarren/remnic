@@ -90,7 +90,6 @@ const ModelUsageSchema = z
 
 const ModelCallSchema = z
   .object({
-    model: z.string().trim().min(1).max(256),
     route: z.enum(["local", "direct", "gateway"]),
     transport: z.enum(["local-compatible", "openai-responses", "openai-compatible", "gateway-model-chain"]),
     outputSchemaVersion: z.literal(1),
@@ -118,6 +117,7 @@ const CardVersionSchema = z
 export const SupportPassportReceiptSchema = z
   .object({
     schemaVersion: z.literal(RECEIPT_SCHEMA_VERSION),
+    validationScope: z.literal("self_consistency_only"),
     fixtureHash: Sha256Schema,
     commitSha: CommitShaSchema,
     generatedAt: IsoTimestampSchema,
