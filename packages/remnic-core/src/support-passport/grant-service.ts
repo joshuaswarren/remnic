@@ -107,26 +107,28 @@ export class SupportPassportGrantService {
     if (confirmedState.stateVersion !== state.stateVersion) {
       throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
     }
-    const confirmedCards = await this.readGrantCards(storage, confirmedState);
-    if (JSON.stringify(confirmedCards) !== JSON.stringify(cards)) {
-      throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
-    }
-    const finalState = await this.grantStore.authenticate(input.grantId, input.secret);
-    if (finalState.stateVersion !== confirmedState.stateVersion) {
-      throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
-    }
-    const firstCard = confirmedCards[0];
-    if (!firstCard) throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
-    const updatedAt = confirmedCards.reduce(
-      (latest, card) => (card.updatedAt > latest ? card.updatedAt : latest),
-      firstCard.updatedAt
-    );
-    return SupportPassportPublicGuideSchema.parse({
-      schemaVersion: 1,
-      grantId: finalState.grantId,
-      expiresAt: finalState.expiresAt,
-      updatedAt,
-      cards: confirmedCards,
+    return await withSupportPassportOwnerLock(storage, async () => {
+      const confirmedCards = await this.readGrantCards(storage, confirmedState);
+      if (JSON.stringify(confirmedCards) !== JSON.stringify(cards)) {
+        throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
+      }
+      const finalState = await this.grantStore.authenticate(input.grantId, input.secret);
+      if (finalState.stateVersion !== confirmedState.stateVersion) {
+        throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
+      }
+      const firstCard = confirmedCards[0];
+      if (!firstCard) throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
+      const updatedAt = confirmedCards.reduce(
+        (latest, card) => (card.updatedAt > latest ? card.updatedAt : latest),
+        firstCard.updatedAt
+      );
+      return SupportPassportPublicGuideSchema.parse({
+        schemaVersion: 1,
+        grantId: finalState.grantId,
+        expiresAt: finalState.expiresAt,
+        updatedAt,
+        cards: confirmedCards,
+      });
     });
   }
 

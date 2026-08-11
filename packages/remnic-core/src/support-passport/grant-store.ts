@@ -23,6 +23,7 @@ const GRANT_LOCK_HEARTBEAT_MS = 10_000;
 const SAFE_GRANT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SAFE_OWNER_INDEX_HASH = /^[0-9a-f]{64}$/;
 const UNSUPPORTED_DIRECTORY_SYNC_ERRORS = new Set(["EINVAL", "ENOSYS", "ENOTSUP", "EOPNOTSUPP"]);
+const MAX_OWNER_GRANT_HISTORY = 100;
 
 export interface SupportPassportGrantStoreOptions {
   memoryDir: string;
@@ -50,6 +51,14 @@ function hashesMatch(left: string, right: string): boolean {
 
 function grantNotFound(): SupportPassportError {
   return new SupportPassportError("grant_not_found", "The share link was not found.", 404);
+}
+
+function normalizeNamespace(namespace: unknown): string {
+  const normalized = typeof namespace === "string" ? namespace.trim() : "";
+  if (normalized.length < 1 || normalized.length > 256) {
+    throw new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
+  }
+  return normalized;
 }
 
 export async function syncDirectoryForDurability(
@@ -107,17 +116,13 @@ export class SupportPassportGrantStore {
   }
 
   async create(input: CreateStoredGrantInput): Promise<{ state: SupportPassportGrantState; secret: string }> {
+    const namespace = normalizeNamespace(input.namespace);
     const parsed = SupportPassportCreateGrantInputSchema.safeParse({
       principal: input.principal,
       cards: input.cards,
       expiresAt: input.expiresAt,
     });
-    if (
-      !parsed.success ||
-      typeof input.namespace !== "string" ||
-      input.namespace.trim().length < 1 ||
-      input.namespace.trim().length > 256
-    ) {
+    if (!parsed.success) {
       throw new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
     }
     return await this.withMutationLock(async (lock) => {
@@ -137,7 +142,7 @@ export class SupportPassportGrantStore {
         schemaVersion: 1,
         stateVersion: 1,
         grantId,
-        namespace: input.namespace.trim(),
+        namespace,
         principalHash: sha256("support-passport-principal:v1", parsed.data.principal),
         secretHash: sha256("support-passport-secret:v1", secret),
         cards: parsed.data.cards,
@@ -178,13 +183,16 @@ export class SupportPassportGrantStore {
   }
 
   async listForOwner(namespace: string, principal: string): Promise<SupportPassportGrantState[]> {
+    const normalizedNamespace = normalizeNamespace(namespace);
     const principalHash = sha256("support-passport-principal:v1", principal);
-    const grantIds = await this.readOwnerIndex(namespace, principalHash);
+    const grantIds = await this.readOwnerIndex(normalizedNamespace, principalHash);
     const states: SupportPassportGrantState[] = [];
     for (const grantId of grantIds) {
       try {
         const state = await this.readState(grantId);
-        if (state.namespace === namespace && hashesMatch(state.principalHash, principalHash)) states.push(state);
+        if (state.namespace === normalizedNamespace && hashesMatch(state.principalHash, principalHash)) {
+          states.push(state);
+        }
       } catch {}
     }
     return states.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.grantId.localeCompare(b.grantId));
@@ -197,6 +205,7 @@ export class SupportPassportGrantStore {
     expectedStateVersion?: number;
   }): Promise<SupportPassportGrantState> {
     if (!SAFE_GRANT_ID.test(input.grantId)) throw grantNotFound();
+    const namespace = normalizeNamespace(input.namespace);
     return await this.withMutationLock(async (lock) => {
       let state: SupportPassportGrantState;
       try {
@@ -206,7 +215,7 @@ export class SupportPassportGrantStore {
         throw error;
       }
       const principalHash = sha256("support-passport-principal:v1", input.principal);
-      if (state.namespace !== input.namespace || !hashesMatch(state.principalHash, principalHash))
+      if (state.namespace !== namespace || !hashesMatch(state.principalHash, principalHash))
         throw grantNotFound();
       if (state.revokedAt) return state;
       if (input.expectedStateVersion !== undefined && input.expectedStateVersion !== state.stateVersion) {
@@ -244,7 +253,40 @@ export class SupportPassportGrantStore {
     const ownerHash = this.ownerHash(state.namespace, state.principalHash);
     const current = await this.readOwnerIndexByHash(ownerHash);
     if (current.includes(state.grantId)) return;
-    const grantIds = [...current, state.grantId].sort((a, b) => a.localeCompare(b));
+    let retained = current;
+    if (current.length >= MAX_OWNER_GRANT_HISTORY) {
+      const indexedStates = (
+        await Promise.all(
+          current.map(async (grantId) => {
+            try {
+              return await this.readState(grantId);
+            } catch {
+              return null;
+            }
+          })
+        )
+      ).filter((item): item is SupportPassportGrantState => item !== null);
+      const active = indexedStates.filter(
+        (item) => !item.revokedAt && Date.parse(item.expiresAt) > this.now().getTime()
+      );
+      if (active.length >= MAX_OWNER_GRANT_HISTORY) {
+        throw new SupportPassportError(
+          "invalid_input",
+          "A support passport can contain at most 100 active share links.",
+          400
+        );
+      }
+      const inactive = indexedStates
+        .filter((item) => item.revokedAt || Date.parse(item.expiresAt) <= this.now().getTime())
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.grantId.localeCompare(b.grantId));
+      retained = [
+        ...active.map((item) => item.grantId),
+        ...inactive
+          .slice(0, MAX_OWNER_GRANT_HISTORY - active.length - 1)
+          .map((item) => item.grantId),
+      ];
+    }
+    const grantIds = [...retained, state.grantId];
     await this.requireMutationLock(lock);
     await this.writeOwnerIndex(ownerHash, grantIds);
   }
@@ -281,6 +323,9 @@ export class SupportPassportGrantStore {
     }
     const uniqueGrantIds = new Set(grantIds as string[]);
     if (uniqueGrantIds.size !== grantIds.length) throw new Error("support passport owner index is invalid");
+    if (uniqueGrantIds.size > MAX_OWNER_GRANT_HISTORY) {
+      throw new Error("support passport owner index is invalid");
+    }
     return [...uniqueGrantIds];
   }
 
