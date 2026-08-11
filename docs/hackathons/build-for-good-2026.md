@@ -159,11 +159,11 @@ The six-layer stack keeps each review boundary clear:
 | Layer | Commit range | New work |
 |---|---|---|
 | Cards | `0110199..1b65b5e` | Support card contract, storage, owner review, and lifecycle. |
-| Grants | `1b65b5e..d296d4e` | Revocable, exact-version share grants and race-safe state. |
-| Models | `d296d4e..86898f7` | Local, gateway, direct, and compatible model routes with strict output. |
-| API | `86898f7..9153828` | Owner HTTP and MCP routes plus the public helper boundary. |
-| UI | `9153828..447ee7f` | Responsive owner and helper browser app with accessibility checks. |
-| Demo | `447ee7f..HEAD` | Walkthrough, live runner, receipt verifier, docs, and submission entry. |
+| Grants | `1b65b5e..6b91c5b` | Revocable, exact-version share grants and race-safe state. |
+| Models | `6b91c5b..7fabffc` | Local, gateway, direct, and compatible model routes with strict output. |
+| API | `7fabffc..c61b127` | Owner HTTP and MCP routes plus the public helper boundary. |
+| UI | `c61b127..1b90a7a` | Responsive owner and helper browser app with accessibility checks. |
+| Demo | `1b90a7a..HEAD` | Walkthrough, live runner, receipt verifier, docs, and submission entry. |
 
 The full submission diff is `011019911cc361bf702bddbead686ea07479d328..HEAD`.
 The older Relay entry remains in [HACKATHON.md](../../HACKATHON.md).
