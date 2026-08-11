@@ -28,7 +28,7 @@ export interface CreateStoredGrantInput {
   namespace: string;
   principal: string;
   cards: SupportPassportGrantCardRef[];
-  durationSeconds: number;
+  expiresAt: string;
 }
 
 function sha256(domain: string, value: string): string {
@@ -64,7 +64,7 @@ export class SupportPassportGrantStore {
     const parsed = SupportPassportCreateGrantInputSchema.safeParse({
       principal: input.principal,
       cards: input.cards,
-      durationSeconds: input.durationSeconds,
+      expiresAt: input.expiresAt,
     });
     if (
       !parsed.success ||
@@ -83,6 +83,10 @@ export class SupportPassportGrantStore {
       if (!SAFE_GRANT_ID.test(grantId)) throw new Error("SupportPassportGrantStore.makeGrantId must return a UUID");
       const secret = secretBytes.toString("base64url");
       const createdAt = this.now();
+      const durationMs = Date.parse(parsed.data.expiresAt) - createdAt.getTime();
+      if (durationMs < 300_000 || durationMs > 604_800_000) {
+        throw new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
+      }
       const state = SupportPassportGrantStateSchema.parse({
         schemaVersion: 1,
         stateVersion: 1,
@@ -92,7 +96,7 @@ export class SupportPassportGrantStore {
         secretHash: sha256("support-passport-secret:v1", secret),
         cards: parsed.data.cards,
         createdAt: createdAt.toISOString(),
-        expiresAt: new Date(createdAt.getTime() + parsed.data.durationSeconds * 1_000).toISOString(),
+        expiresAt: parsed.data.expiresAt,
       });
       await this.writeState(state, true);
       return { state, secret };

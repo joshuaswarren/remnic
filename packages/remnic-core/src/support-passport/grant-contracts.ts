@@ -48,7 +48,7 @@ export const SupportPassportCreateGrantInputSchema = z
   .object({
     principal: z.string().trim().min(1).max(512),
     cards: z.array(SupportPassportGrantCardRefSchema).min(1).max(8),
-    durationSeconds: z.number().int().min(300).max(604_800),
+    expiresAt: IsoTimestampSchema,
   })
   .strict()
   .superRefine((input, ctx) => {
