@@ -127,6 +127,57 @@ test("the owner note preview hides stored attribute metadata", async ({ page }, 
   await expect(page.getByText(/\[Attributes:/)).toHaveCount(0);
 });
 
+test("a created share link remains visible when its list refresh fails", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers owner refresh recovery.");
+  const now = new Date();
+  const card = {
+    cardId: "card-approved",
+    title: "Quiet place",
+    statement: "Offer me a quiet place and time.",
+    category: "environment",
+    status: "active",
+    updatedAt: now.toISOString(),
+    reviewBy: new Date(now.getTime() + 24 * 60 * 60_000).toISOString(),
+    revision: "a".repeat(64),
+  };
+  let cardReads = 0;
+  await page.route("**/engram/v1/support-passport/cards", async (route) => {
+    cardReads += 1;
+    if (cardReads > 1) {
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "offline" }) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ cards: [card] }) });
+  });
+  await page.route("**/engram/v1/support-passport/grants", async (route) => {
+    if (route.request().method() === "POST") {
+      await route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({
+          grantId: "grant-created",
+          secret: "s".repeat(43),
+          expiresAt: new Date(now.getTime() + 2 * 60 * 60_000).toISOString(),
+          version: 1,
+        }),
+      });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grants: [] }) });
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await page.getByLabel("Bearer token").fill("owner-token");
+  await page.getByRole("button", { name: "Open my guide" }).click();
+  await page.locator('input[name="shareCard"]').check();
+  await page.getByRole("button", { name: "Create share link" }).click();
+
+  await expect(page.getByText("Share link ready")).toBeVisible();
+  await expect(page.getByLabel("Copy this link once")).toHaveValue(/grant=grant-created#secret=/);
+  await expect(page.getByText("The share link was created, but the share list did not refresh.")).toBeVisible();
+  await expect(page.getByText("The share link was not created.")).toHaveCount(0);
+});
+
 test("the helper sees only shared cards and grounded citations", async ({ page }, testInfo) => {
   await page.goto(helperUrl());
 
@@ -282,6 +333,45 @@ test("a fast helper clock does not expire a server-authorized guide", async ({ p
 
   await expect(page.locator(".public-card")).toHaveCount(1);
   await expect(page.locator("#lockedView")).toBeHidden();
+});
+
+test("a stalled initial helper read aborts and fails closed", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers the initial helper timeout.");
+  await page.clock.install({ time: new Date("2026-08-11T12:00:00.000Z") });
+  await page.addInitScript(() => {
+    const realFetch = window.fetch.bind(window);
+    Object.assign(window, { __initialHelperAbortObserved: false });
+    window.fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes("replay-grant-initial-stalled") && (init?.method ?? "GET") === "GET") {
+        return await new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => {
+              Object.assign(window, { __initialHelperAbortObserved: true });
+              reject(new DOMException("The request was aborted.", "AbortError"));
+            },
+            { once: true }
+          );
+        });
+      }
+      return await realFetch(input, init);
+    };
+  });
+
+  await page.goto(helperUrl("-initial-stalled").replace("mode=replay&", ""));
+  await expect(page.getByText("Opening the shared guide…")).toBeVisible();
+  await page.clock.fastForward(10_000);
+
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __initialHelperAbortObserved?: boolean }).__initialHelperAbortObserved
+      )
+    )
+    .toBe(true);
+  await expect(page.getByRole("heading", { name: "The support passport did not load." })).toBeVisible();
 });
 
 test("a live helper view locks after the owner revokes its grant", async ({ page }, testInfo) => {

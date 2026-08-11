@@ -15,7 +15,7 @@
   const replayChannel =
     replayMode && "BroadcastChannel" in window ? new BroadcastChannel("remnic-what-helps-me-replay") : null;
   const HELPER_REVALIDATION_MS = 15_000;
-  const HELPER_REVALIDATION_TIMEOUT_MS = 10_000;
+  const HELPER_READ_TIMEOUT_MS = 10_000;
 
   const state = {
     token: "",
@@ -27,6 +27,7 @@
     helperGrantId: grantId,
     helperServerOffsetMs: null,
     helperExpiryTimer: null,
+    helperLoadController: null,
     helperQuestionController: null,
     helperRevalidationController: null,
     helperRevalidationTimer: null,
@@ -490,19 +491,25 @@
       return;
     }
     const button = event.currentTarget.querySelector('button[type="submit"]');
+    let created;
     try {
-      const created = await withBusy(button, "Creating link…", () => api.createGrant({ cardIds, expiresAt }));
-      const url = model.buildShareUrl(window.location.href, created.grantId, created.secret, replayMode);
-      byId("shareLinkInput").value = url;
-      byId("openLinkButton").href = url;
-      byId("newLinkPanel").hidden = false;
-      await loadOwnerState();
-      const message = `Share link created. It ends ${model.formatDate(created.expiresAt)}.`;
-      toast(message);
-      announce(message);
-      byId("newLinkPanel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+      created = await withBusy(button, "Creating link…", () => api.createGrant({ cardIds, expiresAt }));
     } catch (error) {
       setError("shareError", errorMessage(error, "The share link was not created."));
+      return;
+    }
+    const url = model.buildShareUrl(window.location.href, created.grantId, created.secret, replayMode);
+    byId("shareLinkInput").value = url;
+    byId("openLinkButton").href = url;
+    byId("newLinkPanel").hidden = false;
+    const message = `Share link created. It ends ${model.formatDate(created.expiresAt)}.`;
+    toast(message);
+    announce(message);
+    byId("newLinkPanel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    try {
+      await loadOwnerState();
+    } catch {
+      setError("shareError", "The share link was created, but the share list did not refresh. Use the link above.");
     }
   }
 
@@ -540,6 +547,8 @@
     state.helperExpiryTimer = null;
     window.clearTimeout(state.helperRevalidationTimer);
     state.helperRevalidationTimer = null;
+    state.helperLoadController?.abort();
+    state.helperLoadController = null;
     state.helperQuestionController?.abort();
     state.helperQuestionController = null;
     state.helperRevalidationController?.abort();
@@ -621,7 +630,7 @@
     const controller = new AbortController();
     state.helperRevalidationController?.abort();
     state.helperRevalidationController = controller;
-    const timeout = window.setTimeout(() => controller.abort(), HELPER_REVALIDATION_TIMEOUT_MS);
+    const timeout = window.setTimeout(() => controller.abort(), HELPER_READ_TIMEOUT_MS);
     try {
       state.guide = await readHelperGuide(controller.signal);
       scheduleHelperExpiry();
@@ -653,14 +662,21 @@
       return;
     }
     if (replayMode) replayStore.seedSharedGuide(state.helperGrantId, state.helperSecret);
+    const controller = new AbortController();
+    state.helperLoadController?.abort();
+    state.helperLoadController = controller;
+    const timeout = window.setTimeout(() => controller.abort(), HELPER_READ_TIMEOUT_MS);
     try {
-      state.guide = await readHelperGuide();
+      state.guide = await readHelperGuide(controller.signal);
       renderGuide(state.guide);
       if (!state.guide) return;
       scheduleHelperRevalidation();
       announce(`Support passport loaded with ${state.guide.cards.length} cards.`);
     } catch (error) {
       showLocked(error);
+    } finally {
+      window.clearTimeout(timeout);
+      if (state.helperLoadController === controller) state.helperLoadController = null;
     }
   }
 
@@ -743,6 +759,7 @@
       () => {
         window.clearTimeout(state.helperExpiryTimer);
         window.clearTimeout(state.helperRevalidationTimer);
+        state.helperLoadController?.abort();
         state.helperQuestionController?.abort();
         state.helperRevalidationController?.abort();
         replayChannel?.close();
