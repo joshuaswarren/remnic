@@ -136,7 +136,7 @@ test("a helper sees only the selected active card through a valid secret", async
   }
 });
 
-test("bad secrets return not found, while valid revoked or expired grants return gone", async () => {
+test("bad secrets return not found, while valid revoked and expired grants reveal safe lifecycle states", async () => {
   const subject = await makeSubject();
   try {
     const card = await createActiveCard(subject);
@@ -191,7 +191,8 @@ test("bad secrets return not found, while valid revoked or expired grants return
     subject.advance(300_000);
     await assert.rejects(
       subject.grantService.readGrant({ grantId: second.grant.grantId, secret: second.secret }),
-      (error: unknown) => error instanceof SupportPassportError && error.code === "grant_gone"
+      (error: unknown) =>
+        error instanceof SupportPassportError && error.code === "grant_expired" && error.status === 410
     );
   } finally {
     await subject.cleanup();
