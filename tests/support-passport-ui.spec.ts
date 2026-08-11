@@ -106,10 +106,11 @@ test("the helper sees only shared cards and grounded citations", async ({ page }
 });
 
 test("a bad helper link has a clear locked view", async ({ page }, testInfo) => {
-  await page.goto(`${origin}/remnic/ui/what-helps-me/?grant=missing-secret`);
+  await page.goto(`${origin}/remnic/ui/what-helps-me/#secret=${"s".repeat(43)}`);
 
   await expect(page.getByRole("heading", { name: "This link does not open a support passport." })).toBeVisible();
   await expect(page.locator("#tokenInput")).toHaveCount(0);
+  expect(new URL(page.url()).hash).toBe("");
   await expectNoSeriousAxeFindings(page);
   await page.screenshot({ path: testInfo.outputPath(`locked-${testInfo.project.name}.png`), fullPage: true });
 });

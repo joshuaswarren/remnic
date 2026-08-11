@@ -6,7 +6,11 @@
   const params = new URLSearchParams(window.location.search);
   const replayMode = params.get("mode") === "replay";
   const grantId = params.get("grant") ?? "";
+  const hasSecretFragment = new URLSearchParams(window.location.hash.slice(1)).has("secret");
   const secret = model.parseSecret(window.location.hash);
+  if (hasSecretFragment) {
+    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+  }
   const replayStore = replayMode ? model.createReplayStore() : null;
   const replayChannel =
     replayMode && "BroadcastChannel" in window ? new BroadcastChannel("remnic-what-helps-me-replay") : null;
@@ -561,7 +565,6 @@
       showLocked(error);
       return;
     }
-    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
     if (replayMode) replayStore.seedSharedGuide(state.helperGrantId, state.helperSecret);
     try {
       state.guide = model.parsePublicGuide(await api.readGrant(state.helperGrantId, state.helperSecret));
@@ -645,7 +648,7 @@
 
   async function init() {
     if (replayMode) byId("replayBanner").hidden = false;
-    if (grantId) {
+    if (grantId || hasSecretFragment) {
       bindHelperEvents();
       await loadHelper();
       return;
@@ -669,7 +672,7 @@
   }
 
   void init().catch((error) => {
-    if (grantId) showLocked(error);
+    if (grantId || hasSecretFragment) showLocked(error);
     else setError("connectError", errorMessage(error, "The support passport did not start."));
   });
 })();
