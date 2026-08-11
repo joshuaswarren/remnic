@@ -48,16 +48,18 @@ preflight_calibration_state() {
   local benchmark="$1"
   local file="$CALIBRATION_DIR/${benchmark}.json"
   if [ ! -f "$file" ] || ! python3 -c "
-import json, sys
+import json, math, sys
 d = json.load(open(sys.argv[1]))
+def is_finite_number(value):
+  return type(value) in (int, float) and math.isfinite(value)
 assert d.get('localJudgeProvider') == 'ollama', f\"localJudgeProvider: {d.get('localJudgeProvider')}\"
 assert d.get('localJudgeModel') == 'qwen2.5-7b-32k:latest', f\"localJudgeModel: {d.get('localJudgeModel')}\"
 assert d.get('frontierJudgeProvider') == 'claude-cli', f\"frontierJudgeProvider: {d.get('frontierJudgeProvider')}\"
 assert d.get('frontierJudgeModel') == 'opus', f\"frontierJudgeModel: {d.get('frontierJudgeModel')}\"
-assert isinstance(d.get('kappa'), (int, float)), f\"kappa: {d.get('kappa')}\"
+assert is_finite_number(d.get('kappa')), f\"kappa: {d.get('kappa')}\"
 expected_sample_size = int(sys.argv[2])
 assert d.get('sampleSize') == expected_sample_size, f\"sampleSize: {d.get('sampleSize')} (expected {expected_sample_size})\"
-assert isinstance(d.get('threshold'), (int, float)), f\"threshold: {d.get('threshold')}\"
+assert is_finite_number(d.get('threshold')), f\"threshold: {d.get('threshold')}\"
 assert isinstance(d.get('warning'), bool), f\"warning: {d.get('warning')}\"
 assert isinstance(d.get('sourceResultId'), str) and d['sourceResultId'], 'missing sourceResultId'
 answer_hash = d.get('answerSetHash')
@@ -67,8 +69,8 @@ assert len(d['sliceQuestionIds']) == expected_sample_size, f\"sliceQuestionIds: 
 assert len(set(d['sliceQuestionIds'])) == expected_sample_size, 'sliceQuestionIds contains duplicates'
 ci = d.get('confidenceInterval')
 assert isinstance(ci, dict), 'missing confidenceInterval'
-assert all(isinstance(ci.get(k), (int, float)) for k in ('lower', 'upper', 'level')), f\"confidenceInterval: {ci}\"
-assert isinstance(d.get('bootstrapSamples'), int) and d['bootstrapSamples'] > 0, f\"bootstrapSamples: {d.get('bootstrapSamples')}\"
+assert all(is_finite_number(ci.get(k)) for k in ('lower', 'upper', 'level')), f\"confidenceInterval: {ci}\"
+assert type(d.get('bootstrapSamples')) is int and d['bootstrapSamples'] > 0, f\"bootstrapSamples: {d.get('bootstrapSamples')}\"
 for key in ('localJudgeConfigHash', 'frontierJudgeConfigHash'):
   value = d.get(key)
   assert isinstance(value, str) and len(value) == 64 and all(c in '0123456789abcdef' for c in value), f\"missing or invalid {key}\"

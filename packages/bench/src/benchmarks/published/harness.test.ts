@@ -1582,50 +1582,209 @@ test("runPublishedHarness does not replay a baseline answer after a later trial 
   assert.equal(realResponds, 2);
 });
 
-test("pairedAnswerReplayKey hashes identical nested retryOptions regardless of property order", () => {
-  const baseSystemProvider = {
-    provider: "openai" as const,
-    model: "gpt-test",
+test("runPublishedHarness clears staged baseline replay entries after a terminal abort", async () => {
+  const baseline = makeFakeSystem({ recallPrefix: "shared" });
+  const real = makeFakeSystem({ recallPrefix: "shared" });
+  baseline.system.responder.respond = async () => ({
+    text: "baseline answer",
+    tokens: { input: 1, output: 1 },
+    latencyMs: 1,
+    model: "shared-responder",
+  });
+  let realResponds = 0;
+  real.system.responder.respond = async () => {
+    realResponds++;
+    return {
+      text: "real answer",
+      tokens: { input: 1, output: 1 },
+      latencyMs: 1,
+      model: "shared-responder",
+    };
   };
+  let baselineResets = 0;
+  baseline.system.reset = async () => {
+    baselineResets++;
+    if (baselineResets === 2) {
+      throw new Error("terminal baseline abort");
+    }
+  };
+  const pairedAnswerReplayCache = new Map();
+  const scoredPlan: HarnessPlan = {
+    ingestSessions: [{ sessionId: "session", messages: [{ role: "user", content: "memory" }] }],
+    trials: [
+      {
+        taskId: "paired",
+        question: "What happened?",
+        expected: "baseline answer",
+        recallSessionIds: ["session"],
+      },
+    ],
+  };
+
+  await assert.rejects(
+    () =>
+      runPublishedHarness({
+        options: makeOptions(baseline.system, {
+          pairedAnswerReplayCache,
+          runtimeProfile: "baseline",
+        }),
+        metricsSpec: { metrics: ["f1"] },
+        plans: [scoredPlan, { ingestSessions: [], trials: [] }],
+      }),
+    /terminal baseline abort/,
+  );
+  assert.equal(pairedAnswerReplayCache.size, 0);
+
+  const realResult = await runPublishedHarness({
+    options: makeOptions(real.system, {
+      pairedAnswerReplayCache,
+      runtimeProfile: "real",
+    }),
+    metricsSpec: { metrics: ["f1"] },
+    plans: [scoredPlan],
+  });
+  assert.equal(realResult.results.tasks[0]?.actual, "real answer");
+  assert.equal(realResponds, 1);
+});
+
+test("paired replay keys include every responder-affecting provider option", async () => {
+  type SystemProvider = NonNullable<ResolvedRunBenchmarkOptions["systemProvider"]>;
+  const baseProvider: SystemProvider = {
+    provider: "openai",
+    model: "gpt-test",
+    baseUrl: "https://example.test/v1",
+    retryOptions: { maxAttempts: 3, baseBackoffMs: 100 },
+    providerRequestTimeoutMs: 1_000,
+    disableThinking: false,
+    reasoningEffort: "low",
+    responderContextBudgetChars: 4_000,
+    responderPromptBudgetChars: 2_000,
+    temperature: 0,
+    seed: 1,
+  };
+  const variants: Array<[string, SystemProvider]> = [
+    ["provider", { ...baseProvider, provider: "anthropic" }],
+    ["model", { ...baseProvider, model: "gpt-other" }],
+    ["baseUrl", { ...baseProvider, baseUrl: "https://other.example.test/v1" }],
+    ["retryOptions", { ...baseProvider, retryOptions: { maxAttempts: 4, baseBackoffMs: 100 } }],
+    ["providerRequestTimeoutMs", { ...baseProvider, providerRequestTimeoutMs: 2_000 }],
+    ["disableThinking", { ...baseProvider, disableThinking: true }],
+    ["reasoningEffort", { ...baseProvider, reasoningEffort: "high" }],
+    ["responderContextBudgetChars", { ...baseProvider, responderContextBudgetChars: 5_000 }],
+    ["responderPromptBudgetChars", { ...baseProvider, responderPromptBudgetChars: 3_000 }],
+    ["temperature", { ...baseProvider, temperature: 0.5 }],
+    ["seed", { ...baseProvider, seed: 2 }],
+  ];
   const plan: HarnessPlan = {
     ingestSessions: [{ sessionId: "session", messages: [{ role: "user", content: "memory" }] }],
-    trials: [{
-      taskId: "paired",
-      question: "What happened?",
-      expected: "baseline answer",
-      recallSessionIds: ["session"],
-    }],
+    trials: [
+      {
+        taskId: "paired",
+        question: "What happened?",
+        expected: "baseline answer",
+        recallSessionIds: ["session"],
+      },
+    ],
   };
-  const runWithRetry = (retryOptions: Record<string, unknown>) => {
+
+  for (const [field, realProvider] of variants) {
     const baseline = makeFakeSystem({ recallPrefix: "shared" });
+    const real = makeFakeSystem({ recallPrefix: "shared" });
     baseline.system.responder.respond = async () => ({
       text: "baseline answer",
       tokens: { input: 1, output: 1 },
       latencyMs: 1,
       model: "shared-responder",
     });
-    return runPublishedHarness({
-      options: makeOptions(baseline.system, {
-        runtimeProfile: "baseline",
+    let realResponds = 0;
+    real.system.responder.respond = async () => {
+      realResponds++;
+      return {
+        text: "real answer",
+        tokens: { input: 1, output: 1 },
+        latencyMs: 1,
+        model: "shared-responder",
+      };
+    };
+    const pairedAnswerReplayCache = new Map();
+    const run = (
+      system: typeof baseline.system,
+      runtimeProfile: "baseline" | "real",
+      systemProvider: SystemProvider,
+    ) =>
+      runPublishedHarness({
+        options: makeOptions(system, {
+          pairedAnswerReplayCache,
+          runtimeProfile,
+          systemProvider,
+        }),
+        metricsSpec: { metrics: ["f1"] },
+        plans: [plan],
+      });
+
+    await run(baseline.system, "baseline", baseProvider);
+    const realResult = await run(real.system, "real", realProvider);
+    assert.equal(realResult.results.tasks[0]?.actual, "real answer", field);
+    assert.equal(realResponds, 1, `${field} must prevent paired replay`);
+  }
+});
+
+test("paired replay keys canonicalize nested retry option order", async () => {
+  const baseline = makeFakeSystem({ recallPrefix: "shared" });
+  const real = makeFakeSystem({ recallPrefix: "shared" });
+  baseline.system.responder.respond = async () => ({
+    text: "baseline answer",
+    tokens: { input: 1, output: 1 },
+    latencyMs: 1,
+    model: "shared-responder",
+  });
+  let realResponds = 0;
+  real.system.responder.respond = async () => {
+    realResponds++;
+    return {
+      text: "real answer",
+      tokens: { input: 1, output: 1 },
+      latencyMs: 1,
+      model: "shared-responder",
+    };
+  };
+  const pairedAnswerReplayCache = new Map();
+  const plan: HarnessPlan = {
+    ingestSessions: [{ sessionId: "session", messages: [{ role: "user", content: "memory" }] }],
+    trials: [
+      {
+        taskId: "paired",
+        question: "What happened?",
+        expected: "baseline answer",
+        recallSessionIds: ["session"],
+      },
+    ],
+  };
+  const run = (
+    system: typeof baseline.system,
+    runtimeProfile: "baseline" | "real",
+    retryOptions: NonNullable<NonNullable<ResolvedRunBenchmarkOptions["systemProvider"]>["retryOptions"]>,
+  ) =>
+    runPublishedHarness({
+      options: makeOptions(system, {
+        pairedAnswerReplayCache,
+        runtimeProfile,
         systemProvider: {
-          ...baseSystemProvider,
-          retryOptions: retryOptions as never,
+          provider: "openai",
+          model: "gpt-test",
+          retryOptions,
         },
       }),
       metricsSpec: { metrics: ["f1"] },
       plans: [plan],
     });
-  };
-  const first = runWithRetry({ maxAttempts: 3, baseBackoffMs: 100 });
-  const second = runWithRetry({ baseBackoffMs: 100, maxAttempts: 3 });
-  return Promise.all([first, second]).then(([a, b]) => {
-    assert.equal(
-      a.results.tasks[0]?.actual,
-      b.results.tasks[0]?.actual,
-      "identical retryOptions must produce identical answers",
-    );
-  });
+
+  await run(baseline.system, "baseline", { maxAttempts: 3, baseBackoffMs: 100 });
+  const realResult = await run(real.system, "real", { baseBackoffMs: 100, maxAttempts: 3 });
+  assert.equal(realResult.results.tasks[0]?.actual, "baseline answer");
+  assert.equal(realResponds, 0);
 });
+
 test("runPublishedHarness preserves goldMemories on TaskResult in success path", async () => {
   const { system } = makeFakeSystem();
   const plan: HarnessPlan = {

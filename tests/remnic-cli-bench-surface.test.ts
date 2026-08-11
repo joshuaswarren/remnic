@@ -637,6 +637,10 @@ printf '%s' "$CALIBRATION_DIR"`],
       const commandStart = script.indexOf(`run ${benchmark} \\\n`);
       assert.ok(commandStart >= 0, `missing Tier-F ${benchmark} run command in ${config.path}`);
       const commandEnd = script.indexOf("2>&1 | tee", commandStart);
+      assert.ok(
+        commandEnd > commandStart,
+        `missing Tier-F ${benchmark} command terminator in ${config.path}`,
+      );
       const command = script.slice(commandStart, commandEnd);
       assert.match(command, new RegExp(`--runtime-profile ${config.runtimeProfile}`));
       assert.match(command, /--local-lab-manifest "\$MANIFEST"/);
@@ -669,6 +673,8 @@ printf '%s' "$CALIBRATION_DIR"`],
 
   const realScript = await readFile("scripts/bench/run-tierf-opus-real.sh", "utf8");
   assert.match(realScript, /local file="\$CALIBRATION_DIR\/\$\{benchmark\}\.json"/);
+  assert.match(realScript, /math\.isfinite/);
+  assert.match(realScript, /type\(d\.get\('bootstrapSamples'\)\) is int/);
   const calibrationPreflight = realScript.indexOf('step "preflight: calibration state');
   const providerAuthProbe = realScript.indexOf('step "preflight: claude auth');
   assert.ok(calibrationPreflight >= 0, "real-profile runner must preflight calibration state");
