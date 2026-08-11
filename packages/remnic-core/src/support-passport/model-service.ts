@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { log } from "../logger.js";
 import { stripAttributesSuffix } from "../structured-attributes.js";
 import type { MemoryFile } from "../types.js";
 import type { SupportPassportCardService, SupportPassportOwnerScope } from "./card-service.js";
@@ -7,7 +8,11 @@ import { type SupportPassportCard, SupportPassportMemoryIdSchema } from "./contr
 import { SupportPassportError } from "./errors.js";
 import type { SupportPassportGrantService } from "./grant-service.js";
 import { type SupportPassportModelAdapter, SupportPassportModelCallError } from "./model-adapter.js";
-import { type SupportPassportModelAuditSink, hashSupportPassportAuditValues } from "./model-audit.js";
+import {
+  type SupportPassportModelAuditRecord,
+  type SupportPassportModelAuditSink,
+  hashSupportPassportAuditValues,
+} from "./model-audit.js";
 import type { SupportPassportAnswerOutput } from "./model-contracts.js";
 
 const DraftServiceInputSchema = z
@@ -64,6 +69,21 @@ function modelFailureAuditFields(error: unknown, signal: AbortSignal | undefined
   };
 }
 
+function operationErrorClass(error: unknown): string {
+  return error instanceof SupportPassportError ? error.code : "operation_error";
+}
+
+async function recordAuditSafely(
+  audit: SupportPassportModelAuditSink,
+  record: SupportPassportModelAuditRecord
+): Promise<void> {
+  try {
+    await audit.record(record);
+  } catch {
+    log.warn("support passport model audit write failed");
+  }
+}
+
 export class SupportPassportDraftService {
   private readonly cardService: SupportPassportCardService;
   private readonly modelAdapter: SupportPassportModelAdapter;
@@ -114,7 +134,7 @@ export class SupportPassportDraftService {
         input.signal
       );
     } catch (error) {
-      await this.audit.record({
+      await recordAuditSafely(this.audit, {
         schemaVersion: 1,
         operation: "draft_cards",
         actorHash: hashSupportPassportAuditValues("owner", [parsed.data.principal]),
@@ -126,23 +146,46 @@ export class SupportPassportDraftService {
       });
       throw error;
     }
-    await this.audit.record({
-      schemaVersion: 1,
-      operation: "draft_cards",
+    const auditBase = {
+      schemaVersion: 1 as const,
+      operation: "draft_cards" as const,
       actorHash: hashSupportPassportAuditValues("owner", [parsed.data.principal]),
       subjectIdsHash: hashSupportPassportAuditValues("source-memory-ids", parsed.data.sourceMemoryIds),
       modelUsed: modelResult.modelUsed,
       route: modelResult.route,
-      outputSchemaVersion: 1,
-      outcome: "success",
+      outputSchemaVersion: 1 as const,
       occurredAt: this.now().toISOString(),
       latencyMs: Math.floor(modelResult.latencyMs),
       usage: modelResult.usage,
-    });
-    return await this.cardService.createGeneratedDrafts({
-      principal: parsed.data.principal,
-      cards: modelResult.cards,
-    });
+    };
+    try {
+      await this.revalidateSources(owner.storage, memories);
+      const cards = await this.cardService.createGeneratedDrafts({
+        principal: parsed.data.principal,
+        cards: modelResult.cards,
+      });
+      await recordAuditSafely(this.audit, { ...auditBase, outcome: "success" });
+      return cards;
+    } catch (error) {
+      await recordAuditSafely(this.audit, {
+        ...auditBase,
+        outcome: "error",
+        errorClass: operationErrorClass(error),
+      });
+      throw error;
+    }
+  }
+
+  private async revalidateSources(
+    storage: SupportPassportOwnerScope["storage"],
+    expected: Array<{ memoryId: string; content: string }>
+  ): Promise<void> {
+    for (const source of expected) {
+      const memory = await storage.getMemoryById(source.memoryId);
+      if (!memory || !isEligibleSource(memory) || stripAttributesSuffix(memory.content) !== source.content) {
+        throw new SupportPassportError("invalid_input", "A selected memory is not available.", 400);
+      }
+    }
   }
 }
 
@@ -171,7 +214,7 @@ export class SupportPassportQuestionService {
     try {
       modelResult = await this.modelAdapter.answerQuestion({ guide, question: input.question }, input.signal);
     } catch (error) {
-      await this.audit.record({
+      await recordAuditSafely(this.audit, {
         schemaVersion: 1,
         operation: "answer_question",
         actorHash: hashSupportPassportAuditValues("helper-grant", [input.grantId]),
@@ -186,9 +229,9 @@ export class SupportPassportQuestionService {
       });
       throw error;
     }
-    await this.audit.record({
+    const auditBase = {
       schemaVersion: 1,
-      operation: "answer_question",
+      operation: "answer_question" as const,
       actorHash: hashSupportPassportAuditValues("helper-grant", [input.grantId]),
       subjectIdsHash: hashSupportPassportAuditValues(
         "shared-card-ids",
@@ -196,17 +239,28 @@ export class SupportPassportQuestionService {
       ),
       modelUsed: modelResult.modelUsed,
       route: modelResult.route,
-      outputSchemaVersion: 1,
-      outcome: "success",
+      outputSchemaVersion: 1 as const,
       occurredAt: this.now().toISOString(),
       latencyMs: Math.floor(modelResult.latencyMs),
       usage: modelResult.usage,
-    });
-    await this.grantService.readGrant(input);
-    return {
-      answer: modelResult.answer,
-      citedCardIds: modelResult.citedCardIds,
-      coverage: modelResult.coverage,
     };
+    try {
+      await this.grantService.readGrant(input);
+      const answer = {
+        answer: modelResult.answer,
+        citedCardIds: modelResult.citedCardIds,
+        coverage: modelResult.coverage,
+      };
+      await recordAuditSafely(this.audit, { ...auditBase, schemaVersion: 1, outcome: "success" });
+      return answer;
+    } catch (error) {
+      await recordAuditSafely(this.audit, {
+        ...auditBase,
+        schemaVersion: 1,
+        outcome: "error",
+        errorClass: operationErrorClass(error),
+      });
+      throw error;
+    }
   }
 }

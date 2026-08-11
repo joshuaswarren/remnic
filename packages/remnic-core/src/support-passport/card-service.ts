@@ -102,35 +102,35 @@ export class SupportPassportCardService {
     const output = SupportPassportDraftOutputSchema.safeParse({ cards: input.cards });
     if (!principal.success || !output.success) throw invalidInput();
     const { storage } = await this.resolveOwner(principal.data.principal);
-    const created: SupportPassportCard[] = [];
-    try {
-      for (const card of output.data.cards) {
-        created.push(
-          await this.createDraft(storage, {
-            title: card.title,
-            statement: card.statement,
-            category: card.category,
-            sourceMemoryIds: card.sourceMemoryIds,
-          })
-        );
-      }
-      return created;
-    } catch (error) {
-      for (const card of created) {
-        const stored = await storage.getMemoryById(card.cardId);
-        if (stored) {
-          await storage.writeMemoryFrontmatterIfUnchanged(
-            stored,
-            {
-              status: "rejected",
-              updated: this.now().toISOString(),
-            },
-            { actor: "support-passport.draft-rollback", reasonCode: "draft-batch-failed" }
+    return await this.withOwnerLock(storage, async (lock) => {
+      const created: SupportPassportCard[] = [];
+      try {
+        for (const card of output.data.cards) {
+          created.push(
+            await this.createDraft(
+              storage,
+              {
+                title: card.title,
+                statement: card.statement,
+                category: card.category,
+                sourceMemoryIds: card.sourceMemoryIds,
+              },
+              lock
+            )
           );
         }
+        return created;
+      } catch (error) {
+        let rollbackIncomplete = false;
+        for (const card of created) {
+          if (!(await this.rejectGeneratedDraft(storage, card.cardId, lock))) rollbackIncomplete = true;
+        }
+        if (rollbackIncomplete) {
+          throw new SupportPassportError("storage_conflict", "A generated draft batch could not be rolled back.", 500);
+        }
+        throw error;
       }
-      throw error;
-    }
+    });
   }
 
   async replaceCard(input: SupportPassportReplaceCardInput): Promise<SupportPassportCard> {
@@ -422,6 +422,28 @@ export class SupportPassportCardService {
         `support passport could not roll back a replacement draft: ${error instanceof Error ? error.message : String(error)}`
       );
     }
+  }
+
+  private async rejectGeneratedDraft(
+    storage: StorageManager,
+    cardId: string,
+    lock: HeldFileLockController
+  ): Promise<boolean> {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const memory = await storage.getMemoryById(cardId);
+      if (!memory) return true;
+      const stored = projectSupportPassportCard(memory);
+      if (!stored || stored.card.status === "rejected") return true;
+      if (stored.card.status !== "pending_review") return false;
+      await this.requireOwnerLock(lock);
+      const rejected = await storage.writeMemoryFrontmatterIfUnchanged(
+        memory,
+        { status: "rejected", updated: this.now().toISOString() },
+        { actor: "support-passport.draft-rollback", reasonCode: "draft-batch-failed" }
+      );
+      if (rejected) return true;
+    }
+    return false;
   }
 
   private async requireCard(storage: StorageManager, cardId: string): Promise<StoredSupportPassportCard> {

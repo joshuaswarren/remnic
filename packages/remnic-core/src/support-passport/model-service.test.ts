@@ -200,6 +200,126 @@ test("drafting rejects missing sources and absent consent before the model runs"
   }
 });
 
+test("drafting revalidates selected memories after the model returns", async () => {
+  const subject = await makeSubject();
+  try {
+    const selected = await subject.aliceStorage.writeMemory("preference", "Tell me before plans change.", {
+      source: "test",
+    });
+    const records: SupportPassportModelAuditRecord[] = [];
+    const route: SupportPassportModelRoute = {
+      kind: "local",
+      invoke: async () => {
+        const current = await subject.aliceStorage.getMemoryById(selected.id);
+        assert.ok(current);
+        assert.equal(
+          await subject.aliceStorage.writeMemoryFrontmatterIfUnchanged(current, {
+            status: "archived",
+            archivedAt: "2026-08-11T12:00:00.000Z",
+            updated: "2026-08-11T12:00:00.000Z",
+          }),
+          true
+        );
+        return {
+          modelUsed: "local/test-model",
+          content: JSON.stringify({
+            cards: [
+              {
+                title: "Plan changes",
+                statement: "Tell me before plans change.",
+                category: "transitions",
+                sourceMemoryIds: [selected.id],
+              },
+            ],
+          }),
+        };
+      },
+    };
+    const service = new SupportPassportDraftService({
+      cardService: subject.cardService,
+      modelAdapter: new SupportPassportModelAdapter({ routes: [route] }),
+      resolveOwner: subject.resolveOwner,
+      audit: {
+        record: async (record) => {
+          records.push(SupportPassportModelAuditRecordSchema.parse(record));
+        },
+      },
+      now: subject.now,
+    });
+
+    await assert.rejects(
+      service.draftCards({ principal: "owner:alice", sourceMemoryIds: [selected.id], consent: true }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "invalid_input"
+    );
+    assert.deepEqual(await subject.cardService.listCards({ principal: "owner:alice" }), []);
+    assert.equal(records.length, 1);
+    assert.equal(records[0]?.outcome, "error");
+    assert.equal(records[0]?.errorClass, "invalid_input");
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("audit write failures do not block successful drafts or replace model errors", async () => {
+  const subject = await makeSubject();
+  try {
+    const selected = await subject.aliceStorage.writeMemory("preference", "Give me time to answer.", {
+      source: "test",
+    });
+    const audit = {
+      record: async () => {
+        throw new Error("audit unavailable");
+      },
+    };
+    const successful = new SupportPassportDraftService({
+      cardService: subject.cardService,
+      modelAdapter: new SupportPassportModelAdapter({
+        routes: [
+          {
+            kind: "local",
+            invoke: async () => ({
+              modelUsed: "local/test-model",
+              content: JSON.stringify({
+                cards: [
+                  {
+                    title: "Processing time",
+                    statement: "Give me time to answer.",
+                    category: "communication",
+                    sourceMemoryIds: [selected.id],
+                  },
+                ],
+              }),
+            }),
+          },
+        ],
+      }),
+      resolveOwner: subject.resolveOwner,
+      audit,
+      now: subject.now,
+    });
+    assert.equal(
+      (await successful.draftCards({ principal: "owner:alice", sourceMemoryIds: [selected.id], consent: true })).length,
+      1
+    );
+
+    const failing = new SupportPassportDraftService({
+      cardService: subject.cardService,
+      modelAdapter: new SupportPassportModelAdapter({
+        routes: [{ kind: "local", invoke: async () => ({ modelUsed: "local/test-model", content: "not-json" }) }],
+      }),
+      resolveOwner: subject.resolveOwner,
+      audit,
+      now: subject.now,
+    });
+    await assert.rejects(
+      failing.draftCards({ principal: "owner:alice", sourceMemoryIds: [selected.id], consent: true }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "model_output_invalid"
+    );
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("helper questions recheck the grant after the model call", async () => {
   const subject = await makeSubject();
   try {
@@ -238,10 +358,15 @@ test("helper questions recheck the grant after the model call", async () => {
         };
       },
     };
+    const records: SupportPassportModelAuditRecord[] = [];
     const questionService = new SupportPassportQuestionService({
       grantService: subject.grantService,
       modelAdapter: new SupportPassportModelAdapter({ routes: [route] }),
-      audit: { record: async () => undefined },
+      audit: {
+        record: async (record) => {
+          records.push(SupportPassportModelAuditRecordSchema.parse(record));
+        },
+      },
       now: subject.now,
     });
 
@@ -253,6 +378,66 @@ test("helper questions recheck the grant after the model call", async () => {
       }),
       (error: unknown) => error instanceof SupportPassportError && error.code === "grant_gone"
     );
+    assert.equal(records.length, 1);
+    assert.equal(records[0]?.outcome, "error");
+    assert.equal(records[0]?.errorClass, "grant_gone");
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("an audit write failure does not block a grounded helper answer", async () => {
+  const subject = await makeSubject();
+  try {
+    const draft = await subject.cardService.createManualDraft({
+      principal: "owner:alice",
+      title: "Quiet space",
+      statement: "Offer me a quiet place and time.",
+      category: "environment",
+      reviewBy: "2026-09-01T12:00:00.000Z",
+    });
+    const active = await subject.cardService.approveCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+    });
+    const created = await subject.grantService.createGrant({
+      principal: "owner:alice",
+      cards: [{ cardId: active.cardId, revision: active.revision }],
+      expiresAt: "2026-08-11T13:00:00.000Z",
+    });
+    const service = new SupportPassportQuestionService({
+      grantService: subject.grantService,
+      modelAdapter: new SupportPassportModelAdapter({
+        routes: [
+          {
+            kind: "gateway",
+            invoke: async () => ({
+              modelUsed: "gateway/test-model",
+              content: JSON.stringify({
+                answer: "Offer a quiet place.",
+                citedCardIds: [active.cardId],
+                coverage: "grounded",
+              }),
+            }),
+          },
+        ],
+      }),
+      audit: {
+        record: async () => {
+          throw new Error("audit unavailable");
+        },
+      },
+      now: subject.now,
+    });
+
+    const answer = await service.askGrant({
+      grantId: created.grant.grantId,
+      secret: created.secret,
+      question: "What can help?",
+    });
+    assert.equal(answer.answer, "Offer a quiet place.");
+    assert.deepEqual(answer.citedCardIds, [active.cardId]);
   } finally {
     await subject.cleanup();
   }
