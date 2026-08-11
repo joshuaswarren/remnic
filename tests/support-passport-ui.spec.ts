@@ -247,6 +247,43 @@ test("helper load, error, stale, stopped, and expired states fail closed", async
   await expect(page.locator(".public-card")).toHaveCount(0);
 });
 
+test("a fast helper clock does not expire a server-authorized guide", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers helper clock calibration.");
+
+  await page.addInitScript(() => {
+    const realNow = Date.now.bind(Date);
+    Date.now = () => realNow() + 24 * 60 * 60_000;
+  });
+  const serverNow = Date.now();
+  await page.route("**/engram/v1/support-passport/public/grants/replay-grant-fast-clock", async (route) => {
+    await route.fulfill({
+      status: 200,
+      headers: { date: new Date(serverNow).toUTCString() },
+      contentType: "application/json",
+      body: JSON.stringify({
+        schemaVersion: 1,
+        grantId: "replay-grant-fast-clock",
+        expiresAt: new Date(serverNow + 60 * 60_000).toISOString(),
+        updatedAt: new Date(serverNow).toISOString(),
+        cards: [
+          {
+            cardId: "card-fast-clock",
+            title: "Quiet place",
+            statement: "Offer me a quiet place and time.",
+            category: "environment",
+            updatedAt: new Date(serverNow).toISOString(),
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.goto(helperUrl("-fast-clock").replace("mode=replay&", ""));
+
+  await expect(page.locator(".public-card")).toHaveCount(1);
+  await expect(page.locator("#lockedView")).toBeHidden();
+});
+
 test("a live helper view locks after the owner revokes its grant", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers live grant revalidation.");
 

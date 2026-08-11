@@ -24,6 +24,7 @@
     guide: null,
     helperSecret: secret,
     helperGrantId: grantId,
+    helperServerOffsetMs: null,
     helperExpiryTimer: null,
     helperQuestionController: null,
     helperRevalidationController: null,
@@ -108,7 +109,12 @@
       error.status = response.status;
       throw error;
     }
-    return payload;
+    if (!options.captureServerTime) return payload;
+    const serverNowMs = Date.parse(response.headers.get("date") ?? "");
+    return {
+      payload,
+      serverOffsetMs: Number.isFinite(serverNowMs) ? serverNowMs - Date.now() : null,
+    };
   }
 
   const liveApi = {
@@ -143,6 +149,7 @@
       fetchJson(`/engram/v1/support-passport/public/grants/${encodeURIComponent(id)}`, {
         secret: helperSecret,
         signal,
+        captureServerTime: true,
       }),
     askGrant: (id, helperSecret, question, signal) =>
       fetchJson(`/engram/v1/support-passport/public/grants/${encodeURIComponent(id)}/ask`, {
@@ -552,6 +559,33 @@
     announce(lock.title);
   }
 
+  async function readHelperGuide(signal) {
+    const result = await api.readGrant(state.helperGrantId, state.helperSecret, signal);
+    if (replayMode) return model.parsePublicGuide(result);
+    if (Number.isFinite(result.serverOffsetMs)) state.helperServerOffsetMs = result.serverOffsetMs;
+    return model.parsePublicGuide(result.payload);
+  }
+
+  function scheduleHelperExpiry() {
+    window.clearTimeout(state.helperExpiryTimer);
+    state.helperExpiryTimer = null;
+    if (!state.guide) return;
+    const serverNow = Date.now() + (state.helperServerOffsetMs ?? 0);
+    const remainingMs = Date.parse(state.guide.expiresAt) - serverNow;
+    if (remainingMs <= 0 && !replayMode && state.helperServerOffsetMs === null) return;
+    if (remainingMs <= 0) {
+      const error = new Error("The share link has expired.");
+      error.code = "grant_expired";
+      showLocked(error);
+      return;
+    }
+    state.helperExpiryTimer = window.setTimeout(() => {
+      const error = new Error("The share link has expired.");
+      error.code = "grant_expired";
+      showLocked(error);
+    }, remainingMs);
+  }
+
   function renderGuide(guide) {
     byId("helperLoading").hidden = true;
     byId("helperExpiry").textContent = model.formatDate(guide.expiresAt);
@@ -570,19 +604,7 @@
       }
       groupsNode.append(section);
     }
-    const remainingMs = Date.parse(guide.expiresAt) - Date.now();
-    if (remainingMs <= 0) {
-      const error = new Error("The share link has expired.");
-      error.code = "grant_expired";
-      showLocked(error);
-      return;
-    }
-    window.clearTimeout(state.helperExpiryTimer);
-    state.helperExpiryTimer = window.setTimeout(() => {
-      const error = new Error("The share link has expired.");
-      error.code = "grant_expired";
-      showLocked(error);
-    }, remainingMs);
+    scheduleHelperExpiry();
   }
 
   function scheduleHelperRevalidation() {
@@ -599,7 +621,8 @@
     state.helperRevalidationController?.abort();
     state.helperRevalidationController = controller;
     try {
-      model.parsePublicGuide(await api.readGrant(state.helperGrantId, state.helperSecret, controller.signal));
+      state.guide = await readHelperGuide(controller.signal);
+      scheduleHelperExpiry();
     } catch (error) {
       if (controller.signal.aborted || !state.guide) return;
       if (["grant_expired", "grant_gone", "grant_not_found", "grant_stale"].includes(error?.code)) {
@@ -628,7 +651,7 @@
     }
     if (replayMode) replayStore.seedSharedGuide(state.helperGrantId, state.helperSecret);
     try {
-      state.guide = model.parsePublicGuide(await api.readGrant(state.helperGrantId, state.helperSecret));
+      state.guide = await readHelperGuide();
       renderGuide(state.guide);
       if (!state.guide) return;
       scheduleHelperRevalidation();
