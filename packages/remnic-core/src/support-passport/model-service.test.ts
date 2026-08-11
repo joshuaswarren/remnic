@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { lstat, mkdtemp, readFile, rm } from "node:fs/promises";
+import { link, lstat, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -19,6 +19,22 @@ import { SupportPassportDraftService, SupportPassportQuestionService } from "./m
 
 async function flushAudit(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+function makeAuditRecord(overrides: Partial<SupportPassportModelAuditRecord> = {}): SupportPassportModelAuditRecord {
+  return SupportPassportModelAuditRecordSchema.parse({
+    schemaVersion: 1,
+    operation: "draft_cards",
+    actorHash: "a".repeat(64),
+    subjectIdsHash: "b".repeat(64),
+    modelUsed: "gateway/test-model",
+    route: "gateway",
+    outputSchemaVersion: 1,
+    outcome: "success",
+    occurredAt: "2026-08-11T12:00:00.000Z",
+    latencyMs: 25,
+    ...overrides,
+  });
 }
 
 async function makeSubject() {
@@ -614,24 +630,35 @@ test("the model audit store writes strict private JSONL without text fields", as
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-model-audit-"));
   try {
     const store = new SupportPassportModelAuditStore({ memoryDir: root });
-    const record = SupportPassportModelAuditRecordSchema.parse({
-      schemaVersion: 1,
-      operation: "draft_cards",
-      actorHash: "a".repeat(64),
-      subjectIdsHash: "b".repeat(64),
-      modelUsed: "gateway/test-model",
-      route: "gateway",
-      outputSchemaVersion: 1,
-      outcome: "success",
-      occurredAt: "2026-08-11T12:00:00.000Z",
-      latencyMs: 25,
-    });
+    const record = makeAuditRecord();
     await store.record(record);
     const auditPath = path.join(root, "state", "support-passport", "audit", "2026-08-11.jsonl");
     assert.deepEqual(JSON.parse((await readFile(auditPath, "utf8")).trim()), record);
     assert.equal((await lstat(auditPath)).mode & 0o777, 0o600);
     assert.equal((await lstat(path.dirname(auditPath))).mode & 0o777, 0o700);
     assert.equal(SupportPassportModelAuditRecordSchema.safeParse({ ...record, question: "private" }).success, false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the model audit store rejects symlinked and hard-linked audit files", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-model-audit-links-"));
+  try {
+    const store = new SupportPassportModelAuditStore({ memoryDir: root });
+    await store.record(makeAuditRecord({ occurredAt: "2026-08-10T12:00:00.000Z" }));
+    const auditPath = path.join(root, "state", "support-passport", "audit", "2026-08-11.jsonl");
+    const outsidePath = path.join(root, "outside.jsonl");
+    await writeFile(outsidePath, "outside\n", { mode: 0o600 });
+
+    await symlink(outsidePath, auditPath);
+    await assert.rejects(store.record(makeAuditRecord()), /regular files in a stable directory/);
+    assert.equal(await readFile(outsidePath, "utf8"), "outside\n");
+
+    await rm(auditPath);
+    await link(outsidePath, auditPath);
+    await assert.rejects(store.record(makeAuditRecord()), /regular files in a stable directory/);
+    assert.equal(await readFile(outsidePath, "utf8"), "outside\n");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

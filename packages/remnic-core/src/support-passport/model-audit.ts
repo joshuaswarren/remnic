@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import { appendFile, chmod, lstat, mkdir } from "node:fs/promises";
+import { chmod, lstat, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 
 import { serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
+import { appendPrivateFileNoFollow } from "./private-file.js";
 
 const HashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 
@@ -92,16 +93,12 @@ export class SupportPassportModelAuditStore implements SupportPassportModelAudit
         },
         async (acquired) => {
           if (!acquired) throw new Error("could not acquire the support passport audit lock");
-          try {
-            const metadata = await lstat(filePath);
-            if (metadata.isSymbolicLink() || !metadata.isFile()) {
-              throw new Error("support passport audit paths must be regular files");
-            }
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-          }
-          await appendFile(filePath, `${JSON.stringify(record)}\n`, { encoding: "utf8", mode: 0o600 });
-          await chmod(filePath, 0o600);
+          await appendPrivateFileNoFollow(
+            this.auditDir,
+            filePath,
+            `${JSON.stringify(record)}\n`,
+            "support passport audit paths must be regular files in a stable directory"
+          );
         }
       )
     );
