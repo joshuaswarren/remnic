@@ -344,6 +344,66 @@ test("gateway support models work with direct OpenAI disabled", async () => {
   assert.equal((optionsSeen?.responsesJsonSchema as { name?: string } | undefined)?.name, "support_passport_drafts");
 });
 
+test("gateway model chains continue after invalid structured output", { concurrency: false }, async () => {
+  const originalFetch = globalThis.fetch;
+  const models: string[] = [];
+  globalThis.fetch = (async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string };
+    models.push(body.model);
+    const content =
+      body.model === "primary"
+        ? JSON.stringify({ cards: [{ sourceMemoryIds: ["foreign-memory"] }] })
+        : JSON.stringify({
+            cards: [
+              {
+                title: "Plan changes",
+                statement: "Tell me before plans change.",
+                category: "transitions",
+                sourceMemoryIds: ["memory-1"],
+              },
+            ],
+          });
+    return new Response(JSON.stringify({ choices: [{ message: { content } }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  try {
+    const adapter = createSupportPassportModelAdapter(
+      parseConfig({
+        modelSource: "gateway",
+        openaiApiKey: false,
+        gatewayConfig: {
+          agents: { defaults: { model: { primary: "gateway/primary", fallbacks: ["gateway/fallback"] } } },
+          models: {
+            providers: {
+              gateway: {
+                baseUrl: "https://models.example.test/v1",
+                apiKey: "test-key",
+                api: "openai-completions",
+                models: [
+                  { id: "primary", name: "primary" },
+                  { id: "fallback", name: "fallback" },
+                ],
+              },
+            },
+          },
+        },
+      })
+    );
+
+    const result = await adapter.draftCards({
+      consent: true,
+      memories: [{ memoryId: "memory-1", content: "Tell me before plans change." }],
+    });
+
+    assert.deepEqual(models, ["primary", "fallback"]);
+    assert.equal(result.modelUsed, "gateway/fallback");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("direct OpenAI models use the existing Responses API transport", () => {
   const config = buildSupportPassportDirectGatewayConfig({
     openaiApiKey: "test-key",

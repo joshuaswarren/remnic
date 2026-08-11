@@ -51,6 +51,7 @@ export interface SupportPassportModelRoute {
       signal?: AbortSignal;
       operation: string;
       jsonSchema: SupportPassportJsonSchema;
+      acceptResponse?: (response: SupportPassportModelRouteResult) => boolean;
     }
   ): Promise<SupportPassportModelRouteResult | null>;
 }
@@ -297,6 +298,7 @@ export function createSupportPassportModelAdapter(
           store: false,
           responsesJsonSchema: options.jsonSchema,
           redactProviderErrors: true,
+          acceptResponse: options.acceptResponse,
           ...(kind === "gateway" ? gatewayTaskChainOptions(config) : {}),
         };
         return await client.chatCompletion(messages, routeOptions);
@@ -380,6 +382,15 @@ export class SupportPassportModelAdapter {
     }
   ): Promise<{ value: T; metadata: SupportPassportModelResultMetadata }> {
     const startedAt = this.nowMs();
+    const parseResponse = (content: string): T | undefined => {
+      for (const candidate of extractJsonCandidates(content)) {
+        try {
+          const parsed = schema.safeParse(JSON.parse(candidate));
+          if (parsed.success && validate(parsed.data)) return parsed.data;
+        } catch {}
+      }
+      return undefined;
+    };
     let invalidResponse = false;
     let failureMetadata: Omit<SupportPassportModelFailureMetadata, "errorClass"> = {
       modelUsed: "unavailable",
@@ -390,7 +401,12 @@ export class SupportPassportModelAdapter {
       if (options.signal?.aborted) throw options.signal.reason ?? new Error("The model request was aborted.");
       let response: SupportPassportModelRouteResult | null;
       try {
-        response = await this.invokeRoute(route, messages, options, this.timeoutMs);
+        response = await this.invokeRoute(
+          route,
+          messages,
+          { ...options, acceptResponse: (candidate) => parseResponse(candidate.content) !== undefined },
+          this.timeoutMs
+        );
       } catch (error) {
         if (options.signal?.aborted) throw error;
         continue;
@@ -403,20 +419,17 @@ export class SupportPassportModelAdapter {
         latencyMs: Math.max(0, this.nowMs() - startedAt),
         usage: response.usage,
       };
-      for (const candidate of extractJsonCandidates(response.content)) {
-        try {
-          const parsed = schema.safeParse(JSON.parse(candidate));
-          if (!parsed.success || !validate(parsed.data)) continue;
-          return {
-            value: parsed.data,
-            metadata: {
-              modelUsed: response.modelUsed,
-              route: route.kind,
-              latencyMs: Math.max(0, this.nowMs() - startedAt),
-              usage: response.usage,
-            },
-          };
-        } catch {}
+      const value = parseResponse(response.content);
+      if (value !== undefined) {
+        return {
+          value,
+          metadata: {
+            modelUsed: response.modelUsed,
+            route: route.kind,
+            latencyMs: Math.max(0, this.nowMs() - startedAt),
+            usage: response.usage,
+          },
+        };
       }
     }
     failureMetadata.latencyMs = Math.max(0, this.nowMs() - startedAt);
@@ -433,6 +446,7 @@ export class SupportPassportModelAdapter {
       operation: string;
       jsonSchema: SupportPassportJsonSchema;
       signal?: AbortSignal;
+      acceptResponse?: (response: SupportPassportModelRouteResult) => boolean;
     },
     timeoutMs: number
   ): Promise<SupportPassportModelRouteResult | null> {

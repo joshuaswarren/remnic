@@ -17,6 +17,10 @@ import {
 } from "./model-audit.js";
 import { SupportPassportDraftService, SupportPassportQuestionService } from "./model-service.js";
 
+async function flushAudit(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
 async function makeSubject() {
   StorageManager.clearAllStaticCaches();
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-model-service-"));
@@ -103,6 +107,7 @@ test("drafting reads only selected memories and persists pending cards with a co
       sourceMemoryIds: [selected.id],
       consent: true,
     });
+    await flushAudit();
 
     assert.equal(cards.length, 1);
     assert.equal(cards[0]?.status, "pending_review");
@@ -150,6 +155,7 @@ test("model failures produce a content-free audit record with an error class", a
       service.draftCards({ principal: "owner:alice", sourceMemoryIds: [selected.id], consent: true }),
       (error: unknown) => error instanceof SupportPassportError && error.code === "model_output_invalid"
     );
+    await flushAudit();
     assert.equal(records.length, 1);
     assert.equal(records[0]?.outcome, "error");
     assert.equal(records[0]?.errorClass, "model_output_invalid");
@@ -190,6 +196,7 @@ test("drafting rejects missing sources and absent consent before the model runs"
       service.draftCards({ principal: "owner:alice", sourceMemoryIds: ["missing-memory"], consent: true }),
       (error: unknown) => error instanceof SupportPassportError && error.code === "invalid_input"
     );
+    await flushAudit();
     await assert.rejects(
       service.draftCards({ principal: "owner:alice", sourceMemoryIds: ["missing-memory"], consent: false }),
       (error: unknown) => error instanceof SupportPassportError && error.code === "consent_required"
@@ -320,6 +327,45 @@ test("audit write failures do not block successful drafts or replace model error
   }
 });
 
+test("stalled error audits do not delay the model error", async () => {
+  const subject = await makeSubject();
+  const auditStarted = Promise.withResolvers<void>();
+  const releaseAudit = Promise.withResolvers<void>();
+  try {
+    const selected = await subject.aliceStorage.writeMemory("preference", "Give me time to answer.", {
+      source: "test",
+    });
+    const service = new SupportPassportDraftService({
+      cardService: subject.cardService,
+      modelAdapter: new SupportPassportModelAdapter({
+        routes: [{ kind: "local", invoke: async () => ({ modelUsed: "local/test-model", content: "not-json" }) }],
+      }),
+      resolveOwner: subject.resolveOwner,
+      audit: {
+        record: async () => {
+          auditStarted.resolve();
+          await releaseAudit.promise;
+        },
+      },
+      now: subject.now,
+    });
+
+    await assert.rejects(
+      Promise.race([
+        service.draftCards({ principal: "owner:alice", sourceMemoryIds: [selected.id], consent: true }),
+        new Promise<never>((_resolve, reject) =>
+          setTimeout(() => reject(new Error("The model error waited for its audit.")), 100)
+        ),
+      ]),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "model_output_invalid"
+    );
+    await auditStarted.promise;
+  } finally {
+    releaseAudit.resolve();
+    await subject.cleanup();
+  }
+});
+
 test("helper questions recheck the grant after the model call", async () => {
   const subject = await makeSubject();
   try {
@@ -378,6 +424,7 @@ test("helper questions recheck the grant after the model call", async () => {
       }),
       (error: unknown) => error instanceof SupportPassportError && error.code === "grant_gone"
     );
+    await flushAudit();
     assert.equal(records.length, 1);
     assert.equal(records[0]?.outcome, "error");
     assert.equal(records[0]?.errorClass, "grant_gone");

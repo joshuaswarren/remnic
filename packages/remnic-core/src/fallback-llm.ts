@@ -35,6 +35,8 @@ export interface FallbackLlmOptions {
   modelChain?: AgentPersonaModelConfig;
   /** Override which agent persona's model chain to use (by ID from agents.list[]). */
   agentId?: string;
+  /** Reject a transport-successful response and continue through the configured model chain. */
+  acceptResponse?: (response: FallbackLlmResponse) => boolean;
 }
 
 export interface FallbackLlmAvailabilityOptions {
@@ -203,14 +205,19 @@ export class FallbackLlmClient {
         try {
           const result = await this.tryModel(model, messages, runOptions);
           if (result) {
-            if (isFallback) {
-              log.debug(`fallback LLM: succeeded using ${model.modelString} (fallback ${i})`);
-            }
-            return {
+            const response = {
               content: result.content,
               modelUsed: model.modelString,
               usage: result.usage,
             };
+            if (runOptions.acceptResponse && !runOptions.acceptResponse(response)) {
+              log.debug(`fallback LLM: ${model.modelString} returned rejected output, trying next...`);
+              continue;
+            }
+            if (isFallback) {
+              log.debug(`fallback LLM: succeeded using ${model.modelString} (fallback ${i})`);
+            }
+            return response;
           }
         } catch (err) {
           if (runOptions.signal?.aborted) {

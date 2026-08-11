@@ -84,6 +84,12 @@ async function recordAuditSafely(
   }
 }
 
+function scheduleAudit(audit: SupportPassportModelAuditSink, record: SupportPassportModelAuditRecord): void {
+  setImmediate(() => {
+    void recordAuditSafely(audit, record);
+  });
+}
+
 export class SupportPassportDraftService {
   private readonly cardService: SupportPassportCardService;
   private readonly modelAdapter: SupportPassportModelAdapter;
@@ -134,7 +140,7 @@ export class SupportPassportDraftService {
         input.signal
       );
     } catch (error) {
-      await recordAuditSafely(this.audit, {
+      scheduleAudit(this.audit, {
         schemaVersion: 1,
         operation: "draft_cards",
         actorHash: hashSupportPassportAuditValues("owner", [parsed.data.principal]),
@@ -164,10 +170,10 @@ export class SupportPassportDraftService {
         principal: parsed.data.principal,
         cards: modelResult.cards,
       });
-      await recordAuditSafely(this.audit, { ...auditBase, outcome: "success" });
+      scheduleAudit(this.audit, { ...auditBase, outcome: "success" });
       return cards;
     } catch (error) {
-      await recordAuditSafely(this.audit, {
+      scheduleAudit(this.audit, {
         ...auditBase,
         outcome: "error",
         errorClass: operationErrorClass(error),
@@ -214,7 +220,7 @@ export class SupportPassportQuestionService {
     try {
       modelResult = await this.modelAdapter.answerQuestion({ guide, question: input.question }, input.signal);
     } catch (error) {
-      await recordAuditSafely(this.audit, {
+      scheduleAudit(this.audit, {
         schemaVersion: 1,
         operation: "answer_question",
         actorHash: hashSupportPassportAuditValues("helper-grant", [input.grantId]),
@@ -251,12 +257,10 @@ export class SupportPassportQuestionService {
         citedCardIds: modelResult.citedCardIds,
         coverage: modelResult.coverage,
       };
-      setImmediate(() => {
-        void recordAuditSafely(this.audit, { ...auditBase, schemaVersion: 1, outcome: "success" });
-      });
+      scheduleAudit(this.audit, { ...auditBase, schemaVersion: 1, outcome: "success" });
       return answer;
     } catch (error) {
-      await recordAuditSafely(this.audit, {
+      scheduleAudit(this.audit, {
         ...auditBase,
         schemaVersion: 1,
         outcome: "error",
