@@ -153,7 +153,7 @@ export class SupportPassportGrantStore {
         throw grantNotFound();
       if (state.revokedAt) return state;
       if (input.expectedStateVersion !== undefined && input.expectedStateVersion !== state.stateVersion) {
-        throw new SupportPassportError("storage_conflict", "The share link changed after it was loaded.", 409);
+        throw new SupportPassportError("state_conflict", "The share link changed after it was loaded.", 409);
       }
       const revoked = SupportPassportGrantStateSchema.parse({
         ...state,
@@ -191,7 +191,7 @@ export class SupportPassportGrantStore {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
-    await writeFileAtomically(filePath, `${JSON.stringify(state, null, 2)}\n`);
+    await writeFileAtomically(filePath, `${JSON.stringify(state, null, 2)}\n`, undefined, { mode: 0o600 });
     await chmod(filePath, 0o600);
   }
 
