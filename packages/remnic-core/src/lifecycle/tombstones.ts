@@ -613,6 +613,7 @@ export class TombstoneStore {
       sourceMemoryId: input.sourceMemoryId,
       contentHash: input.contentHash ?? currentHash,
       normalizedText: this.options.normalizeText(input.rawContent),
+      normalizerVersion: TOMBSTONE_NORMALIZER_VERSION,
       ...(legacyHash !== currentHash
         ? {
             legacyContentHash: legacyHash,
