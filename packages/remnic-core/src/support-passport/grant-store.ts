@@ -146,8 +146,11 @@ export class SupportPassportGrantStore {
     }
     const candidate = sha256("support-passport-secret:v1", secret);
     if (!hashesMatch(candidate, state.secretHash)) throw grantNotFound();
-    if (state.revokedAt || Date.parse(state.expiresAt) <= this.now().getTime()) {
+    if (state.revokedAt) {
       throw new SupportPassportError("grant_gone", "The share link is no longer active.", 410);
+    }
+    if (Date.parse(state.expiresAt) <= this.now().getTime()) {
+      throw new SupportPassportError("grant_expired", "The share link has expired.", 410);
     }
     return state;
   }
@@ -165,9 +168,7 @@ export class SupportPassportGrantStore {
       try {
         const state = await this.readState(grantId);
         if (state.namespace === namespace && hashesMatch(state.principalHash, principalHash)) states.push(state);
-      } catch {
-        continue;
-      }
+      } catch {}
     }
     return states.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.grantId.localeCompare(b.grantId));
   }
