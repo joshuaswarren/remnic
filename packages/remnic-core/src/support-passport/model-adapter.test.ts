@@ -248,6 +248,7 @@ test("local support models work with direct OpenAI disabled", async () => {
   assert.equal(result.route, "local");
   assert.equal(result.modelUsed, "local/local-test-model");
   assert.deepEqual(optionsSeen?.responseFormat, { type: "json_object" });
+  assert.equal(optionsSeen?.redactProviderErrors, true);
 });
 
 test("gateway support models work with direct OpenAI disabled", async () => {
@@ -298,6 +299,7 @@ test("gateway support models work with direct OpenAI disabled", async () => {
   assert.equal(result.route, "gateway");
   assert.equal(result.modelUsed, "gateway/test-model");
   assert.equal(optionsSeen?.store, false);
+  assert.equal(optionsSeen?.redactProviderErrors, true);
   assert.equal((optionsSeen?.responsesJsonSchema as { name?: string } | undefined)?.name, "support_passport_drafts");
 });
 

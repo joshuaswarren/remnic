@@ -235,6 +235,7 @@ interface LocalLlmChatCompletionOptions {
   disableThinking?: boolean;
   priority?: LocalLlmRequestPriority;
   signal?: AbortSignal;
+  redactProviderErrors?: boolean;
 }
 
 interface LocalLlmQueuedRequest {
@@ -917,7 +918,12 @@ export class LocalLlmClient {
           enqueuedAtMs: next.enqueuedAtMs,
         });
       } catch (err) {
-        log.warn(`local LLM queue drain failed open: ${err instanceof Error ? err.message : String(err)}`);
+        const detail = next.options.redactProviderErrors
+          ? "provider error details redacted"
+          : err instanceof Error
+            ? err.message
+            : String(err);
+        log.warn(`local LLM queue drain failed open: ${detail}`);
       }
       next.resolve(result);
     } finally {
@@ -1071,7 +1077,8 @@ export class LocalLlmClient {
             break;
           }
           if (response && !response.ok) {
-            log.debug(`local LLM failed to read ${response.status} response body: ${error.message}`);
+            const detail = options.redactProviderErrors ? "details redacted" : error.message;
+            log.debug(`local LLM failed to read ${response.status} response body: ${detail}`);
           } else {
             response = null;
             if (!isAbortError(err)) throw err;
@@ -1132,10 +1139,13 @@ export class LocalLlmClient {
           const parsed = JSON.parse(responseBody) as { error?: { message?: string } };
           reason = parsed?.error?.message ? ` — ${parsed.error.message}` : "";
         } catch {
-          log.debug(`local LLM error body: ${responseBody.slice(0, 500)}`);
+          if (!options.redactProviderErrors) {
+            log.debug(`local LLM error body: ${responseBody.slice(0, 500)}`);
+          }
         }
+        const loggedReason = options.redactProviderErrors ? "" : reason;
         log.warn(
-          `local LLM request failed: ${response.status} ${response.statusText}${reason} ` +
+          `local LLM request failed: ${response.status} ${response.statusText}${loggedReason} ` +
           `(op=${operation}, model=${this.config.localLlmModel}, url=${chatUrl}, promptChars=${promptChars}, maxTokens=${requestBody.max_tokens as number})`,
         );
         const nonRecoverableReason =
@@ -1187,7 +1197,10 @@ export class LocalLlmClient {
       const msg = data.choices?.[0]?.message;
       const content = msg?.content || msg?.reasoning_content || "";
       if (!content) {
-        log.warn(`local LLM returned empty content. choices=${JSON.stringify(data.choices)?.slice(0, 200)}`);
+        const detail = options.redactProviderErrors
+          ? ""
+          : ` choices=${JSON.stringify(data.choices)?.slice(0, 200)}`;
+        log.warn(`local LLM returned empty content.${detail}`);
         return null;
       }
 
@@ -1213,14 +1226,15 @@ export class LocalLlmClient {
       return { content, usage };
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
+      const loggedError = options.redactProviderErrors ? "provider error details redacted" : errMsg;
       const durationMs = Date.now() - startedAtMs;
       if (isAbortError(err)) {
         log.warn(
-          `local LLM request aborted: op=${operation} timeoutMs=${options.timeoutMs ?? this.config.localLlmTimeoutMs} model=${this.config.localLlmModel} durationMs=${durationMs} error=${errMsg}`,
+          `local LLM request aborted: op=${operation} timeoutMs=${options.timeoutMs ?? this.config.localLlmTimeoutMs} model=${this.config.localLlmModel} durationMs=${durationMs} error=${loggedError}`,
         );
         return null;
       }
-      log.warn(`local LLM request error: op=${operation} error=${errMsg}`);
+      log.warn(`local LLM request error: op=${operation} error=${loggedError}`);
       this.isAvailable = false; // Mark as unavailable on non-abort errors
       const nonRecoverableReason = extractNonRecoverableBackendReason(errMsg);
       if (nonRecoverableReason) {

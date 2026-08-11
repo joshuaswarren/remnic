@@ -265,6 +265,7 @@ export function createSupportPassportModelAdapter(
             forceDisableThinking: true,
             priority: "background",
             signal: options.signal,
+            redactProviderErrors: true,
           });
           if (!response) return null;
           return {
@@ -293,6 +294,7 @@ export function createSupportPassportModelAdapter(
           signal: options.signal,
           store: false,
           responsesJsonSchema: options.jsonSchema,
+          redactProviderErrors: true,
           ...(kind === "gateway" ? gatewayTaskChainOptions(config) : {}),
         };
         return await client.chatCompletion(messages, routeOptions);

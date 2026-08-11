@@ -27,6 +27,8 @@ export interface FallbackLlmOptions {
   store?: boolean;
   /** Request strict JSON output when a route uses the Responses API. */
   responsesJsonSchema?: { name: string; schema: Record<string, unknown> };
+  /** Hide provider error details that could echo private request content. */
+  redactProviderErrors?: boolean;
   /** Explicit "provider/model" override to try before the configured chain. */
   model?: string;
   /** Explicit model chain override to use instead of the configured agent/default chain. */
@@ -214,7 +216,11 @@ export class FallbackLlmClient {
           if (runOptions.signal?.aborted) {
             throw abortReason(runOptions.signal);
           }
-          const errorMsg = err instanceof Error ? err.message : String(err);
+          const errorMsg = runOptions.redactProviderErrors
+            ? "provider error details redacted"
+            : err instanceof Error
+              ? err.message
+              : String(err);
           log.debug(`fallback LLM: ${model.modelString} failed (${errorMsg}), trying next...`);
           // Continue to next model in chain
         }
