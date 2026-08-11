@@ -1044,7 +1044,6 @@
     "@openclaw/plugin-inspector": "0.3.10",
     "@playwright/test": "^1.62.1",
     "@remnic/bench": "workspace:*",
-    "@remnic/server": "workspace:*",
     "@types/better-sqlite3": "^7.6.13",
     "semver": "^7.7.4",
     "tsup": "^8.5.1",
