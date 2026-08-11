@@ -145,6 +145,47 @@ test("helper answers cite only shared cards and use the exact uncovered fallback
   assert.equal((await uncovered.answerQuestion({ guide, question: "What food helps?" })).coverage, "not_in_guide");
 });
 
+test("helper model calls send only shared cards and the question", async () => {
+  const guide = {
+    schemaVersion: 1 as const,
+    grantId: "00000000-0000-4000-8000-000000000001",
+    expiresAt: "2026-08-11T13:00:00.000Z",
+    updatedAt: "2026-08-11T12:00:00.000Z",
+    cards: [
+      {
+        cardId: "card-1",
+        title: "Quiet space",
+        statement: "Offer me a quiet place and time.",
+        category: "environment" as const,
+        updatedAt: "2026-08-11T12:00:00.000Z",
+      },
+    ],
+  };
+  let payload: unknown;
+  const adapter = new SupportPassportModelAdapter({
+    routes: [
+      {
+        kind: "gateway",
+        invoke: async (messages) => {
+          payload = JSON.parse(messages.find((message) => message.role === "user")?.content ?? "null");
+          return {
+            content: JSON.stringify({
+              answer: "Offer a quiet place.",
+              citedCardIds: ["card-1"],
+              coverage: "grounded",
+            }),
+            modelUsed: "gateway/test",
+          };
+        },
+      },
+    ],
+  });
+
+  await adapter.answerQuestion({ guide, question: "What can help?" });
+
+  assert.deepEqual(payload, { cards: guide.cards, question: "What can help?" });
+});
+
 test("helper answer output rejects foreign citations and invented uncovered answers", async () => {
   const guide = {
     schemaVersion: 1 as const,

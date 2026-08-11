@@ -350,7 +350,7 @@ export class SupportPassportModelAdapter {
     const result = await this.runStructured(
       [
         { role: "system", content: ANSWER_SYSTEM_PROMPT },
-        { role: "user", content: JSON.stringify({ guide: parsed.data.guide, question: parsed.data.question }) },
+        { role: "user", content: JSON.stringify({ cards: parsed.data.guide.cards, question: parsed.data.question }) },
       ],
       SupportPassportAnswerOutputSchema,
       (output) => output.citedCardIds.every((id) => allowedCardIds.has(id)),
