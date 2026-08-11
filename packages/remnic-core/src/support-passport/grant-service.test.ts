@@ -140,6 +140,74 @@ test("owner grant listings read only the indexed owner grants", async () => {
   }
 });
 
+test("owner grant operations use one trimmed namespace", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-namespace-"));
+  try {
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({ memoryDir: root, now: () => now });
+    const created = await store.create({
+      namespace: " alice ",
+      principal: "owner:alice",
+      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+      expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
+    });
+
+    assert.deepEqual(
+      (await store.listForOwner(" alice ", "owner:alice")).map((state) => state.grantId),
+      [created.state.grantId]
+    );
+    const revoked = await store.revoke({
+      grantId: created.state.grantId,
+      namespace: " alice ",
+      principal: "owner:alice",
+      expectedStateVersion: created.state.stateVersion,
+    });
+    assert.ok(revoked.revokedAt);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("owner grant history stays bounded while an inactive link frees capacity", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-history-"));
+  try {
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    let nextGrantId = 1;
+    const store = new SupportPassportGrantStore({
+      memoryDir: root,
+      makeGrantId: () =>
+        `00000000-0000-4000-8000-${String(nextGrantId++).padStart(12, "0")}`,
+      now: () => now,
+    });
+    const input = {
+      namespace: "alice",
+      principal: "owner:alice",
+      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+      expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
+    };
+    const first = await store.create(input);
+    for (let index = 1; index < 100; index += 1) await store.create(input);
+
+    await assert.rejects(
+      store.create(input),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "invalid_input"
+    );
+    await store.revoke({
+      grantId: first.state.grantId,
+      namespace: input.namespace,
+      principal: input.principal,
+      expectedStateVersion: first.state.stateVersion,
+    });
+    const replacement = await store.create(input);
+    const listed = await store.listForOwner(input.namespace, input.principal);
+    assert.equal(listed.length, 100);
+    assert.equal(listed.some((state) => state.grantId === first.state.grantId), false);
+    assert.equal(listed.some((state) => state.grantId === replacement.state.grantId), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("directory sync ignores only explicit unsupported errors", async () => {
   const failingOpen = (code: string) => async () => ({
     sync: async () => {
@@ -413,6 +481,58 @@ test("a revoke during the confirmed card read never returns the old guide", asyn
     );
     assert.equal(reads, 2);
   } finally {
+    await subject.cleanup();
+  }
+});
+
+test("final helper guide assembly blocks card withdrawal", async () => {
+  const subject = await makeSubject();
+  const finalAuthenticationStarted = Promise.withResolvers<void>();
+  const releaseFinalAuthentication = Promise.withResolvers<void>();
+  try {
+    const card = await createActiveCard(subject);
+    const created = await subject.grantService.createGrant({
+      principal: "owner:alice",
+      cards: [{ cardId: card.cardId, revision: card.revision }],
+      expiresAt: expiryAfter(subject, 3_600_000),
+    });
+    const authenticate = subject.grantStore.authenticate.bind(subject.grantStore);
+    let authentications = 0;
+    subject.grantStore.authenticate = async (grantId, secret) => {
+      const state = await authenticate(grantId, secret);
+      authentications += 1;
+      if (authentications === 3) {
+        finalAuthenticationStarted.resolve();
+        await releaseFinalAuthentication.promise;
+      }
+      return state;
+    };
+
+    const readPromise = subject.grantService.readGrant({
+      grantId: created.grant.grantId,
+      secret: created.secret,
+    });
+    await finalAuthenticationStarted.promise;
+    let withdrawalSettled = false;
+    const withdrawalPromise = subject.cardService
+      .withdrawCard({
+        principal: "owner:alice",
+        cardId: card.cardId,
+        expectedRevision: card.revision,
+      })
+      .finally(() => {
+        withdrawalSettled = true;
+      });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(withdrawalSettled, false);
+
+    releaseFinalAuthentication.resolve();
+    const guide = await readPromise;
+    assert.equal(guide.cards[0]?.cardId, card.cardId);
+    await withdrawalPromise;
+    assert.equal(withdrawalSettled, true);
+  } finally {
+    releaseFinalAuthentication.resolve();
     await subject.cleanup();
   }
 });
