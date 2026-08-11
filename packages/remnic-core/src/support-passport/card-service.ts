@@ -394,6 +394,7 @@ export class SupportPassportCardService {
   private async recoverReplacementTransition(storage: StorageManager, memory: MemoryFile): Promise<MemoryFile> {
     const replacement = projectSupportPassportCard(memory);
     if (replacement?.card.status !== "pending_review") return memory;
+    if (!replacement.replacesDraftId && !memory.frontmatter.supersedes) return memory;
     await this.recoverReplacedDraft(storage, replacement);
     const currentMemory = (await storage.getMemoryById(replacement.card.cardId)) ?? memory;
     if (projectSupportPassportCard(currentMemory)?.card.status !== "pending_review") return currentMemory;
