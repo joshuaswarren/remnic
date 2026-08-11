@@ -97,8 +97,30 @@ npm run demo:support-passport:verify -- \
   --receipt ./tmp/support-passport-demo/receipt.json
 ```
 
-Use `--require-openai` when the evidence must prove the official OpenAI
-Responses transport. Omit it for a local model or OpenClaw gateway chain.
+For an existing OpenClaw install, keep the current gateway providers and auth.
+Enable only the feature and gateway route in `openclaw.json`:
+
+```jsonc
+{
+  "plugins": {
+    "entries": {
+      "openclaw-remnic": {
+        "config": {
+          "modelSource": "gateway",
+          "openaiApiKey": false,
+          "supportPassport": { "enabled": true }
+        }
+      }
+    }
+  }
+}
+```
+
+Open `/remnic/ui/what-helps-me/` on the configured Remnic HTTP origin. Remnic
+uses the OpenClaw gateway model chain and its existing provider auth.
+
+Do not pass `--require-openai` for local or OpenClaw runs. That optional flag
+exists only when evidence must prove the official OpenAI Responses transport.
 Manual cards and sharing need no model. Draft and question requests return an
 honest `503 provider_unavailable` when no model route is configured.
 <!-- END BUILD FOR GOOD 2026 HIGHLIGHT -->

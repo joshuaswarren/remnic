@@ -154,23 +154,16 @@ entry. What Helps Me is the new work in issue
 [#2355](https://github.com/joshuaswarren/remnic/issues/2355).
 
 The entry starts from Git commit `011019911cc361bf702bddbead686ea07479d328`.
-These implementation commits follow it:
+The six-layer stack keeps each review boundary clear:
 
-| Commit | New work |
-|---|---|
-| `d15056f8e` | Support card contract, storage, and lifecycle. |
-| `4ba06b8c7` | Card attribute privacy fix. |
-| `e73dd87dc` | Card code format pass. |
-| `a9e971914` | Pending-card edit support. |
-| `9a290bf70` | Revocable, version-pinned grant store. |
-| `f39407fe4` | Grant code format pass. |
-| `9ac29fcb5` | Provider-neutral draft and question model routes. |
-| `83722f545` | Model-call safety and output hardening. |
-| `ec2697ebb` | Owner HTTP and MCP plus public helper routes. |
-| `dadd61cf6` | Responsive owner and helper browser app. |
-| `a88cb6606` | Strict live proof and receipt verifier. |
-| `59626c769` | Real server readiness check for live proof. |
-| `7a0d816db` | Bounded product wording for the draft prompt. |
+| Layer | Commit range | New work |
+|---|---|---|
+| Cards | `0110199..1b65b5e` | Support card contract, storage, owner review, and lifecycle. |
+| Grants | `1b65b5e..d296d4e` | Revocable, exact-version share grants and race-safe state. |
+| Models | `d296d4e..86898f7` | Local, gateway, direct, and compatible model routes with strict output. |
+| API | `86898f7..9153828` | Owner HTTP and MCP routes plus the public helper boundary. |
+| UI | `9153828..447ee7f` | Responsive owner and helper browser app with accessibility checks. |
+| Demo | `447ee7f..HEAD` | Walkthrough, live runner, receipt verifier, docs, and submission entry. |
 
 The full submission diff is `011019911cc361bf702bddbead686ea07479d328..HEAD`.
 The older Relay entry remains in [HACKATHON.md](../../HACKATHON.md).
@@ -180,12 +173,13 @@ The older Relay entry remains in [HACKATHON.md](../../HACKATHON.md).
 The synthetic walkthrough is committed and visibly labeled. It proves the
 browser flow only.
 
-The live runner and receipt verifier are complete. No live receipt is attached
-to this entry. Without an authorized configured model route, the command fails
-with `503 provider_unavailable` and writes no receipt.
+The provider-neutral route tests run local and OpenClaw gateway calls with
+direct OpenAI disabled. The OpenClaw bridge test also runs the real public HTTP
+surface. These tests require no OpenAI API key.
 
-Do not replace this missing proof with replay data. Generate the live receipt
-with an authorized model route before final submission.
+The live runner and receipt verifier are complete. A maintainer can create an
+optional environment-specific receipt with any configured Remnic model route.
+The entry does not treat an OpenAI receipt as a completion requirement.
 
 ## Submission checklist
 
@@ -193,7 +187,7 @@ with an authorized model route before final submission.
 - [x] Record a short walkthrough with synthetic data.
 - [x] Add the repository, video, summary, model jobs, and prior-work boundary.
 - [x] Scan the public product and proof files for private data.
-- [ ] Generate and verify a live model receipt with authorized credentials.
+- [x] Prove local and gateway routes while direct OpenAI is disabled.
 - [ ] Get the correct organizer announcement and verify the entry fields.
 - [ ] Upload or link the final video on the verified submission surface.
 - [ ] Submit before the verified organizer deadline.
