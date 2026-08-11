@@ -283,6 +283,13 @@ test(
       assert.equal(requestBody.store, false);
       assert.equal(Object.hasOwn(requestBody, "tools"), false);
       assert.equal(Object.hasOwn(requestBody, "parallel_tool_calls"), false);
+      const textFormat = (requestBody.text as { format?: Record<string, unknown> } | undefined)?.format;
+      assert.equal(textFormat?.type, "json_schema");
+      assert.equal(textFormat?.strict, true);
+      assert.equal((textFormat?.schema as Record<string, unknown>)?.additionalProperties, false);
+      const cards = (textFormat?.schema as { properties?: { cards?: { items?: Record<string, unknown> } } })?.properties
+        ?.cards;
+      assert.equal(cards?.items?.additionalProperties, false);
     } finally {
       globalThis.fetch = originalFetch;
     }

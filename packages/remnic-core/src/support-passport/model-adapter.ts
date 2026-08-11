@@ -23,6 +23,11 @@ import {
 type ModelMessage = { role: "system" | "user" | "assistant"; content: string };
 export type SupportPassportModelRouteKind = "local" | "direct" | "gateway";
 
+interface SupportPassportJsonSchema {
+  name: string;
+  schema: Record<string, unknown>;
+}
+
 export interface SupportPassportModelUsage {
   inputTokens?: number;
   outputTokens?: number;
@@ -39,7 +44,14 @@ export interface SupportPassportModelRoute {
   kind: SupportPassportModelRouteKind;
   invoke(
     messages: ModelMessage[],
-    options: { temperature: number; maxTokens: number; timeoutMs: number; signal?: AbortSignal; operation: string }
+    options: {
+      temperature: number;
+      maxTokens: number;
+      timeoutMs: number;
+      signal?: AbortSignal;
+      operation: string;
+      jsonSchema: SupportPassportJsonSchema;
+    }
   ): Promise<SupportPassportModelRouteResult | null>;
 }
 
@@ -110,6 +122,61 @@ const ANSWER_SYSTEM_PROMPT = [
   "If the guide does not cover the question, use coverage not_in_guide.",
   "For not_in_guide, cite no cards and use the exact required fallback sentence.",
 ].join("\n");
+
+const DRAFT_JSON_SCHEMA: SupportPassportJsonSchema = {
+  name: "support_passport_drafts",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["cards"],
+    properties: {
+      cards: {
+        type: "array",
+        minItems: 1,
+        maxItems: 8,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["title", "statement", "category", "sourceMemoryIds"],
+          properties: {
+            title: { type: "string", minLength: 1, maxLength: 80 },
+            statement: { type: "string", minLength: 1, maxLength: 500 },
+            category: {
+              type: "string",
+              enum: ["communication", "environment", "transitions", "sensory", "regulation", "interests", "other"],
+            },
+            sourceMemoryIds: {
+              type: "array",
+              minItems: 1,
+              maxItems: 5,
+              uniqueItems: true,
+              items: { type: "string", minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]+$" },
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
+const ANSWER_JSON_SCHEMA: SupportPassportJsonSchema = {
+  name: "support_passport_answer",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["answer", "citedCardIds", "coverage"],
+    properties: {
+      answer: { type: "string", minLength: 1, maxLength: 800 },
+      citedCardIds: {
+        type: "array",
+        maxItems: 8,
+        uniqueItems: true,
+        items: { type: "string", minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]+$" },
+      },
+      coverage: { type: "string", enum: ["grounded", "not_in_guide"] },
+    },
+  },
+};
 
 function modelFailure(
   code: "model_output_invalid" | "provider_unavailable",
@@ -225,6 +292,7 @@ export function createSupportPassportModelAdapter(
           timeoutMs: options.timeoutMs,
           signal: options.signal,
           store: false,
+          responsesJsonSchema: options.jsonSchema,
           ...(kind === "gateway" ? gatewayTaskChainOptions(config) : {}),
         };
         return await client.chatCompletion(messages, routeOptions);
@@ -259,7 +327,13 @@ export class SupportPassportModelAdapter {
       ],
       SupportPassportDraftOutputSchema,
       (output) => output.cards.every((card) => card.sourceMemoryIds.every((id) => selectedIds.has(id))),
-      { temperature: 0.2, maxTokens: 1_800, operation: "support-passport-draft", signal }
+      {
+        temperature: 0.2,
+        maxTokens: 1_800,
+        operation: "support-passport-draft",
+        jsonSchema: DRAFT_JSON_SCHEMA,
+        signal,
+      }
     );
     return { cards: result.value.cards, ...result.metadata };
   }
@@ -278,7 +352,13 @@ export class SupportPassportModelAdapter {
       ],
       SupportPassportAnswerOutputSchema,
       (output) => output.citedCardIds.every((id) => allowedCardIds.has(id)),
-      { temperature: 0, maxTokens: 500, operation: "support-passport-answer", signal }
+      {
+        temperature: 0,
+        maxTokens: 500,
+        operation: "support-passport-answer",
+        jsonSchema: ANSWER_JSON_SCHEMA,
+        signal,
+      }
     );
     return { ...result.value, ...result.metadata };
   }
@@ -287,7 +367,13 @@ export class SupportPassportModelAdapter {
     messages: ModelMessage[],
     schema: { safeParse(value: unknown): { success: true; data: T } | { success: false } },
     validate: (value: T) => boolean,
-    options: { temperature: number; maxTokens: number; operation: string; signal?: AbortSignal }
+    options: {
+      temperature: number;
+      maxTokens: number;
+      operation: string;
+      jsonSchema: SupportPassportJsonSchema;
+      signal?: AbortSignal;
+    }
   ): Promise<{ value: T; metadata: SupportPassportModelResultMetadata }> {
     const startedAt = this.nowMs();
     const deadline = startedAt + this.timeoutMs;
@@ -340,7 +426,13 @@ export class SupportPassportModelAdapter {
   private async invokeRoute(
     route: SupportPassportModelRoute,
     messages: ModelMessage[],
-    options: { temperature: number; maxTokens: number; operation: string; signal?: AbortSignal },
+    options: {
+      temperature: number;
+      maxTokens: number;
+      operation: string;
+      jsonSchema: SupportPassportJsonSchema;
+      signal?: AbortSignal;
+    },
     timeoutMs: number
   ): Promise<SupportPassportModelRouteResult | null> {
     const controller = new AbortController();

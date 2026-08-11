@@ -25,6 +25,8 @@ export interface FallbackLlmOptions {
   signal?: AbortSignal;
   /** Set the Responses API storage policy. Other transports ignore this value. */
   store?: boolean;
+  /** Request strict JSON output when a route uses the Responses API. */
+  responsesJsonSchema?: { name: string; schema: Record<string, unknown> };
   /** Explicit "provider/model" override to try before the configured chain. */
   model?: string;
   /** Explicit model chain override to use instead of the configured agent/default chain. */
@@ -861,6 +863,18 @@ export class FallbackLlmClient {
         assumeOpenAI: shouldAssumeOpenAiChatCompletions(config.baseUrl),
       }),
       ...(options.store === undefined ? {} : { store: options.store }),
+      ...(options.responsesJsonSchema
+        ? {
+            text: {
+              format: {
+                type: "json_schema",
+                name: options.responsesJsonSchema.name,
+                strict: true,
+                schema: options.responsesJsonSchema.schema,
+              },
+            },
+          }
+        : {}),
     };
     if (instructions.length > 0) {
       body.instructions = instructions;
