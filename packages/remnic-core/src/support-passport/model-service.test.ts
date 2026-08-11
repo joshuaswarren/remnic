@@ -58,10 +58,17 @@ test("drafting reads only selected memories and persists pending cards with a co
     const unselected = await subject.aliceStorage.writeMemory("preference", "Do not send this note.", {
       source: "test",
     });
+    const exactReads: string[] = [];
+    const getMemoryById = subject.aliceStorage.getMemoryById.bind(subject.aliceStorage);
+    subject.aliceStorage.getMemoryById = async (memoryId: string) => {
+      exactReads.push(memoryId);
+      return await getMemoryById(memoryId);
+    };
     const calls: Array<Array<{ role: string; content: string }>> = [];
     const route: SupportPassportModelRoute = {
       kind: "gateway",
       invoke: async (messages) => {
+        assert.deepEqual(exactReads, [selected.id]);
         calls.push(messages);
         return {
           modelUsed: "gateway/test-model",
@@ -107,10 +114,50 @@ test("drafting reads only selected memories and persists pending cards with a co
     const stored = await subject.aliceStorage.getMemoryById(firstCard.cardId);
     assert.deepEqual(stored?.frontmatter.lineage, [selected.id]);
     assert.equal(records.length, 1);
+    assert.equal(records[0]?.outputSchemaVersion, 1);
+    assert.equal(records[0]?.outcome, "success");
     const serializedAudit = JSON.stringify(records[0]);
     assert.equal(serializedAudit.includes("owner:alice"), false);
     assert.equal(serializedAudit.includes(selected.id), false);
     assert.equal(serializedAudit.includes("Tell me before"), false);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("model failures produce a content-free audit record with an error class", async () => {
+  const subject = await makeSubject();
+  try {
+    const selected = await subject.aliceStorage.writeMemory("preference", "Tell me before plans change.", {
+      source: "test",
+    });
+    const records: SupportPassportModelAuditRecord[] = [];
+    const service = new SupportPassportDraftService({
+      cardService: subject.cardService,
+      modelAdapter: new SupportPassportModelAdapter({
+        routes: [{ kind: "direct", invoke: async () => ({ content: "not-json", modelUsed: "openai/gpt-test" }) }],
+      }),
+      resolveOwner: subject.resolveOwner,
+      audit: {
+        record: async (record) => {
+          records.push(SupportPassportModelAuditRecordSchema.parse(record));
+        },
+      },
+      now: subject.now,
+    });
+
+    await assert.rejects(
+      service.draftCards({ principal: "owner:alice", sourceMemoryIds: [selected.id], consent: true }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "model_output_invalid"
+    );
+    assert.equal(records.length, 1);
+    assert.equal(records[0]?.outcome, "error");
+    assert.equal(records[0]?.errorClass, "model_output_invalid");
+    assert.equal(records[0]?.outputSchemaVersion, 1);
+    const serializedAudit = JSON.stringify(records[0]);
+    assert.equal(serializedAudit.includes(selected.id), false);
+    assert.equal(serializedAudit.includes("Tell me before"), false);
+    assert.equal(serializedAudit.includes("not-json"), false);
   } finally {
     await subject.cleanup();
   }
@@ -221,6 +268,8 @@ test("the model audit store writes strict private JSONL without text fields", as
       subjectIdsHash: "b".repeat(64),
       modelUsed: "gateway/test-model",
       route: "gateway",
+      outputSchemaVersion: 1,
+      outcome: "success",
       occurredAt: "2026-08-11T12:00:00.000Z",
       latencyMs: 25,
     });

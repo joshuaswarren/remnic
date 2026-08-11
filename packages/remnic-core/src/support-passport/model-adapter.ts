@@ -62,6 +62,26 @@ export interface SupportPassportModelAdapterOptions {
   nowMs?: () => number;
 }
 
+export interface SupportPassportModelFailureMetadata extends Omit<SupportPassportModelResultMetadata, "route"> {
+  route: SupportPassportModelRouteKind | "unavailable";
+  errorClass: string;
+}
+
+export class SupportPassportModelCallError extends SupportPassportError {
+  readonly metadata: SupportPassportModelFailureMetadata;
+
+  constructor(
+    code: "model_output_invalid" | "provider_unavailable",
+    message: string,
+    status: number,
+    metadata: SupportPassportModelFailureMetadata
+  ) {
+    super(code, message, status);
+    this.name = "SupportPassportModelCallError";
+    this.metadata = metadata;
+  }
+}
+
 type ModelRoutePlanConfig = Pick<
   PluginConfig,
   "modelSource" | "localLlmEnabled" | "localLlmFallback" | "openaiApiKey" | "gatewayConfig"
@@ -91,16 +111,26 @@ const ANSWER_SYSTEM_PROMPT = [
   "For not_in_guide, cite no cards and use the exact required fallback sentence.",
 ].join("\n");
 
-function unavailable(): SupportPassportError {
-  return new SupportPassportError("provider_unavailable", "No configured model could complete this request.", 503);
+function modelFailure(
+  code: "model_output_invalid" | "provider_unavailable",
+  metadata: Omit<SupportPassportModelFailureMetadata, "errorClass">
+): SupportPassportModelCallError {
+  return new SupportPassportModelCallError(
+    code,
+    code === "model_output_invalid"
+      ? "The model returned an invalid support passport response."
+      : "No configured model could complete this request.",
+    code === "model_output_invalid" ? 502 : 503,
+    { ...metadata, errorClass: code }
+  );
 }
 
-function invalidOutput(): SupportPassportError {
-  return new SupportPassportError(
-    "model_output_invalid",
-    "The model returned an invalid support passport response.",
-    502
-  );
+function unavailable(metadata: Omit<SupportPassportModelFailureMetadata, "errorClass">): SupportPassportError {
+  return modelFailure("provider_unavailable", metadata);
+}
+
+function invalidOutput(metadata: Omit<SupportPassportModelFailureMetadata, "errorClass">): SupportPassportError {
+  return modelFailure("model_output_invalid", metadata);
 }
 
 export function resolveSupportPassportModelRoutePlan(config: ModelRoutePlanConfig): SupportPassportModelRouteKind[] {
@@ -120,14 +150,20 @@ export function buildSupportPassportDirectGatewayConfig(
 ): GatewayConfig | undefined {
   if (!config.openaiApiKey) return undefined;
   const providerId = "remnic-direct";
+  const baseUrl = config.openaiBaseUrl ?? "https://api.openai.com/v1";
+  const normalizedBaseUrl = baseUrl.replace(/\/+$/, "");
+  const api =
+    normalizedBaseUrl === "https://api.openai.com" || normalizedBaseUrl === "https://api.openai.com/v1"
+      ? "openai-responses"
+      : "openai-completions";
   return {
     agents: { defaults: { model: { primary: `${providerId}/${config.model}` } } },
     models: {
       providers: {
         [providerId]: {
-          baseUrl: config.openaiBaseUrl ?? "https://api.openai.com/v1",
+          baseUrl,
           apiKey: config.openaiApiKey,
-          api: "openai-completions",
+          api,
           models: [{ id: config.model, name: config.model }],
         },
       },
@@ -188,6 +224,7 @@ export function createSupportPassportModelAdapter(
           maxTokens: options.maxTokens,
           timeoutMs: options.timeoutMs,
           signal: options.signal,
+          store: false,
           ...(kind === "gateway" ? gatewayTaskChainOptions(config) : {}),
         };
         return await client.chatCompletion(messages, routeOptions);
@@ -255,6 +292,11 @@ export class SupportPassportModelAdapter {
     const startedAt = this.nowMs();
     const deadline = startedAt + this.timeoutMs;
     let invalidResponse = false;
+    let failureMetadata: Omit<SupportPassportModelFailureMetadata, "errorClass"> = {
+      modelUsed: "unavailable",
+      route: "unavailable",
+      latencyMs: 0,
+    };
     for (const route of this.routes) {
       if (options.signal?.aborted) throw options.signal.reason ?? new Error("The model request was aborted.");
       const remainingMs = deadline - this.nowMs();
@@ -268,6 +310,12 @@ export class SupportPassportModelAdapter {
       }
       if (!response?.content.trim()) continue;
       invalidResponse = true;
+      failureMetadata = {
+        modelUsed: response.modelUsed,
+        route: route.kind,
+        latencyMs: Math.max(0, this.nowMs() - startedAt),
+        usage: response.usage,
+      };
       for (const candidate of extractJsonCandidates(response.content)) {
         try {
           const parsed = schema.safeParse(JSON.parse(candidate));
@@ -284,7 +332,8 @@ export class SupportPassportModelAdapter {
         } catch {}
       }
     }
-    if (invalidResponse) throw invalidOutput();
-    throw unavailable();
+    failureMetadata.latencyMs = Math.max(0, this.nowMs() - startedAt);
+    if (invalidResponse) throw invalidOutput(failureMetadata);
+    throw unavailable(failureMetadata);
   }
 }

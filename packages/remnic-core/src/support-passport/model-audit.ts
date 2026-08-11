@@ -14,7 +14,16 @@ export const SupportPassportModelAuditRecordSchema = z
     actorHash: HashSchema,
     subjectIdsHash: HashSchema,
     modelUsed: z.string().trim().min(1).max(256),
-    route: z.enum(["local", "direct", "gateway"]),
+    route: z.enum(["local", "direct", "gateway", "unavailable"]),
+    outputSchemaVersion: z.literal(1),
+    outcome: z.enum(["success", "error"]),
+    errorClass: z
+      .string()
+      .trim()
+      .min(1)
+      .max(64)
+      .regex(/^[a-z0-9_-]+$/)
+      .optional(),
     occurredAt: z.string().datetime({ offset: true }),
     latencyMs: z.number().int().nonnegative(),
     usage: z
@@ -26,7 +35,23 @@ export const SupportPassportModelAuditRecordSchema = z
       .strict()
       .optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((record, ctx) => {
+    if (record.outcome === "error" && !record.errorClass) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "error records require an error class",
+        path: ["errorClass"],
+      });
+    }
+    if (record.outcome === "success" && record.errorClass) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "success records cannot have an error class",
+        path: ["errorClass"],
+      });
+    }
+  });
 
 export type SupportPassportModelAuditRecord = z.infer<typeof SupportPassportModelAuditRecordSchema>;
 

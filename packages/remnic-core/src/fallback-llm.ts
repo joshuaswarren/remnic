@@ -23,6 +23,8 @@ export interface FallbackLlmOptions {
   maxTokens?: number;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** Set the Responses API storage policy. Other transports ignore this value. */
+  store?: boolean;
   /** Explicit "provider/model" override to try before the configured chain. */
   model?: string;
   /** Explicit model chain override to use instead of the configured agent/default chain. */
@@ -858,6 +860,7 @@ export class FallbackLlmClient {
       ...buildChatCompletionTemperature(modelId, options.temperature ?? 0.3, {
         assumeOpenAI: shouldAssumeOpenAiChatCompletions(config.baseUrl),
       }),
+      ...(options.store === undefined ? {} : { store: options.store }),
     };
     if (instructions.length > 0) {
       body.instructions = instructions;

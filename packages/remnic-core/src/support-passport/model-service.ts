@@ -6,7 +6,7 @@ import type { SupportPassportCardService, SupportPassportOwnerScope } from "./ca
 import { type SupportPassportCard, SupportPassportMemoryIdSchema } from "./contracts.js";
 import { SupportPassportError } from "./errors.js";
 import type { SupportPassportGrantService } from "./grant-service.js";
-import type { SupportPassportModelAdapter } from "./model-adapter.js";
+import { type SupportPassportModelAdapter, SupportPassportModelCallError } from "./model-adapter.js";
 import { type SupportPassportModelAuditSink, hashSupportPassportAuditValues } from "./model-audit.js";
 import type { SupportPassportAnswerOutput } from "./model-contracts.js";
 
@@ -52,6 +52,18 @@ function isEligibleSource(memory: MemoryFile): boolean {
   );
 }
 
+function modelFailureAuditFields(error: unknown, signal: AbortSignal | undefined, latencyMs: number) {
+  if (error instanceof SupportPassportModelCallError) {
+    return { ...error.metadata, latencyMs };
+  }
+  return {
+    modelUsed: "unavailable",
+    route: "unavailable" as const,
+    latencyMs,
+    errorClass: signal?.aborted ? "aborted" : "provider_error",
+  };
+}
+
 export class SupportPassportDraftService {
   private readonly cardService: SupportPassportCardService;
   private readonly modelAdapter: SupportPassportModelAdapter;
@@ -83,31 +95,37 @@ export class SupportPassportDraftService {
     });
     if (!parsed.success) throw new SupportPassportError("invalid_input", "The drafting request is invalid.", 400);
     const owner = await this.resolveOwner(parsed.data.principal);
-    const corpus = [...(await owner.storage.readAllMemories()), ...(await owner.storage.readAllColdMemories())];
-    const byId = new Map<string, MemoryFile>();
-    for (const memory of corpus) {
-      if (!parsed.data.sourceMemoryIds.includes(memory.frontmatter.id)) continue;
-      if (byId.has(memory.frontmatter.id) || !isEligibleSource(memory)) {
-        throw new SupportPassportError("invalid_input", "A selected memory is not available.", 400);
-      }
-      byId.set(memory.frontmatter.id, memory);
-    }
-    if (byId.size !== parsed.data.sourceMemoryIds.length) {
-      throw new SupportPassportError("invalid_input", "A selected memory is not available.", 400);
-    }
     const memories: Array<{ memoryId: string; content: string }> = [];
     for (const memoryId of parsed.data.sourceMemoryIds) {
-      const memory = byId.get(memoryId);
-      if (!memory) throw new SupportPassportError("invalid_input", "A selected memory is not available.", 400);
+      const memory = await owner.storage.getMemoryById(memoryId);
+      if (!memory || !isEligibleSource(memory)) {
+        throw new SupportPassportError("invalid_input", "A selected memory is not available.", 400);
+      }
       memories.push({ memoryId, content: stripAttributesSuffix(memory.content) });
     }
-    const modelResult = await this.modelAdapter.draftCards(
-      {
-        consent: true,
-        memories,
-      },
-      input.signal
-    );
+    const startedAt = Date.now();
+    let modelResult: Awaited<ReturnType<SupportPassportModelAdapter["draftCards"]>>;
+    try {
+      modelResult = await this.modelAdapter.draftCards(
+        {
+          consent: true,
+          memories,
+        },
+        input.signal
+      );
+    } catch (error) {
+      await this.audit.record({
+        schemaVersion: 1,
+        operation: "draft_cards",
+        actorHash: hashSupportPassportAuditValues("owner", [parsed.data.principal]),
+        subjectIdsHash: hashSupportPassportAuditValues("source-memory-ids", parsed.data.sourceMemoryIds),
+        outputSchemaVersion: 1,
+        outcome: "error",
+        occurredAt: this.now().toISOString(),
+        ...modelFailureAuditFields(error, input.signal, Math.max(0, Date.now() - startedAt)),
+      });
+      throw error;
+    }
     await this.audit.record({
       schemaVersion: 1,
       operation: "draft_cards",
@@ -115,6 +133,8 @@ export class SupportPassportDraftService {
       subjectIdsHash: hashSupportPassportAuditValues("source-memory-ids", parsed.data.sourceMemoryIds),
       modelUsed: modelResult.modelUsed,
       route: modelResult.route,
+      outputSchemaVersion: 1,
+      outcome: "success",
       occurredAt: this.now().toISOString(),
       latencyMs: Math.floor(modelResult.latencyMs),
       usage: modelResult.usage,
@@ -146,7 +166,26 @@ export class SupportPassportQuestionService {
     signal?: AbortSignal;
   }): Promise<SupportPassportAnswerOutput> {
     const guide = await this.grantService.readGrant(input);
-    const modelResult = await this.modelAdapter.answerQuestion({ guide, question: input.question }, input.signal);
+    const startedAt = Date.now();
+    let modelResult: Awaited<ReturnType<SupportPassportModelAdapter["answerQuestion"]>>;
+    try {
+      modelResult = await this.modelAdapter.answerQuestion({ guide, question: input.question }, input.signal);
+    } catch (error) {
+      await this.audit.record({
+        schemaVersion: 1,
+        operation: "answer_question",
+        actorHash: hashSupportPassportAuditValues("helper-grant", [input.grantId]),
+        subjectIdsHash: hashSupportPassportAuditValues(
+          "shared-card-ids",
+          guide.cards.map((card) => card.cardId)
+        ),
+        outputSchemaVersion: 1,
+        outcome: "error",
+        occurredAt: this.now().toISOString(),
+        ...modelFailureAuditFields(error, input.signal, Math.max(0, Date.now() - startedAt)),
+      });
+      throw error;
+    }
     await this.audit.record({
       schemaVersion: 1,
       operation: "answer_question",
@@ -157,6 +196,8 @@ export class SupportPassportQuestionService {
       ),
       modelUsed: modelResult.modelUsed,
       route: modelResult.route,
+      outputSchemaVersion: 1,
+      outcome: "success",
       occurredAt: this.now().toISOString(),
       latencyMs: Math.floor(modelResult.latencyMs),
       usage: modelResult.usage,

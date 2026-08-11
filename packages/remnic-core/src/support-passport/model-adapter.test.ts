@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
+import { parseConfig } from "../config.js";
 import { SupportPassportError } from "./errors.js";
 import {
   SupportPassportModelAdapter,
   type SupportPassportModelRoute,
   buildSupportPassportDirectGatewayConfig,
+  createSupportPassportModelAdapter,
   resolveSupportPassportModelRoutePlan,
 } from "./model-adapter.js";
 
@@ -208,7 +210,21 @@ test("route planning preserves Remnic model-source and local fallback rules", ()
   );
 });
 
-test("direct configured API models use the existing fallback client configuration", () => {
+test("direct OpenAI models use the existing Responses API transport", () => {
+  const config = buildSupportPassportDirectGatewayConfig({
+    openaiApiKey: "test-key",
+    openaiBaseUrl: undefined,
+    model: "test-model",
+  });
+  assert.deepEqual(config?.models?.providers?.["remnic-direct"], {
+    baseUrl: "https://api.openai.com/v1",
+    apiKey: "test-key",
+    api: "openai-responses",
+    models: [{ id: "test-model", name: "test-model" }],
+  });
+});
+
+test("direct compatible APIs keep their configured fallback transport", () => {
   const config = buildSupportPassportDirectGatewayConfig({
     openaiApiKey: "test-key",
     openaiBaseUrl: "https://models.example.test/v1",
@@ -222,6 +238,56 @@ test("direct configured API models use the existing fallback client configuratio
     models: [{ id: "test-model", name: "test-model" }],
   });
 });
+
+test(
+  "direct OpenAI requests use the shared Responses transport without storage or tools",
+  { concurrency: false },
+  async () => {
+    const originalFetch = globalThis.fetch;
+    let requestUrl = "";
+    let requestBody: Record<string, unknown> = {};
+    globalThis.fetch = (async (url, init) => {
+      requestUrl = String(url);
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(
+        JSON.stringify({
+          output_text: JSON.stringify({
+            cards: [
+              {
+                title: "Plan changes",
+                statement: "Tell me before plans change.",
+                category: "transitions",
+                sourceMemoryIds: ["memory-1"],
+              },
+            ],
+          }),
+          usage: { input_tokens: 10, output_tokens: 12, total_tokens: 22 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }) as typeof fetch;
+    try {
+      const adapter = createSupportPassportModelAdapter(
+        parseConfig({
+          modelSource: "plugin",
+          openaiApiKey: "test-key",
+          openaiBaseUrl: "https://api.openai.com/v1",
+          model: "gpt-test",
+        })
+      );
+      await adapter.draftCards({
+        consent: true,
+        memories: [{ memoryId: "memory-1", content: "Tell me before plans change." }],
+      });
+      assert.equal(requestUrl, "https://api.openai.com/v1/responses");
+      assert.equal(requestBody.store, false);
+      assert.equal(Object.hasOwn(requestBody, "tools"), false);
+      assert.equal(Object.hasOwn(requestBody, "parallel_tool_calls"), false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }
+);
 
 test("missing model routes return provider_unavailable", async () => {
   const adapter = new SupportPassportModelAdapter({ routes: [] });
