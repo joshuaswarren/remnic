@@ -1,5 +1,4 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { constants as fsConstants, type Stats } from "node:fs";
 import { chmod, lstat, mkdir, open, rename, rm, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 
@@ -16,6 +15,7 @@ import {
   type SupportPassportGrantState,
   SupportPassportGrantStateSchema,
 } from "./grant-contracts.js";
+import { readPrivateFileNoFollow } from "./private-file.js";
 
 const GRANT_LOCK_STALE_MS = 30_000;
 const GRANT_LOCK_WAIT_MS = 5_000;
@@ -66,48 +66,6 @@ export async function syncDirectoryForDurability(
     if (!UNSUPPORTED_DIRECTORY_SYNC_ERRORS.has(code ?? "")) throw error;
   } finally {
     await handle?.close().catch(() => undefined);
-  }
-}
-
-function assertStableDirectory(before: Stats, opened: Stats, after: Stats, errorMessage: string): void {
-  if (
-    before.isSymbolicLink() ||
-    !before.isDirectory() ||
-    after.isSymbolicLink() ||
-    !after.isDirectory() ||
-    before.dev !== opened.dev ||
-    before.ino !== opened.ino ||
-    after.dev !== opened.dev ||
-    after.ino !== opened.ino
-  ) {
-    throw new Error(errorMessage);
-  }
-}
-
-async function readPrivateFileNoFollow(directory: string, filePath: string, errorMessage: string): Promise<string> {
-  const before = await lstat(directory);
-  let directoryHandle: FileHandle | undefined;
-  let fileHandle: FileHandle | undefined;
-  try {
-    directoryHandle = await open(
-      directory,
-      fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW
-    );
-    const opened = await directoryHandle.stat();
-    assertStableDirectory(before, opened, await lstat(directory), errorMessage);
-    try {
-      fileHandle = await open(filePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ELOOP") throw new Error(errorMessage);
-      throw error;
-    }
-    const fileMetadata = await fileHandle.stat();
-    assertStableDirectory(before, opened, await lstat(directory), errorMessage);
-    if (!fileMetadata.isFile() || fileMetadata.nlink !== 1) throw new Error(errorMessage);
-    return await fileHandle.readFile("utf8");
-  } finally {
-    await fileHandle?.close().catch(() => undefined);
-    await directoryHandle?.close().catch(() => undefined);
   }
 }
 
