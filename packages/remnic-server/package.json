@@ -18,7 +18,8 @@
   },
   "files": [
     "bin/*.js",
-    "dist"
+    "dist",
+    "src"
   ],
   "publishConfig": {
     "access": "public",

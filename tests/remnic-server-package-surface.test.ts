@@ -20,14 +20,25 @@ test("@remnic/server build emits and advertises TypeScript declarations", async 
 
   const pkg = JSON.parse(await readFile(path.join(SERVER_DIR, "package.json"), "utf8")) as {
     types?: string;
-    exports?: Record<string, { types?: string; import?: string }>;
+    exports?: Record<string, { types?: string; import?: string; "remnic-source"?: string }>;
+    files?: string[];
     scripts?: Record<string, string>;
   };
 
   assert.equal(pkg.types, "./dist/index.d.ts");
   assert.equal(pkg.exports?.["."]?.types, "./dist/index.d.ts");
   assert.equal(pkg.exports?.["."]?.import, "./dist/index.js");
+  assert.equal(pkg.exports?.["."]?.["remnic-source"], "./src/index.ts");
+  assert.equal(pkg.files?.includes("src"), true);
   assert.match(pkg.scripts?.build ?? "", /\s--dts(\s|$)/);
+
+  const pack = spawnSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+    cwd: SERVER_DIR,
+    encoding: "utf-8",
+  });
+  assert.equal(pack.status, 0, pack.stderr || pack.stdout);
+  const packResult = JSON.parse(pack.stdout) as Array<{ files?: Array<{ path?: string }> }>;
+  assert.equal(packResult[0]?.files?.some((file) => file.path === "src/index.ts"), true);
 
   const api = await import(pathToFileURL(path.join(SERVER_DIR, "dist", "index.js")).href);
   assert.equal(typeof api.startServer, "function");
