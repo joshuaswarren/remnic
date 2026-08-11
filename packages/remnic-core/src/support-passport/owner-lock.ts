@@ -29,3 +29,8 @@ export async function withSupportPassportOwnerLock<T>(
     )
   );
 }
+
+export async function requireSupportPassportOwnerLock(lock: HeldFileLockController): Promise<void> {
+  if (await lock.refresh()) return;
+  throw new SupportPassportError("storage_conflict", "The support passport changed during the request.", 409);
+}
