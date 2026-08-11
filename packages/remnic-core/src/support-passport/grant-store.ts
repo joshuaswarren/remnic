@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { chmod, lstat, mkdir, open, readFile, readdir, rename, rm } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 
 import { expandTildePath } from "../utils/path.js";
@@ -16,6 +16,7 @@ const GRANT_LOCK_STALE_MS = 30_000;
 const GRANT_LOCK_WAIT_MS = 5_000;
 const GRANT_LOCK_HEARTBEAT_MS = 10_000;
 const SAFE_GRANT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SAFE_OWNER_INDEX_HASH = /^[0-9a-f]{64}$/;
 
 export interface SupportPassportGrantStoreOptions {
   memoryDir: string;
@@ -80,6 +81,7 @@ async function writePrivateFileAtomically(filePath: string, content: string): Pr
 export class SupportPassportGrantStore {
   private readonly memoryDir: string;
   private readonly grantsDir: string;
+  private readonly ownerIndexesDir: string;
   private readonly now: () => Date;
   private readonly makeSecret: () => Buffer;
   private readonly makeGrantId: () => string;
@@ -87,6 +89,7 @@ export class SupportPassportGrantStore {
   constructor(options: SupportPassportGrantStoreOptions) {
     this.memoryDir = path.resolve(expandTildePath(options.memoryDir));
     this.grantsDir = path.join(this.memoryDir, "state", "support-passport", "grants");
+    this.ownerIndexesDir = path.join(this.grantsDir, "owners");
     this.now = options.now ?? (() => new Date());
     this.makeSecret = options.makeSecret ?? (() => randomBytes(32));
     this.makeGrantId = options.makeGrantId ?? randomUUID;
@@ -131,6 +134,12 @@ export class SupportPassportGrantStore {
         expiresAt: parsed.data.expiresAt,
       });
       await this.writeState(state, true);
+      try {
+        await this.addToOwnerIndex(state);
+      } catch (error) {
+        await rm(this.filePath(state.grantId), { force: true }).catch(() => undefined);
+        throw error;
+      }
       return { state, secret };
     });
   }
@@ -157,15 +166,10 @@ export class SupportPassportGrantStore {
   }
 
   async listForOwner(namespace: string, principal: string): Promise<SupportPassportGrantState[]> {
-    await this.ensureSafeDirectories();
-    const entries = await readdir(this.grantsDir, { withFileTypes: true });
     const principalHash = sha256("support-passport-principal:v1", principal);
+    const grantIds = await this.readOwnerIndex(namespace, principalHash);
     const states: SupportPassportGrantState[] = [];
-    for (const entry of entries) {
-      if (entry.isSymbolicLink()) continue;
-      if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-      const grantId = entry.name.slice(0, -5);
-      if (!SAFE_GRANT_ID.test(grantId)) continue;
+    for (const grantId of grantIds) {
       try {
         const state = await this.readState(grantId);
         if (state.namespace === namespace && hashesMatch(state.principalHash, principalHash)) states.push(state);
@@ -211,6 +215,71 @@ export class SupportPassportGrantStore {
     return path.join(this.grantsDir, `${grantId}.json`);
   }
 
+  private ownerIndexPath(ownerHash: string): string {
+    if (!SAFE_OWNER_INDEX_HASH.test(ownerHash)) throw new Error("support passport owner index hash is invalid");
+    return path.join(this.ownerIndexesDir, `${ownerHash}.json`);
+  }
+
+  private ownerHash(namespace: string, principalHash: string): string {
+    return sha256("support-passport-owner-index:v1", `${namespace}\0${principalHash}`);
+  }
+
+  private async addToOwnerIndex(state: SupportPassportGrantState): Promise<void> {
+    const ownerHash = this.ownerHash(state.namespace, state.principalHash);
+    const current = await this.readOwnerIndexByHash(ownerHash);
+    if (current.includes(state.grantId)) return;
+    const grantIds = [...current, state.grantId].sort((a, b) => a.localeCompare(b));
+    await this.writeOwnerIndex(ownerHash, grantIds);
+  }
+
+  private async readOwnerIndex(namespace: string, principalHash: string): Promise<string[]> {
+    return await this.readOwnerIndexByHash(this.ownerHash(namespace, principalHash));
+  }
+
+  private async readOwnerIndexByHash(ownerHash: string): Promise<string[]> {
+    await this.ensureSafeDirectories();
+    const filePath = this.ownerIndexPath(ownerHash);
+    let content: string;
+    try {
+      const metadata = await lstat(filePath);
+      if (metadata.isSymbolicLink() || !metadata.isFile()) {
+        throw new Error("support passport owner indexes must be regular files");
+      }
+      content = await readFile(filePath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    const parsed: unknown = JSON.parse(content);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("support passport owner index is invalid");
+    }
+    const record = parsed as Record<string, unknown>;
+    const grantIds = record.grantIds;
+    if (record.schemaVersion !== 1 || record.ownerHash !== ownerHash || !Array.isArray(grantIds)) {
+      throw new Error("support passport owner index is invalid");
+    }
+    if (grantIds.some((grantId) => typeof grantId !== "string" || !SAFE_GRANT_ID.test(grantId))) {
+      throw new Error("support passport owner index is invalid");
+    }
+    const uniqueGrantIds = new Set(grantIds as string[]);
+    if (uniqueGrantIds.size !== grantIds.length) throw new Error("support passport owner index is invalid");
+    return [...uniqueGrantIds];
+  }
+
+  private async writeOwnerIndex(ownerHash: string, grantIds: string[]): Promise<void> {
+    const filePath = this.ownerIndexPath(ownerHash);
+    try {
+      const metadata = await lstat(filePath);
+      if (metadata.isSymbolicLink() || !metadata.isFile()) {
+        throw new Error("support passport owner indexes must be regular files");
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    await writePrivateFileAtomically(filePath, `${JSON.stringify({ schemaVersion: 1, ownerHash, grantIds }, null, 2)}\n`);
+  }
+
   private async readState(grantId: string): Promise<SupportPassportGrantState> {
     await this.ensureSafeDirectories();
     const filePath = this.filePath(grantId);
@@ -241,6 +310,7 @@ export class SupportPassportGrantStore {
       path.join(this.memoryDir, "state"),
       path.join(this.memoryDir, "state", "support-passport"),
       this.grantsDir,
+      this.ownerIndexesDir,
     ];
     for (const directory of directories) {
       await mkdir(directory, { recursive: true, mode: 0o700 });
