@@ -72,6 +72,37 @@ test("draft generation retries the full job after invalid output", async () => {
   assert.equal(result.cards[0]?.sourceMemoryIds[0], "memory-1");
 });
 
+test("draft generation rejects titles that can corrupt stored attribute suffixes", async () => {
+  const calls: string[] = [];
+  const adapter = new SupportPassportModelAdapter({
+    routes: [
+      route(
+        "local",
+        JSON.stringify({
+          cards: [
+            {
+              title: "Plan changes ] hidden",
+              statement: "Tell me before plans change.",
+              category: "transitions",
+              sourceMemoryIds: ["memory-1"],
+            },
+          ],
+        }),
+        calls
+      ),
+    ],
+  });
+
+  await assert.rejects(
+    adapter.draftCards({
+      consent: true,
+      memories: [{ memoryId: "memory-1", content: "Tell me before plans change." }],
+    }),
+    (error: unknown) => error instanceof SupportPassportError && error.code === "model_output_invalid"
+  );
+  assert.deepEqual(calls, ["local"]);
+});
+
 test("draft generation requires explicit consent before any model call", async () => {
   const calls: string[] = [];
   const adapter = new SupportPassportModelAdapter({

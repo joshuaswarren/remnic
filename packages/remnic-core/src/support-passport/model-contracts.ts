@@ -1,13 +1,17 @@
 import { z } from "zod";
 
-import { SupportPassportCardCategorySchema, SupportPassportMemoryIdSchema } from "./contracts.js";
+import {
+  SupportPassportCardCategorySchema,
+  SupportPassportCardTitleSchema,
+  SupportPassportMemoryIdSchema,
+} from "./contracts.js";
 import { SupportPassportPublicGuideSchema } from "./grant-contracts.js";
 
 export const SUPPORT_PASSPORT_NOT_IN_GUIDE_ANSWER = "That is not covered in this person's support guide.";
 
 export const SupportPassportDraftCardSchema = z
   .object({
-    title: z.string().trim().min(1).max(80),
+    title: SupportPassportCardTitleSchema,
     statement: z.string().trim().min(1).max(500),
     category: SupportPassportCardCategorySchema,
     sourceMemoryIds: z.array(SupportPassportMemoryIdSchema).min(1).max(5),

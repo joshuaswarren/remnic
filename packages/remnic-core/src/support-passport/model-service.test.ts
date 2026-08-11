@@ -130,6 +130,66 @@ test("drafting reads only selected memories and persists pending cards with a co
   }
 });
 
+test("drafting persists into the owner scope used for source reads", async () => {
+  StorageManager.clearAllStaticCaches();
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-model-owner-scope-"));
+  const aliceStorage = new StorageManager(path.join(root, "alice"));
+  const bobStorage = new StorageManager(path.join(root, "bob"));
+  try {
+    await Promise.all([aliceStorage.ensureDirectories(), bobStorage.ensureDirectories()]);
+    const selected = await aliceStorage.writeMemory("preference", "Tell me before plans change.", {
+      source: "test",
+    });
+    let ownerResolutions = 0;
+    const resolveOwner = async () => {
+      ownerResolutions += 1;
+      return ownerResolutions === 1
+        ? { namespace: "alice", storage: aliceStorage }
+        : { namespace: "bob", storage: bobStorage };
+    };
+    const cardService = new SupportPassportCardService({ resolveOwner });
+    const service = new SupportPassportDraftService({
+      cardService,
+      modelAdapter: new SupportPassportModelAdapter({
+        routes: [
+          {
+            kind: "local",
+            invoke: async () => ({
+              modelUsed: "local/test-model",
+              content: JSON.stringify({
+                cards: [
+                  {
+                    title: "Plan changes",
+                    statement: "Tell me before plans change.",
+                    category: "transitions",
+                    sourceMemoryIds: [selected.id],
+                  },
+                ],
+              }),
+            }),
+          },
+        ],
+      }),
+      resolveOwner,
+      audit: { record: async () => undefined },
+    });
+
+    const cards = await service.draftCards({
+      principal: "owner:alice",
+      sourceMemoryIds: [selected.id],
+      consent: true,
+    });
+
+    assert.equal(ownerResolutions, 1);
+    assert.equal(cards.length, 1);
+    assert.ok(await aliceStorage.getMemoryById(cards[0]?.cardId ?? ""));
+    assert.deepEqual(await bobStorage.readAllMemories(), []);
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("model failures produce a content-free audit record with an error class", async () => {
   const subject = await makeSubject();
   try {

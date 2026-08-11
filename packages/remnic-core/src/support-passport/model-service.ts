@@ -166,8 +166,8 @@ export class SupportPassportDraftService {
     };
     try {
       await this.revalidateSources(owner.storage, memories);
-      const cards = await this.cardService.createGeneratedDrafts({
-        principal: parsed.data.principal,
+      const cards = await this.cardService.createGeneratedDraftsForOwner({
+        owner,
         cards: modelResult.cards,
       });
       scheduleAudit(this.audit, { ...auditBase, outcome: "success" });

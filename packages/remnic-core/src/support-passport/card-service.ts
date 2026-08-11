@@ -99,9 +99,18 @@ export class SupportPassportCardService {
     cards: SupportPassportDraftCard[];
   }): Promise<SupportPassportCard[]> {
     const principal = SupportPassportListCardsInputSchema.safeParse({ principal: input.principal });
+    if (!principal.success) throw invalidInput();
+    const owner = await this.resolveOwner(principal.data.principal);
+    return await this.createGeneratedDraftsForOwner({ owner, cards: input.cards });
+  }
+
+  async createGeneratedDraftsForOwner(input: {
+    owner: SupportPassportOwnerScope;
+    cards: SupportPassportDraftCard[];
+  }): Promise<SupportPassportCard[]> {
     const output = SupportPassportDraftOutputSchema.safeParse({ cards: input.cards });
-    if (!principal.success || !output.success) throw invalidInput();
-    const { storage } = await this.resolveOwner(principal.data.principal);
+    if (!output.success) throw invalidInput();
+    const { storage } = input.owner;
     return await this.withOwnerLock(storage, async (lock) => {
       const created: SupportPassportCard[] = [];
       try {
