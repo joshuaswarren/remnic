@@ -42,3 +42,18 @@ test("support card revisions change when any public field changes", () => {
   });
   assert.notEqual(changed, initial.revision);
 });
+
+test("support card revisions ignore object key insertion order", () => {
+  const initial = makeCard("card-1");
+  const reordered = {
+    reviewBy: initial.reviewBy,
+    updatedAt: initial.updatedAt,
+    status: initial.status,
+    category: initial.category,
+    statement: initial.statement,
+    title: initial.title,
+    cardId: initial.cardId,
+  };
+
+  assert.equal(computeSupportPassportCardRevision(reordered), initial.revision);
+});

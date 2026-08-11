@@ -50,7 +50,7 @@ test("manual support cards stay private until their owner approves them", async 
 
     assert.equal(draft.status, "pending_review");
     assert.equal(draft.statement, "Tell me before plans change.");
-    assert.equal(draft.reviewBy, "2027-02-07T12:00:00.000Z");
+    assert.equal(draft.reviewBy, "2026-08-11T12:00:00.000Z");
     assert.match(draft.revision, /^[a-f0-9]{64}$/);
     assert.deepEqual(await subject.service.listCards({ principal: "owner:bob" }), []);
 
@@ -61,6 +61,15 @@ test("manual support cards stay private until their owner approves them", async 
     assert.ok(stored.frontmatter.tags.includes("support-passport-card"));
     assert.equal(stored.frontmatter.structuredAttributes?.["support-passport-title"], "When plans change");
 
+    await assert.rejects(
+      subject.service.approveCard({
+        principal: "owner:bob",
+        cardId: draft.cardId,
+        expectedRevision: draft.revision,
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "card_not_found"
+    );
+
     subject.advance();
     const approved = await subject.service.approveCard({
       principal: "owner:alice",
@@ -70,6 +79,7 @@ test("manual support cards stay private until their owner approves them", async 
 
     assert.equal(approved.status, "active");
     assert.notEqual(approved.revision, draft.revision);
+    assert.equal(approved.reviewBy, "2026-08-11T12:00:00.000Z");
     assert.equal((await subject.service.listCards({ principal: "owner:alice" }))[0]?.cardId, draft.cardId);
   } finally {
     await subject.cleanup();
