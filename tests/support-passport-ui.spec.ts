@@ -328,3 +328,80 @@ test("a live helper view locks after the owner revokes its grant", async ({ page
   expect(reads).toBeGreaterThanOrEqual(2);
   await expect(page.locator(".public-card")).toHaveCount(0);
 });
+
+test("a stalled helper revalidation aborts and later observes revocation", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers revalidation recovery.");
+  const now = new Date("2026-08-11T12:00:00.000Z");
+  await page.clock.install({ time: now });
+  await page.addInitScript(() => {
+    const realFetch = window.fetch.bind(window);
+    let grantReads = 0;
+    Object.assign(window, { __revalidationAbortObserved: false });
+    window.fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes("replay-grant-stalled") && (init?.method ?? "GET") === "GET") {
+        grantReads += 1;
+        if (grantReads === 2) {
+          return await new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener(
+              "abort",
+              () => {
+                Object.assign(window, { __revalidationAbortObserved: true });
+                reject(new DOMException("The request was aborted.", "AbortError"));
+              },
+              { once: true }
+            );
+          });
+        }
+      }
+      return await realFetch(input, init);
+    };
+  });
+  let serverReads = 0;
+  await page.route("**/engram/v1/support-passport/public/grants/replay-grant-stalled", async (route) => {
+    serverReads += 1;
+    if (serverReads > 1) {
+      await route.fulfill({
+        status: 410,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "ended", code: "grant_gone" }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      headers: { date: now.toUTCString() },
+      contentType: "application/json",
+      body: JSON.stringify({
+        schemaVersion: 1,
+        grantId: "replay-grant-stalled",
+        expiresAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
+        updatedAt: now.toISOString(),
+        cards: [
+          {
+            cardId: "card-stalled",
+            title: "Quiet place",
+            statement: "Offer me a quiet place and time.",
+            category: "environment",
+            updatedAt: now.toISOString(),
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.goto(helperUrl("-stalled").replace("mode=replay&", ""));
+  await expect(page.locator(".public-card")).toHaveCount(1);
+  await page.clock.fastForward(15_000);
+  await page.clock.fastForward(10_000);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as typeof window & { __revalidationAbortObserved?: boolean }).__revalidationAbortObserved
+      )
+    )
+    .toBe(true);
+  await page.clock.fastForward(15_000);
+  await expect(page.getByRole("heading", { name: "This support passport is locked." })).toBeVisible();
+  expect(serverReads).toBe(2);
+});

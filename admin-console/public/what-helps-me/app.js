@@ -15,6 +15,7 @@
   const replayChannel =
     replayMode && "BroadcastChannel" in window ? new BroadcastChannel("remnic-what-helps-me-replay") : null;
   const HELPER_REVALIDATION_MS = 15_000;
+  const HELPER_REVALIDATION_TIMEOUT_MS = 10_000;
 
   const state = {
     token: "",
@@ -620,6 +621,7 @@
     const controller = new AbortController();
     state.helperRevalidationController?.abort();
     state.helperRevalidationController = controller;
+    const timeout = window.setTimeout(() => controller.abort(), HELPER_REVALIDATION_TIMEOUT_MS);
     try {
       state.guide = await readHelperGuide(controller.signal);
       scheduleHelperExpiry();
@@ -630,6 +632,7 @@
         return;
       }
     } finally {
+      window.clearTimeout(timeout);
       if (state.helperRevalidationController === controller) {
         state.helperRevalidationController = null;
         scheduleHelperRevalidation();
