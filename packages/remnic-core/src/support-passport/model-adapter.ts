@@ -218,7 +218,9 @@ export function buildSupportPassportDirectGatewayConfig(
   if (!config.openaiApiKey) return undefined;
   const providerId = "remnic-direct";
   const baseUrl = config.openaiBaseUrl ?? "https://api.openai.com/v1";
-  const normalizedBaseUrl = baseUrl.replace(/\/+$/, "");
+  let baseUrlEnd = baseUrl.length;
+  while (baseUrlEnd > 0 && baseUrl.charCodeAt(baseUrlEnd - 1) === 47) baseUrlEnd -= 1;
+  const normalizedBaseUrl = baseUrl.slice(0, baseUrlEnd);
   const api =
     normalizedBaseUrl === "https://api.openai.com" || normalizedBaseUrl === "https://api.openai.com/v1"
       ? "openai-responses"

@@ -358,6 +358,15 @@ test("direct OpenAI models use the existing Responses API transport", () => {
   });
 });
 
+test("direct OpenAI route detection ignores repeated trailing slashes", () => {
+  const config = buildSupportPassportDirectGatewayConfig({
+    openaiApiKey: "test-key",
+    openaiBaseUrl: "https://api.openai.com/v1////",
+    model: "test-model",
+  });
+  assert.equal(config?.models?.providers?.["remnic-direct"]?.api, "openai-responses");
+});
+
 test("direct compatible APIs keep their configured fallback transport", () => {
   const config = buildSupportPassportDirectGatewayConfig({
     openaiApiKey: "test-key",
