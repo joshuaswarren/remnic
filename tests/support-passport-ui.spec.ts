@@ -936,6 +936,32 @@ test("a new helper question clears the prior answer before dispatch", async ({ p
   await expect(page.locator("#answerPanel")).toBeHidden();
 });
 
+test("replay helpers receive only the card selected by the owner", async ({ page, context }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers replay grant transfer.");
+  await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
+  await page.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
+  await page.getByRole("button", { name: "Draft my support cards" }).click();
+  const planCard = page.locator(".support-card").filter({ hasText: "Plan changes" });
+  await planCard.getByRole("button", { name: "Approve" }).click();
+  await page.locator(".card-choice").filter({ hasText: "Plan changes" }).locator('input[name="shareCard"]').check();
+  await page.getByRole("button", { name: "Create share link" }).click();
+  const shareUrl = await page.locator("#shareLinkInput").inputValue();
+
+  const helper = await context.newPage();
+  try {
+    await helper.goto(shareUrl);
+    await expect(helper.locator(".public-card")).toHaveCount(1);
+    await expect(helper.locator(".public-card").getByRole("heading", { name: "Plan changes" })).toBeVisible();
+    await expect(helper.getByRole("heading", { name: "Lighting" })).toHaveCount(0);
+    await helper.getByLabel("Your question").fill("What should I do when plans change?");
+    await helper.getByRole("button", { name: "Ask from this guide" }).click();
+    await expect(helper.locator("#answerCopy")).toHaveText("Tell me before plans change.");
+    await expect(helper.locator(".citation")).toContainText("Plan changes");
+  } finally {
+    await helper.close();
+  }
+});
+
 test("a bad helper link has a clear locked view", async ({ page }, testInfo) => {
   await page.goto(`${origin}/remnic/ui/what-helps-me/#secret=${"s".repeat(43)}`);
 

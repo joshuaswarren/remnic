@@ -63,12 +63,13 @@ async function capture() {
     await owner.getByLabel("Card title").fill("Softer lighting");
     await owner.getByRole("button", { name: "Save draft" }).click();
     await owner.getByRole("heading", { name: "Softer lighting" }).waitFor();
-    await owner.getByRole("button", { name: "Approve" }).first().click();
-    await owner.locator(".status-pill.approved").waitFor();
+    const planCard = owner.locator(".support-card").filter({ hasText: "Plan changes" });
+    await planCard.getByRole("button", { name: "Approve" }).click();
+    await planCard.locator(".status-pill.approved").waitFor();
     await page.screenshot({ path: path.join(outputDir, "owner-approved.png") });
     await pause(page);
 
-    await owner.locator('input[name="shareCard"]').first().check();
+    await owner.locator(".card-choice").filter({ hasText: "Plan changes" }).locator('input[name="shareCard"]').check();
     await owner.getByRole("button", { name: "Create share link" }).click();
     await owner.getByText("Share link ready").waitFor();
     const shareUrl = await owner.locator("#shareLinkInput").inputValue();
@@ -81,10 +82,12 @@ async function capture() {
     await showFrame(page, "helper");
     const helper = page.frameLocator("#helperFrame");
     await helper.getByRole("heading", { name: "What helps me" }).waitFor();
+    await helper.locator(".public-card").waitFor();
+    await helper.locator(".public-card").getByRole("heading", { name: "Plan changes" }).waitFor();
     await pause(page);
-    await helper.getByLabel("Your question").fill("What should I do when this person is overwhelmed?");
+    await helper.getByLabel("Your question").fill("What should I do when plans change?");
     await helper.getByRole("button", { name: "Ask from this guide" }).click();
-    await helper.getByText("Offer a quiet place and time. Give the person space to respond.").waitFor();
+    await helper.locator("#answerCopy").getByText("Tell me before plans change.", { exact: true }).waitFor();
     await page.screenshot({ path: path.join(outputDir, "helper-answer.png") });
     await pause(page, 1_800);
 

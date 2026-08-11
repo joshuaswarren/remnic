@@ -34,6 +34,7 @@
     "grant_stale",
     "missing_link",
   ]);
+  const REPLAY_SYNC_TIMEOUT_MS = 250;
 
   const state = {
     token: "",
@@ -236,6 +237,50 @@
     byId("lockedView").remove();
     byId("ownerView").hidden = false;
     byId("viewMarkerText").textContent = replayMode ? "Owner replay" : "Owner view";
+  }
+
+  function requestReplaySharedGuide() {
+    if (!replayChannel) return Promise.resolve(null);
+    const requestId = crypto.randomUUID();
+    return new Promise((resolve) => {
+      let timeout;
+      const finish = (snapshot) => {
+        window.clearTimeout(timeout);
+        replayChannel.removeEventListener("message", receive);
+        resolve(snapshot);
+      };
+      const receive = (event) => {
+        if (event.data?.type === "grant-state" && event.data.requestId === requestId) {
+          finish(event.data.snapshot ?? null);
+        }
+      };
+      replayChannel.addEventListener("message", receive);
+      timeout = window.setTimeout(() => finish(null), REPLAY_SYNC_TIMEOUT_MS);
+      replayChannel.postMessage({
+        type: "grant-request",
+        requestId,
+        grantId: state.helperGrantId,
+        secret: state.helperSecret,
+      });
+    });
+  }
+
+  function bindReplayOwnerBridge() {
+    if (!replayChannel || !replayStore) return;
+    replayChannel.addEventListener("message", (event) => {
+      const request = event.data;
+      if (
+        request?.type !== "grant-request" ||
+        typeof request.requestId !== "string" ||
+        typeof request.grantId !== "string" ||
+        typeof request.secret !== "string"
+      ) {
+        return;
+      }
+      const snapshot = replayStore.exportSharedGuide(request.grantId, request.secret);
+      if (snapshot) replayChannel.postMessage({ type: "grant-state", requestId: request.requestId, snapshot });
+    });
+    window.addEventListener("pagehide", () => replayChannel.close(), { once: true });
   }
 
   function renderSelectedNotes() {
@@ -921,7 +966,10 @@
       showLocked(error);
       return;
     }
-    if (replayMode) replayStore.seedSharedGuide(state.helperGrantId, state.helperSecret);
+    if (replayMode) {
+      const sharedState = await requestReplaySharedGuide();
+      replayStore.seedSharedGuide(state.helperGrantId, state.helperSecret, sharedState);
+    }
     const controller = new AbortController();
     state.helperLoadController?.abort();
     state.helperLoadController = controller;
@@ -1072,6 +1120,7 @@
       renderSelectedNotes();
       await loadOwnerState();
       showOwner();
+      bindReplayOwnerBridge();
       return;
     }
     if (prefill) byId("tokenInput").value = prefill;

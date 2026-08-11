@@ -469,19 +469,49 @@
         }
         return { card: { ...card } };
       },
-      seedSharedGuide(grantId, secret) {
-        cards = REPLAY_DRAFTS.map((draft) => makeCard(draft, "active"));
-        grants = [
-          {
-            grantId,
-            stateVersion: 1,
-            cards: cards.map((card) => ({ cardId: card.cardId, revision: card.revision })),
-            createdAt: now().toISOString(),
-            expiresAt: new Date(now().getTime() + 2 * 60 * 60_000).toISOString(),
-            status: "active",
-          },
-        ];
+      seedSharedGuide(grantId, secret, sharedState) {
+        if (sharedState !== null && sharedState !== undefined) {
+          if (!hasExactKeys(sharedState, ["grant", "cards"])) {
+            throw new Error("The replay share state is invalid.");
+          }
+          const sharedGrant = assertGrant(sharedState.grant);
+          const sharedCards = parseCardList({ cards: sharedState.cards });
+          const cardsById = new Map(sharedCards.map((card) => [card.cardId, card]));
+          if (
+            sharedGrant.grantId !== grantId ||
+            sharedCards.length !== sharedGrant.cards.length ||
+            sharedGrant.cards.some((reference) => cardsById.get(reference.cardId)?.revision !== reference.revision)
+          ) {
+            throw new Error("The replay share state is invalid.");
+          }
+          cards = sharedCards.map((card) => ({ ...card }));
+          grants = [{ ...sharedGrant, cards: sharedGrant.cards.map((card) => ({ ...card })) }];
+        } else {
+          cards = REPLAY_DRAFTS.map((draft) => makeCard(draft, "active"));
+          grants = [
+            {
+              grantId,
+              stateVersion: 1,
+              cards: cards.map((card) => ({ cardId: card.cardId, revision: card.revision })),
+              createdAt: now().toISOString(),
+              expiresAt: new Date(now().getTime() + 2 * 60 * 60_000).toISOString(),
+              status: "active",
+            },
+          ];
+        }
         secrets.set(grantId, secret);
+      },
+      exportSharedGuide(grantId, secret) {
+        const grant = grants.find((candidate) => candidate.grantId === grantId);
+        if (!grant || secrets.get(grantId) !== secret) return null;
+        const selected = grant.cards.map((reference) =>
+          cards.find((card) => card.cardId === reference.cardId && card.revision === reference.revision)
+        );
+        if (selected.some((card) => !card)) return null;
+        return {
+          grant: { ...grant, cards: grant.cards.map((card) => ({ ...card })) },
+          cards: selected.map((card) => ({ ...card })),
+        };
       },
       async createGrant(input) {
         const selected = input.cardIds.map((cardId) => cards.find((card) => card.cardId === cardId));
@@ -539,6 +569,14 @@
       },
       async askGrant(grantId, secret, question) {
         const guide = await this.readGrant(grantId, secret);
+        const transitionCard = guide.cards.find((card) => card.category === "transitions");
+        if (transitionCard && /plan|change|transition/i.test(question)) {
+          return {
+            answer: transitionCard.statement,
+            citedCardIds: [transitionCard.cardId],
+            coverage: "grounded",
+          };
+        }
         const quietCard = guide.cards.find((card) => card.category === "communication") || guide.cards[0];
         if (!quietCard || !/overwhelm|speaking|quiet/i.test(question)) {
           return {
