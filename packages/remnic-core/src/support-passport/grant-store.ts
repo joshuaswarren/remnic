@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { chmod, lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { constants as fsConstants, type Stats } from "node:fs";
+import { chmod, lstat, mkdir, open, rename, rm, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 
 import { expandTildePath } from "../utils/path.js";
@@ -55,6 +56,48 @@ async function syncDirectory(directory: string): Promise<void> {
     return;
   } finally {
     await handle?.close().catch(() => undefined);
+  }
+}
+
+function assertStableDirectory(before: Stats, opened: Stats, after: Stats, errorMessage: string): void {
+  if (
+    before.isSymbolicLink() ||
+    !before.isDirectory() ||
+    after.isSymbolicLink() ||
+    !after.isDirectory() ||
+    before.dev !== opened.dev ||
+    before.ino !== opened.ino ||
+    after.dev !== opened.dev ||
+    after.ino !== opened.ino
+  ) {
+    throw new Error(errorMessage);
+  }
+}
+
+async function readPrivateFileNoFollow(directory: string, filePath: string, errorMessage: string): Promise<string> {
+  const before = await lstat(directory);
+  let directoryHandle: FileHandle | undefined;
+  let fileHandle: FileHandle | undefined;
+  try {
+    directoryHandle = await open(
+      directory,
+      fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW
+    );
+    const opened = await directoryHandle.stat();
+    assertStableDirectory(before, opened, await lstat(directory), errorMessage);
+    try {
+      fileHandle = await open(filePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ELOOP") throw new Error(errorMessage);
+      throw error;
+    }
+    const fileMetadata = await fileHandle.stat();
+    assertStableDirectory(before, opened, await lstat(directory), errorMessage);
+    if (!fileMetadata.isFile() || fileMetadata.nlink !== 1) throw new Error(errorMessage);
+    return await fileHandle.readFile("utf8");
+  } finally {
+    await fileHandle?.close().catch(() => undefined);
+    await directoryHandle?.close().catch(() => undefined);
   }
 }
 
@@ -241,11 +284,11 @@ export class SupportPassportGrantStore {
     const filePath = this.ownerIndexPath(ownerHash);
     let content: string;
     try {
-      const metadata = await lstat(filePath);
-      if (metadata.isSymbolicLink() || !metadata.isFile()) {
-        throw new Error("support passport owner indexes must be regular files");
-      }
-      content = await readFile(filePath, "utf8");
+      content = await readPrivateFileNoFollow(
+        this.ownerIndexesDir,
+        filePath,
+        "support passport owner indexes must be regular files in a stable directory"
+      );
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
       throw error;
@@ -283,10 +326,14 @@ export class SupportPassportGrantStore {
   private async readState(grantId: string): Promise<SupportPassportGrantState> {
     await this.ensureSafeDirectories();
     const filePath = this.filePath(grantId);
-    const metadata = await lstat(filePath);
-    if (metadata.isSymbolicLink() || !metadata.isFile())
-      throw new Error("support passport grant files must be regular files");
-    return SupportPassportGrantStateSchema.parse(JSON.parse(await readFile(filePath, "utf8")));
+    const content = await readPrivateFileNoFollow(
+      this.grantsDir,
+      filePath,
+      "support passport grant files must be regular files in a stable directory"
+    );
+    const state = SupportPassportGrantStateSchema.parse(JSON.parse(content));
+    if (state.grantId !== grantId) throw new Error("support passport grant ID must match its file name");
+    return state;
   }
 
   private async writeState(state: SupportPassportGrantState, requireAbsent = false): Promise<void> {
