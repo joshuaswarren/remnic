@@ -196,6 +196,21 @@ async function requestJson(url, init, expectedStatus, label) {
   };
 }
 
+async function waitForReady(baseUrl, authToken) {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`${baseUrl}/engram/v1/health`, {
+        headers: { authorization: `Bearer ${authToken}` },
+        signal: AbortSignal.timeout(1_000),
+      });
+      if (response.status === 200) return;
+    } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new DemoFailure("The fresh Remnic server did not become ready.");
+}
+
 function ownerHeaders(authToken) {
   return { authorization: `Bearer ${authToken}`, "content-type": "application/json" };
 }
@@ -337,13 +352,13 @@ async function run(options) {
         writeRateLimitMaxRequests: 60,
         writeRateLimitWindowMs: 60_000,
         adminConsoleEnabled: false,
-        readinessOverride: true,
       },
     };
     await writeFile(configPath, `${JSON.stringify(derivedConfig)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
     server = await startServer({ configPath, host: "127.0.0.1", port, authToken });
     const baseUrl = `http://127.0.0.1:${server.port}`;
     const headers = ownerHeaders(authToken);
+    await waitForReady(baseUrl, authToken);
 
     console.log("[1/9] Started a fresh loopback Remnic server.");
     const sourceMemoryIds = [];
