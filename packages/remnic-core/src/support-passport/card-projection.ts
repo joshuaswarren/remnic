@@ -3,6 +3,7 @@ import { stripAttributesSuffix } from "../structured-attributes.js";
 import {
   computeSupportPassportCardRevision,
   SupportPassportCardCategorySchema,
+  SupportPassportMemoryIdSchema,
   SupportPassportCardSchema,
   SupportPassportCardStatusSchema,
   type SupportPassportCard,
@@ -25,15 +26,11 @@ export interface StoredSupportPassportCard {
 }
 
 function parseSourceMemoryIds(value: string): string[] | null {
-  try {
-    const parsed: unknown = JSON.parse(value);
-    if (!Array.isArray(parsed) || parsed.length > 5) return null;
-    if (parsed.some((id) => typeof id !== "string" || id.length < 1 || id.length > 128)) return null;
-    if (new Set(parsed).size !== parsed.length) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
+  if (value === "") return [];
+  const parsed = value.split(",");
+  if (parsed.length > 5 || parsed.some((id) => !SupportPassportMemoryIdSchema.safeParse(id).success)) return null;
+  if (new Set(parsed).size !== parsed.length) return null;
+  return parsed;
 }
 
 export function projectSupportPassportCard(memory: MemoryFile): StoredSupportPassportCard | null {

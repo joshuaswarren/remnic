@@ -23,9 +23,10 @@ export const SupportPassportCardCategorySchema = z.enum(SUPPORT_PASSPORT_CARD_CA
 export const SupportPassportCardStatusSchema = z.enum(SUPPORT_PASSPORT_CARD_STATUSES);
 
 const IsoTimestampSchema = z.string().datetime({ offset: true });
+export const SupportPassportMemoryIdSchema = z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9._:-]+$/);
 
 export const SupportPassportCardSchema = z.object({
-  cardId: z.string().trim().min(1).max(128),
+  cardId: SupportPassportMemoryIdSchema,
   title: z.string().trim().min(1).max(80),
   statement: z.string().trim().min(1).max(500),
   category: SupportPassportCardCategorySchema,
@@ -63,7 +64,7 @@ export const SupportPassportManualDraftInputSchema = z.object({
 
 export const SupportPassportCardMutationInputSchema = z.object({
   principal: z.string().trim().min(1).max(512),
-  cardId: z.string().trim().min(1).max(128),
+  cardId: SupportPassportMemoryIdSchema,
   expectedRevision: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
 

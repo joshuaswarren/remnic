@@ -151,7 +151,7 @@ export class SupportPassportCardService {
         [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.category]: input.category,
         [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.order]: String(order),
         [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.reviewBy]: reviewBy,
-        [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.sourceMemoryIds]: JSON.stringify(input.sourceMemoryIds),
+        [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.sourceMemoryIds]: input.sourceMemoryIds.join(","),
       },
       sourceReason: "support-passport",
     }, { source: "support-passport", now: this.now });
