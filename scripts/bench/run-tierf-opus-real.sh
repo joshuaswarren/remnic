@@ -46,6 +46,9 @@ step() { printf '\n=== %s — %s ===\n' "$(date -u +%FT%TZ)" "$1"; }
 # real-profile artifacts carry no kappa and the publishability gate fails.
 preflight_calibration_state() {
   local benchmark="$1"
+  local expected_source_result_id="$2"
+  local expected_answer_set_hash="$3"
+  local expected_ordered_question_ids_hash="$4"
   local file="$CALIBRATION_DIR/${benchmark}.json"
   if [ ! -f "$file" ] || ! python3 -c "
 import json, math, sys
@@ -61,9 +64,12 @@ expected_sample_size = int(sys.argv[2])
 assert d.get('sampleSize') == expected_sample_size, f\"sampleSize: {d.get('sampleSize')} (expected {expected_sample_size})\"
 assert is_finite_number(d.get('threshold')), f\"threshold: {d.get('threshold')}\"
 assert isinstance(d.get('warning'), bool), f\"warning: {d.get('warning')}\"
-assert isinstance(d.get('sourceResultId'), str) and d['sourceResultId'], 'missing sourceResultId'
-answer_hash = d.get('answerSetHash')
-assert isinstance(answer_hash, str) and len(answer_hash) == 64 and all(c in '0123456789abcdef' for c in answer_hash), 'missing or invalid answerSetHash'
+expected_source_result_id = sys.argv[3]
+assert d.get('sourceResultId') == expected_source_result_id, f\"sourceResultId: {d.get('sourceResultId')} (expected {expected_source_result_id})\"
+expected_answer_set_hash = sys.argv[4]
+assert d.get('answerSetHash') == expected_answer_set_hash, f\"answerSetHash: {d.get('answerSetHash')} (expected {expected_answer_set_hash})\"
+expected_ordered_question_ids_hash = sys.argv[5]
+assert d.get('orderedQuestionIdsHash') == expected_ordered_question_ids_hash, f\"orderedQuestionIdsHash: {d.get('orderedQuestionIdsHash')} (expected {expected_ordered_question_ids_hash})\"
 assert isinstance(d.get('sliceQuestionIds'), list), 'missing sliceQuestionIds'
 assert len(d['sliceQuestionIds']) == expected_sample_size, f\"sliceQuestionIds: {len(d['sliceQuestionIds'])}\"
 assert len(set(d['sliceQuestionIds'])) == expected_sample_size, 'sliceQuestionIds contains duplicates'
@@ -74,15 +80,21 @@ assert type(d.get('bootstrapSamples')) is int and d['bootstrapSamples'] > 0, f\"
 for key in ('localJudgeConfigHash', 'frontierJudgeConfigHash'):
   value = d.get(key)
   assert isinstance(value, str) and len(value) == 64 and all(c in '0123456789abcdef' for c in value), f\"missing or invalid {key}\"
-" "$file" "$CALIBRATION_SAMPLE_SIZE" 2>/dev/null; then
+" "$file" "$CALIBRATION_SAMPLE_SIZE" "$expected_source_result_id" "$expected_answer_set_hash" "$expected_ordered_question_ids_hash" 2>/dev/null; then
     echo "BLOCKED: calibration state for ${benchmark} is missing, corrupt, unpinned, below the ${CALIBRATION_SAMPLE_SIZE}-question contract, or scoped to a different judge pair - rerun judge-calibrate against the pinned answer source." >&2
     exit 3
   fi
 }
 
 step "preflight: calibration state (from baseline pass)"
-preflight_calibration_state locomo
-preflight_calibration_state longmemeval
+preflight_calibration_state locomo \
+  6e499698-6eaf-4a06-8a81-3d90dd867e57 \
+  a360907a60753d56bd066de88eb903464f1cb4f8fef89a930dd6a5f728f3ad81 \
+  9a603e17ed3c0eae426243364e6a98b5b4932bfe723ed3332408b825b9860869
+preflight_calibration_state longmemeval \
+  a7ab6f70-5661-499e-b4b2-99bf0830368c \
+  009e69a367b0d048f7db18bf51cde91b690a7520ce7246cee6f35ab9c5ca02e4 \
+  9778429495a91bb01db6899743d4476c0a4f1848789fce175ef2df90d100e3f5
 
 LONGMEM_LOCAL_HASH="$(node -p "require(process.argv[1]).localJudgeConfigHash" "$CALIBRATION_DIR/longmemeval.json")"
 LONGMEM_FRONTIER_HASH="$(node -p "require(process.argv[1]).frontierJudgeConfigHash" "$CALIBRATION_DIR/longmemeval.json")"

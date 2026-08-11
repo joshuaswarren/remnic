@@ -67,6 +67,8 @@ export type LoadedJudgeCalibrationState = BenchmarkArtifactJudgeCalibration &
     sourceResultId?: string;
     /** Stable hash of the exact question/predicted/expected triples judged. */
     answerSetHash?: string;
+    /** Stable hash of the full ordered source question-id list. */
+    orderedQuestionIdsHash?: string;
     /** Question ids in the pinned calibration slice, in verdict order. */
     sliceQuestionIds?: readonly string[];
     /** Full sanitized provider configuration hashes bound to this calibration. */
@@ -557,11 +559,12 @@ function stableJson(value: unknown): string {
  * then-rename (cursor review: a direct writeFile can leave truncated JSON on
  * crash, which loadJudgeCalibrationState would silently drop as a miss).
  *
- * Only the artifact-relevant subset (`BenchmarkArtifactJudgeCalibration`) is
- * persisted — never the per-question verdicts or answer text (repo ethics +
- * rule 10: nothing interpolated into shell). Optional `identities` record the
- * judge pair that produced the kappa so a later run can refuse a stale kappa
- * for a different pair (codex P2 review); omitted on pre-binding state files.
+ * The artifact-relevant subset (`BenchmarkArtifactJudgeCalibration`) plus
+ * private source provenance is persisted — never the per-question verdicts
+ * or answer text (repo ethics + rule 10: nothing interpolated into shell).
+ * Optional `identities` record the judge pair that produced the kappa so a
+ * later run can refuse a stale kappa for a different pair (codex P2 review);
+ * omitted on pre-binding state files.
  */
 export async function writeJudgeCalibrationState(
   result: JudgeCalibrationResult,
@@ -569,12 +572,15 @@ export async function writeJudgeCalibrationState(
   identities?: JudgeCalibrationIdentities,
   provenance?: {
     sourceResultId: string;
+    orderedQuestionIdsHash?: string;
     localJudgeConfigHash?: string;
     frontierJudgeConfigHash?: string;
   },
 ): Promise<string> {
   await ensurePrivateDirectory(calibrationDir);
-  const state: BenchmarkArtifactJudgeCalibration & Partial<JudgeCalibrationIdentities> = {
+  const state: BenchmarkArtifactJudgeCalibration & Partial<JudgeCalibrationIdentities> & {
+    orderedQuestionIdsHash?: string;
+  } = {
     kappa: result.kappa,
     sampleSize: result.sampleSize,
     threshold: result.threshold,
@@ -659,6 +665,7 @@ export async function loadJudgeCalibrationState(
   }
   const sourceResultId = record.sourceResultId;
   const answerSetHash = record.answerSetHash;
+  const orderedQuestionIdsHash = record.orderedQuestionIdsHash;
   if (
     typeof sourceResultId === "string" && sourceResultId.length > 0 &&
     typeof answerSetHash === "string" && /^[0-9a-f]{64}$/.test(answerSetHash) &&
@@ -671,6 +678,11 @@ export async function loadJudgeCalibrationState(
     loaded.sourceResultId = sourceResultId;
     loaded.answerSetHash = answerSetHash;
     loaded.sliceQuestionIds = record.sliceQuestionIds as string[];
+  }
+  if (
+    typeof orderedQuestionIdsHash === "string" && /^[0-9a-f]{64}$/.test(orderedQuestionIdsHash)
+  ) {
+    loaded.orderedQuestionIdsHash = orderedQuestionIdsHash;
   }
   if (
     typeof record.localJudgeConfigHash === "string" && /^[0-9a-f]{64}$/.test(record.localJudgeConfigHash) &&

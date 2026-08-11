@@ -478,7 +478,10 @@ test("judge-calibrate calibration reaches artifacts, resolves package benchmarks
   assert.match(source, /disableThinking: parsed\.disableThinking/);
   assert.match(source, /timeoutMs: parsed\.frontierJudgeRequestTimeout/);
   assert.match(source, /checkpoint: \{/);
-  assert.match(source, /\{ sourceResultId: loaded\.meta\.id, localJudgeConfigHash, frontierJudgeConfigHash \}/);
+  assert.match(
+    source,
+    /\{[\s\S]*sourceResultId: loaded\.meta\.id,[\s\S]*orderedQuestionIdsHash,[\s\S]*localJudgeConfigHash,[\s\S]*frontierJudgeConfigHash[\s\S]*\}/,
+  );
   assert.match(source, /bootstrap CI/);
 });
 
@@ -675,6 +678,9 @@ printf '%s' "$CALIBRATION_DIR"`],
   assert.match(realScript, /local file="\$CALIBRATION_DIR\/\$\{benchmark\}\.json"/);
   assert.match(realScript, /math\.isfinite/);
   assert.match(realScript, /type\(d\.get\('bootstrapSamples'\)\) is int/);
+  assert.match(realScript, /d\.get\('sourceResultId'\) == expected_source_result_id/);
+  assert.match(realScript, /d\.get\('answerSetHash'\) == expected_answer_set_hash/);
+  assert.match(realScript, /d\.get\('orderedQuestionIdsHash'\) == expected_ordered_question_ids_hash/);
   const calibrationPreflight = realScript.indexOf('step "preflight: calibration state');
   const providerAuthProbe = realScript.indexOf('step "preflight: claude auth');
   assert.ok(calibrationPreflight >= 0, "real-profile runner must preflight calibration state");
@@ -682,6 +688,80 @@ printf '%s' "$CALIBRATION_DIR"`],
     providerAuthProbe > calibrationPreflight,
     "real-profile runner must validate calibration file shape before provider auth",
   );
+});
+
+test("real Tier-F preflight rejects calibration provenance from any unpinned source", async () => {
+  const realScript = await readFile("scripts/bench/run-tierf-opus-real.sh", "utf8");
+  const preflightStart = realScript.indexOf("preflight_calibration_state() {");
+  const preflightEnd = realScript.indexOf('LONGMEM_LOCAL_HASH="', preflightStart);
+  assert.ok(preflightStart >= 0 && preflightEnd > preflightStart);
+  const preflightSource = realScript.slice(preflightStart, preflightEnd);
+  assert.match(preflightSource, /preflight_calibration_state locomo/);
+  assert.match(preflightSource, /preflight_calibration_state longmemeval/);
+  const calibrationDir = mkdtempSync(join(tmpdir(), "remnic-tierf-calibration-provenance-"));
+  const baseState = {
+    localJudgeProvider: "ollama",
+    localJudgeModel: "qwen2.5-7b-32k:latest",
+    frontierJudgeProvider: "claude-cli",
+    frontierJudgeModel: "opus",
+    kappa: 0.8,
+    sampleSize: 200,
+    threshold: 0.7,
+    warning: false,
+    sliceQuestionIds: Array.from({ length: 200 }, (_, index) => `question-${index}`),
+    confidenceInterval: { lower: 0.7, upper: 0.9, level: 0.95 },
+    bootstrapSamples: 2_000,
+    localJudgeConfigHash: "a".repeat(64),
+    frontierJudgeConfigHash: "b".repeat(64),
+  };
+  const pinned = {
+    locomo: {
+      sourceResultId: "6e499698-6eaf-4a06-8a81-3d90dd867e57",
+      answerSetHash: "a360907a60753d56bd066de88eb903464f1cb4f8fef89a930dd6a5f728f3ad81",
+      orderedQuestionIdsHash: "9a603e17ed3c0eae426243364e6a98b5b4932bfe723ed3332408b825b9860869",
+    },
+    longmemeval: {
+      sourceResultId: "a7ab6f70-5661-499e-b4b2-99bf0830368c",
+      answerSetHash: "009e69a367b0d048f7db18bf51cde91b690a7520ce7246cee6f35ab9c5ca02e4",
+      orderedQuestionIdsHash: "9778429495a91bb01db6899743d4476c0a4f1848789fce175ef2df90d100e3f5",
+    },
+  };
+  const runPreflight = () =>
+    spawnSync("bash", ["-c", `step() { :; }\n${preflightSource}`], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CALIBRATION_DIR: calibrationDir,
+        CALIBRATION_SAMPLE_SIZE: "200",
+      },
+    });
+
+  try {
+    for (const [benchmark, provenance] of Object.entries(pinned)) {
+      writeFileSync(
+        join(calibrationDir, `${benchmark}.json`),
+        JSON.stringify({ ...baseState, ...provenance }),
+      );
+    }
+    const validProbe = runPreflight();
+    assert.equal(validProbe.status, 0, validProbe.stderr);
+
+    for (const field of [
+      "sourceResultId",
+      "answerSetHash",
+      "orderedQuestionIdsHash",
+    ] as const) {
+      writeFileSync(
+        join(calibrationDir, "locomo.json"),
+        JSON.stringify({ ...baseState, ...pinned.locomo, [field]: "unpinned" }),
+      );
+      const invalidProbe = runPreflight();
+      assert.equal(invalidProbe.status, 3, `${field}: ${invalidProbe.stderr}`);
+      assert.match(invalidProbe.stderr, /rerun judge-calibrate against the pinned answer source/);
+    }
+  } finally {
+    rmSync(calibrationDir, { recursive: true, force: true });
+  }
 });
 
 test("frontier and unrelated runs ignore local calibration state without requiring pins", async () => {

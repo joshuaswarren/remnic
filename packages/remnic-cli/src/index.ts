@@ -2507,7 +2507,12 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
     result,
     calibrationDir,
     calibrationIdentities,
-    { sourceResultId: loaded.meta.id, localJudgeConfigHash, frontierJudgeConfigHash },
+    {
+      sourceResultId: loaded.meta.id,
+      orderedQuestionIdsHash,
+      localJudgeConfigHash,
+      frontierJudgeConfigHash,
+    },
   );
   // Read the persisted state straight back. This exercises the load path the
   // artifact builder will use (cursor review + codex P1: loadJudgeCalibration-
@@ -2518,6 +2523,7 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
   if (
     !persisted || persisted.kappa !== result.kappa || persisted.warning !== result.warning ||
     persisted.localJudgeConfigHash !== localJudgeConfigHash ||
+    persisted.orderedQuestionIdsHash !== orderedQuestionIdsHash ||
     persisted.frontierJudgeConfigHash !== frontierJudgeConfigHash
   ) {
     console.error(
