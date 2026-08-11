@@ -752,6 +752,60 @@ test("draft creation enforces the 100-card owner-visible limit", async () => {
   }
 });
 
+test("editing a pending draft remains available at the 100-card limit", async () => {
+  const subject = await makeSubject();
+  try {
+    const draft = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Template",
+      statement: "Use this support statement.",
+      category: "other",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const stored = await subject.aliceStorage.getMemoryById(draft.cardId);
+    assert.ok(stored);
+    const originalRead = subject.aliceStorage.readAllMemories.bind(subject.aliceStorage);
+    subject.aliceStorage.readAllMemories = async () => {
+      const persisted = await originalRead();
+      return [
+        ...persisted,
+        ...Array.from({ length: 99 }, (_, index) => ({
+          ...stored,
+          path: `${stored.path}-capacity-${index}`,
+          frontmatter: {
+            ...stored.frontmatter,
+            id: `support-card-capacity-${index}`,
+            structuredAttributes: {
+              ...stored.frontmatter.structuredAttributes,
+              "support-passport-order": String(index + 1),
+            },
+          },
+        })),
+      ];
+    };
+
+    const replacement = await subject.service.replaceCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+      title: "Updated template",
+      statement: "Use this updated support statement.",
+      category: "other",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+
+    subject.aliceStorage.readAllMemories = originalRead;
+    assert.equal(replacement.status, "pending_review");
+    assert.equal((await subject.aliceStorage.getMemoryById(draft.cardId))?.frontmatter.status, "rejected");
+    assert.deepEqual(
+      (await subject.service.listCards({ principal: "owner:alice" })).map((card) => card.cardId),
+      [replacement.cardId]
+    );
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("concurrent draft creation cannot exceed the 100-card limit", async () => {
   const subject = await makeSubject();
   try {
