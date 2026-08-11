@@ -411,6 +411,10 @@ test("bench providers discovery is exposed as a package-backed CLI surface", asy
  */
 test("judge-calibrate calibration reaches artifacts, resolves package benchmarks, and requires full runs (#1573)", async () => {
   const source = await readFile("packages/remnic-cli/src/index.ts", "utf8");
+  const calibrationBindingSource = await readFile(
+    "packages/remnic-cli/src/bench-calibration-binding.ts",
+    "utf8",
+  );
 
   // High/P1 (cursor + codex): loadJudgeCalibrationState must be a real
   // production consumer — the run path loads persisted calibration and
@@ -449,8 +453,14 @@ test("judge-calibrate calibration reaches artifacts, resolves package benchmarks
   assert.match(source, /calibrationIdentities = \{/);
   assert.match(source, /writeJudgeCalibrationState\([\s\S]*result,[\s\S]*calibrationDir,[\s\S]*calibrationIdentities,[\s\S]*sourceResultId: loaded\.meta\.id,[\s\S]*localJudgeConfigHash,[\s\S]*frontierJudgeConfigHash/);
   assert.match(source, /getProviderBackedJudgePromptIdentity\(localJudgeConfig\)/);
-  assert.match(source, /if \(!matchesLocal\) \{[\s\S]*if \(hasBothPins\)[\s\S]*return undefined;/);
+  assert.match(source, /if \(!matchesLocal\) \{[\s\S]*if \(hasAnyBindingPin\)[\s\S]*return undefined;/);
   assert.match(source, /state\.localJudgeProvider !== undefined && state\.localJudgeModel !== undefined/);
+  assert.match(calibrationBindingSource, /binding\.sourceResultId !== state\.sourceResultId/);
+  assert.match(calibrationBindingSource, /binding\.expectedAnswerSetSha256 !== state\.answerSetHash/);
+  assert.match(
+    calibrationBindingSource,
+    /binding\.expectedQuestionIdListSha256 !== state\.orderedQuestionIdsHash/,
+  );
 
   // P2 (codex): limited full runs (--limit 1) are rejected before calibrating
   // so a one-sample κ cannot be persisted.
@@ -485,7 +495,7 @@ test("judge-calibrate calibration reaches artifacts, resolves package benchmarks
   assert.match(source, /bootstrap CI/);
 });
 
-test("custom calibration directory and both config hashes bind attachment end to end", async () => {
+test("custom calibration directory and exact config and provenance pins bind attachment end to end", async () => {
   const {
     attachPreparedJudgeCalibration,
     hashCalibrationProviderConfig,
@@ -502,7 +512,19 @@ test("custom calibration directory and both config hashes bind attachment end to
   };
   const localHash = hashCalibrationProviderConfig(localConfig);
   const frontierHash = "b".repeat(64);
+  const sourceResultId = "run-pinned";
+  const answerSetHash = "c".repeat(64);
+  const orderedQuestionIdsHash = "d".repeat(64);
+  const calibrationBinding = {
+    calibrationDir: customDir,
+    calibrationLocalConfigSha256: localHash,
+    calibrationFrontierConfigSha256: frontierHash,
+    sourceResultId,
+    expectedAnswerSetSha256: answerSetHash,
+    expectedQuestionIdListSha256: orderedQuestionIdsHash,
+  };
   let loadedDir: string | undefined;
+  let loadedSourceResultId = sourceResultId;
   const benchModule = {
     async loadJudgeCalibrationState(_benchmarkId: string, calibrationDir: string) {
       loadedDir = calibrationDir;
@@ -517,6 +539,9 @@ test("custom calibration directory and both config hashes bind attachment end to
         frontierJudgeModel: "gpt-5.6",
         localJudgeConfigHash: localHash,
         frontierJudgeConfigHash: frontierHash,
+        sourceResultId: loadedSourceResultId,
+        answerSetHash,
+        orderedQuestionIdsHash,
       };
     },
   };
@@ -530,11 +555,7 @@ test("custom calibration directory and both config hashes bind attachment end to
     benchModule as never,
     "locomo",
     localConfig,
-    {
-      calibrationDir: customDir,
-      calibrationLocalConfigSha256: localHash,
-      calibrationFrontierConfigSha256: frontierHash,
-    },
+    calibrationBinding,
   );
   attachPreparedJudgeCalibration(result, prepared);
   assert.equal(loadedDir, customDir);
@@ -543,9 +564,35 @@ test("custom calibration directory and both config hashes bind attachment end to
     sampleSize: 2,
     threshold: 0.7,
     warning: false,
+    answerSetHash,
+    sourceResultId,
     localJudgeConfigHash: localHash,
     frontierJudgeConfigHash: frontierHash,
   });
+  loadedSourceResultId = "replacement-run";
+  await assert.rejects(
+    preparePersistedJudgeCalibrationAttachment(
+      benchModule as never,
+      "locomo",
+      localConfig,
+      calibrationBinding,
+    ),
+    /Calibration provenance mismatch/,
+  );
+  await assert.rejects(
+    preparePersistedJudgeCalibrationAttachment(
+      benchModule as never,
+      "locomo",
+      localConfig,
+      {
+        calibrationDir: customDir,
+        calibrationLocalConfigSha256: localHash,
+        calibrationFrontierConfigSha256: frontierHash,
+        sourceResultId,
+      },
+    ),
+    /provenance.*must be supplied together|--source-result-id.*must be supplied together/,
+  );
 });
 
 test("frontier calibration config preserves timeout, 429, and thinking overlays", async () => {
@@ -660,6 +707,20 @@ printf '%s' "$CALIBRATION_DIR"`],
         `${config.path} must bind ${benchmark} to its matching frontier calibration hash`,
       );
       assert.ok(
+        command.includes(`--source-result-id "\$${hashPrefix}_SOURCE_RESULT_ID"`),
+        `${config.path} must bind ${benchmark} to its calibration source result`,
+      );
+      assert.ok(
+        command.includes(`--expected-answer-set-sha256 "\$${hashPrefix}_ANSWER_SET_HASH"`),
+        `${config.path} must bind ${benchmark} to its calibration answer set`,
+      );
+      assert.ok(
+        command.includes(
+          `--expected-question-id-list-sha256 "\$${hashPrefix}_ORDERED_QUESTION_IDS_HASH"`,
+        ),
+        `${config.path} must bind ${benchmark} to its ordered calibration questions`,
+      );
+      assert.ok(
         script.includes(
           `${hashPrefix}_LOCAL_HASH="$(node -p "require(process.argv[1]).localJudgeConfigHash" "\$CALIBRATION_DIR/${benchmark}.json")"`,
         ),
@@ -731,7 +792,7 @@ test("Tier-F runbooks diagnose nonzero Claude auth probes before exiting", async
 
 test("real Tier-F preflight rejects unpinned or malformed calibration provenance", async () => {
   const realScript = await readFile("scripts/bench/run-tierf-opus-real.sh", "utf8");
-  const preflightStart = realScript.indexOf("preflight_calibration_state() {");
+  const preflightStart = realScript.indexOf("LOCOMO_SOURCE_RESULT_ID=");
   const preflightEnd = realScript.indexOf('LONGMEM_LOCAL_HASH="', preflightStart);
   assert.ok(preflightStart >= 0 && preflightEnd > preflightStart);
   const preflightSource = realScript.slice(preflightStart, preflightEnd);

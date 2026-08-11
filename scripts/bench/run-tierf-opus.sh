@@ -40,6 +40,12 @@ if [[ "$CALIBRATION_DIR" != /* ]]; then
   CALIBRATION_DIR="$PWD/$CALIBRATION_DIR"
 fi
 SEED=1
+LOCOMO_SOURCE_RESULT_ID=6e499698-6eaf-4a06-8a81-3d90dd867e57
+LOCOMO_ANSWER_SET_HASH=a360907a60753d56bd066de88eb903464f1cb4f8fef89a930dd6a5f728f3ad81
+LOCOMO_ORDERED_QUESTION_IDS_HASH=9a603e17ed3c0eae426243364e6a98b5b4932bfe723ed3332408b825b9860869
+LONGMEM_SOURCE_RESULT_ID=a7ab6f70-5661-499e-b4b2-99bf0830368c
+LONGMEM_ANSWER_SET_HASH=009e69a367b0d048f7db18bf51cde91b690a7520ce7246cee6f35ab9c5ca02e4
+LONGMEM_ORDERED_QUESTION_IDS_HASH=9778429495a91bb01db6899743d4476c0a4f1848789fce175ef2df90d100e3f5
 
 # judge-calibrate does NOT generate answers — it re-judges a benchmark's
 # CACHED answers from an existing FULL stored result in ~/.remnic/bench/results
@@ -75,9 +81,9 @@ step "judge calibration (Cohen's kappa) — locomo"
 node scripts/run-bench-cli.mjs judge-calibrate --benchmark locomo \
   --local-lab-manifest "$MANIFEST" \
   --judge-provider claude-cli --judge-model opus \
-  --source-result-id 6e499698-6eaf-4a06-8a81-3d90dd867e57 \
-  --expected-answer-set-sha256 a360907a60753d56bd066de88eb903464f1cb4f8fef89a930dd6a5f728f3ad81 \
-  --expected-question-id-list-sha256 9a603e17ed3c0eae426243364e6a98b5b4932bfe723ed3332408b825b9860869 \
+  --source-result-id "$LOCOMO_SOURCE_RESULT_ID" \
+  --expected-answer-set-sha256 "$LOCOMO_ANSWER_SET_HASH" \
+  --expected-question-id-list-sha256 "$LOCOMO_ORDERED_QUESTION_IDS_HASH" \
   --calibration-dir "$CALIBRATION_DIR" \
   --local-judge-request-timeout 180000 --frontier-judge-request-timeout 600000 \
   2>&1 | tee "$LOG_DIR/judge-calibrate-locomo.log"
@@ -86,9 +92,9 @@ step "judge calibration (Cohen's kappa) — longmemeval"
 node scripts/run-bench-cli.mjs judge-calibrate --benchmark longmemeval \
   --local-lab-manifest "$MANIFEST" \
   --judge-provider claude-cli --judge-model opus \
-  --source-result-id a7ab6f70-5661-499e-b4b2-99bf0830368c \
-  --expected-answer-set-sha256 009e69a367b0d048f7db18bf51cde91b690a7520ce7246cee6f35ab9c5ca02e4 \
-  --expected-question-id-list-sha256 9778429495a91bb01db6899743d4476c0a4f1848789fce175ef2df90d100e3f5 \
+  --source-result-id "$LONGMEM_SOURCE_RESULT_ID" \
+  --expected-answer-set-sha256 "$LONGMEM_ANSWER_SET_HASH" \
+  --expected-question-id-list-sha256 "$LONGMEM_ORDERED_QUESTION_IDS_HASH" \
   --calibration-dir "$CALIBRATION_DIR" \
   --local-judge-request-timeout 180000 --frontier-judge-request-timeout 600000 \
   2>&1 | tee "$LOG_DIR/judge-calibrate-longmemeval.log"
@@ -106,6 +112,9 @@ node scripts/run-bench-cli.mjs run longmemeval \
   --calibration-dir "$CALIBRATION_DIR" \
   --calibration-local-config-sha256 "$LONGMEM_LOCAL_HASH" \
   --calibration-frontier-config-sha256 "$LONGMEM_FRONTIER_HASH" \
+  --source-result-id "$LONGMEM_SOURCE_RESULT_ID" \
+  --expected-answer-set-sha256 "$LONGMEM_ANSWER_SET_HASH" \
+  --expected-question-id-list-sha256 "$LONGMEM_ORDERED_QUESTION_IDS_HASH" \
   --seed "$SEED" \
   2>&1 | tee "$LOG_DIR/longmemeval-full.log"
 
@@ -122,6 +131,9 @@ node scripts/run-bench-cli.mjs run locomo \
   --calibration-dir "$CALIBRATION_DIR" \
   --calibration-local-config-sha256 "$LOCOMO_LOCAL_HASH" \
   --calibration-frontier-config-sha256 "$LOCOMO_FRONTIER_HASH" \
+  --source-result-id "$LOCOMO_SOURCE_RESULT_ID" \
+  --expected-answer-set-sha256 "$LOCOMO_ANSWER_SET_HASH" \
+  --expected-question-id-list-sha256 "$LOCOMO_ORDERED_QUESTION_IDS_HASH" \
   --seed "$SEED" \
   2>&1 | tee "$LOG_DIR/locomo-full.log"
 
