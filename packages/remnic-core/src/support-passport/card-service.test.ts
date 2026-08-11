@@ -47,6 +47,7 @@ test("manual support cards stay private until their owner approves them", async 
     });
 
     assert.equal(draft.status, "pending_review");
+    assert.equal(draft.statement, "Tell me before plans change.");
     assert.equal(draft.reviewBy, "2027-02-07T12:00:00.000Z");
     assert.match(draft.revision, /^[a-f0-9]{64}$/);
     assert.deepEqual(await subject.service.listCards({ principal: "owner:bob" }), []);
