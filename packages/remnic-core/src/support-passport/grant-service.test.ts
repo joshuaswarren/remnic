@@ -59,12 +59,17 @@ async function createActiveCard(subject: Awaited<ReturnType<typeof makeSubject>>
     title,
     statement: "Offer me a quiet place and time.",
     category: "environment",
+    reviewBy: "2026-09-01T12:00:00.000Z",
   });
   return await subject.cardService.approveCard({
     principal: "owner:alice",
     cardId: draft.cardId,
     expectedRevision: draft.revision,
   });
+}
+
+function expiryAfter(subject: Awaited<ReturnType<typeof makeSubject>>, milliseconds: number): string {
+  return new Date(subject.now().getTime() + milliseconds).toISOString();
 }
 
 test("a grant stores only hashed credentials with private file permissions", async () => {
@@ -74,11 +79,12 @@ test("a grant stores only hashed credentials with private file permissions", asy
     const created = await subject.grantService.createGrant({
       principal: "owner:alice",
       cards: [{ cardId: card.cardId, revision: card.revision }],
-      durationSeconds: 3_600,
+      expiresAt: "2026-08-11T13:00:00.123Z",
     });
 
     assert.match(created.secret, /^[A-Za-z0-9_-]{43}$/);
     assert.equal(created.grant.stateVersion, 1);
+    assert.equal(created.grant.expiresAt, "2026-08-11T13:00:00.123Z");
     const filePath = path.join(
       subject.root,
       "shared",
@@ -105,7 +111,7 @@ test("a helper sees only the selected active card through a valid secret", async
     const created = await subject.grantService.createGrant({
       principal: "owner:alice",
       cards: [{ cardId: selected.cardId, revision: selected.revision }],
-      durationSeconds: 3_600,
+      expiresAt: expiryAfter(subject, 3_600_000),
     });
 
     const guide = await subject.grantService.readGrant({
@@ -137,7 +143,7 @@ test("bad secrets return not found, while valid revoked or expired grants return
     const created = await subject.grantService.createGrant({
       principal: "owner:alice",
       cards: [{ cardId: card.cardId, revision: card.revision }],
-      durationSeconds: 300,
+      expiresAt: expiryAfter(subject, 300_000),
     });
 
     await assert.rejects(
@@ -180,7 +186,7 @@ test("bad secrets return not found, while valid revoked or expired grants return
     const second = await subject.grantService.createGrant({
       principal: "owner:alice",
       cards: [{ cardId: card.cardId, revision: card.revision }],
-      durationSeconds: 300,
+      expiresAt: expiryAfter(subject, 300_000),
     });
     subject.advance(300_000);
     await assert.rejects(
@@ -199,7 +205,7 @@ test("a revoke during a helper read never returns the old guide", async () => {
     const created = await subject.grantService.createGrant({
       principal: "owner:alice",
       cards: [{ cardId: card.cardId, revision: card.revision }],
-      durationSeconds: 3_600,
+      expiresAt: expiryAfter(subject, 3_600_000),
     });
     const peerStore = new SupportPassportGrantStore({ memoryDir: path.join(subject.root, "shared"), now: subject.now });
     const getMemoryById = subject.aliceStorage.getMemoryById.bind(subject.aliceStorage);
@@ -237,7 +243,7 @@ test("a changed card makes the whole grant stale without a partial guide", async
         { cardId: first.cardId, revision: first.revision },
         { cardId: second.cardId, revision: second.revision },
       ],
-      durationSeconds: 3_600,
+      expiresAt: expiryAfter(subject, 3_600_000),
     });
     await subject.cardService.withdrawCard({
       principal: "owner:alice",
@@ -262,20 +268,24 @@ test("grant creation rejects drafts, duplicate cards, and unsafe durations", asy
       title: "Draft card",
       statement: "Give me time to answer.",
       category: "communication",
+      reviewBy: "2026-09-01T12:00:00.000Z",
     });
     const active = await createActiveCard(subject);
 
     for (const input of [
-      { cards: [{ cardId: draft.cardId, revision: draft.revision }], durationSeconds: 3_600 },
+      { cards: [{ cardId: draft.cardId, revision: draft.revision }], expiresAt: expiryAfter(subject, 3_600_000) },
       {
         cards: [
           { cardId: active.cardId, revision: active.revision },
           { cardId: active.cardId, revision: active.revision },
         ],
-        durationSeconds: 3_600,
+        expiresAt: expiryAfter(subject, 3_600_000),
       },
-      { cards: [{ cardId: active.cardId, revision: active.revision }], durationSeconds: 299 },
-      { cards: [{ cardId: active.cardId, revision: active.revision }], durationSeconds: 604_801 },
+      { cards: [{ cardId: active.cardId, revision: active.revision }], expiresAt: expiryAfter(subject, 299_999) },
+      {
+        cards: [{ cardId: active.cardId, revision: active.revision }],
+        expiresAt: expiryAfter(subject, 604_800_001),
+      },
     ]) {
       await assert.rejects(
         subject.grantService.createGrant({ principal: "owner:alice", ...input }),
@@ -295,14 +305,15 @@ test("the grant store rejects a symlinked grant directory", async () => {
     await mkdir(path.join(memoryDir, "state", "support-passport"), { recursive: true });
     await mkdir(outside);
     await symlink(outside, path.join(memoryDir, "state", "support-passport", "grants"));
-    const store = new SupportPassportGrantStore({ memoryDir });
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({ memoryDir, now: () => now });
 
     await assert.rejects(
       store.create({
         namespace: "alice",
         principal: "owner:alice",
         cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
-        durationSeconds: 300,
+        expiresAt: new Date(now.getTime() + 300_000).toISOString(),
       }),
       /must not be a symbolic link/
     );
@@ -317,15 +328,17 @@ test("the grant store fails closed for corrupt and symlinked grant files", async
     const firstGrantId = "00000000-0000-4000-8000-000000000001";
     const secondGrantId = "00000000-0000-4000-8000-000000000002";
     const grantIds = [firstGrantId, secondGrantId];
+    const now = new Date("2026-08-11T12:00:00.000Z");
     const store = new SupportPassportGrantStore({
       memoryDir: root,
       makeGrantId: () => grantIds.shift() ?? secondGrantId,
+      now: () => now,
     });
     const input = {
       namespace: "alice",
       principal: "owner:alice",
       cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
-      durationSeconds: 300,
+      expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
     };
     const corrupt = await store.create(input);
     const grantDir = path.join(root, "state", "support-passport", "grants");
@@ -349,12 +362,13 @@ test("the grant store rejects unsafe durations and grant ID collisions", async (
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-collision-"));
   try {
     const grantId = "00000000-0000-4000-8000-000000000001";
-    const store = new SupportPassportGrantStore({ memoryDir: root, makeGrantId: () => grantId });
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({ memoryDir: root, makeGrantId: () => grantId, now: () => now });
     const input = {
       namespace: "alice",
       principal: "owner:alice",
       cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
-      durationSeconds: 300,
+      expiresAt: new Date(now.getTime() + 300_000).toISOString(),
     };
     await store.create(input);
     await assert.rejects(
@@ -362,7 +376,7 @@ test("the grant store rejects unsafe durations and grant ID collisions", async (
       (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
     );
     await assert.rejects(
-      store.create({ ...input, durationSeconds: 299 }),
+      store.create({ ...input, expiresAt: new Date(now.getTime() + 299_999).toISOString() }),
       (error: unknown) => error instanceof SupportPassportError && error.code === "invalid_input"
     );
   } finally {
