@@ -32,7 +32,6 @@ export interface SupportPassportCardServiceDependencies {
 }
 
 const OWNER_VISIBLE_STATUSES = new Set(["pending_review", "active"]);
-const DEFAULT_REVIEW_INTERVAL_MS = 180 * 24 * 60 * 60 * 1_000;
 
 function invalidInput(): SupportPassportError {
   return new SupportPassportError("invalid_input", "The support card request is invalid.", 400);
@@ -157,8 +156,7 @@ export class SupportPassportCardService {
     }
   ): Promise<SupportPassportCard> {
     const now = this.now();
-    const reviewBy = input.reviewBy ?? new Date(now.getTime() + DEFAULT_REVIEW_INTERVAL_MS).toISOString();
-    if (Date.parse(reviewBy) <= now.getTime()) throw invalidInput();
+    const reviewBy = input.reviewBy ?? now.toISOString();
     const order = input.order ?? (await this.nextOrder(storage));
     const envelope = composeMemoryEnvelope(
       {
