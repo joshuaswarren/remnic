@@ -12,6 +12,97 @@ Open-source, local-first memory and context for AI agents. One memory store, eve
 - **Sharp retrieval.** Hybrid search (BM25 + vector + reranking) over rebuildable indexes, with graph recall, memory-worth scoring, and per-result provenance you can inspect.
 - **MIT licensed.** Free, open, and built to be forked.
 
+<!-- BEGIN BUILD FOR GOOD 2026 HIGHLIGHT -->
+## Build for Good 2026: What Helps Me
+
+**Explain what helps once. Share only what you choose. Stop sharing at any time.**
+
+What Helps Me is a private support passport built on Remnic. It turns selected
+memories into short first-person cards. The owner reviews every word before a
+helper can see it.
+
+[Watch the synthetic walkthrough](docs/hackathons/assets/what-helps-me/demo.webm)
+or read the [full Build for Good entry](docs/hackathons/build-for-good-2026.md).
+The walkthrough always shows a **Synthetic replay** banner. It is not live-call
+proof. The separate receipt command below proves the real server and model flow.
+
+### What we built
+
+- An owner workspace for selecting exact memories, drafting cards, editing each
+  draft, and approving each card.
+- Exact-version share links that last from five minutes through seven days.
+- A helper view that shows approved cards only and cites the card behind each
+  grounded answer.
+- Immediate **Stop sharing** controls. Every helper request checks durable grant
+  state again.
+- A provider-neutral model path. It uses Remnic's existing direct OpenAI,
+  OpenAI-compatible local, and OpenClaw gateway routes.
+- A strict live receipt that proves draft, approval, sharing, question,
+  revocation, and the final locked read without storing private text or secrets.
+
+The framing comes from [NHS England's health and care passport guidance](https://www.england.nhs.uk/long-read/health-and-care-passports-implementation-guidance/).
+The NHS guidance says the person owns the passport, chooses its contents, and
+chooses who sees it. What Helps Me applies those rules to a broader
+self-advocacy tool. It is not a medical record, care plan, IEP, diagnosis tool,
+or emergency guide.
+
+### Who it helps
+
+What Helps Me is for people who often need to explain how others can support
+them. It also helps trusted helpers act on clear, current guidance without
+seeing the person's full memory store.
+
+### How it will be used
+
+1. The owner selects one to 20 notes.
+2. The owner checks a clear consent box or writes a card by hand.
+3. The configured model drafts up to eight cards.
+4. The owner edits and approves each card.
+5. The owner shares exact card versions for a set time.
+6. The helper reads the guide or asks a grounded question.
+7. The owner selects **Stop sharing** to lock the link.
+
+The model is the scribe. The person is the author.
+
+### How Codex helped
+
+Codex traced Remnic's existing memory, model, HTTP, MCP, and browser contracts.
+It then built the feature as a six-layer PR stack. Codex also wrote adversarial
+tests, checked WCAG states at four widths, and built the privacy-safe live
+receipt. The owner approval and revocation rules remain deterministic core
+code. A model cannot bypass them.
+
+### How to run the project
+
+Run the no-key synthetic walkthrough in about five minutes:
+
+```bash
+git clone https://github.com/joshuaswarren/remnic.git
+cd remnic
+pnpm install --frozen-lockfile
+pnpm exec playwright install chromium
+npm run demo:support-passport:replay
+```
+
+Open the printed loopback URL. The replay uses synthetic data and labels itself
+on every screen.
+
+Run the live proof with any configured Remnic model route:
+
+```bash
+npm run demo:support-passport:live -- \
+  --config ./remnic.config.json \
+  --output ./tmp/support-passport-demo
+npm run demo:support-passport:verify -- \
+  --receipt ./tmp/support-passport-demo/receipt.json
+```
+
+Use `--require-openai` when the evidence must prove the official OpenAI
+Responses transport. Omit it for a local model or OpenClaw gateway chain.
+Manual cards and sharing need no model. Draft and question requests return an
+honest `503 provider_unavailable` when no model route is configured.
+<!-- END BUILD FOR GOOD 2026 HIGHLIGHT -->
+
 <!-- BEGIN OPENAI BUILD WEEK 2026 HIGHLIGHT — temporary submission section -->
 ## OpenAI Build Week 2026: Remnic Relay
 
