@@ -72,7 +72,7 @@ export const SupportPassportManualDraftInputSchema = z
     title: z.string().trim().min(1).max(80),
     statement: z.string().trim().min(1).max(500),
     category: SupportPassportCardCategorySchema,
-    reviewBy: IsoTimestampSchema.optional(),
+    reviewBy: IsoTimestampSchema,
   })
   .strict();
 
@@ -88,7 +88,7 @@ export const SupportPassportReplaceCardInputSchema = SupportPassportCardMutation
   title: z.string().trim().min(1).max(80),
   statement: z.string().trim().min(1).max(500),
   category: SupportPassportCardCategorySchema,
-  reviewBy: IsoTimestampSchema.optional(),
+  reviewBy: IsoTimestampSchema,
 }).strict();
 
 export type SupportPassportCard = z.infer<typeof SupportPassportCardSchema>;

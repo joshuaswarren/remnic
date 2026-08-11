@@ -4,6 +4,8 @@ import { test } from "node:test";
 import {
   SupportPassportCardListSchema,
   SupportPassportCardSchema,
+  SupportPassportManualDraftInputSchema,
+  SupportPassportReplaceCardInputSchema,
   computeSupportPassportCardRevision,
 } from "./contracts.js";
 
@@ -27,6 +29,24 @@ test("the public support card contract rejects unknown fields", () => {
 test("the support card list contract rejects duplicate card IDs", () => {
   const card = makeCard("card-1");
   assert.equal(SupportPassportCardListSchema.safeParse([card, card]).success, false);
+});
+
+test("manual and replacement drafts require the owner's review date", () => {
+  const draft = {
+    principal: "owner:alice",
+    title: "Quiet space",
+    statement: "Offer me a quiet place and time.",
+    category: "environment",
+  };
+  assert.equal(SupportPassportManualDraftInputSchema.safeParse(draft).success, false);
+  assert.equal(
+    SupportPassportReplaceCardInputSchema.safeParse({
+      ...draft,
+      cardId: "card-1",
+      expectedRevision: "a".repeat(64),
+    }).success,
+    false
+  );
 });
 
 test("support card revisions change when any public field changes", () => {

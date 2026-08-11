@@ -8,6 +8,8 @@ import { StorageManager } from "../storage.js";
 import { SupportPassportCardService } from "./card-service.js";
 import { SupportPassportError } from "./errors.js";
 
+const OWNER_REVIEW_BY = "2026-09-01T12:00:00.000Z";
+
 async function makeSubject() {
   StorageManager.clearAllStaticCaches();
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-passport-"));
@@ -46,11 +48,12 @@ test("manual support cards stay private until their owner approves them", async 
       title: "When plans change",
       statement: "Tell me before plans change.",
       category: "transitions",
+      reviewBy: OWNER_REVIEW_BY,
     });
 
     assert.equal(draft.status, "pending_review");
     assert.equal(draft.statement, "Tell me before plans change.");
-    assert.equal(draft.reviewBy, "2026-08-11T12:00:00.000Z");
+    assert.equal(draft.reviewBy, OWNER_REVIEW_BY);
     assert.match(draft.revision, /^[a-f0-9]{64}$/);
     assert.deepEqual(await subject.service.listCards({ principal: "owner:bob" }), []);
 
@@ -79,7 +82,7 @@ test("manual support cards stay private until their owner approves them", async 
 
     assert.equal(approved.status, "active");
     assert.notEqual(approved.revision, draft.revision);
-    assert.equal(approved.reviewBy, "2026-08-11T12:00:00.000Z");
+    assert.equal(approved.reviewBy, OWNER_REVIEW_BY);
     assert.equal((await subject.service.listCards({ principal: "owner:alice" }))[0]?.cardId, draft.cardId);
   } finally {
     await subject.cleanup();
@@ -94,6 +97,7 @@ test("card mutations reject stale revisions and invalid lifecycle changes", asyn
       title: "Quiet space",
       statement: "Offer me a quiet place and time.",
       category: "environment",
+      reviewBy: OWNER_REVIEW_BY,
     });
 
     await assert.rejects(
@@ -131,6 +135,7 @@ test("an approved replacement retires the prior card and withdrawal removes the 
       title: "Bright lights",
       statement: "Bright lights make it hard for me to think.",
       category: "sensory",
+      reviewBy: OWNER_REVIEW_BY,
     });
     const active = await subject.service.approveCard({
       principal: "owner:alice",
@@ -146,6 +151,7 @@ test("an approved replacement retires the prior card and withdrawal removes the 
       title: "Lighting",
       statement: "Dim bright lights when you can.",
       category: "sensory",
+      reviewBy: OWNER_REVIEW_BY,
     });
     assert.equal(replacement.status, "pending_review");
     assert.notEqual(replacement.cardId, active.cardId);
@@ -180,6 +186,7 @@ test("a rejected draft leaves no owner-visible card", async () => {
       title: "Communication pause",
       statement: "Give me time when I stop speaking.",
       category: "communication",
+      reviewBy: OWNER_REVIEW_BY,
     });
 
     await subject.service.rejectCard({
@@ -203,6 +210,7 @@ test("a superseded marker keeps an active card out of projections", async () => 
       title: "Quiet space",
       statement: "Offer me a quiet place and time.",
       category: "environment",
+      reviewBy: OWNER_REVIEW_BY,
     });
     const active = await subject.service.approveCard({
       principal: "owner:alice",
@@ -233,6 +241,7 @@ test("editing a pending card creates one replacement draft and rejects the old d
       title: "Quiet place",
       statement: "Offer me a quiet place.",
       category: "environment",
+      reviewBy: OWNER_REVIEW_BY,
     });
 
     subject.advance();
@@ -243,7 +252,7 @@ test("editing a pending card creates one replacement draft and rejects the old d
       title: "Quiet place and time",
       statement: "Offer me a quiet place and time.",
       category: "environment",
-      reviewBy: "2026-09-01T12:00:00.000Z",
+      reviewBy: OWNER_REVIEW_BY,
     });
 
     assert.equal(edited.status, "pending_review");
@@ -267,6 +276,7 @@ test("replacement approval rolls back when the prior card changes", async () => 
       title: "Plan changes",
       statement: "Tell me before plans change.",
       category: "transitions",
+      reviewBy: OWNER_REVIEW_BY,
     });
     const active = await subject.service.approveCard({
       principal: "owner:alice",
@@ -280,6 +290,7 @@ test("replacement approval rolls back when the prior card changes", async () => 
       title: "Plan changes",
       statement: "Tell me early when plans change.",
       category: "transitions",
+      reviewBy: OWNER_REVIEW_BY,
     });
 
     const priorMemory = await subject.aliceStorage.getMemoryById(active.cardId);
