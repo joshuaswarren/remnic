@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import { test } from "node:test";
 
 import { SupportPassportCardService as PublicSupportPassportCardService } from "../index.js";
@@ -15,10 +16,14 @@ function makeMemory(
     order?: string;
     sourceMemoryIds?: string;
     status?: string;
+    supportCategory?: string;
+    blockedBy?: string;
+    archivedAt?: string;
+    supersededBy?: string;
   } = {}
 ): MemoryFile {
   return {
-    path: "/tmp/support-card.md",
+    path: path.resolve(import.meta.dirname, "fixtures", "support-card.md"),
     content: overrides.content ?? "Offer me a quiet place and time.",
     frontmatter: {
       id: overrides.id ?? "support-card-1",
@@ -29,10 +34,13 @@ function makeMemory(
       created: "2026-08-11T12:00:00.000Z",
       updated: "2026-08-11T12:00:00.000Z",
       status: (overrides.status ?? "active") as "active",
+      blockedBy: overrides.blockedBy,
+      archivedAt: overrides.archivedAt,
+      supersededBy: overrides.supersededBy,
       tags: ["support-passport-card"],
       structuredAttributes: {
         "support-passport-title": overrides.title ?? "Quiet space",
-        "support-passport-category": "environment",
+        "support-passport-category": overrides.supportCategory ?? "environment",
         "support-passport-order": overrides.order ?? "0",
         "support-passport-review-by": "2026-09-01T12:00:00.000Z",
         "support-passport-source-ids": overrides.sourceMemoryIds ?? "source-1,source-2",
@@ -69,6 +77,14 @@ test("card projection rejects duplicate normalized source IDs", () => {
 
 test("card projection rejects superseded status without relying on supersededBy", () => {
   assert.equal(projectSupportPassportCard(makeMemory({ status: "superseded" })), null);
+});
+
+test("card projection rejects invalid lifecycle and category fields", () => {
+  assert.equal(projectSupportPassportCard(makeMemory({ supportCategory: "medical" })), null);
+  assert.equal(projectSupportPassportCard(makeMemory({ status: "published" })), null);
+  assert.equal(projectSupportPassportCard(makeMemory({ blockedBy: "memory-review" })), null);
+  assert.equal(projectSupportPassportCard(makeMemory({ archivedAt: "2026-08-12T12:00:00.000Z" })), null);
+  assert.equal(projectSupportPassportCard(makeMemory({ supersededBy: "replacement-card" })), null);
 });
 
 test("card projection accepts only canonical nonnegative decimal order values", () => {

@@ -271,6 +271,55 @@ test("editing a pending card creates one replacement draft and rejects the old d
   }
 });
 
+test("an interrupted pending-draft replacement recovers to one approvable draft", async () => {
+  const subject = await makeSubject();
+  try {
+    const draft = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Quiet place",
+      statement: "Offer me a quiet place.",
+      category: "environment",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const originalWrite = subject.aliceStorage.writeMemoryFrontmatterIfUnchanged.bind(subject.aliceStorage);
+    let interrupted = false;
+    subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = async (memory, patch, lifecycle) => {
+      if (!interrupted && lifecycle?.actor === "support-passport.replace-draft") {
+        interrupted = true;
+        throw new Error("simulated process exit after replacement creation");
+      }
+      return await originalWrite(memory, patch, lifecycle);
+    };
+
+    await assert.rejects(
+      subject.service.replaceCard({
+        principal: "owner:alice",
+        cardId: draft.cardId,
+        expectedRevision: draft.revision,
+        title: "Quiet place and time",
+        statement: "Offer me a quiet place and time.",
+        category: "environment",
+        reviewBy: OWNER_REVIEW_BY,
+      }),
+      /simulated process exit/
+    );
+    subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = originalWrite;
+
+    const beforeRecovery = await subject.aliceStorage.readAllMemories();
+    const replacement = beforeRecovery.find((memory) => memory.frontmatter.id !== draft.cardId);
+    assert.ok(replacement);
+    assert.equal(replacement.frontmatter.supersedes, draft.cardId);
+    assert.equal(replacement.frontmatter.status, "pending_review");
+
+    const recovered = await subject.service.listCards({ principal: "owner:alice" });
+    assert.equal(recovered.length, 1);
+    assert.equal(recovered[0]?.cardId, replacement.frontmatter.id);
+    assert.equal((await subject.aliceStorage.getMemoryById(draft.cardId))?.frontmatter.status, "rejected");
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("replacement approval rolls back when the prior card changes", async () => {
   const subject = await makeSubject();
   try {
@@ -358,11 +407,65 @@ test("replacement approval recovers after the prior card was durably retired", a
       true
     );
 
-    const recovered = await subject.service.listCards({ principal: "owner:alice" });
-    assert.equal(recovered.length, 1);
-    assert.equal(recovered[0]?.cardId, replacement.cardId);
-    assert.equal(recovered[0]?.status, "active");
+    const recovered = await subject.service.approveCard({
+      principal: "owner:alice",
+      cardId: replacement.cardId,
+      expectedRevision: replacement.revision,
+    });
+    assert.equal(recovered.cardId, replacement.cardId);
+    assert.equal(recovered.status, "active");
     assert.equal((await subject.aliceStorage.getMemoryById(active.cardId))?.frontmatter.status, "superseded");
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("a stale mutation does not run replacement approval recovery", async () => {
+  const subject = await makeSubject();
+  try {
+    const draft = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Plan changes",
+      statement: "Tell me before plans change.",
+      category: "transitions",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const active = await subject.service.approveCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+    });
+    const replacement = await subject.service.replaceCard({
+      principal: "owner:alice",
+      cardId: active.cardId,
+      expectedRevision: active.revision,
+      title: "Plan changes",
+      statement: "Tell me early when plans change.",
+      category: "transitions",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const prior = await subject.aliceStorage.getMemoryById(active.cardId);
+    assert.ok(prior);
+    assert.equal(
+      await subject.aliceStorage.supersedeMemory(
+        active.cardId,
+        replacement.cardId,
+        "support-passport-replacement",
+        { supersessionCause: "direct" },
+        { requireActive: true, expectedSnapshot: prior }
+      ),
+      true
+    );
+
+    await assert.rejects(
+      subject.service.rejectCard({
+        principal: "owner:alice",
+        cardId: replacement.cardId,
+        expectedRevision: "0".repeat(64),
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "revision_conflict"
+    );
+    assert.equal((await subject.aliceStorage.getMemoryById(replacement.cardId))?.frontmatter.status, "pending_review");
   } finally {
     await subject.cleanup();
   }
@@ -393,9 +496,13 @@ test("a rollback failure does not replace the approval conflict", async () => {
       reviewBy: OWNER_REVIEW_BY,
     });
     const originalWrite = subject.aliceStorage.writeMemoryFrontmatterIfUnchanged.bind(subject.aliceStorage);
+    let rollbackAttempts = 0;
     subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = async (memory, patch, lifecycle) => {
       if (lifecycle?.actor === "support-passport.approve") return false;
-      if (lifecycle?.actor === "support-passport.approve-rollback") return false;
+      if (lifecycle?.actor === "support-passport.approve-rollback") {
+        rollbackAttempts += 1;
+        return false;
+      }
       return await originalWrite(memory, patch, lifecycle);
     };
 
@@ -408,6 +515,7 @@ test("a rollback failure does not replace the approval conflict", async () => {
       (error: unknown) =>
         error instanceof SupportPassportError && error.code === "storage_conflict" && error.status === 409
     );
+    assert.equal(rollbackAttempts, 1);
   } finally {
     await subject.cleanup();
   }
@@ -444,6 +552,7 @@ test("draft creation enforces the 100-card owner-visible limit", async () => {
     });
     const stored = await subject.aliceStorage.getMemoryById(template.cardId);
     assert.ok(stored);
+    const originalRead = subject.aliceStorage.readAllMemories.bind(subject.aliceStorage);
     subject.aliceStorage.readAllMemories = async () =>
       Array.from({ length: 100 }, (_, index) => ({
         ...stored,
@@ -468,6 +577,71 @@ test("draft creation enforces the 100-card owner-visible limit", async () => {
       }),
       (error: unknown) => error instanceof SupportPassportError && error.code === "invalid_input"
     );
+    subject.aliceStorage.readAllMemories = originalRead;
+    const persisted = await originalRead();
+    assert.equal(persisted.length, 1);
+    assert.equal(persisted[0]?.frontmatter.id, template.cardId);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("concurrent draft creation cannot exceed the 100-card limit", async () => {
+  const subject = await makeSubject();
+  try {
+    const template = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Template",
+      statement: "Use this support statement.",
+      category: "other",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const stored = await subject.aliceStorage.getMemoryById(template.cardId);
+    assert.ok(stored);
+    const originalRead = subject.aliceStorage.readAllMemories.bind(subject.aliceStorage);
+    subject.aliceStorage.readAllMemories = async () => {
+      const persisted = await originalRead();
+      return [
+        ...persisted,
+        ...Array.from({ length: 98 }, (_, index) => ({
+          ...stored,
+          path: `${stored.path}-capacity-${index}`,
+          frontmatter: {
+            ...stored.frontmatter,
+            id: `support-card-capacity-${index}`,
+            structuredAttributes: {
+              ...stored.frontmatter.structuredAttributes,
+              "support-passport-order": String(index + 1),
+            },
+          },
+        })),
+      ];
+    };
+
+    const results = await Promise.allSettled([
+      subject.service.createManualDraft({
+        principal: "owner:alice",
+        title: "Allowed card",
+        statement: "This card can use the final slot.",
+        category: "other",
+        reviewBy: OWNER_REVIEW_BY,
+      }),
+      subject.service.createManualDraft({
+        principal: "owner:alice",
+        title: "Rejected card",
+        statement: "This card must not exceed the limit.",
+        category: "other",
+        reviewBy: OWNER_REVIEW_BY,
+      }),
+    ]);
+    assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+    const rejection = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    assert.ok(rejection);
+    assert.ok(rejection.reason instanceof SupportPassportError);
+    assert.equal(rejection.reason.code, "invalid_input");
+
+    subject.aliceStorage.readAllMemories = originalRead;
+    assert.equal((await originalRead()).length, 2);
   } finally {
     await subject.cleanup();
   }
