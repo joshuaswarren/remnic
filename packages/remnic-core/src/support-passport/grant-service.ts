@@ -16,7 +16,10 @@ import {
   SupportPassportRevokeGrantInputSchema,
 } from "./grant-contracts.js";
 import type { SupportPassportGrantStore } from "./grant-store.js";
-import { withSupportPassportOwnerLock } from "./owner-lock.js";
+import {
+  requireSupportPassportOwnerLock,
+  withSupportPassportOwnerLock,
+} from "./owner-lock.js";
 
 export interface SupportPassportGrantServiceDependencies {
   grantStore: SupportPassportGrantStore;
@@ -49,7 +52,7 @@ export class SupportPassportGrantService {
     return await withSupportPassportOwnerLock(
       owner.storage,
       { namespace: owner.namespace, principal: parsed.data.principal },
-      async () => {
+      async (ownerLock) => {
       for (const cardRef of parsed.data.cards) {
         const memory = await owner.storage.getMemoryById(cardRef.cardId);
         const stored = memory ? projectSupportPassportCard(memory) : null;
@@ -60,12 +63,15 @@ export class SupportPassportGrantService {
           throw new SupportPassportError("revision_conflict", "A support card changed after it was selected.", 409);
         }
       }
-      const created = await this.grantStore.create({
-        namespace: owner.namespace,
-        principal: parsed.data.principal,
-        cards: parsed.data.cards,
-        expiresAt: parsed.data.expiresAt,
-      });
+      const created = await this.grantStore.create(
+        {
+          namespace: owner.namespace,
+          principal: parsed.data.principal,
+          cards: parsed.data.cards,
+          expiresAt: parsed.data.expiresAt,
+        },
+        async () => await requireSupportPassportOwnerLock(ownerLock)
+      );
       return SupportPassportCreatedGrantSchema.parse({
         grant: this.ownerGrant(created.state),
         secret: created.secret,
