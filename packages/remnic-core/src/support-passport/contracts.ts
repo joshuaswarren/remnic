@@ -21,6 +21,14 @@ export const SUPPORT_PASSPORT_CARD_STATUSES = [
 
 export const SupportPassportCardCategorySchema = z.enum(SUPPORT_PASSPORT_CARD_CATEGORIES);
 export const SupportPassportCardStatusSchema = z.enum(SUPPORT_PASSPORT_CARD_STATUSES);
+export const SupportPassportCardTitleSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(80)
+  .refine((title) => !title.includes("]") && !title.includes("\n") && !title.includes("\r"), {
+    message: "card titles cannot contain closing brackets or line breaks",
+  });
 
 const IsoTimestampSchema = z.string().datetime({ offset: true });
 export const SupportPassportMemoryIdSchema = z
@@ -33,7 +41,7 @@ export const SupportPassportMemoryIdSchema = z
 export const SupportPassportCardSchema = z
   .object({
     cardId: SupportPassportMemoryIdSchema,
-    title: z.string().trim().min(1).max(80),
+    title: SupportPassportCardTitleSchema,
     statement: z.string().trim().min(1).max(500),
     category: SupportPassportCardCategorySchema,
     status: SupportPassportCardStatusSchema,
@@ -69,7 +77,7 @@ export const SupportPassportListCardsInputSchema = z
 export const SupportPassportManualDraftInputSchema = z
   .object({
     principal: z.string().trim().min(1).max(512),
-    title: z.string().trim().min(1).max(80),
+    title: SupportPassportCardTitleSchema,
     statement: z.string().trim().min(1).max(500),
     category: SupportPassportCardCategorySchema,
     reviewBy: IsoTimestampSchema,
@@ -85,7 +93,7 @@ export const SupportPassportCardMutationInputSchema = z
   .strict();
 
 export const SupportPassportReplaceCardInputSchema = SupportPassportCardMutationInputSchema.extend({
-  title: z.string().trim().min(1).max(80),
+  title: SupportPassportCardTitleSchema,
   statement: z.string().trim().min(1).max(500),
   category: SupportPassportCardCategorySchema,
   reviewBy: IsoTimestampSchema,

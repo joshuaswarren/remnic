@@ -240,8 +240,11 @@ export class SupportPassportCardService {
     if (!parsed.success) throw invalidInput();
     const { storage } = await this.resolveOwner(parsed.data.principal);
     return await this.withOwnerLock(storage, async () => {
-      const card = await this.requireCard(storage, parsed.data.cardId);
+      let card = await this.requireCard(storage, parsed.data.cardId);
       this.requireRevision(card, parsed.data.expectedRevision);
+      if (expectedStatus === "pending_review") {
+        card = this.projectRequiredCard(await this.recoverReplacementTransition(storage, card.memory));
+      }
       this.requireStatus(card, expectedStatus);
       const updatedAt = this.now().toISOString();
       const changed = await storage.writeMemoryFrontmatterIfUnchanged(
@@ -374,6 +377,7 @@ export class SupportPassportCardService {
     if (replacement?.card.status !== "pending_review") return memory;
     await this.recoverReplacedDraft(storage, replacement);
     const currentMemory = (await storage.getMemoryById(replacement.card.cardId)) ?? memory;
+    if (projectSupportPassportCard(currentMemory)?.card.status !== "pending_review") return currentMemory;
     const priorId = currentMemory.frontmatter.supersedes;
     if (!priorId) return currentMemory;
     const prior = await storage.getMemoryById(priorId);
@@ -402,8 +406,28 @@ export class SupportPassportCardService {
       if (rejected) return;
     }
     const currentDraft = await storage.getMemoryById(replacement.replacesDraftId);
+    if (currentDraft?.frontmatter.status === "active") {
+      await this.rejectOrphanedReplacement(storage, replacement.card.cardId);
+      return;
+    }
     if (currentDraft?.frontmatter.status !== "rejected") {
       throw new SupportPassportError("storage_conflict", "The replaced draft changed during recovery.", 409);
+    }
+  }
+
+  private async rejectOrphanedReplacement(storage: StorageManager, replacementId: string): Promise<void> {
+    const currentReplacement = await this.requireCard(storage, replacementId);
+    if (currentReplacement.card.status === "rejected") return;
+    this.requireStatus(currentReplacement, "pending_review");
+    const rejected = await storage.writeMemoryFrontmatterIfUnchanged(
+      currentReplacement.memory,
+      { status: "rejected", updated: this.now().toISOString() },
+      { actor: "support-passport.replace-draft-recovery", reasonCode: "replaced-draft-approved" }
+    );
+    if (rejected) return;
+    const latest = await storage.getMemoryById(replacementId);
+    if (latest?.frontmatter.status !== "rejected") {
+      throw new SupportPassportError("storage_conflict", "The orphaned replacement could not be rejected.", 409);
     }
   }
 
