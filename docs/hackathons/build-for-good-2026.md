@@ -120,10 +120,10 @@ npm run demo:support-passport:validate-receipt -- \
 ```
 
 The standalone runner does not boot OpenClaw or load its plugin entry. For an
-OpenClaw gateway run, enable the feature in the existing plugin, keep
-`modelSource: "gateway"`, and use the browser flow on that host. The feature
-uses the host's existing model chain and provider auth. No OpenAI API key is
-required. The receipt validator checks self-consistency only.
+OpenClaw gateway run, use the complete bridge configuration in the
+[support passport guide](../support-passport.md#enable-the-feature).
+Keep `modelSource: "gateway"` and the host's existing model chain. No OpenAI
+API key is required. The receipt validator checks self-consistency only.
 
 ## Two model jobs
 
@@ -157,19 +157,17 @@ Remnic's memory engine, model routes, adapters, and server existed before this
 entry. What Helps Me is the new work in issue
 [#2355](https://github.com/joshuaswarren/remnic/issues/2355).
 
-The entry starts from Git commit `011019911cc361bf702bddbead686ea07479d328`.
 The six-layer stack keeps each review boundary clear:
 
-| Layer | Commit range | New work |
+| Layer | Pull request | New work |
 |---|---|---|
-| Cards | `0110199..0f7e752` | Support card contract, storage, owner review, and lifecycle. |
-| Grants | `0f7e752..d4a815a` | Revocable, exact-version share grants and race-safe state. |
-| Models | `d4a815a..72c04fe` | Local, gateway, direct, and compatible model routes with strict output. |
-| API | `72c04fe..bd4f527` | Owner HTTP and MCP routes plus the public helper boundary. |
-| UI | `bd4f527..2632996` | Responsive owner and helper browser app with accessibility checks. |
-| Demo | `2632996..HEAD` | Walkthrough, live runner, receipt validator, docs, and submission entry. |
+| Cards | [#2360](https://github.com/joshuaswarren/remnic/pull/2360) | Support card contract, storage, owner review, and lifecycle. |
+| Grants | [#2361](https://github.com/joshuaswarren/remnic/pull/2361) | Revocable, exact-version share grants and race-safe state. |
+| Models | [#2362](https://github.com/joshuaswarren/remnic/pull/2362) | Local, gateway, direct, and compatible model routes with strict output. |
+| API | [#2363](https://github.com/joshuaswarren/remnic/pull/2363) | Owner HTTP and MCP routes plus the public helper boundary. |
+| UI | [#2364](https://github.com/joshuaswarren/remnic/pull/2364) | Responsive owner and helper browser app with accessibility checks. |
+| Demo | [#2365](https://github.com/joshuaswarren/remnic/pull/2365) | Walkthrough, live runner, receipt validator, docs, and submission entry. |
 
-The full submission diff is `011019911cc361bf702bddbead686ea07479d328..HEAD`.
 The older Relay entry remains in [HACKATHON.md](../../HACKATHON.md).
 
 ## Proof status

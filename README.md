@@ -101,8 +101,9 @@ npm run demo:support-passport:validate-receipt -- \
 The validator checks the self-reported receipt schema and hash consistency. It
 does not convert that receipt into independent attestation.
 
-For an existing OpenClaw install, keep the current gateway providers and auth.
-Enable only the feature and gateway route in `openclaw.json`:
+For an existing OpenClaw install, keep the current gateway providers and model
+auth. Enable the feature, owner HTTP bridge, and gateway route in
+`openclaw.json`:
 
 ```jsonc
 {
@@ -112,7 +113,14 @@ Enable only the feature and gateway route in `openclaw.json`:
         "config": {
           "modelSource": "gateway",
           "openaiApiKey": false,
-          "supportPassport": { "enabled": true }
+          "supportPassport": { "enabled": true },
+          "agentAccessHttp": {
+            "enabled": true,
+            "host": "127.0.0.1",
+            "port": 4318,
+            "authToken": "${OPENCLAW_REMNIC_ACCESS_TOKEN}",
+            "principal": "passport-owner"
+          }
         }
       }
     }
@@ -120,8 +128,10 @@ Enable only the feature and gateway route in `openclaw.json`:
 }
 ```
 
-Open `/remnic/ui/what-helps-me/` on the configured Remnic HTTP origin. Remnic
-uses the OpenClaw gateway model chain and its existing provider auth.
+Set `OPENCLAW_REMNIC_ACCESS_TOKEN` to a private local bearer token. This token
+protects the browser bridge. It is not a model provider key. Open
+`/remnic/ui/what-helps-me/` on the configured Remnic HTTP origin. Remnic uses
+the OpenClaw gateway model chain and its existing provider auth.
 
 The standalone live runner does not boot an OpenClaw host. Use the real browser
 flow above to exercise an existing OpenClaw gateway setup. No OpenAI API key is

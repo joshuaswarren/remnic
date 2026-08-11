@@ -24,6 +24,7 @@ import {
   receiptStatusSequence,
   sha256,
 } from "./receipt-schema.mjs";
+import { runCleanupSteps, waitForResult } from "./live-demo-runtime.mjs";
 import { validateReceiptConsistency } from "./verify-receipt.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -324,6 +325,7 @@ async function run(options) {
   let server;
   let receiptWritten = false;
   let receiptValidated = false;
+  let runError;
 
   try {
     process.env.REMNIC_MEMORY_DIR = memoryDir;
@@ -522,7 +524,7 @@ async function run(options) {
     }
     console.log("[9/9] Confirmed the stopped link returns 410 with no card content.");
 
-    const audits = await readSuccessfulModelAudits(memoryDir);
+    const audits = await waitForResult(() => readSuccessfulModelAudits(memoryDir));
     const responses = {
       draft: draftedRequest.receiptEntry,
       edit: editedRequest.receiptEntry,
@@ -579,12 +581,22 @@ async function run(options) {
     await validateReceiptConsistency({ receiptPath });
     receiptValidated = true;
     console.log(`Saved receipt.json and validated its self-consistency for commit ${commitSha}.`);
+  } catch (error) {
+    runError = error;
+    throw error;
   } finally {
-    if (server) await server.stop();
-    restoreEnvironment("REMNIC_MEMORY_DIR", previousMemoryDir);
-    restoreEnvironment("ENGRAM_MEMORY_DIR", previousLegacyMemoryDir);
-    await rm(tempRoot, { recursive: true, force: true });
-    if (receiptWritten && !receiptValidated) await rm(receiptPath, { force: true });
+    const cleanupError = await runCleanupSteps([
+      async () => {
+        if (server) await server.stop();
+      },
+      async () => restoreEnvironment("REMNIC_MEMORY_DIR", previousMemoryDir),
+      async () => restoreEnvironment("ENGRAM_MEMORY_DIR", previousLegacyMemoryDir),
+      async () => rm(tempRoot, { recursive: true, force: true }),
+      async () => {
+        if (receiptWritten && !receiptValidated) await rm(receiptPath, { force: true });
+      },
+    ]);
+    if (!runError && cleanupError) throw cleanupError;
   }
 }
 
