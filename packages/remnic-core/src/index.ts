@@ -404,6 +404,7 @@ export {
   type RemnicAdminModelOption,
 } from "./access-http.js";
 export { EngramMcpServer } from "./access-mcp.js";
+export * from "./support-passport/index.js";
 
 // Remnic Relay — host-agnostic mission evidence and receipt contract.
 export {
