@@ -249,6 +249,7 @@
 
   function buildShareUrl(currentUrl, grantId, secret, replay) {
     const url = new URL(currentUrl);
+    url.pathname = "/remnic/ui/what-helps-me/";
     url.search = "";
     url.hash = "";
     url.searchParams.set("grant", grantId);
@@ -279,7 +280,7 @@
   function expiryForChoice(choice, customValue, now = Date.now()) {
     const durations = { "30m": 30 * 60_000, "2h": 2 * 60 * 60_000, "1d": 24 * 60 * 60_000 };
     const timestamp = Object.hasOwn(durations, choice) ? now + durations[choice] : Date.parse(customValue);
-    if (!Number.isFinite(timestamp) || timestamp < now + 301_000 || timestamp > now + 7 * 24 * 60 * 60_000) {
+    if (!Number.isFinite(timestamp) || timestamp < now + 300_000 || timestamp > now + 7 * 24 * 60 * 60_000) {
       throw new Error("Choose a share time from five minutes through seven days.");
     }
     return new Date(timestamp).toISOString();

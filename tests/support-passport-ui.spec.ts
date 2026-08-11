@@ -114,6 +114,29 @@ test("a bad helper link has a clear locked view", async ({ page }, testInfo) => 
   await page.screenshot({ path: testInfo.outputPath(`locked-${testInfo.project.name}.png`), fullPage: true });
 });
 
+test("share links use the canonical path and allow the exact five-minute boundary", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers the browser policy helpers.");
+  await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
+
+  const result = await page.evaluate(() => {
+    const now = Date.parse("2026-08-11T12:00:00.000Z");
+    return {
+      expiresAt: window.WhatHelpsMeModel.expiryForChoice("custom", new Date(now + 300_000).toISOString(), now),
+      shareUrl: window.WhatHelpsMeModel.buildShareUrl(
+        "https://example.test/engram/ui/what-helps-me/?old=value#old=value",
+        "grant-one",
+        "secret-one",
+        false
+      ),
+    };
+  });
+
+  expect(result).toEqual({
+    expiresAt: "2026-08-11T12:05:00.000Z",
+    shareUrl: "https://example.test/remnic/ui/what-helps-me/?grant=grant-one#secret=secret-one",
+  });
+});
+
 test("helper load, error, stale, stopped, and expired states fail closed", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers the state matrix.");
 
@@ -123,12 +146,14 @@ test("helper load, error, stale, stopped, and expired states fail closed", async
     ["stopped", 410, "grant_gone", "This support passport is locked."],
   ] as const;
   for (const [name, status, code, heading] of cases) {
+    const releaseResponse = Promise.withResolvers<void>();
     await page.route(`**/engram/v1/support-passport/public/grants/replay-grant-${name}`, async (route) => {
-      await new Promise((resolve) => setTimeout(resolve, 80));
+      await releaseResponse.promise;
       await route.fulfill({ status, contentType: "application/json", body: JSON.stringify({ error: name, code }) });
     });
     await page.goto(helperUrl(`-${name}`).replace("mode=replay&", ""));
     await expect(page.getByText("Opening the shared guide…")).toBeVisible();
+    releaseResponse.resolve();
     await expect(page.getByRole("heading", { name: heading })).toBeVisible();
     await page.unrouteAll({ behavior: "wait" });
   }
