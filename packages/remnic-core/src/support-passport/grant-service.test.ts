@@ -173,6 +173,59 @@ test("a helper sees only the selected active card through a valid secret", async
   }
 });
 
+test("grant creation and card withdrawal cannot interleave", async () => {
+  const subject = await makeSubject();
+  try {
+    const card = await createActiveCard(subject);
+    const getMemoryById = subject.aliceStorage.getMemoryById.bind(subject.aliceStorage);
+    let releaseRead!: () => void;
+    let markReadStarted!: () => void;
+    const readStarted = new Promise<void>((resolve) => {
+      markReadStarted = resolve;
+    });
+    const readReleased = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    let pauseRead = true;
+    subject.aliceStorage.getMemoryById = async (memoryId: string) => {
+      const memory = await getMemoryById(memoryId);
+      if (pauseRead) {
+        pauseRead = false;
+        markReadStarted();
+        await readReleased;
+      }
+      return memory;
+    };
+
+    const createPromise = subject.grantService.createGrant({
+      principal: "owner:alice",
+      cards: [{ cardId: card.cardId, revision: card.revision }],
+      expiresAt: expiryAfter(subject, 3_600_000),
+    });
+    await readStarted;
+    let withdrawalSettled = false;
+    const withdrawalPromise = subject.cardService
+      .withdrawCard({
+        principal: "owner:alice",
+        cardId: card.cardId,
+        expectedRevision: card.revision,
+      })
+      .finally(() => {
+        withdrawalSettled = true;
+      });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(withdrawalSettled, false);
+
+    releaseRead();
+    const created = await createPromise;
+    assert.equal(created.grant.status, "active");
+    await withdrawalPromise;
+    assert.equal(withdrawalSettled, true);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("bad secrets return not found, while valid revoked and expired grants reveal safe lifecycle states", async () => {
   const subject = await makeSubject();
   try {
