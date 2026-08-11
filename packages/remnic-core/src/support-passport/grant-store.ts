@@ -30,6 +30,7 @@ export interface SupportPassportGrantStoreOptions {
   now?: () => Date;
   makeSecret?: () => Buffer;
   makeGrantId?: () => string;
+  withHeldFileLock?: typeof withHeldFileLock;
 }
 
 export interface CreateStoredGrantInput {
@@ -105,6 +106,7 @@ export class SupportPassportGrantStore {
   private readonly now: () => Date;
   private readonly makeSecret: () => Buffer;
   private readonly makeGrantId: () => string;
+  private readonly runWithHeldFileLock: typeof withHeldFileLock;
 
   constructor(options: SupportPassportGrantStoreOptions) {
     this.memoryDir = path.resolve(expandTildePath(options.memoryDir));
@@ -113,9 +115,13 @@ export class SupportPassportGrantStore {
     this.now = options.now ?? (() => new Date());
     this.makeSecret = options.makeSecret ?? (() => randomBytes(32));
     this.makeGrantId = options.makeGrantId ?? randomUUID;
+    this.runWithHeldFileLock = options.withHeldFileLock ?? withHeldFileLock;
   }
 
-  async create(input: CreateStoredGrantInput): Promise<{ state: SupportPassportGrantState; secret: string }> {
+  async create(
+    input: CreateStoredGrantInput,
+    beforeCommit?: () => Promise<void>
+  ): Promise<{ state: SupportPassportGrantState; secret: string }> {
     const namespace = normalizeNamespace(input.namespace);
     const parsed = SupportPassportCreateGrantInputSchema.safeParse({
       principal: input.principal,
@@ -150,6 +156,7 @@ export class SupportPassportGrantStore {
         expiresAt: parsed.data.expiresAt,
       });
       await this.requireMutationLock(lock);
+      await beforeCommit?.();
       await this.writeState(state, true);
       try {
         await this.addToOwnerIndex(state, lock);
@@ -255,17 +262,14 @@ export class SupportPassportGrantStore {
     if (current.includes(state.grantId)) return;
     let retained = current;
     if (current.length >= MAX_OWNER_GRANT_HISTORY) {
-      const indexedStates = (
-        await Promise.all(
-          current.map(async (grantId) => {
-            try {
-              return await this.readState(grantId);
-            } catch {
-              return null;
-            }
-          })
-        )
-      ).filter((item): item is SupportPassportGrantState => item !== null);
+      const indexedStates: SupportPassportGrantState[] = [];
+      for (const grantId of current) {
+        try {
+          indexedStates.push(await this.readState(grantId));
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+      }
       const active = indexedStates.filter(
         (item) => !item.revokedAt && Date.parse(item.expiresAt) > this.now().getTime()
       );
@@ -391,7 +395,7 @@ export class SupportPassportGrantStore {
     await this.ensureSafeDirectories();
     const lockPath = path.join(this.grantsDir, ".grants.lock");
     return await serializeMutations(`support-passport-grants:${this.grantsDir}`, () =>
-      withHeldFileLock(
+      this.runWithHeldFileLock(
         lockPath,
         {
           staleMs: GRANT_LOCK_STALE_MS,
@@ -399,7 +403,9 @@ export class SupportPassportGrantStore {
           heartbeatMs: GRANT_LOCK_HEARTBEAT_MS,
         },
         async (acquired, lock) => {
-          if (!acquired) throw new Error("could not acquire the support passport grant lock");
+          if (!acquired) {
+            throw new SupportPassportError("storage_conflict", "The share link store is busy. Try again.", 409);
+          }
           return await task(lock);
         }
       )

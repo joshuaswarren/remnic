@@ -9,6 +9,7 @@ import { SupportPassportCardService } from "./card-service.js";
 import { SupportPassportError } from "./errors.js";
 import { SupportPassportGrantService } from "./grant-service.js";
 import { SupportPassportGrantStore, syncDirectoryForDurability } from "./grant-store.js";
+import { withHeldFileLock } from "../utils/serialize-mutations.js";
 
 async function makeSubject() {
   StorageManager.clearAllStaticCaches();
@@ -198,6 +199,22 @@ test("owner grant history stays bounded while an inactive link frees capacity", 
       principal: input.principal,
       expectedStateVersion: first.state.stateVersion,
     });
+    const inspected = store as unknown as {
+      readState(grantId: string): Promise<unknown>;
+    };
+    const readState = inspected.readState.bind(store);
+    inspected.readState = async (grantId) => {
+      if (grantId === first.state.grantId) {
+        throw Object.assign(new Error("simulated indexed grant read failure"), { code: "EIO" });
+      }
+      return await readState(grantId);
+    };
+    await assert.rejects(
+      store.create(input),
+      (error: unknown) => (error as NodeJS.ErrnoException).code === "EIO"
+    );
+    inspected.readState = readState;
+    assert.equal((await store.listForOwner(input.namespace, input.principal)).length, 100);
     const replacement = await store.create(input);
     const listed = await store.listForOwner(input.namespace, input.principal);
     assert.equal(listed.length, 100);
@@ -205,6 +222,64 @@ test("owner grant history stays bounded while an inactive link frees capacity", 
     assert.equal(listed.some((state) => state.grantId === replacement.state.grantId), true);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("grant mutations report a storage conflict when the file lock is busy", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-busy-"));
+  try {
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const rejectLock = (async (_lockPath, _options, task) =>
+      await task(false, { refresh: async () => false, failure: "timeout" })) as typeof withHeldFileLock;
+    const store = new SupportPassportGrantStore({
+      memoryDir: root,
+      now: () => now,
+      withHeldFileLock: rejectLock,
+    });
+
+    await assert.rejects(
+      store.create({
+        namespace: "alice",
+        principal: "owner:alice",
+        cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+        expiresAt: new Date(now.getTime() + 300_000).toISOString(),
+      }),
+      (error: unknown) =>
+        error instanceof SupportPassportError && error.code === "storage_conflict" && error.status === 409
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("grant creation rechecks the owner lock immediately before commit", async () => {
+  const subject = await makeSubject();
+  try {
+    const card = await createActiveCard(subject);
+    const originalRead = subject.aliceStorage.getMemoryById.bind(subject.aliceStorage);
+    let replacedLock = false;
+    subject.aliceStorage.getMemoryById = async (memoryId: string) => {
+      const memory = await originalRead(memoryId);
+      if (!replacedLock) {
+        replacedLock = true;
+        const lockPath = path.join(subject.aliceStorage.dir, "state", "support-passport-cards.lock");
+        await writeFile(lockPath, `${process.pid} 00000000-0000-4000-8000-000000000000 peer\n`);
+      }
+      return memory;
+    };
+
+    await assert.rejects(
+      subject.grantService.createGrant({
+        principal: "owner:alice",
+        cards: [{ cardId: card.cardId, revision: card.revision }],
+        expiresAt: expiryAfter(subject, 300_000),
+      }),
+      (error: unknown) =>
+        error instanceof SupportPassportError && error.code === "storage_conflict" && error.status === 409
+    );
+    assert.deepEqual(await subject.grantService.listGrants({ principal: "owner:alice" }), []);
+  } finally {
+    await subject.cleanup();
   }
 });
 
