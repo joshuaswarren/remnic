@@ -1,5 +1,5 @@
-import { copyFile, mkdir, open, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
+import { copyFile, mkdir, open, rename, rm, stat } from "node:fs/promises";
 
 async function syncDirectory(dir: string): Promise<void> {
   let handle: Awaited<ReturnType<typeof open>> | undefined;
@@ -18,7 +18,10 @@ function tempPathFor(outputPath: string): string {
   return path.join(path.dirname(outputPath), `.${path.basename(outputPath)}.${suffix}.tmp`);
 }
 
-export async function copyExistingFileToBackup(sourcePath: string, backupPath: string): Promise<string | undefined> {
+export async function copyExistingFileToBackup(
+  sourcePath: string,
+  backupPath: string,
+): Promise<string | undefined> {
   try {
     await stat(sourcePath);
   } catch (err) {
@@ -35,7 +38,6 @@ export async function writeFileAtomically(
   outputPath: string,
   content: string | Uint8Array,
   backupPath?: string,
-  options: { mode?: number } = {}
 ): Promise<string | undefined> {
   const dir = path.dirname(outputPath);
   await mkdir(dir, { recursive: true });
@@ -43,7 +45,7 @@ export async function writeFileAtomically(
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   let resolvedBackupPath: string | undefined;
   try {
-    handle = await open(tempPath, "wx", options.mode);
+    handle = await open(tempPath, "w");
     if (typeof content === "string") {
       await handle.writeFile(content, "utf-8");
     } else {
@@ -69,7 +71,7 @@ export async function writeFileAtomically(
 export async function commitPreparedFileAtomically(
   tempPath: string,
   outputPath: string,
-  backupPath?: string
+  backupPath?: string,
 ): Promise<string | undefined> {
   const dir = path.dirname(outputPath);
   let resolvedBackupPath: string | undefined;
