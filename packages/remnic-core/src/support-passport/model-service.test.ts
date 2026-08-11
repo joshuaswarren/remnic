@@ -15,7 +15,11 @@ import {
   SupportPassportModelAuditRecordSchema,
   SupportPassportModelAuditStore,
 } from "./model-audit.js";
-import { SupportPassportDraftService, SupportPassportQuestionService } from "./model-service.js";
+import {
+  computeSupportPassportSourceRevision,
+  SupportPassportDraftService,
+  SupportPassportQuestionService,
+} from "./model-service.js";
 
 async function flushAudit(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
@@ -35,6 +39,10 @@ function makeAuditRecord(overrides: Partial<SupportPassportModelAuditRecord> = {
     latencyMs: 25,
     ...overrides,
   });
+}
+
+function sourceRevision(memoryId: string, content: string) {
+  return [{ memoryId, revision: computeSupportPassportSourceRevision(content) }];
 }
 
 async function makeSubject() {
@@ -121,6 +129,7 @@ test("drafting reads only selected memories and persists pending cards with a co
     const cards = await service.draftCards({
       principal: "owner:alice",
       sourceMemoryIds: [selected.id],
+      sourceMemoryRevisions: sourceRevision(selected.id, "Tell me before plans change."),
       consent: true,
     });
     await flushAudit();
@@ -193,6 +202,7 @@ test("drafting persists into the owner scope used for source reads", async () =>
     const cards = await service.draftCards({
       principal: "owner:alice",
       sourceMemoryIds: [selected.id],
+      sourceMemoryRevisions: sourceRevision(selected.id, "Tell me before plans change."),
       consent: true,
     });
 
@@ -228,7 +238,12 @@ test("model failures produce a content-free audit record with an error class", a
     });
 
     await assert.rejects(
-      service.draftCards({ principal: "owner:alice", sourceMemoryIds: [selected.id], consent: true }),
+      service.draftCards({
+        principal: "owner:alice",
+        sourceMemoryIds: [selected.id],
+        sourceMemoryRevisions: sourceRevision(selected.id, "Tell me before plans change."),
+        consent: true,
+      }),
       (error: unknown) => error instanceof SupportPassportError && error.code === "model_output_invalid"
     );
     await flushAudit();
@@ -269,15 +284,71 @@ test("drafting rejects missing sources and absent consent before the model runs"
     });
 
     await assert.rejects(
-      service.draftCards({ principal: "owner:alice", sourceMemoryIds: ["missing-memory"], consent: true }),
+      service.draftCards({
+        principal: "owner:alice",
+        sourceMemoryIds: ["missing-memory"],
+        sourceMemoryRevisions: [{ memoryId: "missing-memory", revision: "a".repeat(64) }],
+        consent: true,
+      }),
       (error: unknown) => error instanceof SupportPassportError && error.code === "invalid_input"
     );
     await flushAudit();
     await assert.rejects(
-      service.draftCards({ principal: "owner:alice", sourceMemoryIds: ["missing-memory"], consent: false }),
+      service.draftCards({
+        principal: "owner:alice",
+        sourceMemoryIds: ["missing-memory"],
+        sourceMemoryRevisions: [{ memoryId: "missing-memory", revision: "a".repeat(64) }],
+        consent: false,
+      }),
       (error: unknown) => error instanceof SupportPassportError && error.code === "consent_required"
     );
     assert.equal(calls, 0);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("drafting rejects a memory changed after the owner reviewed it", async () => {
+  const subject = await makeSubject();
+  try {
+    const selected = await subject.aliceStorage.writeMemory("preference", "Tell me before plans change.", {
+      source: "test",
+    });
+    const reviewedRevision = sourceRevision(selected.id, "Tell me before plans change.");
+    assert.equal(
+      await subject.aliceStorage.updateMemory(selected.id, "Tell me only after plans change."),
+      true
+    );
+    let modelCalls = 0;
+    const service = new SupportPassportDraftService({
+      cardService: subject.cardService,
+      modelAdapter: new SupportPassportModelAdapter({
+        routes: [
+          {
+            kind: "local",
+            invoke: async () => {
+              modelCalls += 1;
+              return null;
+            },
+          },
+        ],
+      }),
+      resolveOwner: subject.resolveOwner,
+      audit: { record: async () => undefined },
+      now: subject.now,
+    });
+
+    await assert.rejects(
+      service.draftCards({
+        principal: "owner:alice",
+        sourceMemoryIds: [selected.id],
+        sourceMemoryRevisions: reviewedRevision,
+        consent: true,
+      }),
+      (error: unknown) =>
+        error instanceof SupportPassportError && error.code === "revision_conflict" && error.status === 409
+    );
+    assert.equal(modelCalls, 0);
   } finally {
     await subject.cleanup();
   }
@@ -331,7 +402,12 @@ test("drafting revalidates selected memories after the model returns", async () 
     });
 
     await assert.rejects(
-      service.draftCards({ principal: "owner:alice", sourceMemoryIds: [selected.id], consent: true }),
+      service.draftCards({
+        principal: "owner:alice",
+        sourceMemoryIds: [selected.id],
+        sourceMemoryRevisions: sourceRevision(selected.id, "Tell me before plans change."),
+        consent: true,
+      }),
       (error: unknown) => error instanceof SupportPassportError && error.code === "invalid_input"
     );
     assert.deepEqual(await subject.cardService.listCards({ principal: "owner:alice" }), []);
@@ -381,7 +457,14 @@ test("audit write failures do not block successful drafts or replace model error
       now: subject.now,
     });
     assert.equal(
-      (await successful.draftCards({ principal: "owner:alice", sourceMemoryIds: [selected.id], consent: true })).length,
+      (
+        await successful.draftCards({
+          principal: "owner:alice",
+          sourceMemoryIds: [selected.id],
+          sourceMemoryRevisions: sourceRevision(selected.id, "Give me time to answer."),
+          consent: true,
+        })
+      ).length,
       1
     );
 
@@ -395,7 +478,12 @@ test("audit write failures do not block successful drafts or replace model error
       now: subject.now,
     });
     await assert.rejects(
-      failing.draftCards({ principal: "owner:alice", sourceMemoryIds: [selected.id], consent: true }),
+      failing.draftCards({
+        principal: "owner:alice",
+        sourceMemoryIds: [selected.id],
+        sourceMemoryRevisions: sourceRevision(selected.id, "Give me time to answer."),
+        consent: true,
+      }),
       (error: unknown) => error instanceof SupportPassportError && error.code === "model_output_invalid"
     );
   } finally {
@@ -428,7 +516,12 @@ test("stalled error audits do not delay the model error", async () => {
 
     await assert.rejects(
       Promise.race([
-        service.draftCards({ principal: "owner:alice", sourceMemoryIds: [selected.id], consent: true }),
+        service.draftCards({
+          principal: "owner:alice",
+          sourceMemoryIds: [selected.id],
+          sourceMemoryRevisions: sourceRevision(selected.id, "Give me time to answer."),
+          consent: true,
+        }),
         new Promise<never>((_resolve, reject) =>
           setTimeout(() => reject(new Error("The model error waited for its audit.")), 100)
         ),

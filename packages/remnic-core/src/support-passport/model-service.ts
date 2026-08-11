@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { z } from "zod";
 
 import { log } from "../logger.js";
@@ -19,6 +21,17 @@ const DraftServiceInputSchema = z
   .object({
     principal: z.string().trim().min(1).max(512),
     sourceMemoryIds: z.array(SupportPassportMemoryIdSchema).min(1).max(20),
+    sourceMemoryRevisions: z
+      .array(
+        z
+          .object({
+            memoryId: SupportPassportMemoryIdSchema,
+            revision: z.string().regex(/^[0-9a-f]{64}$/),
+          })
+          .strict()
+      )
+      .min(1)
+      .max(20),
     consent: z.literal(true),
   })
   .strict()
@@ -30,7 +43,26 @@ const DraftServiceInputSchema = z
         path: ["sourceMemoryIds"],
       });
     }
+    const revisionIds = input.sourceMemoryRevisions.map((source) => source.memoryId);
+    if (
+      new Set(revisionIds).size !== revisionIds.length ||
+      revisionIds.length !== input.sourceMemoryIds.length ||
+      input.sourceMemoryIds.some((memoryId) => !revisionIds.includes(memoryId))
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "source memory revisions must match the selected memory IDs",
+        path: ["sourceMemoryRevisions"],
+      });
+    }
   });
+
+export function computeSupportPassportSourceRevision(content: string): string {
+  return createHash("sha256")
+    .update("support-passport-source:v1\0")
+    .update(stripAttributesSuffix(content))
+    .digest("hex");
+}
 
 export interface SupportPassportDraftServiceDependencies {
   cardService: SupportPassportCardService;
@@ -108,6 +140,7 @@ export class SupportPassportDraftService {
   async draftCards(input: {
     principal: string;
     sourceMemoryIds: string[];
+    sourceMemoryRevisions: Array<{ memoryId: string; revision: string }>;
     consent: boolean;
     signal?: AbortSignal;
   }): Promise<SupportPassportCard[]> {
@@ -117,15 +150,22 @@ export class SupportPassportDraftService {
     const parsed = DraftServiceInputSchema.safeParse({
       principal: input.principal,
       sourceMemoryIds: input.sourceMemoryIds,
+      sourceMemoryRevisions: input.sourceMemoryRevisions,
       consent: input.consent,
     });
     if (!parsed.success) throw new SupportPassportError("invalid_input", "The drafting request is invalid.", 400);
     const owner = await this.resolveOwner(parsed.data.principal);
+    const revisions = new Map(
+      parsed.data.sourceMemoryRevisions.map((source) => [source.memoryId, source.revision] as const)
+    );
     const memories: Array<{ memoryId: string; content: string }> = [];
     for (const memoryId of parsed.data.sourceMemoryIds) {
       const memory = await owner.storage.getMemoryById(memoryId);
       if (!memory || !isEligibleSource(memory)) {
         throw new SupportPassportError("invalid_input", "A selected memory is not available.", 400);
+      }
+      if (computeSupportPassportSourceRevision(memory.content) !== revisions.get(memoryId)) {
+        throw new SupportPassportError("revision_conflict", "A selected memory changed after it was reviewed.", 409);
       }
       memories.push({ memoryId, content: stripAttributesSuffix(memory.content) });
     }
