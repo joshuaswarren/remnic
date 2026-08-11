@@ -116,6 +116,10 @@ export class SupportPassportGrantService {
       (latest, card) => (card.updatedAt > latest ? card.updatedAt : latest),
       firstCard.updatedAt
     );
+    const confirmedState = await this.grantStore.authenticate(input.grantId, input.secret);
+    if (confirmedState.stateVersion !== state.stateVersion) {
+      throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
+    }
     return SupportPassportPublicGuideSchema.parse({
       schemaVersion: 1,
       grantId: state.grantId,

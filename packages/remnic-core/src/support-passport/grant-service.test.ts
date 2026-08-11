@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { lstat, mkdir, mkdtemp, readFile, rm, symlink } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -38,7 +38,9 @@ async function makeSubject() {
 
   return {
     root,
+    aliceStorage,
     cardService,
+    grantStore,
     grantService,
     now,
     advance: (milliseconds: number) => {
@@ -144,6 +146,17 @@ test("bad secrets return not found, while valid revoked or expired grants return
         error instanceof SupportPassportError && error.code === "grant_not_found" && error.status === 404
     );
 
+    await assert.rejects(
+      subject.grantStore.revoke({
+        namespace: "alice",
+        principal: "owner:alice",
+        grantId: created.grant.grantId,
+        expectedStateVersion: created.grant.stateVersion + 1,
+      }),
+      (error: unknown) =>
+        error instanceof SupportPassportError && error.code === "state_conflict" && error.status === 409
+    );
+
     const peerStore = new SupportPassportGrantStore({ memoryDir: path.join(subject.root, "shared"), now: subject.now });
     const peerRevoked = await peerStore.revoke({
       namespace: "alice",
@@ -169,9 +182,43 @@ test("bad secrets return not found, while valid revoked or expired grants return
       cards: [{ cardId: card.cardId, revision: card.revision }],
       durationSeconds: 300,
     });
-    subject.advance(300_001);
+    subject.advance(300_000);
     await assert.rejects(
       subject.grantService.readGrant({ grantId: second.grant.grantId, secret: second.secret }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "grant_gone"
+    );
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("a revoke during a helper read never returns the old guide", async () => {
+  const subject = await makeSubject();
+  try {
+    const card = await createActiveCard(subject);
+    const created = await subject.grantService.createGrant({
+      principal: "owner:alice",
+      cards: [{ cardId: card.cardId, revision: card.revision }],
+      durationSeconds: 3_600,
+    });
+    const peerStore = new SupportPassportGrantStore({ memoryDir: path.join(subject.root, "shared"), now: subject.now });
+    const getMemoryById = subject.aliceStorage.getMemoryById.bind(subject.aliceStorage);
+    let revoked = false;
+    subject.aliceStorage.getMemoryById = async (memoryId: string) => {
+      if (!revoked) {
+        revoked = true;
+        await peerStore.revoke({
+          namespace: "alice",
+          principal: "owner:alice",
+          grantId: created.grant.grantId,
+          expectedStateVersion: created.grant.stateVersion,
+        });
+      }
+      return await getMemoryById(memoryId);
+    };
+
+    await assert.rejects(
+      subject.grantService.readGrant({ grantId: created.grant.grantId, secret: created.secret }),
       (error: unknown) => error instanceof SupportPassportError && error.code === "grant_gone"
     );
   } finally {
@@ -259,6 +306,40 @@ test("the grant store rejects a symlinked grant directory", async () => {
       }),
       /must not be a symbolic link/
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the grant store fails closed for corrupt and symlinked grant files", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-state-"));
+  try {
+    const firstGrantId = "00000000-0000-4000-8000-000000000001";
+    const secondGrantId = "00000000-0000-4000-8000-000000000002";
+    const grantIds = [firstGrantId, secondGrantId];
+    const store = new SupportPassportGrantStore({
+      memoryDir: root,
+      makeGrantId: () => grantIds.shift() ?? secondGrantId,
+    });
+    const input = {
+      namespace: "alice",
+      principal: "owner:alice",
+      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+      durationSeconds: 300,
+    };
+    const corrupt = await store.create(input);
+    const grantDir = path.join(root, "state", "support-passport", "grants");
+    const corruptPath = path.join(grantDir, `${firstGrantId}.json`);
+    await writeFile(corruptPath, "{", { mode: 0o600 });
+    await assert.rejects(store.authenticate(firstGrantId, corrupt.secret));
+
+    const linked = await store.create(input);
+    const linkedPath = path.join(grantDir, `${secondGrantId}.json`);
+    const outsidePath = path.join(root, "outside.json");
+    await writeFile(outsidePath, await readFile(linkedPath), { mode: 0o600 });
+    await rm(linkedPath);
+    await symlink(outsidePath, linkedPath);
+    await assert.rejects(store.authenticate(secondGrantId, linked.secret), /must be regular files/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
