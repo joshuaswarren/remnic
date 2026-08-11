@@ -303,7 +303,7 @@ export class SupportPassportModelAdapter {
       if (remainingMs <= 0) break;
       let response: SupportPassportModelRouteResult | null;
       try {
-        response = await route.invoke(messages, { ...options, timeoutMs: remainingMs });
+        response = await this.invokeRoute(route, messages, options, remainingMs);
       } catch (error) {
         if (options.signal?.aborted) throw error;
         continue;
@@ -335,5 +335,43 @@ export class SupportPassportModelAdapter {
     failureMetadata.latencyMs = Math.max(0, this.nowMs() - startedAt);
     if (invalidResponse) throw invalidOutput(failureMetadata);
     throw unavailable(failureMetadata);
+  }
+
+  private async invokeRoute(
+    route: SupportPassportModelRoute,
+    messages: ModelMessage[],
+    options: { temperature: number; maxTokens: number; operation: string; signal?: AbortSignal },
+    timeoutMs: number
+  ): Promise<SupportPassportModelRouteResult | null> {
+    const controller = new AbortController();
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    let removeCallerAbort: () => void = () => undefined;
+    const callerAbort = new Promise<never>((_resolve, reject) => {
+      const abort = () => {
+        const reason = options.signal?.reason;
+        const error = reason instanceof Error ? reason : new Error("The model request was aborted.");
+        controller.abort(error);
+        reject(error);
+      };
+      if (options.signal?.aborted) abort();
+      else options.signal?.addEventListener("abort", abort, { once: true });
+      removeCallerAbort = () => options.signal?.removeEventListener("abort", abort);
+    });
+    const routeCall = Promise.resolve().then(() =>
+      route.invoke(messages, { ...options, timeoutMs, signal: controller.signal })
+    );
+    routeCall.catch(() => undefined);
+    const deadline = new Promise<null>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        controller.abort(new Error("The model request timed out."));
+        resolve(null);
+      }, timeoutMs);
+    });
+    try {
+      return await Promise.race([routeCall, deadline, callerAbort]);
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      removeCallerAbort();
+    }
   }
 }

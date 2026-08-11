@@ -298,6 +298,35 @@ test("missing model routes return provider_unavailable", async () => {
   );
 });
 
+test("the model deadline aborts provider work", async () => {
+  const aborted = Promise.withResolvers<boolean>();
+  const adapter = new SupportPassportModelAdapter({
+    timeoutMs: 20,
+    routes: [
+      {
+        kind: "gateway",
+        invoke: async (_messages, options) =>
+          await new Promise<never>((_resolve, reject) => {
+            options.signal?.addEventListener(
+              "abort",
+              () => {
+                aborted.resolve(true);
+                reject(options.signal?.reason);
+              },
+              { once: true }
+            );
+          }),
+      },
+    ],
+  });
+
+  await assert.rejects(
+    adapter.draftCards({ consent: true, memories: [{ memoryId: "memory-1", content: "Source" }] }),
+    (error: unknown) => error instanceof SupportPassportError && error.code === "provider_unavailable"
+  );
+  assert.equal(await aborted.promise, true);
+});
+
 test("the support passport model adapter has no custom OpenAI transport", async () => {
   const source = await readFile(new URL("./model-adapter.ts", import.meta.url), "utf8");
   assert.equal(source.includes('from "openai"'), false);
