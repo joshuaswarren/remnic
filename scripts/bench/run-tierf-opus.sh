@@ -33,6 +33,12 @@ MANIFEST="docs/benchmarks/configs/local-lab-3090.json"
 # CLI flag does not).
 JUDGE_ARGS=(--judge-provider ollama --judge-model "qwen2.5-7b-32k:latest" --judge-base-url "http://127.0.0.1:11434/api")
 CALIBRATION_DIR="${TIERF_CALIBRATION_DIR:-$HOME/.remnic/bench/build-week-2026/calibration}"
+if [[ "$CALIBRATION_DIR" == \~ || "$CALIBRATION_DIR" == \~/* ]]; then
+  CALIBRATION_DIR="${CALIBRATION_DIR/#\~/$HOME}"
+fi
+if [[ "$CALIBRATION_DIR" != /* ]]; then
+  CALIBRATION_DIR="$PWD/$CALIBRATION_DIR"
+fi
 SEED=1
 
 # judge-calibrate does NOT generate answers — it re-judges a benchmark's

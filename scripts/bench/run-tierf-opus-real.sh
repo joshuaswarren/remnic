@@ -26,6 +26,12 @@ mkdir -p "$LOG_DIR"
 REMNIC_CONFIG="docs/benchmarks/configs/tierf-real-remnic-config.json"
 MANIFEST="docs/benchmarks/configs/local-lab-3090.json"
 CALIBRATION_DIR="${TIERF_CALIBRATION_DIR:-$HOME/.remnic/bench/build-week-2026/calibration}"
+if [[ "$CALIBRATION_DIR" == \~ || "$CALIBRATION_DIR" == \~/* ]]; then
+  CALIBRATION_DIR="${CALIBRATION_DIR/#\~/$HOME}"
+fi
+if [[ "$CALIBRATION_DIR" != /* ]]; then
+  CALIBRATION_DIR="$PWD/$CALIBRATION_DIR"
+fi
 # The bench ollama provider appends /generate and /tags directly to baseUrl —
 # it needs the /api form (the local-lab manifest path normalizes this, the raw
 # CLI flag does not).

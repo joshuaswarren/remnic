@@ -604,6 +604,35 @@ test("Tier-F runbooks bind every run to the calibrated judge configuration", asy
       script,
       /CALIBRATION_DIR="\$\{TIERF_CALIBRATION_DIR:-\$HOME\/\.remnic\/bench\/build-week-2026\/calibration\}"/,
     );
+    assert.match(script, /CALIBRATION_DIR="\$\{CALIBRATION_DIR\/#\\~\/\$HOME\}"/);
+    assert.match(script, /CALIBRATION_DIR="\$PWD\/\$CALIBRATION_DIR"/);
+    const normalizationStart = script.indexOf('CALIBRATION_DIR="${TIERF_CALIBRATION_DIR:');
+    const tildeExpansionEnd = script.indexOf("\nfi\n", normalizationStart);
+    const normalizationEnd = script.indexOf("\nfi\n", tildeExpansionEnd + 1) + 4;
+    assert.ok(
+      normalizationStart >= 0 &&
+        tildeExpansionEnd > normalizationStart &&
+        normalizationEnd > tildeExpansionEnd,
+    );
+    const normalizationSource = script.slice(normalizationStart, normalizationEnd);
+    for (const [input, expected] of [
+      ["relative-calibration", join(tmpdir(), "relative-calibration")],
+      ["~/pinned-calibration", "/home/alice/pinned-calibration"],
+      ["/tmp/absolute-calibration", "/tmp/absolute-calibration"],
+    ]) {
+      const probe = spawnSync(
+        "bash",
+        ["-c", `${normalizationSource}
+printf '%s' "$CALIBRATION_DIR"`],
+        {
+          cwd: tmpdir(),
+          encoding: "utf8",
+          env: { ...process.env, HOME: "/home/alice", TIERF_CALIBRATION_DIR: input },
+        },
+      );
+      assert.equal(probe.status, 0, probe.stderr);
+      assert.equal(probe.stdout, expected, `${config.path} must normalize ${input}`);
+    }
     for (const benchmark of ["longmemeval", "locomo"]) {
       const commandStart = script.indexOf(`run ${benchmark} \\\n`);
       assert.ok(commandStart >= 0, `missing Tier-F ${benchmark} run command in ${config.path}`);
