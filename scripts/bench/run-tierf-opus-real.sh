@@ -58,34 +58,37 @@ import json, math, sys
 d = json.load(open(sys.argv[1]))
 def is_finite_number(value):
   return type(value) in (int, float) and math.isfinite(value)
-assert d.get('localJudgeProvider') == 'ollama', f\"localJudgeProvider: {d.get('localJudgeProvider')}\"
-assert d.get('localJudgeModel') == 'qwen2.5-7b-32k:latest', f\"localJudgeModel: {d.get('localJudgeModel')}\"
-assert d.get('frontierJudgeProvider') == 'claude-cli', f\"frontierJudgeProvider: {d.get('frontierJudgeProvider')}\"
-assert d.get('frontierJudgeModel') == 'opus', f\"frontierJudgeModel: {d.get('frontierJudgeModel')}\"
-assert is_finite_number(d.get('kappa')), f\"kappa: {d.get('kappa')}\"
+def require(condition, message):
+  if not condition:
+    raise ValueError(message)
+require(d.get('localJudgeProvider') == 'ollama', f\"localJudgeProvider: {d.get('localJudgeProvider')}\")
+require(d.get('localJudgeModel') == 'qwen2.5-7b-32k:latest', f\"localJudgeModel: {d.get('localJudgeModel')}\")
+require(d.get('frontierJudgeProvider') == 'claude-cli', f\"frontierJudgeProvider: {d.get('frontierJudgeProvider')}\")
+require(d.get('frontierJudgeModel') == 'opus', f\"frontierJudgeModel: {d.get('frontierJudgeModel')}\")
+require(is_finite_number(d.get('kappa')), f\"kappa: {d.get('kappa')}\")
 expected_sample_size = int(sys.argv[2])
-assert d.get('sampleSize') == expected_sample_size, f\"sampleSize: {d.get('sampleSize')} (expected {expected_sample_size})\"
-assert is_finite_number(d.get('threshold')), f\"threshold: {d.get('threshold')}\"
-assert isinstance(d.get('warning'), bool), f\"warning: {d.get('warning')}\"
+require(d.get('sampleSize') == expected_sample_size, f\"sampleSize: {d.get('sampleSize')} (expected {expected_sample_size})\")
+require(is_finite_number(d.get('threshold')), f\"threshold: {d.get('threshold')}\")
+require(isinstance(d.get('warning'), bool), f\"warning: {d.get('warning')}\")
 expected_source_result_id = sys.argv[3]
-assert d.get('sourceResultId') == expected_source_result_id, f\"sourceResultId: {d.get('sourceResultId')} (expected {expected_source_result_id})\"
+require(d.get('sourceResultId') == expected_source_result_id, f\"sourceResultId: {d.get('sourceResultId')} (expected {expected_source_result_id})\")
 expected_answer_set_hash = sys.argv[4]
-assert d.get('answerSetHash') == expected_answer_set_hash, f\"answerSetHash: {d.get('answerSetHash')} (expected {expected_answer_set_hash})\"
+require(d.get('answerSetHash') == expected_answer_set_hash, f\"answerSetHash: {d.get('answerSetHash')} (expected {expected_answer_set_hash})\")
 expected_ordered_question_ids_hash = sys.argv[5]
-assert d.get('orderedQuestionIdsHash') == expected_ordered_question_ids_hash, f\"orderedQuestionIdsHash: {d.get('orderedQuestionIdsHash')} (expected {expected_ordered_question_ids_hash})\"
-assert isinstance(d.get('sliceQuestionIds'), list), 'missing sliceQuestionIds'
-assert len(d['sliceQuestionIds']) == expected_sample_size, f\"sliceQuestionIds: {len(d['sliceQuestionIds'])}\"
-assert all(isinstance(question_id, str) and question_id for question_id in d['sliceQuestionIds']), 'sliceQuestionIds contains invalid ids'
-assert len(set(d['sliceQuestionIds'])) == expected_sample_size, 'sliceQuestionIds contains duplicates'
+require(d.get('orderedQuestionIdsHash') == expected_ordered_question_ids_hash, f\"orderedQuestionIdsHash: {d.get('orderedQuestionIdsHash')} (expected {expected_ordered_question_ids_hash})\")
+require(isinstance(d.get('sliceQuestionIds'), list), 'missing sliceQuestionIds')
+require(len(d['sliceQuestionIds']) == expected_sample_size, f\"sliceQuestionIds: {len(d['sliceQuestionIds'])}\")
+require(all(isinstance(question_id, str) and question_id for question_id in d['sliceQuestionIds']), 'sliceQuestionIds contains invalid ids')
+require(len(set(d['sliceQuestionIds'])) == expected_sample_size, 'sliceQuestionIds contains duplicates')
 ci = d.get('confidenceInterval')
-assert isinstance(ci, dict), 'missing confidenceInterval'
-assert all(is_finite_number(ci.get(k)) for k in ('lower', 'upper', 'level')), f\"confidenceInterval: {ci}\"
-assert type(d.get('bootstrapSamples')) is int and d['bootstrapSamples'] > 0, f\"bootstrapSamples: {d.get('bootstrapSamples')}\"
+require(isinstance(ci, dict), 'missing confidenceInterval')
+require(all(is_finite_number(ci.get(k)) for k in ('lower', 'upper', 'level')), f\"confidenceInterval: {ci}\")
+require(type(d.get('bootstrapSamples')) is int and d['bootstrapSamples'] > 0, f\"bootstrapSamples: {d.get('bootstrapSamples')}\")
 for key in ('localJudgeConfigHash', 'frontierJudgeConfigHash'):
   value = d.get(key)
-  assert isinstance(value, str) and len(value) == 64 and all(c in '0123456789abcdef' for c in value), f\"missing or invalid {key}\"
+  require(isinstance(value, str) and len(value) == 64 and all(c in '0123456789abcdef' for c in value), f\"missing or invalid {key}\")
 expected_frontier_judge_config_hash = sys.argv[6]
-assert d.get('frontierJudgeConfigHash') == expected_frontier_judge_config_hash, f\"frontierJudgeConfigHash: {d.get('frontierJudgeConfigHash')} (expected {expected_frontier_judge_config_hash})\"
+require(d.get('frontierJudgeConfigHash') == expected_frontier_judge_config_hash, f\"frontierJudgeConfigHash: {d.get('frontierJudgeConfigHash')} (expected {expected_frontier_judge_config_hash})\")
 " "$file" "$CALIBRATION_SAMPLE_SIZE" "$expected_source_result_id" "$expected_answer_set_hash" "$expected_ordered_question_ids_hash" "$EXPECTED_FRONTIER_JUDGE_CONFIG_HASH" 2>/dev/null; then
     echo "BLOCKED: calibration state for ${benchmark} is missing, corrupt, unpinned, below the ${CALIBRATION_SAMPLE_SIZE}-question contract, or scoped to a different judge pair - rerun judge-calibrate against the pinned answer source." >&2
     exit 3

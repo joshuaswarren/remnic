@@ -773,6 +773,7 @@ test("real Tier-F preflight rejects unpinned or malformed calibration provenance
         CALIBRATION_DIR: calibrationDir,
         CALIBRATION_SAMPLE_SIZE: "200",
         EXPECTED_FRONTIER_JUDGE_CONFIG_HASH: "522bad1f22f4e031f5ab96fb13050edde876e190a45dbaf812cd2b87084d1a60",
+        PYTHONOPTIMIZE: "1",
       },
     });
 
