@@ -95,6 +95,31 @@ export class SupportPassportGrantService {
     }
     const state = await this.grantStore.authenticate(input.grantId, input.secret);
     const storage = await this.resolveNamespace(state.namespace);
+    const cards = await this.readGrantCards(storage, state);
+    const confirmedState = await this.grantStore.authenticate(input.grantId, input.secret);
+    if (confirmedState.stateVersion !== state.stateVersion) {
+      throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
+    }
+    const confirmedCards = await this.readGrantCards(storage, confirmedState);
+    if (JSON.stringify(confirmedCards) !== JSON.stringify(cards)) {
+      throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
+    }
+    const firstCard = confirmedCards[0];
+    if (!firstCard) throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
+    const updatedAt = confirmedCards.reduce(
+      (latest, card) => (card.updatedAt > latest ? card.updatedAt : latest),
+      firstCard.updatedAt
+    );
+    return SupportPassportPublicGuideSchema.parse({
+      schemaVersion: 1,
+      grantId: confirmedState.grantId,
+      expiresAt: confirmedState.expiresAt,
+      updatedAt,
+      cards: confirmedCards,
+    });
+  }
+
+  private async readGrantCards(storage: StorageManager, state: SupportPassportGrantState) {
     const cards = [];
     for (const cardRef of state.cards) {
       const memory = await storage.getMemoryById(cardRef.cardId);
@@ -110,23 +135,7 @@ export class SupportPassportGrantService {
         updatedAt: stored.card.updatedAt,
       });
     }
-    const firstCard = cards[0];
-    if (!firstCard) throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
-    const updatedAt = cards.reduce(
-      (latest, card) => (card.updatedAt > latest ? card.updatedAt : latest),
-      firstCard.updatedAt
-    );
-    const confirmedState = await this.grantStore.authenticate(input.grantId, input.secret);
-    if (confirmedState.stateVersion !== state.stateVersion) {
-      throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
-    }
-    return SupportPassportPublicGuideSchema.parse({
-      schemaVersion: 1,
-      grantId: state.grantId,
-      expiresAt: state.expiresAt,
-      updatedAt,
-      cards,
-    });
+    return cards;
   }
 
   private ownerGrant(state: SupportPassportGrantState): SupportPassportOwnerGrant {
