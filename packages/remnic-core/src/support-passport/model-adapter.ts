@@ -11,6 +11,7 @@ import type { GatewayConfig, PluginConfig } from "../types.js";
 import { SupportPassportError } from "./errors.js";
 import {
   type SupportPassportAnswerModelInput,
+  SUPPORT_PASSPORT_NOT_IN_GUIDE_ANSWER,
   SupportPassportAnswerModelInputSchema,
   type SupportPassportAnswerOutput,
   SupportPassportAnswerOutputSchema,
@@ -112,6 +113,7 @@ const DRAFT_SYSTEM_PROMPT = [
   "Do not infer a diagnosis, treatment, or emergency instruction.",
   "Return one strict JSON object with a cards array.",
   "Each card needs title, statement, category, and sourceMemoryIds.",
+  "Use category communication, environment, transitions, sensory, regulation, interests, or other.",
   "Use only source IDs supplied with the notes.",
 ].join("\n");
 
@@ -121,7 +123,7 @@ const ANSWER_SYSTEM_PROMPT = [
   "Return one strict JSON object with answer, citedCardIds, and coverage.",
   "Use coverage grounded only when the answer follows directly from cited cards.",
   "If the guide does not cover the question, use coverage not_in_guide.",
-  "For not_in_guide, cite no cards and use the exact required fallback sentence.",
+  `For not_in_guide, cite no cards and answer exactly: "${SUPPORT_PASSPORT_NOT_IN_GUIDE_ANSWER}"`,
 ].join("\n");
 
 const DRAFT_JSON_SCHEMA: SupportPassportJsonSchema = {

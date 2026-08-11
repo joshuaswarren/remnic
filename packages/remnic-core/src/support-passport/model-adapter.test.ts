@@ -4,6 +4,7 @@ import { test } from "node:test";
 
 import { parseConfig } from "../config.js";
 import { SupportPassportError } from "./errors.js";
+import { SUPPORT_PASSPORT_NOT_IN_GUIDE_ANSWER } from "./model-contracts.js";
 import {
   SupportPassportModelAdapter,
   type SupportPassportModelClients,
@@ -125,6 +126,69 @@ test("malformed model output is an error and never becomes an empty success", as
     adapter.draftCards({ consent: true, memories: [{ memoryId: "memory-1", content: "Source" }] }),
     (error: unknown) => error instanceof SupportPassportError && error.code === "model_output_invalid"
   );
+});
+
+test("provider-neutral prompts include every category and the exact uncovered answer", async () => {
+  const systemPrompts: Record<string, string> = {};
+  const adapter = new SupportPassportModelAdapter({
+    routes: [
+      {
+        kind: "local",
+        invoke: async (messages, options) => {
+          systemPrompts[options.operation] = messages.find((message) => message.role === "system")?.content ?? "";
+          return {
+            content:
+              options.operation === "support-passport-draft"
+                ? JSON.stringify({
+                    cards: [
+                      {
+                        title: "Plan changes",
+                        statement: "Tell me before plans change.",
+                        category: "transitions",
+                        sourceMemoryIds: ["memory-1"],
+                      },
+                    ],
+                  })
+                : JSON.stringify({
+                    answer: SUPPORT_PASSPORT_NOT_IN_GUIDE_ANSWER,
+                    citedCardIds: [],
+                    coverage: "not_in_guide",
+                  }),
+            modelUsed: "local/test",
+          };
+        },
+      },
+    ],
+  });
+
+  await adapter.draftCards({
+    consent: true,
+    memories: [{ memoryId: "memory-1", content: "Tell me before plans change." }],
+  });
+  await adapter.answerQuestion({
+    guide: {
+      schemaVersion: 1,
+      grantId: "00000000-0000-4000-8000-000000000001",
+      expiresAt: "2026-08-11T13:00:00.000Z",
+      updatedAt: "2026-08-11T12:00:00.000Z",
+      cards: [
+        {
+          cardId: "card-1",
+          title: "Quiet space",
+          statement: "Offer me a quiet place and time.",
+          category: "environment",
+          updatedAt: "2026-08-11T12:00:00.000Z",
+        },
+      ],
+    },
+    question: "What food helps?",
+  });
+
+  assert.match(
+    systemPrompts["support-passport-draft"] ?? "",
+    /communication, environment, transitions, sensory, regulation, interests, or other/
+  );
+  assert.ok(systemPrompts["support-passport-answer"]?.includes(SUPPORT_PASSPORT_NOT_IN_GUIDE_ANSWER));
 });
 
 test("helper answers cite only shared cards and use the exact uncovered fallback", async () => {
