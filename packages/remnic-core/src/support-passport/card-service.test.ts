@@ -427,6 +427,65 @@ test("retrying an interrupted pending-draft replacement reuses one approvable dr
   }
 });
 
+test("retrying an interrupted pending-draft replacement rejects changed content", async () => {
+  const subject = await makeSubject();
+  try {
+    const draft = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Quiet place",
+      statement: "Offer me a quiet place.",
+      category: "environment",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const originalWrite = subject.aliceStorage.writeMemoryFrontmatterIfUnchanged.bind(subject.aliceStorage);
+    let interrupted = false;
+    subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = async (memory, patch, lifecycle) => {
+      if (!interrupted && lifecycle?.actor === "support-passport.replace-draft") {
+        interrupted = true;
+        throw new Error("simulated process exit after replacement creation");
+      }
+      return await originalWrite(memory, patch, lifecycle);
+    };
+    await assert.rejects(
+      subject.service.replaceCard({
+        principal: "owner:alice",
+        cardId: draft.cardId,
+        expectedRevision: draft.revision,
+        title: "Quiet place and time",
+        statement: "Offer me a quiet place and time.",
+        category: "environment",
+        reviewBy: OWNER_REVIEW_BY,
+      }),
+      /simulated process exit/
+    );
+    subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = originalWrite;
+    const replacement = (await subject.aliceStorage.readAllMemories()).find(
+      (memory) => memory.frontmatter.id !== draft.cardId
+    );
+    assert.ok(replacement);
+
+    await assert.rejects(
+      subject.service.replaceCard({
+        principal: "owner:alice",
+        cardId: draft.cardId,
+        expectedRevision: draft.revision,
+        title: "Different quiet place",
+        statement: "Offer a different quiet place and more time.",
+        category: "environment",
+        reviewBy: OWNER_REVIEW_BY,
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
+    );
+    const visible = await subject.service.listCards({ principal: "owner:alice" });
+    assert.equal(visible.length, 1);
+    assert.equal(visible[0]?.cardId, replacement.frontmatter.id);
+    assert.equal(visible[0]?.statement, "Offer me a quiet place and time.");
+    assert.equal((await subject.aliceStorage.readAllMemories()).length, 2);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("replacement approval rolls back when the prior card changes", async () => {
   const subject = await makeSubject();
   try {
