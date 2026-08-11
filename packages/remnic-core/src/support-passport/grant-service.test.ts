@@ -260,6 +260,39 @@ test("a changed card makes the whole grant stale without a partial guide", async
   }
 });
 
+test("a card changed while a helper guide is assembled never returns the old guide", async () => {
+  const subject = await makeSubject();
+  try {
+    const card = await createActiveCard(subject);
+    const created = await subject.grantService.createGrant({
+      principal: "owner:alice",
+      cards: [{ cardId: card.cardId, revision: card.revision }],
+      expiresAt: expiryAfter(subject, 3_600_000),
+    });
+    const getMemoryById = subject.aliceStorage.getMemoryById.bind(subject.aliceStorage);
+    let reads = 0;
+    subject.aliceStorage.getMemoryById = async (memoryId: string) => {
+      const memory = await getMemoryById(memoryId);
+      reads += 1;
+      if (reads === 1) {
+        await subject.cardService.withdrawCard({
+          principal: "owner:alice",
+          cardId: card.cardId,
+          expectedRevision: card.revision,
+        });
+      }
+      return memory;
+    };
+
+    await assert.rejects(
+      subject.grantService.readGrant({ grantId: created.grant.grantId, secret: created.secret }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "grant_stale"
+    );
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("grant creation rejects drafts, duplicate cards, and unsafe durations", async () => {
   const subject = await makeSubject();
   try {
@@ -285,6 +318,10 @@ test("grant creation rejects drafts, duplicate cards, and unsafe durations", asy
       {
         cards: [{ cardId: active.cardId, revision: active.revision }],
         expiresAt: expiryAfter(subject, 604_800_001),
+      },
+      {
+        cards: [{ cardId: active.cardId, revision: active.revision }],
+        expiresAt: "2026-08-11T13:00:00+99:99",
       },
     ]) {
       await assert.rejects(
@@ -353,6 +390,7 @@ test("the grant store fails closed for corrupt and symlinked grant files", async
     await rm(linkedPath);
     await symlink(outsidePath, linkedPath);
     await assert.rejects(store.authenticate(secondGrantId, linked.secret), /must be regular files/);
+    assert.deepEqual(await store.listForOwner("alice", "owner:alice"), []);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

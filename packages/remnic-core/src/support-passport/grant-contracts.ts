@@ -2,7 +2,10 @@ import { z } from "zod";
 
 import { SupportPassportCardCategorySchema, SupportPassportMemoryIdSchema } from "./contracts.js";
 
-const IsoTimestampSchema = z.string().datetime({ offset: true });
+const IsoTimestampSchema = z
+  .string()
+  .datetime({ offset: true })
+  .refine((value) => Number.isFinite(Date.parse(value)), "timestamp must be a real date");
 const RevisionSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const GrantIdSchema = z.string().uuid();
 
