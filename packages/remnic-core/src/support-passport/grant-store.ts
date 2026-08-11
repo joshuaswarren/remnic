@@ -115,7 +115,7 @@ export class SupportPassportGrantStore {
       const secret = secretBytes.toString("base64url");
       const createdAt = this.now();
       const durationMs = Date.parse(parsed.data.expiresAt) - createdAt.getTime();
-      if (durationMs < 300_000 || durationMs > 604_800_000) {
+      if (!Number.isFinite(durationMs) || durationMs < 300_000 || durationMs > 604_800_000) {
         throw new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
       }
       const state = SupportPassportGrantStateSchema.parse({
@@ -158,12 +158,16 @@ export class SupportPassportGrantStore {
     const principalHash = sha256("support-passport-principal:v1", principal);
     const states: SupportPassportGrantState[] = [];
     for (const entry of entries) {
-      if (entry.isSymbolicLink()) throw new Error("support passport grant files must not be symbolic links");
+      if (entry.isSymbolicLink()) continue;
       if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
       const grantId = entry.name.slice(0, -5);
       if (!SAFE_GRANT_ID.test(grantId)) continue;
-      const state = await this.readState(grantId);
-      if (state.namespace === namespace && hashesMatch(state.principalHash, principalHash)) states.push(state);
+      try {
+        const state = await this.readState(grantId);
+        if (state.namespace === namespace && hashesMatch(state.principalHash, principalHash)) states.push(state);
+      } catch {
+        continue;
+      }
     }
     return states.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.grantId.localeCompare(b.grantId));
   }
