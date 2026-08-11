@@ -298,6 +298,7 @@ export async function buildRunAudit(input: {
   outputDir: string;
   drivers: readonly RepeatedFailureEpisodeDriver[];
 }): Promise<Record<string, unknown>> {
+  const timingOnly = input.analysis.hypothesisSet === "timing_only";
   const expectedKeys = input.design.runOrder.map((row) => row.rowKey).sort();
   const actualKeys = input.rows.map((row) => row.rowKey).sort();
   const supportArtifacts = await Promise.all(H6_SUPPORT_ARTIFACT_PATHS.map(async (artifactPath) => {
@@ -438,11 +439,13 @@ export async function buildRunAudit(input: {
       tokenizerImplementation: driver.tokenizer.implementation,
       driverKind: driver.driverKind ?? "unknown",
     })),
-    noTrap: {
-      expectedRows: expectedNoTrapKeys.size,
-      observedRows: noTrapRows.length,
-      allPassed: noTrapPassed,
-    },
+    ...(timingOnly ? {} : {
+      noTrap: {
+        expectedRows: expectedNoTrapKeys.size,
+        observedRows: noTrapRows.length,
+        allPassed: noTrapPassed,
+      },
+    }),
     deviations: {
       count: deviationLines.length,
       none: deviationLines.length === 0,
@@ -473,8 +476,10 @@ export function projectConfidenceIntervals(
   };
   add("timing_repeated_failure_benefit", analysis.timing.repeatedFailureBenefitInterval);
   add("timing_relative_risk_reduction", analysis.timing.relativeRiskReductionInterval);
-  add("content_repeated_failure_benefit", analysis.content.repeatedFailureBenefitInterval);
-  add("content_task_pass_benefit", analysis.content.taskPassBenefitInterval);
+  if (analysis.content !== null) {
+    add("content_repeated_failure_benefit", analysis.content.repeatedFailureBenefitInterval);
+    add("content_task_pass_benefit", analysis.content.taskPassBenefitInterval);
+  }
   return projected;
 }
 

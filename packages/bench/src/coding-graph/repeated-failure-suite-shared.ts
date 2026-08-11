@@ -35,6 +35,7 @@ import {
   H6BenchmarkDatasetSchema,
   H6_SUPPORT_ARTIFACT_PATHS,
   H6_DECISION_RULE,
+  H6_TIMING_DECISION_RULE,
   H6_FROZEN_INVENTORY_HASH,
   H6_FROZEN_SPLITS,
   BaseTaskSchema,
@@ -117,6 +118,8 @@ export const HISTORY_SUCCESS_SUMMARY = "Offline check classified result FIXED wh
 export const HISTORY_FOLLOW_UP = "Inspect root cause and choose another strategy after checking artifact audit boundary context evidence invariant memory output policy record revision safety session source status.";
 export const PRIMARY_ARMS = REPEATED_FAILURE_ARMS;
 export const TIMIDITY_ARMS = Object.freeze(["NO_MEMORY", "PRE_ACTION_FAILURE"] as const);
+export const TIMING_ONLY_ARMS = Object.freeze(["TURN_START_FAILURE", "PRE_ACTION_FAILURE"] as const);
+export const H6_TIMING_RERUN_SEEDS = Object.freeze([6, 7, 8, 9, 10]);
 export const DEFAULT_TOOL_OUTPUT_CHARS = 16_384;
 export const MAX_INSPECT_FILES = 200;
 export const NEUTRAL_INSTRUCTION = "Inspect the codebase, identify the defect, and apply the appropriate code changes using the tools.";
@@ -202,6 +205,142 @@ export const DecisionRuleSchema = z.object({
     rerunTaskResults: z.literal(false),
   }).passthrough(),
 }).passthrough();
+export const TimingPreregistrationBindingSchema = z.object({
+  path: z.literal(H6_TIMING_DECISION_RULE.preregistration.path),
+  sha256: z.literal(H6_TIMING_DECISION_RULE.preregistration.sha256),
+}).strict();
+
+export const TimingDecisionRuleSchema = z.object({
+  version: z.literal(H6_TIMING_DECISION_RULE.version),
+  name: z.literal(H6_TIMING_DECISION_RULE.name),
+  preregistration: TimingPreregistrationBindingSchema,
+  design: z.object({
+    armsMode: z.literal("timing_only"),
+    arms: z.tuple([
+      z.literal("TURN_START_FAILURE"),
+      z.literal("PRE_ACTION_FAILURE"),
+    ]),
+  }).strict(),
+  analysisPopulation: z.object({
+    datasetVersion: z.literal(1),
+    datasetInventoryHash: z.literal(H6_FROZEN_INVENTORY_HASH),
+    split: z.literal("main"),
+    taskCount: z.literal(18),
+    seedsPerModelProfile: z.literal(5),
+    modelProfileCount: z.literal(1),
+    unit: z.literal("task"),
+    pairingKey: z.tuple([
+      z.literal("taskId"),
+      z.literal("variantId"),
+      z.literal("seed"),
+      z.literal("modelProfileId"),
+      z.literal("modelProfileHash"),
+    ]),
+    maximumPrimaryTaskCuts: z.literal(0),
+    registeredSeeds: z.tuple([
+      z.literal(6),
+      z.literal(7),
+      z.literal(8),
+      z.literal(9),
+      z.literal(10),
+    ]),
+  }).strict(),
+  analysis: z.object({
+    bootstrap: z.object({
+      draws: z.literal(10_000),
+      group: z.literal("task"),
+      confidenceLevel: z.literal(0.95),
+      method: z.literal("percentile"),
+    }).strict(),
+    shuffle: z.object({
+      draws: z.literal(10_000),
+      group: z.literal("task"),
+      alternative: z.literal("candidate_benefit"),
+      plusOneCorrection: z.literal(true),
+    }).strict(),
+    alpha: z.literal(0.05),
+    multiplicity: z.object({
+      method: z.literal("HOLM"),
+      family: z.tuple([z.literal("H6_TIMING_REPEATED_FAILURE")]),
+    }).strict(),
+  }).strict(),
+  invalidRowPolicy: z.object({
+    VAGUE_CHECK: z.literal("WORST_CASE_AGAINST_CANDIDATE"),
+  }).strict(),
+  factMatching: z.object({
+    timing: z.object({
+      factCount: z.literal(1),
+      requireSameFactIds: z.literal(true),
+      requireSameCitationHashes: z.literal(true),
+      requireSameRenderedTokenCount: z.literal(true),
+    }).strict(),
+  }).strict(),
+  hypotheses: z.object({
+    "H6-timing": z.object({
+      baselineArm: z.literal("TURN_START_FAILURE"),
+      candidateArm: z.literal("PRE_ACTION_FAILURE"),
+      metric: z.literal("repeatedFailure"),
+      minimumRelativeRiskReduction: z.literal(0.3),
+      minimumAbsoluteRepeatedFailureBenefit: z.literal(0.05),
+      requireRepeatedFailureBenefitIntervalLowerStrictlyAbove: z.literal(0),
+      requireHolmAdjustedPStrictlyBelow: z.literal(0.05),
+      zeroBaselineDecision: z.literal("NOT_ESTIMABLE"),
+    }).strict(),
+  }).strict(),
+  power: z.object({
+    simulationDraws: z.literal(10_000),
+    minimumTimingPower: z.literal(0.8),
+    sourceSplit: z.literal("pilot"),
+    transferredPilotEvidence: z.object({
+      runId: z.literal("h6-a30b5cb7dc9174e31329195d"),
+      manifestArtifactHash: z.literal("5bce2c0c20fadf77706ae5dbb503d4f938d40e2d4178c5395b36683cfef75e21"),
+      powerArtifactHash: z.literal("cfaec22f374b353b536dec6067243a1731804f8f1d8d2f4742e1631cf1b27bd5"),
+      decisionRuleHash: z.literal("c775947440dc764a62fbc4bd0c3fca08fe2ede90b543701875af3ab541114cd9"),
+      preregistrationHash: z.literal("0fe2838c50d3e70be59b47bc5d932fecd52af8975c6c0279b3ebc0ebf4a80236"),
+      harnessSourceHash: z.literal("129045d73b7f8fdc18bb5b9a87faa5245f9921945ce1ff9d94d859f29bb88770"),
+      analysisVersion: z.literal("h6-task-bootstrap-shuffle-holm-v1"),
+      timingPower: z.literal(0.8364),
+    }).strict(),
+  }).strict(),
+  trapAudit: z.object({
+    minimumTrappedRate: z.literal(0.3),
+    minimumNonFixedRate: z.literal(0.5),
+    maximumInvalidRows: z.literal(0),
+    requireCompleteRows: z.literal(true),
+  }).strict(),
+  completeness: z.object({
+    expectedRowsFormula: z.literal(
+      "taskCount*variantsPerTask*seedsPerModelProfile*modelProfileCount*armCount",
+    ),
+    primaryArmCount: z.literal(2),
+    hostFaultRetriesAfterFirstTry: z.literal(5),
+    rerunTaskResults: z.literal(false),
+    invalidReasons: z.tuple([
+      z.literal("CORPUS_INVALID"),
+      z.literal("CORE_REPO_DIR_MISMATCH"),
+      z.literal("START_DRIFT"),
+      z.literal("TRACE_GAP"),
+      z.literal("VAGUE_CHECK"),
+      z.literal("MIXED_ARM_STATE"),
+      z.literal("UNMATCHED_FACTS"),
+      z.literal("WAIT_RULE_FAULT"),
+      z.literal("HOST_RETRIES_EXHAUSTED"),
+    ]),
+  }).strict(),
+  outcomes: z.object({
+    PASS: z.literal("timing=SUPPORTED"),
+    REJECT: z.literal("timing=REJECTED"),
+    NOT_ESTIMABLE: z.literal("timing=NOT_ESTIMABLE"),
+  }).strict(),
+  gateStatuses: z.tuple([
+    z.literal("NO_MATCH"),
+    z.literal("MATCH_WARN"),
+    z.literal("ERROR_FAIL_OPEN"),
+  ]),
+}).strict();
+
+export const AnyDecisionRuleSchema = z.union([DecisionRuleSchema, TimingDecisionRuleSchema]);
+export type AnyDecisionRule = z.infer<typeof AnyDecisionRuleSchema>;
 
 export const ProfileInstructionsSchema = z.object({
   system: z.string().min(1).max(16_384),
@@ -258,7 +397,7 @@ export type RepeatedFailureModelProfile = z.infer<typeof ModelProfileSchema>;
 export type FixtureBundle = {
   fixtureDir: string;
   dataset: H6BenchmarkDataset;
-  decisionRule: z.infer<typeof DecisionRuleSchema>;
+  decisionRule: AnyDecisionRule;
   decisionRuleBytes: string;
   suiteVersion: string;
 };
@@ -271,20 +410,44 @@ export type FixtureBundle = {
  * one-module change. A hand-copied list is how `timidityGatePassRate` reached
  * the power simulation but silently defaulted in the live analysis.
  */
+export function decisionRuleDesignMode(rule: AnyDecisionRule): "full" | "timing_only" {
+  return rule.version === H6_TIMING_DECISION_RULE.version ? "timing_only" : "full";
+}
+
 export function decisionRuleAnalysisOptions(
-  decisionRule: z.infer<typeof DecisionRuleSchema>,
-): {
-  alpha: number;
-  timingMinimumRrr: number;
-  timingMinimumAbsoluteBenefit: number;
-  timingMinimumBenefitIntervalLower: number;
-  contentMinimumRepeatedFailureBenefitIntervalLower: number;
-  contentMinimumTaskPassBenefitIntervalLower: number;
-  timidityPassMargin: number;
-  timidityStepsMargin: number;
-  timidityGatePassRate: boolean;
-} {
+  decisionRule: AnyDecisionRule,
+):
+  | {
+    alpha: number;
+    timingMinimumRrr: number;
+    timingMinimumAbsoluteBenefit: number;
+    timingMinimumBenefitIntervalLower: number;
+    contentMinimumRepeatedFailureBenefitIntervalLower: number;
+    contentMinimumTaskPassBenefitIntervalLower: number;
+    timidityPassMargin: number;
+    timidityStepsMargin: number;
+    timidityGatePassRate: boolean;
+  }
+  | {
+    alpha: number;
+    timingMinimumRrr: number;
+    timingMinimumAbsoluteBenefit: number;
+    timingMinimumBenefitIntervalLower: number;
+    hypothesisSet: "timing_only";
+    invalidRowPolicy: { vagueCheck: "worst_case_against_candidate" };
+  } {
   const timing = decisionRule.hypotheses["H6-timing"];
+  if (decisionRule.version === H6_TIMING_DECISION_RULE.version) {
+    return {
+      alpha: decisionRule.analysis.alpha,
+      timingMinimumRrr: timing.minimumRelativeRiskReduction,
+      timingMinimumAbsoluteBenefit: timing.minimumAbsoluteRepeatedFailureBenefit,
+      timingMinimumBenefitIntervalLower:
+        timing.requireRepeatedFailureBenefitIntervalLowerStrictlyAbove,
+      hypothesisSet: "timing_only",
+      invalidRowPolicy: { vagueCheck: "worst_case_against_candidate" },
+    };
+  }
   const content = decisionRule.hypotheses["H6-content"];
   return {
     alpha: decisionRule.analysis.alpha,

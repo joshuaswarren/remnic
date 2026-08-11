@@ -216,6 +216,7 @@ export interface RunRepeatedFailureSuiteOptions {
   phase?: "pilot" | "main";
   pilotRunDir?: string;
   fixtureDir?: string;
+  decisionRuleFile?: string;
   runId?: string;
   taskIds?: readonly string[];
   variantIds?: readonly string[];
@@ -334,6 +335,7 @@ export interface RunRepeatedFailureCliCommandInput {
   profilePaths: readonly string[];
   outputDir: string;
   fixtureDir?: string;
+  decisionRuleFile?: string;
   resumeRunDir?: string;
   pilotRunDir?: string;
   maxSteps?: number;
@@ -352,6 +354,7 @@ export interface RepeatedFailureCliCommandResult {
 
 export interface ReplayRepeatedFailureStatisticsOptions {
   runDir: string;
+  decisionRuleFile?: string;
 }
 
 export interface RepeatedFailureExpectedDesign {

@@ -28,10 +28,10 @@ const DEFAULT_REPEATED_FAILURE_OUTPUT_DIR = path.join(
 
 export const BENCH_CODING_USAGE = `Usage: remnic bench coding repo-gen [--count 30] [--seed N] [--out DIR]
        remnic bench coding repo-gen verify-all [DIR]
-       remnic bench coding repeated-failure --seeds N --profile FILE [--profile FILE ...] [options]
-       remnic bench coding repeated-failure stats --run DIR
-       remnic bench coding repeated-failure report --run DIR
-       remnic bench coding repeated-failure trap-audit --profile FILE [--profile FILE ...] [options]
+       remnic bench coding repeated-failure --seeds N --profile FILE [--profile FILE ...] [--decision-rule FILE] [options]
+       remnic bench coding repeated-failure stats --run DIR [--decision-rule FILE]
+       remnic bench coding repeated-failure report --run DIR [--decision-rule FILE]
+       remnic bench coding repeated-failure trap-audit --profile FILE [--profile FILE ...] [--decision-rule FILE] [options]
 
 Commands:
   repo-gen                  Generate the frozen H6 synthetic repo fixture dataset
@@ -54,6 +54,7 @@ Repeated-failure options:
   --out DIR                 New run output directory (default: ~/.remnic/bench/results/h6-repeated-failure)
   --run DIR                 Existing run directory to resume
   --fixture DIR             Generated H6 fixture directory
+  --decision-rule FILE      Decision-rule filename in the fixture directory
   --max-steps 12            Frozen episode step cap
   --max-output-chars 16384  Frozen serialized model output cap
   --max-duration-ms 120000  Episode wall-clock cap (trap-audit only; raise for large local models)
@@ -85,6 +86,7 @@ export type BenchCodingCommand =
       profilePaths: string[];
       outputDir: string;
       fixtureDir?: string;
+      decisionRuleFile?: string;
       resumeRunDir?: string;
       pilotRunDir?: string;
       maxSteps?: number;
@@ -95,13 +97,14 @@ export type BenchCodingCommand =
       statisticsDraws?: number;
       statisticsSeed?: number;
     }
-  | { kind: "repeated-stats"; runDir: string }
-  | { kind: "repeated-report"; runDir: string }
+  | { kind: "repeated-stats"; runDir: string; decisionRuleFile?: string }
+  | { kind: "repeated-report"; runDir: string; decisionRuleFile?: string }
   | {
       kind: "trap-audit";
       profilePaths: string[];
       outputDir: string;
       fixtureDir?: string;
+      decisionRuleFile?: string;
       maxSteps?: number;
       maxToolCalls?: number;
       maxOutputChars?: number;
@@ -135,14 +138,17 @@ interface H6BenchModule {
   ): Promise<OptionalBenchCommandResult>;
   replayRepeatedFailureStatistics(input: {
     runDir: string;
+    decisionRuleFile?: string;
   }): Promise<OptionalBenchCommandResult>;
   runRepeatedFailurePaperReportCliCommand(input: {
     runDir: string;
+    decisionRuleFile?: string;
   }): Promise<OptionalBenchCommandResult>;
   runTrapAuditCliCommand(input: {
     profilePaths: readonly string[];
     outputDir: string;
     fixtureDir?: string;
+    decisionRuleFile?: string;
     maxSteps?: number;
     maxToolCalls?: number;
     maxOutputChars?: number;
@@ -240,21 +246,32 @@ function parseRepeatedRunArtifact(
   commandName: "stats" | "report",
 ): BenchCodingCommand {
   if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) return { kind: "help" };
-  if (args.length !== 2 || args[0] !== "--run") {
-    const unknown = args.find((arg) => arg.startsWith("-") && arg !== "--run");
-    if (unknown) throw new Error(`unknown option ${unknown}`);
-    throw new Error(`repeated-failure ${commandName} requires exactly --run DIR`);
+  let runDir: string | undefined;
+  let decisionRuleFile: string | undefined;
+  const seen = new Set<string>();
+  for (let index = 0; index < args.length; index += 1) {
+    const flag = args[index];
+    if (flag === undefined) break;
+    if (flag !== "--run" && flag !== "--decision-rule") {
+      throw new Error(flag.startsWith("-") ? `unknown option ${flag}` : `ambiguous repeated-failure subcommand ${flag}`);
+    }
+    const read = readSingleValue(args, index, flag, seen);
+    index = read.nextIndex;
+    if (flag === "--run") runDir = read.value;
+    else decisionRuleFile = read.value;
   }
-  const runDir = args[1];
-  if (runDir === undefined || runDir.trim().length === 0 || runDir.startsWith("-")) {
-    throw new Error("missing value for --run");
-  }
-  return { kind, runDir };
+  if (runDir === undefined) throw new Error(`repeated-failure ${commandName} requires exactly --run DIR`);
+  return {
+    kind,
+    runDir,
+    ...(decisionRuleFile === undefined ? {} : { decisionRuleFile }),
+  };
 }
 
 function parseRepeatedRun(args: readonly string[]): BenchCodingCommand {
   let phase: "pilot" | "main" = "pilot";
   let seedCount: number | undefined;
+  let decisionRuleFile: string | undefined;
   const profilePaths: string[] = [];
   let outputDir = DEFAULT_REPEATED_FAILURE_OUTPUT_DIR;
   let fixtureDir: string | undefined;
@@ -277,6 +294,7 @@ function parseRepeatedRun(args: readonly string[]): BenchCodingCommand {
     "--out",
     "--run",
     "--fixture",
+    "--decision-rule",
     "--max-steps",
     "--max-tool-calls",
     "--max-output-chars",
@@ -318,6 +336,7 @@ function parseRepeatedRun(args: readonly string[]): BenchCodingCommand {
     } else if (flag === "--out") outputDir = read.value;
     else if (flag === "--run") resumeRunDir = read.value;
     else if (flag === "--pilot-run" || flag === "--pilot-run-dir") pilotRunDir = read.value;
+    else if (flag === "--decision-rule") decisionRuleFile = read.value;
     else if (flag === "--fixture") fixtureDir = read.value;
     else if (flag === "--max-steps") {
       maxSteps = parseBoundedInteger(read.value, flag, FROZEN_MAX_STEPS, FROZEN_MAX_STEPS);
@@ -369,6 +388,7 @@ function parseRepeatedRun(args: readonly string[]): BenchCodingCommand {
     profilePaths,
     outputDir,
     ...(fixtureDir === undefined ? {} : { fixtureDir }),
+    ...(decisionRuleFile === undefined ? {} : { decisionRuleFile }),
     ...(resumeRunDir === undefined ? {} : { resumeRunDir }),
     ...(pilotRunDir === undefined ? {} : { pilotRunDir }),
     ...(maxSteps === undefined ? {} : { maxSteps }),
@@ -383,6 +403,7 @@ function parseRepeatedRun(args: readonly string[]): BenchCodingCommand {
 function parseTrapAudit(args: readonly string[]): BenchCodingCommand {
   const profilePaths: string[] = [];
   let outputDir = "./h6-trap-audit";
+  let decisionRuleFile: string | undefined;
   let fixtureDir: string | undefined;
   let maxSteps: number | undefined;
   let maxToolCalls: number | undefined;
@@ -395,6 +416,7 @@ function parseTrapAudit(args: readonly string[]): BenchCodingCommand {
     "--out",
     "--fixture",
     "--max-steps",
+    "--decision-rule",
     "--max-tool-calls",
     "--max-output-chars",
     "--max-duration-ms",
@@ -425,6 +447,7 @@ function parseTrapAudit(args: readonly string[]): BenchCodingCommand {
     index = read.nextIndex;
     if (flag === "--out") outputDir = read.value;
     else if (flag === "--fixture") fixtureDir = read.value;
+    else if (flag === "--decision-rule") decisionRuleFile = read.value;
     else if (flag === "--max-steps") maxSteps = parseBoundedInteger(read.value, flag, 1, 100);
     else if (flag === "--max-tool-calls") maxToolCalls = parseBoundedInteger(read.value, flag, 1, 100);
     else if (flag === "--max-output-chars") maxOutputChars = parseBoundedInteger(read.value, flag, 256, 65_536);
@@ -439,6 +462,7 @@ function parseTrapAudit(args: readonly string[]): BenchCodingCommand {
     profilePaths,
     outputDir,
     ...(fixtureDir === undefined ? {} : { fixtureDir }),
+    ...(decisionRuleFile === undefined ? {} : { decisionRuleFile }),
     ...(maxSteps === undefined ? {} : { maxSteps }),
     ...(maxToolCalls === undefined ? {} : { maxToolCalls }),
     ...(maxOutputChars === undefined ? {} : { maxOutputChars }),
@@ -740,16 +764,21 @@ async function executeCommand(
   if (command.kind === "repo-generate") return runRepoGeneration(command, bench);
   if (command.kind === "repo-verify") return runRepoVerification(command, bench);
   if (command.kind === "repeated-stats") {
-    return requireFunction(bench, "replayRepeatedFailureStatistics")({ runDir: command.runDir });
+    return requireFunction(bench, "replayRepeatedFailureStatistics")({
+      runDir: command.runDir,
+      ...(command.decisionRuleFile === undefined ? {} : { decisionRuleFile: command.decisionRuleFile }),
+    });
   }
   if (command.kind === "repeated-report") {
     return requireFunction(bench, "runRepeatedFailurePaperReportCliCommand")({
       runDir: command.runDir,
+      ...(command.decisionRuleFile === undefined ? {} : { decisionRuleFile: command.decisionRuleFile }),
     });
   }
   if (command.kind === "trap-audit") {
     return requireFunction(bench, "runTrapAuditCliCommand")({
       profilePaths: command.profilePaths,
+      ...(command.decisionRuleFile === undefined ? {} : { decisionRuleFile: command.decisionRuleFile }),
       outputDir: command.outputDir,
       ...(command.fixtureDir === undefined ? {} : { fixtureDir: command.fixtureDir }),
       ...(command.maxSteps === undefined ? {} : { maxSteps: command.maxSteps }),
@@ -764,6 +793,7 @@ async function executeCommand(
       phase: command.phase,
       seedCount: command.seedCount,
       profilePaths: command.profilePaths,
+      ...(command.decisionRuleFile === undefined ? {} : { decisionRuleFile: command.decisionRuleFile }),
       outputDir: command.outputDir,
       ...(command.fixtureDir === undefined ? {} : { fixtureDir: command.fixtureDir }),
       ...(command.resumeRunDir === undefined ? {} : { resumeRunDir: command.resumeRunDir }),

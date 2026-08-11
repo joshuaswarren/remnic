@@ -34,6 +34,7 @@ import type { BenchmarkMode, BenchmarkResult, ConfidenceInterval, TaskResult } f
 import {
   H6BenchmarkDatasetSchema,
   H6_SUPPORT_ARTIFACT_PATHS,
+  H6_TIMING_DECISION_RULE,
   H6_FROZEN_INVENTORY_HASH,
   H6_FROZEN_SPLITS,
   BaseTaskSchema,
@@ -109,13 +110,14 @@ import {
   REPEATED_FAILURE_ANALYSIS_VERSION,
   FIXED_RECORDED_AT,
   DEFAULT_CAPS,
+  DEFAULT_TOOL_OUTPUT_CHARS,
   HISTORY_ACTION_SUMMARY,
   HISTORY_FAILURE_SUMMARY,
   HISTORY_SUCCESS_SUMMARY,
   HISTORY_FOLLOW_UP,
   PRIMARY_ARMS,
   TIMIDITY_ARMS,
-  DEFAULT_TOOL_OUTPUT_CHARS,
+  TIMING_ONLY_ARMS,
   MAX_INSPECT_FILES,
   NEUTRAL_INSTRUCTION,
   PROMPT_CONTRACT,
@@ -144,6 +146,7 @@ import {
   FixtureActionEvaluator,
   countFactTokens,
   decisionRuleAnalysisOptions,
+  decisionRuleDesignMode,
   runOfflineCheck,
   listRegularFiles,
   hashDirectory,
@@ -439,6 +442,7 @@ function expectedRegisteredRunOrder(
   taskIds: readonly string[],
   drivers: NormalizedRunOptions["drivers"],
   seeds: readonly number[],
+  designMode: "full" | "timing_only" = "full",
 ): RepeatedFailureRunMetadata["runOrder"] {
   const tasks = bundle.dataset.tasks
     .filter((task) => taskIds.includes(task.id))
@@ -450,7 +454,8 @@ function expectedRegisteredRunOrder(
     )) {
       for (const seed of seeds) {
         for (const driver of drivers) {
-          for (const arm of PRIMARY_ARMS) {
+          const primaryArms = designMode === "timing_only" ? TIMING_ONLY_ARMS : PRIMARY_ARMS;
+          for (const arm of primaryArms) {
             const identity = identityFor(
               bundle.suiteVersion,
               task.id,
@@ -465,20 +470,22 @@ function expectedRegisteredRunOrder(
               identity,
             });
           }
-          for (const arm of TIMIDITY_ARMS) {
-            const identity = identityFor(
-              bundle.suiteVersion,
-              task.id,
-              `${variant.variantId}:no-trap`,
-              driver,
-              seed,
-              arm,
-            );
-            order.push({
-              rowKey: buildRepeatedFailureRowKey(identity),
-              analysis: "TIMIDITY",
-              identity,
-            });
+          if (designMode === "full") {
+            for (const arm of TIMIDITY_ARMS) {
+              const identity = identityFor(
+                bundle.suiteVersion,
+                task.id,
+                `${variant.variantId}:no-trap`,
+                driver,
+                seed,
+                arm,
+              );
+              order.push({
+                rowKey: buildRepeatedFailureRowKey(identity),
+                analysis: "TIMIDITY",
+                identity,
+              });
+            }
           }
         }
       }
@@ -488,6 +495,159 @@ function expectedRegisteredRunOrder(
 }
 
 
+async function verifyTransferredPilotEvidence(
+  pilotRunDir: string,
+  bundle: FixtureBundle,
+  configuration: NormalizedRunOptions,
+): Promise<VerifiedPilotPower> {
+  if (bundle.decisionRule.version !== H6_TIMING_DECISION_RULE.version) {
+    throw new Error("transferred pilot evidence requires the timing decision rule");
+  }
+  const timingRule = bundle.decisionRule;
+  const evidence = timingRule.power.transferredPilotEvidence;
+  const runDir = path.resolve(pilotRunDir);
+  const manifest = await verifyRunManifest(runDir);
+  if (manifest.artifactHash !== evidence.manifestArtifactHash) {
+    throw new Error("transferred pilot manifest hash does not match the registered evidence");
+  }
+  const metadata = parseRunMetadata(
+    JSON.parse(await readFile(path.join(runDir, "run.json"), "utf8")),
+  );
+  const expectedProfiles = configuration.drivers.map(
+    (driver) => [
+      driver.modelProfileId,
+      driver.modelProfileHash,
+      driver.modelDigest,
+      driver.driverKind ?? "unknown",
+      driver.tokenizer.identity,
+      driver.tokenizer.implementation,
+    ].join("\u0000"),
+  ).sort(compareCodePoints);
+  const pilotProfiles = metadata.modelProfileIds.map(
+    (id, index) => [
+      id,
+      metadata.modelProfileHashes[index] ?? "",
+      metadata.modelDigests[index] ?? "",
+      metadata.modelDriverKinds[index] ?? "",
+      metadata.modelTokenizerIdentities[index] ?? "",
+      metadata.modelTokenizerImplementations[index] ?? "",
+    ].join("\u0000"),
+  ).sort(compareCodePoints);
+  if (
+    metadata.phase !== "pilot"
+    || metadata.mode !== "full"
+    || metadata.datasetInventoryHash !== bundle.dataset.inventoryHash
+    || metadata.decisionRuleHash !== evidence.decisionRuleHash
+    || metadata.preregistrationHash !== evidence.preregistrationHash
+    || metadata.analysisVersion !== evidence.analysisVersion
+    || metadata.harnessSourceHash !== evidence.harnessSourceHash
+    || metadata.statisticsSeed !== bundle.dataset.seed
+    || metadata.statisticsDraws !== REPEATED_FAILURE_STATISTICS_DRAWS
+    || stableStringify(metadata.seeds) !== stableStringify(FROZEN_SEEDS)
+    || stableStringify(metadata.splitTaskIds)
+      !== stableStringify([...bundle.dataset.splits.pilot].sort(compareCodePoints))
+    || stableStringify(metadata.arms) !== stableStringify(PRIMARY_ARMS)
+    || stableStringify(pilotProfiles) !== stableStringify(expectedProfiles)
+    || stableStringify(metadata.caps) !== stableStringify({
+      ...DEFAULT_CAPS,
+      maxToolOutputChars: DEFAULT_TOOL_OUTPUT_CHARS,
+    })
+    || metadata.retryRule.hostApiFaultRetriesAfterFirstTry !== 5
+    || metadata.retryRule.rerunTaskResults
+    || !metadata.retryRule.retainAllTries
+  ) {
+    throw new Error("transferred pilot metadata does not match the registered evidence");
+  }
+  const pilotDecisionRuleBytes = await readFile(path.join(runDir, "decision-rule.json"), "utf8");
+  if (sha256(pilotDecisionRuleBytes) !== evidence.decisionRuleHash) {
+    throw new Error("transferred pilot decision rule hash does not match the registered evidence");
+  }
+  const pilotDecisionRule = DecisionRuleSchema.parse(JSON.parse(pilotDecisionRuleBytes));
+  const designBytes = await readFile(path.join(runDir, "expected-design.json"), "utf8");
+  const design = parseDesign(JSON.parse(designBytes));
+  if (sha256(stableStringify(design)) !== metadata.expectedDesignHash) {
+    throw new Error("transferred pilot expected-design hash mismatch");
+  }
+  const expectedRunOrder = expectedRegisteredRunOrder(
+    bundle,
+    bundle.dataset.splits.pilot,
+    configuration.drivers,
+    FROZEN_SEEDS,
+    "full",
+  );
+  if (
+    stableStringify(metadata.runOrder) !== stableStringify(design.runOrder)
+    || stableStringify(metadata.runOrder) !== stableStringify(expectedRunOrder)
+  ) {
+    throw new Error("transferred pilot run order does not match the frozen deterministic schedule");
+  }
+  const episodeBytes = await readFile(path.join(runDir, "episodes.jsonl"), "utf8");
+  const rows = parseEpisodesJsonl(episodeBytes);
+  assertDesignRowsPresent(rows, [...design.primary.rows, ...design.timidity.rows]);
+  const power = parseComputedPilotPower(JSON.parse(
+    await readFile(path.join(runDir, "power.json"), "utf8"),
+  ));
+  const replayedAnalysis = analyzeRepeatedFailureRows(rows, {
+    expectedDesign: design.primary,
+    timidityDesign: design.timidity,
+    seed: metadata.statisticsSeed,
+    draws: metadata.statisticsDraws,
+    ...decisionRuleAnalysisOptions(pilotDecisionRule),
+  });
+  const replayedPower = buildPowerArtifact(
+    rows,
+    {
+      ...configuration,
+      phase: "pilot",
+      taskIds: [...metadata.splitTaskIds],
+      seeds: [...metadata.seeds],
+      statisticsSeed: metadata.statisticsSeed,
+      statisticsDraws: metadata.statisticsDraws,
+    },
+    "full",
+    replayedAnalysis,
+    pilotDecisionRule,
+    {
+      episodesHash: sha256(episodeBytes),
+      expectedDesignHash: sha256(designBytes),
+      decisionRuleHash: metadata.decisionRuleHash,
+    },
+  );
+  if (stableStringify(power.raw) !== stableStringify(replayedPower)) {
+    throw new Error("transferred pilot power does not match deterministic replay");
+  }
+  if (
+    sha256(stableStringify(power.raw)) !== evidence.powerArtifactHash
+    || power.timingPower < timingRule.power.minimumTimingPower
+    || power.timingPower !== evidence.timingPower
+  ) {
+    throw new Error("transferred pilot timing power is absent, underpowered, or mismatched");
+  }
+  return {
+    runId: metadata.runId,
+    manifestArtifactHash: manifest.artifactHash,
+    powerArtifactHash: sha256(stableStringify(power.raw)),
+    artifact: power.raw,
+    profileBindings: metadata.modelProfileIds.map((id, index) => ({
+      id,
+      hash: metadata.modelProfileHashes[index]!,
+      modelDigest: metadata.modelDigests[index]!,
+      driverKind: metadata.modelDriverKinds[index]!,
+      tokenizerIdentity: metadata.modelTokenizerIdentities[index]!,
+      tokenizerImplementation: metadata.modelTokenizerImplementations[index]!,
+    })).sort((left, right) => compareCodePoints(
+      stableStringify(left),
+      stableStringify(right),
+    )),
+    trapAuditReceipts: [...metadata.trapAuditReceipts].sort(
+      (left, right) => compareCodePoints(stableStringify(left), stableStringify(right)),
+    ),
+    runOrder: metadata.runOrder,
+    expectedDesignHash: sha256(designBytes),
+    episodesHash: sha256(episodeBytes),
+  };
+}
+
 export async function verifyPilotPower(
   pilotRunDir: string | undefined,
   bundle: FixtureBundle,
@@ -495,6 +655,10 @@ export async function verifyPilotPower(
   harnessVersion: string,
   harnessSourceHash: string,
 ): Promise<VerifiedPilotPower> {
+  if (decisionRuleDesignMode(bundle.decisionRule) === "timing_only") {
+    if (!pilotRunDir) throw new Error("main execution requires a verified pilot run");
+    return verifyTransferredPilotEvidence(pilotRunDir, bundle, configuration);
+  }
   if (!pilotRunDir) throw new Error("main execution requires a verified pilot run");
   const runDir = path.resolve(pilotRunDir);
   const manifest = await verifyRunManifest(runDir);
@@ -833,6 +997,9 @@ export function buildPowerArtifact(
       draws: configuration.statisticsDraws,
       source,
     };
+  }
+  if (!("timidity" in decisionRule)) {
+    throw new Error("power artifact generation requires the full decision rule");
   }
   const taskGroups = new Map<string, RepeatedFailureEpisodeRow[]>();
   for (const row of rows) {

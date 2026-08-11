@@ -43,7 +43,7 @@ export const StatisticsSchema = z.object({
     reasons: z.array(z.string().min(1)),
   })),
   timing: EffectSchema,
-  content: EffectSchema,
+  content: EffectSchema.nullable(),
   contentCompoundP: z.number().nullable(),
   holm: z.array(z.object({
     id: z.enum(["TIMING", "CONTENT"]),
@@ -53,7 +53,7 @@ export const StatisticsSchema = z.object({
   })),
   decisions: z.object({
     timing: z.enum(["SUPPORTED", "REJECTED", "NOT_ESTIMABLE"]),
-    content: z.enum(["SUPPORTED", "REJECTED", "NOT_ESTIMABLE"]),
+    content: z.enum(["SUPPORTED", "REJECTED", "NOT_ESTIMABLE"]).nullable(),
   }),
   studyDecision: z.enum(["PASS", "PARTIAL", "REJECT", "NOT_ESTIMABLE"]),
   timidity: z.object({
@@ -67,6 +67,14 @@ export const StatisticsSchema = z.object({
     stepsMargin: z.number().nonnegative(),
     equivalent: z.boolean().nullable(),
   }),
+  hypothesisSet: z.literal("timing_only").optional(),
+  imputedRows: z.array(z.object({
+    taskId: z.string().min(1),
+    arm: z.enum(["TURN_START_FAILURE", "PRE_ACTION_FAILURE"]),
+    seed: z.number().int().nonnegative(),
+    variantId: z.string().min(1),
+    invalidReason: z.literal("VAGUE_CHECK"),
+  }).strict()).optional(),
 });
 export const AuditSchema = z.object({
   schemaVersion: z.literal(1),
@@ -127,7 +135,7 @@ export const AuditSchema = z.object({
     expectedRows: z.number().int().nonnegative(),
     observedRows: z.number().int().nonnegative(),
     allPassed: z.boolean(),
-  }).strict(),
+  }).strict().optional(),
   deviations: z.object({
     count: z.number().int().nonnegative(),
     none: z.boolean(),
@@ -348,6 +356,7 @@ export function assessClaimEligibility(
   evidence: ClaimEvidence,
 ): ClaimEligibility {
   const reasons: string[] = [];
+  const timingOnly = statistics.hypothesisSet === "timing_only";
   if (run.phase !== "main") reasons.push("PILOT_RUN");
   if (run.mode !== "full" || !evidence.registeredContract) reasons.push("REGISTERED_CONTRACT_MISMATCH");
   if (
@@ -366,15 +375,15 @@ export function assessClaimEligibility(
     || audit.cuts.timidity.length > 0
     || statistics.cuts.length > 0
     || statistics.decisions.timing === "NOT_ESTIMABLE"
-    || statistics.decisions.content === "NOT_ESTIMABLE"
+    || (!timingOnly && statistics.decisions.content === "NOT_ESTIMABLE")
   ) reasons.push("CUT_ROWS");
   if (evidence.deviations > 0 || !audit.deviations.none) reasons.push("DEVIATIONS_RECORDED");
   if (!evidence.factPairsMatched || !audit.factPairs.allMatched) reasons.push("UNMATCHED_FACT_PAIRS");
   if (!evidence.isolationMatched) reasons.push("ISOLATION_FAILURE");
   if (!evidence.timingEvidenceMatched) reasons.push("TIMING_EVIDENCE_FAILURE");
-  if (!evidence.noTrapPassed) reasons.push("NO_TRAP_FAILURE");
+  if (!timingOnly && !evidence.noTrapPassed) reasons.push("NO_TRAP_FAILURE");
   if (!evidence.tracesDurable) reasons.push("TRACE_DURABILITY_FAILURE");
-  if (statistics.timidity.equivalent !== true) reasons.push("TIMIDITY_NOT_EQUIVALENT");
+  if (!timingOnly && statistics.timidity.equivalent !== true) reasons.push("TIMIDITY_NOT_EQUIVALENT");
   return {
     status: reasons.length === 0 ? "CONFIRMATORY" : "INELIGIBLE",
     reasons,
@@ -517,10 +526,10 @@ export function renderEffectsTable(statistics: ParsedStatistics): string {
     "holmAdjustedP",
     "decision",
   ]);
-  for (const [hypothesis, effect] of [
-    ["TIMING", statistics.timing],
-    ["CONTENT", statistics.content],
-  ] as const) {
+  const effects = statistics.content === null
+    ? [["TIMING", statistics.timing] as const]
+    : [["TIMING", statistics.timing] as const, ["CONTENT", statistics.content] as const];
+  for (const [hypothesis, effect] of effects) {
     const adjustedP = statistics.holm.find((entry) => entry.id === hypothesis)?.adjustedP ?? null;
     csv += csvRow([
       hypothesis,
@@ -540,7 +549,7 @@ export function renderEffectsTable(statistics: ParsedStatistics): string {
       formatNumber(effect.taskPassBenefitInterval?.upper ?? null),
       formatNumber(effect.taskPassP),
       formatNumber(adjustedP),
-      statistics.decisions[hypothesis === "TIMING" ? "timing" : "content"],
+      statistics.decisions[hypothesis === "TIMING" ? "timing" : "content"] ?? "NOT_ESTIMABLE",
     ]);
   }
   return csv;
@@ -608,12 +617,17 @@ ${elements}
 }
 
 export function renderEffectsFigure(statistics: ParsedStatistics): string {
-  const metrics = [
-    ["Timing: repeated-failure benefit", statistics.timing.repeatedFailureBenefit, statistics.timing.repeatedFailureBenefitInterval],
-    ["Timing: relative risk reduction", statistics.timing.relativeRiskReduction, statistics.timing.relativeRiskReductionInterval],
-    ["Content: repeated-failure benefit", statistics.content.repeatedFailureBenefit, statistics.content.repeatedFailureBenefitInterval],
-    ["Content: task-pass benefit", statistics.content.taskPassBenefit, statistics.content.taskPassBenefitInterval],
-  ] as const;
+  const metrics = statistics.content === null
+    ? [
+        ["Timing: repeated-failure benefit", statistics.timing.repeatedFailureBenefit, statistics.timing.repeatedFailureBenefitInterval],
+        ["Timing: relative risk reduction", statistics.timing.relativeRiskReduction, statistics.timing.relativeRiskReductionInterval],
+      ] as const
+    : [
+        ["Timing: repeated-failure benefit", statistics.timing.repeatedFailureBenefit, statistics.timing.repeatedFailureBenefitInterval],
+        ["Timing: relative risk reduction", statistics.timing.relativeRiskReduction, statistics.timing.relativeRiskReductionInterval],
+        ["Content: repeated-failure benefit", statistics.content.repeatedFailureBenefit, statistics.content.repeatedFailureBenefitInterval],
+        ["Content: task-pass benefit", statistics.content.taskPassBenefit, statistics.content.taskPassBenefitInterval],
+      ] as const;
   const width = 1000;
   const height = 300;
   const plotX = 410;
@@ -664,9 +678,28 @@ export function renderReport(input: {
   for (const task of selectedTasks) trapCounts.set(task.trapId, (trapCounts.get(task.trapId) ?? 0) + 1);
   const trapSet = [...trapCounts.entries()].sort(([left], [right]) => compareCodePoints(left, right))
     .map(([trapId, count]) => `${trapId} (${count})`).join(", ");
+  const timingOnly = input.statistics.hypothesisSet === "timing_only";
+  const content = input.statistics.content;
   const adjustedTiming = input.statistics.holm.find((entry) => entry.id === "TIMING")?.adjustedP ?? null;
   const adjustedContent = input.statistics.holm.find((entry) => entry.id === "CONTENT")?.adjustedP ?? null;
   const rows = input.outcomes.reduce((sum, outcome) => sum + outcome.validRows + outcome.invalidRows, 0);
+  const analysisDescription = timingOnly
+    ? "All task means, intervals, and tests use task groups as the statistical unit. This timing-only registration compares pre-action failure memory with turn-start failure memory. Grouped bootstrap intervals, paired randomization tests, and Holm adjustment follow the frozen decision rule."
+    : "All task means, intervals, and tests use task groups as the statistical unit. The timing contrast compares pre-action failure memory with turn-start failure memory. The content contrast compares turn-start failure memory with turn-start success memory. Grouped bootstrap intervals, paired randomization tests, and Holm adjustment follow the frozen decision rule.";
+  const analysisRows = timingOnly
+    ? `| Claim | Estimate | 95% interval | Raw p | Holm-adjusted p | Decision |
+|---|---:|---:|---:|---:|---|
+| Timing repeated-failure benefit | ${formatNumber(input.statistics.timing.repeatedFailureBenefit, 3)} | ${formatNumber(input.statistics.timing.repeatedFailureBenefitInterval?.lower ?? null, 3)} to ${formatNumber(input.statistics.timing.repeatedFailureBenefitInterval?.upper ?? null, 3)} | ${formatNumber(input.statistics.timing.repeatedFailureP, 4)} | ${formatNumber(adjustedTiming, 4)} | ${input.statistics.decisions.timing} |
+
+Content analysis: not part of this registration.`
+    : `| Claim | Estimate | 95% interval | Raw p | Holm-adjusted p | Decision |
+|---|---:|---:|---:|---:|---|
+| Timing repeated-failure benefit | ${formatNumber(input.statistics.timing.repeatedFailureBenefit, 3)} | ${formatNumber(input.statistics.timing.repeatedFailureBenefitInterval?.lower ?? null, 3)} to ${formatNumber(input.statistics.timing.repeatedFailureBenefitInterval?.upper ?? null, 3)} | ${formatNumber(input.statistics.timing.repeatedFailureP, 4)} | ${formatNumber(adjustedTiming, 4)} | ${input.statistics.decisions.timing} |
+| Content repeated-failure benefit | ${formatNumber(content?.repeatedFailureBenefit ?? null, 3)} | ${formatNumber(content?.repeatedFailureBenefitInterval?.lower ?? null, 3)} to ${formatNumber(content?.repeatedFailureBenefitInterval?.upper ?? null, 3)} | ${formatNumber(input.statistics.contentCompoundP, 4)} | ${formatNumber(adjustedContent, 4)} | ${input.statistics.decisions.content} |
+| Content task-pass benefit | ${formatNumber(content?.taskPassBenefit ?? null, 3)} | ${formatNumber(content?.taskPassBenefitInterval?.lower ?? null, 3)} to ${formatNumber(content?.taskPassBenefitInterval?.upper ?? null, 3)} | ${formatNumber(content?.taskPassP ?? null, 4)} | ${formatNumber(adjustedContent, 4)} | ${input.statistics.decisions.content}`;
+  const timidityDescription = timingOnly
+    ? "Timidity analysis: not part of this registration."
+    : `Timidity equivalence: ${input.statistics.timidity.equivalent === null ? "NOT_ESTIMABLE" : input.statistics.timidity.equivalent ? "PASS" : "FAIL"}. The 90% pass-rate interval is ${formatNumber(input.statistics.timidity.passRateInterval?.lower ?? null, 3)} to ${formatNumber(input.statistics.timidity.passRateInterval?.upper ?? null, 3)} against a margin of ${formatNumber(input.statistics.timidity.passMargin, 3)}. The 90% step interval is ${formatNumber(input.statistics.timidity.stepsInterval?.lower ?? null, 3)} to ${formatNumber(input.statistics.timidity.stepsInterval?.upper ?? null, 3)} against a margin of ${formatNumber(input.statistics.timidity.stepsMargin, 3)}.`;
   return `# H6 failure-gate experiment report
 
 This report was generated from the frozen run artifacts. The CSV tables and SVG figures contain the paper data. The report manifest binds every source and generated file by SHA-256 hash.
@@ -702,15 +735,11 @@ The machine-readable task set is [tables/task-set.csv](tables/task-set.csv). It 
 
 ## Analysis
 
-All task means, intervals, and tests use task groups as the statistical unit. The timing contrast compares pre-action failure memory with turn-start failure memory. The content contrast compares turn-start failure memory with turn-start success memory. Grouped bootstrap intervals, paired randomization tests, and Holm adjustment follow the frozen decision rule.
+${analysisDescription}
 
-| Claim | Estimate | 95% interval | Raw p | Holm-adjusted p | Decision |
-|---|---:|---:|---:|---:|---|
-| Timing repeated-failure benefit | ${formatNumber(input.statistics.timing.repeatedFailureBenefit, 3)} | ${formatNumber(input.statistics.timing.repeatedFailureBenefitInterval?.lower ?? null, 3)} to ${formatNumber(input.statistics.timing.repeatedFailureBenefitInterval?.upper ?? null, 3)} | ${formatNumber(input.statistics.timing.repeatedFailureP, 4)} | ${formatNumber(adjustedTiming, 4)} | ${input.statistics.decisions.timing} |
-| Content repeated-failure benefit | ${formatNumber(input.statistics.content.repeatedFailureBenefit, 3)} | ${formatNumber(input.statistics.content.repeatedFailureBenefitInterval?.lower ?? null, 3)} to ${formatNumber(input.statistics.content.repeatedFailureBenefitInterval?.upper ?? null, 3)} | ${formatNumber(input.statistics.contentCompoundP, 4)} | ${formatNumber(adjustedContent, 4)} | ${input.statistics.decisions.content} |
-| Content task-pass benefit | ${formatNumber(input.statistics.content.taskPassBenefit, 3)} | ${formatNumber(input.statistics.content.taskPassBenefitInterval?.lower ?? null, 3)} to ${formatNumber(input.statistics.content.taskPassBenefitInterval?.upper ?? null, 3)} | ${formatNumber(input.statistics.content.taskPassP, 4)} | ${formatNumber(adjustedContent, 4)} | ${input.statistics.decisions.content} |
+${analysisRows}
 
-Timidity equivalence: ${input.statistics.timidity.equivalent === null ? "NOT_ESTIMABLE" : input.statistics.timidity.equivalent ? "PASS" : "FAIL"}. The 90% pass-rate interval is ${formatNumber(input.statistics.timidity.passRateInterval?.lower ?? null, 3)} to ${formatNumber(input.statistics.timidity.passRateInterval?.upper ?? null, 3)} against a margin of ${formatNumber(input.statistics.timidity.passMargin, 3)}. The 90% step interval is ${formatNumber(input.statistics.timidity.stepsInterval?.lower ?? null, 3)} to ${formatNumber(input.statistics.timidity.stepsInterval?.upper ?? null, 3)} against a margin of ${formatNumber(input.statistics.timidity.stepsMargin, 3)}.
+${timidityDescription}
 
 - [Arm outcomes](tables/arm-outcomes.csv)
 - [Effect estimates](tables/effects.csv)
@@ -729,7 +758,7 @@ Timidity equivalence: ${input.statistics.timidity.equivalent === null ? "NOT_EST
 | Start repositories matched within paired cells | ${renderIntegrity(input.audit.isolation.primaryStartHashesMatchWithinCells)} |
 | Trace artifacts durable | ${renderIntegrity(input.audit.traces.allDurable)} |
 | Primary task cuts | ${input.statistics.cuts.filter((cut) => cut.hypothesis !== "TIMIDITY").length} |
-| Timidity task cuts | ${input.statistics.cuts.filter((cut) => cut.hypothesis === "TIMIDITY").length} |
+| Timidity task cuts | ${timingOnly ? "not part of this registration" : input.statistics.cuts.filter((cut) => cut.hypothesis === "TIMIDITY").length} |
 | Invalid rows | ${input.invalidRows} of ${rows} |
 
 The preregistered cut log is [tables/task-cuts.csv](tables/task-cuts.csv). Cut tasks remain in the record and never enter confirmatory estimates.

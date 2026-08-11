@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { z } from "zod";
 import {
   captureBenchmarkExecutionProvenance,
   getRemnicVersion,
@@ -21,12 +22,15 @@ import type {
 import {
   PRIMARY_ARMS,
   TIMIDITY_ARMS,
+  TIMING_ONLY_ARMS,
   PreregistrationBindingSchema,
-  type DesignArtifact,
+  TimingPreregistrationBindingSchema,
+  decisionRuleDesignMode,
   type FixtureBundle,
   type NormalizedRunOptions,
   type PlannedRow,
   type VerifiedPilotPower,
+  type DesignArtifact,
   identityFor,
   sha256,
 } from "./repeated-failure-suite-shared.js";
@@ -47,7 +51,10 @@ import {
   isRegisteredProfileDriver,
 } from "./repeated-failure-suite-output.js";
 
-const PACKAGED_PREREGISTRATION_FILENAME = "h6-failure-gate.md";
+const PACKAGED_PREREGISTRATION_FILENAMES = {
+  12: "h6-failure-gate.md",
+  13: "h6-timing-rerun.md",
+} as const;
 
 interface PreparedRepeatedFailureSuite {
   bundle: FixtureBundle;
@@ -73,7 +80,10 @@ export async function verifyPreregistrationBinding(
   binding: unknown,
   resourcePath?: string,
 ): Promise<string> {
-  const sealed = PreregistrationBindingSchema.parse(binding);
+  const sealed = z.union([
+    PreregistrationBindingSchema,
+    TimingPreregistrationBindingSchema,
+  ]).parse(binding);
   const resolvedResourcePath = resourcePath ?? sealed.path;
   let bytes: Buffer;
   try {
@@ -95,7 +105,10 @@ async function verifyResumePreregistrationMetadata(
   outputDir: string,
   binding: unknown,
 ): Promise<void> {
-  const sealed = PreregistrationBindingSchema.parse(binding);
+  const sealed = z.union([
+    PreregistrationBindingSchema,
+    TimingPreregistrationBindingSchema,
+  ]).parse(binding);
   const metadata = parseRunMetadata(JSON.parse(
     await readFile(path.join(outputDir, "run.json"), "utf8"),
   ));
@@ -110,7 +123,7 @@ async function verifyResumePreregistrationMetadata(
 export async function prepareRepeatedFailureSuite(
   options: RunRepeatedFailureSuiteOptions,
 ): Promise<PreparedRepeatedFailureSuite> {
-  const bundle = await loadFixtureBundle(options.fixtureDir);
+  const bundle = await loadFixtureBundle(options.fixtureDir, options.decisionRuleFile);
   const configuration = normalizeRunOptions(options, bundle);
   await assertSafeBenchmarkOutput(configuration.outputDir, options.resume === true);
   if (options.resume === true) {
@@ -123,7 +136,7 @@ export async function prepareRepeatedFailureSuite(
   await verifyPreregistrationBinding(
     resolvePackagedPreregistrationRoot(),
     bundle.decisionRule.preregistration,
-    PACKAGED_PREREGISTRATION_FILENAME,
+    PACKAGED_PREREGISTRATION_FILENAMES[bundle.decisionRule.version],
   );
   await assertTrapDatasetPreflight(bundle.dataset);
   for (const driver of configuration.drivers) {
@@ -182,6 +195,7 @@ export async function prepareRepeatedFailureSuite(
     configuration.variantIds,
     configuration.drivers,
     configuration.seeds,
+    decisionRuleDesignMode(bundle.decisionRule),
   );
   const design = buildDesign(plans);
   return {
@@ -203,6 +217,7 @@ export async function buildPlans(
   variantIds: readonly string[],
   drivers: readonly RepeatedFailureEpisodeDriver[],
   seeds: readonly number[],
+  designMode: "full" | "timing_only" = "full",
 ): Promise<PlannedRow[]> {
   const tasks = bundle.dataset.tasks
     .filter((task) => taskIds.length === 0 || taskIds.includes(task.id))
@@ -221,10 +236,11 @@ export async function buildPlans(
   }
   if (selectedVariants.length === 0) throw new Error("variant selection is empty");
   const plans: PlannedRow[] = [];
+  const primaryArms = designMode === "timing_only" ? TIMING_ONLY_ARMS : PRIMARY_ARMS;
   for (const { task, variant } of selectedVariants) {
     for (const seed of seeds) {
       for (const driver of drivers) {
-        for (const arm of PRIMARY_ARMS) {
+        for (const arm of primaryArms) {
           plans.push({
             identity: identityFor(bundle.suiteVersion, task.id, variant.variantId, driver, seed, arm),
             task,
@@ -233,21 +249,23 @@ export async function buildPlans(
             noTrapControl: false,
           });
         }
-        for (const arm of TIMIDITY_ARMS) {
-          plans.push({
-            identity: identityFor(
-              bundle.suiteVersion,
-              task.id,
-              `${variant.variantId}:no-trap`,
-              driver,
-              seed,
-              arm,
-            ),
-            task,
-            variant,
-            files: variant.noTrapControlFiles,
-            noTrapControl: true,
-          });
+        if (designMode === "full") {
+          for (const arm of TIMIDITY_ARMS) {
+            plans.push({
+              identity: identityFor(
+                bundle.suiteVersion,
+                task.id,
+                `${variant.variantId}:no-trap`,
+                driver,
+                seed,
+                arm,
+              ),
+              task,
+              variant,
+              files: variant.noTrapControlFiles,
+              noTrapControl: true,
+            });
+          }
         }
       }
     }

@@ -29,6 +29,10 @@ export interface AnalyzeRepeatedFailureOptions {
   timidityStepsMargin?: number;
   /** Amendment 4 (Option B): false keeps the pass-rate half reported but ungated. */
   timidityGatePassRate?: boolean;
+  hypothesisSet?: "timing_and_content" | "timing_only";
+  invalidRowPolicy?: {
+    vagueCheck: "worst_case_against_candidate";
+  };
 }
 
 export interface RepeatedFailureInterval {
@@ -47,6 +51,14 @@ export interface RepeatedFailureTaskCut {
   hypothesis: "TIMING" | "CONTENT" | "TIMIDITY";
   taskId: string;
   reasons: string[];
+}
+
+export interface RepeatedFailureImputation {
+  taskId: string;
+  arm: RepeatedFailureArm;
+  seed: number;
+  variantId: string;
+  invalidReason: "VAGUE_CHECK";
 }
 
 export interface RepeatedFailureEffectAnalysis {
@@ -101,15 +113,29 @@ export interface RepeatedFailureStatisticalAnalysis {
   alpha: number;
   cuts: RepeatedFailureTaskCut[];
   timing: RepeatedFailureEffectAnalysis;
-  content: RepeatedFailureEffectAnalysis;
+  content: RepeatedFailureEffectAnalysis | null;
   contentCompoundP: number | null;
   holm: RepeatedFailureHolmResult[];
   decisions: {
     timing: RepeatedFailureSupportDecision;
-    content: RepeatedFailureSupportDecision;
+    content: RepeatedFailureSupportDecision | null;
   };
   studyDecision: "PASS" | "PARTIAL" | "REJECT" | "NOT_ESTIMABLE";
   timidity: RepeatedFailureTimidityAnalysis;
+  hypothesisSet?: "timing_only";
+  imputedRows?: RepeatedFailureImputation[];
+}
+
+interface ComparisonMetricRow {
+  repeatedFailure: boolean;
+  taskPassed: boolean;
+  steps: number;
+}
+
+interface ComparisonPreparation {
+  groups: TaskArmMean[];
+  cuts: RepeatedFailureTaskCut[];
+  imputations: RepeatedFailureImputation[];
 }
 
 interface TaskArmMean {
@@ -120,11 +146,6 @@ interface TaskArmMean {
   candidateTaskPass: number;
   baselineSteps: number;
   candidateSteps: number;
-}
-
-interface ComparisonPreparation {
-  groups: TaskArmMean[];
-  cuts: RepeatedFailureTaskCut[];
 }
 
 function mean(values: readonly number[]): number {
@@ -207,7 +228,8 @@ function prepareComparison(
   baselineArm: RepeatedFailureArm,
   candidateArm: RepeatedFailureArm,
   hypothesis: RepeatedFailureTaskCut["hypothesis"],
-  requireMatchedFacts: boolean
+  requireMatchedFacts: boolean,
+  invalidRowPolicy?: AnalyzeRepeatedFailureOptions["invalidRowPolicy"],
 ): ComparisonPreparation {
   const actualByIdentity = new Map<string, RepeatedFailureEpisodeRow[]>();
   for (const row of rows) {
@@ -227,6 +249,7 @@ function prepareComparison(
 
   const groups: TaskArmMean[] = [];
   const cuts: RepeatedFailureTaskCut[] = [];
+  const imputations: RepeatedFailureImputation[] = [];
   for (
     const [taskId, expected] of [...expectedByTask.entries()].sort(
       ([left], [right]) => compareCodePoints(left, right),
@@ -242,8 +265,8 @@ function prepareComparison(
       expectedCells.set(key, cell);
     }
 
-    const baselineRows: RepeatedFailureEpisodeRow[] = [];
-    const candidateRows: RepeatedFailureEpisodeRow[] = [];
+    const baselineRows: ComparisonMetricRow[] = [];
+    const candidateRows: ComparisonMetricRow[] = [];
     for (const [key, cell] of expectedCells) {
       for (const arm of [baselineArm, candidateArm] as const) {
         const expectedIdentity = cell[arm];
@@ -263,7 +286,25 @@ function prepareComparison(
           continue;
         }
         if (row.status !== "VALID") {
-          reasons.add(`INVALID_ROW:${arm}:${row.invalidReason ?? "UNKNOWN"}`);
+          if (
+            hypothesis === "TIMING" &&
+            invalidRowPolicy?.vagueCheck === "worst_case_against_candidate" &&
+            row.invalidReason === "VAGUE_CHECK"
+          ) {
+            const imputed: ComparisonMetricRow = arm === candidateArm
+              ? { repeatedFailure: true, taskPassed: false, steps: 0 }
+              : { repeatedFailure: false, taskPassed: true, steps: 0 };
+            (arm === baselineArm ? baselineRows : candidateRows).push(imputed);
+            imputations.push({
+              taskId,
+              arm,
+              seed: expectedIdentity.seed,
+              variantId: expectedIdentity.variantId,
+              invalidReason: "VAGUE_CHECK",
+            });
+          } else {
+            reasons.add(`INVALID_ROW:${arm}:${row.invalidReason ?? "UNKNOWN"}`);
+          }
           continue;
         }
         if (
@@ -279,7 +320,11 @@ function prepareComparison(
           reasons.add(`UNMATCHED_FACTS:${arm}`);
           continue;
         }
-        (arm === baselineArm ? baselineRows : candidateRows).push(row);
+        (arm === baselineArm ? baselineRows : candidateRows).push({
+          repeatedFailure: row.repeatedFailure,
+          taskPassed: row.taskPassed,
+          steps: row.steps,
+        });
       }
     }
 
@@ -297,17 +342,11 @@ function prepareComparison(
       candidateRepeatedFailure: mean(candidateRows.map((row) => Number(row.repeatedFailure))),
       baselineTaskPass: mean(baselineRows.map((row) => Number(row.taskPassed))),
       candidateTaskPass: mean(candidateRows.map((row) => Number(row.taskPassed))),
-      baselineSteps: mean(baselineRows.map((row) => {
-        if (typeof row.steps !== "number") throw new Error("validated baseline row lost steps");
-        return row.steps;
-      })),
-      candidateSteps: mean(candidateRows.map((row) => {
-        if (typeof row.steps !== "number") throw new Error("validated candidate row lost steps");
-        return row.steps;
-      })),
+      baselineSteps: mean(baselineRows.map((row) => row.steps)),
+      candidateSteps: mean(candidateRows.map((row) => row.steps)),
     });
   }
-  return { groups, cuts };
+  return { groups, cuts, imputations };
 }
 
 function bootstrapGroups(
@@ -519,8 +558,13 @@ export function decideRepeatedFailureContent(
 
 export function decideRepeatedFailureStudy(
   timing: RepeatedFailureSupportDecision,
-  content: RepeatedFailureSupportDecision,
+  content: RepeatedFailureSupportDecision | null,
 ): RepeatedFailureStatisticalAnalysis["studyDecision"] {
+  if (content === null) {
+    if (timing === "SUPPORTED") return "PASS";
+    if (timing === "REJECTED") return "REJECT";
+    return "NOT_ESTIMABLE";
+  }
   if (timing === "NOT_ESTIMABLE" || content === "NOT_ESTIMABLE") return "NOT_ESTIMABLE";
   if (timing === "SUPPORTED" && content === "SUPPORTED") return "PASS";
   if (timing === "SUPPORTED" || content === "SUPPORTED") return "PARTIAL";
@@ -565,10 +609,24 @@ export function analyzeRepeatedFailureRows(
   const timidityPassMargin = options.timidityPassMargin ?? 0.02;
   const timidityStepsMargin = options.timidityStepsMargin ?? 2;
   const timidityGatePassRate = options.timidityGatePassRate ?? true;
+  const hypothesisSet = options.hypothesisSet ?? "timing_and_content";
+  const timingOnly = hypothesisSet === "timing_only";
   if (!Number.isSafeInteger(draws) || draws <= 0) throw new Error("draws must be a positive safe integer");
   if (!(level > 0 && level < 1) || !(alpha > 0 && alpha < 1)) throw new Error("level and alpha must be in (0, 1)");
   if (!Number.isSafeInteger(options.seed) || options.seed < 0 || options.seed > 0xffffffff) {
     throw new Error("seed must be an integer in [0, 2^32 - 1]");
+  }
+
+  const timidityRequested =
+    options.timidityDesign !== undefined ||
+    options.timidityPassMargin !== undefined ||
+    options.timidityStepsMargin !== undefined ||
+    options.timidityGatePassRate !== undefined;
+  if (timingOnly && timidityRequested) {
+    throw new Error("timidity options are not allowed for timing_only analysis");
+  }
+  if (timidityRequested && !options.timidityDesign) {
+    throw new Error("timidity analysis requires a compatible timidityDesign");
   }
 
   const timingPreparation = prepareComparison(
@@ -577,26 +635,21 @@ export function analyzeRepeatedFailureRows(
     "TURN_START_FAILURE",
     "PRE_ACTION_FAILURE",
     "TIMING",
-    false
+    false,
+    options.invalidRowPolicy,
   );
-  const contentPreparation = prepareComparison(
-    rows,
-    options.expectedDesign,
-    "TURN_START_SUCCESS",
-    "TURN_START_FAILURE",
-    "CONTENT",
-    true
-  );
-  const timidityRequested =
-    options.timidityDesign !== undefined ||
-    options.timidityPassMargin !== undefined ||
-    options.timidityStepsMargin !== undefined ||
-    options.timidityGatePassRate !== undefined;
-  if (timidityRequested && !options.timidityDesign) {
-    throw new Error("timidity analysis requires a compatible timidityDesign");
-  }
-  let timidityPreparation: ComparisonPreparation = { groups: [], cuts: [] };
-  if (options.timidityDesign) {
+  const contentPreparation = timingOnly
+    ? null
+    : prepareComparison(
+      rows,
+      options.expectedDesign,
+      "TURN_START_SUCCESS",
+      "TURN_START_FAILURE",
+      "CONTENT",
+      true,
+    );
+  let timidityPreparation: ComparisonPreparation = { groups: [], cuts: [], imputations: [] };
+  if (!timingOnly && options.timidityDesign) {
     assertCompatibleTimidityDesign(options.timidityDesign);
     timidityPreparation = prepareComparison(
       rows,
@@ -604,7 +657,7 @@ export function analyzeRepeatedFailureRows(
       "NO_MEMORY",
       "PRE_ACTION_FAILURE",
       "TIMIDITY",
-      false
+      false,
     );
   }
   const timing = analyzeComparison(
@@ -615,22 +668,28 @@ export function analyzeRepeatedFailureRows(
     level,
     (options.seed ^ 0x13579bdf) >>> 0
   );
-  const content = analyzeComparison(
-    contentPreparation,
-    "TURN_START_SUCCESS",
-    "TURN_START_FAILURE",
-    draws,
-    level,
-    (options.seed ^ 0x2468ace0) >>> 0
-  );
+  const content = contentPreparation === null
+    ? null
+    : analyzeComparison(
+      contentPreparation,
+      "TURN_START_SUCCESS",
+      "TURN_START_FAILURE",
+      draws,
+      level,
+      (options.seed ^ 0x2468ace0) >>> 0
+    );
   const contentCompoundP =
-    content.repeatedFailureP === null || content.taskPassP === null
+    content === null || content.repeatedFailureP === null || content.taskPassP === null
       ? null
       : Math.max(content.repeatedFailureP, content.taskPassP);
   const primaries: { id: "TIMING" | "CONTENT"; p: number }[] = [];
   if (timing.repeatedFailureP !== null) primaries.push({ id: "TIMING", p: timing.repeatedFailureP });
-  if (contentCompoundP !== null) primaries.push({ id: "CONTENT", p: contentCompoundP });
-  const holm = primaries.length === 2 ? holmAdjust(primaries) : [];
+  if (!timingOnly && contentCompoundP !== null) primaries.push({ id: "CONTENT", p: contentCompoundP });
+  const holm = timingOnly
+    ? timing.repeatedFailureP === null
+      ? []
+      : holmAdjust([{ id: "TIMING", p: timing.repeatedFailureP }])
+    : primaries.length === 2 ? holmAdjust(primaries) : [];
   const timingAdjustedP = holm.find((entry) => entry.id === "TIMING")?.adjustedP;
   const contentAdjustedP = holm.find((entry) => entry.id === "CONTENT")?.adjustedP;
 
@@ -699,23 +758,25 @@ export function analyzeRepeatedFailureRows(
       timingMinimumBenefitIntervalLower,
       alpha,
     );
-  const contentDecision = contentPreparation.cuts.length > 0
-    ? "NOT_ESTIMABLE"
-    : decideRepeatedFailureContent(
-      content,
-      contentCompoundP,
-      contentAdjustedP,
-      contentMinimumRepeatedFailureBenefitIntervalLower,
-      contentMinimumTaskPassBenefitIntervalLower,
-      alpha,
-    );
+  const contentDecision = timingOnly
+    ? null
+    : contentPreparation?.cuts.length
+      ? "NOT_ESTIMABLE"
+      : decideRepeatedFailureContent(
+        content as RepeatedFailureEffectAnalysis,
+        contentCompoundP,
+        contentAdjustedP,
+        contentMinimumRepeatedFailureBenefitIntervalLower,
+        contentMinimumTaskPassBenefitIntervalLower,
+        alpha,
+      );
   return {
     schemaVersion: 1,
     seed: options.seed,
     draws,
     level,
     alpha,
-    cuts: [...timingPreparation.cuts, ...contentPreparation.cuts, ...timidityPreparation.cuts].sort(
+    cuts: [...timingPreparation.cuts, ...(contentPreparation?.cuts ?? []), ...timidityPreparation.cuts].sort(
       (left, right) => compareCodePoints(left.hypothesis, right.hypothesis)
         || compareCodePoints(left.taskId, right.taskId),
     ),
@@ -729,6 +790,15 @@ export function analyzeRepeatedFailureRows(
     },
     studyDecision: decideRepeatedFailureStudy(timingDecision, contentDecision),
     timidity,
+    ...(timingOnly
+      ? {
+        hypothesisSet: "timing_only" as const,
+        imputedRows: [...timingPreparation.imputations].sort(
+          (left, right) => compareCodePoints(left.taskId, right.taskId)
+            || compareCodePoints(left.arm, right.arm),
+        ),
+      }
+      : {}),
   };
 }
 

@@ -34,13 +34,16 @@ import {
   type RepeatedFailureTrapAuditRowIdentity,
 } from "./repeated-failure-trap-audit.js";
 import {
-  DecisionRuleSchema,
+  AnyDecisionRuleSchema,
   FROZEN_SEEDS,
+  H6_TIMING_RERUN_SEEDS,
+  TIMING_ONLY_ARMS,
   REPEATED_FAILURE_ANALYSIS_VERSION,
   TIMIDITY_ARMS,
   assertNoSymlinkComponents,
   countFactTokens,
   decisionRuleAnalysisOptions,
+  decisionRuleDesignMode,
   stableStringify,
   publicError,
   type FactPairAuditPair,
@@ -93,6 +96,7 @@ const SOURCE_ARTIFACTS = [
 
 export interface WriteRepeatedFailurePaperArtifactsOptions {
   runDir: string;
+  decisionRuleFile?: string;
   dataset?: H6BenchmarkDataset;
 }
 
@@ -137,11 +141,14 @@ async function readSourceArtifacts(runDir: string): Promise<Record<(typeof SOURC
 function expectedRegisteredDesign(
   run: RepeatedFailureRunMetadata,
   dataset: H6BenchmarkDataset,
+  mode: "full" | "timing_only",
 ): { primaryKeys: Set<string>; timidityKeys: Set<string>; allKeys: string[] } {
   const taskIds = run.phase === "main" ? dataset.splits.main : run.phase === "pilot" ? dataset.splits.pilot : [];
   const tasksById = new Map(dataset.tasks.map((task) => [task.id, task]));
   const primaryKeys = new Set<string>();
   const timidityKeys = new Set<string>();
+  const seeds = mode === "timing_only" ? H6_TIMING_RERUN_SEEDS : FROZEN_SEEDS;
+  const primaryArms = mode === "timing_only" ? TIMING_ONLY_ARMS : REPEATED_FAILURE_ARMS;
   for (const taskId of taskIds) {
     const task = tasksById.get(taskId);
     if (!task) throw new Error(`frozen split references missing task ${taskId}`);
@@ -149,8 +156,8 @@ function expectedRegisteredDesign(
       for (const [index, modelProfileId] of run.modelProfileIds.entries()) {
         const modelProfileHash = run.modelProfileHashes[index];
         if (!modelProfileHash) throw new Error("model profile identity arrays are misaligned");
-        for (const seed of FROZEN_SEEDS) {
-          for (const arm of REPEATED_FAILURE_ARMS) {
+        for (const seed of seeds) {
+          for (const arm of primaryArms) {
             primaryKeys.add(buildRepeatedFailureRowKey({
               suiteVersion: run.suiteVersion,
               taskId,
@@ -161,16 +168,18 @@ function expectedRegisteredDesign(
               arm,
             }));
           }
-          for (const arm of TIMIDITY_ARMS) {
-            timidityKeys.add(buildRepeatedFailureRowKey({
-              suiteVersion: run.suiteVersion,
-              taskId,
-              variantId: `${variant.variantId}:no-trap`,
-              modelProfileId,
-              modelProfileHash,
-              seed,
-              arm,
-            }));
+          if (mode === "full") {
+            for (const arm of TIMIDITY_ARMS) {
+              timidityKeys.add(buildRepeatedFailureRowKey({
+                suiteVersion: run.suiteVersion,
+                taskId,
+                variantId: `${variant.variantId}:no-trap`,
+                modelProfileId,
+                modelProfileHash,
+                seed,
+                arm,
+              }));
+            }
           }
         }
       }
@@ -187,6 +196,7 @@ function expectedRegisteredRunOrder(
   run: RepeatedFailureRunMetadata,
   dataset: H6BenchmarkDataset,
   phase: "pilot" | "main",
+  mode: "full" | "timing_only",
 ): RepeatedFailureRunMetadata["runOrder"] {
   const taskIds = phase === "main" ? dataset.splits.main : dataset.splits.pilot;
   const selectedTasks = dataset.tasks
@@ -200,13 +210,15 @@ function expectedRegisteredRunOrder(
     `${right.modelProfileId}\u0000${right.modelProfileHash}`,
   ));
   const order: RepeatedFailureRunMetadata["runOrder"][number][] = [];
+  const seeds = mode === "timing_only" ? H6_TIMING_RERUN_SEEDS : FROZEN_SEEDS;
+  const primaryArms = mode === "timing_only" ? TIMING_ONLY_ARMS : REPEATED_FAILURE_ARMS;
   for (const task of selectedTasks) {
     for (const variant of [...task.variants].sort(
       (left, right) => compareCodePoints(left.variantId, right.variantId),
     )) {
-      for (const seed of FROZEN_SEEDS) {
+      for (const seed of seeds) {
         for (const profile of profiles) {
-          for (const arm of REPEATED_FAILURE_ARMS) {
+          for (const arm of primaryArms) {
             const identity = {
               suiteVersion: run.suiteVersion,
               taskId: task.id,
@@ -221,20 +233,22 @@ function expectedRegisteredRunOrder(
               identity,
             });
           }
-          for (const arm of TIMIDITY_ARMS) {
-            const identity = {
-              suiteVersion: run.suiteVersion,
-              taskId: task.id,
-              variantId: `${variant.variantId}:no-trap`,
-              ...profile,
-              seed,
-              arm,
-            };
-            order.push({
-              rowKey: buildRepeatedFailureRowKey(identity),
-              analysis: "TIMIDITY",
-              identity,
-            });
+          if (mode === "full") {
+            for (const arm of TIMIDITY_ARMS) {
+              const identity = {
+                suiteVersion: run.suiteVersion,
+                taskId: task.id,
+                variantId: `${variant.variantId}:no-trap`,
+                ...profile,
+                seed,
+                arm,
+              };
+              order.push({
+                rowKey: buildRepeatedFailureRowKey(identity),
+                analysis: "TIMIDITY",
+                identity,
+              });
+            }
           }
         }
       }
@@ -242,6 +256,7 @@ function expectedRegisteredRunOrder(
   }
   return order;
 }
+
 
 async function verifyRegisteredFactPairs(
   rawArtifact: unknown,
@@ -369,7 +384,8 @@ export async function writeRepeatedFailurePaperArtifacts(
     preregistrationHash: z.string().regex(SHA256),
   }).passthrough().parse(runJson);
   const decisionRuleBytes = source["decision-rule.json"];
-  const decisionRule = DecisionRuleSchema.parse(JSON.parse(decisionRuleBytes));
+  const decisionRule = AnyDecisionRuleSchema.parse(JSON.parse(decisionRuleBytes));
+  const designMode = decisionRuleDesignMode(decisionRule);
   if (sha256(decisionRuleBytes) !== runBinding.decisionRuleHash) {
     throw new Error("paper report decision rule does not match run metadata");
   }
@@ -381,7 +397,10 @@ export async function writeRepeatedFailurePaperArtifacts(
   }
   const committedFixtureDir = await resolveCommittedH6FixtureDirectory();
   const committedDecisionRuleBytes = (
-    await readArtifactLeaf(path.join(committedFixtureDir, "decision-rule.json"))
+    await readArtifactLeaf(path.join(
+      committedFixtureDir,
+      designMode === "timing_only" ? "decision-rule-timing.json" : "decision-rule.json",
+    ))
   ).toString("utf8");
   if (decisionRuleBytes !== committedDecisionRuleBytes) {
     throw new Error("paper report decision rule differs from the frozen committed artifact");
@@ -430,22 +449,12 @@ export async function writeRepeatedFailurePaperArtifacts(
   ) {
     throw new Error("paper report dataset inventory does not match run metadata");
   }
-  const recomputedStatistics = analyzeRepeatedFailureRows(rows, {
-    expectedDesign: design.primary,
-    timidityDesign: design.timidity,
-    seed: run.statisticsSeed,
-    draws: run.statisticsDraws,
-    ...decisionRuleAnalysisOptions(decisionRule),
-  });
-  if (stableStringify(statistics) !== stableStringify(recomputedStatistics)) {
-    throw new Error("paper report statistics do not replay from immutable rows");
-  }
-  const registeredDesign = expectedRegisteredDesign(run, dataset);
+  const registeredDesign = expectedRegisteredDesign(run, dataset, designMode);
   const expectedKeys = design.runOrder.map((entry) => entry.rowKey).sort(compareCodePoints);
   const actualKeys = rows.map((row) => row.rowKey).sort(compareCodePoints);
   const primaryDesignKeys = design.primary.rows.map(buildRepeatedFailureRowKey).sort(compareCodePoints);
   const timidityDesignKeys = design.timidity.rows.map(buildRepeatedFailureRowKey).sort(compareCodePoints);
-  const frozenMainRunOrder = expectedRegisteredRunOrder(run, dataset, "main");
+  const frozenMainRunOrder = expectedRegisteredRunOrder(run, dataset, "main", designMode);
   const runOrderMatches = run.runOrder.every(
     (entry) => entry.rowKey === buildRepeatedFailureRowKey(entry.identity),
   )
@@ -505,12 +514,14 @@ export async function writeRepeatedFailurePaperArtifacts(
     && audit.isolation.primaryStartHashesMatchWithinCells;
   const expectedNoTrapKeys = new Set(design.timidity.rows.map(buildRepeatedFailureRowKey));
   const noTrapRows = rows.filter((row) => expectedNoTrapKeys.has(row.rowKey));
-  const noTrapPassed = expectedNoTrapKeys.size > 0
-    && noTrapRows.length === expectedNoTrapKeys.size
-    && noTrapRows.every((row) =>
-      row.status === "VALID" && row.finalState === "NO_TRAP" && row.taskPassed === true
-    )
-    && audit.noTrap.allPassed;
+  const noTrapPassed = designMode === "timing_only"
+    ? true
+    : expectedNoTrapKeys.size > 0
+      && noTrapRows.length === expectedNoTrapKeys.size
+      && noTrapRows.every((row) =>
+        row.status === "VALID" && row.finalState === "NO_TRAP" && row.taskPassed === true
+      )
+      && audit.noTrap?.allPassed === true;
   const supplementalByPath = new Map(
     (reproManifest.supplementalArtifacts ?? []).map((artifact) => [artifact.path, artifact]),
   );
@@ -654,7 +665,7 @@ export async function writeRepeatedFailurePaperArtifacts(
         (left, right) => compareCodePoints(stableStringify(left), stableStringify(right)),
       )
     : [];
-  const expectedPilotRunOrder = expectedRegisteredRunOrder(run, dataset, "pilot");
+  const expectedPilotRunOrder = expectedRegisteredRunOrder(run, dataset, "pilot", designMode);
   const pilotContinuityMatched = run.phase !== "main" || (
     mainPowerEvidence.success
     && stableStringify(pilotProfileBindings) === stableStringify(runExecutionProfiles)
@@ -729,10 +740,14 @@ export async function writeRepeatedFailurePaperArtifacts(
     && trapAuditsMatch
     && pilotEvidenceMatched
     && pilotContinuityMatched
-    && stableStringify(run.seeds) === stableStringify(FROZEN_SEEDS)
+    && stableStringify(run.seeds) === stableStringify(
+      designMode === "timing_only" ? H6_TIMING_RERUN_SEEDS : FROZEN_SEEDS,
+    )
     && stableStringify([...run.splitTaskIds].sort(compareCodePoints))
       === stableStringify([...expectedSplit].sort(compareCodePoints))
-    && stableStringify(run.arms) === stableStringify(REPEATED_FAILURE_ARMS)
+    && stableStringify(run.arms) === stableStringify(
+      designMode === "timing_only" ? TIMING_ONLY_ARMS : REPEATED_FAILURE_ARMS,
+    )
     && decisionRule.analysisPopulation.datasetInventoryHash === run.datasetInventoryHash
     && decisionRule.analysisPopulation.split === "main"
     && decisionRule.trapAudit.maximumInvalidRows === 0
@@ -783,8 +798,10 @@ export async function writeRepeatedFailurePaperArtifacts(
     && stableStringify(audit.runContract.trapAudit) === stableStringify(decisionRule.trapAudit)
     && audit.expectedDesign.expectedRows === design.runOrder.length
     && audit.expectedDesign.terminalRows === rows.length
-    && audit.noTrap.expectedRows === expectedNoTrapKeys.size
-    && audit.noTrap.observedRows === noTrapRows.length
+    && (designMode === "timing_only" || (
+      audit.noTrap?.expectedRows === expectedNoTrapKeys.size
+      && audit.noTrap?.observedRows === noTrapRows.length
+    ))
     && audit.deviations.count === deviationLines.length
     && audit.deviations.none === (deviationLines.length === 0)
     && audit.traces.expectedCount === rows.length
@@ -884,7 +901,7 @@ export async function writeRepeatedFailurePaperArtifacts(
 }
 
 export async function runRepeatedFailurePaperReportCliCommand(
-  options: { runDir: string },
+  options: { runDir: string; decisionRuleFile?: string },
 ): Promise<RepeatedFailureCliCommandResult> {
   try {
     const { replayRepeatedFailureStatistics } = await import("./repeated-failure-suite-runner.js");

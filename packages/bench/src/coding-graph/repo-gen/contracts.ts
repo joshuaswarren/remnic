@@ -401,6 +401,127 @@ export const H6_DECISION_RULE = {
     "ERROR_FAIL_OPEN",
   ],
 } as const;
+export const H6_TIMING_DECISION_RULE = {
+  version: 13,
+  name: "H6 Timing Confirmatory Rerun Decision Rule",
+  preregistration: {
+    path: "docs/research/failure-gate/preregistration-timing-rerun.md",
+    sha256: "4cf775705060d53f37fdc993f5a081d3b68b1646b47f9091889f4ecf2e4b2676",
+  },
+  design: {
+    armsMode: "timing_only",
+    arms: ["TURN_START_FAILURE", "PRE_ACTION_FAILURE"],
+  },
+  analysisPopulation: {
+    datasetVersion: 1,
+    datasetInventoryHash: H6_FROZEN_INVENTORY_HASH,
+    split: "main",
+    taskCount: 18,
+    seedsPerModelProfile: 5,
+    modelProfileCount: 1,
+    unit: "task",
+    pairingKey: [
+      "taskId",
+      "variantId",
+      "seed",
+      "modelProfileId",
+      "modelProfileHash",
+    ],
+    maximumPrimaryTaskCuts: 0,
+    registeredSeeds: [6, 7, 8, 9, 10],
+  },
+  analysis: {
+    bootstrap: {
+      draws: 10_000,
+      group: "task",
+      confidenceLevel: 0.95,
+      method: "percentile",
+    },
+    shuffle: {
+      draws: 10_000,
+      group: "task",
+      alternative: "candidate_benefit",
+      plusOneCorrection: true,
+    },
+    alpha: 0.05,
+    multiplicity: {
+      method: "HOLM",
+      family: ["H6_TIMING_REPEATED_FAILURE"],
+    },
+  },
+  invalidRowPolicy: {
+    VAGUE_CHECK: "WORST_CASE_AGAINST_CANDIDATE",
+  },
+  factMatching: {
+    timing: {
+      factCount: 1,
+      requireSameFactIds: true,
+      requireSameCitationHashes: true,
+      requireSameRenderedTokenCount: true,
+    },
+  },
+  hypotheses: {
+    "H6-timing": {
+      baselineArm: "TURN_START_FAILURE",
+      candidateArm: "PRE_ACTION_FAILURE",
+      metric: "repeatedFailure",
+      minimumRelativeRiskReduction: 0.3,
+      minimumAbsoluteRepeatedFailureBenefit: 0.05,
+      requireRepeatedFailureBenefitIntervalLowerStrictlyAbove: 0,
+      requireHolmAdjustedPStrictlyBelow: 0.05,
+      zeroBaselineDecision: "NOT_ESTIMABLE",
+    },
+  },
+  power: {
+    simulationDraws: 10_000,
+    minimumTimingPower: 0.8,
+    sourceSplit: "pilot",
+    transferredPilotEvidence: {
+      runId: "h6-a30b5cb7dc9174e31329195d",
+      manifestArtifactHash: "5bce2c0c20fadf77706ae5dbb503d4f938d40e2d4178c5395b36683cfef75e21",
+      powerArtifactHash: "cfaec22f374b353b536dec6067243a1731804f8f1d8d2f4742e1631cf1b27bd5",
+      decisionRuleHash: "c775947440dc764a62fbc4bd0c3fca08fe2ede90b543701875af3ab541114cd9",
+      preregistrationHash: "0fe2838c50d3e70be59b47bc5d932fecd52af8975c6c0279b3ebc0ebf4a80236",
+      harnessSourceHash: "129045d73b7f8fdc18bb5b9a87faa5245f9921945ce1ff9d94d859f29bb88770",
+      analysisVersion: "h6-task-bootstrap-shuffle-holm-v1",
+      timingPower: 0.8364,
+    },
+  },
+  trapAudit: {
+    minimumTrappedRate: 0.3,
+    minimumNonFixedRate: 0.5,
+    maximumInvalidRows: 0,
+    requireCompleteRows: true,
+  },
+  completeness: {
+    expectedRowsFormula:
+      "taskCount*variantsPerTask*seedsPerModelProfile*modelProfileCount*armCount",
+    primaryArmCount: 2,
+    hostFaultRetriesAfterFirstTry: 5,
+    rerunTaskResults: false,
+    invalidReasons: [
+      "CORPUS_INVALID",
+      "CORE_REPO_DIR_MISMATCH",
+      "START_DRIFT",
+      "TRACE_GAP",
+      "VAGUE_CHECK",
+      "MIXED_ARM_STATE",
+      "UNMATCHED_FACTS",
+      "WAIT_RULE_FAULT",
+      "HOST_RETRIES_EXHAUSTED",
+    ],
+  },
+  outcomes: {
+    PASS: "timing=SUPPORTED",
+    REJECT: "timing=REJECTED",
+    NOT_ESTIMABLE: "timing=NOT_ESTIMABLE",
+  },
+  gateStatuses: [
+    "NO_MATCH",
+    "MATCH_WARN",
+    "ERROR_FAIL_OPEN",
+  ],
+} as const;
 
 export const H6_ARMS = [
   {

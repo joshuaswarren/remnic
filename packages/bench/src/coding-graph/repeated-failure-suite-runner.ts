@@ -112,12 +112,14 @@ import {
   HISTORY_SUCCESS_SUMMARY,
   HISTORY_FOLLOW_UP,
   PRIMARY_ARMS,
+  TIMING_ONLY_ARMS,
+  H6_TIMING_RERUN_SEEDS,
   DEFAULT_TOOL_OUTPUT_CHARS,
   MAX_INSPECT_FILES,
   NEUTRAL_INSTRUCTION,
   PROMPT_CONTRACT,
   ArmManifestSchema,
-  DecisionRuleSchema,
+  AnyDecisionRuleSchema,
   ProfileInstructionsSchema,
   ProfileTokenizerSchema,
   OpenAiModelProfileSchema,
@@ -132,11 +134,12 @@ import {
   type FactPairAuditPair,
   type FactPairAuditArtifact,
   type ParsedStrategyAction,
-  buildFixtureToolDefinitions,
-  FixtureToolHost,
   FixtureActionEvaluator,
   countFactTokens,
+  buildFixtureToolDefinitions,
+  FixtureToolHost,
   decisionRuleAnalysisOptions,
+  decisionRuleDesignMode,
   runOfflineCheck,
   listRegularFiles,
   hashDirectory,
@@ -243,6 +246,9 @@ export async function runRepeatedFailureSuite(
   const templates = new Map<string, HistoryTemplate>();
   const expectedDesignHash = sha256(stableStringify(design));
   const decisionRuleHash = sha256(bundle.decisionRuleBytes);
+  const runArms = decisionRuleDesignMode(bundle.decisionRule) === "timing_only"
+    ? TIMING_ONLY_ARMS
+    : PRIMARY_ARMS;
   const taskRevisions = collectTaskRevisions(plans);
   const toolLocks = buildToolLocks(plans, configuration.maxToolOutputChars);
   const provenanceHash = sha256(stableStringify({
@@ -288,7 +294,7 @@ export async function runRepeatedFailureSuite(
     harnessSourceHash,
     provenanceHash,
     mode: options.mode,
-    arms: PRIMARY_ARMS,
+    arms: runArms,
     modelProfiles: configuration.drivers.map((driver) => ({
       id: driver.modelProfileId,
       hash: driver.modelProfileHash,
@@ -332,7 +338,7 @@ export async function runRepeatedFailureSuite(
     phase: configuration.phase,
     ...(pilotEvidence ? { pilotEvidence } : {}),
     mode: options.mode,
-    arms: PRIMARY_ARMS,
+    arms: runArms,
     modelProfileIds: configuration.drivers.map((driver) => driver.modelProfileId),
     modelProfileHashes: configuration.drivers.map((driver) => driver.modelProfileHash),
     modelDigests: configuration.drivers.map((driver) => driver.modelDigest),
@@ -594,7 +600,7 @@ export async function replayRepeatedFailureStatistics(
     if (sha256(decisionRuleBytes) !== metadata.decisionRuleHash) {
       throw new Error("frozen decision-rule hash does not match run metadata");
     }
-    const decisionRule = DecisionRuleSchema.parse(JSON.parse(decisionRuleBytes));
+    const decisionRule = AnyDecisionRuleSchema.parse(JSON.parse(decisionRuleBytes));
     if (
       metadata.phase !== "unspecified"
       && !registeredModelDigestsMatch(
@@ -644,18 +650,23 @@ export async function replayRepeatedFailureStatistics(
     return { exitCode: 1, output: publicError(error) };
   }
 }
-
 export async function runRepeatedFailureCliCommand(
   input: RunRepeatedFailureCliCommandInput,
 ): Promise<RepeatedFailureCliCommandResult> {
   try {
-    if (input.seedCount !== FROZEN_SEEDS.length) {
-      throw new Error("registered pilot and main phases require exactly five frozen seeds");
+    const bundle = await loadFixtureBundle(input.fixtureDir, input.decisionRuleFile);
+    const designMode = decisionRuleDesignMode(bundle.decisionRule);
+    const registeredSeeds = designMode === "timing_only" ? H6_TIMING_RERUN_SEEDS : FROZEN_SEEDS;
+    if (input.seedCount !== registeredSeeds.length) {
+      throw new Error(
+        designMode === "timing_only"
+          ? "registered timing reruns require exactly five rerun seeds"
+          : "registered pilot and main phases require exactly five frozen seeds",
+      );
     }
     if (input.profilePaths.length < 1 || input.profilePaths.length > 2) {
       throw new Error("registered pilot and main phases require one or two immutable model profiles");
     }
-    const bundle = await loadFixtureBundle(input.fixtureDir);
     const caps: ControlledResponsesCaps = {
       ...DEFAULT_CAPS,
       ...(input.maxSteps !== undefined ? { maxTurns: input.maxSteps } : {}),
@@ -687,8 +698,9 @@ export async function runRepeatedFailureCliCommand(
     const run = await runRepeatedFailureSuite({
       outputDir: input.resumeRunDir ?? input.outputDir,
       fixtureDir: input.fixtureDir,
+      decisionRuleFile: input.decisionRuleFile,
       drivers,
-      seeds: Array.from({ length: input.seedCount }, (_, index) => index + 1),
+      seeds: [...registeredSeeds],
       mode: "full",
       phase: input.phase,
       ...(input.pilotRunDir ? { pilotRunDir: input.pilotRunDir } : {}),

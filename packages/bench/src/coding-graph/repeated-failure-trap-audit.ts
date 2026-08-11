@@ -677,6 +677,7 @@ export interface RunTrapAuditOptions {
   driver: RepeatedFailureEpisodeDriver;
   outputDir: string;
   fixtureDir?: string;
+  decisionRuleFile?: string;
   seed?: number;
   maxHostRetries?: 0 | 1 | 2 | 3 | 4 | 5;
   caps?: Partial<ControlledResponsesCaps>;
@@ -688,7 +689,7 @@ export async function runTrapAudit(
 ): Promise<RepeatedFailureTrapAuditArtifact> {
   const outputRoot = path.resolve(options.outputDir);
   await assertNoSymlinkComponents(path.parse(outputRoot).root, outputRoot);
-  const bundle = await loadFixtureBundle(options.fixtureDir);
+  const bundle = await loadFixtureBundle(options.fixtureDir, options.decisionRuleFile);
   await assertTrapDatasetPreflight(bundle.dataset);
   const harnessSourceHash = await computeAnalysisHarnessHash();
   await options.driver.preflight?.();
@@ -865,6 +866,7 @@ export async function runTrapAuditCliCommand(input: {
   outputDir: string;
   fixtureDir?: string;
   maxSteps?: number;
+  decisionRuleFile?: string;
   maxToolCalls?: number;
   maxOutputChars?: number;
   maxDurationMs?: number;
@@ -874,7 +876,7 @@ export async function runTrapAuditCliCommand(input: {
     return { exitCode: 1, output: "trap-audit requires at least one --profile FILE" };
   }
 
-  const bundle = await loadFixtureBundle(input.fixtureDir);
+  const bundle = await loadFixtureBundle(input.fixtureDir, input.decisionRuleFile);
   const caps: ControlledResponsesCaps = {
     ...DEFAULT_CAPS,
     ...(input.maxSteps !== undefined ? { maxTurns: input.maxSteps } : {}),
@@ -915,6 +917,7 @@ export async function runTrapAuditCliCommand(input: {
       driver,
       outputDir: input.outputDir,
       fixtureDir: input.fixtureDir,
+      ...(input.decisionRuleFile === undefined ? {} : { decisionRuleFile: input.decisionRuleFile }),
       caps,
       maxToolOutputChars,
     });

@@ -36,6 +36,7 @@ import {
   H6BenchmarkDatasetSchema,
   H6_SUPPORT_ARTIFACT_PATHS,
   H6_DECISION_RULE,
+  H6_TIMING_DECISION_RULE,
   H6_FROZEN_INVENTORY_HASH,
   H6_FROZEN_SPLITS,
   BaseTaskSchema,
@@ -108,8 +109,9 @@ import {
   SHA256_PATTERN,
   FROZEN_DATASET_INVENTORY_HASH,
   FROZEN_SEEDS,
-  REPEATED_FAILURE_ANALYSIS_VERSION,
   FIXED_RECORDED_AT,
+  H6_TIMING_RERUN_SEEDS,
+  REPEATED_FAILURE_ANALYSIS_VERSION,
   DEFAULT_CAPS,
   HISTORY_ACTION_SUMMARY,
   HISTORY_FAILURE_SUMMARY,
@@ -122,9 +124,10 @@ import {
   NEUTRAL_INSTRUCTION,
   PROMPT_CONTRACT,
   ArmManifestSchema,
-  DecisionRuleSchema,
+  AnyDecisionRuleSchema,
   ProfileInstructionsSchema,
   ProfileTokenizerSchema,
+  decisionRuleDesignMode,
   OpenAiModelProfileSchema,
   OllamaChatModelProfileSchema,
   ModelProfileSchema,
@@ -412,7 +415,10 @@ export function armSemanticsAreValid(
     || (warnings.length === 1 && warnings.some((warning) => warning.warningHash === sha256(failureFact)));
 }
 
-export async function loadFixtureBundle(fixtureDir?: string): Promise<FixtureBundle> {
+export async function loadFixtureBundle(
+  fixtureDir?: string,
+  decisionRuleFile = "decision-rule.json",
+): Promise<FixtureBundle> {
   const root = fixtureDir
     ? path.resolve(fixtureDir)
     : await resolveCommittedH6FixtureDirectory();
@@ -420,13 +426,13 @@ export async function loadFixtureBundle(fixtureDir?: string): Promise<FixtureBun
     readJson(path.join(root, "dataset.json")),
     readJson(path.join(root, "arms", "arms.json")),
     readJson(path.join(root, "trap-taxonomy.json")),
-    readFile(path.join(root, "decision-rule.json"), "utf8"),
+    readFile(path.join(root, decisionRuleFile), "utf8"),
   ]);
   const decisionRaw = JSON.parse(decisionRuleBytes);
   const dataset = H6BenchmarkDatasetSchema.parse(datasetRaw);
   const arms = ArmManifestSchema.parse(armsRaw);
   const taxonomy = z.array(TrapTaxonomyItemSchema).length(6).parse(taxonomyRaw);
-  const decisionRule = DecisionRuleSchema.parse(decisionRaw);
+  const decisionRule = AnyDecisionRuleSchema.parse(decisionRaw);
   const corpusValidation = validateH6StateDefiningIndependence(dataset);
   if (corpusValidation.issues.length > 0) {
     const issueCodes = [...new Set(corpusValidation.issues.map((issue) => issue.code))].sort(compareCodePoints);
@@ -559,6 +565,8 @@ export function normalizeRunOptions(
     if (bundle.dataset.inventoryHash !== FROZEN_DATASET_INVENTORY_HASH) {
       throw new Error("registered H6 execution requires the frozen dataset inventory");
     }
+    const designMode = decisionRuleDesignMode(bundle.decisionRule);
+    const requiredSeeds = designMode === "timing_only" ? H6_TIMING_RERUN_SEEDS : FROZEN_SEEDS;
     if (options.mode !== "full") throw new Error("registered H6 execution requires full mode");
     const requiredProfileCount = bundle.decisionRule.analysisPopulation.modelProfileCount;
     if (drivers.length !== requiredProfileCount) {
@@ -567,8 +575,12 @@ export function normalizeRunOptions(
     if (new Set(drivers.map((driver) => driver.modelDigest)).size !== drivers.length) {
       throw new Error("registered H6 execution requires distinct served model digests");
     }
-    if (stableStringify(seeds) !== stableStringify(FROZEN_SEEDS)) {
-      throw new Error("registered H6 execution requires the exact frozen seeds [1,2,3,4,5]");
+    if (stableStringify(seeds) !== stableStringify(requiredSeeds)) {
+      throw new Error(
+        designMode === "timing_only"
+          ? "registered H6 timing execution requires the exact rerun seeds [6,7,8,9,10]"
+          : "registered H6 execution requires the exact frozen seeds [1,2,3,4,5]",
+      );
     }
     if (
       stableStringify(registeredTaskIds)
@@ -823,8 +835,14 @@ export function parseRunMetadata(value: unknown): RepeatedFailureRunMetadata {
     resumeContractHash: z.string().regex(SHA256_PATTERN),
     expectedDesignHash: z.string().regex(SHA256_PATTERN),
     decisionRuleHash: z.string().regex(SHA256_PATTERN),
-    preregistrationPath: z.literal(H6_DECISION_RULE.preregistration.path),
-    preregistrationHash: z.literal(H6_DECISION_RULE.preregistration.sha256),
+    preregistrationPath: z.union([
+      z.literal(H6_DECISION_RULE.preregistration.path),
+      z.literal(H6_TIMING_DECISION_RULE.preregistration.path),
+    ]),
+    preregistrationHash: z.union([
+      z.literal(H6_DECISION_RULE.preregistration.sha256),
+      z.literal(H6_TIMING_DECISION_RULE.preregistration.sha256),
+    ]),
     analysisVersion: z.string().min(1),
     harnessVersion: z.string().min(1),
     harnessSourceHash: z.string().regex(SHA256_PATTERN),
@@ -839,7 +857,13 @@ export function parseRunMetadata(value: unknown): RepeatedFailureRunMetadata {
       powerArtifactHash: z.string().regex(SHA256_PATTERN),
     }).strict().optional(),
     mode: z.enum(["quick", "full"]),
-    arms: z.array(z.enum(REPEATED_FAILURE_ARMS)).length(5),
+    arms: z.union([
+      z.array(z.enum(REPEATED_FAILURE_ARMS)).length(5),
+      z.tuple([
+        z.literal("TURN_START_FAILURE"),
+        z.literal("PRE_ACTION_FAILURE"),
+      ]),
+    ]),
     modelProfileIds: z.array(z.string().min(1)).min(1),
     modelProfileHashes: z.array(z.string().regex(SHA256_PATTERN)).min(1),
     modelDigests: z.array(z.string().regex(SHA256_PATTERN)).min(1),
@@ -902,6 +926,17 @@ export function parseRunMetadata(value: unknown): RepeatedFailureRunMetadata {
     statisticsSeed: z.number().int().nonnegative().max(0xffffffff),
     statisticsDraws: z.number().int().positive(),
   }).strict().superRefine((metadata, context) => {
+    const v12Binding = metadata.preregistrationPath === H6_DECISION_RULE.preregistration.path
+      && metadata.preregistrationHash === H6_DECISION_RULE.preregistration.sha256;
+    const v13Binding = metadata.preregistrationPath === H6_TIMING_DECISION_RULE.preregistration.path
+      && metadata.preregistrationHash === H6_TIMING_DECISION_RULE.preregistration.sha256;
+    if (!v12Binding && !v13Binding) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["preregistrationHash"],
+        message: "preregistration path and hash must be a registered pair",
+      });
+    }
     const profileCount = metadata.modelProfileIds.length;
     for (
       const field of [
