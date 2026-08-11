@@ -7,15 +7,15 @@ import { log } from "../logger.js";
 import type { MemoryFile, MemoryFrontmatter } from "../types.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { isErrnoCode } from "../utils/errno.js";
-import { withHeldFileLock } from "../utils/serialize-mutations.js";
+import type { withHeldFileLock } from "../utils/serialize-mutations.js";
 import {
   CONTENT_HASH_INDEX_RETRY_MAX_DELAY_MS,
   ContentHashIndex,
   type ContentHashIndexLockOptions,
 } from "./content-hash-index.js";
 import {
-  buildExplicitCaptureDedupKey,
   TombstoneBlockedCaptureWriteLock,
+  buildExplicitCaptureDedupKey,
 } from "./tombstone-blocked-capture-mutation.js";
 import type { OfflineSyncMemoryParser } from "./tombstone-blocked-capture-sync.js";
 export {
@@ -38,7 +38,6 @@ const MARKER_PROCESS_START_TOLERANCE_MS = 2_000;
 const DOTNET_UNIX_EPOCH_TICKS = 621_355_968_000_000_000;
 const MARKER_PROCESS_STARTED_AT_MS = Date.now() - process.uptime() * 1000;
 
-
 type RebuildMarker = {
   path: string;
   committed: boolean;
@@ -48,7 +47,6 @@ type RebuildMarker = {
   processStartedAtMs?: number;
   malformed?: boolean;
 };
-
 
 export type TombstoneBlockedCaptureIndexOptions = {
   readonly stateDir: string;
@@ -326,7 +324,7 @@ export class TombstoneBlockedCaptureIndex {
         await index.load();
         const rebuildMarkers = await this.getRebuildMarkers();
         const clearableRebuildMarkers = await this.getClearableRebuildMarkerPaths(rebuildMarkers);
-        let persisted = true;
+        let persisted = !index.requiresFormatMigration;
         try {
           await stat(this.indexPath());
           if (rebuildMarkers.length > 0) persisted = false;
@@ -505,10 +503,7 @@ export class TombstoneBlockedCaptureIndex {
     if (rebuildMarker) await this.markRebuildCommitted(rebuildMarker);
     const rebuilt = await this.rebuild(await this.getIndex());
     if (rebuilt) {
-      await this.clearRebuildRequired([
-        ...clearableExistingMarkers,
-        marker,
-      ]);
+      await this.clearRebuildRequired([...clearableExistingMarkers, marker]);
     }
     await this.setAuthoritative(rebuilt);
   }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -14,25 +14,13 @@ test("findContradictions detects can versus cannot statements", async () => {
     await mkdir(factsDir);
     await writeFile(
       path.join(factsDir, "can.md"),
-      [
-        "---",
-        "id: mem-can",
-        "category: fact",
-        "---",
-        "The user can access production.",
-      ].join("\n"),
-      "utf8",
+      ["---", "id: mem-can", "category: fact", "---", "The user can access production."].join("\n"),
+      "utf8"
     );
     await writeFile(
       path.join(factsDir, "cannot.md"),
-      [
-        "---",
-        "id: mem-cannot",
-        "category: fact",
-        "---",
-        "The user cannot access production.",
-      ].join("\n"),
-      "utf8",
+      ["---", "id: mem-cannot", "category: fact", "---", "The user cannot access production."].join("\n"),
+      "utf8"
     );
 
     const result = findContradictions({ memoryDir, categories: ["facts"] });
@@ -58,14 +46,8 @@ test("dedup public numeric options are normalized before scanning", async () => 
     ] as const) {
       await writeFile(
         path.join(factsDir, fileName),
-        [
-          "---",
-          `id: ${id}`,
-          "category: fact",
-          "---",
-          content,
-        ].join("\n"),
-        "utf8",
+        ["---", `id: ${id}`, "category: fact", "---", content].join("\n"),
+        "utf8"
       );
     }
 
@@ -95,6 +77,48 @@ test("dedup public numeric options are normalized before scanning", async () => 
   }
 });
 
+test("dedup keeps duplicate and distinct pairs across Unicode scripts", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-dedup-unicode-"));
+
+  try {
+    const factsDir = path.join(memoryDir, "facts");
+    await mkdir(factsDir);
+    const entries = [
+      ["english-a.md", "mem-english-a", "The user prefers tea."],
+      ["english-b.md", "mem-english-b", "The user prefers tea."],
+      ["english-c.md", "mem-english-c", "The user prefers coffee."],
+      ["japanese-a.md", "mem-japanese-a", "利用者は紅茶を好む。"],
+      ["japanese-b.md", "mem-japanese-b", "利用者は紅茶を好む。"],
+      ["japanese-c.md", "mem-japanese-c", "利用者は珈琲を好む。"],
+      ["korean-a.md", "mem-korean-a", "사용자는홍차를좋아한다"],
+      ["korean-b.md", "mem-korean-b", "사용자는홍차를좋아한다"],
+      ["korean-c.md", "mem-korean-c", "사용자는커피를좋아한다"],
+      ["korean-punctuation.md", "mem-korean-punctuation", "홍차・커피"],
+      ["korean-joined.md", "mem-korean-joined", "홍차커피"],
+    ] as const;
+
+    for (const [fileName, id, content] of entries) {
+      await writeFile(
+        path.join(factsDir, fileName),
+        ["---", `id: ${id}`, "category: fact", "---", content].join("\n"),
+        "utf8"
+      );
+    }
+
+    const result = findDuplicates({ memoryDir, categories: ["facts"] });
+
+    assert.equal(result.scanned, entries.length);
+    assert.equal(result.duplicates.length, 3);
+    assert.deepEqual(result.duplicates.map(({ left, right }) => [left.id, right.id]).sort(), [
+      ["mem-english-a", "mem-english-b"],
+      ["mem-japanese-a", "mem-japanese-b"],
+      ["mem-korean-a", "mem-korean-b"],
+    ]);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("dedup scans reject symlinked category directories outside memoryDir", async (t) => {
   if (process.platform === "win32") {
     t.skip("directory symlink setup is platform-specific");
@@ -107,24 +131,15 @@ test("dedup scans reject symlinked category directories outside memoryDir", asyn
   try {
     await writeFile(
       path.join(outsideDir, "outside.md"),
-      [
-        "---",
-        "id: outside",
-        "category: fact",
-        "---",
-        "Outside memory should not be scanned.",
-      ].join("\n"),
-      "utf8",
+      ["---", "id: outside", "category: fact", "---", "Outside memory should not be scanned."].join("\n"),
+      "utf8"
     );
     await symlink(outsideDir, path.join(memoryDir, "facts"), "dir");
 
-    assert.throws(
-      () => findDuplicates({ memoryDir, categories: ["facts"] }),
-      /symlinked memory category directory/,
-    );
+    assert.throws(() => findDuplicates({ memoryDir, categories: ["facts"] }), /symlinked memory category directory/);
     assert.throws(
       () => findContradictions({ memoryDir, categories: ["facts"] }),
-      /symlinked memory category directory/,
+      /symlinked memory category directory/
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });

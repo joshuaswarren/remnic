@@ -5,9 +5,10 @@
  * against existing memories. Can be used standalone or via curation.
  */
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import crypto from "node:crypto";
+import { normalizeRecallTokenSet } from "../recall-tokenization.js";
 import { ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -89,20 +90,11 @@ const DEFAULT_DEDUP_THRESHOLD = 0.85;
 const DEFAULT_MAX_LOAD = 10000;
 
 function normalizeThreshold(value: number | undefined, defaultValue: number): number {
-  return typeof value === "number" &&
-    Number.isFinite(value) &&
-    value >= 0 &&
-    value <= 1
-    ? value
-    : defaultValue;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1 ? value : defaultValue;
 }
 
 function normalizeMaxLoad(value: number | undefined, defaultValue: number): number {
-  return typeof value === "number" &&
-    Number.isInteger(value) &&
-    value >= 0
-    ? value
-    : defaultValue;
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : defaultValue;
 }
 
 export function findDuplicates(options: DedupOptions): DedupResult {
@@ -163,26 +155,24 @@ export function findContradictions(options: ContradictionOptions): Contradiction
 // ── Similarity computation ───────────────────────────────────────────────────
 
 function computeSimilarity(a: string, b: string): number {
-  // Normalize
   const normA = normalize(a);
   const normB = normalize(b);
+  const unicodeBoundariesA = a.match(/[^\p{ASCII}\p{L}\p{M}\p{N}\s']/gu)?.join("") ?? "";
+  const unicodeBoundariesB = b.match(/[^\p{ASCII}\p{L}\p{M}\p{N}\s']/gu)?.join("") ?? "";
 
-  // Exact match
   if (normA === normB) return 1;
 
-  // Hash-based exact match
   if (hashContent(normA) === hashContent(normB)) return 0.99;
+  if (unicodeBoundariesA !== unicodeBoundariesB) return 0;
 
-  // Substring containment
   if (normA.length > 50 && normB.length > 50) {
     if (normA.includes(normB.slice(0, 40)) || normB.includes(normA.slice(0, 40))) {
       return 0.9;
     }
   }
 
-  // Word overlap (Jaccard)
-  const wordsA = new Set(normA.split(/\s+/));
-  const wordsB = new Set(normB.split(/\s+/));
+  const wordsA = tokenizeForSimilarity(normA);
+  const wordsB = tokenizeForSimilarity(normB);
   const intersection = new Set([...wordsA].filter((w) => wordsB.has(w)));
   const union = new Set([...wordsA, ...wordsB]);
 
@@ -192,23 +182,54 @@ function computeSimilarity(a: string, b: string): number {
 
 function normalize(text: string): string {
   return text
+    .normalize("NFC")
     .toLowerCase()
-    .replace(/[^\w\s']/g, "")
+    .replace(/[^\p{ASCII}\p{L}\p{M}\p{N}\s']/gu, " ")
+    .replace(/[^\p{L}\p{M}\p{N}\s']/gu, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function tokenizeForSimilarity(text: string): Set<string> {
+  if (/\p{Script=Hangul}/u.test(text)) {
+    const tokens = normalizeRecallTokenSet(text);
+    for (const segment of text.match(/\p{Script=Hangul}+/gu) ?? []) {
+      const chars = [...segment];
+      for (const size of [1, 2, 3, 4]) {
+        for (let index = 0; index <= chars.length - size; index += 1) {
+          tokens.add(chars.slice(index, index + size).join(""));
+        }
+      }
+    }
+    return tokens;
+  }
+  if (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(text)) {
+    return normalizeRecallTokenSet(text);
+  }
+  return text.length === 0 ? new Set() : new Set(text.split(/\s+/));
 }
 
 // ── Contradiction detection ──────────────────────────────────────────────────
 
 const NEGATION_WORDS = new Set([
-  "not", "don't", "doesn't", "isn't", "aren't", "won't", "can't", "cannot",
-  "never", "no", "none", "neither", "nor", "nothing", "nowhere",
+  "not",
+  "don't",
+  "doesn't",
+  "isn't",
+  "aren't",
+  "won't",
+  "can't",
+  "cannot",
+  "never",
+  "no",
+  "none",
+  "neither",
+  "nor",
+  "nothing",
+  "nowhere",
 ]);
 
-function detectContradiction(
-  a: MemoryEntry,
-  b: MemoryEntry,
-): ContradictionPair | null {
+function detectContradiction(a: MemoryEntry, b: MemoryEntry): ContradictionPair | null {
   const normA = normalize(a.content);
   const normB = normalize(b.content);
 
@@ -271,11 +292,7 @@ function stripNegation(text: string): string {
 
 // ── Memory loading ───────────────────────────────────────────────────────────
 
-function loadMemories(
-  memoryDir: string,
-  categories?: string[],
-  maxLoad = 10000,
-): MemoryEntry[] {
+function loadMemories(memoryDir: string, categories?: string[], maxLoad = 10000): MemoryEntry[] {
   const result: MemoryEntry[] = [];
   const allCategories = categories ?? ALL_CATEGORY_DIRS;
   if (!fs.existsSync(memoryDir)) return result;
@@ -322,11 +339,7 @@ function hashContent(content: string): string {
   return crypto.createHash("sha256").update(content).digest("hex").slice(0, 16);
 }
 
-function readFileSafe(
-  filePath: string,
-  memoryRootReal: string,
-  categoryRootReal: string,
-): string | null {
+function readFileSafe(filePath: string, memoryRootReal: string, categoryRootReal: string): string | null {
   try {
     const fileStat = fs.lstatSync(filePath);
     if (fileStat.isSymbolicLink()) {
@@ -373,7 +386,7 @@ function walkMdFiles(
   dir: string,
   memoryRootReal: string,
   categoryRootReal: string,
-  callback: (filePath: string) => void,
+  callback: (filePath: string) => void
 ): void {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const fullPath = path.join(dir, entry.name);

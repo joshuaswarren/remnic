@@ -900,7 +900,7 @@ test("#2016: rebuildUnderLock refuses to publish while a peer holds the lock (no
     await mkdir(stateDir, { recursive: true });
     // A peer already committed a hash to disk.
     const peerHash = ContentHashIndex.computeHash("peer-committed-fact");
-    await writeFile(path.join(stateDir, "fact-hashes.txt"), `${peerHash}\n`);
+    await writeFile(path.join(stateDir, "fact-hashes.txt"), `# remnic-content-hash-index:v2\n${peerHash}\n`);
     // The peer holds the advisory lock (fresh, non-stale, not stale-breakable).
     const lockPath = path.join(stateDir, "fact-hashes.txt.lock");
     await writeFile(lockPath, `99999 peer-owner ${new Date().toISOString()}\n`);

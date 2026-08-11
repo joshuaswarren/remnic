@@ -5,15 +5,11 @@
 // part of its public API.
 import { mkdir, stat } from "node:fs/promises";
 import path from "node:path";
+import { computeContentHash, normalizeContent } from "../content-hash.js";
 import { log } from "../logger.js";
+import { SecureStoreLockedError, readMaybeEncryptedFile, writeMaybeEncryptedFile } from "../secure-store/secure-fs.js";
 import { isErrnoCode } from "../utils/errno.js";
 import { withHeldFileLock } from "../utils/serialize-mutations.js";
-import { normalizeContent, computeContentHash } from "../content-hash.js";
-import {
-  SecureStoreLockedError,
-  readMaybeEncryptedFile,
-  writeMaybeEncryptedFile,
-} from "../secure-store/secure-fs.js";
 
 /**
  * Stale threshold (ms) for the per-file advisory lock guarding a fact-hash
@@ -23,6 +19,23 @@ import {
  * without breaking a legitimately in-progress publish.
  */
 const CONTENT_HASH_INDEX_LOCK_STALE_MS = 30_000;
+/** Version marker for the normalized Unicode hash index format. */
+const CONTENT_HASH_INDEX_FORMAT_HEADER = "# remnic-content-hash-index:v2";
+
+function parseHashIndex(raw: string): { versioned: boolean; hashes: Set<string> } {
+  const lines = raw
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines[0] !== CONTENT_HASH_INDEX_FORMAT_HEADER) {
+    return { versioned: false, hashes: new Set() };
+  }
+  return { versioned: true, hashes: new Set(lines.slice(1)) };
+}
+
+function serializeHashIndex(hashes: Set<string>): string {
+  return `${CONTENT_HASH_INDEX_FORMAT_HEADER}\n${[...hashes].join("\n")}\n`;
+}
 
 /**
  * Durable-retry policy for a deferred content-hash reconcile save whose
@@ -70,7 +83,7 @@ export interface ContentHashIndexLockOptions {
 export class FactHashIndexNotAuthoritativeError extends Error {
   constructor(stateDir: string) {
     super(
-      `fact-hash index is not authoritative: the cross-process rebuild lock for ${stateDir} could not be acquired within the bounded retry budget`,
+      `fact-hash index is not authoritative: the cross-process rebuild lock for ${stateDir} could not be acquired within the bounded retry budget`
     );
     this.name = "FactHashIndexNotAuthoritativeError";
   }
@@ -98,6 +111,8 @@ export interface ContentHashPathEntry {
 export class ContentHashIndex {
   private hashes: Set<string> = new Set();
   private dirty = false;
+  /** True when load() found the pre-Unicode, markerless on-disk format. */
+  private formatMigrationRequired = false;
   /**
    * Hashes explicitly removed since the last successful save (issue #1909 review
    * round 8 thread 3). Tracked separately so `saveMergingWithDisk` can be
@@ -140,7 +155,6 @@ export class ContentHashIndex {
    * without an O(file-size) read on the hot path.
    */
   private lastSyncedFingerprint: DiskFingerprint | null = null;
-
   constructor(
     stateDir: string,
     secureStoreKeyProvider: () => Buffer | null = () => null,
@@ -154,16 +168,24 @@ export class ContentHashIndex {
     this.memoryDir = memoryDir;
     this.lockOptions = lockOptions;
   }
+  /** Whether a caller with an authoritative corpus must rebuild this legacy index. */
+  get requiresFormatMigration(): boolean {
+    return this.formatMigrationRequired;
+  }
 
   /** Load existing hashes from disk. Safe to call multiple times. */
   async load(): Promise<void> {
     try {
       const raw = await readMaybeEncryptedFile(this.filePath, this.secureStoreKeyProvider(), this.memoryDir);
-      for (const line of raw.split("\n")) {
-        const trimmed = line.trim();
-        if (trimmed.length > 0) {
-          this.hashes.add(trimmed);
-        }
+      const parsed = parseHashIndex(raw);
+      this.formatMigrationRequired = !parsed.versioned;
+      if (!parsed.versioned) {
+        // Hashes from the pre-NFC format are unsafe after normalization changes.
+        // Ignore them until an authoritative corpus rebuild publishes v2.
+        this.hashes.clear();
+        log.warn(`content-hash index: ignored legacy unversioned index at ${this.filePath}`);
+      } else {
+        for (const hash of parsed.hashes) this.hashes.add(hash);
       }
       log.debug(`content-hash index: loaded ${this.hashes.size} hashes`);
     } catch (err) {
@@ -292,14 +314,9 @@ export class ContentHashIndex {
     // what we published; late deltas stay pending. Mirrors saveMergingWithDisk.
     const publishedAdded = new Set<string>(this.added);
     const publishedRemoved = new Set<string>(this.removed);
-    const serialized = [...this.hashes].join("\n") + "\n";
-    await writeMaybeEncryptedFile(
-      this.filePath,
-      serialized,
-      this.secureStoreWriteKeyProvider(),
-      {},
-      this.memoryDir
-    );
+    const serialized = serializeHashIndex(this.hashes);
+    await writeMaybeEncryptedFile(this.filePath, serialized, this.secureStoreWriteKeyProvider(), {}, this.memoryDir);
+    this.formatMigrationRequired = false;
     // Consume ONLY the deltas this overwrite published; anything that arrived
     // during the awaits above remains pending for the next save.
     for (const h of publishedAdded) this.added.delete(h);
@@ -360,15 +377,16 @@ export class ContentHashIndex {
       const publishedRemoved = new Set<string>(this.removed);
       const merged = new Set<string>(publishedAdded);
       try {
-        const raw = await readMaybeEncryptedFile(
-          this.filePath,
-          this.secureStoreKeyProvider(),
-          this.memoryDir
-        );
-        for (const line of raw.split("\n")) {
-          const trimmed = line.trim();
-          // Keep prior/concurrent on-disk hashes EXCEPT the ones we removed.
-          if (trimmed.length > 0 && !publishedRemoved.has(trimmed)) merged.add(trimmed);
+        const raw = await readMaybeEncryptedFile(this.filePath, this.secureStoreKeyProvider(), this.memoryDir);
+        const parsed = parseHashIndex(raw);
+        if (parsed.versioned) {
+          for (const hash of parsed.hashes) {
+            // Keep prior/concurrent on-disk hashes EXCEPT the ones we removed.
+            if (!publishedRemoved.has(hash)) merged.add(hash);
+          }
+        } else {
+          // Do not carry hashes from the pre-NFC format into a v2 write.
+          log.warn(`content-hash index: discarded legacy unversioned entries from ${this.filePath}`);
         }
       } catch (err) {
         if (err instanceof SecureStoreLockedError) throw err;
@@ -378,11 +396,12 @@ export class ContentHashIndex {
       await mkdir(path.dirname(this.filePath), { recursive: true });
       await writeMaybeEncryptedFile(
         this.filePath,
-        [...merged].join("\n") + "\n",
+        serializeHashIndex(merged),
         this.secureStoreWriteKeyProvider(),
         {},
         this.memoryDir
       );
+      this.formatMigrationRequired = false;
       // Consume ONLY the deltas we just published; deltas that arrived during
       // the awaits above remain pending.
       for (const h of publishedAdded) this.added.delete(h);
@@ -415,7 +434,7 @@ export class ContentHashIndex {
           // the retry keeps re-attempting the locked publish until the addition
           // lands on disk.
           log.warn(
-            `content-hash index: lock not acquired for ${this.filePath}; deferring reconcile save (dirty retained, scheduling durable retry)`,
+            `content-hash index: lock not acquired for ${this.filePath}; deferring reconcile save (dirty retained, scheduling durable retry)`
           );
           this.scheduleReconcileRetry();
           return;
@@ -431,7 +450,7 @@ export class ContentHashIndex {
           // Published cleanly: any pending deferred retry is now satisfied.
           this.cancelReconcileRetry();
         }
-      },
+      }
     );
     log.debug(`content-hash index: reconcile-saved ${this.hashes.size} hashes`);
   }
@@ -479,7 +498,7 @@ export class ContentHashIndex {
           // so overwriting now could clobber its addition. Leave the index as-is
           // and let the caller retry the authoritative rebuild on next use.
           log.warn(
-            `content-hash index: lock not acquired for ${this.filePath}; deferring authoritative rebuild (index left non-authoritative, retried on next use)`,
+            `content-hash index: lock not acquired for ${this.filePath}; deferring authoritative rebuild (index left non-authoritative, retried on next use)`
           );
           return;
         }
@@ -488,7 +507,7 @@ export class ContentHashIndex {
         // is a full overwrite that supersedes any pending add/remove deltas.
         await this.save();
         published = true;
-      },
+      }
     );
     return published;
   }
@@ -572,7 +591,7 @@ export class ContentHashIndex {
     if (this.reconcileRetryAttempts >= maxAttempts) {
       log.warn(
         `content-hash index: exhausted ${maxAttempts} deferred reconcile-save retries for ${this.filePath}; ` +
-          `${this.added.size} addition(s) remain dirty in-memory (a process restart rebuilds the index from the durable corpus)`,
+          `${this.added.size} addition(s) remain dirty in-memory (a process restart rebuilds the index from the durable corpus)`
       );
       this.reconcileRetryAttempts = 0;
       this.settleReconcileRetry();
@@ -681,10 +700,7 @@ export class ContentHashIndex {
    * one hash per line and `has(content)` keeps its existing raw-content contract.
    * Reconciliation supplies short-lived manifest rows where hash and path coexist.
    */
-  static resolvePathByHash(
-    hash: string,
-    entries: Iterable<ContentHashPathEntry>,
-  ): string | undefined {
+  static resolvePathByHash(hash: string, entries: Iterable<ContentHashPathEntry>): string | undefined {
     const canonicalHash = hash.toLowerCase();
     if (!/^[a-f0-9]{64}$/.test(canonicalHash)) return undefined;
     let canonicalPath: string | undefined;

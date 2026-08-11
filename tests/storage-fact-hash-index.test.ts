@@ -8,6 +8,68 @@ import { clearMemoryCache } from "../src/memory-cache.ts";
 import { sanitizeMemoryContent } from "../src/sanitize.ts";
 import { attachCitation } from "../src/source-attribution.ts";
 
+test("legacy hash-index entries cannot suppress writes after Unicode normalization migration", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-fact-hash-migration-"));
+  const stateDir = path.join(dir, "state");
+  const content = "利用者は紅茶を好む。";
+
+  try {
+    await mkdir(stateDir, { recursive: true });
+    // Seed a pre-versioned file with a hash that matches the new content.
+    // A legacy entry is not authoritative after the normalization change.
+    await writeFile(path.join(stateDir, "fact-hashes.txt"), `${ContentHashIndex.computeHash(content)}\n`, "utf8");
+
+    const index = new ContentHashIndex(stateDir);
+    await index.load();
+    assert.equal(index.has(content), false);
+
+    index.add(content);
+    await index.saveMergingWithDisk();
+
+    const migrated = new ContentHashIndex(stateDir);
+    await migrated.load();
+    assert.equal(migrated.has(content), true);
+    assert.match(await readFile(path.join(stateDir, "fact-hashes.txt"), "utf8"), /^# remnic-content-hash-index:v2\n/u);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("legacy tombstone-blocked hash indexes rebuild before answering authoritatively", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-tombstone-hash-migration-"));
+  const content = "利用者はこの記憶を再取得しない。";
+  const sourceConnector = "openclaw";
+
+  try {
+    const storage = new StorageManager(dir);
+    const { id } = await storage.writeMemory("fact", content, {
+      source: "explicit-inline-review",
+      sourceConnector,
+      status: "pending_review",
+    });
+    const pending = (await storage.readAllMemories()).find((memory) => memory.frontmatter.id === id);
+    assert.ok(pending);
+    await storage.writeMemoryFrontmatter(pending, {
+      status: "pending_review",
+      blockedBy: "legacy-tombstone",
+      tombstoneBlockTier: "exact",
+    });
+    assert.equal((await storage.checkTombstoneBlockedExplicitCapture(content, "fact", sourceConnector)).has, true);
+
+    const indexPath = path.join(dir, "state", "tombstone-blocked-capture", "fact-hashes.txt");
+    const versioned = await readFile(indexPath, "utf8");
+    await writeFile(indexPath, versioned.split("\n").slice(1).join("\n"), "utf8");
+    clearMemoryCache(dir);
+
+    const restarted = new StorageManager(dir);
+    const result = await restarted.checkTombstoneBlockedExplicitCapture(content, "fact", sourceConnector);
+    assert.deepEqual(result, { has: true, authoritative: true });
+    assert.match(await readFile(indexPath, "utf8"), /^# remnic-content-hash-index:v2\n/u);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("concurrent fact hash lookups wait for a single shared index load", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "engram-fact-hash-"));
   const content = "User prefers pourover coffee.";

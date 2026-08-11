@@ -9,11 +9,12 @@
 
 import { createHash } from "node:crypto";
 
-/** Normalize content: lowercase, strip non-alphanumerics, collapse whitespace. */
+/** Normalize content: preserve Unicode letters, marks, and numbers. */
 export function normalizeContent(content: string): string {
   return content
+    .normalize("NFC")
     .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/[^\p{L}\p{M}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
