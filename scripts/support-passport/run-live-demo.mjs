@@ -24,7 +24,7 @@ import {
   receiptStatusSequence,
   sha256,
 } from "./receipt-schema.mjs";
-import { runCleanupSteps, waitForResult } from "./live-demo-runtime.mjs";
+import { readCleanCommitSha, runCleanupSteps, waitForResult } from "./live-demo-runtime.mjs";
 import { validateReceiptConsistency } from "./verify-receipt.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -139,21 +139,6 @@ async function findAvailablePort() {
   } finally {
     await new Promise((resolve) => server.close(() => resolve()));
   }
-}
-
-async function currentCommitSha() {
-  let status;
-  let commit;
-  try {
-    status = await execFileAsync("git", ["status", "--porcelain"], { cwd: repoRoot });
-    commit = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repoRoot });
-  } catch {
-    throw new DemoFailure("Git could not identify the demo commit.");
-  }
-  if (status.stdout.trim()) throw new DemoFailure("Commit all tracked changes before creating a live receipt.");
-  const sha = commit.stdout.trim();
-  if (!/^[a-f0-9]{40}$/.test(sha)) throw new DemoFailure("Git returned an invalid commit SHA.");
-  return sha;
 }
 
 function resolveInputConfig(options) {
@@ -314,7 +299,9 @@ async function run(options) {
     path.join(repoRoot, "fixtures/support-passport/expected-public-cards.json"),
     ExpectedPublicCardsFixtureSchema
   );
-  const commitSha = await currentCommitSha();
+  const commitSha = await readCleanCommitSha(repoRoot, (args, execOptions) =>
+    execFileAsync("git", args, execOptions)
+  );
   const sourceConfig = resolveInputConfig(options);
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "remnic-support-passport-live-"));
   const memoryDir = path.join(tempRoot, "memory");

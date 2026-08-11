@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 
-import { runCleanupSteps, waitForResult } from "./live-demo-runtime.mjs";
+import { readCleanCommitSha, runCleanupSteps, waitForResult } from "./live-demo-runtime.mjs";
+
+const execFileAsync = promisify(execFile);
 
 test("waitForResult polls until an asynchronous result is durable", async () => {
   let clock = 0;
@@ -70,4 +77,22 @@ test("runCleanupSteps completes every cleanup and returns the first error", asyn
 
   assert.equal(result, firstError);
   assert.deepEqual(completed, ["server", "environment", "temp", "receipt"]);
+});
+
+test("readCleanCommitSha permits an untracked config but rejects tracked changes", async (t) => {
+  const repoRoot = await mkdtemp(path.join(os.tmpdir(), "remnic-live-demo-git-"));
+  t.after(async () => rm(repoRoot, { recursive: true, force: true }));
+  const runGit = (args, options) => execFileAsync("git", args, options);
+  await runGit(["init", "--quiet"], { cwd: repoRoot });
+  await runGit(["config", "user.name", "Remnic test"], { cwd: repoRoot });
+  await runGit(["config", "user.email", "test@example.invalid"], { cwd: repoRoot });
+  await writeFile(path.join(repoRoot, "tracked.txt"), "clean\n");
+  await runGit(["add", "tracked.txt"], { cwd: repoRoot });
+  await runGit(["commit", "--quiet", "-m", "test fixture"], { cwd: repoRoot });
+  await writeFile(path.join(repoRoot, "remnic.config.json"), "{}\n");
+
+  assert.match(await readCleanCommitSha(repoRoot, runGit), /^[a-f0-9]{40}$/);
+
+  await writeFile(path.join(repoRoot, "tracked.txt"), "changed\n");
+  await assert.rejects(readCleanCommitSha(repoRoot, runGit), /Commit all tracked changes/);
 });
