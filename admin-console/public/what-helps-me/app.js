@@ -23,6 +23,8 @@
     guide: null,
     helperSecret: secret,
     helperGrantId: grantId,
+    helperExpiryTimer: null,
+    helperQuestionController: null,
     toastTimer: null,
   };
 
@@ -517,6 +519,10 @@
   }
 
   function showLocked(error) {
+    window.clearTimeout(state.helperExpiryTimer);
+    state.helperExpiryTimer = null;
+    state.helperQuestionController?.abort();
+    state.helperQuestionController = null;
     const lastGuide = state.guide;
     state.guide = null;
     byId("connectPanel")?.remove();
@@ -551,6 +557,19 @@
       }
       groupsNode.append(section);
     }
+    const remainingMs = Date.parse(guide.expiresAt) - Date.now();
+    if (remainingMs <= 0) {
+      const error = new Error("The share link is no longer active.");
+      error.code = "grant_gone";
+      showLocked(error);
+      return;
+    }
+    window.clearTimeout(state.helperExpiryTimer);
+    state.helperExpiryTimer = window.setTimeout(() => {
+      const error = new Error("The share link is no longer active.");
+      error.code = "grant_gone";
+      showLocked(error);
+    }, remainingMs);
   }
 
   async function loadHelper() {
@@ -582,6 +601,8 @@
     if (!question || !state.guide) return;
     const button = event.currentTarget.querySelector("button");
     const controller = new AbortController();
+    state.helperQuestionController?.abort();
+    state.helperQuestionController = controller;
     try {
       const payload = await withBusy(button, "Checking shared cards…", () =>
         api.askGrant(state.helperGrantId, state.helperSecret, question, controller.signal)
@@ -600,11 +621,14 @@
       byId("answerPanel").focus();
       announce("Answer ready with support card citations.");
     } catch (error) {
+      if (!state.guide) return;
       if (["grant_gone", "grant_not_found", "grant_stale"].includes(error?.code)) {
         showLocked(error);
         return;
       }
       setError("questionError", errorMessage(error, "The question did not complete."));
+    } finally {
+      if (state.helperQuestionController === controller) state.helperQuestionController = null;
     }
   }
 

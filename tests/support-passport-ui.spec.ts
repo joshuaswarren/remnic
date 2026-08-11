@@ -190,8 +190,6 @@ test("helper load, error, stale, stopped, and expired states fail closed", async
   });
   await page.goto(helperUrl("-expired").replace("mode=replay&", ""));
   await expect(page.locator(".public-card")).toHaveCount(1);
-  await page.waitForTimeout(300);
-  await page.getByLabel("Your question").fill("What helps?");
-  await page.getByRole("button", { name: "Ask from this guide" }).click();
   await expect(page.getByRole("heading", { name: "This share link has expired." })).toBeVisible();
+  await expect(page.locator(".public-card")).toHaveCount(0);
 });
