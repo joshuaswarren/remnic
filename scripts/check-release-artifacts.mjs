@@ -29,6 +29,14 @@ const requiredFiles = [
   "dist/admin-console/public/relay/relay-model.js",
   "dist/admin-console/public/relay/relay.js",
   "dist/admin-console/public/relay/replay.json",
+  "dist/admin-console/public/what-helps-me/index.html",
+  "dist/admin-console/public/what-helps-me/what-helps-me.css",
+  "dist/admin-console/public/what-helps-me/model.js",
+  "dist/admin-console/public/what-helps-me/app.js",
+  "packages/remnic-core/dist/admin-console/public/what-helps-me/index.html",
+  "packages/remnic-core/dist/admin-console/public/what-helps-me/what-helps-me.css",
+  "packages/remnic-core/dist/admin-console/public/what-helps-me/model.js",
+  "packages/remnic-core/dist/admin-console/public/what-helps-me/app.js",
 ];
 
 const rootPackageJson = JSON.parse(await readFile(rootPackageJsonPath, "utf8"));

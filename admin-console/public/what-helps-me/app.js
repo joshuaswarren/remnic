@@ -423,7 +423,10 @@
       if (payload.found !== true || !payload.memory || typeof payload.memory.content !== "string") {
         throw new Error("That memory was not found in your Remnic scope.");
       }
-      state.selectedNotes = [...state.selectedNotes, { memoryId, content: payload.memory.content }];
+      state.selectedNotes = [
+        ...state.selectedNotes,
+        { memoryId, content: model.stripAttributesSuffix(payload.memory.content) },
+      ];
       byId("memoryIdInput").value = "";
       byId("consentInput").checked = false;
       renderSelectedNotes();

@@ -97,6 +97,7 @@ export abstract class SupportPassportAccessHttpBase {
     res: ServerResponse,
     pathname: string,
   ): Promise<boolean> {
+    if (req.method !== "GET") return false;
     const isSupportPassportPath =
       pathname === "/remnic/ui/what-helps-me" ||
       pathname === "/engram/ui/what-helps-me" ||

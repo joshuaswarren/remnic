@@ -41,7 +41,7 @@ test("What Helps Me serves both aliases from one exact feature-gated allow-list"
       port: 0,
       authToken: "owner-token",
       principal: "support-passport-owner",
-      adminConsoleEnabled: true,
+      adminConsoleEnabled: false,
       adminConsolePublicDir,
       adminConsolePrefillToken: true,
     });

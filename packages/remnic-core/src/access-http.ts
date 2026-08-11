@@ -824,6 +824,10 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
     const parsed = new URL(req.url ?? "/", `http://${hostToUrlAuthority(this.host)}`);
     const pathname = parsed.pathname;
 
+    if (await this.handleSupportPassportUi(req, res, pathname)) {
+      return;
+    }
+
     if (this.adminConsoleEnabled && await this.handleAdminConsole(req, res, pathname)) {
       return;
     }
@@ -3519,7 +3523,6 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
       res.end();
       return true;
     }
-    if (await this.handleSupportPassportUi(req, res, pathname)) return true;
     if (pathname === "/remnic/ui/" || pathname === "/engram/ui/") {
       await this.respondAdminConsoleShell(req, res, pathname);
       return true;

@@ -16,6 +16,7 @@ const assets = new Map<string, readonly [string, string]>([
 interface WhatHelpsMeBrowserModel {
   expiryForChoice(choice: string, customValue: string, nowMs: number): string;
   buildShareUrl(currentUrl: string, grantId: string, secret: string, legacyPath: boolean): string;
+  stripAttributesSuffix(content: string): string;
 }
 
 let server: Server;
@@ -93,6 +94,39 @@ test("the owner reviews one card at a time and controls sharing", async ({ page 
   await expect(page.getByText("Sharing stopped", { exact: true })).toBeVisible();
 });
 
+test("the owner note preview hides stored attribute metadata", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers note preview content.");
+
+  await page.route("**/engram/v1/support-passport/cards", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ cards: [] }) });
+  });
+  await page.route("**/engram/v1/support-passport/grants", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grants: [] }) });
+  });
+  await page.route("**/engram/v1/memories/note-with-attributes", async (route) => {
+    expect(route.request().headers().authorization).toBe("Bearer owner-token");
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        found: true,
+        memory: {
+          content: "Tell me before plans change.\n[Attributes: support-passport: source]",
+        },
+      }),
+    });
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await page.getByLabel("Bearer token").fill("owner-token");
+  await page.getByRole("button", { name: "Open my guide" }).click();
+  await page.getByLabel("Memory ID").fill("note-with-attributes");
+  await page.getByRole("button", { name: "Add selected note" }).click();
+
+  await expect(page.getByText("Tell me before plans change.", { exact: true })).toBeVisible();
+  await expect(page.getByText(/\[Attributes:/)).toHaveCount(0);
+});
+
 test("the helper sees only shared cards and grounded citations", async ({ page }, testInfo) => {
   await page.goto(helperUrl());
 
@@ -142,6 +176,9 @@ test("share links use the canonical path and reserve time for grant creation", a
         "secret-one",
         false
       ),
+      notePreview: model.stripAttributesSuffix(
+        "Tell me before plans change.\n[Attributes: support-passport: source]"
+      ),
     };
   });
 
@@ -149,6 +186,7 @@ test("share links use the canonical path and reserve time for grant creation", a
     boundaryError: "Choose a share time at least five minutes from now and no more than seven days away.",
     expiresAt: "2026-08-11T12:05:05.000Z",
     shareUrl: "https://example.test/remnic/ui/what-helps-me/?grant=grant-one#secret=secret-one",
+    notePreview: "Tell me before plans change.",
   });
 });
 
