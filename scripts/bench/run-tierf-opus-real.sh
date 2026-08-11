@@ -72,6 +72,7 @@ expected_ordered_question_ids_hash = sys.argv[5]
 assert d.get('orderedQuestionIdsHash') == expected_ordered_question_ids_hash, f\"orderedQuestionIdsHash: {d.get('orderedQuestionIdsHash')} (expected {expected_ordered_question_ids_hash})\"
 assert isinstance(d.get('sliceQuestionIds'), list), 'missing sliceQuestionIds'
 assert len(d['sliceQuestionIds']) == expected_sample_size, f\"sliceQuestionIds: {len(d['sliceQuestionIds'])}\"
+assert all(isinstance(question_id, str) and question_id for question_id in d['sliceQuestionIds']), 'sliceQuestionIds contains invalid ids'
 assert len(set(d['sliceQuestionIds'])) == expected_sample_size, 'sliceQuestionIds contains duplicates'
 ci = d.get('confidenceInterval')
 assert isinstance(ci, dict), 'missing confidenceInterval'

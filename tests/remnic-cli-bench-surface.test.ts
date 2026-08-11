@@ -690,7 +690,7 @@ printf '%s' "$CALIBRATION_DIR"`],
   );
 });
 
-test("real Tier-F preflight rejects calibration provenance from any unpinned source", async () => {
+test("real Tier-F preflight rejects unpinned or malformed calibration provenance", async () => {
   const realScript = await readFile("scripts/bench/run-tierf-opus-real.sh", "utf8");
   const preflightStart = realScript.indexOf("preflight_calibration_state() {");
   const preflightEnd = realScript.indexOf('LONGMEM_LOCAL_HASH="', preflightStart);
@@ -759,6 +759,18 @@ test("real Tier-F preflight rejects calibration provenance from any unpinned sou
       assert.equal(invalidProbe.status, 3, `${field}: ${invalidProbe.stderr}`);
       assert.match(invalidProbe.stderr, /rerun judge-calibrate against the pinned answer source/);
     }
+
+    writeFileSync(
+      join(calibrationDir, "locomo.json"),
+      JSON.stringify({
+        ...baseState,
+        ...pinned.locomo,
+        sliceQuestionIds: [0, ...baseState.sliceQuestionIds.slice(1)],
+      }),
+    );
+    const invalidSliceProbe = runPreflight();
+    assert.equal(invalidSliceProbe.status, 3, invalidSliceProbe.stderr);
+    assert.match(invalidSliceProbe.stderr, /rerun judge-calibrate against the pinned answer source/);
   } finally {
     rmSync(calibrationDir, { recursive: true, force: true });
   }
