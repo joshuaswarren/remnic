@@ -1,4 +1,4 @@
-import type { StorageManager } from "../storage.js";
+import type { StorageManager } from "../index.js";
 import { composeMemoryEnvelope } from "../write-envelope.js";
 import {
   SUPPORT_PASSPORT_ATTRIBUTE_KEYS,
