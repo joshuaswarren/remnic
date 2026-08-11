@@ -13,6 +13,11 @@ const assets = new Map<string, readonly [string, string]>([
   ["/remnic/ui/what-helps-me/app.js", ["app.js", "application/javascript; charset=utf-8"]],
 ]);
 
+interface WhatHelpsMeBrowserModel {
+  expiryForChoice(choice: string, customValue: string, nowMs: number): string;
+  buildShareUrl(currentUrl: string, grantId: string, secret: string, legacyPath: boolean): string;
+}
+
 let server: Server;
 let origin = "";
 
@@ -121,9 +126,10 @@ test("share links use the canonical path and allow the exact five-minute boundar
 
   const result = await page.evaluate(() => {
     const now = Date.parse("2026-08-11T12:00:00.000Z");
+    const model = (window as typeof window & { WhatHelpsMeModel: WhatHelpsMeBrowserModel }).WhatHelpsMeModel;
     return {
-      expiresAt: window.WhatHelpsMeModel.expiryForChoice("custom", new Date(now + 300_000).toISOString(), now),
-      shareUrl: window.WhatHelpsMeModel.buildShareUrl(
+      expiresAt: model.expiryForChoice("custom", new Date(now + 300_000).toISOString(), now),
+      shareUrl: model.buildShareUrl(
         "https://example.test/engram/ui/what-helps-me/?old=value#old=value",
         "grant-one",
         "secret-one",
