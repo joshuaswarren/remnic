@@ -126,11 +126,12 @@ Options:
                            Calibration-only timeout for each frontier judge call
   --max-429-wait <ms>      Maximum cumulative 429 retry wait for provider calls
   --disable-thinking       Disable thinking for supported provider-backed models
-  --source-result-id <id>  Exact full stored result used by judge-calibrate
+  --source-result-id <id>  Exact stored result used by or expected for calibration
   --expected-answer-set-sha256 <sha256>
-                           Expected deterministic calibration-slice payload hash
+                           Expected deterministic calibration answer-set hash
   --expected-question-id-list-sha256 <sha256>
-                           Expected ordered source task-ID list hash
+                           Expected ordered source task-ID list hash; later runs may
+                           pass all three source pins with both config pins
   --calibration-dir <path> Private final-state and resumable-checkpoint directory
   --calibration-local-config-sha256 <sha256>
                            Required on later runs that attach calibration state

@@ -601,7 +601,7 @@ test("writeJudgeCalibrationState + loadJudgeCalibrationState round-trip judge id
   }
 });
 
-test("writeJudgeCalibrationState pins source, slice, answer hash, and bootstrap interval (#1877)", async () => {
+test("writeJudgeCalibrationState pins source, task order, slice, answer hash, and bootstrap interval (#1877)", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "bench-calib-pinned-"));
   try {
     const answers = makeAnswers(12);
@@ -616,12 +616,17 @@ test("writeJudgeCalibrationState pins source, slice, answer hash, and bootstrap 
     });
     await writeJudgeCalibrationState(result, dir, undefined, {
       sourceResultId: "run-pinned-123",
+      orderedQuestionIdsHash: hashOrderedQuestionIds(answers.map((answer) => answer.questionId)),
       localJudgeConfigHash: "a".repeat(64),
       frontierJudgeConfigHash: "b".repeat(64),
     });
     const loaded = await loadJudgeCalibrationState("locomo", dir);
     assert.equal(loaded?.sourceResultId, "run-pinned-123");
     assert.equal(loaded?.answerSetHash, result.answerSetHash);
+    assert.equal(
+      loaded?.orderedQuestionIdsHash,
+      hashOrderedQuestionIds(answers.map((answer) => answer.questionId)),
+    );
     assert.deepEqual(loaded?.sliceQuestionIds, result.sliceQuestionIds);
     assert.deepEqual(loaded?.confidenceInterval, result.confidenceInterval);
     assert.equal(loaded?.bootstrapSamples, 100);

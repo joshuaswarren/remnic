@@ -247,6 +247,10 @@ import {
 } from "./bench-args.js";
 import { readBenchOptionValue } from "./bench-flags.js";
 import {
+  assertCalibrationProvenanceMatches,
+  validateCalibrationProvenancePinSet,
+} from "./bench-calibration-binding.js";
+import {
   createBenchStatusPath,
   initBenchStatus,
   updateBenchmarkStarted,
@@ -775,15 +779,8 @@ type PackageBenchModule = {
     | { ok: true; expectedModel: string; discoveredModels: unknown[] }
     | { ok: false; reason: string; expectedModel: string; discoveredModels?: unknown[] }
   >;
-  /**
-   * Load a previously persisted judge-calibration state for a benchmark (issue
-   * #1573 PR3). Returns the artifact-relevant subset (`{ kappa, sampleSize,
-   * threshold, warning }`) plus optional judge identities, or `undefined` when
-   * no calibration has been run. Wired into the run path so subsequent local
-   * artifacts carry the persisted kappa after `remnic bench judge-calibrate`,
-   * but ONLY when the run's judge matches the calibrated pair (codex P2 review:
-   * the loader was previously dead code — only tests called it).
-   */
+  /** Load persisted calibration state. Optional identities and provenance bind
+   * subsequent local artifacts to the calibrated pair and source. */
   loadJudgeCalibrationState?: (
     benchmarkId: string,
     calibrationDir: string,
@@ -799,6 +796,7 @@ type PackageBenchModule = {
         frontierJudgeModel?: string;
         sourceResultId?: string;
         answerSetHash?: string;
+        orderedQuestionIdsHash?: string;
         sliceQuestionIds?: readonly string[];
         confidenceInterval?: { lower: number; upper: number; level: number };
         bootstrapSamples?: number;
@@ -2507,7 +2505,7 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
     result,
     calibrationDir,
     calibrationIdentities,
-    { sourceResultId: loaded.meta.id, localJudgeConfigHash, frontierJudgeConfigHash },
+    { sourceResultId: loaded.meta.id, orderedQuestionIdsHash, localJudgeConfigHash, frontierJudgeConfigHash },
   );
   // Read the persisted state straight back. This exercises the load path the
   // artifact builder will use (cursor review + codex P1: loadJudgeCalibration-
@@ -2518,6 +2516,7 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
   if (
     !persisted || persisted.kappa !== result.kappa || persisted.warning !== result.warning ||
     persisted.localJudgeConfigHash !== localJudgeConfigHash ||
+    persisted.orderedQuestionIdsHash !== orderedQuestionIdsHash ||
     persisted.frontierJudgeConfigHash !== frontierJudgeConfigHash
   ) {
     console.error(
@@ -3540,11 +3539,8 @@ async function runBenchViaPackage(
 type PreparedJudgeCalibrationAttachment = Record<string, unknown>;
 
 /**
- * Resolve and validate calibration state before any endpoint preflight,
- * adapter construction, or benchmark/model call. A run that does not use the
- * calibrated local judge is ineligible and ignores the state without needing
- * attachment pins. Eligible runs fail closed on legacy state, missing or stale
- * pins, and any drift in the fully resolved judge provider configuration.
+ * Validate eligible calibration state before endpoint, adapter, or model work.
+ * Unrelated judges ignore unpinned state; eligible runs fail closed on drift.
  */
 export async function preparePersistedJudgeCalibrationAttachment(
   benchModule: PackageBenchModule,
@@ -3552,18 +3548,20 @@ export async function preparePersistedJudgeCalibrationAttachment(
   runJudgeProvider: PackageBenchProviderConfig | null | undefined,
   calibrationBinding: Pick<ParsedBenchArgs,
     "calibrationDir" | "calibrationLocalConfigSha256" | "calibrationFrontierConfigSha256" |
-    "amaBenchJudgeProtocol"
+    "sourceResultId" | "expectedAnswerSetSha256" | "expectedQuestionIdListSha256" | "amaBenchJudgeProtocol"
   >,
 ): Promise<PreparedJudgeCalibrationAttachment | undefined> {
   const hasLocalPin = Boolean(calibrationBinding.calibrationLocalConfigSha256);
   const hasFrontierPin = Boolean(calibrationBinding.calibrationFrontierConfigSha256);
   const hasAnyPin = hasLocalPin || hasFrontierPin;
   const hasBothPins = hasLocalPin && hasFrontierPin;
+  const hasAnyProvenancePin = validateCalibrationProvenancePinSet(calibrationBinding, hasBothPins);
+  const hasAnyBindingPin = hasAnyPin || hasAnyProvenancePin;
   if (
     benchmarkId === "ama-bench" &&
     calibrationBinding.amaBenchJudgeProtocol === "recommended"
   ) {
-    if (hasAnyPin) {
+    if (hasAnyBindingPin) {
       throw new Error(
         "AMA-Bench recommended-protocol runs cannot attach default-protocol judge calibration; remove both calibration pins or calibrate the recommended prompt contract separately.",
       );
@@ -3581,7 +3579,7 @@ export async function preparePersistedJudgeCalibrationAttachment(
   );
   const state = await benchModule.loadJudgeCalibrationState?.(benchmarkId, calibrationDir);
   if (!state) {
-    if (hasAnyPin) {
+    if (hasAnyBindingPin) {
       throw new Error(
         `Calibration binding pins were supplied for ${benchmarkId}, but no valid calibration state could be loaded from ${calibrationDir}; rerun judge-calibrate or remove both pins.`,
       );
@@ -3597,7 +3595,7 @@ export async function preparePersistedJudgeCalibrationAttachment(
     // with the frontier judge. Frontier and unrelated runs are not attachment
     // candidates, so their normal execution must not require local-run pins.
     if (!matchesLocal) {
-      if (hasBothPins) {
+      if (hasAnyBindingPin) {
         throw new Error(
           `Calibration binding pins for ${benchmarkId} target the calibrated local judge ` +
             `${state.localJudgeProvider}/${state.localJudgeModel}, but the run judge is ` +
@@ -3625,7 +3623,7 @@ export async function preparePersistedJudgeCalibrationAttachment(
     // identity. In that case the resolved local-config hash is the only safe
     // eligibility signal: unrelated unpinned runs ignore the state, while
     // explicit pins must never be silently discarded.
-    if (hasBothPins) {
+    if (hasAnyBindingPin) {
       throw new Error(
         `Calibration binding pins for ${benchmarkId} do not match the resolved run judge configuration; refusing to ignore explicit pins.`,
       );
@@ -3646,6 +3644,8 @@ export async function preparePersistedJudgeCalibrationAttachment(
   ) {
     throw new Error(`Calibration configuration hash mismatch for ${benchmarkId}; refusing to attach stale kappa.`);
   }
+
+  assertCalibrationProvenanceMatches(calibrationBinding, state, benchmarkId);
 
   if (resolvedRunJudgeConfigHash !== state.localJudgeConfigHash) {
     throw new Error(

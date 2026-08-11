@@ -516,10 +516,16 @@ test("parseBenchArgs binds later runs to an exact calibration directory and judg
     "--calibration-dir", "./private-calibration",
     "--calibration-local-config-sha256", "c".repeat(64),
     "--calibration-frontier-config-sha256", "d".repeat(64),
+    "--source-result-id", "run-1",
+    "--expected-answer-set-sha256", "e".repeat(64),
+    "--expected-question-id-list-sha256", "f".repeat(64),
   ]);
   assert.equal(parsed.calibrationDir, path.resolve("private-calibration"));
   assert.equal(parsed.calibrationLocalConfigSha256, "c".repeat(64));
   assert.equal(parsed.calibrationFrontierConfigSha256, "d".repeat(64));
+  assert.equal(parsed.sourceResultId, "run-1");
+  assert.equal(parsed.expectedAnswerSetSha256, "e".repeat(64));
+  assert.equal(parsed.expectedQuestionIdListSha256, "f".repeat(64));
   assert.throws(() => parseBenchArgs([
     "run", "locomo", "--calibration-local-config-sha256", "not-a-digest",
   ]), /lowercase SHA-256/);

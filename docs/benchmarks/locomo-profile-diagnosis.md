@@ -148,12 +148,11 @@ hidden-evidence-id safety score.
 | F1 | 0.3100 | 0.3057 | -0.0044 | 16 | 22 | 283 |
 | `contains_answer` | 0.0903 | 0.0935 | +0.0031 | 5 | 4 | 312 |
 
-The new result is much closer than the historical multi-hop gap, but it does
-not establish parity: judge score and F1 remain slightly lower for `real`,
-while exact containment is slightly higher. Issue #1879 therefore remains
-open. Combined with the provider-free receipt showing no structural retrieval
-delta, the scored pair shifts the next investigation toward post-retrieval
-answer behavior, evidence ordering, or responder sensitivity rather than a
+This result was much closer than the historical multi-hop gap, but it did not
+establish parity at the time: judge score and F1 remained slightly lower for
+`real`, while exact containment was slightly higher. Combined with the
+provider-free receipt showing no structural retrieval delta, it shifted the
+next investigation toward benchmark-control behavior rather than a
 demonstrated core/LCM displacement.
 
 The private result SHA-256 values are
@@ -167,13 +166,36 @@ manifest also recorded an unrelated shared-checkout branch switch as dirty;
 the result files retain the launch-time SHA, but this envelope is deliberately
 not promoted or used for a leaderboard claim.
 
-## Further questions
+## Final bounded rerun establishes benchmark-control parity
 
-- Does the multi-hop regression reproduce when the responder answers are
-  judged by the same calibrated frontier judge?
-- If scored answers still diverge, which post-retrieval or responder behavior
-  explains the difference despite structurally identical recalled context?
-- Is the effect caused by evidence omission, ordering, token-budget pressure,
-  or responder distraction despite retaining the same evidence?
-- Does enabling extraction for LoCoMo reverse the result, making the current
-  guidance specific to skip-extraction replay rather than LoCoMo generally?
+PR #2133 (`92fbf9985`) hardened the paired-answer replay control around the
+final matched 321-task rerun. A `real` task can reuse a `baseline` answer only
+after the complete responder-facing input matches, including a non-secret
+responder identity and every responder-affecting provider option. Partial or
+aborted runs clear staged replay entries, and cross-profile reuse in the
+opposite direction is rejected.
+
+The run used the exact 321-task multi-hop selector whose ordered task-id
+SHA-256 is
+`bbc56610faefc0a65704f713c6c7aa8ce5a7f71ca060a1e3d218c57a514f21b9`.
+Baseline and `real` used the same responder, judge, model settings, task order,
+and recall budget; all 321 `real` answers were reused only after the full
+responder-facing input matched. The public durable receipt is the
+[#1879 acceptance comment](https://github.com/joshuaswarren/remnic/issues/1879#issuecomment-5061446119).
+The bounded raw results remain private because they contain benchmark answers
+and recalled context.
+
+| Metric | Baseline | Real | Delta |
+|---|---:|---:|---:|
+| `llm_judge` | 0.3062305296 | 0.3062305296 | 0 |
+| F1 | 0.3014345813 | 0.3014345813 | 0 |
+| `contains_answer` | 0.0934579439 | 0.0934579439 | 0 |
+| ROUGE-L | 0.2827454650 | 0.2827454650 | 0 |
+
+This bounded control satisfies #1879's narrow profile-diagnosis acceptance:
+current main does not show a recall-side structural regression when responder
+inputs match. It is not an uncapped, calibrated LoCoMo leaderboard artifact
+and does not satisfy #1878's separate 1,986-task acceptance gate. The
+resolution is a benchmark-side variance control, not a retrieval improvement.
+The answer-support gate remains an explicit, reversible opt-in rather than an
+implicit difference between `baseline` and `real`.
