@@ -1,8 +1,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { chmod, lstat, mkdir, readFile, readdir } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readFile, readdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
 
-import { writeFileAtomically } from "../maintenance/atomic-file.js";
 import { serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
 import { SupportPassportError } from "./errors.js";
 import {
@@ -43,6 +42,38 @@ function hashesMatch(left: string, right: string): boolean {
 
 function grantNotFound(): SupportPassportError {
   return new SupportPassportError("grant_not_found", "The share link was not found.", 404);
+}
+
+async function syncDirectory(directory: string): Promise<void> {
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(directory, "r");
+    await handle.sync();
+  } catch {
+    return;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+async function writePrivateFileAtomically(filePath: string, content: string): Promise<void> {
+  const directory = path.dirname(filePath);
+  const tempPath = path.join(directory, `.${path.basename(filePath)}.${randomUUID()}.tmp`);
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(tempPath, "wx", 0o600);
+    await handle.writeFile(content, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await rename(tempPath, filePath);
+    await chmod(filePath, 0o600);
+    await syncDirectory(directory);
+  } catch (error) {
+    await handle?.close().catch(() => undefined);
+    await rm(tempPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 export class SupportPassportGrantStore {
@@ -195,8 +226,7 @@ export class SupportPassportGrantStore {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
-    await writeFileAtomically(filePath, `${JSON.stringify(state, null, 2)}\n`, undefined, { mode: 0o600 });
-    await chmod(filePath, 0o600);
+    await writePrivateFileAtomically(filePath, `${JSON.stringify(state, null, 2)}\n`);
   }
 
   private async ensureSafeDirectories(): Promise<void> {
