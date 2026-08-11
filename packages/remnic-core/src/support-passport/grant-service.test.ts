@@ -8,7 +8,7 @@ import { StorageManager } from "../storage.js";
 import { SupportPassportCardService } from "./card-service.js";
 import { SupportPassportError } from "./errors.js";
 import { SupportPassportGrantService } from "./grant-service.js";
-import { SupportPassportGrantStore } from "./grant-store.js";
+import { SupportPassportGrantStore, syncDirectoryForDurability } from "./grant-store.js";
 
 async function makeSubject() {
   StorageManager.clearAllStaticCaches();
@@ -135,6 +135,64 @@ test("owner grant listings read only the indexed owner grants", async () => {
     assert.deepEqual(listed.map((state) => state.grantId), [alice.state.grantId]);
     assert.deepEqual(readGrantIds, [alice.state.grantId]);
     assert.notEqual(alice.state.grantId, bob.state.grantId);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("directory sync ignores only explicit unsupported errors", async () => {
+  const failingOpen = (code: string) => async () => ({
+    sync: async () => {
+      throw Object.assign(new Error(`simulated ${code}`), { code });
+    },
+    close: async () => undefined,
+  });
+
+  await assert.rejects(
+    syncDirectoryForDurability("/unused", failingOpen("EIO")),
+    (error: unknown) => (error as NodeJS.ErrnoException).code === "EIO"
+  );
+  await syncDirectoryForDurability("/unused", failingOpen("EINVAL"));
+});
+
+test("grant creation aborts before replacing an owner index after lock ownership is lost", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-lock-loss-"));
+  try {
+    const grantIds = ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"];
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({
+      memoryDir: root,
+      makeGrantId: () => grantIds.shift() ?? "00000000-0000-4000-8000-000000000003",
+      now: () => now,
+    });
+    const input = {
+      namespace: "alice",
+      principal: "owner:alice",
+      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+      expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
+    };
+    const first = await store.create(input);
+    let refreshes = 0;
+    const inspected = store as unknown as {
+      withMutationLock<T>(task: (lock: { refresh(): Promise<boolean> }) => Promise<T>): Promise<T>;
+    };
+    inspected.withMutationLock = async (task) =>
+      await task({
+        refresh: async () => {
+          refreshes += 1;
+          return refreshes === 1;
+        },
+      });
+
+    await assert.rejects(
+      store.create(input),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
+    );
+    assert.equal(refreshes, 2);
+    assert.deepEqual(
+      (await store.listForOwner("alice", "owner:alice")).map((state) => state.grantId),
+      [first.state.grantId]
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
