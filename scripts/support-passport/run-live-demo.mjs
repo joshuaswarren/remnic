@@ -149,7 +149,7 @@ async function currentCommitSha() {
   let status;
   let commit;
   try {
-    status = await execFileAsync("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: repoRoot });
+    status = await execFileAsync("git", ["status", "--porcelain"], { cwd: repoRoot });
     commit = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repoRoot });
   } catch {
     throw new DemoFailure("Git could not identify the demo commit.");
