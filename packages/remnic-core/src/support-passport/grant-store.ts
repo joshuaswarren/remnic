@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { chmod, lstat, mkdir, open, readFile, readdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
 
+import { expandTildePath } from "../utils/path.js";
 import { serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
 import { SupportPassportError } from "./errors.js";
 import {
@@ -84,7 +85,7 @@ export class SupportPassportGrantStore {
   private readonly makeGrantId: () => string;
 
   constructor(options: SupportPassportGrantStoreOptions) {
-    this.memoryDir = path.resolve(options.memoryDir);
+    this.memoryDir = path.resolve(expandTildePath(options.memoryDir));
     this.grantsDir = path.join(this.memoryDir, "state", "support-passport", "grants");
     this.now = options.now ?? (() => new Date());
     this.makeSecret = options.makeSecret ?? (() => randomBytes(32));

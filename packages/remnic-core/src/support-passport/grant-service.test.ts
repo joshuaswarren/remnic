@@ -233,6 +233,42 @@ test("a revoke during a helper read never returns the old guide", async () => {
   }
 });
 
+test("a revoke during the confirmed card read never returns the old guide", async () => {
+  const subject = await makeSubject();
+  try {
+    const card = await createActiveCard(subject);
+    const created = await subject.grantService.createGrant({
+      principal: "owner:alice",
+      cards: [{ cardId: card.cardId, revision: card.revision }],
+      expiresAt: expiryAfter(subject, 3_600_000),
+    });
+    const peerStore = new SupportPassportGrantStore({ memoryDir: path.join(subject.root, "shared"), now: subject.now });
+    const getMemoryById = subject.aliceStorage.getMemoryById.bind(subject.aliceStorage);
+    let reads = 0;
+    subject.aliceStorage.getMemoryById = async (memoryId: string) => {
+      const memory = await getMemoryById(memoryId);
+      reads += 1;
+      if (reads === 2) {
+        await peerStore.revoke({
+          namespace: "alice",
+          principal: "owner:alice",
+          grantId: created.grant.grantId,
+          expectedStateVersion: created.grant.stateVersion,
+        });
+      }
+      return memory;
+    };
+
+    await assert.rejects(
+      subject.grantService.readGrant({ grantId: created.grant.grantId, secret: created.secret }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "grant_gone"
+    );
+    assert.equal(reads, 2);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("a changed card makes the whole grant stale without a partial guide", async () => {
   const subject = await makeSubject();
   try {
@@ -421,4 +457,12 @@ test("the grant store rejects unsafe durations and grant ID collisions", async (
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("the grant store expands a leading tilde in its memory directory", () => {
+  const store = new SupportPassportGrantStore({ memoryDir: "~/support-passport-path-test" });
+  const memoryDir = (store as unknown as { memoryDir: string }).memoryDir;
+  assert.equal(memoryDir.includes(`${path.sep}~${path.sep}`), false);
+  assert.equal(path.basename(memoryDir), "support-passport-path-test");
+  assert.equal(path.isAbsolute(memoryDir), true);
 });

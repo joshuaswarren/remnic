@@ -104,6 +104,10 @@ export class SupportPassportGrantService {
     if (JSON.stringify(confirmedCards) !== JSON.stringify(cards)) {
       throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
     }
+    const finalState = await this.grantStore.authenticate(input.grantId, input.secret);
+    if (finalState.stateVersion !== confirmedState.stateVersion) {
+      throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
+    }
     const firstCard = confirmedCards[0];
     if (!firstCard) throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
     const updatedAt = confirmedCards.reduce(
@@ -112,8 +116,8 @@ export class SupportPassportGrantService {
     );
     return SupportPassportPublicGuideSchema.parse({
       schemaVersion: 1,
-      grantId: confirmedState.grantId,
-      expiresAt: confirmedState.expiresAt,
+      grantId: finalState.grantId,
+      expiresAt: finalState.expiresAt,
       updatedAt,
       cards: confirmedCards,
     });
