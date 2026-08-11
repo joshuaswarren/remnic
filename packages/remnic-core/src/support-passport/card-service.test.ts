@@ -89,6 +89,30 @@ test("manual support cards stay private until their owner approves them", async 
   }
 });
 
+test("listing linkless drafts does not rescan the corpus by card ID", async () => {
+  const subject = await makeSubject();
+  try {
+    const draft = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Quiet space",
+      statement: "Offer me a quiet place and time.",
+      category: "environment",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    let cardReads = 0;
+    const getMemoryById = subject.aliceStorage.getMemoryById.bind(subject.aliceStorage);
+    subject.aliceStorage.getMemoryById = async (memoryId) => {
+      cardReads += 1;
+      return await getMemoryById(memoryId);
+    };
+
+    assert.deepEqual(await subject.service.listCards({ principal: "owner:alice" }), [draft]);
+    assert.equal(cardReads, 0);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("card mutations reject stale revisions and invalid lifecycle changes", async () => {
   const subject = await makeSubject();
   try {
