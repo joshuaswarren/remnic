@@ -238,6 +238,11 @@ const RELAY_ADMIN_CONSOLE_ASSETS = new Map<string, string>([
   ["relay.js", "application/javascript; charset=utf-8"],
   ["replay.json", "application/json; charset=utf-8"],
 ]);
+const SUPPORT_PASSPORT_ADMIN_CONSOLE_ASSETS = new Map<string, string>([
+  ["what-helps-me.css", "text/css; charset=utf-8"],
+  ["model.js", "application/javascript; charset=utf-8"],
+  ["app.js", "application/javascript; charset=utf-8"],
+]);
 
 const TRUST_ZONE_RECORD_KINDS = ["memory", "artifact", "state", "trajectory", "external"] as const;
 const TRUST_ZONE_SOURCE_CLASSES = ["tool_output", "web_content", "subagent_trace", "system_memory", "user_input", "manual"] as const;
@@ -3517,6 +3522,39 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
       res.statusCode = 301;
       res.setHeader("location", pathname + "/");
       res.end();
+      return true;
+    }
+    const isSupportPassportPath =
+      pathname === "/remnic/ui/what-helps-me" ||
+      pathname === "/engram/ui/what-helps-me" ||
+      pathname.startsWith("/remnic/ui/what-helps-me/") ||
+      pathname.startsWith("/engram/ui/what-helps-me/");
+    if (isSupportPassportPath) {
+      if (!this.service.supportPassportEnabled) {
+        this.respondJson(res, 404, { error: "not_found" });
+        return true;
+      }
+      if (pathname === "/remnic/ui/what-helps-me" || pathname === "/engram/ui/what-helps-me") {
+        res.statusCode = 301;
+        res.setHeader("location", pathname + "/");
+        res.end();
+        return true;
+      }
+      if (pathname === "/remnic/ui/what-helps-me/" || pathname === "/engram/ui/what-helps-me/") {
+        await this.respondAdminConsoleShell(req, res, pathname, "what-helps-me/index.html");
+        return true;
+      }
+      const fileName = pathname.split("/").at(-1) ?? "";
+      const assetType = SUPPORT_PASSPORT_ADMIN_CONSOLE_ASSETS.get(fileName);
+      if (assetType && pathname.split("/").length === 5) {
+        await this.respondStatic(
+          res,
+          path.join(this.adminConsolePublicDir, "what-helps-me", fileName),
+          assetType,
+        );
+        return true;
+      }
+      this.respondJson(res, 404, { error: "not_found" });
       return true;
     }
     if (pathname === "/remnic/ui/" || pathname === "/engram/ui/") {
