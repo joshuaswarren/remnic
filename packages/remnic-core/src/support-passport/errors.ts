@@ -7,6 +7,7 @@ export type SupportPassportErrorCode =
   | "invalid_card_status"
   | "invalid_input"
   | "revision_conflict"
+  | "state_conflict"
   | "storage_conflict";
 
 export class SupportPassportError extends Error {
