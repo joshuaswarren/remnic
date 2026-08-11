@@ -27,10 +27,16 @@ export interface StoredSupportPassportCard {
 
 function parseSourceMemoryIds(value: string): string[] | null {
   if (value === "") return [];
-  const parsed = value.split(",");
-  if (parsed.length > 5 || parsed.some((id) => !SupportPassportMemoryIdSchema.safeParse(id).success)) return null;
-  if (new Set(parsed).size !== parsed.length) return null;
-  return parsed;
+  const rawIds = value.split(",");
+  if (rawIds.length > 5) return null;
+  const normalized: string[] = [];
+  for (const rawId of rawIds) {
+    const parsed = SupportPassportMemoryIdSchema.safeParse(rawId);
+    if (!parsed.success) return null;
+    normalized.push(parsed.data);
+  }
+  if (new Set(normalized).size !== normalized.length) return null;
+  return normalized;
 }
 
 export function projectSupportPassportCard(memory: MemoryFile): StoredSupportPassportCard | null {
@@ -42,9 +48,17 @@ export function projectSupportPassportCard(memory: MemoryFile): StoredSupportPas
 
   const category = SupportPassportCardCategorySchema.safeParse(attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.category]);
   const status = SupportPassportCardStatusSchema.safeParse(frontmatter.status);
-  const order = Number(attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.order]);
+  const rawOrder = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.order] ?? "";
+  const order = Number(rawOrder);
   const sourceMemoryIds = parseSourceMemoryIds(attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.sourceMemoryIds] ?? "");
-  if (!category.success || !status.success || !Number.isSafeInteger(order) || order < 0 || !sourceMemoryIds)
+  if (
+    !category.success ||
+    !status.success ||
+    status.data === "superseded" ||
+    !/^(?:0|[1-9]\d*)$/.test(rawOrder) ||
+    !Number.isSafeInteger(order) ||
+    !sourceMemoryIds
+  )
     return null;
 
   const fields = {
@@ -56,9 +70,11 @@ export function projectSupportPassportCard(memory: MemoryFile): StoredSupportPas
     updatedAt: frontmatter.updated,
     reviewBy: attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.reviewBy] ?? "",
   };
+  const normalized = SupportPassportCardSchema.omit({ revision: true }).safeParse(fields);
+  if (!normalized.success) return null;
   const parsed = SupportPassportCardSchema.safeParse({
-    ...fields,
-    revision: computeSupportPassportCardRevision(fields),
+    ...normalized.data,
+    revision: computeSupportPassportCardRevision(normalized.data),
   });
   if (!parsed.success) return null;
   return { card: parsed.data, memory, order, sourceMemoryIds };

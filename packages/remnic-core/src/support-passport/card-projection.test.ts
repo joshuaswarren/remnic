@@ -1,0 +1,75 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import type { MemoryFile } from "../types.js";
+import { SupportPassportCardService as PublicSupportPassportCardService } from "../index.js";
+import { projectSupportPassportCard } from "./card-projection.js";
+import { SupportPassportCardService } from "./card-service.js";
+import { computeSupportPassportCardRevision } from "./contracts.js";
+
+function makeMemory(overrides: {
+  id?: string;
+  title?: string;
+  content?: string;
+  order?: string;
+  sourceMemoryIds?: string;
+  status?: string;
+} = {}): MemoryFile {
+  return {
+    path: "/tmp/support-card.md",
+    content: overrides.content ?? "Offer me a quiet place and time.",
+    frontmatter: {
+      id: overrides.id ?? "support-card-1",
+      category: "preference",
+      source: "support-passport",
+      confidence: 1,
+      confidenceTier: "explicit",
+      created: "2026-08-11T12:00:00.000Z",
+      updated: "2026-08-11T12:00:00.000Z",
+      status: (overrides.status ?? "active") as "active",
+      tags: ["support-passport-card"],
+      structuredAttributes: {
+        "support-passport-title": overrides.title ?? "Quiet space",
+        "support-passport-category": "environment",
+        "support-passport-order": overrides.order ?? "0",
+        "support-passport-review-by": "2026-09-01T12:00:00.000Z",
+        "support-passport-source-ids": overrides.sourceMemoryIds ?? "source-1,source-2",
+      },
+    },
+  } as MemoryFile;
+}
+
+test("the support passport is exported from the public core package", () => {
+  assert.equal(PublicSupportPassportCardService, SupportPassportCardService);
+});
+
+test("card projection normalizes IDs and public fields before revision hashing", () => {
+  const projected = projectSupportPassportCard(makeMemory({
+    id: " support-card-1 ",
+    title: " Quiet space ",
+    content: " Offer me a quiet place and time. ",
+    sourceMemoryIds: "source-1, source-2 ",
+  }));
+  assert.ok(projected);
+  assert.equal(projected.card.cardId, "support-card-1");
+  assert.equal(projected.card.title, "Quiet space");
+  assert.equal(projected.card.statement, "Offer me a quiet place and time.");
+  assert.deepEqual(projected.sourceMemoryIds, ["source-1", "source-2"]);
+  const { revision, ...fields } = projected.card;
+  assert.equal(revision, computeSupportPassportCardRevision(fields));
+});
+
+test("card projection rejects duplicate normalized source IDs", () => {
+  assert.equal(projectSupportPassportCard(makeMemory({ sourceMemoryIds: "source-1, source-1 " })), null);
+});
+
+test("card projection rejects superseded status without relying on supersededBy", () => {
+  assert.equal(projectSupportPassportCard(makeMemory({ status: "superseded" })), null);
+});
+
+test("card projection accepts only canonical nonnegative decimal order values", () => {
+  assert.ok(projectSupportPassportCard(makeMemory({ order: "0" })));
+  for (const order of ["", " ", "00", "01", "+1", "-1", "0x10", "1.0"]) {
+    assert.equal(projectSupportPassportCard(makeMemory({ order })), null);
+  }
+});
