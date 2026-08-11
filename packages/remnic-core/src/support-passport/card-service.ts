@@ -94,7 +94,16 @@ export class SupportPassportCardService {
     return await this.withOwnerLock(storage, async () => {
       const loadedPrior = await this.requireCard(storage, parsed.data.cardId);
       this.requireRevision(loadedPrior, parsed.data.expectedRevision);
-      const recoveredMemory = await this.recoverReplacementTransition(storage, loadedPrior.memory);
+      if (loadedPrior.card.status === "pending_review") {
+        const storedCards = await this.readStoredCards(storage);
+        const interruptedReplacement = storedCards.find(
+          (item) => item.replacesDraftId === loadedPrior.card.cardId && item.card.status === "pending_review"
+        );
+        if (interruptedReplacement) return interruptedReplacement.card;
+      }
+      const refreshedPrior = await this.requireCard(storage, parsed.data.cardId);
+      this.requireRevision(refreshedPrior, parsed.data.expectedRevision);
+      const recoveredMemory = await this.recoverReplacementTransition(storage, refreshedPrior.memory);
       const prior = this.projectRequiredCard(recoveredMemory);
       if (prior.card.status !== "active" && prior.card.status !== "pending_review") {
         throw new SupportPassportError(
@@ -290,14 +299,18 @@ export class SupportPassportCardService {
   }
 
   private async rejectCreatedDraft(storage: StorageManager, cardId: string, reasonCode: string): Promise<void> {
-    const current = await this.requireCard(storage, cardId);
-    const rejected = await storage.writeMemoryFrontmatterIfUnchanged(
-      current.memory,
-      { status: "rejected", updated: this.now().toISOString() },
-      { actor: "support-passport.replace-draft-rollback", reasonCode }
-    );
-    if (!rejected) {
-      throw new SupportPassportError("storage_conflict", "The replacement support card could not be rolled back.", 500);
+    try {
+      const current = await this.requireCard(storage, cardId);
+      const rejected = await storage.writeMemoryFrontmatterIfUnchanged(
+        current.memory,
+        { status: "rejected", updated: this.now().toISOString() },
+        { actor: "support-passport.replace-draft-rollback", reasonCode }
+      );
+      if (!rejected) log.warn("support passport could not roll back a replacement draft");
+    } catch (error) {
+      log.warn(
+        `support passport could not roll back a replacement draft: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
   }
 
@@ -412,13 +425,11 @@ export class SupportPassportCardService {
       if (rejected) return;
     }
     const currentDraft = await storage.getMemoryById(replacement.replacesDraftId);
-    if (currentDraft?.frontmatter.status === "active") {
-      await this.rejectOrphanedReplacement(storage, replacement.card.cardId);
-      return;
-    }
-    if (currentDraft?.frontmatter.status !== "rejected") {
+    if (currentDraft?.frontmatter.status === "rejected") return;
+    if (currentDraft?.frontmatter.status === "pending_review") {
       throw new SupportPassportError("storage_conflict", "The replaced draft changed during recovery.", 409);
     }
+    await this.rejectOrphanedReplacement(storage, replacement.card.cardId);
   }
 
   private async rejectOrphanedReplacement(storage: StorageManager, replacementId: string): Promise<void> {
