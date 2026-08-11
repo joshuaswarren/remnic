@@ -32,11 +32,14 @@ async function pause(page, milliseconds = 1_200) {
 }
 
 async function capture() {
-  const server = await startSupportPassportReplayServer();
-  const videoDir = await mkdtemp(path.join(os.tmpdir(), "what-helps-me-video-"));
-  const browser = await launchBrowser();
+  let server;
+  let videoDir;
+  let browser;
   let context;
   try {
+    server = await startSupportPassportReplayServer();
+    videoDir = await mkdtemp(path.join(os.tmpdir(), "what-helps-me-video-"));
+    browser = await launchBrowser();
     await mkdir(outputDir, { recursive: true });
     context = await browser.newContext({
       viewport: { width: 1280, height: 720 },
@@ -100,9 +103,9 @@ async function capture() {
     await copyFile(videoPath, path.join(outputDir, "demo.webm"));
   } finally {
     await context?.close().catch(() => undefined);
-    await browser.close().catch(() => undefined);
-    await server.stop().catch(() => undefined);
-    await rm(videoDir, { recursive: true, force: true });
+    await browser?.close().catch(() => undefined);
+    await server?.stop().catch(() => undefined);
+    if (videoDir) await rm(videoDir, { recursive: true, force: true });
   }
 }
 
