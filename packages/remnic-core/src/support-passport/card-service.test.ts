@@ -5,8 +5,8 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { StorageManager } from "../storage.js";
-import { SupportPassportError } from "./errors.js";
 import { SupportPassportCardService } from "./card-service.js";
+import { SupportPassportError } from "./errors.js";
 
 async function makeSubject() {
   StorageManager.clearAllStaticCaches();
@@ -28,7 +28,9 @@ async function makeSubject() {
   return {
     service,
     aliceStorage,
-    advance: () => { currentTime += 1_000; },
+    advance: () => {
+      currentTime += 1_000;
+    },
     cleanup: async () => {
       StorageManager.clearAllStaticCaches();
       await rm(root, { recursive: true, force: true });
@@ -90,7 +92,7 @@ test("card mutations reject stale revisions and invalid lifecycle changes", asyn
         cardId: draft.cardId,
         expectedRevision: "0".repeat(64),
       }),
-      (error: unknown) => error instanceof SupportPassportError && error.code === "revision_conflict",
+      (error: unknown) => error instanceof SupportPassportError && error.code === "revision_conflict"
     );
 
     const approved = await subject.service.approveCard({
@@ -104,7 +106,7 @@ test("card mutations reject stale revisions and invalid lifecycle changes", asyn
         cardId: approved.cardId,
         expectedRevision: approved.revision,
       }),
-      (error: unknown) => error instanceof SupportPassportError && error.code === "invalid_card_status",
+      (error: unknown) => error instanceof SupportPassportError && error.code === "invalid_card_status"
     );
   } finally {
     await subject.cleanup();
@@ -208,11 +210,14 @@ test("replacement approval rolls back when the prior card changes", async () => 
 
     const priorMemory = await subject.aliceStorage.getMemoryById(active.cardId);
     assert.ok(priorMemory);
-    assert.equal(await subject.aliceStorage.writeMemoryFrontmatterIfUnchanged(priorMemory, {
-      status: "superseded",
-      supersededBy: "another-replacement",
-      updated: "2026-08-11T12:01:00.000Z",
-    }), true);
+    assert.equal(
+      await subject.aliceStorage.writeMemoryFrontmatterIfUnchanged(priorMemory, {
+        status: "superseded",
+        supersededBy: "another-replacement",
+        updated: "2026-08-11T12:01:00.000Z",
+      }),
+      true
+    );
 
     await assert.rejects(
       subject.service.approveCard({
@@ -220,7 +225,7 @@ test("replacement approval rolls back when the prior card changes", async () => 
         cardId: replacement.cardId,
         expectedRevision: replacement.revision,
       }),
-      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict",
+      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
     );
     assert.equal((await subject.aliceStorage.getMemoryById(replacement.cardId))?.frontmatter.status, "pending_review");
   } finally {
