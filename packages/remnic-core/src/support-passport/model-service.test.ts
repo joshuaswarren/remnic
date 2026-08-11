@@ -208,6 +208,7 @@ test("helper questions recheck the grant after the model call", async () => {
       title: "Quiet space",
       statement: "Offer me a quiet place and time.",
       category: "environment",
+      reviewBy: "2026-09-01T12:00:00.000Z",
     });
     const active = await subject.cardService.approveCard({
       principal: "owner:alice",
@@ -217,7 +218,7 @@ test("helper questions recheck the grant after the model call", async () => {
     const created = await subject.grantService.createGrant({
       principal: "owner:alice",
       cards: [{ cardId: active.cardId, revision: active.revision }],
-      durationSeconds: 3_600,
+      expiresAt: "2026-08-11T13:00:00.000Z",
     });
     const route: SupportPassportModelRoute = {
       kind: "gateway",
