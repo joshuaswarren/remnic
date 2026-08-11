@@ -4,7 +4,11 @@ import { chmod, lstat, mkdir, open, rename, rm, type FileHandle } from "node:fs/
 import path from "node:path";
 
 import { expandTildePath } from "../utils/path.js";
-import { serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
+import {
+  type HeldFileLockController,
+  serializeMutations,
+  withHeldFileLock,
+} from "../utils/serialize-mutations.js";
 import { SupportPassportError } from "./errors.js";
 import {
   SupportPassportCreateGrantInputSchema,
@@ -18,6 +22,7 @@ const GRANT_LOCK_WAIT_MS = 5_000;
 const GRANT_LOCK_HEARTBEAT_MS = 10_000;
 const SAFE_GRANT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SAFE_OWNER_INDEX_HASH = /^[0-9a-f]{64}$/;
+const UNSUPPORTED_DIRECTORY_SYNC_ERRORS = new Set(["EINVAL", "ENOSYS", "ENOTSUP", "EOPNOTSUPP"]);
 
 export interface SupportPassportGrantStoreOptions {
   memoryDir: string;
@@ -47,13 +52,18 @@ function grantNotFound(): SupportPassportError {
   return new SupportPassportError("grant_not_found", "The share link was not found.", 404);
 }
 
-async function syncDirectory(directory: string): Promise<void> {
-  let handle: Awaited<ReturnType<typeof open>> | undefined;
+export async function syncDirectoryForDurability(
+  directory: string,
+  openDirectory: (directory: string) => Promise<Pick<FileHandle, "sync" | "close">> = async (target) =>
+    await open(target, "r")
+): Promise<void> {
+  let handle: Pick<FileHandle, "sync" | "close"> | undefined;
   try {
-    handle = await open(directory, "r");
+    handle = await openDirectory(directory);
     await handle.sync();
-  } catch {
-    return;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (!UNSUPPORTED_DIRECTORY_SYNC_ERRORS.has(code ?? "")) throw error;
   } finally {
     await handle?.close().catch(() => undefined);
   }
@@ -113,7 +123,7 @@ async function writePrivateFileAtomically(filePath: string, content: string): Pr
     handle = undefined;
     await rename(tempPath, filePath);
     await chmod(filePath, 0o600);
-    await syncDirectory(directory);
+    await syncDirectoryForDurability(directory);
   } catch (error) {
     await handle?.close().catch(() => undefined);
     await rm(tempPath, { force: true }).catch(() => undefined);
@@ -152,7 +162,7 @@ export class SupportPassportGrantStore {
     ) {
       throw new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
     }
-    return await this.withMutationLock(async () => {
+    return await this.withMutationLock(async (lock) => {
       const secretBytes = this.makeSecret();
       if (!Buffer.isBuffer(secretBytes) || secretBytes.length !== 32) {
         throw new Error("SupportPassportGrantStore.makeSecret must return 32 bytes");
@@ -176,9 +186,10 @@ export class SupportPassportGrantStore {
         createdAt: createdAt.toISOString(),
         expiresAt: parsed.data.expiresAt,
       });
+      await this.requireMutationLock(lock);
       await this.writeState(state, true);
       try {
-        await this.addToOwnerIndex(state);
+        await this.addToOwnerIndex(state, lock);
       } catch (error) {
         await rm(this.filePath(state.grantId), { force: true }).catch(() => undefined);
         throw error;
@@ -228,7 +239,7 @@ export class SupportPassportGrantStore {
     expectedStateVersion?: number;
   }): Promise<SupportPassportGrantState> {
     if (!SAFE_GRANT_ID.test(input.grantId)) throw grantNotFound();
-    return await this.withMutationLock(async () => {
+    return await this.withMutationLock(async (lock) => {
       let state: SupportPassportGrantState;
       try {
         state = await this.readState(input.grantId);
@@ -248,6 +259,7 @@ export class SupportPassportGrantStore {
         stateVersion: state.stateVersion + 1,
         revokedAt: this.now().toISOString(),
       });
+      await this.requireMutationLock(lock);
       await this.writeState(revoked);
       return revoked;
     });
@@ -267,11 +279,15 @@ export class SupportPassportGrantStore {
     return sha256("support-passport-owner-index:v1", `${namespace}\0${principalHash}`);
   }
 
-  private async addToOwnerIndex(state: SupportPassportGrantState): Promise<void> {
+  private async addToOwnerIndex(
+    state: SupportPassportGrantState,
+    lock: HeldFileLockController
+  ): Promise<void> {
     const ownerHash = this.ownerHash(state.namespace, state.principalHash);
     const current = await this.readOwnerIndexByHash(ownerHash);
     if (current.includes(state.grantId)) return;
     const grantIds = [...current, state.grantId].sort((a, b) => a.localeCompare(b));
+    await this.requireMutationLock(lock);
     await this.writeOwnerIndex(ownerHash, grantIds);
   }
 
@@ -368,7 +384,7 @@ export class SupportPassportGrantStore {
     await Promise.all(directories.slice(1).map((directory) => chmod(directory, 0o700)));
   }
 
-  private async withMutationLock<T>(task: () => Promise<T>): Promise<T> {
+  private async withMutationLock<T>(task: (lock: HeldFileLockController) => Promise<T>): Promise<T> {
     await this.ensureSafeDirectories();
     const lockPath = path.join(this.grantsDir, ".grants.lock");
     return await serializeMutations(`support-passport-grants:${this.grantsDir}`, () =>
@@ -379,11 +395,16 @@ export class SupportPassportGrantStore {
           maxWaitMs: GRANT_LOCK_WAIT_MS,
           heartbeatMs: GRANT_LOCK_HEARTBEAT_MS,
         },
-        async (acquired) => {
+        async (acquired, lock) => {
           if (!acquired) throw new Error("could not acquire the support passport grant lock");
-          return await task();
+          return await task(lock);
         }
       )
     );
+  }
+
+  private async requireMutationLock(lock: HeldFileLockController): Promise<void> {
+    if (await lock.refresh()) return;
+    throw new SupportPassportError("storage_conflict", "The share link store changed during the request.", 409);
   }
 }
