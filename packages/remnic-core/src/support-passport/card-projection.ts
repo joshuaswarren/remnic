@@ -1,12 +1,12 @@
-import type { MemoryFile } from "../types.js";
 import { stripAttributesSuffix } from "../structured-attributes.js";
+import type { MemoryFile } from "../types.js";
 import {
-  computeSupportPassportCardRevision,
+  type SupportPassportCard,
   SupportPassportCardCategorySchema,
-  SupportPassportMemoryIdSchema,
   SupportPassportCardSchema,
   SupportPassportCardStatusSchema,
-  type SupportPassportCard,
+  SupportPassportMemoryIdSchema,
+  computeSupportPassportCardRevision,
 } from "./contracts.js";
 
 export const SUPPORT_PASSPORT_CARD_TAG = "support-passport-card";
@@ -44,7 +44,8 @@ export function projectSupportPassportCard(memory: MemoryFile): StoredSupportPas
   const status = SupportPassportCardStatusSchema.safeParse(frontmatter.status);
   const order = Number(attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.order]);
   const sourceMemoryIds = parseSourceMemoryIds(attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.sourceMemoryIds] ?? "");
-  if (!category.success || !status.success || !Number.isSafeInteger(order) || order < 0 || !sourceMemoryIds) return null;
+  if (!category.success || !status.success || !Number.isSafeInteger(order) || order < 0 || !sourceMemoryIds)
+    return null;
 
   const fields = {
     cardId: frontmatter.id,

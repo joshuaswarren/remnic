@@ -1,24 +1,24 @@
 import type { StorageManager } from "../storage.js";
 import { composeMemoryEnvelope } from "../write-envelope.js";
 import {
-  computeSupportPassportCardRevision,
-  type SupportPassportCard,
-  type SupportPassportCardCategory,
-  type SupportPassportCardMutationInput,
-  SupportPassportCardMutationInputSchema,
-  SupportPassportCardListSchema,
-  type SupportPassportManualDraftInput,
-  SupportPassportManualDraftInputSchema,
-  SupportPassportListCardsInputSchema,
-  type SupportPassportReplaceCardInput,
-  SupportPassportReplaceCardInputSchema,
-} from "./contracts.js";
-import {
   SUPPORT_PASSPORT_ATTRIBUTE_KEYS,
   SUPPORT_PASSPORT_CARD_TAG,
-  projectSupportPassportCard,
   type StoredSupportPassportCard,
+  projectSupportPassportCard,
 } from "./card-projection.js";
+import {
+  type SupportPassportCard,
+  type SupportPassportCardCategory,
+  SupportPassportCardListSchema,
+  type SupportPassportCardMutationInput,
+  SupportPassportCardMutationInputSchema,
+  SupportPassportListCardsInputSchema,
+  type SupportPassportManualDraftInput,
+  SupportPassportManualDraftInputSchema,
+  type SupportPassportReplaceCardInput,
+  SupportPassportReplaceCardInputSchema,
+  computeSupportPassportCardRevision,
+} from "./contracts.js";
 import { SupportPassportError } from "./errors.js";
 
 export interface SupportPassportOwnerScope {
@@ -97,7 +97,7 @@ export class SupportPassportCardService {
     const approved = await storage.writeMemoryFrontmatterIfUnchanged(
       card.memory,
       { status: "active", updated: updatedAt },
-      { actor: "support-passport.approve", reasonCode: "owner-approved" },
+      { actor: "support-passport.approve", reasonCode: "owner-approved" }
     );
     if (!approved) throw new SupportPassportError("storage_conflict", "The support card changed before approval.", 409);
 
@@ -108,7 +108,7 @@ export class SupportPassportCardService {
         card.card.cardId,
         "support-passport-replacement",
         { supersessionCause: "direct" },
-        { requireActive: true, expectedSnapshot: prior.memory },
+        { requireActive: true, expectedSnapshot: prior.memory }
       );
       if (!retired) {
         await this.rollbackApproval(storage, card.card.cardId);
@@ -136,25 +136,28 @@ export class SupportPassportCardService {
       sourceMemoryIds: string[];
       supersedes?: string;
       order?: number;
-    },
+    }
   ): Promise<SupportPassportCard> {
     const now = this.now();
     const reviewBy = input.reviewBy ?? new Date(now.getTime() + DEFAULT_REVIEW_INTERVAL_MS).toISOString();
     if (Date.parse(reviewBy) <= now.getTime()) throw invalidInput();
-    const order = input.order ?? await this.nextOrder(storage);
-    const envelope = composeMemoryEnvelope({
-      content: input.statement,
-      category: "preference",
-      tags: [SUPPORT_PASSPORT_CARD_TAG],
-      structuredAttributes: {
-        [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.title]: input.title,
-        [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.category]: input.category,
-        [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.order]: String(order),
-        [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.reviewBy]: reviewBy,
-        [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.sourceMemoryIds]: input.sourceMemoryIds.join(","),
+    const order = input.order ?? (await this.nextOrder(storage));
+    const envelope = composeMemoryEnvelope(
+      {
+        content: input.statement,
+        category: "preference",
+        tags: [SUPPORT_PASSPORT_CARD_TAG],
+        structuredAttributes: {
+          [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.title]: input.title,
+          [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.category]: input.category,
+          [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.order]: String(order),
+          [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.reviewBy]: reviewBy,
+          [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.sourceMemoryIds]: input.sourceMemoryIds.join(","),
+        },
+        sourceReason: "support-passport",
       },
-      sourceReason: "support-passport",
-    }, { source: "support-passport", now: this.now });
+      { source: "support-passport", now: this.now }
+    );
     const written = await storage.writeSealedMemory(envelope, {
       actor: "support-passport.create-draft",
       status: "pending_review",
@@ -171,7 +174,7 @@ export class SupportPassportCardService {
     input: SupportPassportCardMutationInput,
     expectedStatus: "pending_review" | "active",
     nextStatus: "rejected" | "archived",
-    actor: string,
+    actor: string
   ): Promise<SupportPassportCard> {
     const { storage, card } = await this.resolveMutation(input);
     this.requireStatus(card, expectedStatus);
@@ -183,9 +186,10 @@ export class SupportPassportCardService {
         updated: updatedAt,
         ...(nextStatus === "archived" ? { archivedAt: updatedAt } : {}),
       },
-      { actor, reasonCode: nextStatus === "archived" ? "owner-withdrew" : "owner-rejected" },
+      { actor, reasonCode: nextStatus === "archived" ? "owner-withdrew" : "owner-rejected" }
     );
-    if (!changed) throw new SupportPassportError("storage_conflict", "The support card changed before the request completed.", 409);
+    if (!changed)
+      throw new SupportPassportError("storage_conflict", "The support card changed before the request completed.", 409);
     return {
       ...card.card,
       status: nextStatus,
@@ -194,11 +198,7 @@ export class SupportPassportCardService {
     };
   }
 
-  private revisionFor(
-    card: SupportPassportCard,
-    status: SupportPassportCard["status"],
-    updatedAt: string,
-  ): string {
+  private revisionFor(card: SupportPassportCard, status: SupportPassportCard["status"], updatedAt: string): string {
     return computeSupportPassportCardRevision({
       cardId: card.cardId,
       title: card.title,
@@ -215,7 +215,7 @@ export class SupportPassportCardService {
     const rolledBack = await storage.writeMemoryFrontmatterIfUnchanged(
       current.memory,
       { status: "pending_review", updated: this.now().toISOString() },
-      { actor: "support-passport.approve-rollback", reasonCode: "replacement-retirement-failed" },
+      { actor: "support-passport.approve-rollback", reasonCode: "replacement-retirement-failed" }
     );
     if (!rolledBack) {
       throw new SupportPassportError("storage_conflict", "The replacement support card could not be rolled back.", 500);
