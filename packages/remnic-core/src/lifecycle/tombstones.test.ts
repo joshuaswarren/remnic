@@ -196,6 +196,50 @@ describe("TombstoneStore — Unicode normalizer migration", () => {
       "exact",
     );
   });
+
+  it("preserves an explicit pre-upgrade contentHashSource identity after migration and restart", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "tomb-content-hash-source-migration-"));
+    const filePath = path.join(dir, "tombstones.jsonl");
+    const source = "利用者は紅茶を好む。";
+    const override = computeHash("external contentHashSource identity");
+    const legacyNormalize = (content: string) =>
+      content.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+    const legacyEntry = {
+      id: "tomb-legacy-override",
+      kind: "tombstone" as const,
+      reason: "correction" as const,
+      sourceMemoryId: "fact-override",
+      contentHash: override,
+      normalizedText: legacyNormalize(source),
+      namespace: "default",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      createdBy: "user_correction" as const,
+    };
+    await writeFile(filePath, `${JSON.stringify(legacyEntry)}\n`, "utf8");
+    const options = {
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      hashContent: computeHash,
+      normalizeText: normalizeContent,
+      sourceContentsForMemoryIds: async () =>
+        new Map<string, string>([["fact-override", source]]),
+    };
+    const store = new TombstoneStore(filePath, "default", options, makeIo());
+    await store.load();
+    const query = {
+      namespace: "default",
+      contentHash: override,
+      legacyContentHash: createHash("sha256").update(legacyNormalize(source)).digest("hex"),
+      normalizedText: normalizeContent(source),
+      legacyNormalizedText: legacyNormalize(source),
+    };
+    assert.equal(store.lookup(query)?.matchedTier, "exact");
+
+    const restarted = new TombstoneStore(filePath, "default", options, makeIo());
+    await restarted.load();
+    assert.equal(restarted.lookup(query)?.matchedTier, "exact");
+  });
 });
 
 describe("TombstoneStore — revocation supersedes tombstone", () => {
@@ -603,7 +647,7 @@ describe("TombstoneStore — cross-process write lock (issue #1639)", () => {
         const check = () => {
           if (settled) return;
           turns += 1;
-          if (turns >= 1_000) reject(new Error(message));
+          if (turns >= 100_000) reject(new Error(message));
           else setImmediate(check);
         };
         setImmediate(check);

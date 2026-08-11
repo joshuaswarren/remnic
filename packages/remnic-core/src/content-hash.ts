@@ -19,6 +19,20 @@ export function normalizeContent(content: string): string {
     .trim();
 }
 
+/** Normalize content with the pre-Unicode ASCII-only normalizer. */
+export function normalizeLegacyContent(content: string): string {
+  return content
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Compute the SHA-256 hash used by pre-Unicode content indexes. */
+export function computeLegacyContentHash(content: string): string {
+  return createHash("sha256").update(normalizeLegacyContent(content)).digest("hex");
+}
+
 /** Normalize content and compute SHA-256 hash. */
 export function computeContentHash(content: string): string {
   return createHash("sha256").update(normalizeContent(content)).digest("hex");

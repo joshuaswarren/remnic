@@ -13,7 +13,11 @@ import {
 } from "node:fs/promises";
 import { appendFileSync, createReadStream, mkdirSync, readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { normalizeContent, computeContentHash } from "./content-hash.js";
+import {
+  computeContentHash,
+  computeLegacyContentHash,
+  normalizeContent,
+} from "./content-hash.js";
 import { raceAbort } from "./abort-error.js";
 import { checkCorpusReadAbort, type CorpusReadOptions } from "./corpus-read-cancellation.js";
 import { selectArtifactMatches, type ArtifactSearchOptions } from "./artifact-search.js";
@@ -3032,15 +3036,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
           }
         };
         collectMatches(await this.collectActiveMemoryPaths());
-        if (found.size < requested.size) {
-          collectMatches(await this.collectColdMemoryPaths());
-        }
+        if (found.size < requested.size) collectMatches(await this.collectColdMemoryPaths());
         const contents = new Map<string, string>();
         for (const memory of await this.readParsedMemoriesFromPaths(matchingPaths, 50)) {
-          contents.set(
-            memory.frontmatter.id,
-            stripCitationForTemplate(memory.content, this.citationTemplate),
-          );
+          contents.set(memory.frontmatter.id, stripCitationForTemplate(stripAttributesSuffix(memory.content), this.citationTemplate));
         }
         return contents;
       },
@@ -3402,9 +3401,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private corpusRegisteredHash(memory: MemoryFile): string | null {
     const content = stripAttributesSuffix(memory.content);
     const stripped = stripCitationForTemplate(content, this.citationTemplate);
-    const canonicalContent = stripped !== content || !hasCitation(content)
-      ? sanitizeMemoryContent(stripped !== content ? stripped : content).text
-      : null;
+    const canonicalContent =
+      stripped !== content || !hasCitation(content)
+        ? sanitizeMemoryContent(stripped !== content ? stripped : content).text
+        : null;
     const persistedHash = memory.frontmatter.contentHash;
     if (canonicalContent === null) return persistedHash ?? null;
 
@@ -3412,21 +3412,11 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (
       !persistedHash ||
       persistedHash === currentHash ||
-      persistedHash === this.legacyCorpusHash(canonicalContent)
+      persistedHash === computeLegacyContentHash(canonicalContent)
     ) {
       return currentHash;
     }
     return persistedHash;
-  }
-
-  /** Compute the pre-Unicode hash used by markerless legacy indexes. */
-  private legacyCorpusHash(content: string): string {
-    const normalized = content
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-    return createHash("sha256").update(normalized).digest("hex");
   }
 
   private get questionsDir(): string {

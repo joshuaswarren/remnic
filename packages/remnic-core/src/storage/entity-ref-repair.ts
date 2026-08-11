@@ -11,6 +11,7 @@
  * leave disk in the state peers/caches were told about.
  */
 import { unlink } from "node:fs/promises";
+import { computeLegacyContentHash, normalizeLegacyContent } from "../content-hash.js";
 import { log } from "../logger.js";
 import type { MemoryFile, MemoryFrontmatter } from "../types.js";
 import * as entityRefs from "./entity-canonical-id-references.js";
@@ -74,6 +75,8 @@ export class EntityRefRepair {
           : [];
       const match = applyTombstoneResurrectionGate(store, fm, {
         normalizedText: ContentHashIndex.normalizeContent(hashSource),
+        legacyContentHash: computeLegacyContentHash(hashSource),
+        legacyNormalizedText: normalizeLegacyContent(hashSource),
         supersessionKeys,
         namespace: this.deps.tombstonesNamespace(),
       });
