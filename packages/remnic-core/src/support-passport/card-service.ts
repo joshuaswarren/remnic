@@ -1,9 +1,7 @@
-import path from "node:path";
-
 import type { StorageManager } from "../index.js";
 import { log } from "../logger.js";
 import type { MemoryFile } from "../types.js";
-import { type HeldFileLockController, serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
+import type { HeldFileLockController } from "../utils/serialize-mutations.js";
 import { composeMemoryEnvelope } from "../write-envelope.js";
 import {
   SUPPORT_PASSPORT_ATTRIBUTE_KEYS,
@@ -27,6 +25,7 @@ import {
   computeSupportPassportCardRevision,
 } from "./contracts.js";
 import { SupportPassportError } from "./errors.js";
+import { withSupportPassportOwnerLock } from "./owner-lock.js";
 
 export interface SupportPassportOwnerScope {
   principal: string;
@@ -41,8 +40,6 @@ export interface SupportPassportCardServiceDependencies {
 
 const OWNER_VISIBLE_STATUSES = new Set(["pending_review", "active"]);
 const MAX_OWNER_VISIBLE_CARDS = 100;
-const CARD_MUTATION_LOCK_STALE_MS = 60_000;
-const CARD_MUTATION_LOCK_MAX_WAIT_MS = 30_000;
 
 function invalidInput(): SupportPassportError {
   return new SupportPassportError("invalid_input", "The support card request is invalid.", 400);
@@ -891,19 +888,7 @@ export class SupportPassportCardService {
     storage: StorageManager,
     task: (lock: HeldFileLockController) => Promise<T>
   ): Promise<T> {
-    const lockPath = path.join(storage.dir, "state", "support-passport-cards.lock");
-    return await serializeMutations(lockPath, () =>
-      withHeldFileLock(
-        lockPath,
-        { staleMs: CARD_MUTATION_LOCK_STALE_MS, maxWaitMs: CARD_MUTATION_LOCK_MAX_WAIT_MS },
-        async (acquired, lock) => {
-          if (!acquired) {
-            throw new SupportPassportError("storage_conflict", "The support passport is busy. Try again.", 409);
-          }
-          return await task(lock);
-        }
-      )
-    );
+    return await withSupportPassportOwnerLock(storage, task);
   }
 
   private async restorePriorAfterApprovalFailure(
