@@ -78,16 +78,34 @@ export class SupportPassportCardService {
     const { storage } = await this.resolveOwner(parsed.data.principal);
     const prior = await this.requireCard(storage, parsed.data.cardId);
     this.requireRevision(prior, parsed.data.expectedRevision);
-    this.requireStatus(prior, "active");
-    return await this.createDraft(storage, {
+    if (prior.card.status !== "active" && prior.card.status !== "pending_review") {
+      throw new SupportPassportError(
+        "invalid_card_status",
+        "Only a draft or approved support card can be edited.",
+        409
+      );
+    }
+    const replacement = await this.createDraft(storage, {
       title: parsed.data.title,
       statement: parsed.data.statement,
       category: parsed.data.category,
       reviewBy: parsed.data.reviewBy,
       sourceMemoryIds: prior.sourceMemoryIds,
-      supersedes: prior.card.cardId,
+      supersedes: prior.card.status === "active" ? prior.card.cardId : undefined,
       order: prior.order,
     });
+    if (prior.card.status === "active") return replacement;
+
+    const replacedAt = this.now().toISOString();
+    const rejected = await storage.writeMemoryFrontmatterIfUnchanged(
+      prior.memory,
+      { status: "rejected", updated: replacedAt },
+      { actor: "support-passport.replace-draft", reasonCode: "owner-replaced-draft" }
+    );
+    if (rejected) return replacement;
+
+    await this.rejectCreatedDraft(storage, replacement.cardId, "draft-replacement-failed");
+    throw new SupportPassportError("storage_conflict", "The support card changed before it was edited.", 409);
   }
 
   async approveCard(input: SupportPassportCardMutationInput): Promise<SupportPassportCard> {
@@ -218,6 +236,18 @@ export class SupportPassportCardService {
       { actor: "support-passport.approve-rollback", reasonCode: "replacement-retirement-failed" }
     );
     if (!rolledBack) {
+      throw new SupportPassportError("storage_conflict", "The replacement support card could not be rolled back.", 500);
+    }
+  }
+
+  private async rejectCreatedDraft(storage: StorageManager, cardId: string, reasonCode: string): Promise<void> {
+    const current = await this.requireCard(storage, cardId);
+    const rejected = await storage.writeMemoryFrontmatterIfUnchanged(
+      current.memory,
+      { status: "rejected", updated: this.now().toISOString() },
+      { actor: "support-passport.replace-draft-rollback", reasonCode }
+    );
+    if (!rejected) {
       throw new SupportPassportError("storage_conflict", "The replacement support card could not be rolled back.", 500);
     }
   }

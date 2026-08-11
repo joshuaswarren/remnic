@@ -185,6 +185,40 @@ test("a rejected draft leaves no owner-visible card", async () => {
   }
 });
 
+test("editing a pending card creates one replacement draft and rejects the old draft", async () => {
+  const subject = await makeSubject();
+  try {
+    const draft = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Quiet place",
+      statement: "Offer me a quiet place.",
+      category: "environment",
+    });
+
+    subject.advance();
+    const edited = await subject.service.replaceCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+      title: "Quiet place and time",
+      statement: "Offer me a quiet place and time.",
+      category: "environment",
+      reviewBy: "2026-09-01T12:00:00.000Z",
+    });
+
+    assert.equal(edited.status, "pending_review");
+    assert.notEqual(edited.cardId, draft.cardId);
+    assert.equal(edited.statement, "Offer me a quiet place and time.");
+    assert.equal((await subject.aliceStorage.getMemoryById(draft.cardId))?.frontmatter.status, "rejected");
+    assert.deepEqual(
+      (await subject.service.listCards({ principal: "owner:alice" })).map((card) => card.cardId),
+      [edited.cardId]
+    );
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("replacement approval rolls back when the prior card changes", async () => {
   const subject = await makeSubject();
   try {
