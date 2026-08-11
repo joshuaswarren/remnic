@@ -493,6 +493,14 @@ remnic bench run locomo \
   --calibration-frontier-config-sha256 <frontierJudgeConfigHash>
   # ...the same local judge identity and normal run flags
 ```
+The sibling `scripts/bench/run-tierf-opus.sh` and
+`scripts/bench/run-tierf-opus-real.sh` wrappers use that same calibration
+directory for calibration, preflight, and attachment. Set
+`TIERF_CALIBRATION_DIR` on both invocations to override it. The real-profile
+wrapper reads both persisted configuration hashes and passes the directory,
+hashes, manifest, and request timeout to each full run; the CLI fails before
+benchmark dispatch when any binding is missing or stale.
+
 
 For a non-`local-lab` responder profile, `--local-lab-manifest` binds only the
 judge. The CLI judge provider/model/base URL remain explicit assertions against

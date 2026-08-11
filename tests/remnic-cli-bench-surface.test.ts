@@ -582,24 +582,71 @@ test("frontier calibration config preserves timeout, 429, and thinking overlays"
   );
 });
 
-test("Tier-F runbook binds baseline runs to the same manifest judge configuration", async () => {
+test("Tier-F runbooks bind every run to the calibrated judge configuration", async () => {
   const source = await readFile("packages/remnic-cli/src/index.ts", "utf8");
-  const script = await readFile("scripts/bench/run-tierf-opus.sh", "utf8");
+  const scripts = [
+    {
+      path: "scripts/bench/run-tierf-opus.sh",
+      runtimeProfile: "baseline",
+    },
+    {
+      path: "scripts/bench/run-tierf-opus-real.sh",
+      runtimeProfile: "real",
+    },
+  ] as const;
 
   assert.match(source, /localLabManifestPath: parsed\.localLabManifestPath/);
   assert.match(source, /bench\.resolveLocalLabJudgeProviderConfig\(\{/);
-  for (const benchmark of ["longmemeval", "locomo"]) {
-    const commandStart = script.indexOf(`run ${benchmark} \\\n`);
-    assert.ok(commandStart >= 0, `missing Tier-F ${benchmark} run command`);
-    const commandEnd = script.indexOf("2>&1 | tee", commandStart);
-    const command = script.slice(commandStart, commandEnd);
-    assert.match(command, /--runtime-profile baseline/);
-    assert.match(command, /--local-lab-manifest "\$MANIFEST"/);
-    assert.match(command, /--request-timeout 180000/);
-    assert.match(command, /"\$\{JUDGE_ARGS\[@\]\}"/);
-    assert.match(command, /--calibration-local-config-sha256/);
-    assert.match(command, /--calibration-frontier-config-sha256/);
+
+  for (const config of scripts) {
+    const script = await readFile(config.path, "utf8");
+    assert.match(
+      script,
+      /CALIBRATION_DIR="\$\{TIERF_CALIBRATION_DIR:-\$HOME\/\.remnic\/bench\/build-week-2026\/calibration\}"/,
+    );
+    for (const benchmark of ["longmemeval", "locomo"]) {
+      const commandStart = script.indexOf(`run ${benchmark} \\\n`);
+      assert.ok(commandStart >= 0, `missing Tier-F ${benchmark} run command in ${config.path}`);
+      const commandEnd = script.indexOf("2>&1 | tee", commandStart);
+      const command = script.slice(commandStart, commandEnd);
+      assert.match(command, new RegExp(`--runtime-profile ${config.runtimeProfile}`));
+      assert.match(command, /--local-lab-manifest "\$MANIFEST"/);
+      assert.match(command, /--request-timeout 180000/);
+      assert.match(command, /"\$\{JUDGE_ARGS\[@\]\}"/);
+      assert.match(command, /--calibration-dir "\$CALIBRATION_DIR"/);
+      const hashPrefix = benchmark === "longmemeval" ? "LONGMEM" : "LOCOMO";
+      assert.ok(
+        command.includes(`--calibration-local-config-sha256 "\$${hashPrefix}_LOCAL_HASH"`),
+        `${config.path} must bind ${benchmark} to its matching local calibration hash`,
+      );
+      assert.ok(
+        command.includes(`--calibration-frontier-config-sha256 "\$${hashPrefix}_FRONTIER_HASH"`),
+        `${config.path} must bind ${benchmark} to its matching frontier calibration hash`,
+      );
+      assert.ok(
+        script.includes(
+          `${hashPrefix}_LOCAL_HASH="$(node -p "require(process.argv[1]).localJudgeConfigHash" "\$CALIBRATION_DIR/${benchmark}.json")"`,
+        ),
+        `${config.path} must read ${benchmark}'s local hash from its matching state file`,
+      );
+      assert.ok(
+        script.includes(
+          `${hashPrefix}_FRONTIER_HASH="$(node -p "require(process.argv[1]).frontierJudgeConfigHash" "\$CALIBRATION_DIR/${benchmark}.json")"`,
+        ),
+        `${config.path} must read ${benchmark}'s frontier hash from its matching state file`,
+      );
+    }
   }
+
+  const realScript = await readFile("scripts/bench/run-tierf-opus-real.sh", "utf8");
+  assert.match(realScript, /local file="\$CALIBRATION_DIR\/\$\{benchmark\}\.json"/);
+  const calibrationPreflight = realScript.indexOf('step "preflight: calibration state');
+  const providerAuthProbe = realScript.indexOf('step "preflight: claude auth');
+  assert.ok(calibrationPreflight >= 0, "real-profile runner must preflight calibration state");
+  assert.ok(
+    providerAuthProbe > calibrationPreflight,
+    "real-profile runner must validate calibration file shape before provider auth",
+  );
 });
 
 test("frontier and unrelated runs ignore local calibration state without requiring pins", async () => {

@@ -24,6 +24,8 @@ cd "$(dirname "$0")/../.."
 LOG_DIR="${TIERF_LOG_DIR:-$HOME/tierf-logs}"
 mkdir -p "$LOG_DIR"
 REMNIC_CONFIG="docs/benchmarks/configs/tierf-real-remnic-config.json"
+MANIFEST="docs/benchmarks/configs/local-lab-3090.json"
+CALIBRATION_DIR="${TIERF_CALIBRATION_DIR:-$HOME/.remnic/bench/build-week-2026/calibration}"
 # The bench ollama provider appends /generate and /tags directly to baseUrl —
 # it needs the /api form (the local-lab manifest path normalizes this, the raw
 # CLI flag does not).
@@ -33,20 +35,12 @@ CALIBRATION_SAMPLE_SIZE=200
 
 step() { printf '\n=== %s — %s ===\n' "$(date -u +%FT%TZ)" "$1"; }
 
-step "preflight: claude auth (real-profile pass)"
-AUTH_OUT="$(cd /tmp && timeout 180 claude -p "Reply with exactly: pong" --max-turns 1 2>&1 | tail -1)"
-printf 'claude probe: %s\n' "$AUTH_OUT"
-if [[ "$AUTH_OUT" != *pong* ]]; then
-  echo "BLOCKED: claude CLI is not authenticated on this host. Run: claude /login" >&2
-  exit 2
-fi
-
 # judge-calibrate is NOT re-run here (the judge pair is unchanged from the
 # baseline pass); but the persisted calibration state MUST exist, or the
 # real-profile artifacts carry no kappa and the publishability gate fails.
 preflight_calibration_state() {
   local benchmark="$1"
-  local file="$HOME/.remnic/bench/calibration/${benchmark}.json"
+  local file="$CALIBRATION_DIR/${benchmark}.json"
   if [ ! -f "$file" ] || ! python3 -c "
 import json, sys
 d = json.load(open(sys.argv[1]))
@@ -69,6 +63,9 @@ ci = d.get('confidenceInterval')
 assert isinstance(ci, dict), 'missing confidenceInterval'
 assert all(isinstance(ci.get(k), (int, float)) for k in ('lower', 'upper', 'level')), f\"confidenceInterval: {ci}\"
 assert isinstance(d.get('bootstrapSamples'), int) and d['bootstrapSamples'] > 0, f\"bootstrapSamples: {d.get('bootstrapSamples')}\"
+for key in ('localJudgeConfigHash', 'frontierJudgeConfigHash'):
+  value = d.get(key)
+  assert isinstance(value, str) and len(value) == 64 and all(c in '0123456789abcdef' for c in value), f\"missing or invalid {key}\"
 " "$file" "$CALIBRATION_SAMPLE_SIZE" 2>/dev/null; then
     echo "BLOCKED: calibration state for ${benchmark} is missing, corrupt, unpinned, below the ${CALIBRATION_SAMPLE_SIZE}-question contract, or scoped to a different judge pair - rerun judge-calibrate against the pinned answer source." >&2
     exit 3
@@ -79,13 +76,31 @@ step "preflight: calibration state (from baseline pass)"
 preflight_calibration_state locomo
 preflight_calibration_state longmemeval
 
+LONGMEM_LOCAL_HASH="$(node -p "require(process.argv[1]).localJudgeConfigHash" "$CALIBRATION_DIR/longmemeval.json")"
+LONGMEM_FRONTIER_HASH="$(node -p "require(process.argv[1]).frontierJudgeConfigHash" "$CALIBRATION_DIR/longmemeval.json")"
+LOCOMO_LOCAL_HASH="$(node -p "require(process.argv[1]).localJudgeConfigHash" "$CALIBRATION_DIR/locomo.json")"
+LOCOMO_FRONTIER_HASH="$(node -p "require(process.argv[1]).frontierJudgeConfigHash" "$CALIBRATION_DIR/locomo.json")"
+
+step "preflight: claude auth (real-profile pass)"
+AUTH_OUT="$(cd /tmp && timeout 180 claude -p "Reply with exactly: pong" --max-turns 1 2>&1 | tail -1)"
+printf 'claude probe: %s\n' "$AUTH_OUT"
+if [[ "$AUTH_OUT" != *pong* ]]; then
+  echo "BLOCKED: claude CLI is not authenticated on this host. Run: claude /login" >&2
+  exit 2
+fi
+
 step "full LongMemEval (500 tasks) — real profile, Opus responder, local judge"
 node scripts/run-bench-cli.mjs run longmemeval \
   --runtime-profile real \
   --remnic-config "$REMNIC_CONFIG" \
   --system-provider claude-cli --system-model opus \
   "${JUDGE_ARGS[@]}" \
+  --local-lab-manifest "$MANIFEST" \
+  --request-timeout 180000 \
   --dataset-dir bench-datasets/longmemeval \
+  --calibration-dir "$CALIBRATION_DIR" \
+  --calibration-local-config-sha256 "$LONGMEM_LOCAL_HASH" \
+  --calibration-frontier-config-sha256 "$LONGMEM_FRONTIER_HASH" \
   --seed "$SEED" \
   2>&1 | tee "$LOG_DIR/longmemeval-full-real.log"
 
@@ -95,7 +110,12 @@ node scripts/run-bench-cli.mjs run locomo \
   --remnic-config "$REMNIC_CONFIG" \
   --system-provider claude-cli --system-model opus \
   "${JUDGE_ARGS[@]}" \
+  --local-lab-manifest "$MANIFEST" \
+  --request-timeout 180000 \
   --dataset-dir bench-datasets/locomo \
+  --calibration-dir "$CALIBRATION_DIR" \
+  --calibration-local-config-sha256 "$LOCOMO_LOCAL_HASH" \
+  --calibration-frontier-config-sha256 "$LOCOMO_FRONTIER_HASH" \
   --seed "$SEED" \
   2>&1 | tee "$LOG_DIR/locomo-full-real.log"
 
