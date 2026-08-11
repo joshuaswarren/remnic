@@ -49,6 +49,28 @@ test("manual and replacement drafts require the owner's review date", () => {
   );
 });
 
+test("support card titles reject attribute delimiters and line breaks", () => {
+  for (const title of ["Quiet ] space", "Quiet\nspace", "Quiet\rspace"]) {
+    const manualDraft = {
+      principal: "owner:alice",
+      title,
+      statement: "Offer me a quiet place and time.",
+      category: "environment",
+      reviewBy: "2027-02-07T12:00:00.000Z",
+    };
+    assert.equal(SupportPassportManualDraftInputSchema.safeParse(manualDraft).success, false);
+    assert.equal(
+      SupportPassportReplaceCardInputSchema.safeParse({
+        ...manualDraft,
+        cardId: "card-1",
+        expectedRevision: "a".repeat(64),
+      }).success,
+      false
+    );
+    assert.equal(SupportPassportCardSchema.safeParse({ ...makeCard("card-1"), title }).success, false);
+  }
+});
+
 test("support card revisions change when any public field changes", () => {
   const initial = makeCard("card-1");
   const changed = computeSupportPassportCardRevision({

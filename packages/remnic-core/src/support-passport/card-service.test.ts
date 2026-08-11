@@ -532,6 +532,111 @@ test("a stale mutation does not run replacement approval recovery", async () => 
   }
 });
 
+test("rejecting after a durable prior retirement completes replacement recovery first", async () => {
+  const subject = await makeSubject();
+  try {
+    const draft = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Plan changes",
+      statement: "Tell me before plans change.",
+      category: "transitions",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const active = await subject.service.approveCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+    });
+    const replacement = await subject.service.replaceCard({
+      principal: "owner:alice",
+      cardId: active.cardId,
+      expectedRevision: active.revision,
+      title: "Plan changes",
+      statement: "Tell me early when plans change.",
+      category: "transitions",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const prior = await subject.aliceStorage.getMemoryById(active.cardId);
+    assert.ok(prior);
+    assert.equal(
+      await subject.aliceStorage.supersedeMemory(
+        active.cardId,
+        replacement.cardId,
+        "support-passport-replacement",
+        { supersessionCause: "direct" },
+        { requireActive: true, expectedSnapshot: prior }
+      ),
+      true
+    );
+
+    await assert.rejects(
+      subject.service.rejectCard({
+        principal: "owner:alice",
+        cardId: replacement.cardId,
+        expectedRevision: replacement.revision,
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "invalid_card_status"
+    );
+    const visible = await subject.service.listCards({ principal: "owner:alice" });
+    assert.deepEqual(visible.map((card) => [card.cardId, card.status]), [[replacement.cardId, "active"]]);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("an orphaned replacement is rejected when its replaced draft was approved", async () => {
+  const subject = await makeSubject();
+  try {
+    const draft = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Quiet place",
+      statement: "Offer me a quiet place.",
+      category: "environment",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const originalWrite = subject.aliceStorage.writeMemoryFrontmatterIfUnchanged.bind(subject.aliceStorage);
+    let interrupted = false;
+    subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = async (memory, patch, lifecycle) => {
+      if (!interrupted && lifecycle?.actor === "support-passport.replace-draft") {
+        interrupted = true;
+        throw new Error("simulated process exit after replacement creation");
+      }
+      return await originalWrite(memory, patch, lifecycle);
+    };
+    await assert.rejects(
+      subject.service.replaceCard({
+        principal: "owner:alice",
+        cardId: draft.cardId,
+        expectedRevision: draft.revision,
+        title: "Quiet place and time",
+        statement: "Offer me a quiet place and time.",
+        category: "environment",
+        reviewBy: OWNER_REVIEW_BY,
+      }),
+      /simulated process exit/
+    );
+    subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = originalWrite;
+    const replacement = (await subject.aliceStorage.readAllMemories()).find(
+      (memory) => memory.frontmatter.id !== draft.cardId
+    );
+    assert.ok(replacement);
+
+    const approved = await subject.service.approveCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+    });
+    const visible = await subject.service.listCards({ principal: "owner:alice" });
+    assert.deepEqual(visible.map((card) => card.cardId), [approved.cardId]);
+    assert.equal(
+      (await subject.aliceStorage.getMemoryById(replacement.frontmatter.id))?.frontmatter.status,
+      "rejected"
+    );
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("a rollback failure does not replace the approval conflict", async () => {
   const subject = await makeSubject();
   try {
