@@ -85,7 +85,7 @@ test("dedup keeps duplicate and distinct pairs across Unicode scripts", async ()
     await mkdir(factsDir);
     const entries = [
       ["english-a.md", "mem-english-a", "The user prefers tea."],
-      ["english-b.md", "mem-english-b", "The user prefers tea."],
+      ["english-b.md", "mem-english-b", "The user prefers tea"],
       ["english-c.md", "mem-english-c", "The user prefers coffee."],
       ["japanese-a.md", "mem-japanese-a", "利用者は紅茶を好む。"],
       ["japanese-b.md", "mem-japanese-b", "利用者は紅茶を好む。"],

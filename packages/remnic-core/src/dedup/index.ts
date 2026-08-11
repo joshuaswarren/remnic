@@ -157,11 +157,12 @@ export function findContradictions(options: ContradictionOptions): Contradiction
 function computeSimilarity(a: string, b: string): number {
   const normA = normalize(a);
   const normB = normalize(b);
-  const punctuationBoundariesA = a.match(/[^\p{L}\p{M}\p{N}\s']/gu)?.join("") ?? "";
-  const punctuationBoundariesB = b.match(/[^\p{L}\p{M}\p{N}\s']/gu)?.join("") ?? "";
+  const embeddedPunctuation = /(?<=[\p{L}\p{M}\p{N}])[^\p{L}\p{M}\p{N}\s']+(?=[\p{L}\p{M}\p{N}])/gu;
+  const punctuationBoundariesA = a.match(embeddedPunctuation)?.join("") ?? "";
+  const punctuationBoundariesB = b.match(embeddedPunctuation)?.join("") ?? "";
 
-  // Compare punctuation boundaries before normalization's exact/hash fast paths:
-  // a separated phrase must not become equal to its joined form.
+  // Compare embedded punctuation before normalization's exact/hash fast paths.
+  // Sentence-ending punctuation stays compatible; a separated phrase cannot collapse to its joined form.
   if (punctuationBoundariesA !== punctuationBoundariesB) return 0;
 
   if (normA === normB) return 1;
