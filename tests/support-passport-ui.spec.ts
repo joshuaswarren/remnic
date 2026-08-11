@@ -120,15 +120,22 @@ test("a bad helper link has a clear locked view", async ({ page }, testInfo) => 
   await page.screenshot({ path: testInfo.outputPath(`locked-${testInfo.project.name}.png`), fullPage: true });
 });
 
-test("share links use the canonical path and allow the exact five-minute boundary", async ({ page }, testInfo) => {
+test("share links use the canonical path and reserve time for grant creation", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers the browser policy helpers.");
   await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
 
   const result = await page.evaluate(() => {
     const now = Date.parse("2026-08-11T12:00:00.000Z");
     const model = (window as typeof window & { WhatHelpsMeModel: WhatHelpsMeBrowserModel }).WhatHelpsMeModel;
+    let boundaryError = "";
+    try {
+      model.expiryForChoice("custom", new Date(now + 300_000).toISOString(), now);
+    } catch (error) {
+      boundaryError = error instanceof Error ? error.message : "unknown error";
+    }
     return {
-      expiresAt: model.expiryForChoice("custom", new Date(now + 300_000).toISOString(), now),
+      boundaryError,
+      expiresAt: model.expiryForChoice("custom", new Date(now + 305_000).toISOString(), now),
       shareUrl: model.buildShareUrl(
         "https://example.test/engram/ui/what-helps-me/?old=value#old=value",
         "grant-one",
@@ -139,7 +146,8 @@ test("share links use the canonical path and allow the exact five-minute boundar
   });
 
   expect(result).toEqual({
-    expiresAt: "2026-08-11T12:05:00.000Z",
+    boundaryError: "Choose a share time at least five minutes from now and no more than seven days away.",
+    expiresAt: "2026-08-11T12:05:05.000Z",
     shareUrl: "https://example.test/remnic/ui/what-helps-me/?grant=grant-one#secret=secret-one",
   });
 });
@@ -151,6 +159,7 @@ test("helper load, error, stale, stopped, and expired states fail closed", async
     ["server-error", 503, "provider_unavailable", "The support passport did not load."],
     ["stale", 410, "grant_stale", "This share link is no longer current."],
     ["stopped", 410, "grant_gone", "This support passport is locked."],
+    ["expired-before-load", 410, "grant_expired", "This share link has expired."],
   ] as const;
   for (const [name, status, code, heading] of cases) {
     const releaseResponse = Promise.withResolvers<void>();
@@ -197,5 +206,50 @@ test("helper load, error, stale, stopped, and expired states fail closed", async
   await page.goto(helperUrl("-expired").replace("mode=replay&", ""));
   await expect(page.locator(".public-card")).toHaveCount(1);
   await expect(page.getByRole("heading", { name: "This share link has expired." })).toBeVisible();
+  await expect(page.locator(".public-card")).toHaveCount(0);
+});
+
+test("a live helper view locks after the owner revokes its grant", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers live grant revalidation.");
+
+  let reads = 0;
+  const updatedAt = new Date().toISOString();
+  await page.route("**/engram/v1/support-passport/public/grants/replay-grant-live-revoked", async (route) => {
+    reads += 1;
+    if (reads > 1) {
+      await route.fulfill({
+        status: 410,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "ended", code: "grant_gone" }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        schemaVersion: 1,
+        grantId: "replay-grant-live-revoked",
+        expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+        updatedAt,
+        cards: [
+          {
+            cardId: "card-live",
+            title: "Quiet place",
+            statement: "Offer me a quiet place and time.",
+            category: "environment",
+            updatedAt,
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.goto(helperUrl("-live-revoked").replace("mode=replay&", ""));
+  await expect(page.locator(".public-card")).toHaveCount(1);
+  await expect(page.getByRole("heading", { name: "This support passport is locked." })).toBeVisible({
+    timeout: 20_000,
+  });
+  expect(reads).toBeGreaterThanOrEqual(2);
   await expect(page.locator(".public-card")).toHaveCount(0);
 });

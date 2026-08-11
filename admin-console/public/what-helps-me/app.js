@@ -14,6 +14,7 @@
   const replayStore = replayMode ? model.createReplayStore() : null;
   const replayChannel =
     replayMode && "BroadcastChannel" in window ? new BroadcastChannel("remnic-what-helps-me-replay") : null;
+  const HELPER_REVALIDATION_MS = 15_000;
 
   const state = {
     token: "",
@@ -25,6 +26,8 @@
     helperGrantId: grantId,
     helperExpiryTimer: null,
     helperQuestionController: null,
+    helperRevalidationController: null,
+    helperRevalidationTimer: null,
     toastTimer: null,
   };
 
@@ -136,8 +139,11 @@
         method: "POST",
         body: input,
       }),
-    readGrant: (id, helperSecret) =>
-      fetchJson(`/engram/v1/support-passport/public/grants/${encodeURIComponent(id)}`, { secret: helperSecret }),
+    readGrant: (id, helperSecret, signal) =>
+      fetchJson(`/engram/v1/support-passport/public/grants/${encodeURIComponent(id)}`, {
+        secret: helperSecret,
+        signal,
+      }),
     askGrant: (id, helperSecret, question, signal) =>
       fetchJson(`/engram/v1/support-passport/public/grants/${encodeURIComponent(id)}/ask`, {
         secret: helperSecret,
@@ -521,8 +527,12 @@
   function showLocked(error) {
     window.clearTimeout(state.helperExpiryTimer);
     state.helperExpiryTimer = null;
+    window.clearTimeout(state.helperRevalidationTimer);
+    state.helperRevalidationTimer = null;
     state.helperQuestionController?.abort();
     state.helperQuestionController = null;
+    state.helperRevalidationController?.abort();
+    state.helperRevalidationController = null;
     const lastGuide = state.guide;
     state.guide = null;
     byId("connectPanel")?.remove();
@@ -559,17 +569,46 @@
     }
     const remainingMs = Date.parse(guide.expiresAt) - Date.now();
     if (remainingMs <= 0) {
-      const error = new Error("The share link is no longer active.");
-      error.code = "grant_gone";
+      const error = new Error("The share link has expired.");
+      error.code = "grant_expired";
       showLocked(error);
       return;
     }
     window.clearTimeout(state.helperExpiryTimer);
     state.helperExpiryTimer = window.setTimeout(() => {
-      const error = new Error("The share link is no longer active.");
-      error.code = "grant_gone";
+      const error = new Error("The share link has expired.");
+      error.code = "grant_expired";
       showLocked(error);
     }, remainingMs);
+  }
+
+  function scheduleHelperRevalidation() {
+    window.clearTimeout(state.helperRevalidationTimer);
+    state.helperRevalidationTimer = null;
+    if (replayMode || !state.guide) return;
+    state.helperRevalidationTimer = window.setTimeout(revalidateHelper, HELPER_REVALIDATION_MS);
+  }
+
+  async function revalidateHelper() {
+    state.helperRevalidationTimer = null;
+    if (!state.guide) return;
+    const controller = new AbortController();
+    state.helperRevalidationController?.abort();
+    state.helperRevalidationController = controller;
+    try {
+      model.parsePublicGuide(await api.readGrant(state.helperGrantId, state.helperSecret, controller.signal));
+    } catch (error) {
+      if (controller.signal.aborted || !state.guide) return;
+      if (["grant_expired", "grant_gone", "grant_not_found", "grant_stale"].includes(error?.code)) {
+        showLocked(error);
+        return;
+      }
+    } finally {
+      if (state.helperRevalidationController === controller) {
+        state.helperRevalidationController = null;
+        scheduleHelperRevalidation();
+      }
+    }
   }
 
   async function loadHelper() {
@@ -588,6 +627,8 @@
     try {
       state.guide = model.parsePublicGuide(await api.readGrant(state.helperGrantId, state.helperSecret));
       renderGuide(state.guide);
+      if (!state.guide) return;
+      scheduleHelperRevalidation();
       announce(`Support passport loaded with ${state.guide.cards.length} cards.`);
     } catch (error) {
       showLocked(error);
@@ -622,7 +663,7 @@
       announce("Answer ready with support card citations.");
     } catch (error) {
       if (!state.guide) return;
-      if (["grant_gone", "grant_not_found", "grant_stale"].includes(error?.code)) {
+      if (["grant_expired", "grant_gone", "grant_not_found", "grant_stale"].includes(error?.code)) {
         showLocked(error);
         return;
       }
@@ -668,6 +709,17 @@
         showLocked(error);
       }
     });
+    window.addEventListener(
+      "pagehide",
+      () => {
+        window.clearTimeout(state.helperExpiryTimer);
+        window.clearTimeout(state.helperRevalidationTimer);
+        state.helperQuestionController?.abort();
+        state.helperRevalidationController?.abort();
+        replayChannel?.close();
+      },
+      { once: true }
+    );
   }
 
   async function init() {

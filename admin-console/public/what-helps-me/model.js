@@ -9,6 +9,7 @@
     "other",
   ]);
   const CARD_STATUSES = Object.freeze(["pending_review", "active", "rejected", "superseded", "archived"]);
+  const SHARE_REQUEST_MARGIN_MS = 5_000;
   const CATEGORY_LABELS = Object.freeze({
     communication: "Communication",
     environment: "Environment",
@@ -262,6 +263,7 @@
     const code = typeof error?.code === "string" ? error.code : "";
     if (code === "grant_stale") return LOCK_STATES.stale;
     if (code === "grant_not_found" || code === "missing_link") return LOCK_STATES.bad_link;
+    if (code === "grant_expired") return LOCK_STATES.expired;
     if (code === "grant_gone") {
       return lastGuide && Date.parse(lastGuide.expiresAt) <= now ? LOCK_STATES.expired : LOCK_STATES.stopped;
     }
@@ -280,8 +282,12 @@
   function expiryForChoice(choice, customValue, now = Date.now()) {
     const durations = { "30m": 30 * 60_000, "2h": 2 * 60 * 60_000, "1d": 24 * 60 * 60_000 };
     const timestamp = Object.hasOwn(durations, choice) ? now + durations[choice] : Date.parse(customValue);
-    if (!Number.isFinite(timestamp) || timestamp < now + 300_000 || timestamp > now + 7 * 24 * 60 * 60_000) {
-      throw new Error("Choose a share time from five minutes through seven days.");
+    if (
+      !Number.isFinite(timestamp) ||
+      timestamp < now + 300_000 + SHARE_REQUEST_MARGIN_MS ||
+      timestamp > now + 7 * 24 * 60 * 60_000
+    ) {
+      throw new Error("Choose a share time at least five minutes from now and no more than seven days away.");
     }
     return new Date(timestamp).toISOString();
   }
@@ -459,9 +465,14 @@
           error.code = "grant_not_found";
           throw error;
         }
-        if (grant.status !== "active" || Date.parse(grant.expiresAt) <= now().getTime()) {
+        if (grant.status !== "active") {
           const error = new Error("The share link is no longer active.");
           error.code = "grant_gone";
+          throw error;
+        }
+        if (Date.parse(grant.expiresAt) <= now().getTime()) {
+          const error = new Error("The share link has expired.");
+          error.code = "grant_expired";
           throw error;
         }
         return publicGuide(grant);
