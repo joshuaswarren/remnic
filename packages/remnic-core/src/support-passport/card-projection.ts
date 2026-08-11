@@ -16,6 +16,7 @@ export const SUPPORT_PASSPORT_ATTRIBUTE_KEYS = Object.freeze({
   order: "support-passport-order",
   reviewBy: "support-passport-review-by",
   sourceMemoryIds: "support-passport-source-ids",
+  replacesDraftId: "support-passport-replaces-draft-id",
 });
 
 export interface StoredSupportPassportCard {
@@ -23,6 +24,7 @@ export interface StoredSupportPassportCard {
   memory: MemoryFile;
   order: number;
   sourceMemoryIds: string[];
+  replacesDraftId?: string;
 }
 
 function parseSourceMemoryIds(value: string): string[] | null {
@@ -51,6 +53,13 @@ export function projectSupportPassportCard(memory: MemoryFile): StoredSupportPas
   const rawOrder = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.order] ?? "";
   const order = Number(rawOrder);
   const sourceMemoryIds = parseSourceMemoryIds(attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.sourceMemoryIds] ?? "");
+  let replacesDraftId: string | undefined;
+  const rawReplacesDraftId = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.replacesDraftId];
+  if (rawReplacesDraftId !== undefined) {
+    const parsedReplacesDraftId = SupportPassportMemoryIdSchema.safeParse(rawReplacesDraftId);
+    if (!parsedReplacesDraftId.success) return null;
+    replacesDraftId = parsedReplacesDraftId.data;
+  }
   if (
     !category.success ||
     !status.success ||
@@ -77,5 +86,5 @@ export function projectSupportPassportCard(memory: MemoryFile): StoredSupportPas
     revision: computeSupportPassportCardRevision(normalized.data),
   });
   if (!parsed.success) return null;
-  return { card: parsed.data, memory, order, sourceMemoryIds };
+  return { card: parsed.data, memory, order, sourceMemoryIds, replacesDraftId };
 }
