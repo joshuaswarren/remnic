@@ -470,6 +470,43 @@ test("the grant store fails closed for corrupt and symlinked grant files", async
   }
 });
 
+test("the grant store rejects a state file whose grant ID does not match its file name", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-identity-"));
+  try {
+    const firstGrantId = "00000000-0000-4000-8000-000000000001";
+    const secondGrantId = "00000000-0000-4000-8000-000000000002";
+    const grantIds = [firstGrantId, secondGrantId];
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({
+      memoryDir: root,
+      makeGrantId: () => grantIds.shift() ?? secondGrantId,
+      now: () => now,
+    });
+    const input = {
+      namespace: "alice",
+      principal: "owner:alice",
+      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+      expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
+    };
+    const first = await store.create(input);
+    const second = await store.create(input);
+    const grantDir = path.join(root, "state", "support-passport", "grants");
+    await writeFile(
+      path.join(grantDir, `${secondGrantId}.json`),
+      await readFile(path.join(grantDir, `${firstGrantId}.json`)),
+      { mode: 0o600 }
+    );
+
+    await assert.rejects(store.authenticate(secondGrantId, second.secret), /grant ID must match its file name/);
+    assert.deepEqual(
+      (await store.listForOwner("alice", "owner:alice")).map((state) => state.grantId),
+      [first.state.grantId]
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("the grant store rejects unsafe durations and grant ID collisions", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-collision-"));
   try {
