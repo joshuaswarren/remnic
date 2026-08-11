@@ -823,10 +823,7 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
   ): Promise<void> {
     const parsed = new URL(req.url ?? "/", `http://${hostToUrlAuthority(this.host)}`);
     const pathname = parsed.pathname;
-
-    if (await this.handleSupportPassportUi(req, res, pathname)) {
-      return;
-    }
+    if (await this.handleSupportPassportUi(req, res, pathname)) return;
 
     if (this.adminConsoleEnabled && await this.handleAdminConsole(req, res, pathname)) {
       return;
@@ -843,7 +840,6 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
     }
 
     if (await this.handleSupportPassportPublicRequest(req, res)) return;
-
     // Run any host-supplied pre-auth request handler. It runs AFTER the
     // admin-console branch (admin assets are public) and BEFORE the
     // operator bearer gate. The handler decides whether it has fully
