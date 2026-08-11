@@ -1,4 +1,4 @@
-import type { StorageManager } from "../storage.js";
+import type { StorageManager } from "../index.js";
 import { projectSupportPassportCard } from "./card-projection.js";
 import { SupportPassportError } from "./errors.js";
 import {
