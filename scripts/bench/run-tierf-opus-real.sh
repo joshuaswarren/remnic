@@ -38,6 +38,9 @@ fi
 JUDGE_ARGS=(--judge-provider ollama --judge-model "qwen2.5-7b-32k:latest" --judge-base-url "http://127.0.0.1:11434/api")
 SEED=1
 CALIBRATION_SAMPLE_SIZE=200
+# Canonical `claude-cli`/`opus` frontier config used by judge-calibrate:
+# retryOptions.timeoutMs=600000, with no endpoint, key, 429, or thinking override.
+EXPECTED_FRONTIER_JUDGE_CONFIG_HASH=522bad1f22f4e031f5ab96fb13050edde876e190a45dbaf812cd2b87084d1a60
 
 step() { printf '\n=== %s — %s ===\n' "$(date -u +%FT%TZ)" "$1"; }
 
@@ -81,7 +84,9 @@ assert type(d.get('bootstrapSamples')) is int and d['bootstrapSamples'] > 0, f\"
 for key in ('localJudgeConfigHash', 'frontierJudgeConfigHash'):
   value = d.get(key)
   assert isinstance(value, str) and len(value) == 64 and all(c in '0123456789abcdef' for c in value), f\"missing or invalid {key}\"
-" "$file" "$CALIBRATION_SAMPLE_SIZE" "$expected_source_result_id" "$expected_answer_set_hash" "$expected_ordered_question_ids_hash" 2>/dev/null; then
+expected_frontier_judge_config_hash = sys.argv[6]
+assert d.get('frontierJudgeConfigHash') == expected_frontier_judge_config_hash, f\"frontierJudgeConfigHash: {d.get('frontierJudgeConfigHash')} (expected {expected_frontier_judge_config_hash})\"
+" "$file" "$CALIBRATION_SAMPLE_SIZE" "$expected_source_result_id" "$expected_answer_set_hash" "$expected_ordered_question_ids_hash" "$EXPECTED_FRONTIER_JUDGE_CONFIG_HASH" 2>/dev/null; then
     echo "BLOCKED: calibration state for ${benchmark} is missing, corrupt, unpinned, below the ${CALIBRATION_SAMPLE_SIZE}-question contract, or scoped to a different judge pair - rerun judge-calibrate against the pinned answer source." >&2
     exit 3
   fi

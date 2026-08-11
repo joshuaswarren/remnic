@@ -712,7 +712,7 @@ test("real Tier-F preflight rejects unpinned or malformed calibration provenance
     confidenceInterval: { lower: 0.7, upper: 0.9, level: 0.95 },
     bootstrapSamples: 2_000,
     localJudgeConfigHash: "a".repeat(64),
-    frontierJudgeConfigHash: "b".repeat(64),
+    frontierJudgeConfigHash: "522bad1f22f4e031f5ab96fb13050edde876e190a45dbaf812cd2b87084d1a60",
   };
   const pinned = {
     locomo: {
@@ -733,6 +733,7 @@ test("real Tier-F preflight rejects unpinned or malformed calibration provenance
         ...process.env,
         CALIBRATION_DIR: calibrationDir,
         CALIBRATION_SAMPLE_SIZE: "200",
+        EXPECTED_FRONTIER_JUDGE_CONFIG_HASH: "522bad1f22f4e031f5ab96fb13050edde876e190a45dbaf812cd2b87084d1a60",
       },
     });
 
@@ -750,6 +751,7 @@ test("real Tier-F preflight rejects unpinned or malformed calibration provenance
       "sourceResultId",
       "answerSetHash",
       "orderedQuestionIdsHash",
+      "frontierJudgeConfigHash",
     ] as const) {
       writeFileSync(
         join(calibrationDir, "locomo.json"),
