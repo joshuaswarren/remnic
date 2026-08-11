@@ -6,6 +6,7 @@ import { parseConfig } from "../config.js";
 import { SupportPassportError } from "./errors.js";
 import {
   SupportPassportModelAdapter,
+  type SupportPassportModelClients,
   type SupportPassportModelRoute,
   buildSupportPassportDirectGatewayConfig,
   createSupportPassportModelAdapter,
@@ -208,6 +209,96 @@ test("route planning preserves Remnic model-source and local fallback rules", ()
     }),
     ["local"]
   );
+});
+
+test("local support models work with direct OpenAI disabled", async () => {
+  let optionsSeen: Record<string, unknown> | undefined;
+  const localLlm = {
+    chatCompletion: async (_messages: unknown, options: Record<string, unknown>) => {
+      optionsSeen = options;
+      return {
+        content: JSON.stringify({
+          cards: [
+            {
+              title: "Plan changes",
+              statement: "Tell me before plans change.",
+              category: "transitions",
+              sourceMemoryIds: ["memory-1"],
+            },
+          ],
+        }),
+      };
+    },
+  } as unknown as NonNullable<SupportPassportModelClients["localLlm"]>;
+  const adapter = createSupportPassportModelAdapter(
+    parseConfig({
+      openaiApiKey: false,
+      localLlmEnabled: true,
+      localLlmFallback: false,
+      localLlmModel: "local-test-model",
+    }),
+    { localLlm }
+  );
+
+  const result = await adapter.draftCards({
+    consent: true,
+    memories: [{ memoryId: "memory-1", content: "Tell me before plans change." }],
+  });
+
+  assert.equal(result.route, "local");
+  assert.equal(result.modelUsed, "local/local-test-model");
+  assert.deepEqual(optionsSeen?.responseFormat, { type: "json_object" });
+});
+
+test("gateway support models work with direct OpenAI disabled", async () => {
+  let optionsSeen: Record<string, unknown> | undefined;
+  const gatewayLlm = {
+    chatCompletion: async (_messages: unknown, options: Record<string, unknown>) => {
+      optionsSeen = options;
+      return {
+        content: JSON.stringify({
+          cards: [
+            {
+              title: "Plan changes",
+              statement: "Tell me before plans change.",
+              category: "transitions",
+              sourceMemoryIds: ["memory-1"],
+            },
+          ],
+        }),
+        modelUsed: "gateway/test-model",
+      };
+    },
+  } as unknown as NonNullable<SupportPassportModelClients["gatewayLlm"]>;
+  const adapter = createSupportPassportModelAdapter(
+    parseConfig({
+      modelSource: "gateway",
+      openaiApiKey: false,
+      gatewayConfig: {
+        agents: { defaults: { model: { primary: "gateway/test-model" } } },
+        models: {
+          providers: {
+            gateway: {
+              baseUrl: "https://models.example.test/v1",
+              api: "openai-completions",
+              models: [{ id: "test-model", name: "test-model" }],
+            },
+          },
+        },
+      },
+    }),
+    { gatewayLlm }
+  );
+
+  const result = await adapter.draftCards({
+    consent: true,
+    memories: [{ memoryId: "memory-1", content: "Tell me before plans change." }],
+  });
+
+  assert.equal(result.route, "gateway");
+  assert.equal(result.modelUsed, "gateway/test-model");
+  assert.equal(optionsSeen?.store, false);
+  assert.equal((optionsSeen?.responsesJsonSchema as { name?: string } | undefined)?.name, "support_passport_drafts");
 });
 
 test("direct OpenAI models use the existing Responses API transport", () => {
