@@ -1,20 +1,22 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { MemoryFile } from "../types.js";
 import { SupportPassportCardService as PublicSupportPassportCardService } from "../index.js";
+import type { MemoryFile } from "../types.js";
 import { projectSupportPassportCard } from "./card-projection.js";
 import { SupportPassportCardService } from "./card-service.js";
 import { computeSupportPassportCardRevision } from "./contracts.js";
 
-function makeMemory(overrides: {
-  id?: string;
-  title?: string;
-  content?: string;
-  order?: string;
-  sourceMemoryIds?: string;
-  status?: string;
-} = {}): MemoryFile {
+function makeMemory(
+  overrides: {
+    id?: string;
+    title?: string;
+    content?: string;
+    order?: string;
+    sourceMemoryIds?: string;
+    status?: string;
+  } = {}
+): MemoryFile {
   return {
     path: "/tmp/support-card.md",
     content: overrides.content ?? "Offer me a quiet place and time.",
@@ -44,12 +46,14 @@ test("the support passport is exported from the public core package", () => {
 });
 
 test("card projection normalizes IDs and public fields before revision hashing", () => {
-  const projected = projectSupportPassportCard(makeMemory({
-    id: " support-card-1 ",
-    title: " Quiet space ",
-    content: " Offer me a quiet place and time. ",
-    sourceMemoryIds: "source-1, source-2 ",
-  }));
+  const projected = projectSupportPassportCard(
+    makeMemory({
+      id: " support-card-1 ",
+      title: " Quiet space ",
+      content: " Offer me a quiet place and time. ",
+      sourceMemoryIds: "source-1, source-2 ",
+    })
+  );
   assert.ok(projected);
   assert.equal(projected.card.cardId, "support-card-1");
   assert.equal(projected.card.title, "Quiet space");
