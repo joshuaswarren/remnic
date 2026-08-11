@@ -119,7 +119,12 @@ export class SupportPassportCardService {
     if (!approved) throw new SupportPassportError("storage_conflict", "The support card changed before approval.", 409);
 
     if (card.memory.frontmatter.supersedes) {
-      const prior = await this.requireCard(storage, card.memory.frontmatter.supersedes);
+      const priorMemory = await storage.getMemoryById(card.memory.frontmatter.supersedes);
+      const prior = priorMemory ? projectSupportPassportCard(priorMemory) : null;
+      if (!prior) {
+        await this.rollbackApproval(storage, card.card.cardId);
+        throw new SupportPassportError("storage_conflict", "The prior support card changed before replacement.", 409);
+      }
       const retired = await storage.supersedeMemory(
         prior.card.cardId,
         card.card.cardId,

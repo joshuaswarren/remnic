@@ -195,6 +195,36 @@ test("a rejected draft leaves no owner-visible card", async () => {
   }
 });
 
+test("a superseded marker keeps an active card out of projections", async () => {
+  const subject = await makeSubject();
+  try {
+    const draft = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Quiet space",
+      statement: "Offer me a quiet place and time.",
+      category: "environment",
+    });
+    const active = await subject.service.approveCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+    });
+    const stored = await subject.aliceStorage.getMemoryById(active.cardId);
+    assert.ok(stored);
+    assert.equal(
+      await subject.aliceStorage.writeMemoryFrontmatterIfUnchanged(stored, {
+        supersededBy: "replacement-card",
+        updated: "2026-08-11T12:01:00.000Z",
+      }),
+      true
+    );
+
+    assert.deepEqual(await subject.service.listCards({ principal: "owner:alice" }), []);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("editing a pending card creates one replacement draft and rejects the old draft", async () => {
   const subject = await makeSubject();
   try {

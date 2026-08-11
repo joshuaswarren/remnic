@@ -38,7 +38,7 @@ export function projectSupportPassportCard(memory: MemoryFile): StoredSupportPas
   const attributes = frontmatter.structuredAttributes;
   if (frontmatter.category !== "preference") return null;
   if (!frontmatter.tags?.includes(SUPPORT_PASSPORT_CARD_TAG)) return null;
-  if (!attributes || frontmatter.blockedBy || frontmatter.archivedAt) return null;
+  if (!attributes || frontmatter.blockedBy || frontmatter.archivedAt || frontmatter.supersededBy) return null;
 
   const category = SupportPassportCardCategorySchema.safeParse(attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.category]);
   const status = SupportPassportCardStatusSchema.safeParse(frontmatter.status);
