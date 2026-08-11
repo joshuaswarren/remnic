@@ -4,13 +4,13 @@ import path from "node:path";
 
 import { writeFileAtomically } from "../maintenance/atomic-file.js";
 import { serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
+import { SupportPassportError } from "./errors.js";
 import {
   SupportPassportCreateGrantInputSchema,
-  SupportPassportGrantStateSchema,
   type SupportPassportGrantCardRef,
   type SupportPassportGrantState,
+  SupportPassportGrantStateSchema,
 } from "./grant-contracts.js";
-import { SupportPassportError } from "./errors.js";
 
 const GRANT_LOCK_STALE_MS = 30_000;
 const GRANT_LOCK_WAIT_MS = 5_000;
@@ -66,7 +66,12 @@ export class SupportPassportGrantStore {
       cards: input.cards,
       durationSeconds: input.durationSeconds,
     });
-    if (!parsed.success || typeof input.namespace !== "string" || input.namespace.trim().length < 1 || input.namespace.trim().length > 256) {
+    if (
+      !parsed.success ||
+      typeof input.namespace !== "string" ||
+      input.namespace.trim().length < 1 ||
+      input.namespace.trim().length > 256
+    ) {
       throw new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
     }
     return await this.withMutationLock(async () => {
@@ -144,7 +149,8 @@ export class SupportPassportGrantStore {
         throw error;
       }
       const principalHash = sha256("support-passport-principal:v1", input.principal);
-      if (state.namespace !== input.namespace || !hashesMatch(state.principalHash, principalHash)) throw grantNotFound();
+      if (state.namespace !== input.namespace || !hashesMatch(state.principalHash, principalHash))
+        throw grantNotFound();
       if (state.revokedAt) return state;
       if (input.expectedStateVersion !== undefined && input.expectedStateVersion !== state.stateVersion) {
         throw new SupportPassportError("storage_conflict", "The share link changed after it was loaded.", 409);
@@ -168,7 +174,8 @@ export class SupportPassportGrantStore {
     await this.ensureSafeDirectories();
     const filePath = this.filePath(grantId);
     const metadata = await lstat(filePath);
-    if (metadata.isSymbolicLink() || !metadata.isFile()) throw new Error("support passport grant files must be regular files");
+    if (metadata.isSymbolicLink() || !metadata.isFile())
+      throw new Error("support passport grant files must be regular files");
     return SupportPassportGrantStateSchema.parse(JSON.parse(await readFile(filePath, "utf8")));
   }
 
@@ -176,7 +183,8 @@ export class SupportPassportGrantStore {
     const filePath = this.filePath(state.grantId);
     try {
       const metadata = await lstat(filePath);
-      if (metadata.isSymbolicLink() || !metadata.isFile()) throw new Error("support passport grant files must be regular files");
+      if (metadata.isSymbolicLink() || !metadata.isFile())
+        throw new Error("support passport grant files must be regular files");
       if (requireAbsent) {
         throw new SupportPassportError("storage_conflict", "A new share link could not be allocated.", 409);
       }
@@ -207,14 +215,18 @@ export class SupportPassportGrantStore {
     await this.ensureSafeDirectories();
     const lockPath = path.join(this.grantsDir, ".grants.lock");
     return await serializeMutations(`support-passport-grants:${this.grantsDir}`, () =>
-      withHeldFileLock(lockPath, {
-        staleMs: GRANT_LOCK_STALE_MS,
-        maxWaitMs: GRANT_LOCK_WAIT_MS,
-        heartbeatMs: GRANT_LOCK_HEARTBEAT_MS,
-      }, async (acquired) => {
-        if (!acquired) throw new Error("could not acquire the support passport grant lock");
-        return await task();
-      }),
+      withHeldFileLock(
+        lockPath,
+        {
+          staleMs: GRANT_LOCK_STALE_MS,
+          maxWaitMs: GRANT_LOCK_WAIT_MS,
+          heartbeatMs: GRANT_LOCK_HEARTBEAT_MS,
+        },
+        async (acquired) => {
+          if (!acquired) throw new Error("could not acquire the support passport grant lock");
+          return await task();
+        }
+      )
     );
   }
 }

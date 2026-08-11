@@ -71,7 +71,9 @@ export class SupportPassportGrantService {
     const parsed = SupportPassportListGrantsInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
     const owner = await this.resolveOwner(parsed.data.principal);
-    return (await this.grantStore.listForOwner(owner.namespace, parsed.data.principal)).map((state) => this.ownerGrant(state));
+    return (await this.grantStore.listForOwner(owner.namespace, parsed.data.principal)).map((state) =>
+      this.ownerGrant(state)
+    );
   }
 
   async revokeGrant(input: SupportPassportRevokeGrantInput): Promise<SupportPassportOwnerGrant> {
@@ -108,7 +110,12 @@ export class SupportPassportGrantService {
         updatedAt: stored.card.updatedAt,
       });
     }
-    const updatedAt = cards.reduce((latest, card) => card.updatedAt > latest ? card.updatedAt : latest, cards[0]!.updatedAt);
+    const firstCard = cards[0];
+    if (!firstCard) throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
+    const updatedAt = cards.reduce(
+      (latest, card) => (card.updatedAt > latest ? card.updatedAt : latest),
+      firstCard.updatedAt
+    );
     return SupportPassportPublicGuideSchema.parse({
       schemaVersion: 1,
       grantId: state.grantId,

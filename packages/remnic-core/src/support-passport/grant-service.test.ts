@@ -41,7 +41,9 @@ async function makeSubject() {
     cardService,
     grantService,
     now,
-    advance: (milliseconds: number) => { currentTime += milliseconds; },
+    advance: (milliseconds: number) => {
+      currentTime += milliseconds;
+    },
     cleanup: async () => {
       StorageManager.clearAllStaticCaches();
       await rm(root, { recursive: true, force: true });
@@ -81,7 +83,7 @@ test("a grant stores only hashed credentials with private file permissions", asy
       "state",
       "support-passport",
       "grants",
-      `${created.grant.grantId}.json`,
+      `${created.grant.grantId}.json`
     );
     const body = await readFile(filePath, "utf8");
     assert.equal(body.includes(created.secret), false);
@@ -108,14 +110,18 @@ test("a helper sees only the selected active card through a valid secret", async
       grantId: created.grant.grantId,
       secret: created.secret,
     });
-    assert.deepEqual(guide.cards, [{
-      cardId: selected.cardId,
-      title: "Selected card",
-      statement: "Offer me a quiet place and time.",
-      category: "environment",
-      updatedAt: selected.updatedAt,
-    }]);
-    assert.equal("revision" in guide.cards[0]!, false);
+    assert.deepEqual(guide.cards, [
+      {
+        cardId: selected.cardId,
+        title: "Selected card",
+        statement: "Offer me a quiet place and time.",
+        category: "environment",
+        updatedAt: selected.updatedAt,
+      },
+    ]);
+    const sharedCard = guide.cards[0];
+    assert.ok(sharedCard);
+    assert.equal("revision" in sharedCard, false);
     assert.equal("namespace" in guide, false);
   } finally {
     await subject.cleanup();
@@ -134,7 +140,8 @@ test("bad secrets return not found, while valid revoked or expired grants return
 
     await assert.rejects(
       subject.grantService.readGrant({ grantId: created.grant.grantId, secret: "x".repeat(43) }),
-      (error: unknown) => error instanceof SupportPassportError && error.code === "grant_not_found" && error.status === 404,
+      (error: unknown) =>
+        error instanceof SupportPassportError && error.code === "grant_not_found" && error.status === 404
     );
 
     const peerStore = new SupportPassportGrantStore({ memoryDir: path.join(subject.root, "shared"), now: subject.now });
@@ -154,7 +161,7 @@ test("bad secrets return not found, while valid revoked or expired grants return
     assert.equal(repeated.revokedAt, peerRevoked.revokedAt);
     await assert.rejects(
       subject.grantService.readGrant({ grantId: created.grant.grantId, secret: created.secret }),
-      (error: unknown) => error instanceof SupportPassportError && error.code === "grant_gone" && error.status === 410,
+      (error: unknown) => error instanceof SupportPassportError && error.code === "grant_gone" && error.status === 410
     );
 
     const second = await subject.grantService.createGrant({
@@ -165,7 +172,7 @@ test("bad secrets return not found, while valid revoked or expired grants return
     subject.advance(300_001);
     await assert.rejects(
       subject.grantService.readGrant({ grantId: second.grant.grantId, secret: second.secret }),
-      (error: unknown) => error instanceof SupportPassportError && error.code === "grant_gone",
+      (error: unknown) => error instanceof SupportPassportError && error.code === "grant_gone"
     );
   } finally {
     await subject.cleanup();
@@ -193,7 +200,7 @@ test("a changed card makes the whole grant stale without a partial guide", async
 
     await assert.rejects(
       subject.grantService.readGrant({ grantId: created.grant.grantId, secret: created.secret }),
-      (error: unknown) => error instanceof SupportPassportError && error.code === "grant_stale" && error.status === 410,
+      (error: unknown) => error instanceof SupportPassportError && error.code === "grant_stale" && error.status === 410
     );
   } finally {
     await subject.cleanup();
@@ -213,13 +220,19 @@ test("grant creation rejects drafts, duplicate cards, and unsafe durations", asy
 
     for (const input of [
       { cards: [{ cardId: draft.cardId, revision: draft.revision }], durationSeconds: 3_600 },
-      { cards: [{ cardId: active.cardId, revision: active.revision }, { cardId: active.cardId, revision: active.revision }], durationSeconds: 3_600 },
+      {
+        cards: [
+          { cardId: active.cardId, revision: active.revision },
+          { cardId: active.cardId, revision: active.revision },
+        ],
+        durationSeconds: 3_600,
+      },
       { cards: [{ cardId: active.cardId, revision: active.revision }], durationSeconds: 299 },
       { cards: [{ cardId: active.cardId, revision: active.revision }], durationSeconds: 604_801 },
     ]) {
       await assert.rejects(
         subject.grantService.createGrant({ principal: "owner:alice", ...input }),
-        (error: unknown) => error instanceof SupportPassportError,
+        (error: unknown) => error instanceof SupportPassportError
       );
     }
   } finally {
@@ -244,7 +257,7 @@ test("the grant store rejects a symlinked grant directory", async () => {
         cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
         durationSeconds: 300,
       }),
-      /must not be a symbolic link/,
+      /must not be a symbolic link/
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -265,11 +278,11 @@ test("the grant store rejects unsafe durations and grant ID collisions", async (
     await store.create(input);
     await assert.rejects(
       store.create(input),
-      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict",
+      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
     );
     await assert.rejects(
       store.create({ ...input, durationSeconds: 299 }),
-      (error: unknown) => error instanceof SupportPassportError && error.code === "invalid_input",
+      (error: unknown) => error instanceof SupportPassportError && error.code === "invalid_input"
     );
   } finally {
     await rm(root, { recursive: true, force: true });
