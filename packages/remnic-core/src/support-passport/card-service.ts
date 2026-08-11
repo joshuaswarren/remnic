@@ -194,7 +194,13 @@ export class SupportPassportCardService {
     const now = this.now();
     const reviewBy = input.reviewBy ?? now.toISOString();
     const storedCards = await this.readStoredCards(storage);
-    if (storedCards.filter((item) => OWNER_VISIBLE_STATUSES.has(item.card.status)).length >= MAX_OWNER_VISIBLE_CARDS) {
+    const visibleCardCount = storedCards.filter((item) => OWNER_VISIBLE_STATUSES.has(item.card.status)).length;
+    const replacesVisibleDraft =
+      input.replacesDraftId !== undefined &&
+      storedCards.some(
+        (item) => item.card.cardId === input.replacesDraftId && item.card.status === "pending_review"
+      );
+    if (visibleCardCount - (replacesVisibleDraft ? 1 : 0) >= MAX_OWNER_VISIBLE_CARDS) {
       throw new SupportPassportError("invalid_input", "A support passport can contain at most 100 visible cards.", 400);
     }
     const order = input.order ?? storedCards.reduce((maximum, card) => Math.max(maximum, card.order), -1) + 1;
