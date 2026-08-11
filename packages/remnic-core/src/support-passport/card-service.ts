@@ -264,7 +264,7 @@ export class SupportPassportCardService {
   private async requireCard(
     storage: StorageManager,
     cardId: string,
-    recover = true,
+    recover = true
   ): Promise<StoredSupportPassportCard> {
     const stored = await storage.getMemoryById(cardId);
     const memory = stored && recover ? await this.recoverReplacementApproval(storage, stored) : stored;
@@ -305,7 +305,7 @@ export class SupportPassportCardService {
 
   private async retirePriorForReplacement(
     storage: StorageManager,
-    replacement: StoredSupportPassportCard,
+    replacement: StoredSupportPassportCard
   ): Promise<string | null> {
     const priorId = replacement.memory.frontmatter.supersedes;
     if (!priorId) return null;
@@ -326,7 +326,7 @@ export class SupportPassportCardService {
         requireActive: true,
         acceptExactReplay: true,
         expectedSnapshot: priorMemory,
-      },
+      }
     );
     if (!retired) {
       throw new SupportPassportError("storage_conflict", "The prior support card changed before replacement.", 409);
@@ -345,7 +345,7 @@ export class SupportPassportCardService {
     const recovered = await storage.writeMemoryFrontmatterIfUnchanged(
       memory,
       { status: "active", updated: this.now().toISOString() },
-      { actor: "support-passport.approve-recovery", reasonCode: "complete-replacement-approval" },
+      { actor: "support-passport.approve-recovery", reasonCode: "complete-replacement-approval" }
     );
     if (!recovered) return (await storage.getMemoryById(replacement.card.cardId)) ?? memory;
     return (await storage.getMemoryById(replacement.card.cardId)) ?? memory;
@@ -354,7 +354,7 @@ export class SupportPassportCardService {
   private async restorePriorAfterApprovalFailure(
     storage: StorageManager,
     priorId: string,
-    replacementId: string,
+    replacementId: string
   ): Promise<void> {
     try {
       const replacement = await storage.getMemoryById(replacementId);
@@ -371,12 +371,12 @@ export class SupportPassportCardService {
           invalidatedBy: undefined,
           updated: this.now().toISOString(),
         },
-        { actor: "support-passport.approve-rollback", reasonCode: "replacement-activation-failed" },
+        { actor: "support-passport.approve-rollback", reasonCode: "replacement-activation-failed" }
       );
       if (!restored) log.warn("support passport could not restore a prior card after replacement approval failed");
     } catch (error) {
       log.warn(
-        `support passport could not restore a prior card after replacement approval failed: ${error instanceof Error ? error.message : String(error)}`,
+        `support passport could not restore a prior card after replacement approval failed: ${error instanceof Error ? error.message : String(error)}`
       );
     }
   }

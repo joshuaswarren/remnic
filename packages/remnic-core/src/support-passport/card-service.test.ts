@@ -353,9 +353,9 @@ test("replacement approval recovers after the prior card was durably retired", a
         replacement.cardId,
         "support-passport-replacement",
         { supersessionCause: "direct" },
-        { requireActive: true, expectedSnapshot: prior },
+        { requireActive: true, expectedSnapshot: prior }
       ),
-      true,
+      true
     );
 
     const recovered = await subject.service.listCards({ principal: "owner:alice" });
@@ -406,7 +406,7 @@ test("a rollback failure does not replace the approval conflict", async () => {
         expectedRevision: replacement.revision,
       }),
       (error: unknown) =>
-        error instanceof SupportPassportError && error.code === "storage_conflict" && error.status === 409,
+        error instanceof SupportPassportError && error.code === "storage_conflict" && error.status === 409
     );
   } finally {
     await subject.cleanup();
@@ -424,7 +424,7 @@ test("draft creation rejects sanitized text without writing a placeholder", asyn
         category: "other",
         reviewBy: OWNER_REVIEW_BY,
       }),
-      (error: unknown) => error instanceof SupportPassportError && error.code === "invalid_input",
+      (error: unknown) => error instanceof SupportPassportError && error.code === "invalid_input"
     );
     assert.deepEqual(await subject.aliceStorage.readAllMemories(), []);
   } finally {
@@ -466,7 +466,7 @@ test("draft creation enforces the 100-card owner-visible limit", async () => {
         category: "other",
         reviewBy: OWNER_REVIEW_BY,
       }),
-      (error: unknown) => error instanceof SupportPassportError && error.code === "invalid_input",
+      (error: unknown) => error instanceof SupportPassportError && error.code === "invalid_input"
     );
   } finally {
     await subject.cleanup();
