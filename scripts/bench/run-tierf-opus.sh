@@ -56,7 +56,11 @@ preflight_calibration_inputs() {
 step() { printf '\n=== %s — %s ===\n' "$(date -u +%FT%TZ)" "$1"; }
 
 step "preflight: claude auth"
-AUTH_OUT="$(cd /tmp && timeout 180 claude -p "Reply with exactly: pong" --max-turns 1 2>&1 | tail -1)"
+if ! AUTH_OUT="$(cd /tmp && timeout 180 claude -p "Reply with exactly: pong" --max-turns 1 2>&1 | tail -1)"; then
+  printf 'claude probe: %s\n' "$AUTH_OUT" >&2
+  echo "BLOCKED: claude CLI probe failed. Run: claude auth login" >&2
+  exit 2
+fi
 printf 'claude probe: %s\n' "$AUTH_OUT"
 if [[ "$AUTH_OUT" != *pong* ]]; then
   echo "BLOCKED: claude CLI is not authenticated on this host. Run: claude /login" >&2

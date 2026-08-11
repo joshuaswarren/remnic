@@ -690,6 +690,45 @@ printf '%s' "$CALIBRATION_DIR"`],
   );
 });
 
+test("Tier-F runbooks diagnose nonzero Claude auth probes before exiting", async () => {
+  const scripts = [
+    {
+      path: "scripts/bench/run-tierf-opus.sh",
+      nextStep: 'step "preflight: cached answers for calibration"',
+    },
+    {
+      path: "scripts/bench/run-tierf-opus-real.sh",
+      nextStep: 'step "full LongMemEval',
+    },
+  ] as const;
+  const mockBin = mkdtempSync(join(tmpdir(), "remnic-tierf-auth-probe-"));
+
+  try {
+    writeFileSync(
+      join(mockBin, "timeout"),
+      "#!/usr/bin/env bash\nprintf 'Not logged in · Please run /login\\n' >&2\nexit 1\n",
+      { mode: 0o755 },
+    );
+
+    for (const config of scripts) {
+      const script = await readFile(config.path, "utf8");
+      const authStart = script.indexOf("if ! AUTH_OUT=");
+      const authEnd = script.indexOf(config.nextStep, authStart);
+      assert.ok(authStart >= 0 && authEnd > authStart, `missing auth probe in ${config.path}`);
+      const probe = spawnSync("bash", ["-c", `set -euo pipefail\n${script.slice(authStart, authEnd)}`], {
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${mockBin}:${process.env.PATH ?? ""}` },
+      });
+
+      assert.equal(probe.status, 2, `${config.path}: ${probe.stderr}`);
+      assert.match(probe.stderr, /claude probe: Not logged in · Please run \/login/);
+      assert.match(probe.stderr, /BLOCKED: claude CLI probe failed\. Run: claude auth login/);
+    }
+  } finally {
+    rmSync(mockBin, { recursive: true, force: true });
+  }
+});
+
 test("real Tier-F preflight rejects unpinned or malformed calibration provenance", async () => {
   const realScript = await readFile("scripts/bench/run-tierf-opus-real.sh", "utf8");
   const preflightStart = realScript.indexOf("preflight_calibration_state() {");
