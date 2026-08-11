@@ -52,6 +52,14 @@ test("What Helps Me serves both aliases from one exact feature-gated allow-list"
         const redirect = await fetch(`${origin}/${prefix}/ui/what-helps-me`, { redirect: "manual" });
         assert.equal(redirect.status, 301);
         assert.equal(redirect.headers.get("location"), `/${prefix}/ui/what-helps-me/`);
+        const redirectWithGrant = await fetch(
+          `${origin}/${prefix}/ui/what-helps-me?grant=grant-one&mode=replay`,
+          { redirect: "manual" }
+        );
+        assert.equal(
+          redirectWithGrant.headers.get("location"),
+          `/${prefix}/ui/what-helps-me/?grant=grant-one&mode=replay`
+        );
 
         const shell = await fetch(`${origin}/${prefix}/ui/what-helps-me/`);
         assert.equal(shell.status, 200);

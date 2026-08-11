@@ -178,6 +178,31 @@ test("a created share link remains visible when its list refresh fails", async (
   await expect(page.getByText("The share link was not created.")).toHaveCount(0);
 });
 
+test("the owner view bounds rendered share history", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers bounded share history.");
+  const now = new Date();
+  const grants = Array.from({ length: 150 }, (_, index) => ({
+    grantId: `grant-${index}`,
+    stateVersion: 1,
+    cards: [{ cardId: "card-one", revision: "a".repeat(64) }],
+    createdAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
+    status: "expired",
+  }));
+  await page.route("**/engram/v1/support-passport/cards", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ cards: [] }) });
+  });
+  await page.route("**/engram/v1/support-passport/grants", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grants }) });
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await page.getByLabel("Bearer token").fill("owner-token");
+  await page.getByRole("button", { name: "Open my guide" }).click();
+
+  await expect(page.locator(".grant-card")).toHaveCount(100);
+});
+
 test("the helper sees only shared cards and grounded citations", async ({ page }, testInfo) => {
   await page.goto(helperUrl());
 
@@ -372,6 +397,71 @@ test("a stalled initial helper read aborts and fails closed", async ({ page }, t
     )
     .toBe(true);
   await expect(page.getByRole("heading", { name: "The support passport did not load." })).toBeVisible();
+});
+
+test("a stalled helper question aborts and restores its action", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers the helper question timeout.");
+  const now = new Date("2026-08-11T12:00:00.000Z");
+  await page.clock.install({ time: now });
+  await page.addInitScript(() => {
+    const realFetch = window.fetch.bind(window);
+    Object.assign(window, { __helperQuestionAbortObserved: false });
+    window.fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/ask") && init?.method === "POST") {
+        return await new Promise((_resolve, reject) => {
+          init.signal?.addEventListener(
+            "abort",
+            () => {
+              Object.assign(window, { __helperQuestionAbortObserved: true });
+              reject(new DOMException("The request was aborted.", "AbortError"));
+            },
+            { once: true }
+          );
+        });
+      }
+      return await realFetch(input, init);
+    };
+  });
+  await page.route("**/engram/v1/support-passport/public/grants/replay-grant-question-stalled", async (route) => {
+    await route.fulfill({
+      status: 200,
+      headers: { date: now.toUTCString() },
+      contentType: "application/json",
+      body: JSON.stringify({
+        schemaVersion: 1,
+        grantId: "replay-grant-question-stalled",
+        expiresAt: new Date(now.getTime() + 2 * 60 * 60_000).toISOString(),
+        updatedAt: now.toISOString(),
+        cards: [
+          {
+            cardId: "card-question",
+            title: "Plan changes",
+            statement: "Tell me before plans change.",
+            category: "transitions",
+            updatedAt: now.toISOString(),
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.goto(helperUrl("-question-stalled").replace("mode=replay&", ""));
+  await page.getByLabel("Your question").fill("What should I do when plans change?");
+  const button = page.getByRole("button", { name: "Ask from this guide" });
+  await button.click();
+  await expect(page.getByRole("button", { name: "Checking shared cards…" })).toBeDisabled();
+  await page.clock.fastForward(60_000);
+
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as typeof window & { __helperQuestionAbortObserved?: boolean }).__helperQuestionAbortObserved
+      )
+    )
+    .toBe(true);
+  await expect(page.getByText("The question took too long. Try again.")).toBeVisible();
+  await expect(button).toBeEnabled();
 });
 
 test("a live helper view locks after the owner revokes its grant", async ({ page }, testInfo) => {

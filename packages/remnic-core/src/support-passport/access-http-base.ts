@@ -109,8 +109,9 @@ export abstract class SupportPassportAccessHttpBase {
       return true;
     }
     if (pathname === "/remnic/ui/what-helps-me" || pathname === "/engram/ui/what-helps-me") {
+      const search = new URL(req.url ?? pathname, "http://placeholder").search;
       res.statusCode = 301;
-      res.setHeader("location", pathname + "/");
+      res.setHeader("location", `${pathname}/${search}`);
       res.end();
       return true;
     }

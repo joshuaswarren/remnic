@@ -16,6 +16,8 @@
     replayMode && "BroadcastChannel" in window ? new BroadcastChannel("remnic-what-helps-me-replay") : null;
   const HELPER_REVALIDATION_MS = 15_000;
   const HELPER_READ_TIMEOUT_MS = 10_000;
+  const HELPER_QUESTION_TIMEOUT_MS = 60_000;
+  const MAX_VISIBLE_GRANTS = 100;
 
   const state = {
     token: "",
@@ -352,7 +354,7 @@
   async function loadOwnerState() {
     const [cardPayload, grantPayload] = await Promise.all([api.listCards(), api.listGrants()]);
     state.cards = model.parseCardList(cardPayload);
-    state.grants = model.parseGrantList(grantPayload);
+    state.grants = model.parseGrantList(grantPayload).slice(0, MAX_VISIBLE_GRANTS);
     renderCards();
     renderShareCards();
     renderGrants();
@@ -689,6 +691,11 @@
     const controller = new AbortController();
     state.helperQuestionController?.abort();
     state.helperQuestionController = controller;
+    let timedOut = false;
+    const timeout = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, HELPER_QUESTION_TIMEOUT_MS);
     try {
       const payload = await withBusy(button, "Checking shared cards…", () =>
         api.askGrant(state.helperGrantId, state.helperSecret, question, controller.signal)
@@ -708,12 +715,17 @@
       announce("Answer ready with support card citations.");
     } catch (error) {
       if (!state.guide) return;
+      if (timedOut) {
+        setError("questionError", "The question took too long. Try again.");
+        return;
+      }
       if (["grant_expired", "grant_gone", "grant_not_found", "grant_stale"].includes(error?.code)) {
         showLocked(error);
         return;
       }
       setError("questionError", errorMessage(error, "The question did not complete."));
     } finally {
+      window.clearTimeout(timeout);
       if (state.helperQuestionController === controller) state.helperQuestionController = null;
     }
   }
