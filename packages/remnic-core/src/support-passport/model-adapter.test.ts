@@ -468,6 +468,60 @@ test("the model deadline aborts provider work", async () => {
   assert.equal(await aborted.promise, true);
 });
 
+test("a timed-out route does not consume the fallback route timeout", async () => {
+  const calls: string[] = [];
+  const firstRouteAborted = Promise.withResolvers<boolean>();
+  const adapter = new SupportPassportModelAdapter({
+    timeoutMs: 20,
+    routes: [
+      {
+        kind: "local",
+        invoke: async (_messages, options) => {
+          calls.push("local");
+          return await new Promise<never>((_resolve, reject) => {
+            options.signal?.addEventListener(
+              "abort",
+              () => {
+                firstRouteAborted.resolve(true);
+                reject(options.signal?.reason);
+              },
+              { once: true }
+            );
+          });
+        },
+      },
+      {
+        kind: "gateway",
+        invoke: async () => {
+          calls.push("gateway");
+          return {
+            modelUsed: "gateway/test-model",
+            content: JSON.stringify({
+              cards: [
+                {
+                  title: "Plan changes",
+                  statement: "Tell me before plans change.",
+                  category: "transitions",
+                  sourceMemoryIds: ["memory-1"],
+                },
+              ],
+            }),
+          };
+        },
+      },
+    ],
+  });
+
+  const result = await adapter.draftCards({
+    consent: true,
+    memories: [{ memoryId: "memory-1", content: "Tell me before plans change." }],
+  });
+
+  assert.equal(await firstRouteAborted.promise, true);
+  assert.deepEqual(calls, ["local", "gateway"]);
+  assert.equal(result.route, "gateway");
+});
+
 test("the support passport model adapter has no custom OpenAI transport", async () => {
   const source = await readFile(new URL("./model-adapter.ts", import.meta.url), "utf8");
   assert.equal(source.includes('from "openai"'), false);

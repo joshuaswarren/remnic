@@ -378,7 +378,6 @@ export class SupportPassportModelAdapter {
     }
   ): Promise<{ value: T; metadata: SupportPassportModelResultMetadata }> {
     const startedAt = this.nowMs();
-    const deadline = startedAt + this.timeoutMs;
     let invalidResponse = false;
     let failureMetadata: Omit<SupportPassportModelFailureMetadata, "errorClass"> = {
       modelUsed: "unavailable",
@@ -387,11 +386,9 @@ export class SupportPassportModelAdapter {
     };
     for (const route of this.routes) {
       if (options.signal?.aborted) throw options.signal.reason ?? new Error("The model request was aborted.");
-      const remainingMs = deadline - this.nowMs();
-      if (remainingMs <= 0) break;
       let response: SupportPassportModelRouteResult | null;
       try {
-        response = await this.invokeRoute(route, messages, options, remainingMs);
+        response = await this.invokeRoute(route, messages, options, this.timeoutMs);
       } catch (error) {
         if (options.signal?.aborted) throw error;
         continue;

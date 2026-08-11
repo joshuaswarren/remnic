@@ -123,7 +123,11 @@ export class SupportPassportCardService {
       } catch (error) {
         let rollbackIncomplete = false;
         for (const card of created) {
-          if (!(await this.rejectGeneratedDraft(storage, card.cardId, lock))) rollbackIncomplete = true;
+          try {
+            if (!(await this.rejectGeneratedDraft(storage, card.cardId, lock))) rollbackIncomplete = true;
+          } catch {
+            rollbackIncomplete = true;
+          }
         }
         if (rollbackIncomplete) {
           throw new SupportPassportError("storage_conflict", "A generated draft batch could not be rolled back.", 500);

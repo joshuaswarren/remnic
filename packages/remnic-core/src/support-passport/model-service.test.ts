@@ -443,6 +443,66 @@ test("an audit write failure does not block a grounded helper answer", async () 
   }
 });
 
+test("a success audit runs after the grounded helper answer returns", async () => {
+  const subject = await makeSubject();
+  try {
+    const draft = await subject.cardService.createManualDraft({
+      principal: "owner:alice",
+      title: "Quiet space",
+      statement: "Offer me a quiet place and time.",
+      category: "environment",
+      reviewBy: "2026-09-01T12:00:00.000Z",
+    });
+    const active = await subject.cardService.approveCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+    });
+    const created = await subject.grantService.createGrant({
+      principal: "owner:alice",
+      cards: [{ cardId: active.cardId, revision: active.revision }],
+      expiresAt: "2026-08-11T13:00:00.000Z",
+    });
+    let auditCalls = 0;
+    const service = new SupportPassportQuestionService({
+      grantService: subject.grantService,
+      modelAdapter: new SupportPassportModelAdapter({
+        routes: [
+          {
+            kind: "gateway",
+            invoke: async () => ({
+              modelUsed: "gateway/test-model",
+              content: JSON.stringify({
+                answer: "Offer a quiet place.",
+                citedCardIds: [active.cardId],
+                coverage: "grounded",
+              }),
+            }),
+          },
+        ],
+      }),
+      audit: {
+        record: async () => {
+          auditCalls += 1;
+        },
+      },
+      now: subject.now,
+    });
+
+    const answer = await service.askGrant({
+      grantId: created.grant.grantId,
+      secret: created.secret,
+      question: "What can help?",
+    });
+    assert.equal(answer.answer, "Offer a quiet place.");
+    assert.equal(auditCalls, 0);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(auditCalls, 1);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("the model audit store writes strict private JSONL without text fields", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-model-audit-"));
   try {

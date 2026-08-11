@@ -251,7 +251,9 @@ export class SupportPassportQuestionService {
         citedCardIds: modelResult.citedCardIds,
         coverage: modelResult.coverage,
       };
-      await recordAuditSafely(this.audit, { ...auditBase, schemaVersion: 1, outcome: "success" });
+      setImmediate(() => {
+        void recordAuditSafely(this.audit, { ...auditBase, schemaVersion: 1, outcome: "success" });
+      });
       return answer;
     } catch (error) {
       await recordAuditSafely(this.audit, {
