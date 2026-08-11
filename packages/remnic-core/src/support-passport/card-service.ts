@@ -113,6 +113,7 @@ export class SupportPassportCardService {
     const { storage } = input.owner;
     return await this.withOwnerLock(storage, async (lock) => {
       const created: SupportPassportCard[] = [];
+      const createdIds: string[] = [];
       try {
         for (const card of output.data.cards) {
           created.push(
@@ -123,6 +124,7 @@ export class SupportPassportCardService {
                 statement: card.statement,
                 category: card.category,
                 sourceMemoryIds: card.sourceMemoryIds,
+                onPersisted: (cardId) => createdIds.push(cardId),
               },
               lock
             )
@@ -131,9 +133,9 @@ export class SupportPassportCardService {
         return created;
       } catch (error) {
         let rollbackIncomplete = false;
-        for (const card of created) {
+        for (const cardId of createdIds) {
           try {
-            if (!(await this.rejectGeneratedDraft(storage, card.cardId, lock))) rollbackIncomplete = true;
+            if (!(await this.rejectGeneratedDraft(storage, cardId, lock))) rollbackIncomplete = true;
           } catch {
             rollbackIncomplete = true;
           }
@@ -303,6 +305,7 @@ export class SupportPassportCardService {
       supersedes?: string;
       replacesDraftId?: string;
       order?: number;
+      onPersisted?: (cardId: string) => void;
     },
     lock: HeldFileLockController,
     principal: string
@@ -350,6 +353,7 @@ export class SupportPassportCardService {
     if (written.tombstoneBlocked) {
       throw new SupportPassportError("storage_conflict", "The support card needs memory review before use.", 409);
     }
+    input.onPersisted?.(written.id);
     return this.projectRequiredCard(written.memory).card;
   }
 

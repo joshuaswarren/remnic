@@ -1935,6 +1935,51 @@ test("generated draft rollback retries a compare-and-swap conflict", async () =>
   }
 });
 
+test("generated draft rollback rejects a draft when its post-write read fails", async () => {
+  const subject = await makeSubject();
+  try {
+    const writeSealedMemory = subject.aliceStorage.writeSealedMemory.bind(subject.aliceStorage);
+    let persistedCardId: string | undefined;
+    subject.aliceStorage.writeSealedMemory = async (...args) => {
+      const written = await writeSealedMemory(...args);
+      persistedCardId = written.id;
+      return written;
+    };
+    const getMemoryById = subject.aliceStorage.getMemoryById.bind(subject.aliceStorage);
+    let failedRead = false;
+    subject.aliceStorage.getMemoryById = async (memoryId) => {
+      if (!failedRead && memoryId === persistedCardId) {
+        failedRead = true;
+        throw new Error("post-write read failed");
+      }
+      return await getMemoryById(memoryId);
+    };
+
+    await assert.rejects(
+      subject.service.createGeneratedDrafts({
+        principal: "owner:alice",
+        cards: [
+          {
+            title: "Plan changes",
+            statement: "Tell me before plans change.",
+            category: "transitions",
+            sourceMemoryIds: ["source-1"],
+          },
+        ],
+      }),
+      /post-write read failed/
+    );
+
+    assert.equal(failedRead, true);
+    assert.ok(persistedCardId);
+    const persisted = await subject.aliceStorage.getMemoryById(persistedCardId);
+    assert.equal(persisted?.frontmatter.status, "rejected");
+    assert.deepEqual(await subject.service.listCards({ principal: "owner:alice" }), []);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("generated draft rollback continues after one cleanup throws", async () => {
   const subject = await makeSubject();
   try {
