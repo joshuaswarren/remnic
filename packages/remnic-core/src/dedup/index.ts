@@ -157,14 +157,16 @@ export function findContradictions(options: ContradictionOptions): Contradiction
 function computeSimilarity(a: string, b: string): number {
   const normA = normalize(a);
   const normB = normalize(b);
-  const unicodeBoundariesA = a.match(/[^\p{ASCII}\p{L}\p{M}\p{N}\s']/gu)?.join("") ?? "";
-  const unicodeBoundariesB = b.match(/[^\p{ASCII}\p{L}\p{M}\p{N}\s']/gu)?.join("") ?? "";
+  const punctuationBoundariesA = a.match(/[^\p{L}\p{M}\p{N}\s']/gu)?.join("") ?? "";
+  const punctuationBoundariesB = b.match(/[^\p{L}\p{M}\p{N}\s']/gu)?.join("") ?? "";
+
+  // Compare punctuation boundaries before normalization's exact/hash fast paths:
+  // a separated phrase must not become equal to its joined form.
+  if (punctuationBoundariesA !== punctuationBoundariesB) return 0;
 
   if (normA === normB) return 1;
 
   if (hashContent(normA) === hashContent(normB)) return 0.99;
-  if (unicodeBoundariesA !== unicodeBoundariesB) return 0;
-
   if (normA.length > 50 && normB.length > 50) {
     if (normA.includes(normB.slice(0, 40)) || normB.includes(normA.slice(0, 40))) {
       return 0.9;

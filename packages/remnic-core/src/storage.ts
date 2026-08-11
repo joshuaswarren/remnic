@@ -3019,6 +3019,31 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       // guarantees the tombstone tiers can never drift from dedup.
       hashContent: ContentHashIndex.computeHash,
       normalizeText: ContentHashIndex.normalizeContent,
+      sourceContentsForMemoryIds: async (sourceMemoryIds) => {
+        const requested = new Set(sourceMemoryIds);
+        const matchingPaths: string[] = [];
+        const found = new Set<string>();
+        const collectMatches = (filePaths: readonly string[]): void => {
+          for (const filePath of filePaths) {
+            const id = path.basename(filePath, ".md");
+            if (!requested.has(id) || found.has(id)) continue;
+            matchingPaths.push(filePath);
+            found.add(id);
+          }
+        };
+        collectMatches(await this.collectActiveMemoryPaths());
+        if (found.size < requested.size) {
+          collectMatches(await this.collectColdMemoryPaths());
+        }
+        const contents = new Map<string, string>();
+        for (const memory of await this.readParsedMemoriesFromPaths(matchingPaths, 50)) {
+          contents.set(
+            memory.frontmatter.id,
+            stripCitationForTemplate(memory.content, this.citationTemplate),
+          );
+        }
+        return contents;
+      },
     };
     const io: TombstoneFileIo = {
       read: (filePath) => this.readStorageSecureFile(filePath),
@@ -3263,13 +3288,14 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     }
     this.factHashIndexAuthoritative = false;
     this.factHashIndexAuthoritativePromise = (async () => {
-      // Round 11: ALWAYS rebuild the fact-hash index from the durable corpus on
-      // first use per process — no on-disk "ready" marker is written or trusted,
-      // so a deferred write, crash, or multi-process interleave can never leave a
-      // stale index trusted. The scan AND publish run under the SAME per-index
-      // cross-process lock the reconciling saves use (rebuildUnderLock), so the
-      // rebuild can never overwrite a peer's newer lock-merged or deferred
-      // additions with an unlocked overwrite.
+      // ALWAYS rebuild the index from the durable corpus on first use per
+      // process, preserving the #2016 crash/restart invariant. Markerless
+      // legacy indexes additionally require body-derived hashes because their
+      // frontmatter.contentHash values may use the old normalizer.
+      //
+      // The scan and publish run under the SAME per-index cross-process lock
+      // used by reconcile saves, so migration cannot overwrite a peer's newer
+      // additions with an unlocked write.
       //
       // PR #2016 (findings 1-2): bounded-retry the LOCKED rebuild so transient
       // contention (a peer mid reconcile-save) clears within a short budget
@@ -3284,7 +3310,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       const baseMs = this.factHashIndexLockOptions.retryBaseMs ?? FACT_HASH_INDEX_REBUILD_RETRY_BASE_MS;
       let published = false;
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-        published = await factHashIndex.rebuildUnderLock(() => this.rebuildFactHashIndexFromCorpus(factHashIndex));
+        published = await factHashIndex.rebuildUnderLock(() =>
+          this.rebuildFactHashIndexFromCorpus(factHashIndex)
+        );
         if (published || attempt === maxAttempts - 1) break;
         const wait = Math.min(baseMs * 2 ** attempt, CONTENT_HASH_INDEX_RETRY_MAX_DELAY_MS);
         await new Promise<void>((resolve) => setTimeout(resolve, wait));
@@ -3365,38 +3393,42 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     }
   }
   /**
-   * The content-hash the corpus rebuild registers for `memory`, or null when the
-   * body carries a citation from an unknown/custom template that cannot be
-   * safely stripped. Shared by the authoritative rebuild and the fact-only
-   * corpus confirmation (`hasFactContentHash`) so both derive the identical
-   * hash for a given stored body.
-   *
-   * Preference order:
-   *  1. frontmatter.contentHash — the raw pre-citation hash writeMemory records
-   *     for facts (issue #369 round 8); matches hasFactContentHash(rawFact).
-   *  2. Reconstruct from the stored body: strip the "[Attributes: …]" suffix
-   *     writeMemory appends for structuredAttributes (registration hashed the
-   *     raw canonical content WITHOUT it — a no-op when absent), then strip a
-   *     recognised citation and hash the bare body, or hash a citation-free
-   *     body as-is.
-   *  3. A body with a citation from an unknown/custom template → null: a
-   *     false-negative miss beats a wrong hash that would permanently suppress
-   *     legitimate duplicate writes.
+   * The content hash the corpus rebuild registers for `memory`, or null when
+   * the body has an unknown citation and no persisted hash exists.
+   * Reconstruct from the authoritative body first. Preserve an intentional
+   * `contentHashSource` override when frontmatter differs from both the
+   * current and the legacy pre-Unicode body hash.
    */
   private corpusRegisteredHash(memory: MemoryFile): string | null {
-    if (memory.frontmatter.contentHash) {
-      return memory.frontmatter.contentHash;
-    }
     const content = stripAttributesSuffix(memory.content);
     const stripped = stripCitationForTemplate(content, this.citationTemplate);
-    if (stripped !== content) {
-      return ContentHashIndex.computeHash(sanitizeMemoryContent(stripped).text);
+    const canonicalContent = stripped !== content || !hasCitation(content)
+      ? sanitizeMemoryContent(stripped !== content ? stripped : content).text
+      : null;
+    const persistedHash = memory.frontmatter.contentHash;
+    if (canonicalContent === null) return persistedHash ?? null;
+
+    const currentHash = ContentHashIndex.computeHash(canonicalContent);
+    if (
+      !persistedHash ||
+      persistedHash === currentHash ||
+      persistedHash === this.legacyCorpusHash(canonicalContent)
+    ) {
+      return currentHash;
     }
-    if (!hasCitation(content)) {
-      return ContentHashIndex.computeHash(sanitizeMemoryContent(content).text);
-    }
-    return null;
+    return persistedHash;
   }
+
+  /** Compute the pre-Unicode hash used by markerless legacy indexes. */
+  private legacyCorpusHash(content: string): string {
+    const normalized = content
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    return createHash("sha256").update(normalized).digest("hex");
+  }
+
   private get questionsDir(): string {
     return path.join(this.baseDir, "questions");
   }
@@ -3987,15 +4019,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
   private factContentHashForRemoval(memory: MemoryFile): string | null {
     if (memory.frontmatter.category !== "fact") return null;
-    if (typeof memory.frontmatter.contentHash === "string" && memory.frontmatter.contentHash.length > 0) {
-      return memory.frontmatter.contentHash;
-    }
-    const configuredHashSource = stripCitationMarkersForHashRemoval(memory.content, this.citationTemplate);
-    const hashSource =
-      configuredHashSource !== memory.content
-        ? configuredHashSource
-        : stripDefaultCitationMarkersWithoutRegex(memory.content);
-    return ContentHashIndex.computeHash(sanitizeMemoryContent(hashSource).text);
+    return this.corpusRegisteredHash(memory);
   }
 
   private async addActiveFactContentHash(memory: MemoryFile): Promise<void> {

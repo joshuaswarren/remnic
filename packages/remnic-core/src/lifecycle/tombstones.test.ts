@@ -1,28 +1,20 @@
 import { describe, it } from "node:test";
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile, rm, mkdir, appendFile, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
 import { statSync } from "node:fs";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import {
+  computeContentHash as computeHash,
+  normalizeContent,
+} from "../content-hash.js";
 import {
   TombstoneStore,
   parseTombstoneLine,
   type TombstoneFileIo,
 } from "./tombstones.js";
-
-// Mirror the dedup normalizer EXACTLY — these are the wired injections.
-function normalizeContent(content: string): string {
-  return content
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-function computeHash(content: string): string {
-  return createHash("sha256").update(normalizeContent(content)).digest("hex");
-}
 
 function makeIo(): TombstoneFileIo {
   return {
@@ -131,6 +123,78 @@ describe("TombstoneStore — append/lookup round-trip", () => {
       contentHash: computeHash("something completely different"),
     });
     assert.equal(match, null);
+  });
+});
+
+describe("TombstoneStore — Unicode normalizer migration", () => {
+  it("migrates a legacy Japanese identity before indexing, then survives restart", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "tomb-unicode-migration-"));
+    const filePath = path.join(dir, "tombstones.jsonl");
+    const japanese = "利用者は紅茶を好む。";
+    const legacyNormalize = (content: string) =>
+      content.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+    const legacyEntry = {
+      id: "tomb-legacy-japanese",
+      kind: "tombstone" as const,
+      reason: "correction" as const,
+      sourceMemoryId: "fact-japanese",
+      contentHash: createHash("sha256").update(legacyNormalize(japanese)).digest("hex"),
+      normalizedText: legacyNormalize(japanese),
+      namespace: "default",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      createdBy: "user_correction" as const,
+    };
+    const legacyAscii = {
+      ...legacyEntry,
+      id: "tomb-legacy-ascii",
+      sourceMemoryId: "fact-ascii",
+      contentHash: createHash("sha256").update(legacyNormalize("ASCII survives")).digest("hex"),
+      normalizedText: legacyNormalize("ASCII survives"),
+    };
+    await writeFile(
+      filePath,
+      `${JSON.stringify(legacyEntry)}\n${JSON.stringify(legacyAscii)}\n`,
+      "utf8",
+    );
+    const options = {
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      hashContent: computeHash,
+      normalizeText: normalizeContent,
+      sourceContentsForMemoryIds: async (ids: readonly string[]) =>
+        new Map(ids.filter((id) => id === "fact-japanese").map((id) => [id, japanese])),
+    };
+    const store = new TombstoneStore(filePath, "default", options, makeIo());
+    await store.load();
+    assert.equal(
+      store.lookup({ namespace: "default", contentHash: computeHash(japanese) })?.matchedTier,
+      "exact",
+    );
+    assert.equal(
+      store.lookup({ namespace: "default", normalizedText: normalizeContent(japanese) })?.matchedTier,
+      "normalized",
+    );
+    assert.equal(
+      store.lookup({ namespace: "default", contentHash: computeHash("ASCII survives") })?.matchedTier,
+      "exact",
+    );
+    assert.equal(store.snapshot().find((entry) => entry.id === legacyEntry.id)?.normalizerVersion, 2);
+
+    const restarted = new TombstoneStore(filePath, "default", options, makeIo());
+    await restarted.load();
+    assert.equal(
+      restarted.lookup({ namespace: "default", contentHash: computeHash(japanese) })?.matchedTier,
+      "exact",
+    );
+    assert.equal(
+      restarted.lookup({ namespace: "default", normalizedText: normalizeContent(japanese) })?.matchedTier,
+      "normalized",
+    );
+    assert.equal(
+      restarted.lookup({ namespace: "default", contentHash: computeHash("ASCII survives") })?.matchedTier,
+      "exact",
+    );
   });
 });
 
@@ -500,6 +564,101 @@ describe("TombstoneStore — cross-process write lock (issue #1639)", () => {
     assert.equal(lines2.length, 1);
     // Our fresh lock was released on completion (the stale one was broken).
     await rm(lockPath, { force: true });
+  });
+
+  it("does not deadlock when mtime freshness sees legacy entries before append or rebuild", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "tomb-migration-deadlock-"));
+    const filePath = path.join(dir, "tombstones.jsonl");
+    const japanese = "利用者は紅茶を好む。";
+    const legacyNormalize = (content: string) =>
+      content.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+    const legacyEntry = {
+      id: "tomb-legacy-before-append",
+      kind: "tombstone" as const,
+      reason: "correction" as const,
+      sourceMemoryId: "fact-legacy-before-append",
+      contentHash: createHash("sha256").update(legacyNormalize(japanese)).digest("hex"),
+      normalizedText: legacyNormalize(japanese),
+      namespace: "default",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      createdBy: "user_correction" as const,
+    };
+    let resolveSources = false;
+    const options = {
+      enabled: true,
+      semanticMatch: false,
+      semanticThreshold: 0.9,
+      hashContent: computeHash,
+      normalizeText: normalizeContent,
+      sourceContentsForMemoryIds: async (ids: readonly string[]) =>
+        resolveSources
+          ? new Map(ids.map((id) => [id, japanese]))
+          : new Map<string, string>(),
+    };
+    await mkdir(path.dirname(filePath), { recursive: true });
+    const withTurnTimeout = async <T>(operation: Promise<T>, message: string): Promise<T> => {
+      let settled = false;
+      const timeout = new Promise<never>((_, reject) => {
+        let turns = 0;
+        const check = () => {
+          if (settled) return;
+          turns += 1;
+          if (turns >= 1_000) reject(new Error(message));
+          else setImmediate(check);
+        };
+        setImmediate(check);
+      });
+      try {
+        return await Promise.race([operation, timeout]);
+      } finally {
+        settled = true;
+      }
+    };
+    await writeFile(filePath, `${JSON.stringify(legacyEntry)}\n`, "utf8");
+    const store = new TombstoneStore(filePath, "default", options, makeReadMergeWriteIo());
+    await store.load();
+    resolveSources = true;
+
+    const peerEntry = {
+      ...legacyEntry,
+      id: "tomb-peer-before-append",
+      sourceMemoryId: "fact-peer",
+    };
+    await appendFile(filePath, `${JSON.stringify(peerEntry)}\n`, "utf8");
+    const appendMtime = new Date(Date.now() + 2_000);
+    await utimes(filePath, appendMtime, appendMtime);
+    const appended = await withTurnTimeout(
+      store.appendTombstone({
+        reason: "correction",
+        createdBy: "user_correction",
+        sourceMemoryId: "fact-new",
+        rawContent: "A new fact after the peer append.",
+      }),
+      "append migration deadlock",
+    );
+    assert.match(appended, /^tomb-/);
+
+    const rebuildPeer = {
+      ...legacyEntry,
+      id: "tomb-peer-before-rebuild",
+      sourceMemoryId: "fact-peer-rebuild",
+    };
+    await appendFile(filePath, `${JSON.stringify(rebuildPeer)}\n`, "utf8");
+    const rebuildMtime = new Date(Date.now() + 4_000);
+    await utimes(filePath, rebuildMtime, rebuildMtime);
+    const rebuilt = await withTurnTimeout(
+      store.rebuild([
+        {
+          memoryId: "fact-rebuild",
+          rawContent: japanese,
+          reason: "correction" as const,
+          createdBy: "user_correction" as const,
+          createdAt: "2026-01-02T00:00:00.000Z",
+        },
+      ]),
+      "rebuild migration deadlock",
+    );
+    assert.equal(rebuilt, 1);
   });
 
   it("rebuild preserves a peer's revocation appended before rebuild acquired the lock (cursor/codex #1639)", async () => {
