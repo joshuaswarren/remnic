@@ -103,6 +103,43 @@ test("a grant stores only hashed credentials with private file permissions", asy
   }
 });
 
+test("owner grant listings read only the indexed owner grants", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-index-"));
+  try {
+    const grantIds = ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"];
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({
+      memoryDir: root,
+      makeGrantId: () => grantIds.shift() ?? "00000000-0000-4000-8000-000000000003",
+      now: () => now,
+    });
+    const common = {
+      namespace: "shared",
+      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+      expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
+    };
+    const alice = await store.create({ ...common, principal: "owner:alice" });
+    const bob = await store.create({ ...common, principal: "owner:bob" });
+    const inspected = store as unknown as {
+      readState(grantId: string): Promise<unknown>;
+    };
+    const readState = inspected.readState.bind(store);
+    const readGrantIds: string[] = [];
+    inspected.readState = async (grantId) => {
+      readGrantIds.push(grantId);
+      return await readState(grantId);
+    };
+
+    const listed = await store.listForOwner("shared", "owner:alice");
+
+    assert.deepEqual(listed.map((state) => state.grantId), [alice.state.grantId]);
+    assert.deepEqual(readGrantIds, [alice.state.grantId]);
+    assert.notEqual(alice.state.grantId, bob.state.grantId);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a helper sees only the selected active card through a valid secret", async () => {
   const subject = await makeSubject();
   try {
