@@ -107,7 +107,9 @@ async function startServerWorker(
     const port = await new Promise<number>((resolve, reject) => {
       worker.once("message", (message: { port?: unknown }) => {
         const value = message?.port;
-        if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+        // A TCP port is 1..65535. Accepting any positive integer would let a
+        // worker pass the handshake without a bindable port.
+        if (typeof value !== "number" || !Number.isInteger(value) || value <= 0 || value > 65_535) {
           reject(new Error(`worker announced an unusable port: ${JSON.stringify(value)}`));
           return;
         }
@@ -277,6 +279,39 @@ throw new Error("worker exploded before listen");
   await assert.rejects(
     () => startServerWorker(DYING_WORKER_SOURCE, {}),
     /worker exploded before listen/,
+  );
+});
+
+test("a worker that exits cleanly before listening fails with the early-exit error", async () => {
+  // The `exit` path is distinct from `error`: a worker can return without
+  // throwing and without ever announcing a port (issue #2293).
+  const SILENT_EXIT_WORKER_SOURCE = `
+// exits with code 0 without posting a message
+`;
+  await assert.rejects(
+    () => startServerWorker(SILENT_EXIT_WORKER_SOURCE, {}),
+    /exited with code 0 before it started listening/,
+  );
+});
+
+test("an out-of-range port is rejected rather than accepted as a handshake", async () => {
+  const BAD_PORT_WORKER_SOURCE = `
+import { parentPort } from "node:worker_threads";
+parentPort.postMessage({ port: 65536 });
+setInterval(() => {}, 1000);
+`;
+  await assert.rejects(
+    () => startServerWorker(BAD_PORT_WORKER_SOURCE, {}),
+    /announced an unusable port: 65536/,
+  );
+  const ZERO_PORT_WORKER_SOURCE = `
+import { parentPort } from "node:worker_threads";
+parentPort.postMessage({ port: 0 });
+setInterval(() => {}, 1000);
+`;
+  await assert.rejects(
+    () => startServerWorker(ZERO_PORT_WORKER_SOURCE, {}),
+    /announced an unusable port: 0/,
   );
 });
 
