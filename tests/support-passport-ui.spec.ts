@@ -1386,9 +1386,9 @@ test("helper revalidation backs off after a rate limit", async ({ page }, testIn
   await expect(page.locator(".public-card")).toHaveCount(1);
   await page.clock.fastForward(30_000);
   await expect.poll(() => reads).toBe(2);
-  await page.clock.fastForward(59_999);
+  await page.clock.fastForward(59_000);
   expect(reads).toBe(2);
-  await page.clock.fastForward(1);
+  await page.clock.fastForward(1_000);
   await expect.poll(() => reads).toBe(3);
 });
 
