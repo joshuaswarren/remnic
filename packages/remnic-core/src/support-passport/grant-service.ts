@@ -113,7 +113,7 @@ export class SupportPassportGrantService {
     if (confirmedState.stateVersion !== state.stateVersion) {
       throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
     }
-    return await withSupportPassportOwnerLock(storage, async () => {
+    return await withSupportPassportOwnerLock(storage, async (ownerLock) => {
       const confirmedCards = await this.readGrantCards(storage, confirmedState);
       if (JSON.stringify(confirmedCards) !== JSON.stringify(cards)) {
         throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
@@ -128,6 +128,7 @@ export class SupportPassportGrantService {
         (latest, card) => (card.updatedAt > latest ? card.updatedAt : latest),
         firstCard.updatedAt
       );
+      await requireSupportPassportOwnerLock(ownerLock);
       return SupportPassportPublicGuideSchema.parse({
         schemaVersion: 1,
         grantId: finalState.grantId,
