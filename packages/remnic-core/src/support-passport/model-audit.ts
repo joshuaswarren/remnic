@@ -6,6 +6,7 @@ import { expandTildePath } from "../utils/path.js";
 import { serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
 import {
   appendPrivateFileNoFollow,
+  canonicalizePrivateDirectoryTarget,
   ensurePrivateDirectoryNoFollow,
   ensurePrivateDirectoryTreeNoFollow,
   withPrivateDirectoryNoFollow,
@@ -74,8 +75,9 @@ export function hashSupportPassportAuditValues(domain: string, values: string[])
 }
 
 export class SupportPassportModelAuditStore implements SupportPassportModelAuditSink {
-  private readonly memoryDir: string;
-  private readonly auditDir: string;
+  private memoryDir: string;
+  private auditDir: string;
+  private memoryRootReady?: Promise<void>;
   private readonly runWithHeldFileLock: typeof withHeldFileLock;
 
   constructor(options: { memoryDir: string; withHeldFileLock?: typeof withHeldFileLock }) {
@@ -118,14 +120,33 @@ export class SupportPassportModelAuditStore implements SupportPassportModelAudit
   }
 
   private async ensureSafeDirectories(): Promise<void> {
-    await ensurePrivateDirectoryTreeNoFollow(
-      this.memoryDir,
-      "support passport memory directory must be a stable directory"
-    );
+    await this.ensureMemoryRoot();
     await ensurePrivateDirectoryNoFollow(
       this.memoryDir,
       this.auditDir,
       "support passport audit directory must remain inside the memory directory"
     );
+  }
+
+  private async ensureMemoryRoot(): Promise<void> {
+    if (!this.memoryRootReady) {
+      const configuredMemoryDir = this.memoryDir;
+      this.memoryRootReady = (async () => {
+        const canonicalMemoryDir = await canonicalizePrivateDirectoryTarget(configuredMemoryDir);
+        await ensurePrivateDirectoryTreeNoFollow(
+          canonicalMemoryDir,
+          "support passport memory directory must be a stable directory"
+        );
+        this.memoryDir = canonicalMemoryDir;
+        this.auditDir = path.join(canonicalMemoryDir, "state", "support-passport", "audit");
+      })();
+    }
+    const currentAttempt = this.memoryRootReady;
+    try {
+      await currentAttempt;
+    } catch (error) {
+      if (this.memoryRootReady === currentAttempt) this.memoryRootReady = undefined;
+      throw error;
+    }
   }
 }
