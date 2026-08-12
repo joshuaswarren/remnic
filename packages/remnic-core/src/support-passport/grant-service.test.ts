@@ -23,6 +23,7 @@ import { SupportPassportError } from "./errors.js";
 import { SupportPassportGrantService } from "./grant-service.js";
 import { SupportPassportGrantStore, syncDirectoryForDurability } from "./grant-store.js";
 import {
+  canonicalizePrivateDirectoryTarget,
   ensurePrivateDirectoryNoFollow,
   ensurePrivateDirectoryTreeNoFollow,
   requirePrivateFileDescriptorRoot,
@@ -647,6 +648,59 @@ test("grants reject cards owned by another namespace in shared storage", async (
     );
     const forged = await grantStore.create({
       namespace: "bob",
+      principal: "owner:bob",
+      cards: [{ cardId: aliceCard.cardId, revision: aliceCard.revision }],
+      expiresAt: "2026-08-11T13:00:00.000Z",
+    });
+    await assert.rejects(
+      grantService.readGrant({ grantId: forged.state.grantId, secret: forged.secret }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "grant_stale"
+    );
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("grants reject cards owned by another principal inside a shared namespace", async () => {
+  StorageManager.clearAllStaticCaches();
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-owner-scope-"));
+  try {
+    const storage = new StorageManager(path.join(root, "shared-storage"));
+    await storage.ensureDirectories();
+    const now = () => new Date("2026-08-11T12:00:00.000Z");
+    const resolveOwner = async (principal: string) => ({ principal, namespace: "team", storage });
+    const cardService = new SupportPassportCardService({ resolveOwner, now });
+    const grantStore = new SupportPassportGrantStore({ memoryDir: path.join(root, "grants"), now });
+    const grantService = new SupportPassportGrantService({
+      grantStore,
+      resolveOwner,
+      resolveNamespace: async () => storage,
+      now,
+    });
+    const draft = await cardService.createManualDraft({
+      principal: "owner:alice",
+      title: "Alice card",
+      statement: "Offer Alice a quiet place.",
+      category: "environment",
+      reviewBy: "2026-09-01T12:00:00.000Z",
+    });
+    const aliceCard = await cardService.approveCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+    });
+
+    await assert.rejects(
+      grantService.createGrant({
+        principal: "owner:bob",
+        cards: [{ cardId: aliceCard.cardId, revision: aliceCard.revision }],
+        expiresAt: "2026-08-11T13:00:00.000Z",
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "invalid_card_status"
+    );
+    const forged = await grantStore.create({
+      namespace: "team",
       principal: "owner:bob",
       cards: [{ cardId: aliceCard.cardId, revision: aliceCard.revision }],
       expiresAt: "2026-08-11T13:00:00.000Z",
@@ -1401,7 +1455,7 @@ test("private directory creation syncs every verified parent entry", async () =>
     await ensurePrivateDirectoryNoFollow(root, target, "private directory creation failed", syncVerifiedParent);
     assert.equal(syncs, 3);
     await ensurePrivateDirectoryNoFollow(root, target, "private directory creation failed", syncVerifiedParent);
-    assert.equal(syncs, 6);
+    assert.equal(syncs, 3);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1417,7 +1471,9 @@ test("private directory creation retries a failed parent sync", async () => {
       }),
       (error: unknown) => (error as NodeJS.ErrnoException).code === "EIO"
     );
-    assert.equal((await lstat(path.join(root, "state"))).isDirectory(), true);
+    await assert.rejects(lstat(path.join(root, "state")), (error: unknown) => {
+      return (error as NodeJS.ErrnoException).code === "ENOENT";
+    });
 
     let retrySyncs = 0;
     await ensurePrivateDirectoryNoFollow(root, target, "private directory creation failed", async () => {
@@ -1439,8 +1495,7 @@ test("private directory tree creation syncs missing memory-root ancestors", asyn
       syncs += 1;
     });
 
-    const ancestorCount = path.relative(path.parse(target).root, target).split(path.sep).length;
-    assert.equal(syncs, ancestorCount);
+    assert.equal(syncs, 2);
     assert.equal((await lstat(target)).isDirectory(), true);
     assert.equal((await lstat(target)).mode & 0o777, 0o700);
   } finally {
@@ -1462,6 +1517,23 @@ test("private directory tree creation rejects a symlink in the ancestor chain", 
       /private directory creation failed/
     );
     assert.deepEqual(await readdir(outside), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("configured private directory targets resolve existing symlink aliases once", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-private-root-alias-"));
+  try {
+    const actual = path.join(root, "actual");
+    const alias = path.join(root, "alias");
+    await mkdir(actual);
+    await symlink(actual, alias);
+
+    assert.equal(
+      await canonicalizePrivateDirectoryTarget(path.join(alias, "new-parent", "memory")),
+      path.join(actual, "new-parent", "memory")
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -5,6 +5,7 @@ import path from "node:path";
 import { log } from "../logger.js";
 import { expandTildePath } from "../utils/path.js";
 import { type HeldFileLockController, serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
+import { computeSupportPassportOwnerKey } from "./card-projection.js";
 import { SupportPassportNamespaceSchema } from "./contracts.js";
 import { SupportPassportError } from "./errors.js";
 import {
@@ -14,6 +15,7 @@ import {
   SupportPassportGrantStateSchema,
 } from "./grant-contracts.js";
 import {
+  canonicalizePrivateDirectoryTarget,
   ensurePrivateDirectoryNoFollow,
   ensurePrivateDirectoryTreeNoFollow,
   readPrivateFileNoFollow,
@@ -99,9 +101,10 @@ export async function syncDirectoryForDurability(
 }
 
 export class SupportPassportGrantStore {
-  private readonly memoryDir: string;
-  private readonly grantsDir: string;
-  private readonly ownerIndexesDir: string;
+  private memoryDir: string;
+  private grantsDir: string;
+  private ownerIndexesDir: string;
+  private memoryRootReady?: Promise<void>;
   private readonly now: () => Date;
   private readonly makeSecret: () => Buffer;
   private readonly makeGrantId: () => string;
@@ -149,7 +152,7 @@ export class SupportPassportGrantStore {
         stateVersion: 1,
         grantId,
         namespace,
-        principalHash: sha256("support-passport-principal:v1", parsed.data.principal),
+        principalHash: computeSupportPassportOwnerKey(parsed.data.principal),
         secretHash: sha256("support-passport-secret:v1", secret),
         cards: parsed.data.cards,
         createdAt: createdAt.toISOString(),
@@ -169,11 +172,11 @@ export class SupportPassportGrantStore {
   }
 
   async authenticate(grantId: string, secret: string): Promise<SupportPassportGrantState> {
-    grantId = normalizeGrantId(grantId);
+    const normalizedGrantId = normalizeGrantId(grantId);
     if (typeof secret !== "string" || secret.length > 512) throw grantNotFound();
     let state: SupportPassportGrantState;
     try {
-      state = await this.readState(grantId);
+      state = await this.readState(normalizedGrantId);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") throw grantNotFound();
       throw error;
@@ -214,7 +217,7 @@ export class SupportPassportGrantStore {
 
   async listForOwner(namespace: string, principal: string): Promise<SupportPassportGrantState[]> {
     const normalizedNamespace = normalizeNamespace(namespace);
-    const principalHash = sha256("support-passport-principal:v1", normalizePrincipal(principal));
+    const principalHash = computeSupportPassportOwnerKey(normalizePrincipal(principal));
     const grantIds = await this.readOwnerIndex(normalizedNamespace, principalHash);
     const states: SupportPassportGrantState[] = [];
     for (const grantId of grantIds) {
@@ -245,20 +248,23 @@ export class SupportPassportGrantStore {
     },
     beforeCommit?: () => Promise<void>
   ): Promise<SupportPassportGrantState> {
-    input = { ...input, grantId: normalizeGrantId(input.grantId) };
+    const normalizedInput = { ...input, grantId: normalizeGrantId(input.grantId) };
     const namespace = normalizeNamespace(input.namespace);
-    return await this.withGrantLock(input.grantId, async (lock) => {
+    return await this.withGrantLock(normalizedInput.grantId, async (lock) => {
       let state: SupportPassportGrantState;
       try {
-        state = await this.readState(input.grantId);
+        state = await this.readState(normalizedInput.grantId);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") throw grantNotFound();
         throw error;
       }
-      const principalHash = sha256("support-passport-principal:v1", normalizePrincipal(input.principal));
+      const principalHash = computeSupportPassportOwnerKey(normalizePrincipal(input.principal));
       if (state.namespace !== namespace || !hashesMatch(state.principalHash, principalHash)) throw grantNotFound();
       if (state.revokedAt) return state;
-      if (input.expectedStateVersion !== undefined && input.expectedStateVersion !== state.stateVersion) {
+      if (
+        normalizedInput.expectedStateVersion !== undefined &&
+        normalizedInput.expectedStateVersion !== state.stateVersion
+      ) {
         throw new SupportPassportError("state_conflict", "The share link changed after it was loaded.", 409);
       }
       const revoked = SupportPassportGrantStateSchema.parse({
@@ -274,8 +280,8 @@ export class SupportPassportGrantStore {
   }
 
   private filePath(grantId: string): string {
-    grantId = normalizeGrantId(grantId);
-    return path.join(this.grantsDir, `${grantId}.json`);
+    const normalizedGrantId = normalizeGrantId(grantId);
+    return path.join(this.grantsDir, `${normalizedGrantId}.json`);
   }
 
   private ownerIndexPath(ownerHash: string): string {
@@ -451,15 +457,35 @@ export class SupportPassportGrantStore {
   }
 
   private async ensureSafeDirectories(): Promise<void> {
-    await ensurePrivateDirectoryTreeNoFollow(
-      this.memoryDir,
-      "support passport memory directory must be a stable directory"
-    );
+    await this.ensureMemoryRoot();
     await ensurePrivateDirectoryNoFollow(
       this.memoryDir,
       this.ownerIndexesDir,
       "support passport grant directories must remain inside the memory directory"
     );
+  }
+
+  private async ensureMemoryRoot(): Promise<void> {
+    if (!this.memoryRootReady) {
+      const configuredMemoryDir = this.memoryDir;
+      this.memoryRootReady = (async () => {
+        const canonicalMemoryDir = await canonicalizePrivateDirectoryTarget(configuredMemoryDir);
+        await ensurePrivateDirectoryTreeNoFollow(
+          canonicalMemoryDir,
+          "support passport memory directory must be a stable directory"
+        );
+        this.memoryDir = canonicalMemoryDir;
+        this.grantsDir = path.join(canonicalMemoryDir, "state", "support-passport", "grants");
+        this.ownerIndexesDir = path.join(this.grantsDir, "owners");
+      })();
+    }
+    const currentAttempt = this.memoryRootReady;
+    try {
+      await currentAttempt;
+    } catch (error) {
+      if (this.memoryRootReady === currentAttempt) this.memoryRootReady = undefined;
+      throw error;
+    }
   }
 
   private async withMutationLock<T>(task: (lock: HeldFileLockController) => Promise<T>): Promise<T> {
@@ -478,7 +504,7 @@ export class SupportPassportGrantStore {
   }
 
   private async withGrantLock<T>(grantId: string, task: (lock: HeldFileLockController) => Promise<T>): Promise<T> {
-    grantId = normalizeGrantId(grantId);
+    const normalizedGrantId = normalizeGrantId(grantId);
     await this.ensureSafeDirectories();
     return await withPrivateDirectoryNoFollow(
       this.memoryDir,
@@ -486,8 +512,8 @@ export class SupportPassportGrantStore {
       "support passport grant lock directory must remain inside the memory directory",
       async (pinnedDirectory) =>
         await this.withExclusiveLock(
-          `support-passport-grant:${this.grantsDir}:${grantId}`,
-          path.join(pinnedDirectory, `.${grantId}.lock`),
+          `support-passport-grant:${this.grantsDir}:${normalizedGrantId}`,
+          path.join(pinnedDirectory, `.${normalizedGrantId}.lock`),
           task
         )
     );
