@@ -28,6 +28,17 @@ export interface StoredSupportPassportCard {
   replacesDraftId?: string;
 }
 
+export function activeSupportPassportReplacementPredecessorIds(
+  cards: readonly StoredSupportPassportCard[]
+): Set<string> {
+  return new Set(
+    cards
+      .filter((item) => item.card.status === "active")
+      .map((item) => item.memory.frontmatter.supersedes)
+      .filter((cardId): cardId is string => typeof cardId === "string")
+  );
+}
+
 function parseSourceMemoryIds(value: string): string[] | null {
   if (value === "") return [];
   const rawIds = value.split(",");

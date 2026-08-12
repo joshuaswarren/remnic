@@ -1,6 +1,7 @@
 import {
   getOperation,
   operationRequiresAuthorizedNamespace,
+  operationUsesPrincipalNamespace,
   OPERATION_NAMES,
   type OperationName,
 } from "./access-boundary.js";
@@ -69,4 +70,9 @@ export function authorizationProbeNamespaces(
       !UNRESOLVABLE_RESOURCE_OPERATIONS.has(operation),
   );
   return namespaceOperations.length > 0 ? [requestedNamespace] : [];
+}
+
+/** Whether a probe must resolve the authenticated principal's owner namespace. */
+export function authorizationProbeRequiresPrincipalNamespace(operations: readonly OperationName[]): boolean {
+  return operations.some(operationUsesPrincipalNamespace);
 }

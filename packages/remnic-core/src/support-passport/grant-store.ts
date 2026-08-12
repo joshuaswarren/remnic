@@ -43,6 +43,13 @@ export interface CreateStoredGrantInput {
   expiresAt: string;
 }
 
+export interface SupportPassportGrantMutationHooks {
+  beforeCommit?: () => Promise<void>;
+  onCommitted?: () => void;
+}
+
+type SupportPassportGrantCreateHooks = SupportPassportGrantMutationHooks | (() => Promise<void>);
+
 function sha256(domain: string, value: string): string {
   return createHash("sha256").update(domain).update("\0").update(value).digest("hex");
 }
@@ -111,8 +118,9 @@ export class SupportPassportGrantStore {
 
   async create(
     input: CreateStoredGrantInput,
-    beforeCommit?: () => Promise<void>
+    hooks: SupportPassportGrantCreateHooks = {}
   ): Promise<{ state: SupportPassportGrantState; secret: string }> {
+    const mutationHooks = typeof hooks === "function" ? { beforeCommit: hooks } : hooks;
     const namespace = normalizeNamespace(input.namespace);
     const parsed = SupportPassportCreateGrantInputSchema.safeParse({
       principal: input.principal,
@@ -147,8 +155,9 @@ export class SupportPassportGrantStore {
         expiresAt: parsed.data.expiresAt,
       });
       await this.requireMutationLock(lock);
-      await beforeCommit?.();
+      await mutationHooks.beforeCommit?.();
       await this.writeState(state, true);
+      mutationHooks.onCommitted?.();
       try {
         await this.addToOwnerIndex(state, lock);
       } catch (error) {
@@ -221,12 +230,15 @@ export class SupportPassportGrantStore {
     return states.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.grantId.localeCompare(b.grantId));
   }
 
-  async revoke(input: {
-    grantId: string;
-    namespace: string;
-    principal: string;
-    expectedStateVersion?: number;
-  }, beforeCommit?: () => Promise<void>): Promise<SupportPassportGrantState> {
+  async revoke(
+    input: {
+      grantId: string;
+      namespace: string;
+      principal: string;
+      expectedStateVersion?: number;
+    },
+    hooks: SupportPassportGrantMutationHooks = {}
+  ): Promise<SupportPassportGrantState> {
     if (!SAFE_GRANT_ID.test(input.grantId)) throw grantNotFound();
     const namespace = normalizeNamespace(input.namespace);
     return await this.withGrantLock(input.grantId, async (lock) => {
@@ -249,8 +261,9 @@ export class SupportPassportGrantStore {
         revokedAt: this.now().toISOString(),
       });
       await this.requireMutationLock(lock);
-      await beforeCommit?.();
+      await hooks.beforeCommit?.();
       await this.writeState(revoked);
+      hooks.onCommitted?.();
       return revoked;
     });
   }

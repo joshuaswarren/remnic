@@ -15,6 +15,7 @@ import { DEFAULT_CHAT_CONFIG } from "./chat/chat-config.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
 import { OFFLINE_SYNC_MAX_MTIME_MS } from "./offline-sync.js";
 import type { StorageManager } from "./storage.js";
+import { SupportPassportError } from "./support-passport/errors.js";
 
 test("HTTP server rejects invalid constructor ports", () => {
   const service = {} as EngramAccessService;
@@ -3518,6 +3519,174 @@ test("HTTP-MCP extraction force-flush aliases consume the write quota", async ()
   }
 });
 
+test("concurrent support-passport MCP writes reserve quota before dispatch", async () => {
+  const firstStarted = Promise.withResolvers<void>();
+  const secondStarted = Promise.withResolvers<void>();
+  const releaseWrites = Promise.withResolvers<void>();
+  let writes = 0;
+  let requestId = 0;
+  const service = {
+    supportPassportGenerateDrafts: async () => {
+      writes += 1;
+      if (writes === 1) firstStarted.resolve();
+      if (writes === 2) secondStarted.resolve();
+      await releaseWrites.promise;
+      return [];
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+    writeRateLimitMaxRequests: 1,
+  });
+  const status = await server.start();
+  const generate = () =>
+    fetch(`http://127.0.0.1:${status.port}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer test-token", "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: ++requestId,
+        method: "tools/call",
+        params: {
+          name: "remnic.support_passport_drafts_generate",
+          arguments: {
+            sourceMemoryIds: ["memory-1"],
+            sourceMemoryRevisions: [{ memoryId: "memory-1", revision: "a".repeat(64) }],
+            consent: true,
+          },
+        },
+      }),
+    });
+  try {
+    const firstRequest = generate();
+    await firstStarted.promise;
+    const secondRequest = generate();
+    const secondOutcome = await Promise.race([
+      secondRequest.then(() => "rate-limited" as const),
+      secondStarted.promise.then(() => "dispatched" as const),
+    ]);
+    assert.equal(secondOutcome, "rate-limited");
+    releaseWrites.resolve();
+    const [first, second] = await Promise.all([firstRequest, secondRequest]);
+    assert.equal(first.status, 200);
+    assert.equal(second.status, 429);
+    assert.equal(writes, 1);
+  } finally {
+    releaseWrites.resolve();
+    await server.stop();
+  }
+});
+
+test("support-passport MCP keeps reserved quota when generated drafts commit before failure", async () => {
+  let writes = 0;
+  let requestId = 0;
+  const service = {
+    supportPassportGenerateDrafts: async (
+      _principal: string,
+      input: { onCommitted?: () => void }
+    ) => {
+      writes += 1;
+      input.onCommitted?.();
+      throw new SupportPassportError("state_conflict", "Draft cleanup failed.", 409);
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+    writeRateLimitMaxRequests: 1,
+  });
+  const status = await server.start();
+  const generate = () =>
+    fetch(`http://127.0.0.1:${status.port}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer test-token", "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: ++requestId,
+        method: "tools/call",
+        params: {
+          name: "remnic.support_passport_drafts_generate",
+          arguments: {
+            sourceMemoryIds: ["memory-1"],
+            sourceMemoryRevisions: [{ memoryId: "memory-1", revision: "a".repeat(64) }],
+            consent: true,
+          },
+        },
+      }),
+    });
+  try {
+    const first = await generate();
+    assert.equal(first.status, 200);
+    assert.equal(((await first.json()) as { result?: { isError?: boolean } }).result?.isError, true);
+    assert.equal((await generate()).status, 429, "the committed draft keeps its reserved MCP quota slot");
+    assert.equal(writes, 1);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("support-passport MCP can revoke a share link after the write quota is full", async () => {
+  let drafts = 0;
+  let revocations = 0;
+  const service = {
+    supportPassportEnabled: true,
+    supportPassportCreateManualDraft: async () => {
+      drafts += 1;
+      return { cardId: "card-one" };
+    },
+    supportPassportRevokeGrant: async () => {
+      revocations += 1;
+      return { grantId: "grant-one", revokedAt: "2026-08-11T12:05:00.000Z", version: 2 };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+    writeRateLimitMaxRequests: 1,
+  });
+  const status = await server.start();
+  const call = (name: string, args: Record<string, unknown>, id: number) =>
+    fetch(`http://127.0.0.1:${status.port}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer test-token", "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } }),
+    });
+  try {
+    const draft = await call(
+      "remnic.support_passport_draft_create",
+      {
+        title: "Plan changes",
+        statement: "Tell me before plans change.",
+        category: "transitions",
+        reviewBy: "2027-02-07T12:00:00.000Z",
+      },
+      1
+    );
+    assert.equal(draft.status, 200);
+    const revoked = await call(
+      "remnic.support_passport_grant_revoke",
+      {
+        grantId: "grant-one",
+        expectedVersion: 1,
+      },
+      2
+    );
+    assert.equal(revoked.status, 200);
+    assert.equal(((await revoked.json()) as { result?: { isError?: boolean } }).result?.isError, false);
+    assert.equal(drafts, 1);
+    assert.equal(revocations, 1);
+  } finally {
+    await server.stop();
+  }
+});
+
 test("HTTP extraction force-flush records quota after commit when cleanup fails", async () => {
   let flushes = 0;
   let committed = 0;
@@ -3803,6 +3972,91 @@ test("HTTP authorization probe verifies requested operation grants without invok
     assert.equal(unknown.status, 400);
     assert.equal(unknown.headers.get("cache-control"), "no-store");
     await unknown.text();
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP authorization probe checks the principal-derived support passport namespace", async () => {
+  let namespaceResolutions = 0;
+  const service = {
+    configRef: parseConfig({
+      memoryDir: "/tmp/remnic-http-passport-authorization-probe",
+      defaultNamespace: "default",
+      namespacesEnabled: true,
+      namespacePolicies: [
+        { name: "owner:alice", readPrincipals: ["owner:alice"], writePrincipals: ["owner:alice"] },
+      ],
+    }),
+    getWritableStorageForNamespace: async (namespace: string | undefined, principal: string | undefined) => {
+      namespaceResolutions += 1;
+      assert.equal(namespace, undefined);
+      assert.equal(principal, "owner:alice");
+      return { namespace: "owner:alice", storage: {} as StorageManager };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    principal: "owner:alice",
+    authTokenEntriesGetter: () => [
+      {
+        token: "passport-token",
+        capabilities: {
+          version: 1,
+          ops: ["support_passport_cards_list"],
+          namespaces: ["other"],
+        },
+      },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${status.port}/engram/v1/authorization?op=support_passport_cards_list&namespace=other`,
+      { headers: { authorization: "Bearer passport-token" } }
+    );
+
+    assert.equal(response.status, 403);
+    assert.equal(namespaceResolutions, 1);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP authorization probe rejects support passport access without a trusted principal", async () => {
+  let namespaceResolutions = 0;
+  const service = {
+    configRef: parseConfig({
+      memoryDir: "/tmp/remnic-http-passport-principal-probe",
+      defaultNamespace: "default",
+    }),
+    getWritableStorageForNamespace: async () => {
+      namespaceResolutions += 1;
+      return { namespace: "default", storage: {} as StorageManager };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authTokenEntriesGetter: () => [
+      {
+        token: "passport-token",
+        capabilities: { version: 1, ops: ["support_passport_cards_list"] },
+      },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${status.port}/engram/v1/authorization?op=support_passport_cards_list`,
+      { headers: { authorization: "Bearer passport-token" } }
+    );
+
+    assert.equal(response.status, 403);
+    assert.equal(namespaceResolutions, 0);
   } finally {
     await server.stop();
   }
