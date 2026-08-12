@@ -7,9 +7,31 @@
  * delegate mode returns before any of that wiring, and the daemon cannot see a
  * gateway-local file — so without this the notes the host was told to write
  * are read by nobody.
+ *
+ * Durability model (issue #2303). Notes are CLAIMED by rename, not by
+ * read-then-truncate, so a host append can never be overwritten by our commit.
+ * Three invariants hold the claim together:
+ *
+ *  1. One writer. The whole ingestion runs under the cross-process flush-plan
+ *     lock, so a second flush cannot mistake this run's snapshot for crash
+ *     residue. A contended flush declines and leaves the notes in place.
+ *  2. Content is never unlinked before it is durably somewhere else. The
+ *     rotate target is merged into the snapshot with a temp-then-rename write,
+ *     and only then removed, so no crash window has the notes in RAM alone.
+ *  3. Recovery is part of the claim. A `.rotating` or `.inflight` file found
+ *     while holding the lock is residue from a dead run and is merged ahead of
+ *     the newly claimed notes, preserving write order.
  */
 
-import { lstat, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { appendFile, lstat, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import path from "node:path";
+
+import { log } from "@remnic/core/logger";
+import { withHeldFileLock } from "@remnic/core/utils/serialize-mutations";
+
+import type { DelegateDaemonTarget } from "./bridge.js";
+import { buildMemoryFlushPlan } from "./memory-flush-plan.js";
+import { postJsonWithStatus } from "./delegate-http.js";
 
 /**
  * Bytes per observe request. Comfortably under the daemon's default
@@ -18,13 +40,17 @@ import { lstat, readFile, rename, unlink, writeFile } from "node:fs/promises";
 const MAX_OBSERVE_CHUNK_BYTES = 96 * 1024;
 /** The floor the adaptive halving stops at — below this a single note. */
 const MIN_OBSERVE_CHUNK_BYTES = 4 * 1024;
-import path from "node:path";
+/** Bounded wait for the flush-plan lock; a contended flush declines instead. */
+const LOCK_MAX_WAIT_MS = 5_000;
+const LOCK_STALE_MS = 60_000;
 
-import { log } from "@remnic/core/logger";
-
-import type { DelegateDaemonTarget } from "./bridge.js";
-import { buildMemoryFlushPlan } from "./memory-flush-plan.js";
-import { postJsonWithStatus } from "./delegate-http.js";
+interface SnapshotPaths {
+  plan: string;
+  inflight: string;
+  rotating: string;
+  oversized: string;
+  lock: string;
+}
 
 export async function ingestFlushPlanNotes(options: {
   target: DelegateDaemonTarget;
@@ -40,23 +66,55 @@ export async function ingestFlushPlanNotes(options: {
     options.workspaceDir,
     ...buildMemoryFlushPlan({ serviceId: options.serviceId }).relativePath.split("/"),
   );
+  const paths: SnapshotPaths = {
+    plan: planPath,
+    inflight: `${planPath}.inflight`,
+    rotating: `${planPath}.rotating`,
+    oversized: `${planPath}.oversized`,
+    lock: `${planPath}.lock`,
+  };
   // The embedded processor refuses a symlinked plan file or parent, and so must
   // this one: following a link would send another file's contents to the daemon
-  // and then truncate that file. `lstat` on the ROOT and every segment below
-  // it, never `realpath`, so a link cannot be resolved away before the check.
-  if (!(await isLinkFreeUnder(options.workspaceDir, planPath))) {
+  // and then truncate that file. EVERY path this module reads or writes is
+  // checked, not just the plan — a `flush-plan.md.inflight` symlink planted in
+  // the state directory is the same attack one filename over. `lstat` on the
+  // ROOT and every segment below it, never `realpath`, so a link cannot be
+  // resolved away before the check.
+  for (const candidate of [paths.plan, paths.inflight, paths.rotating, paths.oversized]) {
+    if (await isLinkFreeUnder(options.workspaceDir, candidate)) continue;
     log.warn(
-      `[${options.serviceId}] flush-plan ingestion skipped: ${planPath}, a parent, or the workspace root is a symlink`,
+      `[${options.serviceId}] flush-plan ingestion skipped: ${candidate}, a parent, or the workspace root is a symlink`,
     );
     return;
   }
 
-  // Claim the notes by RENAME before posting anything (issue #2303). Rename is
-  // atomic, so every host append after it lands in a freshly created plan file
-  // and cannot be truncated away by our commit. The alternative — re-reading
-  // the shared file and rewriting it minus the accepted prefix — loses any
-  // append that arrives inside that read/write window.
-  const inflightPath = `${planPath}.inflight`;
+  await withHeldFileLock(
+    paths.lock,
+    { staleMs: LOCK_STALE_MS, maxWaitMs: LOCK_MAX_WAIT_MS },
+    async (acquired) => {
+      if (!acquired) {
+        // Another flush owns the snapshot. Declining is correct: the notes stay
+        // in the plan file and the other run — or the next flush — sends them.
+        log.warn(
+          `[${options.serviceId}] flush-plan ingestion skipped: another flush holds the lock; the notes drain on the next flush`,
+        );
+        return;
+      }
+      await ingestUnderLock(options, paths);
+    },
+  );
+}
+
+async function ingestUnderLock(
+  options: {
+    target: DelegateDaemonTarget;
+    serviceId: string;
+    sessionKey: string;
+    namespace: string | undefined;
+    remainingTimeoutMs: () => number;
+  },
+  paths: SnapshotPaths,
+): Promise<void> {
   // Chunks start large and HALVE on a body-limit rejection. The daemon's
   // `maxBodyBytes` is configurable to any positive integer and is not reported
   // anywhere this client can read, so guessing a fixed ceiling would deadlock
@@ -68,9 +126,9 @@ export async function ingestFlushPlanNotes(options: {
   // the host to have written something new, so this terminates.
   for (;;) {
     if (options.remainingTimeoutMs() <= 0) return;
-    const claimed = await claimPendingNotes(planPath, inflightPath, options.serviceId);
-    if (claimed === undefined || claimed.trim().length === 0) {
-      await discardInflight(inflightPath);
+    const claimed = await claimPendingNotes(paths, options.serviceId);
+    if (claimed.trim().length === 0) {
+      await discard(paths.inflight);
       return;
     }
     let pending = claimed;
@@ -101,107 +159,129 @@ export async function ingestFlushPlanNotes(options: {
           },
           timeoutMs,
         );
-        if (response.status === 401 || response.status === 403) {
-          // Halving cannot fix a refused credential. Stopping here also stops
-          // the pointless retry ladder the old collapsed-to-null contract ran.
+        if (isRefusal(response.status)) {
+          // Halving cannot fix a refused credential, and 431 is an oversized
+          // HEADER — neither shrinks by sending a smaller body. Stopping here
+          // also ends the pointless retry ladder the old collapsed-to-null
+          // contract ran on every auth failure.
           log.warn(
             `[${options.serviceId}] flush-plan notes were refused by the daemon (${response.status}); keeping them for the next flush`,
           );
           stop = true;
           return;
         }
-        if (isBodyTooLarge(response.status)) {
-          // Halve whenever a smaller ceiling is still available. Requiring
-          // the CURRENT ceiling to already split the text was wrong: a
-          // 40 KiB plan under a 96 KiB ceiling is one chunk, so a daemon
-          // configured below 40 KiB rejected it forever — the deadlock
-          // chunking exists to end.
+        if (response.status === 413) {
+          // Halve whenever a smaller ceiling is still available. Requiring the
+          // CURRENT ceiling to already split the text was wrong: a 40 KiB plan
+          // under a 96 KiB ceiling is one chunk, so a daemon configured below
+          // 40 KiB rejected it forever.
           if (chunkBytes > MIN_OBSERVE_CHUNK_BYTES) {
             chunkBytes = Math.max(MIN_OBSERVE_CHUNK_BYTES, Math.floor(chunkBytes / 2));
             continue;
           }
-          log.warn(
-            `[${options.serviceId}] a flush-plan note exceeds the daemon's body limit even at the minimum chunk size; keeping the remainder for the next flush`,
-          );
-          stop = true;
-          return;
+          // At the floor the chunk is one line the daemon will never take.
+          // Keeping it would block every note behind it on every future flush,
+          // so it is set aside in a sidecar the operator can inspect and the
+          // queue keeps draining. Nothing is deleted.
+          pending = await quarantineOversizedLine(paths, pending, options.serviceId);
+          chunkBytes = MAX_OBSERVE_CHUNK_BYTES;
+          await atomicWrite(paths.inflight, pending);
+          continue;
         }
         if (response.status < 200 || response.status > 299) {
           stop = true;
           throw new Error(`daemon /engram/v1/observe responded ${response.status}`);
         }
         // Committed IMMEDIATELY, so a later chunk that throws cannot resend
-        // what the daemon already took. The inflight file has no other writer,
-        // so this rewrite cannot lose a concurrent append.
+        // what the daemon already took. The snapshot has no other writer while
+        // the lock is held, so this rewrite cannot lose a concurrent append.
         pending = pending.slice(chunk.length);
-        await writeFile(inflightPath, pending, "utf8");
+        await atomicWrite(paths.inflight, pending);
       }
     } finally {
       // Whatever is left goes back in FRONT of any note appended while we were
       // posting, so the daemon still receives them in the order written.
-      await releasePendingNotes(planPath, inflightPath, pending, options.serviceId);
+      await releasePendingNotes(paths, pending, options.serviceId);
     }
     if (stop) return;
   }
 }
 
-/** HTTP statuses that mean "the request body was too big for this daemon". */
-function isBodyTooLarge(status: number): boolean {
-  return status === 413 || status === 431;
+/** Statuses that mean "resend later", never "resend smaller". */
+function isRefusal(status: number): boolean {
+  // 431 is an oversized request HEADER, not body: `access-http` answers 413 for
+  // a body over `maxBodyBytes`, so only 413 is worth halving for.
+  return status === 401 || status === 403 || status === 431;
 }
 
 /**
- * Take ownership of the plan file's contents.
+ * Take ownership of the plan file's contents, oldest note first.
  *
- * Recovers an inflight snapshot left by a crashed run first, so its notes are
- * never stranded, then renames the live plan aside. Returns everything now
- * owned by this run, oldest note first.
+ * Runs under the lock, so any `.rotating` or `.inflight` found here is residue
+ * from a run that died and is merged ahead of the newly claimed notes. The
+ * merge is written with temp-then-rename BEFORE the source is unlinked, so no
+ * crash window leaves the notes only in memory.
  */
-async function claimPendingNotes(
-  planPath: string,
-  inflightPath: string,
-  serviceId: string,
-): Promise<string | undefined> {
-  const orphaned = (await readPlan(inflightPath)) ?? "";
-  if (orphaned.length > 0) {
-    log.warn(
-      `[${serviceId}] recovering flush-plan notes left by an interrupted ingestion`,
-    );
+async function claimPendingNotes(paths: SnapshotPaths, serviceId: string): Promise<string> {
+  // 1. Fold any stranded rotate target into the snapshot first. A previous run
+  //    that died between its rename and its merge left the notes only there.
+  if (await mergeRotatedIntoInflight(paths)) {
+    log.warn(`[${serviceId}] recovered flush-plan notes left by an interrupted ingestion`);
   }
+  // 2. Claim the live plan file. Rename is atomic, so a host append either
+  //    lands before it (claimed) or creates a fresh plan file (untouched).
   try {
-    await rename(planPath, `${inflightPath}.rotating`);
+    await rename(paths.plan, paths.rotating);
   } catch (err) {
     if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
-    return orphaned.length > 0 ? orphaned : undefined;
+    return (await readIfPresent(paths.inflight)) ?? "";
   }
-  const rotated = (await readPlan(`${inflightPath}.rotating`)) ?? "";
-  await discardInflight(`${inflightPath}.rotating`);
-  const pending = `${orphaned}${rotated}`;
-  if (pending.length === 0) return undefined;
-  await writeFile(inflightPath, pending, "utf8");
-  return pending;
+  await mergeRotatedIntoInflight(paths);
+  return (await readIfPresent(paths.inflight)) ?? "";
+}
+
+/**
+ * Append `.rotating` to `.inflight` and remove it. Returns true when there was
+ * something to recover. Safe to call when neither file exists.
+ */
+async function mergeRotatedIntoInflight(paths: SnapshotPaths): Promise<boolean> {
+  const rotated = await readIfPresent(paths.rotating);
+  if (rotated === undefined) return false;
+  const existing = (await readIfPresent(paths.inflight)) ?? "";
+  const merged = `${existing}${rotated}`;
+  if (merged.length > 0) {
+    await atomicWrite(paths.inflight, merged);
+  }
+  // Only now: the content is durable under `.inflight`.
+  await discard(paths.rotating);
+  return existing.length > 0 || rotated.length > 0;
 }
 
 /**
  * Put unsent notes back at the head of the plan file and drop the snapshot.
  *
+ * The plan is replaced with one atomic rename, so a reader never sees a torn
+ * file. A host append landing between the read and the rename is still lost —
+ * that window is inherent to reordering a file another process only appends
+ * to, and it is now a single syscall pair rather than the duration of an HTTP
+ * round trip.
+ *
  * A failure here must not mask the error that ended the run, so it only warns:
- * the inflight file survives and the next run recovers from it.
+ * the snapshot survives and the next run recovers from it.
  */
 async function releasePendingNotes(
-  planPath: string,
-  inflightPath: string,
+  paths: SnapshotPaths,
   pending: string,
   serviceId: string,
 ): Promise<void> {
   try {
     if (pending.length === 0) {
-      await discardInflight(inflightPath);
+      await discard(paths.inflight);
       return;
     }
-    const appended = (await readPlan(planPath)) ?? "";
-    await writeFile(planPath, `${pending}${appended}`, "utf8");
-    await discardInflight(inflightPath);
+    const appended = (await readIfPresent(paths.plan)) ?? "";
+    await atomicWrite(paths.plan, `${pending}${appended}`);
+    await discard(paths.inflight);
   } catch (err) {
     log.warn(
       `[${serviceId}] could not restore unsent flush-plan notes; the next ingestion recovers them: ${String(err)}`,
@@ -209,22 +289,59 @@ async function releasePendingNotes(
   }
 }
 
-/** Remove a snapshot file, tolerating one that is already gone. */
-async function discardInflight(inflightPath: string): Promise<void> {
+/**
+ * Move the leading line — one the daemon refuses even at the minimum chunk
+ * size — into the oversized sidecar and return what is left.
+ *
+ * The line is appended to the sidecar BEFORE it leaves `pending`, so a crash
+ * in between duplicates a note rather than losing one.
+ */
+async function quarantineOversizedLine(
+  paths: SnapshotPaths,
+  pending: string,
+  serviceId: string,
+): Promise<string> {
+  const breakAt = pending.indexOf("\n");
+  const line = breakAt === -1 ? pending : pending.slice(0, breakAt + 1);
+  const rest = breakAt === -1 ? "" : pending.slice(breakAt + 1);
+  await appendFile(paths.oversized, line.endsWith("\n") ? line : `${line}\n`, "utf8");
+  log.warn(
+    `[${serviceId}] a flush-plan note exceeds the daemon's body limit; moved it to ${paths.oversized} so the remaining notes can drain`,
+  );
+  return rest;
+}
+
+/** File contents, or `undefined` when the file does not exist. */
+async function readIfPresent(filePath: string): Promise<string | undefined> {
   try {
-    await unlink(inflightPath);
+    return await readFile(filePath, "utf8");
   } catch (err) {
-    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return undefined;
+    throw err;
   }
 }
 
-/** The plan file's contents, or `undefined` when it does not exist. */
-async function readPlan(planPath: string): Promise<string | undefined> {
+/**
+ * Replace `filePath` in one step: write a fresh temp file, then rename over
+ * the target. `wx` refuses an existing temp, so two writers never share one.
+ */
+async function atomicWrite(filePath: string, content: string): Promise<void> {
+  const tempPath = `${filePath}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
   try {
-    return await readFile(planPath, "utf8");
-  } catch {
-    // No plan file yet is the ordinary case, not a failure.
-    return undefined;
+    await writeFile(tempPath, content, { encoding: "utf8", flag: "wx" });
+    await rename(tempPath, filePath);
+  } catch (err) {
+    await discard(tempPath);
+    throw err;
+  }
+}
+
+/** Remove a file, tolerating one that is already gone. */
+async function discard(filePath: string): Promise<void> {
+  try {
+    await unlink(filePath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
   }
 }
 
@@ -232,8 +349,8 @@ async function readPlan(planPath: string): Promise<string | undefined> {
  * Split on line boundaries, each piece under `limit` BYTES.
  *
  * Line-aligned so a note is never cut mid-sentence. A single line longer than
- * the limit is emitted whole rather than mangled — it would be rejected, and
- * the caller keeps it, which is the honest outcome for a note that cannot fit.
+ * the limit is emitted whole rather than mangled — the caller quarantines it
+ * once the daemon proves it will never accept it.
  */
 function chunkOnLineBoundaries(text: string, limit: number): string[] {
   if (Buffer.byteLength(text, "utf8") <= limit) return [text];
