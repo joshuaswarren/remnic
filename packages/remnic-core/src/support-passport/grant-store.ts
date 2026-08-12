@@ -4,11 +4,7 @@ import path from "node:path";
 
 import { log } from "../logger.js";
 import { expandTildePath } from "../utils/path.js";
-import {
-  type HeldFileLockController,
-  serializeMutations,
-  withHeldFileLock,
-} from "../utils/serialize-mutations.js";
+import { type HeldFileLockController, serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
 import { SupportPassportError } from "./errors.js";
 import {
   SupportPassportCreateGrantInputSchema,
@@ -182,6 +178,19 @@ export class SupportPassportGrantStore {
     return state;
   }
 
+  async withAuthenticatedGrant<T>(
+    grantId: string,
+    secret: string,
+    task: (state: SupportPassportGrantState) => Promise<T>
+  ): Promise<T> {
+    return await this.withMutationLock(async (lock) => {
+      const state = await this.authenticate(grantId, secret);
+      const result = await task(state);
+      await this.requireMutationLock(lock);
+      return result;
+    });
+  }
+
   async listForOwner(namespace: string, principal: string): Promise<SupportPassportGrantState[]> {
     const normalizedNamespace = normalizeNamespace(namespace);
     const principalHash = sha256("support-passport-principal:v1", normalizePrincipal(principal));
@@ -215,8 +224,7 @@ export class SupportPassportGrantStore {
         throw error;
       }
       const principalHash = sha256("support-passport-principal:v1", normalizePrincipal(input.principal));
-      if (state.namespace !== namespace || !hashesMatch(state.principalHash, principalHash))
-        throw grantNotFound();
+      if (state.namespace !== namespace || !hashesMatch(state.principalHash, principalHash)) throw grantNotFound();
       if (state.revokedAt) return state;
       if (input.expectedStateVersion !== undefined && input.expectedStateVersion !== state.stateVersion) {
         throw new SupportPassportError("state_conflict", "The share link changed after it was loaded.", 409);
@@ -246,10 +254,7 @@ export class SupportPassportGrantStore {
     return sha256("support-passport-owner-index:v1", `${namespace}\0${principalHash}`);
   }
 
-  private async addToOwnerIndex(
-    state: SupportPassportGrantState,
-    lock: HeldFileLockController
-  ): Promise<void> {
+  private async addToOwnerIndex(state: SupportPassportGrantState, lock: HeldFileLockController): Promise<void> {
     const ownerHash = this.ownerHash(state.namespace, state.principalHash);
     const current = await this.readOwnerIndexByHash(ownerHash);
     if (current.includes(state.grantId)) return;
@@ -278,9 +283,7 @@ export class SupportPassportGrantStore {
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.grantId.localeCompare(b.grantId));
       retained = [
         ...active.map((item) => item.grantId),
-        ...inactive
-          .slice(0, MAX_OWNER_GRANT_HISTORY - active.length - 1)
-          .map((item) => item.grantId),
+        ...inactive.slice(0, MAX_OWNER_GRANT_HISTORY - active.length - 1).map((item) => item.grantId),
       ];
     }
     const grantIds = [...retained, state.grantId];
