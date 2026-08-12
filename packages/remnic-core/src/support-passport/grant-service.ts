@@ -1,5 +1,10 @@
 import type { StorageManager } from "../index.js";
-import { computeSupportPassportOwnerKey, projectSupportPassportCard } from "./card-projection.js";
+import {
+  type StoredSupportPassportCard,
+  activeSupportPassportReplacementPredecessorIds,
+  computeSupportPassportOwnerKey,
+  projectSupportPassportCard,
+} from "./card-projection.js";
 import { SupportPassportListCardsInputSchema, SupportPassportNamespaceSchema } from "./contracts.js";
 import { SupportPassportError } from "./errors.js";
 import {
@@ -46,11 +51,18 @@ export class SupportPassportGrantService {
     this.now = dependencies.now ?? (() => new Date());
   }
 
-  async createGrant(input: SupportPassportCreateGrantInput): Promise<SupportPassportCreatedGrant> {
+  async createGrant(
+    input: SupportPassportCreateGrantInput,
+    options: { signal?: AbortSignal; onCommitted?: () => void } = {}
+  ): Promise<SupportPassportCreatedGrant> {
     const parsed = SupportPassportCreateGrantInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
     const owner = await this.resolveOwnerScope(parsed.data.principal);
     return await withSupportPassportOwnerLock(owner.storage, async (ownerLock) => {
+      options.signal?.throwIfAborted();
+      const activeReplacementPredecessors = activeSupportPassportReplacementPredecessorIds(
+        await this.readStoredCards(owner.storage)
+      );
       for (const cardRef of parsed.data.cards) {
         const memory = await owner.storage.getMemoryById(cardRef.cardId);
         const stored = memory ? projectSupportPassportCard(memory) : null;
@@ -58,7 +70,8 @@ export class SupportPassportGrantService {
           !stored ||
           stored.namespace !== owner.namespace ||
           stored.owner !== computeSupportPassportOwnerKey(owner.principal) ||
-          stored.card.status !== "active"
+          stored.card.status !== "active" ||
+          activeReplacementPredecessors.has(cardRef.cardId)
         ) {
           throw new SupportPassportError("invalid_card_status", "Only approved support cards can be shared.", 409);
         }
@@ -76,8 +89,28 @@ export class SupportPassportGrantService {
           cards: parsed.data.cards,
           expiresAt: parsed.data.expiresAt,
         },
-        async () => await requireSupportPassportOwnerLock(ownerLock)
+        {
+          beforeCommit: async () => await requireSupportPassportOwnerLock(ownerLock),
+          ...(options.onCommitted ? { onCommitted: options.onCommitted } : {}),
+        }
       );
+      if (options.signal?.aborted) {
+        try {
+          await this.grantStore.revoke({
+            grantId: created.state.grantId,
+            namespace: owner.namespace,
+            principal: owner.principal,
+            expectedStateVersion: created.state.stateVersion,
+          });
+        } catch {
+          throw new SupportPassportError(
+            "storage_conflict",
+            "A cancelled share link could not be stopped. Review the active share list.",
+            500
+          );
+        }
+        options.signal.throwIfAborted();
+      }
       return SupportPassportCreatedGrantSchema.parse({
         grant: this.ownerGrant(created.state),
         secret: created.secret,
@@ -94,11 +127,15 @@ export class SupportPassportGrantService {
     );
   }
 
-  async revokeGrant(input: SupportPassportRevokeGrantInput): Promise<SupportPassportOwnerGrant> {
+  async revokeGrant(
+    input: SupportPassportRevokeGrantInput,
+    options: { signal?: AbortSignal; onCommitted?: () => void } = {}
+  ): Promise<SupportPassportOwnerGrant> {
     const parsed = SupportPassportRevokeGrantInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
     const owner = await this.resolveOwnerScope(parsed.data.principal);
     return await withSupportPassportOwnerLock(owner.storage, async (ownerLock) => {
+      options.signal?.throwIfAborted();
       const state = await this.grantStore.revoke(
         {
           grantId: parsed.data.grantId,
@@ -106,7 +143,13 @@ export class SupportPassportGrantService {
           principal: owner.principal,
           expectedStateVersion: parsed.data.expectedStateVersion,
         },
-        async () => await requireSupportPassportOwnerLock(ownerLock)
+        {
+          beforeCommit: async () => {
+            options.signal?.throwIfAborted();
+            await requireSupportPassportOwnerLock(ownerLock);
+          },
+          ...(options.onCommitted ? { onCommitted: options.onCommitted } : {}),
+        }
       );
       await requireSupportPassportOwnerLock(ownerLock);
       return this.ownerGrant(state);
@@ -157,6 +200,9 @@ export class SupportPassportGrantService {
   }
 
   private async readGrantCards(storage: StorageManager, state: SupportPassportGrantState) {
+    const activeReplacementPredecessors = activeSupportPassportReplacementPredecessorIds(
+      await this.readStoredCards(storage)
+    );
     return await Promise.all(
       state.cards.map(async (cardRef) => {
         const memory = await storage.getMemoryById(cardRef.cardId);
@@ -166,7 +212,8 @@ export class SupportPassportGrantService {
           stored.namespace !== state.namespace ||
           stored.owner !== state.principalHash ||
           stored.card.status !== "active" ||
-          stored.card.revision !== cardRef.revision
+          stored.card.revision !== cardRef.revision ||
+          activeReplacementPredecessors.has(cardRef.cardId)
         ) {
           throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
         }
@@ -177,6 +224,12 @@ export class SupportPassportGrantService {
         return publicCard.data;
       })
     );
+  }
+
+  private async readStoredCards(storage: StorageManager): Promise<StoredSupportPassportCard[]> {
+    return (await storage.readAllMemories())
+      .map(projectSupportPassportCard)
+      .filter((card): card is StoredSupportPassportCard => card !== null);
   }
 
   private publicCard(card: {

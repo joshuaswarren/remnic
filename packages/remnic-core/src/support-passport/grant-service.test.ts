@@ -121,6 +121,36 @@ test("a grant stores only hashed credentials with private file permissions", asy
   }
 });
 
+test("grant creation stops the new link when its owner request is cancelled after persistence", async () => {
+  const subject = await makeSubject();
+  const controller = new AbortController();
+  const create = subject.grantStore.create.bind(subject.grantStore);
+  subject.grantStore.create = async (...args) => {
+    const created = await create(...args);
+    controller.abort(new Error("simulated owner request timeout"));
+    return created;
+  };
+  try {
+    const card = await createActiveCard(subject);
+    await assert.rejects(
+      subject.grantService.createGrant(
+        {
+          principal: "owner:alice",
+          cards: [{ cardId: card.cardId, revision: card.revision }],
+          expiresAt: expiryAfter(subject, 3_600_000),
+        },
+        { signal: controller.signal }
+      ),
+      /simulated owner request timeout/
+    );
+    const grants = await subject.grantService.listGrants({ principal: "owner:alice" });
+    assert.equal(grants.length, 1);
+    assert.equal(grants[0]?.status, "revoked");
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("owner grant listings read only the indexed owner grants", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-index-"));
   try {
@@ -565,6 +595,39 @@ test("grant creation rechecks the owner lock immediately before commit", async (
         error instanceof SupportPassportError && error.code === "storage_conflict" && error.status === 409
     );
     assert.deepEqual(await subject.grantService.listGrants({ principal: "owner:alice" }), []);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("grant creation reports its first durable write before later index failure", async () => {
+  const subject = await makeSubject();
+  try {
+    const active = await createActiveCard(subject);
+    const inspected = subject.grantStore as unknown as {
+      addToOwnerIndex(): Promise<void>;
+    };
+    inspected.addToOwnerIndex = async () => {
+      throw new Error("simulated owner index failure");
+    };
+    let committed = 0;
+
+    await assert.rejects(
+      subject.grantService.createGrant(
+        {
+          principal: "owner:alice",
+          cards: [{ cardId: active.cardId, revision: active.revision }],
+          expiresAt: new Date(subject.now().getTime() + 3_600_000).toISOString(),
+        },
+        {
+          onCommitted: () => {
+            committed += 1;
+          },
+        }
+      ),
+      /simulated owner index failure/
+    );
+    assert.equal(committed, 1);
   } finally {
     await subject.cleanup();
   }
@@ -1307,6 +1370,66 @@ test("a changed card makes the whole grant stale without a partial guide", async
   }
 });
 
+test("an active replacement makes predecessor shares stale before retirement finishes", async () => {
+  const subject = await makeSubject();
+  try {
+    const active = await createActiveCard(subject, "Plan changes");
+    const created = await subject.grantService.createGrant({
+      principal: "owner:alice",
+      cards: [{ cardId: active.cardId, revision: active.revision }],
+      expiresAt: expiryAfter(subject, 3_600_000),
+    });
+    const replacement = await subject.cardService.replaceCard({
+      principal: "owner:alice",
+      cardId: active.cardId,
+      expectedRevision: active.revision,
+      title: "Plan changes",
+      statement: "Tell me early when plans change.",
+      category: "transitions",
+      reviewBy: "2026-09-01T12:00:00.000Z",
+    });
+    const writeFrontmatter = subject.aliceStorage.writeMemoryFrontmatterIfUnchanged.bind(subject.aliceStorage);
+    subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = async (memory, patch, lifecycle) => {
+      if (lifecycle?.reasonCode === "support-passport-replacement-pending") {
+        throw new Error("simulated interruption before predecessor retirement");
+      }
+      return await writeFrontmatter(memory, patch, lifecycle);
+    };
+    const approved = await subject.cardService.approveCard({
+      principal: "owner:alice",
+      cardId: replacement.cardId,
+      expectedRevision: replacement.revision,
+    });
+
+    await assert.rejects(
+      subject.grantService.readGrant({ grantId: created.grant.grantId, secret: created.secret }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "grant_stale"
+    );
+    await assert.rejects(
+      subject.grantService.createGrant({
+        principal: "owner:alice",
+        cards: [{ cardId: active.cardId, revision: active.revision }],
+        expiresAt: expiryAfter(subject, 3_600_000),
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "invalid_card_status"
+    );
+    const replacementGrant = await subject.grantService.createGrant({
+      principal: "owner:alice",
+      cards: [{ cardId: approved.cardId, revision: approved.revision }],
+      expiresAt: expiryAfter(subject, 3_600_000),
+    });
+    assert.equal(
+      (await subject.grantService.readGrant({
+        grantId: replacementGrant.grant.grantId,
+        secret: replacementGrant.secret,
+      })).cards[0]?.cardId,
+      approved.cardId
+    );
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("unrelated memory writes do not invalidate an unchanged shared guide", async () => {
   const subject = await makeSubject();
   try {
@@ -1661,9 +1784,11 @@ test("grant writes reject a directory swapped after the initial safety check", a
           cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
           expiresAt: new Date(now.getTime() + 300_000).toISOString(),
         },
-        async () => {
-          renameSync(grantsDir, parkedDir);
-          symlinkSync(outside, grantsDir, "dir");
+        {
+          beforeCommit: async () => {
+            renameSync(grantsDir, parkedDir);
+            symlinkSync(outside, grantsDir, "dir");
+          },
         }
       ),
       /regular files in a stable directory/
@@ -1701,9 +1826,11 @@ test("grant writes reject an ancestor swapped after the initial safety check", a
           cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
           expiresAt: new Date(now.getTime() + 300_000).toISOString(),
         },
-        async () => {
-          renameSync(passportDir, parkedDir);
-          symlinkSync(outside, passportDir, "dir");
+        {
+          beforeCommit: async () => {
+            renameSync(passportDir, parkedDir);
+            symlinkSync(outside, passportDir, "dir");
+          },
         }
       ),
       /regular files in a stable directory/

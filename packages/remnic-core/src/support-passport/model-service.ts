@@ -157,6 +157,7 @@ export class SupportPassportDraftService {
     sourceMemoryRevisions: Array<{ memoryId: string; revision: string }>;
     consent: boolean;
     signal?: AbortSignal;
+    onCommitted?: () => void;
   }): Promise<SupportPassportCard[]> {
     if (input.consent !== true) {
       throw new SupportPassportError("consent_required", "Drafting requires explicit consent.", 400);
@@ -233,6 +234,7 @@ export class SupportPassportDraftService {
         owner,
         cards: modelResult.cards,
         signal: input.signal,
+        ...(input.onCommitted ? { onCommitted: input.onCommitted } : {}),
         validateSources: async () =>
           await this.revalidateSources(owner.storage, selectedMemories, input.signal, cancellationMessage),
       });
