@@ -49,6 +49,28 @@ test("manual and replacement drafts require the owner's review date", () => {
   );
 });
 
+test("support card dates reject invalid calendar values and timezone offsets", () => {
+  for (const reviewBy of ["2027-02-31T12:00:00Z", "2027-01-01T00:00:00+25:00"]) {
+    const draft = {
+      principal: "owner:alice",
+      title: "Quiet space",
+      statement: "Offer me a quiet place and time.",
+      category: "environment",
+      reviewBy,
+    };
+    assert.equal(SupportPassportManualDraftInputSchema.safeParse(draft).success, false);
+    assert.equal(
+      SupportPassportReplaceCardInputSchema.safeParse({
+        ...draft,
+        cardId: "card-1",
+        expectedRevision: "a".repeat(64),
+      }).success,
+      false
+    );
+    assert.equal(SupportPassportCardSchema.safeParse({ ...makeCard("card-1"), reviewBy }).success, false);
+  }
+});
+
 test("support card titles reject attribute delimiters and line breaks", () => {
   for (const title of ["Quiet ] space", "Quiet\nspace", "Quiet\rspace"]) {
     const manualDraft = {
