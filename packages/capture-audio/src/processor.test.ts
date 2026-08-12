@@ -939,3 +939,65 @@ test("a crash between cluster and assignment cannot double-count embeddings", as
     spool.close();
   }
 });
+
+test("a pre-commit failure rewinds the assembler; a partial commit does not", async () => {
+  // Two halves of one invariant (issue #2145): the in-memory assembler and the
+  // durable ids must never diverge. Nothing persisted -> rewind, so the retry
+  // re-splits. Something persisted -> keep, so the durable id is reused.
+  const spool = new Spool(":memory:");
+  try {
+    let minted = 0;
+    const assembler = new ConversationAssembler({ gapMinutes: 0, makeId: () => `conv_${++minted}` });
+    let failAppends = true;
+    const guarded = new Proxy(spool, {
+      get(target, prop, receiver) {
+        if (prop === "appendAssembledSegments" && failAppends) {
+          return () => {
+            throw new Error("sqlite busy");
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as Spool;
+
+    const proc = createChunkProcessor(
+      deps(guarded, {
+        assembler,
+        transcribe: async () => [
+          { text: "one", startUtc: t(1), endUtc: t(2) },
+          { text: "two", startUtc: t(40), endUtc: t(41) },
+        ],
+      }),
+    );
+    proc.enqueue(chunk());
+    await proc.drain();
+    assert.equal(spool.stats().segments, 0, "nothing persisted");
+    assert.deepEqual(assembler.conversations(), [], "the assembler rewound to its pre-batch state");
+
+    // The retry now succeeds and must still split the two segments at gap 0.
+    failAppends = false;
+    const retry = createChunkProcessor(
+      deps(guarded, {
+        assembler,
+        transcribe: async () => [
+          { text: "one", startUtc: t(1), endUtc: t(2) },
+          { text: "two", startUtc: t(40), endUtc: t(41) },
+        ],
+      }),
+    );
+    retry.enqueue(chunk());
+    await retry.finalize();
+    assert.equal(spool.stats().segments, 2);
+    // Ids are never reused, so `minted` also counts the discarded attempt; what
+    // matters is that the retry produced TWO conversations, not one collapsed.
+    const retried = assembler.conversations();
+    assert.equal(retried.length, 2, "the retry re-split instead of collapsing into one conversation");
+    assert.deepEqual(
+      retried.map((conv) => spool.conversationSegmentsForDedup(conv.id).map((seg) => seg.text)),
+      [["one"], ["two"]],
+    );
+  } finally {
+    spool.close();
+  }
+});

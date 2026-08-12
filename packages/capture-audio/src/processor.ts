@@ -336,7 +336,10 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
    *
    * Everything here runs on the RELEASE timeline, not the arrival timeline.
    */
-  async function applyBatch(batch: readonly BufferedChunk[]): Promise<void> {
+  async function applyBatch(
+    batch: readonly BufferedChunk[],
+    progress: { persisted: boolean },
+  ): Promise<void> {
     // Recover the newest still-open conversation once (any chunk, incl. silent)
     // so a post-restart chunk continues it; then finalize a stale open
     // conversation when this batch is released a gap past it. Pure-silence runs
@@ -444,6 +447,7 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
           wavPath: event.path,
           segments: [item.seg],
         });
+        progress.persisted = true;
         openConversationId = run.id;
       }
     }
@@ -507,9 +511,17 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
           left.endMs - right.endMs ||
           (left.chunkId < right.chunkId ? -1 : left.chunkId > right.chunkId ? 1 : 0),
       );
+      // Rewind only matters when NOTHING was persisted: then the assembler is
+      // ahead of durable reality and the retry would collapse conversations
+      // the first attempt split. Once a segment is durable its conversation id
+      // is too, so rewinding past it would split that conversation across two
+      // ids instead (issue #2145).
+      const assemblerCheckpoint = deps.assembler.checkpoint();
+      const progress = { persisted: false };
       try {
-        await applyBatch(batch);
+        await applyBatch(batch, progress);
       } catch (error) {
+        if (!progress.persisted) deps.assembler.rewind(assemblerCheckpoint);
         // Requeue FIRST: `report` runs an operator callback that may itself
         // throw, and losing the batch to a broken telemetry sink would turn an
         // observer failure into data loss. A throw mid-batch leaves the chunks
