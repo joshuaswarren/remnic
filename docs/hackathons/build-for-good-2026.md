@@ -144,7 +144,7 @@ Show these moments in under three minutes:
 
 1. Show the three selected notes and unchecked consent.
 2. Check consent and draft the cards.
-3. Edit and approve the plan-changes card.
+3. Edit the first draft to **Softer lighting**, then approve **Plan changes**.
 4. Create a two-hour share link.
 5. Open the helper view and ask about plan changes.
 6. Show the cited plan-changes card.
