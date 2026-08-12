@@ -1075,7 +1075,9 @@ test("helper load, error, stale, stopped, and expired states fail closed", async
     await page.unrouteAll({ behavior: "wait" });
   }
 
-  const expiresAt = new Date(Date.now() + 250).toISOString();
+  const expiryClock = new Date("2026-08-11T12:00:00.000Z");
+  await page.clock.install({ time: expiryClock });
+  const expiresAt = new Date(expiryClock.getTime() + 5_000).toISOString();
   const publicCard = {
     cardId: "card-expiring",
     title: "Quiet place",
@@ -1106,6 +1108,7 @@ test("helper load, error, stale, stopped, and expired states fail closed", async
   });
   await page.goto(helperUrl("-expired").replace("mode=replay&", ""));
   await expect(page.locator(".public-card")).toHaveCount(1);
+  await page.clock.fastForward(5_000);
   await expect(page.getByRole("heading", { name: "This share link has expired." })).toBeVisible();
   await expect(page.locator(".public-card")).toHaveCount(0);
 });
