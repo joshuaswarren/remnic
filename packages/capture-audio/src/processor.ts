@@ -491,17 +491,19 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       try {
         await applyBatch(batch);
       } catch (error) {
-        report(error, batch[0].event);
-        if (flushAll) finalFailure ??= error;
-        // A throw mid-batch leaves the chunks AFTER the failure point applied
-        // to nothing: they were already spliced out of the buffer, and the
-        // native helper emits each event once. Put every chunk this batch did
-        // not finish back so the next release retries it (issue #2145).
+        // Requeue FIRST: `report` runs an operator callback that may itself
+        // throw, and losing the batch to a broken telemetry sink would turn an
+        // observer failure into data loss. A throw mid-batch leaves the chunks
+        // after the failure point applied to nothing — they were already
+        // spliced out of the buffer, and the native helper emits each event
+        // once (issue #2145).
         for (const entry of batch) {
           if (processedThisRun.has(entry.chunkId) || bufferedIds.has(entry.chunkId)) continue;
           buffer.push(entry);
           bufferedIds.add(entry.chunkId);
         }
+        if (flushAll) finalFailure ??= error;
+        report(error, batch[0].event);
         if (finalFailure !== undefined) throw finalFailure;
         return;
       }
@@ -524,7 +526,15 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     // drain/finalize reject with the same stale error (AGENTS.md #28).
     const flush = tail.then(() => releaseReady(true));
     tail = flush.catch(() => undefined);
-    await flush;
+    // A failed flush must NOT skip the sweep: shutdown flips whatever is left
+    // to `final`, and skipping would serve conversations that were never
+    // deduped or diarized. Run the sweep, then report the flush failure.
+    let flushFailure: unknown;
+    try {
+      await flush;
+    } catch (error) {
+      flushFailure = error;
+    }
     deps.assembler.finalize();
     // Dedup then cluster EVERY still-capturing conversation before the bulk
     // flip to final — including one left by a crashed prior run that this
@@ -546,8 +556,13 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
         sweepFailure ??= error;
       }
     }
+    // The bulk flip only catches conversations created after the id snapshot
+    // above. Skipping it when the sweep failed is what keeps the FAILED
+    // conversation `capturing` for the next finalize to retry.
+    const total = sweepFailure === undefined ? closed + deps.spool.finalizeOpenConversations() : closed;
+    if (flushFailure !== undefined) throw flushFailure;
     if (sweepFailure !== undefined) throw sweepFailure;
-    return closed + deps.spool.finalizeOpenConversations();
+    return total;
   }
 
   return { enqueue, drain, finalize };
