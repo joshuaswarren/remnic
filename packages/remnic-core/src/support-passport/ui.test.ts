@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { EngramAccessHttpServer } from "../access-http.js";
+import { EngramAccessHttpServer, resolveDefaultAdminConsolePublicDir } from "../access-http.js";
 import type { EngramAccessService } from "../access-service.js";
 import type { StorageManager } from "../storage.js";
 
@@ -90,6 +90,32 @@ test("What Helps Me serves both aliases from one exact feature-gated allow-list"
         const nested = await fetch(`${origin}/${prefix}/ui/what-helps-me/app.js/extra`);
         assert.equal(nested.status, 404);
       }
+    } finally {
+      await server.stop();
+    }
+  });
+});
+
+test("What Helps Me finds repository assets without a source-mode path override", async () => {
+  const sourceModuleUrl = new URL("../access-http.ts", import.meta.url);
+  assert.equal(resolveDefaultAdminConsolePublicDir(sourceModuleUrl.href), adminConsolePublicDir);
+  await withTempRoot(async (root) => {
+    const server = new EngramAccessHttpServer({
+      service: fakeService(root, true),
+      host: "127.0.0.1",
+      port: 0,
+      authToken: "owner-token",
+      principal: "support-passport-owner",
+      adminConsoleEnabled: false,
+    });
+    const status = await server.start();
+    try {
+      const shell = await fetch(`http://127.0.0.1:${status.port}/remnic/ui/what-helps-me/`);
+      assert.equal(shell.status, 200);
+      assert.match(await shell.text(), /What Helps Me/);
+      const asset = await fetch(`http://127.0.0.1:${status.port}/remnic/ui/what-helps-me/app.js`);
+      assert.equal(asset.status, 200);
+      assert.ok((await asset.text()).length > 100);
     } finally {
       await server.stop();
     }
