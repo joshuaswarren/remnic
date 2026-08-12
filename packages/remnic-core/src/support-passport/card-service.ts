@@ -680,30 +680,30 @@ export class SupportPassportCardService {
     replacementId: string,
     lock: HeldFileLockController
   ): Promise<void> {
-    try {
-      const replacement = await storage.getMemoryById(replacementId);
-      if (replacement?.frontmatter.status === "active") return;
-      const prior = await storage.getMemoryById(priorId);
-      if (prior?.frontmatter.status !== "superseded" || prior.frontmatter.supersededBy !== replacementId) return;
-      await this.requireOwnerLock(lock);
-      const restored = await storage.writeMemoryFrontmatterIfUnchanged(
-        prior,
-        {
-          status: "active",
-          supersededBy: undefined,
-          supersededAt: undefined,
-          supersessionCause: undefined,
-          invalidatedBy: undefined,
-          updated: this.now().toISOString(),
-        },
-        { actor: "support-passport.approve-rollback", reasonCode: "replacement-activation-failed" }
-      );
-      if (!restored) log.warn("support passport could not restore a prior card after replacement approval failed");
-    } catch (error) {
-      log.warn(
-        `support passport could not restore a prior card after replacement approval failed: ${error instanceof Error ? error.message : String(error)}`
-      );
+    const replacement = await storage.getMemoryById(replacementId);
+    if (replacement?.frontmatter.status === "active") return;
+    const prior = await storage.getMemoryById(priorId);
+    if (prior?.frontmatter.status === "active" && prior.frontmatter.supersededBy === undefined) return;
+    if (prior?.frontmatter.status !== "superseded" || prior.frontmatter.supersededBy !== replacementId) {
+      throw new SupportPassportError("storage_conflict", "The prior support card could not be restored.", 409);
     }
+    await this.requireOwnerLock(lock);
+    const restored = await storage.writeMemoryFrontmatterIfUnchanged(
+      prior,
+      {
+        status: "active",
+        supersededBy: undefined,
+        supersededAt: undefined,
+        supersessionCause: undefined,
+        invalidatedBy: undefined,
+        updated: this.now().toISOString(),
+      },
+      { actor: "support-passport.approve-rollback", reasonCode: "replacement-activation-failed" }
+    );
+    if (restored) return;
+    const currentPrior = await storage.getMemoryById(priorId);
+    if (currentPrior?.frontmatter.status === "active" && currentPrior.frontmatter.supersededBy === undefined) return;
+    throw new SupportPassportError("storage_conflict", "The prior support card could not be restored.", 409);
   }
 
   private async markReplacementComplete(
