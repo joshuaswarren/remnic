@@ -17,14 +17,21 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-test("the demo preserves model routes but isolates namespace policy", () => {
+test("the demo preserves model routes but isolates filesystem and namespace settings", () => {
   const config = isolateDemoRemnicConfig(
     {
       modelSource: "gateway",
       gatewayAgentId: "configured-agent",
+      taskModelChain: { primary: "provider/model" },
+      localLlmHomeDir: "/models/home",
       namespacesEnabled: true,
       defaultNamespace: "private",
       sharedNamespace: "team",
+      workspaceDir: "/operator/workspace",
+      profilingEnabled: true,
+      profilingStorageDir: "/operator/profiling",
+      causalTrajectoryStoreDir: "/operator/trajectories",
+      sharedContextDir: "/operator/shared-context",
       namespacePolicies: [
         { name: "private", readPrincipals: ["configured-owner"], writePrincipals: ["configured-owner"] },
       ],
@@ -34,11 +41,18 @@ test("the demo preserves model routes but isolates namespace policy", () => {
 
   assert.equal(config.modelSource, "gateway");
   assert.equal(config.gatewayAgentId, "configured-agent");
+  assert.deepEqual(config.taskModelChain, { primary: "provider/model" });
+  assert.equal(config.localLlmHomeDir, "/models/home");
   assert.equal(config.memoryDir, "/tmp/fresh-memory");
+  assert.equal(config.workspaceDir, "/tmp/fresh-memory/workspace");
   assert.equal(config.namespacesEnabled, false);
   assert.equal(config.defaultNamespace, "default");
   assert.equal(config.sharedNamespace, "shared");
   assert.deepEqual(config.namespacePolicies, []);
+  assert.equal(Object.hasOwn(config, "profilingEnabled"), false);
+  assert.equal(Object.hasOwn(config, "profilingStorageDir"), false);
+  assert.equal(Object.hasOwn(config, "causalTrajectoryStoreDir"), false);
+  assert.equal(Object.hasOwn(config, "sharedContextDir"), false);
 });
 
 test("model HTTP timeouts cover every configured route budget", () => {
