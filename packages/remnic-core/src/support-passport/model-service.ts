@@ -170,6 +170,7 @@ export class SupportPassportDraftService {
     const revisions = new Map(
       parsed.data.sourceMemoryRevisions.map((source) => [source.memoryId, source.revision] as const)
     );
+    const selectedMemories: MemoryFile[] = [];
     const memories: Array<{ memoryId: string; content: string }> = [];
     for (const memoryId of parsed.data.sourceMemoryIds) {
       throwIfAborted(input.signal, cancellationMessage);
@@ -181,6 +182,7 @@ export class SupportPassportDraftService {
       if (computeSupportPassportSourceRevision(memory.content) !== revisions.get(memoryId)) {
         throw new SupportPassportError("revision_conflict", "A selected memory changed after it was reviewed.", 409);
       }
+      selectedMemories.push(memory);
       memories.push({ memoryId, content: stripAttributesSuffix(memory.content) });
     }
     const startedAt = Date.now();
@@ -224,7 +226,7 @@ export class SupportPassportDraftService {
         cards: modelResult.cards,
         signal: input.signal,
         validateSources: async () =>
-          await this.revalidateSources(owner.storage, memories, input.signal, cancellationMessage),
+          await this.revalidateSources(owner.storage, selectedMemories, input.signal, cancellationMessage),
       });
       scheduleAudit(this.audit, { ...auditBase, outcome: "success" });
       return cards;
@@ -240,17 +242,15 @@ export class SupportPassportDraftService {
 
   private async revalidateSources(
     storage: SupportPassportOwnerScope["storage"],
-    expected: Array<{ memoryId: string; content: string }>,
+    expected: readonly MemoryFile[],
     signal: AbortSignal | undefined,
     cancellationMessage: string
   ): Promise<void> {
-    for (const source of expected) {
-      throwIfAborted(signal, cancellationMessage);
-      const memory = await raceAbort(storage.getMemoryById(source.memoryId), signal, cancellationMessage);
-      throwIfAborted(signal, cancellationMessage);
-      if (!memory || !isEligibleSource(memory) || stripAttributesSuffix(memory.content) !== source.content) {
-        throw new SupportPassportError("invalid_input", "A selected memory is not available.", 400);
-      }
+    throwIfAborted(signal, cancellationMessage);
+    const memories = await raceAbort(storage.readMemorySnapshotsIfUnchanged(expected), signal, cancellationMessage);
+    throwIfAborted(signal, cancellationMessage);
+    if (!memories || memories.some((memory) => !isEligibleSource(memory))) {
+      throw new SupportPassportError("invalid_input", "A selected memory is not available.", 400);
     }
   }
 }
