@@ -34,6 +34,7 @@
     "grant_stale",
     "missing_link",
   ]);
+  const REPLAY_SYNC_TIMEOUT_MS = 2_000;
 
   const state = {
     token: "",
@@ -250,6 +251,60 @@
     byId("viewMarkerText").textContent = replayMode ? "Owner replay" : "Owner view";
   }
 
+  function requestReplaySharedGuide() {
+    if (!replayChannel) return Promise.reject(new Error("The replay share state is unavailable."));
+    const requestId = crypto.randomUUID();
+    return new Promise((resolve, reject) => {
+      let timeout;
+      const finish = (callback, value) => {
+        window.clearTimeout(timeout);
+        replayChannel.removeEventListener("message", receive);
+        callback(value);
+      };
+      const receive = (event) => {
+        if (event.data?.type === "grant-state" && event.data.requestId === requestId) {
+          if (event.data.snapshot) finish(resolve, event.data.snapshot);
+          else finish(reject, new Error("The replay share state is unavailable."));
+        }
+      };
+      replayChannel.addEventListener("message", receive);
+      timeout = window.setTimeout(
+        () => finish(reject, new Error("The replay share state is unavailable.")),
+        REPLAY_SYNC_TIMEOUT_MS
+      );
+      try {
+        replayChannel.postMessage({
+          type: "grant-request",
+          requestId,
+          grantId: state.helperGrantId,
+          secret: state.helperSecret,
+        });
+      } catch (error) {
+        finish(reject, error);
+      }
+    });
+  }
+
+  function bindReplayOwnerBridge() {
+    if (!replayChannel || !replayStore) return;
+    replayChannel.addEventListener("message", (event) => {
+      const request = event.data;
+      if (
+        request?.type !== "grant-request" ||
+        typeof request.requestId !== "string" ||
+        typeof request.grantId !== "string" ||
+        typeof request.secret !== "string"
+      ) {
+        return;
+      }
+      const snapshot = replayStore.exportSharedGuide(request.grantId, request.secret);
+      if (snapshot) replayChannel.postMessage({ type: "grant-state", requestId: request.requestId, snapshot });
+    });
+    window.addEventListener("pagehide", (event) => {
+      if (!event.persisted) replayChannel.close();
+    });
+  }
+
   function renderSelectedNotes() {
     const list = byId("noteList");
     clear(list);
@@ -293,8 +348,9 @@
     button.textContent = verbs[action];
     try {
       let ownerStateFresh = false;
+      let invalidatedCardIds = [];
       try {
-        await api.mutateCard(
+        const result = await api.mutateCard(
           card.cardId,
           {
             expectedRevision: card.revision,
@@ -307,6 +363,9 @@
           },
           action
         );
+        if (replayMode && Array.isArray(result?.invalidatedCardIds)) {
+          invalidatedCardIds = result.invalidatedCardIds.filter((cardId) => typeof cardId === "string");
+        }
       } catch (error) {
         if (error?.code !== "request_timeout") {
           setError("generateError", errorMessage(error, "The support card did not change."));
@@ -329,6 +388,9 @@
           return;
         }
         ownerStateFresh = true;
+      }
+      if (invalidatedCardIds.length > 0) {
+        replayChannel?.postMessage({ type: "cards-stale", cardIds: invalidatedCardIds });
       }
       const message =
         action === "approve"
@@ -1010,12 +1072,15 @@
       showLocked(error);
       return;
     }
-    if (replayMode) replayStore.seedSharedGuide(state.helperGrantId, state.helperSecret);
     const controller = new AbortController();
     state.helperLoadController?.abort();
     state.helperLoadController = controller;
     const timeout = window.setTimeout(() => controller.abort(), HELPER_READ_TIMEOUT_MS);
     try {
+      if (replayMode) {
+        const sharedState = await requestReplaySharedGuide();
+        replayStore.seedSharedGuide(state.helperGrantId, state.helperSecret, sharedState);
+      }
       state.guide = await readHelperGuide(controller.signal);
       renderGuide(state.guide);
       if (!state.guide) return;
@@ -1183,6 +1248,16 @@
         const error = new Error("The share link is no longer active.");
         error.code = "grant_gone";
         showLocked(error);
+        return;
+      }
+      if (
+        event.data?.type === "cards-stale" &&
+        Array.isArray(event.data.cardIds) &&
+        state.guide?.cards.some((card) => event.data.cardIds.includes(card.cardId))
+      ) {
+        const error = new Error("The shared support guide has changed.");
+        error.code = "grant_stale";
+        showLocked(error);
       }
     });
     window.addEventListener("pagehide", (event) => {
@@ -1232,6 +1307,7 @@
       renderSelectedNotes();
       await loadOwnerState();
       showOwner();
+      bindReplayOwnerBridge();
       return;
     }
     if (prefill) byId("tokenInput").value = prefill;

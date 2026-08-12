@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "memories": [
+    {
+      "fixtureId": "light",
+      "content": "Bright lights make it hard for me to think.",
+      "category": "preference",
+      "tags": ["support-passport-demo"]
+    },
+    {
+      "fixtureId": "change",
+      "content": "Tell me before plans change.",
+      "category": "preference",
+      "tags": ["support-passport-demo"]
+    },
+    {
+      "fixtureId": "quiet",
+      "content": "If I stop speaking, offer a quiet place and time.",
+      "category": "preference",
+      "tags": ["support-passport-demo"]
+    }
+  ]
+}
