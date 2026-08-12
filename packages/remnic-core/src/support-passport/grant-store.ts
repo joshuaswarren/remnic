@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { chmod, lstat, mkdir, open, rename, rm, type FileHandle } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, rm, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 
 import { expandTildePath } from "../utils/path.js";
@@ -15,7 +15,7 @@ import {
   type SupportPassportGrantState,
   SupportPassportGrantStateSchema,
 } from "./grant-contracts.js";
-import { readPrivateFileNoFollow } from "./private-file.js";
+import { readPrivateFileNoFollow, writePrivateFileAtomicallyNoFollow } from "./private-file.js";
 
 const GRANT_LOCK_STALE_MS = 30_000;
 const GRANT_LOCK_WAIT_MS = 5_000;
@@ -62,6 +62,14 @@ function normalizeNamespace(namespace: unknown): string {
   return normalized;
 }
 
+function normalizePrincipal(principal: unknown): string {
+  const normalized = typeof principal === "string" ? principal.trim() : "";
+  if (normalized.length < 1 || normalized.length > 512) {
+    throw new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
+  }
+  return normalized;
+}
+
 export async function syncDirectoryForDurability(
   directory: string,
   openDirectory: (directory: string) => Promise<Pick<FileHandle, "sync" | "close">> = async (target) =>
@@ -76,26 +84,6 @@ export async function syncDirectoryForDurability(
     if (!UNSUPPORTED_DIRECTORY_SYNC_ERRORS.has(code ?? "")) throw error;
   } finally {
     await handle?.close().catch(() => undefined);
-  }
-}
-
-async function writePrivateFileAtomically(filePath: string, content: string): Promise<void> {
-  const directory = path.dirname(filePath);
-  const tempPath = path.join(directory, `.${path.basename(filePath)}.${randomUUID()}.tmp`);
-  let handle: Awaited<ReturnType<typeof open>> | undefined;
-  try {
-    handle = await open(tempPath, "wx", 0o600);
-    await handle.writeFile(content, "utf8");
-    await handle.sync();
-    await handle.close();
-    handle = undefined;
-    await rename(tempPath, filePath);
-    await chmod(filePath, 0o600);
-    await syncDirectoryForDurability(directory);
-  } catch (error) {
-    await handle?.close().catch(() => undefined);
-    await rm(tempPath, { force: true }).catch(() => undefined);
-    throw error;
   }
 }
 
@@ -191,7 +179,7 @@ export class SupportPassportGrantStore {
 
   async listForOwner(namespace: string, principal: string): Promise<SupportPassportGrantState[]> {
     const normalizedNamespace = normalizeNamespace(namespace);
-    const principalHash = sha256("support-passport-principal:v1", principal);
+    const principalHash = sha256("support-passport-principal:v1", normalizePrincipal(principal));
     const grantIds = await this.readOwnerIndex(normalizedNamespace, principalHash);
     const states: SupportPassportGrantState[] = [];
     for (const grantId of grantIds) {
@@ -221,7 +209,7 @@ export class SupportPassportGrantStore {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") throw grantNotFound();
         throw error;
       }
-      const principalHash = sha256("support-passport-principal:v1", input.principal);
+      const principalHash = sha256("support-passport-principal:v1", normalizePrincipal(input.principal));
       if (state.namespace !== namespace || !hashesMatch(state.principalHash, principalHash))
         throw grantNotFound();
       if (state.revokedAt) return state;
@@ -353,7 +341,12 @@ export class SupportPassportGrantStore {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
-    await writePrivateFileAtomically(filePath, `${JSON.stringify({ schemaVersion: 1, ownerHash, grantIds }, null, 2)}\n`);
+    await writePrivateFileAtomicallyNoFollow(
+      this.ownerIndexesDir,
+      filePath,
+      `${JSON.stringify({ schemaVersion: 1, ownerHash, grantIds }, null, 2)}\n`,
+      "support passport owner indexes must be regular files in a stable directory"
+    );
   }
 
   private async readState(grantId: string): Promise<SupportPassportGrantState> {
@@ -381,7 +374,12 @@ export class SupportPassportGrantStore {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
-    await writePrivateFileAtomically(filePath, `${JSON.stringify(state, null, 2)}\n`);
+    await writePrivateFileAtomicallyNoFollow(
+      this.grantsDir,
+      filePath,
+      `${JSON.stringify(state, null, 2)}\n`,
+      "support passport grant files must be regular files in a stable directory"
+    );
   }
 
   private async ensureSafeDirectories(): Promise<void> {
