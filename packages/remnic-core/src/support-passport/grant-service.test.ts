@@ -268,6 +268,15 @@ test("owner grant history stays bounded while an inactive link frees capacity", 
     await assert.rejects(store.create(input), (error: unknown) => (error as NodeJS.ErrnoException).code === "EIO");
     inspected.readState = readState;
     assert.equal((await store.listForOwner(input.namespace, input.principal)).length, 100);
+    const evictedGrantLocks: string[] = [];
+    const lockAwareStore = store as unknown as {
+      withGrantLock<T>(grantId: string, task: (lock: { refresh(): Promise<boolean> }) => Promise<T>): Promise<T>;
+    };
+    const withGrantLock = lockAwareStore.withGrantLock.bind(store);
+    lockAwareStore.withGrantLock = async (grantId, task) => {
+      evictedGrantLocks.push(grantId);
+      return await withGrantLock(grantId, task);
+    };
     const replacement = await store.create(input);
     const listed = await store.listForOwner(input.namespace, input.principal);
     assert.equal(listed.length, 100);
@@ -279,6 +288,7 @@ test("owner grant history stays bounded while an inactive link frees capacity", 
       listed.some((state) => state.grantId === replacement.state.grantId),
       true
     );
+    assert.deepEqual(evictedGrantLocks, [first.state.grantId]);
     await assert.rejects(lstat(firstGrantPath), (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT");
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -1252,21 +1262,25 @@ test("the grant store rejects a symlinked grant directory", async () => {
 });
 
 test("private file operations select supported directory access strategies", () => {
-  assert.throws(
-    () => requirePrivateFileDescriptorRoot("win32", "private file directory cannot be pinned"),
-    /private file directory cannot be pinned/
-  );
+  for (const platform of ["win32", "darwin"] as const) {
+    assert.throws(
+      () => requirePrivateFileDescriptorRoot(platform, "private file directory cannot be pinned"),
+      /private file directory cannot be pinned/
+    );
+  }
   assert.equal(requirePrivateFileDescriptorRoot("linux", "unreachable"), "/proc/self/fd");
-  assert.equal(requirePrivateFileDescriptorRoot("darwin", "unreachable"), null);
 });
 
-test("macOS private files use a verified directory path", async () => {
+test("macOS private files fail closed without descriptor-relative operations", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-private-darwin-"));
   let handle: FileHandle | undefined;
   try {
     handle = await open(root, "r");
     const opened = await handle.stat();
-    assert.equal(await resolvePrivateDirectoryPath(root, handle, opened, "private directory changed", "darwin"), root);
+    await assert.rejects(
+      resolvePrivateDirectoryPath(root, handle, opened, "private directory changed", "darwin"),
+      /private directory changed/
+    );
   } finally {
     await handle?.close();
     await rm(root, { recursive: true, force: true });

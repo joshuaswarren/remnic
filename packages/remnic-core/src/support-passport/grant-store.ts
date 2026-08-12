@@ -316,7 +316,12 @@ export class SupportPassportGrantStore {
     await this.requireMutationLock(lock);
     await this.writeOwnerIndex(ownerHash, grantIds);
     try {
-      await this.removeGrantStates(evictedGrantIds);
+      for (const grantId of evictedGrantIds) {
+        await this.withGrantLock(grantId, async (grantLock) => {
+          await this.requireMutationLock(grantLock);
+          await this.removeGrantStates([grantId]);
+        });
+      }
     } catch (error) {
       log.warn(
         `support passport could not remove inactive grant state: ${error instanceof Error ? error.message : String(error)}`
