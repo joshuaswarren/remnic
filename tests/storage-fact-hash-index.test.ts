@@ -328,6 +328,41 @@ test("rebuild replaces an ambiguous pure-CJK legacy hash with the current body h
   }
 });
 
+test("rebuild preserves every recoverable identity behind an ambiguous legacy hash", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-fact-hash-ambiguous-source-"));
+  const rawBody = "利用者は紅茶を好む。";
+  const citationTemplate = "【出典：{agent}／{sessionId}】";
+  const storedBody = `${rawBody} 【出典：計画／主】`;
+  const legacyHash = computeLegacyContentHash(rawBody);
+  try {
+    const factsDir = path.join(dir, "facts", "2026-08-11");
+    await mkdir(factsDir, { recursive: true });
+    await writeFile(
+      path.join(factsDir, "legacy-ambiguous-source.md"),
+      [
+        "---",
+        "id: legacy-ambiguous-source",
+        "category: fact",
+        "created: 2026-08-11T00:00:00.000Z",
+        "updated: 2026-08-11T00:00:00.000Z",
+        `contentHash: ${legacyHash}`,
+        "---",
+        "",
+        storedBody,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const storage = new StorageManager(dir);
+    storage.citationTemplate = citationTemplate;
+    assert.equal(await storage.hasFactContentHash(rawBody), true);
+    assert.equal(await storage.hasFactContentHash(storedBody), true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 
 test("rebuild upgrades a legacy hash that includes structured attributes", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-fact-hash-attribute-rebuild-"));

@@ -432,9 +432,8 @@ export class TombstoneStore {
           return initial;
         }
         const latest = this.parseEntries(latestRaw);
-        if (latest.corruptedLines > 0) return latest;
         let changed = false;
-        const migrated = latest.entries.map((entry) => {
+        const migrateEntry = (entry: TombstoneEntry): TombstoneEntry => {
           if (
             entry.kind !== "tombstone" ||
             entry.normalizerVersion === TOMBSTONE_NORMALIZER_VERSION ||
@@ -463,14 +462,20 @@ export class TombstoneStore {
             normalizedText: this.options.normalizeText(source),
             normalizerVersion: TOMBSTONE_NORMALIZER_VERSION,
           };
-        });
+        };
+        const serialized = latestRaw
+          .split("\n")
+          .map((line) => {
+            const entry = parseTombstoneLine(line);
+            if (!entry) return line;
+            const migrated = migrateEntry(entry);
+            return migrated === entry ? line : JSON.stringify(migrated);
+          })
+          .join("\n");
         if (!changed) return latest;
-        const serialized =
-          migrated.map((entry) => JSON.stringify(entry)).join("\n") +
-          (migrated.length > 0 ? "\n" : "");
         await this.io.write(this.filePath, serialized);
         this.markWritten();
-        return { entries: migrated, corruptedLines: 0 };
+        return this.parseEntries(serialized);
       }),
     );
   }

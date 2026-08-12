@@ -40,9 +40,13 @@ It reads source IDs in bounded batches and completes every available batch befor
 
 Unavailable sources remain unversioned. A later load retries them after the source becomes available.
 
-Malformed JSONL prevents a migration rewrite. The store preserves every malformed row byte-for-byte.
+Malformed JSONL rows stay byte-for-byte while valid rows migrate in place.
 
-The fact-hash index and reconcile manifest use the same source-verified identity selection.
+The fact-hash index registers every stored identity form that matches an ambiguous legacy hash.
+
+This bounded set preserves recoverable explicit sources without making a lossy hash a global alias.
+
+The reconcile manifest uses the same source-verified identity selection.
 
 Ambiguous legacy hashes never suppress unrelated current Unicode content.
 
@@ -60,10 +64,12 @@ Terminal sentence punctuation remains compatible with normalized exact matches.
 
 ## Verification state
 
-The 65-test focused identity suite passes after the citation, attribute, and punctuation fixes.
+The 108-test focused identity suite passes after the corruption and ambiguous-source fixes.
 
 The core type check passes.
 
 The storage line ratchet passes at 7,314 lines, below its 7,315-line ceiling.
 
-The wider mandatory gates and complete workspace suite require a fresh run before merge.
+The mandatory preflight and entity-hardening gates passed before the final review fixes.
+
+They require one fresh run on the final commit before merge.

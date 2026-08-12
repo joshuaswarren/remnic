@@ -3409,15 +3409,15 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const persistedHash = memory.frontmatter.contentHash;
     const candidates = this.storedContentIdentityCandidates(memory.content)
       .map((content) => sanitizeMemoryContent(content).text);
-    const currentMatch = candidates.find(
-      (content) => ContentHashIndex.computeHash(content) === persistedHash
-    );
-    if (currentMatch) return [ContentHashIndex.computeHash(currentMatch)];
-    if (!persistedHash) return [ContentHashIndex.computeHash(candidates[0] ?? "")];
-    const legacyMatch = [...candidates].reverse().find(
+    const currentHashes = candidates.map((content) => ContentHashIndex.computeHash(content));
+    if (persistedHash && currentHashes.includes(persistedHash)) return [persistedHash];
+    if (!persistedHash) return [currentHashes[0] ?? ContentHashIndex.computeHash("")];
+    const legacyMatches = candidates.filter(
       (content) => computeLegacyContentHash(content) === persistedHash
     );
-    return [legacyMatch ? ContentHashIndex.computeHash(legacyMatch) : persistedHash];
+    return legacyMatches.length > 0
+      ? [...new Set(legacyMatches.map((content) => ContentHashIndex.computeHash(content)))]
+      : [persistedHash];
   }
 
   private get questionsDir(): string {

@@ -418,7 +418,7 @@ describe("TombstoneStore — Unicode migration safety", () => {
     assert.equal(entry?.currentContentHashAlias, undefined);
   });
 
-  it("preserves malformed JSONL rows instead of rewriting a partial migration", async () => {
+  it("migrates valid rows while preserving malformed JSONL rows", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "tomb-corrupt-migration-"));
     const filePath = path.join(dir, "tombstones.jsonl");
     const source = "The user prefers café.";
@@ -451,8 +451,11 @@ describe("TombstoneStore — Unicode migration safety", () => {
     );
     await store.load();
 
-    assert.equal(await readFile(filePath, "utf8"), original);
-    assert.equal(store.snapshot()[0]?.normalizerVersion, undefined);
+    const rewritten = await readFile(filePath, "utf8");
+    assert.equal(rewritten.split("\n")[1], "{not-json}");
+    assert.equal(rewritten.endsWith("{not-json}\n"), true);
+    assert.equal(store.snapshot()[0]?.normalizerVersion, 2);
+    assert.equal(store.snapshot()[0]?.contentHash, computeHash(source));
     assert.equal(store.stats().corruptedLines, 1);
   });
 
