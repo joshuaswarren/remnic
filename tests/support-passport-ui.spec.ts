@@ -530,6 +530,54 @@ test("successful owner mutations stay successful when their list refresh fails",
   await expect(page.getByText("The share link did not stop.")).toHaveCount(0);
 });
 
+test("an expired share confirms a timed-out stop request", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers stop reconciliation.");
+  const now = new Date("2026-08-11T12:00:00.000Z");
+  const grant = {
+    grantId: "grant-active",
+    stateVersion: 1,
+    cards: [{ cardId: "card-one", revision: "a".repeat(64) }],
+    createdAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
+    status: "active",
+  };
+  let grantReads = 0;
+  await page.clock.install({ time: now });
+  await page.addInitScript(() => {
+    const realFetch = window.fetch.bind(window);
+    window.fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/engram/v1/support-passport/grants/grant-active/revoke")) {
+        return await new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("The request was aborted.", "AbortError")),
+            { once: true }
+          );
+        });
+      }
+      return await realFetch(input, init);
+    };
+  });
+  await page.route("**/engram/v1/support-passport/cards", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ cards: [] }) });
+  });
+  await page.route("**/engram/v1/support-passport/grants", async (route) => {
+    grantReads += 1;
+    const current = grantReads === 1 ? grant : { ...grant, status: "expired" };
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grants: [current] }) });
+  });
+  await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await page.getByLabel("Bearer token").fill("owner-token");
+  await page.getByRole("button", { name: "Open my guide" }).click();
+  await page.getByRole("button", { name: "Stop sharing" }).click();
+  await page.clock.fastForward(60_000);
+
+  await expect(page.locator("#toast")).toHaveText("Sharing stopped. The helper link is now locked.");
+  await expect(page.getByText("Share time ended", { exact: true })).toBeVisible();
+  await expect(page.locator("#shareError")).toHaveText("");
+});
+
 test("a stalled owner read aborts and restores the connect action", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers the owner request timeout.");
   await page.clock.install({ time: new Date("2026-08-11T12:00:00.000Z") });
