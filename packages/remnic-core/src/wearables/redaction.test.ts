@@ -192,3 +192,22 @@ test("an Arabic marker does not match inside a longer Arabic word", () => {
     1,
   );
 });
+
+test("an Arabic proclitic still reaches the built-in marker", () => {
+  // Arabic writes و/ف/ب attached to the next word, so a leading guard
+  // would silently disable the marker for ordinary phrasing.
+  assert.equal(
+    applyOffTheRecord(conversation(["وبدون تسجيل من فضلك", "سر"])).droppedSegments,
+    1,
+  );
+});
+
+test("a decomposed accent is a word character, not a boundary", () => {
+  const markers = compileOffTheRecordMarkers({
+    start: ["cafe"],
+    useBuiltIns: false,
+  });
+  const decomposed = `cafe\u0301teria is open`;
+  assert.equal(applyOffTheRecord(conversation([decomposed, "x"]), markers).droppedSegments, 0);
+  assert.equal(applyOffTheRecord(conversation(["cafe is open", "x"]), markers).droppedSegments, 1);
+});

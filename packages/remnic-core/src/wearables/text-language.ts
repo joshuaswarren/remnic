@@ -18,18 +18,34 @@ export type ScriptHint =
   | "cyrillic";
 
 /**
- * Scripts that separate words with spaces. A phrase in one of these
- * scripts must not match inside a longer word, so the compiled matcher
- * adds letter boundaries. Scripts outside this set (Han, Kana, Hangul
- * syllables in running text) have no such boundary: requiring one there
- * is exactly the bug that made every non-Latin marker unreachable.
+ * Whether a phrase edge needs a word boundary is decided per EDGE, not
+ * per script, because scripts differ at each end.
  *
- * Arabic and Hebrew belong here. Both space their words, so without a
- * guard the built-in `بدون تسجيل` would match inside `بدون تسجيلات` and
- * elide a span nobody asked to hide.
+ * Leading edge: a guard is added only where nothing attaches in front
+ * of a word. Arabic and Hebrew are excluded — both write proclitics
+ * (`و`, `ف`, `ب`, `ל`) with no space, so a lead guard would stop
+ * `وبدون تسجيل` from matching the built-in `بدون تسجيل`. Hangul is
+ * excluded for the same reason (attached particles).
+ *
+ * Trailing edge: a guard is added wherever the script spaces its words,
+ * Arabic and Hebrew included, so `بدون تسجيل` does not match inside
+ * `بدون تسجيلات`.
+ *
+ * Han, Kana, and Hangul running text has no boundary at all: requiring
+ * one there is the bug that made every non-Latin marker unreachable.
  */
-const SPACE_DELIMITED_CHAR =
-  /[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Arabic}\p{Script=Hebrew}\p{N}]/u;
+const PREFIXABLE_EDGE_CHAR =
+  /[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{N}]/u;
+const SUFFIXABLE_EDGE_CHAR =
+  /[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Arabic}\p{Script=Hebrew}\p{N}\p{M}]/u;
+
+/**
+ * Combining marks count as word characters. Without `\p{M}` a decomposed
+ * `café` (base `e` plus U+0301) would let the phrase `cafe` match its
+ * prefix and elide a span nobody marked.
+ */
+const BOUNDARY_LOOKBEHIND = "(?<![\\p{L}\\p{M}\\p{N}])";
+const BOUNDARY_LOOKAHEAD = "(?![\\p{L}\\p{M}\\p{N}])";
 
 const HAS_KANA = /[\p{Script=Hiragana}\p{Script=Katakana}]/u;
 const HAS_HAN = /\p{Script=Han}/u;
@@ -84,11 +100,11 @@ export function buildPhraseMatcher(
       .split(/\s+/)
       .map((word) => escapeRegExp(word))
       .join("\\s+");
-    const lead = SPACE_DELIMITED_CHAR.test(characters[0])
-      ? "(?<![\\p{L}\\p{N}])"
+    const lead = PREFIXABLE_EDGE_CHAR.test(characters[0])
+      ? BOUNDARY_LOOKBEHIND
       : "";
-    const tail = SPACE_DELIMITED_CHAR.test(characters[characters.length - 1])
-      ? "(?![\\p{L}\\p{N}])"
+    const tail = SUFFIXABLE_EDGE_CHAR.test(characters[characters.length - 1])
+      ? BOUNDARY_LOOKAHEAD
       : "";
     parts.push(`${lead}${body}${tail}`);
   }
