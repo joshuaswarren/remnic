@@ -1,6 +1,10 @@
 import { z } from "zod";
 
-import { SupportPassportCardCategorySchema, SupportPassportMemoryIdSchema } from "./contracts.js";
+import {
+  SupportPassportCardCategorySchema,
+  SupportPassportMemoryIdSchema,
+  SupportPassportNamespaceSchema,
+} from "./contracts.js";
 
 const IsoTimestampSchema = z
   .string()
@@ -21,7 +25,7 @@ export const SupportPassportGrantStateSchema = z
     schemaVersion: z.literal(1),
     stateVersion: z.number().int().positive(),
     grantId: GrantIdSchema,
-    namespace: z.string().trim().min(1).max(256),
+    namespace: SupportPassportNamespaceSchema,
     principalHash: RevisionSchema,
     secretHash: RevisionSchema,
     cards: z.array(SupportPassportGrantCardRefSchema).min(1).max(8),
