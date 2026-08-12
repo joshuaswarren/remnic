@@ -98,7 +98,8 @@ export class SupportPassportModelAuditStore implements SupportPassportModelAudit
             this.auditDir,
             filePath,
             `${JSON.stringify(record)}\n`,
-            "support passport audit paths must be regular files in a stable directory"
+            "support passport audit paths must be regular files in a stable directory",
+            this.memoryDir
           );
         }
       )
