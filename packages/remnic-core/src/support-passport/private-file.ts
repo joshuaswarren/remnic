@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants, type Stats } from "node:fs";
-import { lstat, open, rename, rm, stat, type FileHandle } from "node:fs/promises";
+import { lstat, mkdir, open, rename, rm, stat, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 
 const UNSUPPORTED_DIRECTORY_SYNC_ERRORS = new Set(["EINVAL", "ENOSYS", "ENOTSUP", "EOPNOTSUPP"]);
@@ -106,6 +106,63 @@ async function openStableDirectoryFromRoot(
   } catch (error) {
     await closeDirectoryHandles(handles);
     throw error;
+  }
+}
+
+export async function ensurePrivateDirectoryNoFollow(
+  trustedRoot: string,
+  directory: string,
+  errorMessage: string
+): Promise<void> {
+  const root = path.resolve(trustedRoot);
+  const target = path.resolve(directory);
+  const relative = path.relative(root, target);
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(errorMessage);
+  }
+  const components = relative === "" ? [] : relative.split(path.sep);
+  const handles: FileHandle[] = [];
+  let currentPath = root;
+  try {
+    let current = await openDirectoryNoFollow(root, errorMessage);
+    handles.push(current.handle);
+    for (const component of components) {
+      const pinnedParent = await pinnedDirectoryPath(current.handle, current.opened, errorMessage);
+      const childPath = path.join(pinnedParent, component);
+      try {
+        await mkdir(childPath, { mode: 0o700 });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      }
+      const child = await openDirectoryNoFollow(childPath, errorMessage);
+      handles.push(child.handle);
+      await child.handle.chmod(0o700);
+      assertStableDirectory(current.before, current.opened, await lstat(currentPath), errorMessage);
+      currentPath = path.join(currentPath, component);
+      current = child;
+    }
+    assertStableDirectory(current.before, current.opened, await lstat(target), errorMessage);
+  } finally {
+    await closeDirectoryHandles(handles);
+  }
+}
+
+export async function withPrivateDirectoryNoFollow<T>(
+  trustedRoot: string,
+  directory: string,
+  errorMessage: string,
+  task: (pinnedDirectory: string) => Promise<T>
+): Promise<T> {
+  let directoryHandles: FileHandle[] = [];
+  try {
+    const stableDirectory = await openStableDirectoryFromRoot(trustedRoot, directory, errorMessage);
+    directoryHandles = stableDirectory.handles;
+    const pinnedDirectory = await pinnedDirectoryPath(stableDirectory.handle, stableDirectory.opened, errorMessage);
+    const result = await task(pinnedDirectory);
+    assertStableDirectory(stableDirectory.before, stableDirectory.opened, await lstat(directory), errorMessage);
+    return result;
+  } finally {
+    await closeDirectoryHandles(directoryHandles);
   }
 }
 
