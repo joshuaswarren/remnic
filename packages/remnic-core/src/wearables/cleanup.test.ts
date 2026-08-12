@@ -244,3 +244,10 @@ test("matcher cache keys distinguish differently-shaped token lists", () => {
   assert.equal(stripFillerTokens("uh,um is here", ["uh,um"]), "is here");
   assert.equal(stripFillerTokens("uh,um is here", ["uh", "um"]), "uh,um is here");
 });
+
+test("a Hebrew operator token is a whole token, never a substring", () => {
+  // Hebrew spaces its words, so an inline match would strip the suffix of
+  // an ordinary word and corrupt the transcript.
+  assert.equal(stripFillerTokens("נראה טוב", ["אה"]), "נראה טוב");
+  assert.equal(stripFillerTokens("אה טוב", ["אה"]), "טוב");
+});

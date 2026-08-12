@@ -158,9 +158,15 @@ function buildFillerMatchers(
   return matchers;
 }
 
-/** A token whose first character belongs to a space-delimited script. */
+/**
+ * A token whose first character belongs to a space-delimited script.
+ *
+ * Anything outside this set is removed INLINE, so a script that does
+ * space its words must appear here. Hebrew `אה` routed to the inline
+ * matcher would strip the suffix of `נראה` and corrupt the transcript.
+ */
 const SPACE_DELIMITED_TOKEN =
-  /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Hangul}\p{Script=Arabic}\p{N}]/u;
+  /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Hangul}\p{Script=Arabic}\p{Script=Hebrew}\p{N}]/u;
 
 /** Apply configured cleanup passes to one conversation. */
 export function cleanConversation(
