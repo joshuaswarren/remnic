@@ -65,6 +65,8 @@ export const StatisticsSchema = z.object({
     stepsInterval: IntervalSchema.nullable(),
     passMargin: z.number().nonnegative(),
     stepsMargin: z.number().nonnegative(),
+    passRateWithinMargin: z.boolean().nullable(),
+    gatePassRate: z.boolean(),
     equivalent: z.boolean().nullable(),
   }),
   hypothesisSet: z.literal("timing_only").optional(),

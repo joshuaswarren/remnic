@@ -146,6 +146,7 @@ import {
   FixtureActionEvaluator,
   countFactTokens,
   decisionRuleAnalysisOptions,
+  timidityDesignOption,
   decisionRuleDesignMode,
   runOfflineCheck,
   listRegularFiles,
@@ -589,7 +590,7 @@ async function verifyTransferredPilotEvidence(
   ));
   const replayedAnalysis = analyzeRepeatedFailureRows(rows, {
     expectedDesign: design.primary,
-    timidityDesign: design.timidity,
+    ...timidityDesignOption(pilotDecisionRule, design.timidity),
     seed: metadata.statisticsSeed,
     draws: metadata.statisticsDraws,
     ...decisionRuleAnalysisOptions(pilotDecisionRule),
@@ -782,7 +783,7 @@ export async function verifyPilotPower(
   const power = parseComputedPilotPower(JSON.parse(powerBytes));
   const replayedAnalysis = analyzeRepeatedFailureRows(rows, {
     expectedDesign: design.primary,
-    timidityDesign: design.timidity,
+    ...timidityDesignOption(bundle.decisionRule, design.timidity),
     seed: metadata.statisticsSeed,
     draws: metadata.statisticsDraws,
     ...decisionRuleAnalysisOptions(bundle.decisionRule),
@@ -1050,7 +1051,7 @@ export function buildPowerArtifact(
       const experiment = materializePowerExperiment(sampled);
       simulated = analyzeRepeatedFailureRows(experiment.rows, {
         expectedDesign: experiment.primary,
-        timidityDesign: experiment.timidity,
+        ...timidityDesignOption(decisionRule, experiment.timidity),
         seed: (
           configuration.statisticsSeed
           ^ (Number.parseInt(sha256(cacheKey).slice(0, 8), 16) >>> 0)

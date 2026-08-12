@@ -43,6 +43,7 @@ import {
   assertNoSymlinkComponents,
   countFactTokens,
   decisionRuleAnalysisOptions,
+  timidityDesignOption,
   decisionRuleDesignMode,
   stableStringify,
   publicError,
@@ -420,6 +421,16 @@ export async function writeRepeatedFailurePaperArtifacts(
   const design = parseDesign(JSON.parse(source["expected-design.json"]));
   if (sha256(stableStringify(design)) !== run.expectedDesignHash) {
     throw new Error("paper report expected design does not match run metadata");
+  }
+  const recomputedStatistics = analyzeRepeatedFailureRows(rows, {
+    expectedDesign: design.primary,
+    ...timidityDesignOption(decisionRule, design.timidity),
+    seed: run.statisticsSeed,
+    draws: run.statisticsDraws,
+    ...decisionRuleAnalysisOptions(decisionRule),
+  });
+  if (stableStringify(statistics) !== stableStringify(recomputedStatistics)) {
+    throw new Error("paper report statistics do not replay from immutable rows");
   }
   const currentHarnessVersion = await getRemnicVersion();
   const currentHarnessSourceHash = await computeAnalysisHarnessHash();

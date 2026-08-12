@@ -12,8 +12,10 @@ import { captureBenchmarkExecutionProvenance, getRemnicVersion } from "../report
 import {
   countFactTokens,
   DecisionRuleSchema,
+  decisionRuleAnalysisOptions,
   REPEATED_FAILURE_ANALYSIS_VERSION,
   stableStringify,
+  timidityDesignOption,
 } from "./repeated-failure-suite-shared.js";
 import {
   H6_FROZEN_INVENTORY_HASH,
@@ -303,15 +305,10 @@ test("paper artifacts are generated deterministically from frozen run outputs", 
     };
     const statistics = analyzeRepeatedFailureRows(rows, {
       expectedDesign: design.primary,
-      timidityDesign: design.timidity,
+      ...timidityDesignOption(decisionRule, design.timidity),
       seed: 17,
       draws: decisionRule.analysis.bootstrap.draws,
-      alpha: decisionRule.analysis.alpha,
-      timingMinimumRrr: decisionRule.hypotheses["H6-timing"].minimumRelativeRiskReduction,
-      timingMinimumAbsoluteBenefit:
-        decisionRule.hypotheses["H6-timing"].minimumAbsoluteRepeatedFailureBenefit,
-      timidityPassMargin: decisionRule.timidity.passRateMargin,
-      timidityStepsMargin: decisionRule.timidity.stepsMargin,
+      ...decisionRuleAnalysisOptions(decisionRule),
     });
     const harnessVersion = await getRemnicVersion();
     const harnessSourceHash = await computeAnalysisHarnessHash();

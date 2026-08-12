@@ -913,6 +913,45 @@ test("suite preflights every driver before starting any row", async () => {
   }
 });
 
+test("timing-only fake suite finalizes statistics, power, and audit artifacts", async () => {
+  const outputDir = await mkdtemp(path.join(tmpdir(), "h6-suite-timing-only-"));
+  try {
+    const run = await runRepeatedFailureSuite({
+      outputDir,
+      drivers: [new DeterministicDriver()],
+      seeds: [7],
+      mode: "quick",
+      taskIds: [TASK_ID],
+      variantIds: [VARIANT_ID],
+      decisionRuleFile: "decision-rule-timing.json",
+      statisticsSeed: 9,
+      statisticsDraws: 10_000,
+      clock: FIXED_CLOCK,
+      now: FIXED_NOW,
+    });
+    const statistics = JSON.parse(await readFile(run.statisticsPath, "utf8")) as {
+      hypothesisSet?: string;
+      content?: unknown;
+      decisions?: { timing?: string };
+      cuts?: unknown[];
+    };
+    assert.equal(statistics.hypothesisSet, "timing_only");
+    assert.equal(statistics.content, null);
+    assert.ok(
+      statistics.decisions?.timing === "SUPPORTED"
+        || statistics.decisions?.timing === "REJECTED"
+        || statistics.decisions?.timing === "NOT_ESTIMABLE",
+    );
+    const rows = await rowsFrom(outputDir);
+    assert.equal(rows.length, 2);
+    assert.ok((await readFile(run.powerPath, "utf8")).length > 0);
+    assert.ok((await readFile(run.auditPath, "utf8")).length > 0);
+    assert.ok((await readFile(run.manifestPath, "utf8")).length > 0);
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
 test("deterministic fake runs preserve row order, hashes, isolation, arms, and no-trap audit", async () => {
   const first = await mkdtemp(path.join(tmpdir(), "h6-suite-first-"));
   const second = await mkdtemp(path.join(tmpdir(), "h6-suite-second-"));

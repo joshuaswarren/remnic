@@ -139,6 +139,7 @@ import {
   buildFixtureToolDefinitions,
   FixtureToolHost,
   decisionRuleAnalysisOptions,
+  timidityDesignOption,
   decisionRuleDesignMode,
   runOfflineCheck,
   listRegularFiles,
@@ -457,7 +458,7 @@ export async function runRepeatedFailureSuite(
   );
   const analysis = analyzeRepeatedFailureRows(rows, {
     expectedDesign: design.primary,
-    timidityDesign: design.timidity,
+    ...timidityDesignOption(bundle.decisionRule, design.timidity),
     seed: configuration.statisticsSeed,
     draws: configuration.statisticsDraws,
     ...decisionRuleAnalysisOptions(bundle.decisionRule),
@@ -632,7 +633,7 @@ export async function replayRepeatedFailureStatistics(
     assertDesignRowsPresent(rows, [...design.primary.rows, ...design.timidity.rows]);
     const analysis = analyzeRepeatedFailureRows(rows, {
       expectedDesign: design.primary,
-      timidityDesign: design.timidity,
+      ...timidityDesignOption(decisionRule, design.timidity),
       seed: metadata.statisticsSeed,
       draws: metadata.statisticsDraws,
       ...decisionRuleAnalysisOptions(decisionRule),

@@ -414,6 +414,19 @@ export function decisionRuleDesignMode(rule: AnyDecisionRule): "full" | "timing_
   return rule.version === H6_TIMING_DECISION_RULE.version ? "timing_only" : "full";
 }
 
+/**
+ * Timidity rows exist only in the full design. Every analysis call site must
+ * spread this instead of passing `timidityDesign` directly: the timing-only
+ * guard in `analyzeRepeatedFailureRows` rejects any timidity option, and an
+ * unconditional argument crashed the first timing rerun at finalization.
+ */
+export function timidityDesignOption(
+  rule: AnyDecisionRule,
+  timidity: RepeatedFailureExpectedDesign,
+): { timidityDesign?: RepeatedFailureExpectedDesign } {
+  return decisionRuleDesignMode(rule) === "full" ? { timidityDesign: timidity } : {};
+}
+
 export function decisionRuleAnalysisOptions(
   decisionRule: AnyDecisionRule,
 ):
