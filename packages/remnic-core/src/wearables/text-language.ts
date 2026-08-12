@@ -67,6 +67,20 @@ const HAS_ARABIC = /\p{Script=Arabic}/u;
 const HAS_CYRILLIC = /\p{Script=Cyrillic}/u;
 
 /**
+ * Normalize text for phrase matching: NFC, then fold the Turkic dotted and
+ * dotless I onto plain `i`.
+ *
+ * JavaScript's `/iu` folding is locale-independent, so it equates `i` with
+ * `I` but never `ı` with `I` or `i` with `İ`. A Turkish marker such as
+ * `kayıt dışı` would therefore miss an uppercase `KAYIT DIŞI` transcript and
+ * leave the span on the record. Both sides of the comparison run through
+ * this, so the fold cannot make one side drift from the other.
+ */
+export function foldForMatching(text: string): string {
+  return text.normalize("NFC").replace(/[\u0131\u0130I]/g, "i");
+}
+
+/**
  * Report which script-specific token sets apply to `text`.
  *
  * `latin` is always present: transcripts mix scripts freely, and the
@@ -103,10 +117,10 @@ export function buildPhraseMatcher(
   const seen = new Set<string>();
   for (const raw of phrases) {
     if (typeof raw !== "string") continue;
-    // NFC on both sides (the tester normalizes its input too): an ASR that
-    // emits decomposed text would otherwise never match a composed marker,
-    // and the span would be persisted (issue #2196).
-    const phrase = raw.trim().normalize("NFC");
+    // Folded on both sides (the tester folds its input too): an ASR that
+    // emits decomposed or Turkic-uppercase text would otherwise never match
+    // its marker, and the span would be persisted (issue #2196).
+    const phrase = foldForMatching(raw.trim());
     if (phrase.length === 0) continue;
     const key = phrase.toLowerCase();
     if (seen.has(key)) continue;

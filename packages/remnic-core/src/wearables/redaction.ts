@@ -12,7 +12,7 @@
  * to stay safely outside polynomial-ReDoS territory.
  */
 
-import { buildPhraseMatcher } from "./text-language.js";
+import { buildPhraseMatcher, foldForMatching } from "./text-language.js";
 import type {
   OffTheRecordMarkerSettings,
   WearableConversation,
@@ -215,9 +215,10 @@ export function applyOffTheRecord(
   let droppedSegments = 0;
   const segments = [];
   for (const segment of conversation.segments) {
-    // Matched in NFC, stored as written: the transcript keeps the ASR's
-    // own bytes while a decomposed spelling still reaches the marker.
-    const probe = segment.text.normalize("NFC");
+    // Matched folded, stored as written: the transcript keeps the ASR's own
+    // bytes while a decomposed or Turkic-uppercase spelling still reaches
+    // the marker.
+    const probe = foldForMatching(segment.text);
     if (!offRecord && markers.start.test(probe)) {
       offRecord = true;
       segments.push({

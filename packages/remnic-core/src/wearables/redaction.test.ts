@@ -235,3 +235,16 @@ test("a marker never fires at the tail of a longer word", () => {
   assert.equal(applyOffTheRecord(conversation(["أشخاص كثيرون", "x"]), arabic).droppedSegments, 0);
   assert.equal(applyOffTheRecord(conversation(["وخاص جدا", "سر"]), arabic).droppedSegments, 1);
 });
+
+test("a Turkish marker matches an uppercase transcript", () => {
+  // JS `/iu` folding is locale-independent: it never equates `ı` with `I`.
+  const markers = compileOffTheRecordMarkers({ start: ["kayıt dışı"], useBuiltIns: false });
+  assert.equal(
+    applyOffTheRecord(conversation(["BU KAYIT DIŞI", "gizli bilgi"]), markers).droppedSegments,
+    1,
+  );
+  assert.equal(
+    applyOffTheRecord(conversation(["bu kayıt dışı", "gizli bilgi"]), markers).droppedSegments,
+    1,
+  );
+});
