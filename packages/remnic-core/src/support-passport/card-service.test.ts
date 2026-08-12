@@ -40,6 +40,29 @@ async function makeSubject() {
   };
 }
 
+async function makeSharedStorageSubject() {
+  StorageManager.clearAllStaticCaches();
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-passport-shared-"));
+  const storage = new StorageManager(path.join(root, "shared"));
+  await storage.ensureDirectories();
+  const service = new SupportPassportCardService({
+    now: () => new Date("2026-08-11T12:00:00.000Z"),
+    resolveOwner: async (principal) => {
+      if (principal === "owner:alice") return { principal, namespace: "alice", storage };
+      if (principal === "owner:bob") return { principal, namespace: "bob", storage };
+      throw new Error("unknown test principal");
+    },
+  });
+  return {
+    service,
+    storage,
+    cleanup: async () => {
+      StorageManager.clearAllStaticCaches();
+      await rm(root, { recursive: true, force: true });
+    },
+  };
+}
+
 test("manual support cards stay private until their owner approves them", async () => {
   const subject = await makeSubject();
   try {
@@ -96,6 +119,61 @@ test("manual support cards stay private until their owner approves them", async 
       )?.actor,
       "owner:alice"
     );
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("card reads and mutations stay inside the resolved namespace on shared storage", async () => {
+  const subject = await makeSharedStorageSubject();
+  try {
+    const aliceDraft = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Alice card",
+      statement: "Give Alice advance notice.",
+      category: "transitions",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const bobDraft = await subject.service.createManualDraft({
+      principal: "owner:bob",
+      title: "Bob card",
+      statement: "Give Bob a quiet place.",
+      category: "environment",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+
+    assert.deepEqual(
+      (await subject.service.listCards({ principal: "owner:alice" })).map((card) => card.cardId),
+      [aliceDraft.cardId]
+    );
+    assert.deepEqual(
+      (await subject.service.listCards({ principal: "owner:bob" })).map((card) => card.cardId),
+      [bobDraft.cardId]
+    );
+    await assert.rejects(
+      subject.service.approveCard({
+        principal: "owner:bob",
+        cardId: aliceDraft.cardId,
+        expectedRevision: aliceDraft.revision,
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "card_not_found"
+    );
+    await assert.rejects(
+      subject.service.replaceCard({
+        principal: "owner:bob",
+        cardId: aliceDraft.cardId,
+        expectedRevision: aliceDraft.revision,
+        title: "Foreign edit",
+        statement: "This edit must not be stored.",
+        category: "other",
+        reviewBy: OWNER_REVIEW_BY,
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "card_not_found"
+    );
+
+    const stored = await subject.storage.getMemoryById(aliceDraft.cardId);
+    assert.equal(stored?.frontmatter.status, "pending_review");
+    assert.equal(stored?.frontmatter.structuredAttributes?.["support-passport-namespace"], "alice");
   } finally {
     await subject.cleanup();
   }
@@ -700,6 +778,19 @@ test("retrying an interrupted active-card replacement is exact and idempotent", 
       (memory) => memory.frontmatter.id !== active.cardId
     );
     assert.ok(replacement);
+
+    await assert.rejects(
+      subject.service.replaceCard({
+        principal: "owner:alice",
+        cardId: active.cardId,
+        expectedRevision: "0".repeat(64),
+        title: "Softer lighting",
+        statement: "Use softer lighting when you can.",
+        category: "sensory",
+        reviewBy: OWNER_REVIEW_BY,
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "revision_conflict"
+    );
 
     await assert.rejects(
       subject.service.replaceCard({
@@ -1459,7 +1550,7 @@ test("failed replacement activation stays pending through recovery", async () =>
   }
 });
 
-test("a draft rollback failure does not replace the edit conflict", async () => {
+test("a draft rollback failure recovers to one visible card", async () => {
   const subject = await makeSubject();
   try {
     const draft = await subject.service.createManualDraft({
@@ -1494,6 +1585,15 @@ test("a draft rollback failure does not replace the edit conflict", async () => 
         error instanceof SupportPassportError && error.code === "storage_conflict" && error.status === 409
     );
     assert.equal(rollbackAttempts, 1);
+    const visible = await subject.service.listCards({ principal: "owner:alice" });
+    assert.equal(visible.length, 1);
+    assert.notEqual(visible[0]?.cardId, draft.cardId);
+    const cards = (await subject.aliceStorage.readAllMemories()).filter((memory) =>
+      memory.frontmatter.tags?.includes("support-passport-card")
+    );
+    assert.equal(cards.length, 2);
+    assert.equal(cards.filter((memory) => memory.frontmatter.status === "pending_review").length, 1);
+    assert.equal(cards.filter((memory) => memory.frontmatter.status === "rejected").length, 1);
   } finally {
     await subject.cleanup();
   }

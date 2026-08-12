@@ -11,12 +11,15 @@ import {
 
 export const SUPPORT_PASSPORT_CARD_TAG = "support-passport-card";
 export const SUPPORT_PASSPORT_ATTRIBUTE_KEYS = Object.freeze({
+  namespace: "support-passport-namespace",
   title: "support-passport-title",
   category: "support-passport-category",
   order: "support-passport-order",
   reviewBy: "support-passport-review-by",
   sourceMemoryIds: "support-passport-source-ids",
   replacesDraftId: "support-passport-replaces-draft-id",
+  replacedRevision: "support-passport-replaced-revision",
+  draftReplacementPrepared: "support-passport-draft-replacement-prepared",
   replacementComplete: "support-passport-replacement-complete",
 });
 
@@ -25,7 +28,10 @@ export interface StoredSupportPassportCard {
   memory: MemoryFile;
   order: number;
   sourceMemoryIds: string[];
+  namespace: string;
   replacesDraftId?: string;
+  replacedRevision?: string;
+  draftReplacementPrepared: boolean;
 }
 
 function parseSourceMemoryIds(value: string): string[] | null {
@@ -54,6 +60,7 @@ export function projectSupportPassportCard(memory: MemoryFile): StoredSupportPas
   const rawOrder = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.order] ?? "";
   const order = Number(rawOrder);
   const sourceMemoryIds = parseSourceMemoryIds(attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.sourceMemoryIds] ?? "");
+  const namespace = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.namespace]?.trim() ?? "";
   let replacesDraftId: string | undefined;
   const rawReplacesDraftId = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.replacesDraftId];
   if (rawReplacesDraftId !== undefined) {
@@ -61,12 +68,20 @@ export function projectSupportPassportCard(memory: MemoryFile): StoredSupportPas
     if (!parsedReplacesDraftId.success) return null;
     replacesDraftId = parsedReplacesDraftId.data;
   }
+  let replacedRevision: string | undefined;
+  const rawReplacedRevision = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.replacedRevision];
+  if (rawReplacedRevision !== undefined) {
+    if (!/^[a-f0-9]{64}$/.test(rawReplacedRevision)) return null;
+    replacedRevision = rawReplacedRevision;
+  }
   if (
     !category.success ||
     !status.success ||
     status.data === "superseded" ||
     !/^(?:0|[1-9]\d*)$/.test(rawOrder) ||
     !Number.isSafeInteger(order) ||
+    namespace.length === 0 ||
+    namespace.length > 256 ||
     !sourceMemoryIds
   )
     return null;
@@ -87,5 +102,14 @@ export function projectSupportPassportCard(memory: MemoryFile): StoredSupportPas
     revision: computeSupportPassportCardRevision(normalized.data),
   });
   if (!parsed.success) return null;
-  return { card: parsed.data, memory, order, sourceMemoryIds, replacesDraftId };
+  return {
+    card: parsed.data,
+    memory,
+    order,
+    sourceMemoryIds,
+    namespace,
+    replacesDraftId,
+    replacedRevision,
+    draftReplacementPrepared: attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.draftReplacementPrepared] === "true",
+  };
 }
