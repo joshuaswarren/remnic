@@ -830,6 +830,39 @@ test("a changed card makes the whole grant stale without a partial guide", async
   }
 });
 
+test("unrelated memory writes do not invalidate an unchanged shared guide", async () => {
+  const subject = await makeSubject();
+  try {
+    const card = await createActiveCard(subject);
+    const created = await subject.grantService.createGrant({
+      principal: "owner:alice",
+      cards: [{ cardId: card.cardId, revision: card.revision }],
+      expiresAt: expiryAfter(subject, 3_600_000),
+    });
+    const getMemoryById = subject.aliceStorage.getMemoryById.bind(subject.aliceStorage);
+    let wroteUnrelated = false;
+    subject.aliceStorage.getMemoryById = async (memoryId: string) => {
+      const memory = await getMemoryById(memoryId);
+      if (!wroteUnrelated) {
+        wroteUnrelated = true;
+        await subject.aliceStorage.writeMemory("An unrelated memory write.", "fact", {
+          source: "support-passport-test",
+        });
+      }
+      return memory;
+    };
+
+    const guide = await subject.grantService.readGrant({
+      grantId: created.grant.grantId,
+      secret: created.secret,
+    });
+
+    assert.equal(guide.cards[0]?.cardId, card.cardId);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("grant creation rejects drafts, duplicate cards, and unsafe durations", async () => {
   const subject = await makeSubject();
   try {
