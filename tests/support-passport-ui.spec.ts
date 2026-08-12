@@ -575,6 +575,150 @@ test("a stalled owner read aborts and restores the connect action", async ({ pag
   await expect(button).toBeEnabled();
 });
 
+test("a stalled manual draft aborts without leaving a retryable duplicate", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers owner write cancellation.");
+  await page.clock.install({ time: new Date("2026-08-11T12:00:00.000Z") });
+  await page.addInitScript(() => {
+    const realFetch = window.fetch.bind(window);
+    Object.assign(window, { __ownerDraftAbortObserved: false, __ownerDraftCalls: 0 });
+    window.fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/engram/v1/support-passport/drafts") && init?.method === "POST") {
+        Object.assign(window, {
+          __ownerDraftCalls:
+            ((window as typeof window & { __ownerDraftCalls?: number }).__ownerDraftCalls ?? 0) + 1,
+        });
+        return await new Promise((_resolve, reject) => {
+          init.signal?.addEventListener(
+            "abort",
+            () => {
+              Object.assign(window, { __ownerDraftAbortObserved: true });
+              reject(new DOMException("The request was aborted.", "AbortError"));
+            },
+            { once: true }
+          );
+        });
+      }
+      return await realFetch(input, init);
+    };
+  });
+  await page.route("**/engram/v1/support-passport/cards", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ cards: [] }) });
+  });
+  await page.route("**/engram/v1/support-passport/grants", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grants: [] }) });
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await page.getByLabel("Bearer token").fill("owner-token");
+  await page.getByRole("button", { name: "Open my guide" }).click();
+  await page.getByRole("button", { name: "Write a card" }).click();
+  await page.getByLabel("Card title").fill("Quiet place");
+  await page.getByLabel("What helps me").fill("Offer me a quiet place and time.");
+  await page.getByRole("button", { name: "Save draft" }).click();
+  await expect(page.getByRole("button", { name: "Saving draft…" })).toBeDisabled();
+  await page.clock.fastForward(60_000);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as typeof window & { __ownerDraftAbortObserved?: boolean }).__ownerDraftAbortObserved
+      )
+    )
+    .toBe(true);
+  await page.clock.fastForward(750);
+
+  await expect(page.getByText("The request stopped before the draft saved.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save draft" })).toBeEnabled();
+  expect(
+    await page.evaluate(() => (window as typeof window & { __ownerDraftCalls?: number }).__ownerDraftCalls)
+  ).toBe(1);
+});
+
+test("a stalled share creation detects the stopped link without exposing a secret", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers share write cancellation.");
+  const now = new Date("2026-08-11T12:00:00.000Z");
+  const expiresAt = new Date(now.getTime() + 2 * 60 * 60_000).toISOString();
+  const card = {
+    cardId: "card-approved",
+    title: "Quiet place",
+    statement: "Offer me a quiet place and time.",
+    category: "environment",
+    status: "active",
+    updatedAt: now.toISOString(),
+    reviewBy: new Date(now.getTime() + 24 * 60 * 60_000).toISOString(),
+    revision: "a".repeat(64),
+  };
+  const revokedGrant = {
+    grantId: "3b998a98-d48d-4f5c-887c-617af9228847",
+    stateVersion: 2,
+    cards: [{ cardId: card.cardId, revision: card.revision }],
+    createdAt: now.toISOString(),
+    expiresAt,
+    revokedAt: new Date(now.getTime() + 60_000).toISOString(),
+    status: "revoked",
+  };
+  await page.clock.install({ time: now });
+  await page.addInitScript(() => {
+    const realFetch = window.fetch.bind(window);
+    Object.assign(window, { __ownerShareAbortObserved: false, __ownerShareCalls: 0 });
+    window.fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/engram/v1/support-passport/grants") && init?.method === "POST") {
+        Object.assign(window, {
+          __ownerShareCalls:
+            ((window as typeof window & { __ownerShareCalls?: number }).__ownerShareCalls ?? 0) + 1,
+        });
+        return await new Promise((_resolve, reject) => {
+          init.signal?.addEventListener(
+            "abort",
+            () => {
+              Object.assign(window, { __ownerShareAbortObserved: true });
+              reject(new DOMException("The request was aborted.", "AbortError"));
+            },
+            { once: true }
+          );
+        });
+      }
+      return await realFetch(input, init);
+    };
+  });
+  await page.route("**/engram/v1/support-passport/cards", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ cards: [card] }) });
+  });
+  let grantReads = 0;
+  await page.route("**/engram/v1/support-passport/grants", async (route) => {
+    grantReads += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ grants: grantReads === 1 ? [] : [revokedGrant] }),
+    });
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await page.getByLabel("Bearer token").fill("owner-token");
+  await page.getByRole("button", { name: "Open my guide" }).click();
+  await page.locator('input[name="shareCard"]').check();
+  await page.getByRole("button", { name: "Create share link" }).click();
+  await expect(page.getByRole("button", { name: "Creating link…" })).toBeDisabled();
+  await page.clock.fastForward(60_000);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as typeof window & { __ownerShareAbortObserved?: boolean }).__ownerShareAbortObserved
+      )
+    )
+    .toBe(true);
+
+  await expect(page.getByText("The request stopped before any active link remained. Create a new link.")).toBeVisible();
+  await expect(page.getByText("Share link ready")).toBeHidden();
+  await expect(page.getByLabel("Copy this link once")).toHaveValue("");
+  await expect(page.getByRole("button", { name: "Create share link" })).toBeEnabled();
+  expect(
+    await page.evaluate(() => (window as typeof window & { __ownerShareCalls?: number }).__ownerShareCalls)
+  ).toBe(1);
+});
+
 test("the owner view bounds rendered share history", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers bounded share history.");
   const now = new Date();
