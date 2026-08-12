@@ -39,13 +39,21 @@ test("root build creates the OpenClaw adapter before bundling its public route",
   );
 });
 
-test("root development creates the OpenClaw adapter before watching its public route", () => {
+test("root development builds and watches the OpenClaw adapter with its public route", () => {
   const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as {
     scripts?: Record<string, string>;
   };
+  const adapterPkg = JSON.parse(
+    readFileSync(join(repoRoot, "packages", "plugin-openclaw", "package.json"), "utf8"),
+  ) as { scripts?: Record<string, string> };
 
   const devScript = pkg.scripts?.dev ?? "";
-  assert.match(devScript, /^pnpm --filter @remnic\/plugin-openclaw build && tsup --watch$/);
+  assert.equal(
+    devScript,
+    "pnpm --filter @remnic/plugin-openclaw build && pnpm --parallel --filter remnic-workspace --filter @remnic/plugin-openclaw run dev:watch",
+  );
+  assert.equal(pkg.scripts?.["dev:watch"], "tsup --watch");
+  assert.equal(adapterPkg.scripts?.["dev:watch"], "tsup --config tsup.config.ts --watch");
 });
 
 test("root test runner applies remnic source conditions and test globs portably", () => {
