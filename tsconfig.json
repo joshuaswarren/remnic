@@ -45,6 +45,12 @@
       ],
       "@remnic/core/connectors/codex-materialize-runner": [
         "./packages/remnic-core/src/connectors/codex-materialize-runner.ts"
+      ],
+      "@remnic/plugin-openclaw/support-passport-model-route": [
+        "./packages/plugin-openclaw/src/support-passport-model-route.ts"
+      ],
+      "@remnic/server": [
+        "./packages/remnic-server/src/index.ts"
       ]
     }
   },
