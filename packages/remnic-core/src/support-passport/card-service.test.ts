@@ -299,6 +299,136 @@ test("approval returns success when committed replacement cleanup fails", async 
   }
 });
 
+test("approval rolls an active replacement back to review after a durable predecessor conflict", async () => {
+  const subject = await makeSubject();
+  try {
+    const draft = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Plan changes",
+      statement: "Tell me before plans change.",
+      category: "transitions",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const active = await subject.service.approveCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+    });
+    const replacement = await subject.service.replaceCard({
+      principal: "owner:alice",
+      cardId: active.cardId,
+      expectedRevision: active.revision,
+      title: "Plan changes",
+      statement: "Tell me early when plans change.",
+      category: "transitions",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const originalWrite = subject.aliceStorage.writeMemoryFrontmatterIfUnchanged.bind(subject.aliceStorage);
+    let changedPrior = false;
+    subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = async (memory, patch, lifecycle) => {
+      const changed = await originalWrite(memory, patch, lifecycle);
+      if (changed && !changedPrior && lifecycle?.actor === "support-passport.approve") {
+        changedPrior = true;
+        const prior = await subject.aliceStorage.getMemoryById(active.cardId);
+        assert.ok(prior);
+        assert.equal(
+          await originalWrite(prior, {
+            status: "archived",
+            archivedAt: "2026-08-11T12:01:00.000Z",
+            updated: "2026-08-11T12:01:00.000Z",
+          }),
+          true
+        );
+      }
+      return changed;
+    };
+
+    await assert.rejects(
+      subject.service.approveCard({
+        principal: "owner:alice",
+        cardId: replacement.cardId,
+        expectedRevision: replacement.revision,
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
+    );
+
+    subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = originalWrite;
+    assert.equal((await subject.aliceStorage.getMemoryById(replacement.cardId))?.frontmatter.status, "pending_review");
+    assert.deepEqual(
+      (await subject.service.listCards({ principal: "owner:alice" })).map((card) => [
+        card.cardId,
+        card.status,
+      ]),
+      [[replacement.cardId, "pending_review"]]
+    );
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("withdrawing an incompletely retired replacement finishes its retirement first", async () => {
+  const subject = await makeSubject();
+  try {
+    const draft = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Plan changes",
+      statement: "Tell me before plans change.",
+      category: "transitions",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const active = await subject.service.approveCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+    });
+    const replacement = await subject.service.replaceCard({
+      principal: "owner:alice",
+      cardId: active.cardId,
+      expectedRevision: active.revision,
+      title: "Plan changes",
+      statement: "Tell me early when plans change.",
+      category: "transitions",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const originalSupersede = subject.aliceStorage.supersedeMemory.bind(subject.aliceStorage);
+    let failedOnce = false;
+    subject.aliceStorage.supersedeMemory = async (...args) => {
+      if (!failedOnce) {
+        failedOnce = true;
+        throw new Error("simulated replacement cleanup failure");
+      }
+      return await originalSupersede(...args);
+    };
+    const approved = await subject.service.approveCard({
+      principal: "owner:alice",
+      cardId: replacement.cardId,
+      expectedRevision: replacement.revision,
+    });
+
+    await subject.service.withdrawCard({
+      principal: "owner:alice",
+      cardId: approved.cardId,
+      expectedRevision: approved.revision,
+    });
+
+    const storedReplacement = await subject.aliceStorage.getMemoryById(replacement.cardId);
+    assert.equal(storedReplacement?.frontmatter.status, "archived");
+    assert.equal(
+      storedReplacement?.frontmatter.structuredAttributes?.["support-passport-replacement-complete"],
+      "true"
+    );
+    const retirementAudit = (await subject.aliceStorage.readAllMemories()).find(
+      (memory) =>
+        memory.frontmatter.category === "correction" &&
+        memory.frontmatter.lineage?.includes(active.cardId) &&
+        memory.frontmatter.lineage.includes(replacement.cardId)
+    );
+    assert.ok(retirementAudit);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("a rejected draft leaves no owner-visible card", async () => {
   const subject = await makeSubject();
   try {
