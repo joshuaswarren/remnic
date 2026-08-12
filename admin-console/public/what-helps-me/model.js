@@ -396,7 +396,9 @@
     }
 
     function publicGuide(grant) {
-      const selected = grant.cards.map((reference) => cards.find((card) => card.cardId === reference.cardId));
+      const selected = grant.cards.map((reference) =>
+        cards.find((card) => card.cardId === reference.cardId && card.revision === reference.revision)
+      );
       if (selected.length === 0 || selected.some((card) => !card || card.status !== "active")) {
         const error = new Error("The shared support guide has changed.");
         error.code = "grant_stale";
@@ -465,29 +467,52 @@
         if (!card) throw new Error("The support card changed after it was loaded.");
         const expected = action === "withdraw" ? "active" : "pending_review";
         if (card.status !== expected) throw new Error(`The support card must have status ${expected}.`);
+        const invalidatedCardIds = [];
         card.status = nextStatus;
         card.updatedAt = now().toISOString();
         card.revision = replayRevision(`${card.cardId}:${card.status}:${card.updatedAt}:${card.statement}`);
+        if (action === "withdraw") invalidatedCardIds.push(card.cardId);
         if (action === "approve" && replacements.has(card.cardId)) {
           const prior = cards.find((candidate) => candidate.cardId === replacements.get(card.cardId));
-          if (prior) prior.status = "superseded";
+          if (prior) {
+            prior.status = "superseded";
+            prior.updatedAt = card.updatedAt;
+            prior.revision = replayRevision(`${prior.cardId}:${prior.status}:${prior.updatedAt}:${prior.statement}`);
+            invalidatedCardIds.push(prior.cardId);
+          }
           replacements.delete(card.cardId);
         }
-        return { card: { ...card } };
+        return { card: { ...card }, invalidatedCardIds };
       },
-      seedSharedGuide(grantId, secret) {
-        cards = REPLAY_DRAFTS.map((draft) => makeCard(draft, "active"));
-        grants = [
-          {
-            grantId,
-            stateVersion: 1,
-            cards: cards.map((card) => ({ cardId: card.cardId, revision: card.revision })),
-            createdAt: now().toISOString(),
-            expiresAt: new Date(now().getTime() + 2 * 60 * 60_000).toISOString(),
-            status: "active",
-          },
-        ];
+      seedSharedGuide(grantId, secret, sharedState) {
+        if (!hasExactKeys(sharedState, ["grant", "cards"])) {
+          throw new Error("The replay share state is invalid.");
+        }
+        const sharedGrant = assertGrant(sharedState.grant);
+        const sharedCards = parseCardList({ cards: sharedState.cards });
+        const cardsById = new Map(sharedCards.map((card) => [card.cardId, card]));
+        if (
+          sharedGrant.grantId !== grantId ||
+          sharedCards.length !== sharedGrant.cards.length ||
+          sharedGrant.cards.some((reference) => cardsById.get(reference.cardId)?.revision !== reference.revision)
+        ) {
+          throw new Error("The replay share state is invalid.");
+        }
+        cards = sharedCards.map((card) => ({ ...card }));
+        grants = [{ ...sharedGrant, cards: sharedGrant.cards.map((card) => ({ ...card })) }];
         secrets.set(grantId, secret);
+      },
+      exportSharedGuide(grantId, secret) {
+        const grant = grants.find((candidate) => candidate.grantId === grantId);
+        if (!grant || secrets.get(grantId) !== secret) return null;
+        const selected = grant.cards.map((reference) =>
+          cards.find((card) => card.cardId === reference.cardId && card.revision === reference.revision)
+        );
+        if (selected.some((card) => !card)) return null;
+        return {
+          grant: { ...grant, cards: grant.cards.map((card) => ({ ...card })) },
+          cards: selected.map((card) => ({ ...card })),
+        };
       },
       async createGrant(input) {
         const selected = input.cardIds.map((cardId) => cards.find((card) => card.cardId === cardId));
@@ -549,7 +574,19 @@
       },
       async askGrant(grantId, secret, question) {
         const guide = await this.readGrant(grantId, secret);
-        const quietCard = guide.cards.find((card) => card.category === "communication") || guide.cards[0];
+        const transitionCard = guide.cards.find((card) => card.category === "transitions");
+        if (transitionCard && /\b(?:plans?|schedules?|routines?|transitions?)\b/i.test(question)) {
+          return {
+            answer: transitionCard.statement,
+            citedCardIds: [transitionCard.cardId],
+            coverage: "grounded",
+          };
+        }
+        const quietCard = guide.cards.find(
+          (card) =>
+            (card.category === "communication" || card.category === "regulation") &&
+            /quiet|speak|respond|pause|space|time|settle/i.test(`${card.title} ${card.statement}`)
+        );
         if (!quietCard || !/overwhelm|speaking|quiet/i.test(question)) {
           return {
             answer: "That is not covered in this person's support guide.",
@@ -558,7 +595,7 @@
           };
         }
         return {
-          answer: "Offer a quiet place and time. Give the person space to respond.",
+          answer: quietCard.statement,
           citedCardIds: [quietCard.cardId],
           coverage: "grounded",
         };

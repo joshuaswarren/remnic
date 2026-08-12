@@ -1730,21 +1730,36 @@ test("the owner view bounds rendered share history", async ({ page }, testInfo) 
   await expect(page.locator(".grant-card")).toHaveCount(100);
 });
 
-test("the helper sees only shared cards and grounded citations", async ({ page }, testInfo) => {
-  await page.goto(helperUrl());
+test("the helper sees only shared cards and grounded citations", async ({ page, context }, testInfo) => {
+  await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
+  await page.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
+  await page.getByRole("button", { name: "Draft my support cards" }).click();
+  for (const title of ["Lighting", "Plan changes", "When I stop speaking"]) {
+    await page.locator(".support-card").filter({ hasText: title }).getByRole("button", { name: "Approve" }).click();
+  }
+  const choices = page.locator('input[name="shareCard"]');
+  for (let index = 0; index < 3; index += 1) await choices.nth(index).check();
+  await page.getByRole("button", { name: "Create share link" }).click();
+  const shareUrl = await page.locator("#shareLinkInput").inputValue();
 
-  await expect(page.getByRole("heading", { name: "What helps me" })).toBeVisible();
-  await expect(page.locator(".public-card")).toHaveCount(3);
-  await expect(page.locator("#tokenInput")).toHaveCount(0);
-  await expect(page.getByText("Selected notes", { exact: true })).toHaveCount(0);
+  const helper = await context.newPage();
+  try {
+    await helper.goto(shareUrl);
+    await expect(helper.getByRole("heading", { name: "What helps me" })).toBeVisible();
+    await expect(helper.locator(".public-card")).toHaveCount(3);
+    await expect(helper.locator("#tokenInput")).toHaveCount(0);
+    await expect(helper.getByText("Selected notes", { exact: true })).toHaveCount(0);
 
-  await page.getByLabel("Your question").fill("What should I do when this person is overwhelmed?");
-  await page.getByRole("button", { name: "Ask from this guide" }).click();
-  await expect(page.getByText("Offer a quiet place and time. Give the person space to respond.")).toBeVisible();
-  await expect(page.locator(".citation")).toContainText("Support card");
+    await helper.getByLabel("Your question").fill("What should I do when this person is overwhelmed?");
+    await helper.getByRole("button", { name: "Ask from this guide" }).click();
+    await expect(helper.locator("#answerCopy")).toHaveText("If I stop speaking, offer a quiet place and time.");
+    await expect(helper.locator(".citation")).toContainText("Support card");
 
-  await expectNoSeriousAxeFindings(page);
-  await page.screenshot({ path: testInfo.outputPath(`helper-${testInfo.project.name}.png`), fullPage: true });
+    await expectNoSeriousAxeFindings(helper);
+    await helper.screenshot({ path: testInfo.outputPath(`helper-${testInfo.project.name}.png`), fullPage: true });
+  } finally {
+    await helper.close();
+  }
 });
 
 test("a new helper question clears the prior answer before dispatch", async ({ page }, testInfo) => {
@@ -1907,6 +1922,149 @@ test("an older helper ask cannot unlock a newer ask", async ({ page }, testInfo)
   await expect(page.getByText("Offer a quiet place.", { exact: true })).toBeVisible();
   await expect(page.getByLabel("Your question")).toBeEnabled();
   await expect(page.getByRole("button", { name: "Ask from this guide" })).toBeEnabled();
+});
+
+test("replay helpers receive only the card selected by the owner", async ({ page, context }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers replay grant transfer.");
+  await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
+  await page.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
+  await page.getByRole("button", { name: "Draft my support cards" }).click();
+  const planCard = page.locator(".support-card").filter({ hasText: "Plan changes" });
+  await planCard.getByRole("button", { name: "Approve" }).click();
+  await page.locator(".card-choice").filter({ hasText: "Plan changes" }).locator('input[name="shareCard"]').check();
+  await page.getByRole("button", { name: "Create share link" }).click();
+  const shareUrl = await page.locator("#shareLinkInput").inputValue();
+
+  const helper = await context.newPage();
+  try {
+    await helper.goto(shareUrl);
+    await expect(helper.locator(".public-card")).toHaveCount(1);
+    await expect(helper.locator(".public-card").getByRole("heading", { name: "Plan changes" })).toBeVisible();
+    await expect(helper.getByRole("heading", { name: "Lighting" })).toHaveCount(0);
+    await helper.getByLabel("Your question").fill("Can you change the lighting?");
+    await helper.getByRole("button", { name: "Ask from this guide" }).click();
+    await expect(helper.locator("#answerCopy")).toHaveText("That is not covered in this person's support guide.");
+    await expect(helper.locator(".citation")).toHaveText("No support card covers this question.");
+    await helper.getByLabel("Your question").fill("What should I do when plans change?");
+    await helper.getByRole("button", { name: "Ask from this guide" }).click();
+    await expect(helper.locator("#answerCopy")).toHaveText("Tell me before plans change.");
+    await expect(helper.locator(".citation")).toContainText("Plan changes");
+  } finally {
+    await helper.close();
+  }
+});
+
+test("a replay helper locks after the owner withdraws a shared card", async ({ page, context }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers replay card withdrawal.");
+  await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
+  await page.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
+  await page.getByRole("button", { name: "Draft my support cards" }).click();
+  const planCard = page.locator(".support-card").filter({ hasText: "Plan changes" });
+  await planCard.getByRole("button", { name: "Approve" }).click();
+  await page.locator(".card-choice").filter({ hasText: "Plan changes" }).locator('input[name="shareCard"]').check();
+  await page.getByRole("button", { name: "Create share link" }).click();
+  const shareUrl = await page.locator("#shareLinkInput").inputValue();
+
+  const helper = await context.newPage();
+  try {
+    await helper.goto(shareUrl);
+    await expect(helper.locator(".public-card")).toHaveCount(1);
+    await planCard.getByRole("button", { name: "Withdraw" }).click();
+    await expect(helper.getByRole("heading", { name: "This share link is no longer current." })).toBeVisible();
+    await expect(helper.locator(".public-card")).toHaveCount(0);
+  } finally {
+    await helper.close();
+  }
+});
+
+test("a replay helper locks after the owner approves an edited shared card", async ({ page, context }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers replay card replacement.");
+  await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
+  await page.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
+  await page.getByRole("button", { name: "Draft my support cards" }).click();
+  const planCard = page.locator(".support-card").filter({ hasText: "Tell me before plans change." });
+  await planCard.getByRole("button", { name: "Approve" }).click();
+  await page.locator(".card-choice").filter({ hasText: "Plan changes" }).locator('input[name="shareCard"]').check();
+  await page.getByRole("button", { name: "Create share link" }).click();
+  const shareUrl = await page.locator("#shareLinkInput").inputValue();
+
+  const helper = await context.newPage();
+  try {
+    await helper.goto(shareUrl);
+    await expect(helper.locator(".public-card")).toHaveCount(1);
+    await planCard.getByRole("button", { name: "Edit" }).click();
+    await page.getByLabel("What helps me").fill("Tell me early when plans change.");
+    await page.getByRole("button", { name: "Save draft" }).click();
+    const replacement = page.locator(".support-card").filter({ hasText: "Tell me early when plans change." });
+    await replacement.getByRole("button", { name: "Approve" }).click();
+    await expect(helper.getByRole("heading", { name: "This share link is no longer current." })).toBeVisible();
+    await expect(helper.locator(".public-card")).toHaveCount(0);
+  } finally {
+    await helper.close();
+  }
+});
+
+test("replay helpers never cite an unrelated selected card", async ({ page, context }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers replay answer grounding.");
+  await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
+  await page.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
+  await page.getByRole("button", { name: "Draft my support cards" }).click();
+  const lightingCard = page.locator(".support-card").filter({ hasText: "Lighting" });
+  await lightingCard.getByRole("button", { name: "Approve" }).click();
+  await page.locator(".card-choice").filter({ hasText: "Lighting" }).locator('input[name="shareCard"]').check();
+  await page.getByRole("button", { name: "Create share link" }).click();
+  const shareUrl = await page.locator("#shareLinkInput").inputValue();
+
+  const helper = await context.newPage();
+  try {
+    await helper.goto(shareUrl);
+    await expect(helper.locator(".public-card")).toHaveCount(1);
+    await helper.getByLabel("Your question").fill("What should I do when this person is overwhelmed?");
+    await helper.getByRole("button", { name: "Ask from this guide" }).click();
+    await expect(helper.locator("#answerCopy")).toHaveText("That is not covered in this person's support guide.");
+    await expect(helper.locator(".citation")).toHaveText("No support card covers this question.");
+    await expect(helper.locator(".citation")).not.toContainText("Lighting");
+  } finally {
+    await helper.close();
+  }
+});
+
+test("a replay helper fails closed without owner share state", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers replay synchronization failure.");
+
+  await page.goto(helperUrl("-without-owner"));
+
+  await expect(page.getByRole("heading", { name: "The support passport did not load." })).toBeVisible();
+  await expect(page.locator(".public-card")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Try again" }).click();
+
+  await expect(page.getByRole("heading", { name: "The support passport did not load." })).toBeVisible();
+  await expect(page.locator(".public-card")).toHaveCount(0);
+});
+
+test("a restored replay owner keeps the share bridge active", async ({ page, context }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers replay owner restoration.");
+  await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
+  await page.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
+  await page.getByRole("button", { name: "Draft my support cards" }).click();
+  await page.getByRole("button", { name: "Approve" }).first().click();
+  await page.locator('input[name="shareCard"]').first().check();
+  await page.getByRole("button", { name: "Create share link" }).click();
+  const shareUrl = await page.locator("#shareLinkInput").inputValue();
+
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })));
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })));
+
+  const helper = await context.newPage();
+  try {
+    await helper.goto(shareUrl);
+    await expect(helper.locator(".public-card")).toHaveCount(1);
+    await page.getByRole("button", { name: "Stop sharing" }).click();
+    await expect(helper.getByRole("heading", { name: "This support passport is locked." })).toBeVisible();
+  } finally {
+    await helper.close();
+  }
 });
 
 test("a bad helper link has a clear locked view", async ({ page }, testInfo) => {

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "cards": [
+    {
+      "title": "Quiet place and time",
+      "statement": "Offer me a quiet place and time. Give me space to respond.",
+      "category": "environment"
+    }
+  ],
+  "question": "What should I do when this person is overwhelmed?",
+  "expectedCoverage": "grounded"
+}

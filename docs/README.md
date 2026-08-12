@@ -52,6 +52,7 @@ packaged adapter is.
 
 ### Memory OS
 
+- [What Helps Me support passport](support-passport.md) — Owner-approved support cards, timed sharing, grounded helper questions, and immediate revocation.
 - [Dreams](dreams.md) — Named, phased consolidation (light sleep / REM / deep sleep) over the maintenance pipeline.
 - [Compounding engine](compounding.md) — Turns feedback into persistent institutional learning through weekly synthesis.
 - [Procedural memory](procedural-memory.md) — First-class `procedure` memories mined from recurring task trajectories.
@@ -94,6 +95,7 @@ packaged adapter is.
 
 ### Demos
 
+- [What Helps Me walkthrough](hackathons/build-for-good-2026.md) — Synthetic video, live proof commands, and the Build for Good 2026 entry.
 - [Agentic commerce demo](agentic-commerce-demo.md) — Buyer-aware recommendations, checkout boundaries, and commerce eval coverage.
 - [ChatGPT Apps demo](chatgpt-apps-demo.md) — A local ChatGPT Apps-compatible memory inspector on the MCP runtime.
 - [Coding agent memory demo](../examples/coding-agent-memory-demo/) — No-key, cross-tool walkthrough for scoped coding-agent project memory.
@@ -151,6 +153,7 @@ packaged adapter is.
 - [Plugin engineering patterns](ops/plugin-engineering-patterns.md) — Engineering patterns for retrieval, intent, and cache work.
 - [Rule graduation ledger](ops/rule-graduations.md) — How prose rules graduate into machine-enforced checks.
 - [Memory-extraction threat model](security/memory-extraction-threat-model.md) — The threat Remnic's memory surface faces and the hardening approach.
+- [Support passport threat model](security/support-passport-threat-model.md) — The owner, helper, grant, model, and browser security boundaries for What Helps Me.
 - [Entity isolation audit](security/entity-isolation-audit.md) — Audit of cross-entity memory isolation guarantees.
 - [Example memory extension](extensions/example-github-issues/README.md) — A worked example of publishing a third-party memory extension.
 
