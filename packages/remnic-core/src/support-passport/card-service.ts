@@ -314,12 +314,15 @@ export class SupportPassportCardService {
     return await this.withOwnerLock(storage, async (lock) => {
       let card = await this.requireCard(storage, parsed.data.cardId);
       this.requireRevision(card, parsed.data.expectedRevision);
+      this.requireStatus(card, expectedStatus);
       if (
         expectedStatus === "pending_review" ||
         (expectedStatus === "active" && (card.replacesDraftId || card.memory.frontmatter.supersedes))
       ) {
         card = this.projectRequiredCard(
-          await this.recoverReplacementTransition(storage, card.memory, lock, principal)
+          await this.recoverReplacementTransition(storage, card.memory, lock, principal, {
+            rollbackConflictedApproval: expectedStatus !== "active",
+          })
         );
       }
       this.requireStatus(card, expectedStatus);
@@ -509,7 +512,8 @@ export class SupportPassportCardService {
     storage: StorageManager,
     memory: MemoryFile,
     lock: HeldFileLockController,
-    principal: string
+    principal: string,
+    options: { rollbackConflictedApproval?: boolean } = {}
   ): Promise<MemoryFile> {
     const replacement = projectSupportPassportCard(memory);
     if (replacement?.card.status !== "pending_review" && replacement?.card.status !== "active") return memory;
@@ -539,6 +543,7 @@ export class SupportPassportCardService {
       await this.completeReplacementAfterActivation(storage, currentCard, lock, principal);
     } catch (error) {
       if (!isStorageConflict(error)) throw error;
+      if (options.rollbackConflictedApproval === false) throw error;
       await this.rollbackConflictedApproval(storage, currentCard.card.cardId, lock, principal);
     }
     return (await storage.getMemoryById(replacement.card.cardId)) ?? currentMemory;
