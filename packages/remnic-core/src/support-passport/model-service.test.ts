@@ -489,6 +489,7 @@ test("drafting revalidates selected memories after the model returns", async () 
       (error: unknown) => error instanceof SupportPassportError && error.code === "invalid_input"
     );
     assert.deepEqual(await subject.cardService.listCards({ principal: "owner:alice" }), []);
+    await flushAudit();
     assert.equal(records.length, 1);
     assert.equal(records[0]?.outcome, "error");
     assert.equal(records[0]?.errorClass, "invalid_input");
