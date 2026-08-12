@@ -161,6 +161,7 @@ export default defineConfig({
   dts: false,
   external: [
     "openclaw",
+    "@remnic/server",
     "@node-rs/argon2",
     "@lancedb/lancedb",
     "meilisearch",
