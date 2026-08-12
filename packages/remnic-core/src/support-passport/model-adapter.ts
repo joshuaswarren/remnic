@@ -43,6 +43,7 @@ export interface SupportPassportModelRouteResult {
 
 export interface SupportPassportModelRoute {
   kind: SupportPassportModelRouteKind;
+  timeoutMs?: number;
   invoke(
     messages: ModelMessage[],
     options: {
@@ -262,6 +263,7 @@ export function createSupportPassportModelAdapter(
       const client = localLlm;
       return {
         kind,
+        timeoutMs: config.localLlmTimeoutMs,
         invoke: async (messages, options) => {
           const response = await client.chatCompletion(messages, {
             temperature: options.temperature,
@@ -417,7 +419,7 @@ export class SupportPassportModelAdapter {
               return accepted;
             },
           },
-          this.timeoutMs
+          route.timeoutMs ?? this.timeoutMs
         );
       } catch (error) {
         if (options.signal?.aborted) throw error;
