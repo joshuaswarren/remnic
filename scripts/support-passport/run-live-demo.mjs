@@ -582,7 +582,6 @@ async function runReserved(options, reservation) {
     await reservation.writeReceipt(`${JSON.stringify(receipt, null, 2)}\n`);
     await validateReceiptConsistency({ receiptPath });
     await reservation.retainReceipt();
-    console.log(`Saved receipt.json and validated its self-consistency for commit ${commitSha}.`);
   } catch (error) {
     runFailed = true;
     runError = error;
@@ -597,6 +596,7 @@ async function runReserved(options, reservation) {
   ]);
   if (runFailed) throw runError;
   if (cleanupError) throw cleanupError;
+  console.log(`Saved receipt.json and validated its self-consistency for commit ${commitSha}.`);
 }
 
 async function run(options) {

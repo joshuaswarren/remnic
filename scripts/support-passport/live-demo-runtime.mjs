@@ -83,7 +83,7 @@ async function reserveOutput(outputDir) {
     throw error;
   }
 
-  let retained = false;
+  let retentionRequested = false;
   let closed = false;
   return {
     outputDir,
@@ -96,18 +96,19 @@ async function reserveOutput(outputDir) {
     async retainReceipt() {
       await receiptHandle.close();
       closed = true;
-      retained = true;
+      retentionRequested = true;
     },
-    async release() {
+    async release({ commitReceipt = false } = {}) {
+      const retain = retentionRequested && commitReceipt;
       const cleanupError = await runCleanupSteps([
         async () => {
           if (!closed) await receiptHandle.close();
         },
         async () => {
-          if (!retained) await rm(receiptPath, { force: true });
+          if (!retain) await rm(receiptPath, { force: true });
         },
         async () => {
-          if (!retained) await removeCreatedDirectories(createdDirectories);
+          if (!retain) await removeCreatedDirectories(createdDirectories);
         },
       ]);
       if (cleanupError) throw cleanupError;
@@ -128,7 +129,7 @@ export async function runWithReservedOutput(outputDir, task) {
   }
   let cleanupError;
   try {
-    await reservation.release();
+    await reservation.release({ commitReceipt: !taskFailed });
   } catch (error) {
     cleanupError = error;
   }

@@ -76,6 +76,22 @@ test("runWithReservedOutput cleans only its failed reservation", async (t) => {
   await assert.rejects(access(path.join(root, "receipt.json")), { code: "ENOENT" });
 });
 
+test("runWithReservedOutput removes a requested receipt when later cleanup fails", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-live-demo-late-cleanup-"));
+  t.after(async () => rm(root, { recursive: true, force: true }));
+
+  await assert.rejects(
+    runWithReservedOutput(root, async (reservation) => {
+      await reservation.writeReceipt("receipt\n");
+      await reservation.retainReceipt();
+      throw new Error("server stop failed");
+    }),
+    /server stop failed/
+  );
+
+  await assert.rejects(access(path.join(root, "receipt.json")), { code: "ENOENT" });
+});
+
 test("runWithReservedOutput removes nested directories created for a failed run", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-live-demo-new-output-cleanup-"));
   t.after(async () => rm(root, { recursive: true, force: true }));
