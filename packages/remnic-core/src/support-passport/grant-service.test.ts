@@ -200,10 +200,24 @@ test("owner grant history stays bounded while an inactive link frees capacity", 
       principal: input.principal,
       expectedStateVersion: first.state.stateVersion,
     });
+    const firstGrantPath = path.join(root, "state", "support-passport", "grants", `${first.state.grantId}.json`);
     const inspected = store as unknown as {
       readState(grantId: string): Promise<unknown>;
+      writeOwnerIndex(ownerHash: string, grantIds: string[]): Promise<void>;
     };
     const readState = inspected.readState.bind(store);
+    const writeOwnerIndex = inspected.writeOwnerIndex.bind(store);
+    inspected.writeOwnerIndex = async () => {
+      throw Object.assign(new Error("simulated owner index write failure"), { code: "EIO" });
+    };
+    await assert.rejects(
+      store.create(input),
+      (error: unknown) => (error as NodeJS.ErrnoException).code === "EIO"
+    );
+    inspected.writeOwnerIndex = writeOwnerIndex;
+    assert.equal((await lstat(firstGrantPath)).isFile(), true);
+    assert.equal((await store.listForOwner(input.namespace, input.principal)).length, 100);
+
     inspected.readState = async (grantId) => {
       if (grantId === first.state.grantId) {
         throw Object.assign(new Error("simulated indexed grant read failure"), { code: "EIO" });
@@ -222,7 +236,7 @@ test("owner grant history stays bounded while an inactive link frees capacity", 
     assert.equal(listed.some((state) => state.grantId === first.state.grantId), false);
     assert.equal(listed.some((state) => state.grantId === replacement.state.grantId), true);
     await assert.rejects(
-      lstat(path.join(root, "state", "support-passport", "grants", `${first.state.grantId}.json`)),
+      lstat(firstGrantPath),
       (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT"
     );
   } finally {
@@ -613,6 +627,36 @@ test("final helper guide assembly blocks card withdrawal", async () => {
     assert.equal(withdrawalSettled, true);
   } finally {
     releaseFinalAuthentication.resolve();
+    await subject.cleanup();
+  }
+});
+
+test("helper guide assembly fails when owner-lock ownership is lost", async () => {
+  const subject = await makeSubject();
+  try {
+    const card = await createActiveCard(subject);
+    const created = await subject.grantService.createGrant({
+      principal: "owner:alice",
+      cards: [{ cardId: card.cardId, revision: card.revision }],
+      expiresAt: expiryAfter(subject, 3_600_000),
+    });
+    const authenticate = subject.grantStore.authenticate.bind(subject.grantStore);
+    let authentications = 0;
+    subject.grantStore.authenticate = async (grantId, secret) => {
+      const state = await authenticate(grantId, secret);
+      authentications += 1;
+      if (authentications === 3) {
+        const lockPath = path.join(subject.aliceStorage.dir, "state", "support-passport-cards.lock");
+        await writeFile(lockPath, `${process.pid} 00000000-0000-4000-8000-000000000000 peer\n`);
+      }
+      return state;
+    };
+
+    await assert.rejects(
+      subject.grantService.readGrant({ grantId: created.grant.grantId, secret: created.secret }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
+    );
+  } finally {
     await subject.cleanup();
   }
 });

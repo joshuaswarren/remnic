@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants, type Stats } from "node:fs";
-import { lstat, open, rename, rm, type FileHandle } from "node:fs/promises";
+import { lstat, open, rename, rm, stat, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 
 const UNSUPPORTED_DIRECTORY_SYNC_ERRORS = new Set(["EINVAL", "ENOSYS", "ENOTSUP", "EOPNOTSUPP"]);
@@ -45,6 +45,23 @@ async function syncDirectoryHandle(handle: FileHandle): Promise<void> {
     const code = (error as NodeJS.ErrnoException).code;
     if (!UNSUPPORTED_DIRECTORY_SYNC_ERRORS.has(code ?? "")) throw error;
   }
+}
+
+async function pinnedDirectoryPath(
+  directory: string,
+  handle: FileHandle,
+  opened: Stats,
+  errorMessage: string
+): Promise<string> {
+  const descriptorRoot =
+    process.platform === "linux" ? "/proc/self/fd" : process.platform === "darwin" ? "/dev/fd" : null;
+  if (!descriptorRoot) return directory;
+  const pinnedPath = path.join(descriptorRoot, String(handle.fd));
+  const metadata = await stat(pinnedPath);
+  if (!metadata.isDirectory() || metadata.dev !== opened.dev || metadata.ino !== opened.ino) {
+    throw new Error(errorMessage);
+  }
+  return pinnedPath;
 }
 
 export async function readPrivateFileNoFollow(
@@ -122,12 +139,17 @@ export async function writePrivateFileAtomicallyNoFollow(
   errorMessage: string
 ): Promise<void> {
   if (path.dirname(filePath) !== path.resolve(directory)) throw new Error(errorMessage);
-  const tempPath = path.join(directory, `.${path.basename(filePath)}.${randomUUID()}.tmp`);
+  const targetName = path.basename(filePath);
+  const tempName = `.${targetName}.${randomUUID()}.tmp`;
+  let tempPath = path.join(directory, tempName);
   let directoryHandle: FileHandle | undefined;
   let fileHandle: FileHandle | undefined;
   try {
     const stableDirectory = await openStableDirectory(directory, errorMessage);
     directoryHandle = stableDirectory.handle;
+    const pinnedDirectory = await pinnedDirectoryPath(directory, directoryHandle, stableDirectory.opened, errorMessage);
+    tempPath = path.join(pinnedDirectory, tempName);
+    const targetPath = path.join(pinnedDirectory, targetName);
     try {
       fileHandle = await open(
         tempPath,
@@ -147,7 +169,7 @@ export async function writePrivateFileAtomicallyNoFollow(
     await fileHandle.close();
     fileHandle = undefined;
     assertStableDirectory(stableDirectory.before, stableDirectory.opened, await lstat(directory), errorMessage);
-    await rename(tempPath, filePath);
+    await rename(tempPath, targetPath);
     assertStableDirectory(stableDirectory.before, stableDirectory.opened, await lstat(directory), errorMessage);
     await syncDirectoryHandle(directoryHandle);
   } finally {
