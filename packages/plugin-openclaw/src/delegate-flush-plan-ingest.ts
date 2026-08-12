@@ -317,6 +317,10 @@ async function claimPendingNotes(
   }
   // 2. Claim the live plan file. Rename is atomic, so a host append either
   //    lands before it (claimed) or creates a fresh plan file (untouched).
+  // Ownership is re-checked immediately before the rename: a pause after the
+  // first recovery can let another flush stale-break the lock and rotate the
+  // plan itself, and this rename would then replace ITS `.rotating` file.
+  if (!(await lock.refresh())) return undefined;
   try {
     await rename(paths.plan, paths.rotating);
   } catch (err) {
