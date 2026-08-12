@@ -183,7 +183,7 @@ export class SupportPassportGrantStore {
     secret: string,
     task: (state: SupportPassportGrantState) => Promise<T>
   ): Promise<T> {
-    return await this.withMutationLock(async (lock) => {
+    return await this.withGrantLock(grantId, async (lock) => {
       const state = await this.authenticate(grantId, secret);
       const result = await task(state);
       await this.requireMutationLock(lock);
@@ -220,7 +220,7 @@ export class SupportPassportGrantStore {
   }): Promise<SupportPassportGrantState> {
     if (!SAFE_GRANT_ID.test(input.grantId)) throw grantNotFound();
     const namespace = normalizeNamespace(input.namespace);
-    return await this.withMutationLock(async (lock) => {
+    return await this.withGrantLock(input.grantId, async (lock) => {
       let state: SupportPassportGrantState;
       try {
         state = await this.readState(input.grantId);
@@ -273,8 +273,9 @@ export class SupportPassportGrantStore {
           if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         }
       }
+      const expiryCutoff = this.now().getTime();
       const active = indexedStates.filter(
-        (item) => !item.revokedAt && Date.parse(item.expiresAt) > this.now().getTime()
+        (item) => !item.revokedAt && Date.parse(item.expiresAt) > expiryCutoff
       );
       if (active.length >= MAX_OWNER_GRANT_HISTORY) {
         throw new SupportPassportError(
@@ -284,7 +285,7 @@ export class SupportPassportGrantStore {
         );
       }
       const inactive = indexedStates
-        .filter((item) => item.revokedAt || Date.parse(item.expiresAt) <= this.now().getTime())
+        .filter((item) => item.revokedAt || Date.parse(item.expiresAt) <= expiryCutoff)
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.grantId.localeCompare(b.grantId));
       retained = [
         ...active.map((item) => item.grantId),
@@ -431,7 +432,25 @@ export class SupportPassportGrantStore {
   private async withMutationLock<T>(task: (lock: HeldFileLockController) => Promise<T>): Promise<T> {
     await this.ensureSafeDirectories();
     const lockPath = path.join(this.grantsDir, ".grants.lock");
-    return await serializeMutations(`support-passport-grants:${this.grantsDir}`, () =>
+    return await this.withExclusiveLock(`support-passport-grants:${this.grantsDir}`, lockPath, task);
+  }
+
+  private async withGrantLock<T>(
+    grantId: string,
+    task: (lock: HeldFileLockController) => Promise<T>
+  ): Promise<T> {
+    if (!SAFE_GRANT_ID.test(grantId)) throw grantNotFound();
+    await this.ensureSafeDirectories();
+    const lockPath = path.join(this.grantsDir, `.${grantId}.lock`);
+    return await this.withExclusiveLock(`support-passport-grant:${this.grantsDir}:${grantId}`, lockPath, task);
+  }
+
+  private async withExclusiveLock<T>(
+    serializationKey: string,
+    lockPath: string,
+    task: (lock: HeldFileLockController) => Promise<T>
+  ): Promise<T> {
+    return await serializeMutations(serializationKey, () =>
       this.runWithHeldFileLock(
         lockPath,
         {

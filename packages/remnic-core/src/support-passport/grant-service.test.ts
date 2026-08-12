@@ -244,6 +244,66 @@ test("owner grant history stays bounded while an inactive link frees capacity", 
   }
 });
 
+test("owner grant history uses one expiry cutoff while it prunes old links", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-cutoff-"));
+  try {
+    const initialTime = Date.parse("2026-08-11T12:00:00.000Z");
+    let currentTime = initialTime;
+    let partitionCalls = 0;
+    let crossExpiry = false;
+    let nextGrantId = 1;
+    const store = new SupportPassportGrantStore({
+      memoryDir: root,
+      makeGrantId: () => `00000000-0000-4000-8000-${String(nextGrantId++).padStart(12, "0")}`,
+      now: () => {
+        partitionCalls += 1;
+        return new Date(currentTime + (crossExpiry && partitionCalls > 101 ? 1 : 0));
+      },
+    });
+    const common = {
+      namespace: "alice",
+      principal: "owner:alice",
+      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+      expiresAt: new Date(initialTime + 3_600_000).toISOString(),
+    };
+    const first = await store.create(common);
+    const second = await store.create(common);
+    for (let index = 2; index < 99; index += 1) await store.create(common);
+    await store.revoke({
+      grantId: first.state.grantId,
+      namespace: common.namespace,
+      principal: common.principal,
+    });
+    await store.revoke({
+      grantId: second.state.grantId,
+      namespace: common.namespace,
+      principal: common.principal,
+    });
+    currentTime = initialTime + 1_000;
+    const crossing = await store.create({
+      ...common,
+      expiresAt: new Date(currentTime + 300_000).toISOString(),
+    });
+    currentTime = Date.parse(crossing.state.expiresAt) - 1;
+    partitionCalls = 0;
+    crossExpiry = true;
+
+    const created = await store.create({
+      ...common,
+      expiresAt: new Date(currentTime + 3_600_000).toISOString(),
+    });
+    crossExpiry = false;
+    const listed = await store.listForOwner(common.namespace, common.principal);
+
+    assert.equal(listed.length, 100);
+    assert.equal(new Set(listed.map((state) => state.grantId)).size, 100);
+    assert.equal(listed.some((state) => state.grantId === crossing.state.grantId), true);
+    assert.equal(listed.some((state) => state.grantId === created.state.grantId), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("grant mutations report a storage conflict when the file lock is busy", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-busy-"));
   try {
@@ -593,6 +653,42 @@ test("revocation waits until helper guide assembly completes", async () => {
   } finally {
     releaseCardRead.resolve();
     await subject.cleanup();
+  }
+});
+
+test("helper reads for different grants do not block each other", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-read-lock-"));
+  const releaseFirst = Promise.withResolvers<void>();
+  try {
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({ memoryDir: root, now: () => now });
+    const input = {
+      namespace: "alice",
+      principal: "owner:alice",
+      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+      expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
+    };
+    const first = await store.create(input);
+    const second = await store.create(input);
+    const firstStarted = Promise.withResolvers<void>();
+    const firstRead = store.withAuthenticatedGrant(first.state.grantId, first.secret, async () => {
+      firstStarted.resolve();
+      await releaseFirst.promise;
+      return "first";
+    });
+    await firstStarted.promise;
+    const secondRead = store.withAuthenticatedGrant(second.state.grantId, second.secret, async () => "second");
+    const observedConcurrentRead = await Promise.race([
+      secondRead.then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 500)),
+    ]);
+    releaseFirst.resolve();
+
+    assert.deepEqual(await Promise.all([firstRead, secondRead]), ["first", "second"]);
+    assert.equal(observedConcurrentRead, true);
+  } finally {
+    releaseFirst.resolve();
+    await rm(root, { recursive: true, force: true });
   }
 });
 
