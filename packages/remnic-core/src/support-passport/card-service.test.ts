@@ -1028,6 +1028,68 @@ test("listing rolls back an incomplete active replacement when retirement return
   }
 });
 
+test("status mutations do not roll back an incomplete active replacement", async () => {
+  const subject = await makeSubject();
+  try {
+    const draft = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Plan changes",
+      statement: "Tell me before plans change.",
+      category: "transitions",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const active = await subject.service.approveCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+    });
+    const replacement = await subject.service.replaceCard({
+      principal: "owner:alice",
+      cardId: active.cardId,
+      expectedRevision: active.revision,
+      title: "Plan changes",
+      statement: "Tell me early when plans change.",
+      category: "transitions",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const originalSupersede = subject.aliceStorage.supersedeMemory.bind(subject.aliceStorage);
+    let threwOnce = false;
+    subject.aliceStorage.supersedeMemory = async (...args) => {
+      if (!threwOnce) {
+        threwOnce = true;
+        throw new Error("simulated retirement interruption");
+      }
+      return await originalSupersede(...args);
+    };
+    const approved = await subject.service.approveCard({
+      principal: "owner:alice",
+      cardId: replacement.cardId,
+      expectedRevision: replacement.revision,
+    });
+    subject.aliceStorage.supersedeMemory = async () => false;
+
+    await assert.rejects(
+      subject.service.rejectCard({
+        principal: "owner:alice",
+        cardId: approved.cardId,
+        expectedRevision: approved.revision,
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "invalid_card_status"
+    );
+    await assert.rejects(
+      subject.service.withdrawCard({
+        principal: "owner:alice",
+        cardId: approved.cardId,
+        expectedRevision: approved.revision,
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
+    );
+    assert.equal((await subject.aliceStorage.getMemoryById(approved.cardId))?.frontmatter.status, "active");
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("replacement approval recovers after the prior card was durably retired", async () => {
   const subject = await makeSubject();
   try {
