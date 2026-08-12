@@ -3320,10 +3320,16 @@ test("flush-plan notes survive a rejection, a concurrent append, and a symlink",
 
   let accepting: Awaited<ReturnType<typeof startDaemonStub>> | undefined;
   try {
-    // 1. A REFUSED observe (403) must keep the notes.
+    // 1. A REFUSED observe (403) must keep the notes. They stay in the
+    // snapshot rather than being written back over the file the host appends
+    // to; the next claim merges the snapshot ahead of newly claimed notes.
     await writeFile(planPath, "- keep me\n", "utf8");
     await ingestFlushPlanNotes(options);
-    assert.equal(await readPlanOrEmpty(planPath), "- keep me\n", "rejected notes were kept");
+    assert.equal(
+      await readPlanOrEmpty(`${planPath}.inflight`),
+      "- keep me\n",
+      "rejected notes were kept for the next flush",
+    );
 
     // 2. An append that lands mid-flight must survive the truncation.
     await stub.close();
@@ -3348,6 +3354,7 @@ test("flush-plan notes survive a rejection, a concurrent append, and a symlink",
       ...options,
       target: { ...options.target, port: accepting.port },
     };
+    await rm(`${planPath}.inflight`, { force: true });
     await writeFile(planPath, "- sent\n", "utf8");
     // The stub appends while the observe is in flight, so the write provably
     // lands between the ingestion's read and its commit.
@@ -3518,7 +3525,11 @@ test("a 413 halves the chunk while an auth refusal stops immediately", async () 
       remainingTimeoutMs: () => 10_000,
     });
     assert.equal(authAttempts.length, 1, "a refused credential is not retried at smaller sizes");
-    assert.equal(await readPlanOrEmpty(planPath), notes, "and the notes were kept");
+    assert.equal(
+      await readPlanOrEmpty(`${planPath}.inflight`),
+      notes,
+      "and the notes were kept in the snapshot for the next flush",
+    );
   } finally {
     if (!firstClosed) await stub.close();
     await refusing?.close();
@@ -3697,6 +3708,63 @@ test("a symlinked snapshot sidecar is refused before it is read", async () => {
       "the symlink target was neither read nor overwritten",
     );
     assert.equal(await readPlanOrEmpty(planPath), "- real note\n", "and the notes were kept");
+  } finally {
+    await stub.close();
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("a daemon limit below the chunk floor splits instead of quarantining good notes", async () => {
+  // With maxBodyBytes under MIN_OBSERVE_CHUNK_BYTES, reaching the floor does
+  // NOT mean the chunk is one line — it can still be a multi-line batch. The
+  // trigger for quarantine is the chunk's shape, not a byte floor (#2303).
+  const delivered: string[] = [];
+  const limit = 200;
+  const overLimit = (body: Record<string, unknown>): boolean =>
+    Buffer.byteLength(
+      String((body.messages as Array<{ content?: string }> | undefined)?.[0]?.content ?? ""),
+      "utf8",
+    ) > limit;
+  const stub = await startDaemonStub(
+    (pathname, body) => {
+      // Record only what the daemon ACCEPTS; a 413 delivers nothing.
+      if (pathname.startsWith("/engram/v1/observe") && !overLimit(body)) {
+        delivered.push(
+          String((body.messages as Array<{ content?: string }> | undefined)?.[0]?.content ?? ""),
+        );
+      }
+      return { ok: true };
+    },
+    {
+      statusFor: (pathname, body) =>
+        pathname.startsWith("/engram/v1/observe") && overLimit(body) ? 413 : undefined,
+    },
+  );
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-fp-subfloor-"));
+  const planPath = path.join(workspaceDir, "state", "plugins", "sub", "flush-plan.md");
+  await mkdir(path.dirname(planPath), { recursive: true });
+  try {
+    const notes = Array.from({ length: 40 }, (_, i) => `- short note ${i}\n`).join("");
+    await writeFile(planPath, notes, "utf8");
+    await ingestFlushPlanNotes({
+      target: {
+        host: "127.0.0.1",
+        port: stub.port,
+        resolveAuthToken: () => ({ token: "t", source: "daemon configuration" as const }),
+      },
+      serviceId: "sub",
+      workspaceDir,
+      sessionKey: "s",
+      namespace: undefined,
+      remainingTimeoutMs: () => 10_000,
+    });
+    assert.equal(
+      await readPlanOrEmpty(`${planPath}.oversized`),
+      "",
+      "no acceptable note was quarantined",
+    );
+    assert.equal(delivered.join(""), notes, "every note was delivered exactly once");
+    assert.equal(await readPlanOrEmpty(`${planPath}.inflight`), "", "and nothing is left pending");
   } finally {
     await stub.close();
     await rm(workspaceDir, { recursive: true, force: true });

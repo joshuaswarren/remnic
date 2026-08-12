@@ -27,7 +27,7 @@ import { appendFile, lstat, readFile, rename, unlink, writeFile } from "node:fs/
 import path from "node:path";
 
 import { log } from "@remnic/core/logger";
-import { withHeldFileLock } from "@remnic/core/utils/serialize-mutations";
+import { withHeldFileLock, type HeldFileLockController } from "@remnic/core/utils/serialize-mutations";
 
 import type { DelegateDaemonTarget } from "./bridge.js";
 import { buildMemoryFlushPlan } from "./memory-flush-plan.js";
@@ -91,7 +91,7 @@ export async function ingestFlushPlanNotes(options: {
   await withHeldFileLock(
     paths.lock,
     { staleMs: LOCK_STALE_MS, maxWaitMs: LOCK_MAX_WAIT_MS },
-    async (acquired) => {
+    async (acquired, lock) => {
       if (!acquired) {
         // Another flush owns the snapshot. Declining is correct: the notes stay
         // in the plan file and the other run — or the next flush — sends them.
@@ -100,7 +100,7 @@ export async function ingestFlushPlanNotes(options: {
         );
         return;
       }
-      await ingestUnderLock(options, paths);
+      await ingestUnderLock(options, paths, lock);
     },
   );
 }
@@ -114,6 +114,7 @@ async function ingestUnderLock(
     remainingTimeoutMs: () => number;
   },
   paths: SnapshotPaths,
+  lock: HeldFileLockController,
 ): Promise<void> {
   // Chunks start large and HALVE on a body-limit rejection. The daemon's
   // `maxBodyBytes` is configurable to any positive integer and is not reported
@@ -171,18 +172,19 @@ async function ingestUnderLock(
           return;
         }
         if (response.status === 413) {
-          // Halve whenever a smaller ceiling is still available. Requiring the
-          // CURRENT ceiling to already split the text was wrong: a 40 KiB plan
-          // under a 96 KiB ceiling is one chunk, so a daemon configured below
-          // 40 KiB rejected it forever.
-          if (chunkBytes > MIN_OBSERVE_CHUNK_BYTES) {
-            chunkBytes = Math.max(MIN_OBSERVE_CHUNK_BYTES, Math.floor(chunkBytes / 2));
+          // Halve while the chunk still holds more than one line. The trigger
+          // is the CHUNK's shape, not a byte floor: a daemon configured with a
+          // `maxBodyBytes` under the floor still rejects a multi-line batch,
+          // and quarantining then would set aside a note the daemon would have
+          // accepted on its own.
+          if (countLines(chunk) > 1) {
+            chunkBytes = Math.max(1, Math.floor(chunkBytes / 2));
             continue;
           }
-          // At the floor the chunk is one line the daemon will never take.
-          // Keeping it would block every note behind it on every future flush,
-          // so it is set aside in a sidecar the operator can inspect and the
-          // queue keeps draining. Nothing is deleted.
+          // One line the daemon will never take. Keeping it would block every
+          // note behind it on every future flush, so it is set aside in a
+          // sidecar the operator can inspect and the queue keeps draining.
+          // Nothing is deleted.
           pending = await quarantineOversizedLine(paths, pending, options.serviceId);
           chunkBytes = MAX_OBSERVE_CHUNK_BYTES;
           await atomicWrite(paths.inflight, pending);
@@ -194,7 +196,16 @@ async function ingestUnderLock(
         }
         // Committed IMMEDIATELY, so a later chunk that throws cannot resend
         // what the daemon already took. The snapshot has no other writer while
-        // the lock is held, so this rewrite cannot lose a concurrent append.
+        // the lock is HELD — long synchronous chunking between heartbeats can
+        // let it go stale, so ownership is re-checked before every destructive
+        // write rather than assumed for the whole run.
+        if (!(await lock.refresh())) {
+          log.warn(
+            `[${options.serviceId}] flush-plan lock was lost mid-flush; the remainder drains on the next flush`,
+          );
+          stop = true;
+          return;
+        }
         pending = pending.slice(chunk.length);
         await atomicWrite(paths.inflight, pending);
       }
@@ -205,6 +216,13 @@ async function ingestUnderLock(
     }
     if (stop) return;
   }
+}
+
+/** Lines in one chunk. A trailing newline does not open another line. */
+function countLines(chunk: string): number {
+  const body = chunk.endsWith("\n") ? chunk.slice(0, -1) : chunk;
+  if (body.length === 0) return chunk.length > 0 ? 1 : 0;
+  return body.split("\n").length;
 }
 
 /** Statuses that mean "resend later", never "resend smaller". */
@@ -258,16 +276,17 @@ async function mergeRotatedIntoInflight(paths: SnapshotPaths): Promise<boolean> 
 }
 
 /**
- * Put unsent notes back at the head of the plan file and drop the snapshot.
+ * Leave unsent notes in the snapshot and drop it when there is nothing left.
  *
- * The plan is replaced with one atomic rename, so a reader never sees a torn
- * file. A host append landing between the read and the rename is still lost —
- * that window is inherent to reordering a file another process only appends
- * to, and it is now a single syscall pair rather than the duration of an HTTP
- * round trip.
+ * An earlier version wrote the remainder back into the plan file. That was the
+ * read-modify-write this PR exists to remove: a host append landing between
+ * the read and the rename was discarded. The snapshot is ours alone, so
+ * keeping the remainder there loses nothing — `claimPendingNotes` merges
+ * `.inflight` AHEAD of newly claimed notes, which preserves write order
+ * without ever touching the file the host appends to.
  *
  * A failure here must not mask the error that ended the run, so it only warns:
- * the snapshot survives and the next run recovers from it.
+ * the snapshot survives either way and the next run recovers from it.
  */
 async function releasePendingNotes(
   paths: SnapshotPaths,
@@ -279,12 +298,10 @@ async function releasePendingNotes(
       await discard(paths.inflight);
       return;
     }
-    const appended = (await readIfPresent(paths.plan)) ?? "";
-    await atomicWrite(paths.plan, `${pending}${appended}`);
-    await discard(paths.inflight);
+    await atomicWrite(paths.inflight, pending);
   } catch (err) {
     log.warn(
-      `[${serviceId}] could not restore unsent flush-plan notes; the next ingestion recovers them: ${String(err)}`,
+      `[${serviceId}] could not persist unsent flush-plan notes; the next ingestion recovers them: ${String(err)}`,
     );
   }
 }
