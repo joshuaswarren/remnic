@@ -396,7 +396,9 @@
     }
 
     function publicGuide(grant) {
-      const selected = grant.cards.map((reference) => cards.find((card) => card.cardId === reference.cardId));
+      const selected = grant.cards.map((reference) =>
+        cards.find((card) => card.cardId === reference.cardId && card.revision === reference.revision)
+      );
       if (selected.some((card) => !card || card.status !== "active")) {
         const error = new Error("The shared support guide has changed.");
         error.code = "grant_stale";
@@ -459,15 +461,22 @@
         if (!card) throw new Error("The support card changed after it was loaded.");
         const expected = action === "withdraw" ? "active" : "pending_review";
         if (card.status !== expected) throw new Error(`The support card must have status ${expected}.`);
+        const invalidatedCardIds = [];
         card.status = action === "approve" ? "active" : action === "reject" ? "rejected" : "archived";
         card.updatedAt = now().toISOString();
         card.revision = replayRevision(`${card.cardId}:${card.status}:${card.updatedAt}:${card.statement}`);
+        if (action === "withdraw") invalidatedCardIds.push(card.cardId);
         if (action === "approve" && replacements.has(card.cardId)) {
           const prior = cards.find((candidate) => candidate.cardId === replacements.get(card.cardId));
-          if (prior) prior.status = "superseded";
+          if (prior) {
+            prior.status = "superseded";
+            prior.updatedAt = card.updatedAt;
+            prior.revision = replayRevision(`${prior.cardId}:${prior.status}:${prior.updatedAt}:${prior.statement}`);
+            invalidatedCardIds.push(prior.cardId);
+          }
           replacements.delete(card.cardId);
         }
-        return { card: { ...card } };
+        return { card: { ...card }, invalidatedCardIds };
       },
       seedSharedGuide(grantId, secret, sharedState) {
         if (!hasExactKeys(sharedState, ["grant", "cards"])) {
@@ -556,7 +565,7 @@
       async askGrant(grantId, secret, question) {
         const guide = await this.readGrant(grantId, secret);
         const transitionCard = guide.cards.find((card) => card.category === "transitions");
-        if (transitionCard && /plan|change|transition/i.test(question)) {
+        if (transitionCard && /\b(?:plans?|schedules?|routines?|transitions?)\b/i.test(question)) {
           return {
             answer: transitionCard.statement,
             citedCardIds: [transitionCard.cardId],

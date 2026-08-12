@@ -331,8 +331,9 @@
     setError("generateError");
     const verbs = { approve: "Approving…", reject: "Rejecting…", withdraw: "Stopping…" };
     let ownerStateFresh = false;
+    let invalidatedCardIds = [];
     try {
-      await withBusy(button, verbs[action], () =>
+      const result = await withBusy(button, verbs[action], () =>
         api.mutateCard(
           card.cardId,
           {
@@ -347,6 +348,9 @@
           action
         )
       );
+      if (replayMode && Array.isArray(result?.invalidatedCardIds)) {
+        invalidatedCardIds = result.invalidatedCardIds.filter((cardId) => typeof cardId === "string");
+      }
     } catch (error) {
       if (error?.code !== "request_timeout") {
         setError("generateError", errorMessage(error, "The support card did not change."));
@@ -369,6 +373,9 @@
         return;
       }
       ownerStateFresh = true;
+    }
+    if (invalidatedCardIds.length > 0) {
+      replayChannel?.postMessage({ type: "cards-stale", cardIds: invalidatedCardIds });
     }
     const message =
       action === "approve"
@@ -1087,6 +1094,16 @@
       if (event.data?.type === "grant-revoked" && event.data.grantId === state.helperGrantId) {
         const error = new Error("The share link is no longer active.");
         error.code = "grant_gone";
+        showLocked(error);
+        return;
+      }
+      if (
+        event.data?.type === "cards-stale" &&
+        Array.isArray(event.data.cardIds) &&
+        state.guide?.cards.some((card) => event.data.cardIds.includes(card.cardId))
+      ) {
+        const error = new Error("The shared support guide has changed.");
+        error.code = "grant_stale";
         showLocked(error);
       }
     });
