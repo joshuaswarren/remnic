@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { parseIsoOffsetTimestamp } from "../utils/iso-timestamp.js";
 import {
   SupportPassportCardCategorySchema,
   SupportPassportMemoryIdSchema,
@@ -9,9 +10,12 @@ import {
 const IsoTimestampSchema = z
   .string()
   .datetime({ offset: true })
-  .refine((value) => Number.isFinite(Date.parse(value)), "timestamp must be a real date");
+  .refine((value) => parseIsoOffsetTimestamp(value) !== null, "timestamp must be a real date");
 const RevisionSchema = z.string().regex(/^[a-f0-9]{64}$/);
-const GrantIdSchema = z.string().uuid();
+const GrantIdSchema = z
+  .string()
+  .uuid()
+  .transform((value) => value.toLowerCase());
 
 export const SupportPassportGrantCardRefSchema = z
   .object({
