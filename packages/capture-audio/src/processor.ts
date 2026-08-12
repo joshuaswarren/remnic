@@ -488,9 +488,16 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
           left.endMs - right.endMs ||
           (left.chunkId < right.chunkId ? -1 : left.chunkId > right.chunkId ? 1 : 0),
       );
+      // Rewind point: persistence inside applyBatch is synchronous but can
+      // still throw (a busy/IO error from SQLite) AFTER segments have passed
+      // through the assembler. Without this the retry feeds earlier
+      // timestamps into an advanced assembler and merges spans the first
+      // attempt had split (issue #2145).
+      const assemblerCheckpoint = deps.assembler.checkpoint();
       try {
         await applyBatch(batch);
       } catch (error) {
+        deps.assembler.rewind(assemblerCheckpoint);
         // Requeue FIRST: `report` runs an operator callback that may itself
         // throw, and losing the batch to a broken telemetry sink would turn an
         // observer failure into data loss. A throw mid-batch leaves the chunks
@@ -535,7 +542,12 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     } catch (error) {
       flushFailure = error;
     }
-    deps.assembler.finalize();
+    // A failed flush left chunks in the buffer that may belong to the open
+    // conversation. Closing it now would strand them: a retry or a raw-WAV
+    // replay would open a NEW conversation instead of joining the original.
+    // The sweep below still dedupes and diarizes, so anything a later
+    // shutdown flips is clean.
+    if (flushFailure === undefined) deps.assembler.finalize();
     // Dedup then cluster EVERY still-capturing conversation before the bulk
     // flip to final — including one left by a crashed prior run that this
     // process never touched (so it has no in-memory openConversationId) — so
@@ -551,7 +563,7 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
         // diarization failed must STAY capturing so a later finalize retries
         // it, while the ones that succeeded still reach the final-only read
         // path instead of being stranded behind it.
-        if (deps.spool.finalizeConversation(id)) closed++;
+        if (flushFailure === undefined && deps.spool.finalizeConversation(id)) closed++;
       } catch (error) {
         sweepFailure ??= error;
       }
@@ -559,7 +571,10 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     // The bulk flip only catches conversations created after the id snapshot
     // above. Skipping it when the sweep failed is what keeps the FAILED
     // conversation `capturing` for the next finalize to retry.
-    const total = sweepFailure === undefined ? closed + deps.spool.finalizeOpenConversations() : closed;
+    const total =
+      sweepFailure === undefined && flushFailure === undefined
+        ? closed + deps.spool.finalizeOpenConversations()
+        : closed;
     if (flushFailure !== undefined) throw flushFailure;
     if (sweepFailure !== undefined) throw sweepFailure;
     return total;
