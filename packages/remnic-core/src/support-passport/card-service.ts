@@ -20,6 +20,7 @@ import {
   SupportPassportListCardsInputSchema,
   type SupportPassportManualDraftInput,
   SupportPassportManualDraftInputSchema,
+  SupportPassportNamespaceSchema,
   type SupportPassportReplaceCardInput,
   SupportPassportReplaceCardInputSchema,
   computeSupportPassportCardRevision,
@@ -62,7 +63,7 @@ export class SupportPassportCardService {
   async listCards(input: { principal: string }): Promise<SupportPassportCard[]> {
     const parsed = SupportPassportListCardsInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
-    const { principal, namespace, storage } = await this.resolveOwner(parsed.data.principal);
+    const { principal, namespace, storage } = await this.resolveOwnerScope(parsed.data.principal);
     return await this.withOwnerLock(storage, async (lock) => {
       const stored = await this.readStoredCards(storage, lock, principal, namespace);
       const cards = this.ownerVisibleCards(stored)
@@ -79,7 +80,7 @@ export class SupportPassportCardService {
   async createManualDraft(input: SupportPassportManualDraftInput): Promise<SupportPassportCard> {
     const parsed = SupportPassportManualDraftInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
-    const { principal, namespace, storage } = await this.resolveOwner(parsed.data.principal);
+    const { principal, namespace, storage } = await this.resolveOwnerScope(parsed.data.principal);
     return await this.withOwnerLock(storage, (lock) =>
       this.createDraft(
         storage,
@@ -100,7 +101,7 @@ export class SupportPassportCardService {
   async replaceCard(input: SupportPassportReplaceCardInput): Promise<SupportPassportCard> {
     const parsed = SupportPassportReplaceCardInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
-    const { principal, namespace, storage } = await this.resolveOwner(parsed.data.principal);
+    const { principal, namespace, storage } = await this.resolveOwnerScope(parsed.data.principal);
     return await this.withOwnerLock(storage, async (lock) => {
       const loadedPrior = await this.requireCard(storage, parsed.data.cardId, namespace);
       const storedCards = await this.readProjectedCards(storage, namespace);
@@ -214,7 +215,7 @@ export class SupportPassportCardService {
   async approveCard(input: SupportPassportCardMutationInput): Promise<SupportPassportCard> {
     const parsed = SupportPassportCardMutationInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
-    const { principal, namespace, storage } = await this.resolveOwner(parsed.data.principal);
+    const { principal, namespace, storage } = await this.resolveOwnerScope(parsed.data.principal);
     return await this.withOwnerLock(storage, async (lock) => {
       const loadedCard = await this.requireCard(storage, parsed.data.cardId, namespace);
       this.requireRevision(loadedCard, parsed.data.expectedRevision);
@@ -228,6 +229,13 @@ export class SupportPassportCardService {
       );
       const card = this.projectRequiredCard(recoveredMemory, namespace);
       if (card.card.status === "active") return card.card;
+      if (card.card.status === "rejected") {
+        throw new SupportPassportError(
+          "storage_conflict",
+          "The support card was rejected while its replacement state was recovered.",
+          409
+        );
+      }
       this.requireStatus(card, "pending_review");
       await this.validatePriorForReplacement(storage, card, namespace);
       const updatedAt = this.now().toISOString();
@@ -360,7 +368,7 @@ export class SupportPassportCardService {
   ): Promise<SupportPassportCard> {
     const parsed = SupportPassportCardMutationInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
-    const { principal, namespace, storage } = await this.resolveOwner(parsed.data.principal);
+    const { principal, namespace, storage } = await this.resolveOwnerScope(parsed.data.principal);
     return await this.withOwnerLock(storage, async (lock) => {
       let card = await this.requireCard(storage, parsed.data.cardId, namespace);
       this.requireRevision(card, parsed.data.expectedRevision);
@@ -376,6 +384,7 @@ export class SupportPassportCardService {
           namespace
         );
       }
+      if (card.card.status === nextStatus) return card.card;
       this.requireStatus(card, expectedStatus);
       const updatedAt = this.now().toISOString();
       await this.requireOwnerLock(lock);
@@ -413,6 +422,15 @@ export class SupportPassportCardService {
       updatedAt,
       reviewBy: card.reviewBy,
     });
+  }
+
+  private async resolveOwnerScope(principal: string): Promise<SupportPassportOwnerScope> {
+    const owner = await this.resolveOwner(principal);
+    const namespace = SupportPassportNamespaceSchema.safeParse(owner.namespace);
+    if (!namespace.success) {
+      throw new SupportPassportError("card_data_invalid", "The support passport owner scope is invalid.", 500);
+    }
+    return { ...owner, namespace: namespace.data };
   }
 
   private async rejectCreatedDraft(
@@ -465,7 +483,7 @@ export class SupportPassportCardService {
   }
 
   private ownsMemory(memory: MemoryFile, namespace: string): boolean {
-    return memory.frontmatter.structuredAttributes?.[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.namespace]?.trim() === namespace;
+    return memory.frontmatter.structuredAttributes?.[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.namespace] === namespace;
   }
 
   private async readProjectedCards(storage: StorageManager, namespace: string): Promise<StoredSupportPassportCard[]> {

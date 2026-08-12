@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 
+import { parseIsoOffsetTimestamp } from "../utils/iso-timestamp.js";
+
 export const SUPPORT_PASSPORT_CARD_CATEGORIES = [
   "communication",
   "environment",
@@ -30,7 +32,19 @@ export const SupportPassportCardTitleSchema = z
     message: "card titles cannot contain closing brackets or line breaks",
   });
 
-const IsoTimestampSchema = z.string().datetime({ offset: true });
+const IsoTimestampSchema = z
+  .string()
+  .datetime({ offset: true })
+  .refine((value) => parseIsoOffsetTimestamp(value) !== null, {
+    message: "timestamps must be valid ISO 8601 values",
+  });
+export const SupportPassportNamespaceSchema = z
+  .string()
+  .min(1)
+  .max(256)
+  .refine((namespace) => namespace === namespace.trim(), {
+    message: "namespaces must be canonical",
+  });
 export const SupportPassportMemoryIdSchema = z
   .string()
   .trim()

@@ -5,6 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { StorageManager } from "../storage.js";
+import { projectSupportPassportCard } from "./card-projection.js";
 import { SupportPassportCardService } from "./card-service.js";
 import { SupportPassportError } from "./errors.js";
 
@@ -61,6 +62,50 @@ async function makeSharedStorageSubject() {
       await rm(root, { recursive: true, force: true });
     },
   };
+}
+
+async function createOrphanedReplacement(subject: Awaited<ReturnType<typeof makeSubject>>) {
+  const draft = await subject.service.createManualDraft({
+    principal: "owner:alice",
+    title: "Quiet place",
+    statement: "Offer me a quiet place.",
+    category: "environment",
+    reviewBy: OWNER_REVIEW_BY,
+  });
+  const originalWrite = subject.aliceStorage.writeMemoryFrontmatterIfUnchanged.bind(subject.aliceStorage);
+  let interrupted = false;
+  subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = async (memory, patch, lifecycle) => {
+    if (!interrupted && lifecycle?.reasonCode === "owner-replaced-draft") {
+      interrupted = true;
+      throw new Error("simulated process exit after replacement creation");
+    }
+    return await originalWrite(memory, patch, lifecycle);
+  };
+  await assert.rejects(
+    subject.service.replaceCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+      title: "Quiet place and time",
+      statement: "Offer me a quiet place and time.",
+      category: "environment",
+      reviewBy: OWNER_REVIEW_BY,
+    }),
+    /simulated process exit/
+  );
+  subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = originalWrite;
+  const replacementMemory = (await subject.aliceStorage.readAllMemories()).find(
+    (memory) => memory.frontmatter.id !== draft.cardId
+  );
+  assert.ok(replacementMemory);
+  const replacement = projectSupportPassportCard(replacementMemory);
+  assert.ok(replacement);
+  const approved = await subject.service.approveCard({
+    principal: "owner:alice",
+    cardId: draft.cardId,
+    expectedRevision: draft.revision,
+  });
+  return { approved, replacement };
 }
 
 test("manual support cards stay private until their owner approves them", async () => {
@@ -176,6 +221,32 @@ test("card reads and mutations stay inside the resolved namespace on shared stor
     assert.equal(stored?.frontmatter.structuredAttributes?.["support-passport-namespace"], "alice");
   } finally {
     await subject.cleanup();
+  }
+});
+
+test("card operations reject a non-canonical resolved namespace before writing", async () => {
+  StorageManager.clearAllStaticCaches();
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-passport-namespace-"));
+  const storage = new StorageManager(path.join(root, "shared"));
+  await storage.ensureDirectories();
+  const service = new SupportPassportCardService({
+    resolveOwner: async (principal) => ({ principal, namespace: " alice ", storage }),
+  });
+  try {
+    await assert.rejects(
+      service.createManualDraft({
+        principal: "owner:alice",
+        title: "Quiet place",
+        statement: "Offer me a quiet place.",
+        category: "environment",
+        reviewBy: OWNER_REVIEW_BY,
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "card_data_invalid"
+    );
+    assert.deepEqual(await storage.readAllMemories(), []);
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(root, { recursive: true, force: true });
   }
 });
 
@@ -1440,53 +1511,41 @@ test("rejection stops when a retired predecessor cannot be restored", async () =
 test("an orphaned replacement is rejected when its replaced draft was approved", async () => {
   const subject = await makeSubject();
   try {
-    const draft = await subject.service.createManualDraft({
+    const { approved, replacement } = await createOrphanedReplacement(subject);
+    const rejected = await subject.service.rejectCard({
       principal: "owner:alice",
-      title: "Quiet place",
-      statement: "Offer me a quiet place.",
-      category: "environment",
-      reviewBy: OWNER_REVIEW_BY,
+      cardId: replacement.card.cardId,
+      expectedRevision: replacement.card.revision,
     });
-    const originalWrite = subject.aliceStorage.writeMemoryFrontmatterIfUnchanged.bind(subject.aliceStorage);
-    let interrupted = false;
-    subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = async (memory, patch, lifecycle) => {
-      if (!interrupted && lifecycle?.reasonCode === "owner-replaced-draft") {
-        interrupted = true;
-        throw new Error("simulated process exit after replacement creation");
-      }
-      return await originalWrite(memory, patch, lifecycle);
-    };
-    await assert.rejects(
-      subject.service.replaceCard({
-        principal: "owner:alice",
-        cardId: draft.cardId,
-        expectedRevision: draft.revision,
-        title: "Quiet place and time",
-        statement: "Offer me a quiet place and time.",
-        category: "environment",
-        reviewBy: OWNER_REVIEW_BY,
-      }),
-      /simulated process exit/
-    );
-    subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = originalWrite;
-    const replacement = (await subject.aliceStorage.readAllMemories()).find(
-      (memory) => memory.frontmatter.id !== draft.cardId
-    );
-    assert.ok(replacement);
-
-    const approved = await subject.service.approveCard({
-      principal: "owner:alice",
-      cardId: draft.cardId,
-      expectedRevision: draft.revision,
-    });
+    assert.equal(rejected.status, "rejected");
     const visible = await subject.service.listCards({ principal: "owner:alice" });
     assert.deepEqual(
       visible.map((card) => card.cardId),
       [approved.cardId]
     );
-    assert.equal(
-      (await subject.aliceStorage.getMemoryById(replacement.frontmatter.id))?.frontmatter.status,
-      "rejected"
+    assert.equal((await subject.aliceStorage.getMemoryById(replacement.card.cardId))?.frontmatter.status, "rejected");
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("approving an orphaned replacement reports a storage conflict after recovery", async () => {
+  const subject = await makeSubject();
+  try {
+    const { approved, replacement } = await createOrphanedReplacement(subject);
+
+    await assert.rejects(
+      subject.service.approveCard({
+        principal: "owner:alice",
+        cardId: replacement.card.cardId,
+        expectedRevision: replacement.card.revision,
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
+    );
+    assert.equal((await subject.aliceStorage.getMemoryById(replacement.card.cardId))?.frontmatter.status, "rejected");
+    assert.deepEqual(
+      (await subject.service.listCards({ principal: "owner:alice" })).map((card) => card.cardId),
+      [approved.cardId]
     );
   } finally {
     await subject.cleanup();

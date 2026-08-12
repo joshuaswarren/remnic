@@ -6,6 +6,7 @@ import {
   SupportPassportCardSchema,
   SupportPassportCardStatusSchema,
   SupportPassportMemoryIdSchema,
+  SupportPassportNamespaceSchema,
   computeSupportPassportCardRevision,
 } from "./contracts.js";
 
@@ -60,7 +61,7 @@ export function projectSupportPassportCard(memory: MemoryFile): StoredSupportPas
   const rawOrder = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.order] ?? "";
   const order = Number(rawOrder);
   const sourceMemoryIds = parseSourceMemoryIds(attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.sourceMemoryIds] ?? "");
-  const namespace = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.namespace]?.trim() ?? "";
+  const namespace = SupportPassportNamespaceSchema.safeParse(attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.namespace]);
   let replacesDraftId: string | undefined;
   const rawReplacesDraftId = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.replacesDraftId];
   if (rawReplacesDraftId !== undefined) {
@@ -80,8 +81,7 @@ export function projectSupportPassportCard(memory: MemoryFile): StoredSupportPas
     status.data === "superseded" ||
     !/^(?:0|[1-9]\d*)$/.test(rawOrder) ||
     !Number.isSafeInteger(order) ||
-    namespace.length === 0 ||
-    namespace.length > 256 ||
+    !namespace.success ||
     !sourceMemoryIds
   )
     return null;
@@ -107,7 +107,7 @@ export function projectSupportPassportCard(memory: MemoryFile): StoredSupportPas
     memory,
     order,
     sourceMemoryIds,
-    namespace,
+    namespace: namespace.data,
     replacesDraftId,
     replacedRevision,
     draftReplacementPrepared: attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.draftReplacementPrepared] === "true",
