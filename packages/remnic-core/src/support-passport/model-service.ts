@@ -192,7 +192,7 @@ export class SupportPassportDraftService {
       scheduleAudit(this.audit, {
         schemaVersion: 1,
         operation: "draft_cards",
-        actorHash: hashSupportPassportAuditValues("owner", [parsed.data.principal]),
+        actorHash: hashSupportPassportAuditValues("owner", [owner.principal]),
         subjectIdsHash: hashSupportPassportAuditValues("source-memory-ids", parsed.data.sourceMemoryIds),
         outputSchemaVersion: 1,
         outcome: "error",
@@ -204,7 +204,7 @@ export class SupportPassportDraftService {
     const auditBase = {
       schemaVersion: 1 as const,
       operation: "draft_cards" as const,
-      actorHash: hashSupportPassportAuditValues("owner", [parsed.data.principal]),
+      actorHash: hashSupportPassportAuditValues("owner", [owner.principal]),
       subjectIdsHash: hashSupportPassportAuditValues("source-memory-ids", parsed.data.sourceMemoryIds),
       modelUsed: modelResult.modelUsed,
       route: modelResult.route,

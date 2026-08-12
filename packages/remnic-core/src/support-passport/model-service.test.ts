@@ -15,6 +15,7 @@ import {
   type SupportPassportModelAuditRecord,
   SupportPassportModelAuditRecordSchema,
   SupportPassportModelAuditStore,
+  hashSupportPassportAuditValues,
 } from "./model-audit.js";
 import {
   computeSupportPassportSourceRevision,
@@ -214,6 +215,67 @@ test("drafting persists into the owner scope used for source reads", async () =>
   } finally {
     StorageManager.clearAllStaticCaches();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("drafting audits the authenticated owner principal", async () => {
+  const subject = await makeSubject();
+  try {
+    const selected = await subject.aliceStorage.writeMemory("preference", "Tell me before plans change.", {
+      source: "test",
+    });
+    const records: SupportPassportModelAuditRecord[] = [];
+    const resolveOwner = async () => ({
+      principal: "authenticated:alice",
+      namespace: "alice",
+      storage: subject.aliceStorage,
+    });
+    const service = new SupportPassportDraftService({
+      cardService: new SupportPassportCardService({ resolveOwner }),
+      modelAdapter: new SupportPassportModelAdapter({
+        routes: [
+          {
+            kind: "local",
+            invoke: async () => ({
+              modelUsed: "local/test-model",
+              content: JSON.stringify({
+                cards: [
+                  {
+                    title: "Plan changes",
+                    statement: "Tell me before plans change.",
+                    category: "transitions",
+                    sourceMemoryIds: [selected.id],
+                  },
+                ],
+              }),
+            }),
+          },
+        ],
+      }),
+      resolveOwner,
+      audit: {
+        record: async (record) => {
+          records.push(SupportPassportModelAuditRecordSchema.parse(record));
+        },
+      },
+      now: subject.now,
+    });
+
+    await service.draftCards({
+      principal: "request:alice",
+      sourceMemoryIds: [selected.id],
+      sourceMemoryRevisions: sourceRevision(selected.id, "Tell me before plans change."),
+      consent: true,
+    });
+    await flushAudit();
+
+    assert.equal(
+      records[0]?.actorHash,
+      hashSupportPassportAuditValues("owner", ["authenticated:alice"])
+    );
+    assert.notEqual(records[0]?.actorHash, hashSupportPassportAuditValues("owner", ["request:alice"]));
+  } finally {
+    await subject.cleanup();
   }
 });
 
