@@ -44,6 +44,8 @@ test("owner HTTP routes require bearer auth and use the trusted principal", asyn
     assert.equal((await fetch(url, { headers: { authorization: "SupportPassport helper-secret" } })).status, 401);
     const response = await fetch(url, { headers: { authorization: `Bearer ${TOKEN}` } });
     assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "private, no-store");
+    assert.equal(response.headers.get("vary"), "Authorization");
     assert.deepEqual(await response.json(), { cards: [card("active")] });
     assert.deepEqual(principals, ["owner:alice"]);
 

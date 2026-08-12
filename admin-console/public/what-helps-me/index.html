@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="What Helps Me is an owner-controlled support passport built with Remnic.">
+  <link rel="icon" href="data:,">
+  <title>What Helps Me · Remnic</title>
+  <link rel="stylesheet" href="./what-helps-me.css">
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">Skip to the support passport</a>
+
+  <div class="replay-banner" id="replayBanner" role="status" hidden>
+    <strong>Synthetic replay</strong>
+    <span>This mode uses invented notes. It is not live proof.</span>
+  </div>
+
+  <header class="site-header">
+    <a class="wordmark" href="../" aria-label="Return to the Remnic admin console">
+      <span class="wordmark-mark" aria-hidden="true">W</span>
+      <span><strong>WHAT HELPS ME</strong><small>A Remnic support passport</small></span>
+    </a>
+    <div class="view-marker" id="viewMarker" aria-label="Current view">
+      <span class="view-marker-dot" aria-hidden="true"></span>
+      <span id="viewMarkerText">Owner view</span>
+    </div>
+  </header>
+
+  <main id="mainContent" tabindex="-1">
+    <section class="connect-panel" id="connectPanel" aria-labelledby="connectTitle">
+      <div>
+        <p class="eyebrow">Private owner access</p>
+        <h1 id="connectTitle">Open my support passport</h1>
+        <p>Use the same bearer token as the Remnic admin console.</p>
+      </div>
+      <form class="connect-form" id="connectForm">
+        <label for="tokenInput">Bearer token</label>
+        <div class="input-action">
+          <input id="tokenInput" name="token" type="password" autocomplete="off" required placeholder="Kept only in this page's memory">
+          <button class="button button-primary" type="submit">Open my guide</button>
+        </div>
+        <p class="field-note">The page does not save the token in cookies or browser storage.</p>
+        <p class="form-error" id="connectError" role="alert"></p>
+      </form>
+    </section>
+
+    <div id="ownerView" hidden>
+      <section class="owner-hero" aria-labelledby="ownerTitle">
+        <div class="owner-hero-copy">
+          <p class="eyebrow">My support passport</p>
+          <h1 id="ownerTitle">The person is the author.</h1>
+          <p class="hero-lede">Turn selected notes into clear support cards. Approve every word before sharing anything.</p>
+          <nav class="journey" aria-label="Guide steps">
+            <a href="#selectNotes"><span>1</span>Select notes</a>
+            <a href="#reviewCards"><span>2</span>Review cards</a>
+            <a href="#shareGuide"><span>3</span>Share my guide</a>
+          </nav>
+        </div>
+        <div class="passport-seal" aria-label="Owner controlled">
+          <span class="seal-orbit" aria-hidden="true"></span>
+          <strong>MY WORDS</strong>
+          <small>MY CHOICE</small>
+        </div>
+      </section>
+
+      <div class="owner-layout">
+        <div class="owner-build">
+          <section class="folio-section" id="selectNotes" aria-labelledby="notesTitle">
+            <div class="section-heading">
+              <div>
+                <p class="step-label">Step 1 · Select notes</p>
+                <h2 id="notesTitle">Choose only the notes you want to send</h2>
+              </div>
+              <span class="count-badge" id="noteCount">0 selected</span>
+            </div>
+            <p class="section-lede">Add exact Remnic memory IDs. The page shows each full note before you consent.</p>
+
+            <form class="memory-picker" id="memoryForm">
+              <label for="memoryIdInput">Memory ID</label>
+              <div class="input-action">
+                <input id="memoryIdInput" name="memoryId" required maxlength="128" pattern="[A-Za-z0-9._:-]+" placeholder="memory-id">
+                <button class="button button-secondary" type="submit">Add selected note</button>
+              </div>
+              <p class="form-error" id="memoryError" role="alert"></p>
+            </form>
+
+            <div class="empty-state" id="notesEmpty">
+              <span aria-hidden="true">+</span>
+              <p><strong>No notes selected.</strong> Add one exact memory ID to start.</p>
+            </div>
+            <ul class="note-list" id="noteList" aria-label="Selected notes"></ul>
+
+            <div class="consent-panel">
+              <label class="check-row" for="consentInput">
+                <input id="consentInput" type="checkbox">
+                <span>Send these selected notes to my configured model to draft my cards.</span>
+              </label>
+              <p>The model gets only these selected notes. You must review every draft.</p>
+              <button class="button button-primary" id="generateButton" type="button">Draft my support cards</button>
+              <p class="form-error" id="generateError" role="alert"></p>
+            </div>
+          </section>
+
+          <section class="folio-section" id="reviewCards" aria-labelledby="cardsTitle">
+            <div class="section-heading">
+              <div>
+                <p class="step-label">Step 2 · Review cards</p>
+                <h2 id="cardsTitle">Approve each card yourself</h2>
+              </div>
+              <button class="button button-secondary" id="newCardButton" type="button">Write a card</button>
+            </div>
+            <p class="section-lede">A draft stays private. An approved card can be selected for a share link.</p>
+            <div class="summary-strip" aria-label="Support card totals">
+              <span><strong id="draftCount">0</strong> Draft</span>
+              <span><strong id="approvedCount">0</strong> Approved</span>
+            </div>
+            <div class="empty-state" id="cardsEmpty">
+              <span aria-hidden="true">✦</span>
+              <p><strong>No support cards yet.</strong> Draft from selected notes or write one yourself.</p>
+            </div>
+            <div class="card-list" id="cardList" aria-live="polite"></div>
+          </section>
+        </div>
+
+        <aside class="share-column" id="shareGuide" aria-labelledby="shareTitle">
+          <section class="share-panel">
+            <p class="step-label">Step 3 · Share my guide</p>
+            <h2 id="shareTitle">Choose what a helper can see</h2>
+            <p>Each link holds exact approved card versions. It ends on time or when you stop sharing.</p>
+
+            <form id="shareForm">
+              <fieldset class="card-picker">
+                <legend>Approved support cards</legend>
+                <div id="shareCardList"></div>
+                <p class="field-note" id="shareCardsEmpty">Approve a card before you create a share link.</p>
+              </fieldset>
+
+              <fieldset class="duration-picker">
+                <legend>Share for</legend>
+                <div class="segmented-control">
+                  <label><input type="radio" name="duration" value="30m"><span>30 min</span></label>
+                  <label><input type="radio" name="duration" value="2h" checked><span>2 hours</span></label>
+                  <label><input type="radio" name="duration" value="1d"><span>1 day</span></label>
+                  <label><input type="radio" name="duration" value="custom"><span>Custom</span></label>
+                </div>
+                <label class="custom-time" id="customTimeField" for="customTimeInput" hidden>
+                  End sharing at
+                  <input id="customTimeInput" type="datetime-local">
+                </label>
+              </fieldset>
+
+              <button class="button button-primary button-full" type="submit">Create share link</button>
+              <p class="form-error" id="shareError" role="alert"></p>
+            </form>
+
+            <div class="new-link" id="newLinkPanel" hidden>
+              <p class="eyebrow">Share link ready</p>
+              <label for="shareLinkInput">Copy this link once</label>
+              <textarea id="shareLinkInput" rows="4" readonly></textarea>
+              <div class="button-row">
+                <button class="button button-secondary" id="copyLinkButton" type="button">Copy link</button>
+                <a class="button button-quiet" id="openLinkButton" href="#" target="_blank" rel="noopener">Open helper view</a>
+              </div>
+              <p>The secret is not saved by Remnic. Make a new link if you lose it.</p>
+            </div>
+          </section>
+
+          <section class="live-links" aria-labelledby="liveLinksTitle">
+            <div class="section-heading compact">
+              <div><p class="step-label">Owner control</p><h2 id="liveLinksTitle">Live shares</h2></div>
+              <button class="icon-button" id="refreshButton" type="button" aria-label="Refresh cards and share links">↻</button>
+            </div>
+            <div class="empty-state compact" id="grantsEmpty"><p>No live share links.</p></div>
+            <div id="grantList" aria-live="polite"></div>
+          </section>
+        </aside>
+      </div>
+    </div>
+
+    <div id="helperView" hidden>
+      <section class="helper-hero" aria-labelledby="helperTitle">
+        <div>
+          <p class="eyebrow">Support passport</p>
+          <h1 id="helperTitle">What helps me</h1>
+          <p class="hero-lede">These are the exact support cards this person chose to share.</p>
+        </div>
+        <div class="helper-time">
+          <span>Shared until</span>
+          <strong id="helperExpiry">Loading…</strong>
+        </div>
+      </section>
+      <div class="helper-layout">
+        <section class="guide-panel" aria-labelledby="guideTitle">
+          <div class="section-heading">
+            <div><p class="step-label">Approved guide</p><h2 id="guideTitle">How to help</h2></div>
+            <span class="count-badge" id="helperCardCount">0 cards</span>
+          </div>
+          <div class="helper-loading" id="helperLoading" role="status">
+            <span class="loading-pulse" aria-hidden="true"></span>
+            <p>Opening the shared guide…</p>
+          </div>
+          <div id="guideGroups"></div>
+        </section>
+        <aside class="question-panel" aria-labelledby="questionTitle">
+          <p class="step-label">Ask from this guide</p>
+          <h2 id="questionTitle">Ask one clear question</h2>
+          <p>The answer uses these shared cards only. It cites each card it uses.</p>
+          <form id="questionForm">
+            <label for="questionInput">Your question</label>
+            <textarea id="questionInput" maxlength="500" rows="4" required placeholder="What should I do when this person is overwhelmed?"></textarea>
+            <div class="character-count"><span id="questionCount">0</span> / 500</div>
+            <button class="button button-primary button-full" type="submit">Ask from this guide</button>
+            <p class="form-error" id="questionError" role="alert"></p>
+          </form>
+          <div class="answer-panel" id="answerPanel" tabindex="-1" hidden>
+            <p class="eyebrow">Answer from shared cards</p>
+            <p class="answer-copy" id="answerCopy"></p>
+            <div class="citation-list" id="citationList" aria-label="Support card citations"></div>
+          </div>
+        </aside>
+      </div>
+    </div>
+
+    <section class="locked-view" id="lockedView" aria-labelledby="lockedTitle" hidden>
+      <div class="lock-seal" aria-hidden="true"><span></span></div>
+      <p class="eyebrow" id="lockedEyebrow">Share link not found</p>
+      <h1 id="lockedTitle" tabindex="-1">This link does not open a support passport.</h1>
+      <p id="lockedDetail">Ask the person who shared it for a new link.</p>
+      <button class="button button-primary" id="retryHelperButton" type="button" hidden>Try again</button>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <span>What Helps Me · Built with Remnic</span>
+    <a href="https://www.england.nhs.uk/long-read/health-and-care-passports-implementation-guidance/" target="_blank" rel="noopener noreferrer">NHS health and care passport guidance ↗</a>
+  </footer>
+
+  <dialog class="card-dialog" id="cardDialog" aria-labelledby="cardDialogTitle">
+    <form id="cardForm">
+      <button class="dialog-close" id="cardDialogClose" type="button" aria-label="Close support card editor">×</button>
+      <p class="eyebrow">Owner review</p>
+      <h2 id="cardDialogTitle">Write a support card</h2>
+      <input id="cardIdInput" type="hidden">
+      <input id="cardRevisionInput" type="hidden">
+      <label for="cardTitleInput">Card title</label>
+      <input id="cardTitleInput" maxlength="80" required>
+      <label for="cardStatementInput">What helps me</label>
+      <textarea id="cardStatementInput" maxlength="500" rows="5" required></textarea>
+      <label for="cardCategoryInput">Category</label>
+      <select id="cardCategoryInput" required>
+        <option value="communication">Communication</option>
+        <option value="environment">Environment</option>
+        <option value="transitions">Changes and transitions</option>
+        <option value="sensory">Sensory comfort</option>
+        <option value="regulation">Feeling settled</option>
+        <option value="interests">Interests and connection</option>
+        <option value="other">Other support</option>
+      </select>
+      <label for="cardReviewInput">Review reminder</label>
+      <input id="cardReviewInput" type="datetime-local" required>
+      <p class="field-note">This date is a reminder. It never hides the card automatically.</p>
+      <p class="form-error" id="cardError" role="alert"></p>
+      <div class="button-row dialog-actions">
+        <button class="button button-quiet" id="cardCancelButton" type="button">Keep reviewing</button>
+        <button class="button button-primary" id="cardSaveButton" type="submit">Save draft</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <div class="sr-only" id="announcer" role="status" aria-live="assertive"></div>
+
+  <script src="./model.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
