@@ -144,10 +144,10 @@ Show these moments in under three minutes:
 
 1. Show the three selected notes and unchecked consent.
 2. Check consent and draft the cards.
-3. Edit the lighting card and approve it.
+3. Edit and approve the plan-changes card.
 4. Create a two-hour share link.
-5. Open the helper view and ask what to do when the person is overwhelmed.
-6. Show the cited support card.
+5. Open the helper view and ask about plan changes.
+6. Show the cited plan-changes card.
 7. Return to the owner view and select **Stop sharing**.
 8. Show the helper view lock without any card content.
 
