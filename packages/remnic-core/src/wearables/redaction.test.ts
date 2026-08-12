@@ -211,3 +211,14 @@ test("a decomposed accent is a word character, not a boundary", () => {
   assert.equal(applyOffTheRecord(conversation([decomposed, "x"]), markers).droppedSegments, 0);
   assert.equal(applyOffTheRecord(conversation(["cafe is open", "x"]), markers).droppedSegments, 1);
 });
+
+test("a decomposed transcript still reaches a composed marker", () => {
+  // Some ASR output is canonically decomposed. Without normalizing the
+  // probe, `nicht fürs protokoll` would never match and the span would be
+  // persisted.
+  const decomposed = "nicht fu\u0308rs protokoll, bitte".normalize("NFD");
+  const result = applyOffTheRecord(conversation([decomposed, "geheim", "wieder fürs protokoll"]));
+  assert.equal(result.droppedSegments, 1);
+  assert.equal(result.conversation.segments[0]?.text, "[off the record — segment elided]");
+  assert.equal(result.conversation.segments[1]?.text, "[back on the record]");
+});

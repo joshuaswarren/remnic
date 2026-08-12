@@ -90,7 +90,10 @@ export function buildPhraseMatcher(
   const seen = new Set<string>();
   for (const raw of phrases) {
     if (typeof raw !== "string") continue;
-    const phrase = raw.trim();
+    // NFC on both sides (the tester normalizes its input too): an ASR that
+    // emits decomposed text would otherwise never match a composed marker,
+    // and the span would be persisted (issue #2196).
+    const phrase = raw.trim().normalize("NFC");
     if (phrase.length === 0) continue;
     const key = phrase.toLowerCase();
     if (seen.has(key)) continue;
