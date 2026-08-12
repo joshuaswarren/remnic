@@ -14,7 +14,8 @@
   const replayStore = replayMode ? model.createReplayStore() : null;
   const replayChannel =
     replayMode && "BroadcastChannel" in window ? new BroadcastChannel("remnic-what-helps-me-replay") : null;
-  const HELPER_REVALIDATION_MS = 15_000;
+  const HELPER_REVALIDATION_MS = 30_000;
+  const HELPER_REVALIDATION_MAX_MS = 5 * 60_000;
   const HELPER_READ_TIMEOUT_MS = 10_000;
   const HELPER_QUESTION_TIMEOUT_MS = 60_000;
   const OWNER_READ_TIMEOUT_MS = 30_000;
@@ -37,6 +38,7 @@
     helperQuestionController: null,
     helperRevalidationController: null,
     helperRevalidationTimer: null,
+    helperRevalidationDelayMs: HELPER_REVALIDATION_MS,
     toastTimer: null,
   };
 
@@ -453,8 +455,15 @@
     setError("cardError");
     const cardId = byId("cardIdInput").value;
     const expectedRevision = byId("cardRevisionInput").value;
-    const reviewDate = new Date(byId("cardReviewInput").value);
-    if (!Number.isFinite(reviewDate.getTime()) || reviewDate.getTime() <= Date.now()) {
+    const reviewValue = byId("cardReviewInput").value;
+    const reviewDate = new Date(reviewValue);
+    const existingCard = state.cards.find((card) => card.cardId === cardId);
+    const keepsExistingReminder =
+      existingCard && reviewValue === toLocalInputValue(new Date(existingCard.reviewBy));
+    if (
+      !Number.isFinite(reviewDate.getTime()) ||
+      (reviewDate.getTime() <= Date.now() && !keepsExistingReminder)
+    ) {
       setError("cardError", "Choose a future review reminder.");
       return;
     }
@@ -462,7 +471,7 @@
       title: byId("cardTitleInput").value.trim(),
       statement: byId("cardStatementInput").value.trim(),
       category: byId("cardCategoryInput").value,
-      reviewBy: reviewDate.toISOString(),
+      reviewBy: keepsExistingReminder ? existingCard.reviewBy : reviewDate.toISOString(),
       ...(cardId ? { expectedRevision } : {}),
     };
     try {
@@ -715,7 +724,7 @@
     window.clearTimeout(state.helperRevalidationTimer);
     state.helperRevalidationTimer = null;
     if (replayMode || !state.guide) return;
-    state.helperRevalidationTimer = window.setTimeout(revalidateHelper, HELPER_REVALIDATION_MS);
+    state.helperRevalidationTimer = window.setTimeout(revalidateHelper, state.helperRevalidationDelayMs);
   }
 
   async function revalidateHelper() {
@@ -727,12 +736,19 @@
     const timeout = window.setTimeout(() => controller.abort(), HELPER_READ_TIMEOUT_MS);
     try {
       state.guide = await readHelperGuide(controller.signal);
+      state.helperRevalidationDelayMs = HELPER_REVALIDATION_MS;
       scheduleHelperExpiry();
     } catch (error) {
       if (controller.signal.aborted || !state.guide) return;
       if (["grant_expired", "grant_gone", "grant_not_found", "grant_stale"].includes(error?.code)) {
         showLocked(error);
         return;
+      }
+      if (error?.code === "rate_limited") {
+        state.helperRevalidationDelayMs = Math.min(
+          state.helperRevalidationDelayMs * 2,
+          HELPER_REVALIDATION_MAX_MS
+        );
       }
     } finally {
       window.clearTimeout(timeout);

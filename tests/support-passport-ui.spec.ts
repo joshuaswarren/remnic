@@ -292,6 +292,49 @@ test("a saved manual draft stays successful when its list refresh fails", async 
   expect(draftWrites).toBe(1);
 });
 
+test("an overdue card can be edited without changing its review reminder", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers overdue card edits.");
+  const overdueReview = "2026-01-15T10:30:00.000Z";
+  const card = {
+    cardId: "card-overdue",
+    title: "Plan changes",
+    statement: "Tell me before plans change.",
+    category: "transitions",
+    status: "active",
+    updatedAt: "2026-01-01T12:00:00.000Z",
+    reviewBy: overdueReview,
+    revision: "a".repeat(64),
+  };
+  let replacementInput: unknown;
+  await page.route("**/engram/v1/support-passport/cards", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ cards: [card] }) });
+  });
+  await page.route("**/engram/v1/support-passport/grants", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grants: [] }) });
+  });
+  await page.route("**/engram/v1/support-passport/cards/card-overdue", async (route) => {
+    replacementInput = route.request().postDataJSON();
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ card }) });
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await page.getByLabel("Bearer token").fill("owner-token");
+  await page.getByRole("button", { name: "Open my guide" }).click();
+  await page.getByRole("button", { name: "Edit" }).click();
+  await page.getByLabel("Card title").fill("Early plan changes");
+  await page.getByRole("button", { name: "Save draft" }).click();
+
+  expect(replacementInput).toEqual({
+    title: "Early plan changes",
+    statement: card.statement,
+    category: card.category,
+    reviewBy: overdueReview,
+    expectedRevision: card.revision,
+  });
+  await expect(page.getByText("Draft saved. Review and approve it before sharing.")).toBeVisible();
+  await expect(page.getByText("Choose a future review reminder.")).toHaveCount(0);
+});
+
 test("successful owner mutations stay successful when their list refresh fails", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers owner mutation recovery.");
   const now = new Date();
@@ -777,8 +820,10 @@ test("a stalled helper question aborts and restores its action", async ({ page }
 test("a live helper view locks after the owner revokes its grant", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers live grant revalidation.");
 
+  const now = new Date("2026-08-11T12:00:00.000Z");
+  await page.clock.install({ time: now });
   let reads = 0;
-  const updatedAt = new Date().toISOString();
+  const updatedAt = now.toISOString();
   await page.route("**/engram/v1/support-passport/public/grants/replay-grant-live-revoked", async (route) => {
     reads += 1;
     if (reads > 1) {
@@ -795,7 +840,7 @@ test("a live helper view locks after the owner revokes its grant", async ({ page
       body: JSON.stringify({
         schemaVersion: 1,
         grantId: "replay-grant-live-revoked",
-        expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+        expiresAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
         updatedAt,
         cards: [
           {
@@ -812,11 +857,57 @@ test("a live helper view locks after the owner revokes its grant", async ({ page
 
   await page.goto(helperUrl("-live-revoked").replace("mode=replay&", ""));
   await expect(page.locator(".public-card")).toHaveCount(1);
-  await expect(page.getByRole("heading", { name: "This support passport is locked." })).toBeVisible({
-    timeout: 20_000,
-  });
+  await page.clock.fastForward(30_000);
+  await expect(page.getByRole("heading", { name: "This support passport is locked." })).toBeVisible();
   expect(reads).toBeGreaterThanOrEqual(2);
   await expect(page.locator(".public-card")).toHaveCount(0);
+});
+
+test("helper revalidation backs off after a rate limit", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers helper polling backoff.");
+  const now = new Date("2026-08-11T12:00:00.000Z");
+  await page.clock.install({ time: now });
+  let reads = 0;
+  await page.route("**/engram/v1/support-passport/public/grants/replay-grant-rate-limit", async (route) => {
+    reads += 1;
+    if (reads === 2) {
+      await route.fulfill({
+        status: 429,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "Too many helper requests.", code: "rate_limited" }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      headers: { date: now.toUTCString() },
+      contentType: "application/json",
+      body: JSON.stringify({
+        schemaVersion: 1,
+        grantId: "replay-grant-rate-limit",
+        expiresAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
+        updatedAt: now.toISOString(),
+        cards: [
+          {
+            cardId: "card-rate-limit",
+            title: "Quiet place",
+            statement: "Offer me a quiet place and time.",
+            category: "environment",
+            updatedAt: now.toISOString(),
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.goto(helperUrl("-rate-limit").replace("mode=replay&", ""));
+  await expect(page.locator(".public-card")).toHaveCount(1);
+  await page.clock.fastForward(30_000);
+  await expect.poll(() => reads).toBe(2);
+  await page.clock.fastForward(59_999);
+  expect(reads).toBe(2);
+  await page.clock.fastForward(1);
+  await expect.poll(() => reads).toBe(3);
 });
 
 test("a stalled helper revalidation aborts and later observes revocation", async ({ page }, testInfo) => {
@@ -882,7 +973,7 @@ test("a stalled helper revalidation aborts and later observes revocation", async
 
   await page.goto(helperUrl("-stalled").replace("mode=replay&", ""));
   await expect(page.locator(".public-card")).toHaveCount(1);
-  await page.clock.fastForward(15_000);
+  await page.clock.fastForward(30_000);
   await page.clock.fastForward(10_000);
   await expect
     .poll(() =>
@@ -891,7 +982,7 @@ test("a stalled helper revalidation aborts and later observes revocation", async
       )
     )
     .toBe(true);
-  await page.clock.fastForward(15_000);
+  await page.clock.fastForward(30_000);
   await expect(page.getByRole("heading", { name: "This support passport is locked." })).toBeVisible();
   expect(serverReads).toBe(2);
 });
