@@ -5,6 +5,7 @@ import {
   SupportPassportCardListSchema,
   SupportPassportCardSchema,
   SupportPassportManualDraftInputSchema,
+  SupportPassportNamespaceSchema,
   SupportPassportReplaceCardInputSchema,
   computeSupportPassportCardRevision,
 } from "./contracts.js";
@@ -91,6 +92,13 @@ test("support card titles reject attribute delimiters and line breaks", () => {
     );
     assert.equal(SupportPassportCardSchema.safeParse({ ...makeCard("card-1"), title }).success, false);
   }
+});
+
+test("support passport namespaces reject path and attribute delimiters", () => {
+  for (const namespace of ["alice/bob", "alice\\bob", "alice]bob", "alice:bob"]) {
+    assert.equal(SupportPassportNamespaceSchema.safeParse(namespace).success, false);
+  }
+  assert.equal(SupportPassportNamespaceSchema.safeParse("team.alpha-1").success, true);
 });
 
 test("support card revisions change when any public field changes", () => {
