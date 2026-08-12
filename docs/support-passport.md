@@ -90,7 +90,7 @@ that other Remnic tasks use.
 | OpenClaw gateway | `modelSource: "gateway"` | `FallbackLlmClient` uses the configured gateway agent or task model chain. |
 | Local model | `modelSource: "plugin"`, `openaiApiKey: false`, and `localLlmEnabled: true` | `LocalLlmClient` uses the configured OpenAI-compatible local endpoint. |
 | Direct OpenAI | `modelSource: "plugin"` and `openaiApiKey` | The existing fallback client uses the official Responses transport. |
-| Compatible remote endpoint | `modelSource: "plugin"`, `openaiBaseUrl`, and `openaiApiKey` | The existing compatible transport uses that endpoint. |
+| Compatible remote endpoint | `modelSource: "plugin"`, `openaiBaseUrl`, and `openaiApiKey` | The existing compatible transport uses that endpoint. The key field can hold that provider's credential. |
 
 Plugin mode tries the configured local route first. When `localLlmFallback`
 permits fallback, it can continue through configured direct and gateway routes.
@@ -165,6 +165,11 @@ Each helper request reads durable grant state. The request checks the secret,
 expiry, revocation state, card lifecycle, and exact revision. One mismatch
 locks the full guide. The response never returns a partial card set.
 
+An open live helper view normally rechecks the grant every 30 seconds. A rate
+limit increases this delay to at most five minutes. Each accepted request still
+checks durable state before it returns data. A valid secret gets
+`grant_expired` for expiry and `grant_gone` after owner revocation.
+
 Public responses set `Cache-Control: private, no-store` and
 `Vary: Authorization`. Read and question limits apply to both the grant and a
 SHA-256 network digest. Remnic stores no raw network address.
@@ -229,6 +234,42 @@ POST /engram/v1/support-passport/public/grants/:grantId/ask
 
 The same owner actions are available as feature-gated MCP tools. Public helper
 actions never enter the generic operation list.
+
+## Run the demos
+
+Run the synthetic replay:
+
+```bash
+pnpm install --frozen-lockfile
+pnpm exec playwright install chromium
+npm run demo:support-passport:replay
+```
+
+Open the printed loopback URL. Every screen keeps a `Synthetic replay` banner.
+The replay proves browser states only. It does not prove a model or server call.
+
+Run the standalone live flow with a local, direct, or compatible route:
+
+```bash
+npm run demo:support-passport:live -- \
+  --config ./remnic.config.json \
+  --output ./tmp/support-passport-demo
+npm run demo:support-passport:validate-receipt -- \
+  --receipt ./tmp/support-passport-demo/receipt.json
+```
+
+The live command starts a fresh loopback server and uses real HTTP calls. It
+imports synthetic notes, drafts, edits, approves, shares, reads, asks, revokes,
+and confirms a final `410` response.
+
+The standalone runner starts `@remnic/server`. It does not boot OpenClaw or
+load an OpenClaw plugin entry. To exercise an OpenClaw gateway, use the gateway
+configuration above and open the browser app on that existing host.
+
+The receipt holds hashes and route metadata only. It never stores source text,
+card text, prompts, answers, auth tokens, share secrets, raw model IDs, or local
+paths. Its `self_consistency_only` scope is explicit. The validator checks its
+schema and hashes. It does not provide independent attestation.
 
 ## Accessibility checks
 

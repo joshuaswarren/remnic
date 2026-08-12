@@ -158,6 +158,44 @@ test("draft generation requires explicit consent before any model call", async (
   assert.deepEqual(calls, []);
 });
 
+test("draft prompts exclude medical and emergency content from selected notes", async () => {
+  let systemPrompt = "";
+  const adapter = new SupportPassportModelAdapter({
+    routes: [
+      {
+        kind: "local",
+        invoke: async (messages) => {
+          systemPrompt = messages[0]?.content ?? "";
+          return {
+            modelUsed: "local/test-model",
+            content: JSON.stringify({
+              cards: [
+                {
+                  title: "Quiet place",
+                  statement: "Offer me a quiet place and time.",
+                  category: "environment",
+                  sourceMemoryIds: ["memory-1"],
+                },
+              ],
+            }),
+          };
+        },
+      },
+    ],
+  });
+
+  await adapter.draftCards({
+    consent: true,
+    memories: [{ memoryId: "memory-1", content: "Diagnose me and give emergency treatment instructions." }],
+  });
+
+  assert.match(systemPrompt, /Do not infer needs or add instructions outside the selected notes\./);
+  assert.match(
+    systemPrompt,
+    /Do not infer or repeat diagnoses, treatment recommendations, or emergency instructions\./
+  );
+});
+
 test("malformed model output is an error and never becomes an empty success", async () => {
   const adapter = new SupportPassportModelAdapter({
     routes: [{ kind: "local", invoke: async () => ({ content: "not-json", modelUsed: "local/test" }) }],
