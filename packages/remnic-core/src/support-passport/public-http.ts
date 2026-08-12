@@ -432,7 +432,19 @@ export function buildSupportPassportPublicRequestHandler(
         if (!releaseAuthentication) throw rateLimited();
         let question: string;
         try {
-          question = await readQuestionBody(req, lifecycle.signal);
+          const bodyFailure = rateLimits.networkQuestionFailures.reserve(digest);
+          if (!bodyFailure) throw rateLimited();
+          try {
+            question = await readQuestionBody(req, lifecycle.signal);
+            bodyFailure.release();
+          } catch (error) {
+            if (error instanceof SupportPassportError && error.code === "invalid_input") {
+              bodyFailure.commit();
+            } else {
+              bodyFailure.release();
+            }
+            throw error;
+          }
           await readGrantUnderAuthenticationReservation(
             service,
             grantId,

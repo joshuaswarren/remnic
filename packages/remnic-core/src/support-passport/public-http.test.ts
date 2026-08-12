@@ -200,6 +200,33 @@ test("slow helper bodies cannot bypass authentication capacity", async () => {
   assert.deepEqual(unexpectedErrors, []);
 });
 
+test("malformed helper questions consume the network failure limit", async () => {
+  let reads = 0;
+  const service = {
+    supportPassportReadGrant: async () => {
+      reads += 1;
+      return GUIDE;
+    },
+  } as unknown as EngramAccessService;
+  const { server, root } = await startPublicServer(service);
+  const url = `${root}/engram/v1/support-passport/public/grants/grant-one/ask`;
+  const headers = {
+    authorization: `SupportPassport ${SECRET}`,
+    "content-type": "application/json",
+  };
+  try {
+    for (let index = 0; index < 20; index += 1) {
+      const response = await fetch(url, { method: "POST", headers, body: "{}" });
+      assert.equal(response.status, 400);
+    }
+    const rejected = await fetch(url, { method: "POST", headers, body: "{}" });
+    assert.equal(rejected.status, 429);
+    assert.equal(reads, 0);
+  } finally {
+    await stopServer(server);
+  }
+});
+
 test("a helper disconnect during the question body becomes an abort", async () => {
   const caught = Promise.withResolvers<unknown>();
   const requestStarted = Promise.withResolvers<void>();

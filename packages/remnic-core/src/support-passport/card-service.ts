@@ -72,9 +72,9 @@ export class SupportPassportCardService {
   async listCards(input: { principal: string }): Promise<SupportPassportCard[]> {
     const parsed = SupportPassportListCardsInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
-    const { principal, namespace, storage } = await this.resolveOwnerScope(parsed.data.principal);
-    return await this.withOwnerLock(storage, async (lock) => {
-      const stored = await this.readStoredCards(storage, lock, principal, namespace);
+    const { namespace, storage } = await this.resolveOwnerScope(parsed.data.principal);
+    return await this.withOwnerLock(storage, async () => {
+      const stored = await this.readProjectedCards(storage, namespace);
       const cards = this.ownerListCards(stored)
         .sort((a, b) => a.order - b.order || a.card.cardId.localeCompare(b.card.cardId))
         .map((item) => item.card);
