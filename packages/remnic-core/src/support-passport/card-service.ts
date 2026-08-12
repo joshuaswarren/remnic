@@ -94,11 +94,23 @@ export class SupportPassportCardService {
     return await this.withOwnerLock(storage, async () => {
       const loadedPrior = await this.requireCard(storage, parsed.data.cardId);
       this.requireRevision(loadedPrior, parsed.data.expectedRevision);
-      if (loadedPrior.card.status === "pending_review") {
+      if (loadedPrior.card.status === "pending_review" || loadedPrior.card.status === "active") {
         const storedCards = await this.readStoredCards(storage);
-        const interruptedReplacement = storedCards.find(
-          (item) => item.replacesDraftId === loadedPrior.card.cardId && item.card.status === "pending_review"
+        const interruptedReplacements = storedCards.filter(
+          (item) =>
+            item.card.status === "pending_review" &&
+            (loadedPrior.card.status === "pending_review"
+              ? item.replacesDraftId === loadedPrior.card.cardId
+              : item.memory.frontmatter.supersedes === loadedPrior.card.cardId)
         );
+        if (interruptedReplacements.length > 1) {
+          throw new SupportPassportError(
+            "storage_conflict",
+            "Multiple support card edits already completed. Reload the support passport.",
+            409
+          );
+        }
+        const [interruptedReplacement] = interruptedReplacements;
         if (interruptedReplacement) {
           const matchesRetry =
             interruptedReplacement.card.title === parsed.data.title &&
