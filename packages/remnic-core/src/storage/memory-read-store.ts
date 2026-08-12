@@ -378,6 +378,15 @@ export class MemoryReadStore {
     );
   }
 
+  async collectTombstoneMigrationPaths(): Promise<string[]> {
+    const tiers = await Promise.all([
+      this.collectActiveMemoryPaths(),
+      this.collectColdMemoryPaths(),
+      this.collectContainedMarkdownPaths([path.join(this.deps.baseDir, "archive")]),
+    ]);
+    return tiers.flat();
+  }
+
   async readMemoriesWindow(options: {
     maxMemories?: number;
     batchSize?: number;

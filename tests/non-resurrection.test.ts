@@ -456,6 +456,11 @@ test("legacy migration resolves retired source content from archive storage", as
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-tombstone-archive-source-"));
   const content = "The user prefers café.";
   const sourceMemoryId = "fact-archived-source";
+  class ArchiveProbeStorage extends StorageManager {
+    override async readArchivedMemories(): Promise<never> {
+      throw new Error("migration must not parse the complete archive");
+    }
+  }
   try {
     const seed = new StorageManager(dir);
     await seed.ensureDirectories();
@@ -490,7 +495,7 @@ test("legacy migration resolves retired source content from archive storage", as
       "utf8",
     );
 
-    const restarted = new StorageManager(dir);
+    const restarted = new ArchiveProbeStorage(dir);
     enableTombstones(restarted);
     const result = await restarted.writeMemory("fact", content, { source: "extraction" });
 

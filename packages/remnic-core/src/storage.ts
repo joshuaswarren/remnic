@@ -3013,6 +3013,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   }
 
   private buildTombstoneStore(): TombstoneStore {
+    const sourcePathsPromise = this.memoryReadStore.collectTombstoneMigrationPaths();
     const options: TombstoneStoreOptions = {
       enabled: this.tombstonesConfig.enabled,
       semanticMatch: this.tombstonesConfig.semanticMatch,
@@ -3035,16 +3036,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
             found.add(id);
           }
         };
-        collectMatches(await this.collectActiveMemoryPaths());
-        if (found.size < requested.size) collectMatches(await this.collectColdMemoryPaths());
+        collectMatches(await sourcePathsPromise);
         const contents = new Map<string, string>();
         for (const memory of await this.readParsedMemoriesFromPaths(matchingPaths, 50)) {
           contents.set(memory.frontmatter.id, stripCitationForTemplate(memory.content, this.citationTemplate));
-        }
-        for (const memory of contents.size < requested.size ? await this.readArchivedMemories() : []) {
-          const id = memory.frontmatter.id;
-          if (!requested.has(id) || contents.has(id)) continue;
-          contents.set(id, stripCitationForTemplate(memory.content, this.citationTemplate));
         }
         return contents;
       },
