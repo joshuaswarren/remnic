@@ -6018,6 +6018,49 @@
             "default": true,
             "description": "Honor a spoken 'off the record' marker by eliding segments until 'back on the record'."
           },
+          "offTheRecordMarkers": {
+            "type": "object",
+            "additionalProperties": false,
+            "default": {},
+            "description": "Off-the-record marker phrases. Built-in phrases cover a documented language set; these fields add more.",
+            "properties": {
+              "start": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "default": [],
+                "description": "Additional phrases that begin an off-the-record span."
+              },
+              "end": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "default": [],
+                "description": "Additional phrases that end an off-the-record span."
+              },
+              "useBuiltIns": {
+                "type": "boolean",
+                "default": true,
+                "description": "Include the built-in off-the-record phrases. Set false to honor only the configured phrases."
+              }
+            }
+          },
+          "fillerTokens": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "default": [],
+            "description": "Additional filler tokens removed when a source enables cleanup.stripFillers. Built-in tokens are selected per script."
+          },
           "digestEnabled": {
             "type": "boolean",
             "default": true,

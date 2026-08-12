@@ -35,10 +35,20 @@ export {
 } from "./cleanup.js";
 export {
   applyOffTheRecord,
+  BUILT_IN_OFF_THE_RECORD_END,
+  BUILT_IN_OFF_THE_RECORD_START,
+  compileOffTheRecordMarkers,
   compileRedactionPatterns,
   redactText,
   REDACTION_PLACEHOLDER,
+  type CompiledOffTheRecordMarkers,
+  type OffTheRecordMarkerInput,
 } from "./redaction.js";
+export {
+  buildPhraseMatcher,
+  detectScriptHints,
+  type ScriptHint,
+} from "./text-language.js";
 export {
   applyCorrections,
   compileCorrectionRule,

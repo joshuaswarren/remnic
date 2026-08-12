@@ -1561,11 +1561,6 @@
   },
   {
     "kind": "undocumented-key",
-    "key": "wearables",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
     "key": "wearables.autoSyncDays",
     "issue": "#1990"
   },

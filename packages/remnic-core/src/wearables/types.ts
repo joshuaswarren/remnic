@@ -241,6 +241,20 @@ export interface WearableCorrectionRule {
   sources?: string[];
 }
 
+/**
+ * Off-the-record marker configuration (issue #2196). Matching is
+ * case-insensitive and phrase-level. Built-in phrases stay active
+ * unless `useBuiltIns` is false.
+ */
+export interface OffTheRecordMarkerSettings {
+  /** Extra phrases that begin an off-the-record span. */
+  start: string[];
+  /** Extra phrases that end an off-the-record span. */
+  end: string[];
+  /** Include the built-in phrase lists. Default true. */
+  useBuiltIns: boolean;
+}
+
 /** Top-level wearables configuration (parsed). */
 export interface WearablesConfig {
   /** Master gate for the whole subsystem. Default false. */
@@ -259,6 +273,18 @@ export interface WearablesConfig {
    * "back on the record" (or conversation end). Default false.
    */
   offTheRecordEnabled: boolean;
+  /**
+   * Off-the-record marker phrases (issue #2196). Built-in phrases cover
+   * a documented set of languages; `start`/`end` add more, and
+   * `useBuiltIns: false` uses only the configured phrases.
+   */
+  offTheRecordMarkers: OffTheRecordMarkerSettings;
+  /**
+   * Extra filler tokens removed when a source enables
+   * `cleanup.stripFillers`. Built-in tokens are selected per script; a
+   * language outside that set is configured here.
+   */
+  fillerTokens: string[];
   /**
    * Write one compact daily-digest memory per synced source/day.
    * Default false.

@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import {
   applyOffTheRecord,
+  compileOffTheRecordMarkers,
   compileRedactionPatterns,
   redactText,
   REDACTION_PLACEHOLDER,
@@ -91,4 +92,84 @@ test("conversations without the marker pass through untouched", () => {
     ["Plain talk.", "More plain talk."],
   );
   assert.equal(result.droppedSegments, 0);
+});
+
+test("built-in markers elide a Japanese off-the-record span", () => {
+  const result = applyOffTheRecord(
+    conversation([
+      "ここからはオフレコでお願いします。",
+      "来週の買収は金曜に完了します。",
+      "オンレコに戻ります。",
+      "昼食はおいしかったです。",
+    ]),
+  );
+  assert.deepEqual(
+    result.conversation.segments.map((segment) => segment.text),
+    [
+      "[off the record — segment elided]",
+      "[back on the record]",
+      "昼食はおいしかったです。",
+    ],
+  );
+  assert.equal(result.droppedSegments, 1);
+});
+
+test("built-in markers elide a Korean span through conversation end", () => {
+  const result = applyOffTheRecord(
+    conversation(["지금부터 오프더레코드입니다", "비밀 계약 조건입니다"]),
+  );
+  assert.equal(result.conversation.segments.length, 1);
+  assert.equal(result.droppedSegments, 1);
+});
+
+test("configured markers extend the built-in phrases", () => {
+  const markers = compileOffTheRecordMarkers({
+    start: ["poza protokołem"],
+    end: ["z powrotem do protokołu"],
+  });
+  const result = applyOffTheRecord(
+    conversation([
+      "To jest poza protokołem.",
+      "Tajna informacja.",
+      "Wracamy z powrotem do protokołu.",
+      "Normalna rozmowa.",
+    ]),
+    markers,
+  );
+  assert.deepEqual(
+    result.conversation.segments.map((segment) => segment.text),
+    [
+      "[off the record — segment elided]",
+      "[back on the record]",
+      "Normalna rozmowa.",
+    ],
+  );
+  assert.equal(result.droppedSegments, 1);
+  // The built-in English phrase still applies alongside the custom set.
+  assert.equal(
+    applyOffTheRecord(conversation(["off the record", "secret"]), markers)
+      .droppedSegments,
+    1,
+  );
+});
+
+test("useBuiltIns false honors only the configured phrases", () => {
+  const markers = compileOffTheRecordMarkers({
+    start: ["poza protokołem"],
+    useBuiltIns: false,
+  });
+  const result = applyOffTheRecord(
+    conversation(["Let me say this off the record.", "The merger closes Friday."]),
+    markers,
+  );
+  assert.equal(result.droppedSegments, 0);
+  assert.equal(result.conversation.segments.length, 2);
+});
+
+test("a Latin marker phrase never matches inside a longer word", () => {
+  const result = applyOffTheRecord(
+    conversation(["We discussed hors microphone placement.", "Normal talk."]),
+  );
+  assert.equal(result.droppedSegments, 0);
+  assert.equal(result.conversation.segments.length, 2);
 });

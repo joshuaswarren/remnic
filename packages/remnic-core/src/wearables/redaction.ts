@@ -12,7 +12,11 @@
  * to stay safely outside polynomial-ReDoS territory.
  */
 
-import type { WearableConversation } from "./types.js";
+import { buildPhraseMatcher } from "./text-language.js";
+import type {
+  OffTheRecordMarkerSettings,
+  WearableConversation,
+} from "./types.js";
 
 export const REDACTION_PLACEHOLDER = "[redacted]";
 
@@ -105,8 +109,88 @@ export function compileRedactionPatterns(patterns: string[]): RegExp[] {
   });
 }
 
-const OFF_THE_RECORD = /\boff\s+the\s+record\b/i;
-const BACK_ON_THE_RECORD = /\b(?:back\s+)?on\s+the\s+record\b/i;
+/**
+ * Built-in phrases that BEGIN an off-the-record span.
+ *
+ * Conservative by design: a false positive elides real transcript
+ * content. Every phrase is a fixed multi-word expression, or a loanword
+ * that only means "off the record" (issue #2196). Operators extend this
+ * list through `wearables.offTheRecordMarkers.start`.
+ */
+export const BUILT_IN_OFF_THE_RECORD_START: readonly string[] = [
+  "off the record",
+  "fuera de registro",
+  "extraoficialmente",
+  "fora de registro",
+  "fora do registro",
+  "hors micro",
+  "nicht fürs protokoll",
+  "nicht für das protokoll",
+  "fuori registro",
+  "オフレコ",
+  "오프더레코드",
+  "不要记录",
+  "не для протокола",
+  "بدون تسجيل",
+];
+
+/**
+ * Built-in phrases that END an off-the-record span.
+ *
+ * Shorter than the start list on purpose. A start phrase with no
+ * matching end phrase elides through the end of the conversation, which
+ * is the fail-closed direction; an over-eager end phrase would leak. So
+ * a language only appears here when the phrase is unambiguous.
+ */
+export const BUILT_IN_OFF_THE_RECORD_END: readonly string[] = [
+  "back on the record",
+  "on the record",
+  "de nuevo en registro",
+  "de volta ao registro",
+  "wieder fürs protokoll",
+  "wieder für das protokoll",
+  "オンレコ",
+  "온더레코드",
+];
+
+/**
+ * Loose form of the parsed `OffTheRecordMarkerSettings`: callers that
+ * only override one field pass a partial, so every property is
+ * optional and read-only here.
+ */
+export type OffTheRecordMarkerInput = {
+  readonly [K in keyof OffTheRecordMarkerSettings]?: K extends "useBuiltIns"
+    ? boolean
+    : readonly string[];
+};
+
+export interface CompiledOffTheRecordMarkers {
+  start: RegExp | null;
+  end: RegExp | null;
+}
+
+/**
+ * Compile marker settings into matchers. Omitting `settings` yields the
+ * built-in lists, so callers that never configured markers keep the
+ * previous behavior plus the new languages.
+ */
+export function compileOffTheRecordMarkers(
+  settings?: OffTheRecordMarkerInput,
+): CompiledOffTheRecordMarkers {
+  const useBuiltIns = settings?.useBuiltIns !== false;
+  const start = [
+    ...(useBuiltIns ? BUILT_IN_OFF_THE_RECORD_START : []),
+    ...(settings?.start ?? []),
+  ];
+  const end = [
+    ...(useBuiltIns ? BUILT_IN_OFF_THE_RECORD_END : []),
+    ...(settings?.end ?? []),
+  ];
+  return {
+    start: buildPhraseMatcher(start),
+    end: buildPhraseMatcher(end),
+  };
+}
 
 export interface OffTheRecordResult {
   conversation: WearableConversation;
@@ -114,20 +198,24 @@ export interface OffTheRecordResult {
 }
 
 /**
- * Drop segments between a spoken "off the record" marker and the next
- * "(back) on the record" marker (or conversation end). The marker
- * segments themselves are kept, with the off-record span replaced by a
- * visible placeholder so the transcript shows that content was elided
- * by request rather than lost.
+ * Drop segments between a spoken off-the-record marker and the next
+ * back-on-the-record marker (or conversation end). The marker segments
+ * themselves are kept, with the off-record span replaced by a visible
+ * placeholder so the transcript shows that content was elided by
+ * request rather than lost.
  */
 export function applyOffTheRecord(
   conversation: WearableConversation,
+  markers: CompiledOffTheRecordMarkers = compileOffTheRecordMarkers(),
 ): OffTheRecordResult {
+  if (!markers.start) {
+    return { conversation, droppedSegments: 0 };
+  }
   let offRecord = false;
   let droppedSegments = 0;
   const segments = [];
   for (const segment of conversation.segments) {
-    if (!offRecord && OFF_THE_RECORD.test(segment.text)) {
+    if (!offRecord && markers.start.test(segment.text)) {
       offRecord = true;
       segments.push({
         ...segment,
@@ -136,7 +224,7 @@ export function applyOffTheRecord(
       continue;
     }
     if (offRecord) {
-      if (BACK_ON_THE_RECORD.test(segment.text)) {
+      if (markers.end?.test(segment.text)) {
         offRecord = false;
         segments.push({
           ...segment,

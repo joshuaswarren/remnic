@@ -188,3 +188,46 @@ test("preserveUtteranceBoundaries default (off) still collapses generic labels",
   assert.equal(result.conversation.segments.length, 1);
   assert.equal(result.conversation.segments[0].text, "First. Second.");
 });
+
+test("strips Japanese filler tokens that carry no word spaces", () => {
+  assert.equal(
+    stripFillerTokens("えーと、明日の会議は三時です"),
+    "明日の会議は三時です",
+  );
+  assert.equal(stripFillerTokens("あのー来週で"), "来週で");
+});
+
+test("keeps a meaning-bearing Japanese demonstrative", () => {
+  assert.equal(stripFillerTokens("あの会議は長かった"), "あの会議は長かった");
+});
+
+test("strips Korean and Cyrillic filler tokens as whole tokens", () => {
+  assert.equal(stripFillerTokens("음 회의는 세시입니다"), "회의는 세시입니다");
+  assert.equal(stripFillerTokens("эм встреча в три"), "встреча в три");
+});
+
+test("never strips a filler lookalike inside a longer token", () => {
+  assert.equal(stripFillerTokens("the umbrella is uhh wet"), "the umbrella is wet");
+  // "음" also occurs inside ordinary Korean words; only the whole token goes.
+  assert.equal(stripFillerTokens("다음 회의"), "다음 회의");
+});
+
+test("operator filler tokens apply to any script", () => {
+  assert.equal(stripFillerTokens("bueno vamos a empezar", ["bueno"]), "vamos a empezar");
+  assert.equal(stripFillerTokens("那个我们开始吧", ["那个"]), "我们开始吧");
+});
+
+test("cleanConversation strips configured filler tokens", () => {
+  const result = cleanConversation(
+    conversation([
+      { speakerKey: "a", text: "えーと、予算を確認します" },
+      { speakerKey: "b", text: "bueno, de acuerdo" },
+    ]),
+    ALL_ON,
+    ["bueno"],
+  );
+  assert.deepEqual(
+    result.conversation.segments.map((segment) => segment.text),
+    ["予算を確認します", "de acuerdo"],
+  );
+});
