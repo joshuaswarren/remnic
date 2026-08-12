@@ -556,7 +556,7 @@ test("listing a pending replacement does not add a final unchanged-corpus reload
 
     await subject.service.listCards({ principal: "owner:alice" });
 
-    assert.equal(corpusReads, 4);
+    assert.equal(corpusReads, 1);
   } finally {
     await subject.cleanup();
   }
@@ -1453,7 +1453,10 @@ test("listing projects an incomplete active replacement without recovery writes"
     const visible = await subject.service.listCards({ principal: "owner:alice" });
 
     subject.aliceStorage.supersedeMemory = originalSupersede;
-    assert.deepEqual(visible.map((card) => [card.cardId, card.status]), [[replacement.cardId, "active"]]);
+    assert.deepEqual(
+      visible.map((card) => [card.cardId, card.status]),
+      [[replacement.cardId, "active"]]
+    );
     assert.equal(recoveryWrites, 0);
     assert.equal((await subject.aliceStorage.getMemoryById(active.cardId))?.frontmatter.status, "superseded");
   } finally {
@@ -1502,7 +1505,10 @@ test("listing projects one card when predecessor retirement has not started", as
 
     assert.equal(approved.status, "active");
     assert.equal((await subject.aliceStorage.getMemoryById(active.cardId))?.frontmatter.status, "active");
-    assert.deepEqual(visible.map((card) => [card.cardId, card.status]), [[replacement.cardId, "active"]]);
+    assert.deepEqual(
+      visible.map((card) => [card.cardId, card.status]),
+      [[replacement.cardId, "active"]]
+    );
   } finally {
     await subject.cleanup();
   }
