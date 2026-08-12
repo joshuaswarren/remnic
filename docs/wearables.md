@@ -374,6 +374,79 @@ on the next QMD update after a sync (the sync triggers one).
   defaults to `enabled: false`. Once enabled, memory creation runs the
   fully-automated smart trust pipeline by default.
 
+## Multilingual privacy
+
+Off-the-record markers match without case sensitivity. A phrase matches as a
+whole phrase. In scripts that use spaces, a phrase does not match inside a
+longer word.
+
+Built-in off-the-record start phrases:
+
+| Language | Start phrases |
+|---|---|
+| English | `off the record` |
+| Spanish | `fuera de registro`, `extraoficialmente` |
+| Portuguese | `fora de registro`, `fora do registro` |
+| French | `hors micro` |
+| German | `nicht fürs protokoll`, `nicht für das protokoll` |
+| Italian | `fuori registro` |
+| Japanese | `オフレコ` |
+| Korean | `오프더레코드` |
+| Chinese | `不要记录` |
+| Russian | `не для протокола` |
+| Arabic | `بدون تسجيل` |
+
+Built-in off-the-record end phrases:
+
+| Language | End phrases |
+|---|---|
+| English | `back on the record`, `on the record` |
+| Spanish | `de nuevo en registro` |
+| Portuguese | `de volta ao registro` |
+| German | `wieder fürs protokoll`, `wieder für das protokoll` |
+| Japanese | `オンレコ` |
+| Korean | `온더레코드` |
+
+Add extra start phrases with `wearables.offTheRecordMarkers.start`. Add extra
+end phrases with `wearables.offTheRecordMarkers.end`. Each phrase must be
+non-empty and no longer than 128 characters.
+
+Set `wearables.offTheRecordMarkers.useBuiltIns` to `false` to turn off every
+built-in phrase. Remnic then uses only the configured start and end phrases.
+The default is `true`.
+
+When `cleanup.stripFillers` is on, Remnic removes these built-in filler tokens.
+It selects the list for each segment with a Unicode script hint:
+
+| Text hint | Built-in filler tokens |
+|---|---|
+| Space-delimited scripts | `um`, `uh`, `uhm`, `umm`, `uhh`, `erm`, `hmm`, `mhm`, `ähm`, `äh`, `ehm`, `euh`, `mmm` |
+| Japanese text with Hiragana or Katakana | `えーと`, `えっと`, `ええと`, `あのー`, `あのう`, `うーん` |
+| Chinese text with Han and no kana | `呃`, `嗯` |
+| Korean text with Hangul | `음`, `으음`, `엄`, `어어` |
+| Arabic text | `امم`, `اممم`, `اه` |
+| Cyrillic text | `эм`, `ээ`, `ммм` |
+
+Japanese and Chinese filler tokens are removed inline. Other listed filler
+tokens match as whole tokens. Add extra tokens with `wearables.fillerTokens`.
+Each token must be non-empty and no longer than 64 characters. The default is
+`[]`.
+
+### Multilingual privacy limitations
+
+- **Built-in identifier redaction is US-format-only.** It covers US Social
+  Security numbers with separators and payment-card-like digit runs only.
+  Other national identifier formats need `wearables.redactionPatterns`.
+- If a start phrase matches and no end phrase matches later, elision runs to
+  the end of the conversation. This fail-closed direction never leaks content.
+- Built-in end phrases exist only for English, Spanish, Portuguese, German,
+  Japanese, and Korean. Other languages need
+  `wearables.offTheRecordMarkers.end`.
+- Repeat-collapse and low-quality heuristics still use signals tuned on
+  space-delimited text. They are weaker on Chinese and Japanese.
+- Filler removal for a language outside the built-in list needs
+  `wearables.fillerTokens`.
+
 ## Per-source notes
 
 ### Limitless (`@remnic/connector-limitless`)

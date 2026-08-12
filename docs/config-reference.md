@@ -54,6 +54,16 @@ The activity subsystem is off by default. It synchronizes redacted text snapshot
 | `activity.sources.baseUrl` | `(required)` | HTTP or HTTPS URL of the local capture daemon; must target a loopback host (`localhost`, `127.0.0.0/8`, or `::1`) since the bearer token travels in the request. |
 | `activity.sources.token` | `(unset)` | Literal bearer token sent to a trusted local capture daemon over loopback. This parser does not resolve secret references or `${ENV_VAR}` placeholders; omit the field when the daemon needs no auth. |
 
+## Wearables
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `wearables.offTheRecordMarkers` | `{}` | Optional object that configures extra off-the-record marker phrases. |
+| `wearables.offTheRecordMarkers.start` | `[]` | Array of strings that adds extra start phrases. |
+| `wearables.offTheRecordMarkers.end` | `[]` | Array of strings that adds extra end phrases. |
+| `wearables.offTheRecordMarkers.useBuiltIns` | `true` | Boolean that keeps built-in marker phrases enabled. |
+| `wearables.fillerTokens` | `[]` | Array of strings that adds filler tokens when `cleanup.stripFillers` is on. |
+
 ## Trust scoring
 
 | Setting | Default | Description |

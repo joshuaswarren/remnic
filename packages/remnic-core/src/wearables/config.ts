@@ -13,6 +13,7 @@ import type { ImportanceLevel } from "../types.js";
 import { compileCorrectionRules } from "./corrections.js";
 import { compileRedactionPatterns } from "./redaction.js";
 import type {
+  OffTheRecordMarkerSettings,
   WearableCleanupSettings,
   WearableCorrectionRule,
   WearableMemoryMode,
@@ -111,6 +112,8 @@ export function defaultWearablesConfig(): WearablesConfig {
     redactionEnabled: true,
     redactionPatterns: [],
     offTheRecordEnabled: true,
+    offTheRecordMarkers: { start: [], end: [], useBuiltIns: true },
+    fillerTokens: [],
     digestEnabled: true,
     autoSyncEnabled: DEFAULT_AUTO_SYNC_ENABLED,
     autoSyncIntervalMinutes: DEFAULT_AUTO_SYNC_INTERVAL_MINUTES,
@@ -132,6 +135,37 @@ function requireObject(
     );
   }
   return value as Record<string, unknown>;
+}
+
+/** Longest accepted off-the-record marker phrase. */
+const MAX_MARKER_PHRASE_LENGTH = 128;
+/** Longest accepted filler token. */
+const MAX_FILLER_TOKEN_LENGTH = 64;
+
+/**
+ * Parse an optional array of non-empty phrases. Rejects a non-array, a
+ * non-string entry, a blank entry, and an over-long entry — an operator
+ * privacy phrase that is silently discarded is the failure this parser
+ * exists to prevent (issue #2196).
+ */
+function parsePhraseList(
+  value: unknown,
+  keyPath: string,
+  maxLength: number,
+): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`${keyPath} must be an array of strings`);
+  }
+  return value.map((entry, index) => {
+    if (typeof entry !== "string" || entry.trim().length === 0) {
+      throw new Error(`${keyPath}[${index}] must be a non-empty string`);
+    }
+    if (entry.length > maxLength) {
+      throw new Error(`${keyPath}[${index}] exceeds ${maxLength} characters`);
+    }
+    return entry.trim();
+  });
 }
 
 function parseBool(
@@ -411,6 +445,68 @@ export function parseWearablesConfig(value: unknown): WearablesConfig {
     compileRedactionPatterns(redactionPatterns);
   }
 
+  const offTheRecordEnabled = parseBool(
+    raw.offTheRecordEnabled,
+    "wearables.offTheRecordEnabled",
+    defaults.offTheRecordEnabled,
+  );
+  const rawMarkers =
+    raw.offTheRecordMarkers === undefined
+      ? {}
+      : requireObject(raw.offTheRecordMarkers, "wearables.offTheRecordMarkers");
+  // A typo such as `starts:` would otherwise be dropped without a word,
+  // and the operator would believe a private span is protected. Core and
+  // standalone callers never see OpenClaw's JSON schema, so the check
+  // belongs here. Keys are compared literally so the config-contract
+  // extractor can still enumerate this parser's surface.
+  const {
+    start: rawMarkerStart,
+    end: rawMarkerEnd,
+    useBuiltIns: rawMarkerUseBuiltIns,
+    ...unknownMarkerKeys
+  } = rawMarkers;
+  const unknownMarkerNames = Object.keys(unknownMarkerKeys);
+  if (unknownMarkerNames.length > 0) {
+    throw new Error(
+      `wearables.offTheRecordMarkers has unknown key(s) ${unknownMarkerNames.sort().join(", ")} — valid keys are start, end, useBuiltIns`,
+    );
+  }
+  const offTheRecordMarkers: OffTheRecordMarkerSettings = {
+    start: parsePhraseList(
+      rawMarkerStart,
+      "wearables.offTheRecordMarkers.start",
+      MAX_MARKER_PHRASE_LENGTH,
+    ),
+    end: parsePhraseList(
+      rawMarkerEnd,
+      "wearables.offTheRecordMarkers.end",
+      MAX_MARKER_PHRASE_LENGTH,
+    ),
+    useBuiltIns: parseBool(
+      rawMarkerUseBuiltIns,
+      "wearables.offTheRecordMarkers.useBuiltIns",
+      defaults.offTheRecordMarkers.useBuiltIns,
+    ),
+  };
+  // A silent no-op is the exact failure this feature exists to remove
+  // (issue #2196): turning the built-ins off without supplying a start
+  // phrase would leave the gate on and matching nothing.
+  if (
+    offTheRecordEnabled &&
+    !offTheRecordMarkers.useBuiltIns &&
+    offTheRecordMarkers.start.length === 0
+  ) {
+    throw new Error(
+      "wearables.offTheRecordMarkers.useBuiltIns is false but no start phrase is configured — add wearables.offTheRecordMarkers.start, or set wearables.offTheRecordEnabled to false",
+    );
+  }
+
+  const fillerTokens = parsePhraseList(
+    raw.fillerTokens,
+    "wearables.fillerTokens",
+    MAX_FILLER_TOKEN_LENGTH,
+  );
+
   const parseBoundedInt = (
     value: unknown,
     name: string,
@@ -488,11 +584,9 @@ export function parseWearablesConfig(value: unknown): WearablesConfig {
       defaults.redactionEnabled,
     ),
     redactionPatterns,
-    offTheRecordEnabled: parseBool(
-      raw.offTheRecordEnabled,
-      "wearables.offTheRecordEnabled",
-      defaults.offTheRecordEnabled,
-    ),
+    offTheRecordEnabled,
+    offTheRecordMarkers,
+    fillerTokens,
     digestEnabled: parseBool(
       raw.digestEnabled,
       "wearables.digestEnabled",

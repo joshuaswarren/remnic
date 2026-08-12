@@ -277,3 +277,65 @@ test("fusion knobs reject non-positive integers", () => {
 test("fusion block must be an object when present", () => {
   assert.throws(() => parseWearablesConfig({ fusion: "on" }), /must be an object/);
 });
+
+test("off-the-record marker phrases and filler tokens parse", () => {
+  const parsed = parseWearablesConfig({
+    offTheRecordMarkers: {
+      start: ["  poza protokołem  "],
+      end: ["z powrotem do protokołu"],
+    },
+    fillerTokens: ["bueno", "那个"],
+  });
+  assert.deepEqual(parsed.offTheRecordMarkers.start, ["poza protokołem"]);
+  assert.deepEqual(parsed.offTheRecordMarkers.end, ["z powrotem do protokołu"]);
+  assert.equal(parsed.offTheRecordMarkers.useBuiltIns, true);
+  assert.deepEqual(parsed.fillerTokens, ["bueno", "那个"]);
+});
+
+test("marker and filler lists reject unusable entries loudly", () => {
+  assert.throws(
+    () => parseWearablesConfig({ offTheRecordMarkers: { start: "poza" } }),
+    /offTheRecordMarkers\.start must be an array of strings/,
+  );
+  assert.throws(
+    () => parseWearablesConfig({ offTheRecordMarkers: { end: ["  "] } }),
+    /offTheRecordMarkers\.end\[0\] must be a non-empty string/,
+  );
+  assert.throws(
+    () => parseWearablesConfig({ fillerTokens: ["a".repeat(65)] }),
+    /fillerTokens\[0\] exceeds 64 characters/,
+  );
+  assert.throws(
+    () => parseWearablesConfig({ offTheRecordMarkers: { start: ["a".repeat(129)] } }),
+    /offTheRecordMarkers\.start\[0\] exceeds 128 characters/,
+  );
+  assert.throws(
+    () => parseWearablesConfig({ offTheRecordMarkers: [] }),
+    /offTheRecordMarkers must be an object/,
+  );
+});
+
+test("disabling built-in markers without a start phrase is rejected, not silent", () => {
+  assert.throws(
+    () =>
+      parseWearablesConfig({
+        offTheRecordEnabled: true,
+        offTheRecordMarkers: { useBuiltIns: false },
+      }),
+    /useBuiltIns is false but no start phrase is configured/,
+  );
+  // Turning the whole feature off is the documented escape hatch.
+  const parsed = parseWearablesConfig({
+    offTheRecordEnabled: false,
+    offTheRecordMarkers: { useBuiltIns: false },
+  });
+  assert.equal(parsed.offTheRecordEnabled, false);
+  assert.equal(parsed.offTheRecordMarkers.useBuiltIns, false);
+});
+
+test("an unknown off-the-record marker key is rejected, not dropped", () => {
+  assert.throws(
+    () => parseWearablesConfig({ offTheRecordMarkers: { starts: ["private"] } }),
+    /offTheRecordMarkers has unknown key\(s\) starts/,
+  );
+});

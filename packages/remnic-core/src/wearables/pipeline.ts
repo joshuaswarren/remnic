@@ -37,7 +37,13 @@ import {
   type WearableMemoryGenDeps,
 } from "./memory-gen.js";
 import { tokenizeDayBody, type CorroborationContext } from "./trust.js";
-import { applyOffTheRecord, compileRedactionPatterns, redactText } from "./redaction.js";
+import {
+  applyOffTheRecord,
+  compileOffTheRecordMarkers,
+  compileRedactionPatterns,
+  redactText,
+  type CompiledOffTheRecordMarkers,
+} from "./redaction.js";
 import { loadSpeakerRegistry } from "./speakers.js";
 import {
   loadSyncState,
@@ -259,6 +265,7 @@ function cleanDay(
   config: WearablesConfig,
   userRedaction: RegExp[],
   correctionRules: CompiledCorrectionRule[],
+  offTheRecordMarkers: CompiledOffTheRecordMarkers,
 ): CleanedDay {
   const { offTheRecordEnabled, redactionEnabled } = config;
   const out: CleanedDay = {
@@ -271,11 +278,15 @@ function cleanDay(
   for (const conversation of raw) {
     let current = conversation;
     if (offTheRecordEnabled) {
-      const otr = applyOffTheRecord(current);
+      const otr = applyOffTheRecord(current, offTheRecordMarkers);
       current = otr.conversation;
       out.segmentsDropped += otr.droppedSegments;
     }
-    const cleaned = cleanConversation(current, settings.cleanup);
+    const cleaned = cleanConversation(
+      current,
+      settings.cleanup,
+      config.fillerTokens,
+    );
     current = cleaned.conversation;
     out.segmentsDropped += cleaned.droppedSegments;
 
@@ -337,6 +348,9 @@ export async function syncWearableSource(
     ...compileCorrectionRules(stateRules, "state corrections"),
   ];
   const userRedaction = compileRedactionPatterns(config.redactionPatterns);
+  const offTheRecordMarkers = compileOffTheRecordMarkers(
+    config.offTheRecordMarkers,
+  );
 
   let syncState = await loadSyncState(deps.memoryDir);
   const previousState = syncState.sources[connector.id];
@@ -360,6 +374,7 @@ export async function syncWearableSource(
       config,
       userRedaction,
       correctionRules,
+      offTheRecordMarkers,
     );
     summary.conversations += cleaned.conversations.length;
     summary.segmentsKept += cleaned.segmentsKept;

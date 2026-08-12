@@ -1039,3 +1039,39 @@ test("a transcript write failure prevents the sync watermark from advancing", as
     rmSync(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("configured non-English off-the-record markers elide a span end to end", async () => {
+  const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-otr-"));
+  try {
+    const byDate = {
+      "2026-06-11": [
+        makeConversation("c1", "2026-06-11", [
+          { speaker: "user", isWearer: true, text: "えーと、ここからはオフレコでお願いします。" },
+          { speaker: "Speaker 2", text: "買収の金額は非公開です。" },
+          { speaker: "user", isWearer: true, text: "オンレコに戻ります。" },
+          { speaker: "Speaker 2", text: "bueno, 天気の話をしましょう。" },
+        ]),
+      ],
+    };
+    const { deps, written } = makeDeps(memoryDir);
+    const summary = await syncWearableSource(
+      fakeConnector(byDate),
+      settings({ memoryMode: "off" }),
+      config({ offTheRecordEnabled: true, fillerTokens: ["bueno"] }),
+      { days: 1 },
+      deps,
+    );
+
+    assert.equal(summary.transcriptsWritten.length, 1);
+    const body = written[0]?.serialized ?? "";
+    assert.ok(!body.includes("買収の金額は非公開です"), "off-record segment must not be stored");
+    assert.ok(body.includes("[off the record"), "elision placeholder is visible");
+    assert.ok(body.includes("[back on the record]"), "span closes on the Japanese end marker");
+    assert.ok(body.includes("天気の話をしましょう"), "on-record speech survives");
+    assert.ok(!body.includes("えーと"), "Japanese filler is stripped");
+    assert.ok(!body.includes("bueno"), "configured filler token is stripped");
+    assert.equal(summary.segmentsDropped, 1);
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});

@@ -1,83 +1,85 @@
-# Theory: Safe Unicode Identity Migration
+# Theory: Wearable Privacy Beyond English
 
 ## Problem
 
-Remnic used an ASCII-only normalizer for content hashes and duplicate checks.
+An always-on recorder captures speech in the wearer's own language.
 
-That normalizer erased CJK and other non-ASCII text. Distinct facts could share the empty-string hash.
+The transcript pipeline treated every language as English.
 
-Equivalent Unicode forms could also miss each other without canonical composition.
+The off-the-record feature matched three English words. A wearer who spoke
+Japanese, Korean, Chinese, Arabic, or Russian got no elision at all.
 
-Changing the normalizer fixes new writes but makes persisted identities stale.
+Filler stripping matched English tokens. Non-English transcripts kept every
+filler.
 
-Tombstones and fact-hash indexes must migrate without trusting lossy legacy aliases.
+A privacy control that silently does nothing is worse than one documented as
+absent. The wearer believes the span is protected. It is not.
 
 ## Operating theory
 
-NFC normalization makes canonically equivalent Unicode text stable.
+Two separate defects share one root cause: both features assumed that words are
+separated by spaces and written in Latin script.
 
-Unicode letter, mark, and number classes retain meaningful text across scripts.
+A word boundary is a property of a script, not of text. Japanese, Chinese, and
+Kana runs have no boundary character. A regular expression that requires one
+can never match inside them.
 
-Legacy hashes are evidence only when the old and current normalized text are equal and non-empty.
+So boundary handling is decided per phrase edge. A phrase that starts or ends
+with a Latin, Cyrillic, Greek, or numeric character gets a letter boundary. Any
+other edge gets none.
 
-An empty or changed legacy form cannot identify Unicode content safely.
+This single rule makes one matcher correct for every script.
 
-The system preserves ambiguous persisted identities but does not query them as aliases for new content.
+## Strategy
 
-## Migration strategy
+Built-in phrases cover a documented language set. Operators add more. Nothing
+is hard-coded to one deployment.
 
-Stored content has up to three verified identity forms: raw content, cited content, and the full attributed body.
+Start phrases and end phrases carry different risk. A start phrase that fires
+wrongly elides real speech. An end phrase that fires wrongly leaks protected
+speech.
 
-The persisted hash selects the historic identity form. The system computes a current hash only after that match.
+So the end list is shorter than the start list. A start phrase with no matching
+end phrase elides through the end of the conversation. That is the fail-closed
+direction.
 
-This rule preserves explicit `contentHashSource` identities and old full-body hashes without making legacy hashes global aliases.
+Filler tokens divide the same way. Space-delimited scripts use whole-token
+matching. Japanese and Chinese fillers are removed inline, so each inline entry
+must be unambiguous on its own. The elongated hesitation forms qualify. A bare
+Japanese demonstrative does not, because it carries meaning.
 
-Tombstones can retain a current alias only when both forms come from the same source memory.
+Operator tokens apply to every script. Routing them by script hint would drop a
+token the operator deliberately added.
 
-The tombstone store reads legacy sources from hot, cold, and archive storage.
+## Silence is the failure mode
 
-It reads source IDs in bounded batches and completes every available batch before publishing its index.
+Config parsing rejects every unusable value loudly. A blank phrase, an
+over-long phrase, or a non-array throws with the exact key path.
 
-Unavailable sources remain unversioned. A later load retries them after the source becomes available.
+Turning the built-in phrases off while the feature stays enabled and no start
+phrase is configured also throws. That combination would leave the gate on and
+match nothing, which recreates the original defect.
 
-Unverified entries remain in the ledger and keyed tier.
+The documented escape hatch is `offTheRecordEnabled: false`.
 
-Their exact, normalized, and semantic tiers stay hidden until source verification succeeds.
+## What stays language-dependent
 
-Migration or ledger-read failures leave the tombstone store unloaded.
+Built-in identifier redaction covers US formats only. Other national formats
+need operator patterns.
 
-The failed call returns the error. The next call retries before any legacy identity becomes authoritative.
+Repeat-collapse and the low-quality heuristic still use space-delimited
+signals.
 
-Malformed JSONL rows stay byte-for-byte while valid rows migrate in place.
-
-The fact-hash index registers every stored identity form that matches an ambiguous legacy hash.
-
-This bounded set preserves recoverable explicit sources without making a lossy hash a global alias.
-
-The reconcile manifest uses the same source-verified identity selection.
-
-Ambiguous legacy hashes never suppress unrelated current Unicode content.
-
-Entity repair re-runs the tombstone gate with the final entity reference and structured attributes.
-
-## Deduplication strategy
-
-Duplicate comparison tokenizes Unicode letters, marks, and numbers.
-
-It supports scripts without whitespace, including Japanese and Korean.
-
-Embedded punctuation records both the mark and its semantic character position.
-
-Terminal sentence punctuation remains compatible with normalized exact matches.
+Both limits are stated in the documentation. They are known gaps, not silent
+ones.
 
 ## Verification state
 
-The 111-test focused identity suite passes, including unavailable-source, migration, and ledger-read recovery.
+The 231-test wearables suite passes.
 
-The core type check passes.
+The workspace type check passes.
 
-The storage line ratchet passes at 7,314 lines, below its 7,315-line ceiling.
+The config contract validates, and the stale `wearables` grandfather entry is
+pruned.
 
-The mandatory preflight and entity-hardening gates passed before the final review fixes.
-
-They require one fresh run on the final commit before merge.
+The line ratchet passes.
