@@ -11,7 +11,8 @@ test("OpenClaw gateway models draft support cards without a direct OpenAI key", 
   const models: string[] = [];
   const authorizationHeaders: Array<string | null> = [];
   globalThis.fetch = (async (_url, init) => {
-    const body = JSON.parse(String(init?.body)) as { model: string };
+    assert.ok(init?.body, "The gateway request must include a body.");
+    const body = JSON.parse(String(init.body)) as { model: string };
     models.push(body.model);
     authorizationHeaders.push(new Headers(init?.headers).get("authorization"));
     const content =
