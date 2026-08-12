@@ -113,7 +113,7 @@ export async function ensurePrivateDirectoryNoFollow(
   trustedRoot: string,
   directory: string,
   errorMessage: string,
-  syncCreatedParent: (handle: FileHandle) => Promise<void> = syncDirectoryHandle
+  syncVerifiedParent: (handle: FileHandle) => Promise<void> = syncDirectoryHandle
 ): Promise<void> {
   const root = path.resolve(trustedRoot);
   const target = path.resolve(directory);
@@ -130,17 +130,15 @@ export async function ensurePrivateDirectoryNoFollow(
     for (const component of components) {
       const pinnedParent = await pinnedDirectoryPath(current.handle, current.opened, errorMessage);
       const childPath = path.join(pinnedParent, component);
-      let created = false;
       try {
         await mkdir(childPath, { mode: 0o700 });
-        created = true;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       }
+      await syncVerifiedParent(current.handle);
       const child = await openDirectoryNoFollow(childPath, errorMessage);
       handles.push(child.handle);
       await child.handle.chmod(0o700);
-      if (created) await syncCreatedParent(current.handle);
       assertStableDirectory(current.before, current.opened, await lstat(currentPath), errorMessage);
       currentPath = path.join(currentPath, component);
       current = child;
