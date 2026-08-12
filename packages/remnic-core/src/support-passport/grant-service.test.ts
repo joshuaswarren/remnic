@@ -134,7 +134,10 @@ test("owner grant listings read only the indexed owner grants", async () => {
 
     const listed = await store.listForOwner("shared", "owner:alice");
 
-    assert.deepEqual(listed.map((state) => state.grantId), [alice.state.grantId]);
+    assert.deepEqual(
+      listed.map((state) => state.grantId),
+      [alice.state.grantId]
+    );
     assert.deepEqual(readGrantIds, [alice.state.grantId]);
     assert.notEqual(alice.state.grantId, bob.state.grantId);
   } finally {
@@ -177,8 +180,7 @@ test("owner grant history stays bounded while an inactive link frees capacity", 
     let nextGrantId = 1;
     const store = new SupportPassportGrantStore({
       memoryDir: root,
-      makeGrantId: () =>
-        `00000000-0000-4000-8000-${String(nextGrantId++).padStart(12, "0")}`,
+      makeGrantId: () => `00000000-0000-4000-8000-${String(nextGrantId++).padStart(12, "0")}`,
       now: () => now,
     });
     const input = {
@@ -210,10 +212,7 @@ test("owner grant history stays bounded while an inactive link frees capacity", 
     inspected.writeOwnerIndex = async () => {
       throw Object.assign(new Error("simulated owner index write failure"), { code: "EIO" });
     };
-    await assert.rejects(
-      store.create(input),
-      (error: unknown) => (error as NodeJS.ErrnoException).code === "EIO"
-    );
+    await assert.rejects(store.create(input), (error: unknown) => (error as NodeJS.ErrnoException).code === "EIO");
     inspected.writeOwnerIndex = writeOwnerIndex;
     assert.equal((await lstat(firstGrantPath)).isFile(), true);
     assert.equal((await store.listForOwner(input.namespace, input.principal)).length, 100);
@@ -224,21 +223,21 @@ test("owner grant history stays bounded while an inactive link frees capacity", 
       }
       return await readState(grantId);
     };
-    await assert.rejects(
-      store.create(input),
-      (error: unknown) => (error as NodeJS.ErrnoException).code === "EIO"
-    );
+    await assert.rejects(store.create(input), (error: unknown) => (error as NodeJS.ErrnoException).code === "EIO");
     inspected.readState = readState;
     assert.equal((await store.listForOwner(input.namespace, input.principal)).length, 100);
     const replacement = await store.create(input);
     const listed = await store.listForOwner(input.namespace, input.principal);
     assert.equal(listed.length, 100);
-    assert.equal(listed.some((state) => state.grantId === first.state.grantId), false);
-    assert.equal(listed.some((state) => state.grantId === replacement.state.grantId), true);
-    await assert.rejects(
-      lstat(firstGrantPath),
-      (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT"
+    assert.equal(
+      listed.some((state) => state.grantId === first.state.grantId),
+      false
     );
+    assert.equal(
+      listed.some((state) => state.grantId === replacement.state.grantId),
+      true
+    );
+    await assert.rejects(lstat(firstGrantPath), (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -509,8 +508,10 @@ test("bad secrets return not found, while valid revoked and expired grants revea
   }
 });
 
-test("a revoke during a helper read never returns the old guide", async () => {
+test("revocation waits until helper guide assembly completes", async () => {
   const subject = await makeSubject();
+  const cardReadStarted = Promise.withResolvers<void>();
+  const releaseCardRead = Promise.withResolvers<void>();
   try {
     const card = await createActiveCard(subject);
     const created = await subject.grantService.createGrant({
@@ -520,61 +521,47 @@ test("a revoke during a helper read never returns the old guide", async () => {
     });
     const peerStore = new SupportPassportGrantStore({ memoryDir: path.join(subject.root, "shared"), now: subject.now });
     const getMemoryById = subject.aliceStorage.getMemoryById.bind(subject.aliceStorage);
-    let revoked = false;
-    subject.aliceStorage.getMemoryById = async (memoryId: string) => {
-      if (!revoked) {
-        revoked = true;
-        await peerStore.revoke({
-          namespace: "alice",
-          principal: "owner:alice",
-          grantId: created.grant.grantId,
-          expectedStateVersion: created.grant.stateVersion,
-        });
-      }
-      return await getMemoryById(memoryId);
-    };
-
-    await assert.rejects(
-      subject.grantService.readGrant({ grantId: created.grant.grantId, secret: created.secret }),
-      (error: unknown) => error instanceof SupportPassportError && error.code === "grant_gone"
-    );
-  } finally {
-    await subject.cleanup();
-  }
-});
-
-test("a revoke during the confirmed card read never returns the old guide", async () => {
-  const subject = await makeSubject();
-  try {
-    const card = await createActiveCard(subject);
-    const created = await subject.grantService.createGrant({
-      principal: "owner:alice",
-      cards: [{ cardId: card.cardId, revision: card.revision }],
-      expiresAt: expiryAfter(subject, 3_600_000),
-    });
-    const peerStore = new SupportPassportGrantStore({ memoryDir: path.join(subject.root, "shared"), now: subject.now });
-    const getMemoryById = subject.aliceStorage.getMemoryById.bind(subject.aliceStorage);
-    let reads = 0;
+    let paused = false;
     subject.aliceStorage.getMemoryById = async (memoryId: string) => {
       const memory = await getMemoryById(memoryId);
-      reads += 1;
-      if (reads === 2) {
-        await peerStore.revoke({
-          namespace: "alice",
-          principal: "owner:alice",
-          grantId: created.grant.grantId,
-          expectedStateVersion: created.grant.stateVersion,
-        });
+      if (!paused) {
+        paused = true;
+        cardReadStarted.resolve();
+        await releaseCardRead.promise;
       }
       return memory;
     };
 
+    const readPromise = subject.grantService.readGrant({
+      grantId: created.grant.grantId,
+      secret: created.secret,
+    });
+    await cardReadStarted.promise;
+    let revokeSettled = false;
+    const revokePromise = peerStore
+      .revoke({
+        namespace: "alice",
+        principal: "owner:alice",
+        grantId: created.grant.grantId,
+        expectedStateVersion: created.grant.stateVersion,
+      })
+      .finally(() => {
+        revokeSettled = true;
+      });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(revokeSettled, false);
+
+    releaseCardRead.resolve();
+    const guide = await readPromise;
+    assert.equal(guide.cards[0]?.cardId, card.cardId);
+    await revokePromise;
+    assert.equal(revokeSettled, true);
     await assert.rejects(
       subject.grantService.readGrant({ grantId: created.grant.grantId, secret: created.secret }),
       (error: unknown) => error instanceof SupportPassportError && error.code === "grant_gone"
     );
-    assert.equal(reads, 2);
   } finally {
+    releaseCardRead.resolve();
     await subject.cleanup();
   }
 });
@@ -595,7 +582,7 @@ test("final helper guide assembly blocks card withdrawal", async () => {
     subject.grantStore.authenticate = async (grantId, secret) => {
       const state = await authenticate(grantId, secret);
       authentications += 1;
-      if (authentications === 3) {
+      if (authentications === 2) {
         finalAuthenticationStarted.resolve();
         await releaseFinalAuthentication.promise;
       }
@@ -645,7 +632,7 @@ test("helper guide assembly fails when owner-lock ownership is lost", async () =
     subject.grantStore.authenticate = async (grantId, secret) => {
       const state = await authenticate(grantId, secret);
       authentications += 1;
-      if (authentications === 3) {
+      if (authentications === 2) {
         const lockPath = path.join(subject.aliceStorage.dir, "state", "support-passport-cards.lock");
         await writeFile(lockPath, `${process.pid} 00000000-0000-4000-8000-000000000000 peer\n`);
       }
@@ -683,39 +670,6 @@ test("a changed card makes the whole grant stale without a partial guide", async
     await assert.rejects(
       subject.grantService.readGrant({ grantId: created.grant.grantId, secret: created.secret }),
       (error: unknown) => error instanceof SupportPassportError && error.code === "grant_stale" && error.status === 410
-    );
-  } finally {
-    await subject.cleanup();
-  }
-});
-
-test("a card changed while a helper guide is assembled never returns the old guide", async () => {
-  const subject = await makeSubject();
-  try {
-    const card = await createActiveCard(subject);
-    const created = await subject.grantService.createGrant({
-      principal: "owner:alice",
-      cards: [{ cardId: card.cardId, revision: card.revision }],
-      expiresAt: expiryAfter(subject, 3_600_000),
-    });
-    const getMemoryById = subject.aliceStorage.getMemoryById.bind(subject.aliceStorage);
-    let reads = 0;
-    subject.aliceStorage.getMemoryById = async (memoryId: string) => {
-      const memory = await getMemoryById(memoryId);
-      reads += 1;
-      if (reads === 1) {
-        await subject.cardService.withdrawCard({
-          principal: "owner:alice",
-          cardId: card.cardId,
-          expectedRevision: card.revision,
-        });
-      }
-      return memory;
-    };
-
-    await assert.rejects(
-      subject.grantService.readGrant({ grantId: created.grant.grantId, secret: created.secret }),
-      (error: unknown) => error instanceof SupportPassportError && error.code === "grant_stale"
     );
   } finally {
     await subject.cleanup();
@@ -816,10 +770,7 @@ test("grant cleanup never follows a swapped grant directory", async () => {
       removeGrantStates(grantIds: string[]): Promise<void>;
     };
 
-    await assert.rejects(
-      inspected.removeGrantStates([grantId]),
-      /regular files in a stable directory/
-    );
+    await assert.rejects(inspected.removeGrantStates([grantId]), /regular files in a stable directory/);
     assert.equal(await readFile(path.join(outsideDir, fileName), "utf8"), "outside must remain");
     assert.equal((await lstat(path.join(parkedDir, fileName))).isFile(), true);
   } finally {
