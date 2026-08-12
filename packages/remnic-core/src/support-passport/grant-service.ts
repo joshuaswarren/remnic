@@ -51,7 +51,7 @@ export class SupportPassportGrantService {
       for (const cardRef of parsed.data.cards) {
         const memory = await owner.storage.getMemoryById(cardRef.cardId);
         const stored = memory ? projectSupportPassportCard(memory) : null;
-        if (!stored || stored.card.status !== "active") {
+        if (!stored || stored.namespace !== owner.namespace || stored.card.status !== "active") {
           throw new SupportPassportError("invalid_card_status", "Only approved support cards can be shared.", 409);
         }
         if (stored.card.revision !== cardRef.revision) {
@@ -91,12 +91,15 @@ export class SupportPassportGrantService {
     if (!parsed.success) throw invalidInput();
     const owner = await this.resolveOwner(parsed.data.principal);
     return await withSupportPassportOwnerLock(owner.storage, async (ownerLock) => {
-      const state = await this.grantStore.revoke({
-        grantId: parsed.data.grantId,
-        namespace: owner.namespace,
-        principal: owner.principal,
-        expectedStateVersion: parsed.data.expectedStateVersion,
-      }, async () => await requireSupportPassportOwnerLock(ownerLock));
+      const state = await this.grantStore.revoke(
+        {
+          grantId: parsed.data.grantId,
+          namespace: owner.namespace,
+          principal: owner.principal,
+          expectedStateVersion: parsed.data.expectedStateVersion,
+        },
+        async () => await requireSupportPassportOwnerLock(ownerLock)
+      );
       await requireSupportPassportOwnerLock(ownerLock);
       return this.ownerGrant(state);
     });
@@ -146,18 +149,25 @@ export class SupportPassportGrantService {
   }
 
   private async readGrantCards(storage: StorageManager, state: SupportPassportGrantState) {
-    return await Promise.all(state.cards.map(async (cardRef) => {
-      const memory = await storage.getMemoryById(cardRef.cardId);
-      const stored = memory ? projectSupportPassportCard(memory) : null;
-      if (!stored || stored.card.status !== "active" || stored.card.revision !== cardRef.revision) {
-        throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
-      }
-      const publicCard = this.publicCard(stored.card);
-      if (!publicCard.success) {
-        throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
-      }
-      return publicCard.data;
-    }));
+    return await Promise.all(
+      state.cards.map(async (cardRef) => {
+        const memory = await storage.getMemoryById(cardRef.cardId);
+        const stored = memory ? projectSupportPassportCard(memory) : null;
+        if (
+          !stored ||
+          stored.namespace !== state.namespace ||
+          stored.card.status !== "active" ||
+          stored.card.revision !== cardRef.revision
+        ) {
+          throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
+        }
+        const publicCard = this.publicCard(stored.card);
+        if (!publicCard.success) {
+          throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
+        }
+        return publicCard.data;
+      })
+    );
   }
 
   private publicCard(card: {
