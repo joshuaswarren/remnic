@@ -20,6 +20,7 @@ function makeMemory(
     blockedBy?: string;
     archivedAt?: string;
     supersededBy?: string;
+    namespace?: string;
   } = {}
 ): MemoryFile {
   return {
@@ -39,6 +40,7 @@ function makeMemory(
       supersededBy: overrides.supersededBy,
       tags: ["support-passport-card"],
       structuredAttributes: {
+        ...(overrides.namespace === "" ? {} : { "support-passport-namespace": overrides.namespace ?? "alice" }),
         "support-passport-title": overrides.title ?? "Quiet space",
         "support-passport-category": overrides.supportCategory ?? "environment",
         "support-passport-order": overrides.order ?? "0",
@@ -67,6 +69,7 @@ test("card projection normalizes IDs and public fields before revision hashing",
   assert.equal(projected.card.title, "Quiet space");
   assert.equal(projected.card.statement, "Offer me a quiet place and time.");
   assert.deepEqual(projected.sourceMemoryIds, ["source-1", "source-2"]);
+  assert.equal(projected.namespace, "alice");
   const { revision, ...fields } = projected.card;
   assert.equal(revision, computeSupportPassportCardRevision(fields));
 });
@@ -80,6 +83,7 @@ test("card projection rejects superseded status without relying on supersededBy"
 });
 
 test("card projection rejects invalid lifecycle and category fields", () => {
+  assert.equal(projectSupportPassportCard(makeMemory({ namespace: "" })), null);
   assert.equal(projectSupportPassportCard(makeMemory({ supportCategory: "medical" })), null);
   assert.equal(projectSupportPassportCard(makeMemory({ status: "published" })), null);
   assert.equal(projectSupportPassportCard(makeMemory({ blockedBy: "memory-review" })), null);
