@@ -52,20 +52,23 @@ async function syncDirectoryHandle(handle: FileHandle): Promise<void> {
 }
 
 async function pinnedDirectoryPath(
-  directory: string,
   handle: FileHandle,
   opened: Stats,
   errorMessage: string
 ): Promise<string> {
-  const descriptorRoot =
-    process.platform === "linux" ? "/proc/self/fd" : process.platform === "darwin" ? "/dev/fd" : null;
-  if (!descriptorRoot) return directory;
+  const descriptorRoot = requirePrivateFileDescriptorRoot(process.platform, errorMessage);
   const pinnedPath = path.join(descriptorRoot, String(handle.fd));
   const metadata = await stat(pinnedPath);
   if (!metadata.isDirectory() || metadata.dev !== opened.dev || metadata.ino !== opened.ino) {
     throw new Error(errorMessage);
   }
   return pinnedPath;
+}
+
+export function requirePrivateFileDescriptorRoot(platform: NodeJS.Platform, errorMessage: string): string {
+  if (platform === "linux") return "/proc/self/fd";
+  if (platform === "darwin") return "/dev/fd";
+  throw new Error(errorMessage);
 }
 
 async function openStableDirectoryFromRoot(
@@ -91,7 +94,7 @@ async function openStableDirectoryFromRoot(
     let current = await openDirectoryNoFollow(root, errorMessage);
     handles.push(current.handle);
     for (const component of components) {
-      const pinnedParent = await pinnedDirectoryPath(currentPath, current.handle, current.opened, errorMessage);
+      const pinnedParent = await pinnedDirectoryPath(current.handle, current.opened, errorMessage);
       const child = await openDirectoryNoFollow(path.join(pinnedParent, component), errorMessage);
       handles.push(child.handle);
       assertStableDirectory(current.before, current.opened, await lstat(currentPath), errorMessage);
@@ -119,7 +122,7 @@ export async function readPrivateFileNoFollow(
   try {
     const stableDirectory = await openStableDirectoryFromRoot(trustedRoot, directory, errorMessage);
     directoryHandles = stableDirectory.handles;
-    const pinnedDirectory = await pinnedDirectoryPath(directory, stableDirectory.handle, stableDirectory.opened, errorMessage);
+    const pinnedDirectory = await pinnedDirectoryPath(stableDirectory.handle, stableDirectory.opened, errorMessage);
     try {
       fileHandle = await open(path.join(pinnedDirectory, targetName), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
     } catch (error) {
@@ -155,7 +158,7 @@ export async function appendPrivateFileNoFollow(
   try {
     const stableDirectory = await openStableDirectoryFromRoot(trustedRoot, directory, errorMessage);
     directoryHandles = stableDirectory.handles;
-    const pinnedDirectory = await pinnedDirectoryPath(directory, stableDirectory.handle, stableDirectory.opened, errorMessage);
+    const pinnedDirectory = await pinnedDirectoryPath(stableDirectory.handle, stableDirectory.opened, errorMessage);
     try {
       fileHandle = await open(
         path.join(pinnedDirectory, targetName),
@@ -199,7 +202,7 @@ export async function writePrivateFileAtomicallyNoFollow(
   try {
     const stableDirectory = await openStableDirectoryFromRoot(trustedRoot, directory, errorMessage);
     directoryHandles = stableDirectory.handles;
-    const pinnedDirectory = await pinnedDirectoryPath(directory, stableDirectory.handle, stableDirectory.opened, errorMessage);
+    const pinnedDirectory = await pinnedDirectoryPath(stableDirectory.handle, stableDirectory.opened, errorMessage);
     tempPath = path.join(pinnedDirectory, tempName);
     const targetPath = path.join(pinnedDirectory, targetName);
     try {
@@ -248,7 +251,7 @@ export async function removePrivateFilesNoFollow(
   try {
     const stableDirectory = await openStableDirectoryFromRoot(trustedRoot, directory, errorMessage);
     directoryHandles = stableDirectory.handles;
-    const pinnedDirectory = await pinnedDirectoryPath(directory, stableDirectory.handle, stableDirectory.opened, errorMessage);
+    const pinnedDirectory = await pinnedDirectoryPath(stableDirectory.handle, stableDirectory.opened, errorMessage);
     for (const fileName of fileNames) {
       await rm(path.join(pinnedDirectory, fileName), { force: true });
     }

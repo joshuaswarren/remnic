@@ -187,6 +187,11 @@ export class SupportPassportGrantStore {
       const state = await this.authenticate(grantId, secret);
       const result = await task(state);
       await this.requireMutationLock(lock);
+      const finalState = await this.authenticate(grantId, secret);
+      await this.requireMutationLock(lock);
+      if (finalState.stateVersion !== state.stateVersion) {
+        throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
+      }
       return result;
     });
   }
