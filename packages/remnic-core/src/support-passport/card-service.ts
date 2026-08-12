@@ -29,6 +29,7 @@ import {
 } from "./contracts.js";
 import { SupportPassportError } from "./errors.js";
 import { withSupportPassportOwnerLock } from "./owner-lock.js";
+import { type SupportPassportDraftCard, SupportPassportDraftOutputSchema } from "./model-contracts.js";
 
 export interface SupportPassportOwnerScope {
   principal: string;
@@ -97,6 +98,80 @@ export class SupportPassportCardService {
         namespace
       )
     );
+  }
+
+  async createGeneratedDrafts(input: {
+    principal: string;
+    cards: SupportPassportDraftCard[];
+  }): Promise<SupportPassportCard[]> {
+    const principal = SupportPassportListCardsInputSchema.safeParse({ principal: input.principal });
+    if (!principal.success) throw invalidInput();
+    const owner = await this.resolveOwner(principal.data.principal);
+    return await this.createGeneratedDraftsForOwner({ owner, cards: input.cards });
+  }
+
+  async createGeneratedDraftsForOwner(input: {
+    owner: SupportPassportOwnerScope;
+    cards: SupportPassportDraftCard[];
+    signal?: AbortSignal;
+    validateSources?: () => Promise<void>;
+  }): Promise<SupportPassportCard[]> {
+    const output = SupportPassportDraftOutputSchema.safeParse({ cards: input.cards });
+    if (!output.success) throw invalidInput();
+    const { storage } = input.owner;
+    return await this.withOwnerLock(storage, async (lock) => {
+      const created: SupportPassportCard[] = [];
+      const createdIds: string[] = [];
+      try {
+        input.signal?.throwIfAborted();
+        await input.validateSources?.();
+        input.signal?.throwIfAborted();
+        for (const card of output.data.cards) {
+          input.signal?.throwIfAborted();
+          created.push(
+            await this.createDraft(
+              storage,
+              {
+                title: card.title,
+                statement: card.statement,
+                category: card.category,
+                sourceMemoryIds: card.sourceMemoryIds,
+                onPersisted: (cardId) => createdIds.push(cardId),
+              },
+              lock,
+              input.owner.principal,
+              input.owner.namespace
+            )
+          );
+        }
+        await input.validateSources?.();
+        input.signal?.throwIfAborted();
+        return created;
+      } catch (error) {
+        let rollbackIncomplete = false;
+        for (const cardId of createdIds) {
+          try {
+            if (
+              !(await this.rejectGeneratedDraft(
+                storage,
+                cardId,
+                lock,
+                input.owner.principal,
+                input.owner.namespace
+              ))
+            ) {
+              rollbackIncomplete = true;
+            }
+          } catch {
+            rollbackIncomplete = true;
+          }
+        }
+        if (rollbackIncomplete) {
+          throw new SupportPassportError("storage_conflict", "A generated draft batch could not be rolled back.", 500);
+        }
+        throw error;
+      }
+    });
   }
 
   async replaceCard(input: SupportPassportReplaceCardInput): Promise<SupportPassportCard> {
@@ -304,6 +379,7 @@ export class SupportPassportCardService {
       replacedRevision?: string;
       order?: number;
       draftReplacementPrepared?: boolean;
+      onPersisted?: (cardId: string) => void;
     },
     lock: HeldFileLockController,
     principal: string,
@@ -364,6 +440,7 @@ export class SupportPassportCardService {
     if (written.tombstoneBlocked) {
       throw new SupportPassportError("storage_conflict", "The support card needs memory review before use.", 409);
     }
+    input.onPersisted?.(written.id);
     return this.projectRequiredCard(written.memory, namespace, principal).card;
   }
 
@@ -481,6 +558,31 @@ export class SupportPassportCardService {
         `support passport could not roll back a replacement draft: ${error instanceof Error ? error.message : String(error)}`
       );
     }
+  }
+
+  private async rejectGeneratedDraft(
+    storage: StorageManager,
+    cardId: string,
+    lock: HeldFileLockController,
+    principal: string,
+    namespace: string
+  ): Promise<boolean> {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const memory = await storage.getMemoryById(cardId);
+      if (!memory) return true;
+      const stored = this.projectOwnedCard(memory, namespace);
+      if (!stored) return false;
+      if (stored.card.status === "rejected") return true;
+      if (stored.card.status !== "pending_review") return false;
+      await this.requireOwnerLock(lock);
+      const rejected = await storage.writeMemoryFrontmatterIfUnchanged(
+        memory,
+        { status: "rejected", updated: this.now().toISOString() },
+        { actor: principal, reasonCode: "draft-batch-failed" }
+      );
+      if (rejected) return true;
+    }
+    return false;
   }
 
   private async requireCard(

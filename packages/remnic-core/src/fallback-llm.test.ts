@@ -4,6 +4,7 @@ import test from "node:test";
 
 import { FallbackLlmClient, gatewayTaskChainOptions } from "./fallback-llm.js";
 import { __codexCliFallbackTestHooks } from "./cli-fallback.js";
+import { initLogger, resetLogger } from "./logger.js";
 import { clearModelsJsonCache, __setModelsJsonForTest } from "./models-json.js";
 import {
   __setGatewayRuntimeAuthForModelForTest,
@@ -1649,6 +1650,59 @@ test("fallback llm does NOT append default for a primary-less override that fall
     assert.deepEqual(attemptedModels, ["persona-model"]);
   } finally {
     globalThis.fetch = originalFetch;
+    clearModelsJsonCache();
+    clearSecretCache();
+  }
+});
+
+test("fallback llm redacts provider error bodies for sensitive calls", { concurrency: false }, async () => {
+  clearModelsJsonCache();
+  clearSecretCache();
+  const privateMarker = "private-support-note-must-not-log";
+  const lines: string[] = [];
+  initLogger(
+    {
+      info: (message) => lines.push(message),
+      warn: (message) => lines.push(message),
+      error: (message) => lines.push(message),
+      debug: (message) => lines.push(message),
+    },
+    true,
+    { timestamps: false },
+  );
+  const llm = new FallbackLlmClient({
+    agents: { defaults: { model: { primary: "private-provider/test-model" } } },
+    models: {
+      providers: {
+        "private-provider": {
+          baseUrl: "https://private-provider.example/v1",
+          api: "openai-completions",
+          apiKey: "test-key",
+          models: [],
+        },
+      },
+    },
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ error: { message: privateMarker } }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    })) as typeof fetch;
+
+  try {
+    assert.equal(
+      await llm.chatCompletion(
+        [{ role: "user", content: privateMarker }],
+        { redactProviderErrors: true },
+      ),
+      null,
+    );
+    assert.equal(lines.join("\n").includes(privateMarker), false);
+    assert.match(lines.join("\n"), /provider error details redacted/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetLogger();
     clearModelsJsonCache();
     clearSecretCache();
   }
