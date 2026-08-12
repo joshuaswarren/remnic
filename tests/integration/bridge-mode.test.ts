@@ -29,6 +29,12 @@ const ROOT = path.resolve(__dirname, "../..");
 // thread with Atomics.wait. Fake timers can drive neither side, so the only
 // lever available is a wide margin between the two constants below.
 const PROBE_BUDGET_MS = 2_500;
+/**
+ * Watchdog for the worker startup handshake. Not a boot-time budget: it only
+ * converts a worker that never settles into a named failure instead of a hung
+ * shard (issue #2293).
+ */
+const WORKER_START_WATCHDOG_MS = 30_000;
 const STALLED_DETAILED_HEALTH_MS = 3_000;
 // The auto detector requires the daemon to report the SAME memoryDir, so the
 // stubs below and every detect call agree on one corpus path. It must EXIST:
@@ -99,13 +105,28 @@ setInterval(() => {}, 1000);
 async function startServerWorker(
   source: string,
   workerData: Record<string, unknown>,
+  watchdogMs: number = WORKER_START_WATCHDOG_MS,
 ): Promise<{ worker: Worker; port: number }> {
   const worker = new Worker(new URL(`data:text/javascript,${encodeURIComponent(source)}`), {
     workerData,
   });
   try {
     const port = await new Promise<number>((resolve, reject) => {
-      worker.once("message", (message: { port?: unknown }) => {
+      // A watchdog, not a budget. The 1000 ms handshake this replaced was a
+      // guess at how long a worker needs to boot, and a slow runner blew it
+      // (issue #2293). This bound exists only so a worker that hangs without
+      // posting, erroring, or exiting fails with a clear message instead of
+      // occupying the shard until the CI job timeout — it is orders of
+      // magnitude above any real boot, so it can never decide a healthy run.
+      const watchdog = setTimeout(() => {
+        reject(new Error(`worker never announced a port within ${watchdogMs} ms`));
+      }, watchdogMs);
+      watchdog.unref();
+      const settle = <T>(fn: (value: T) => void) => (value: T) => {
+        clearTimeout(watchdog);
+        fn(value);
+      };
+      worker.once("message", settle((message: { port?: unknown }) => {
         const value = message?.port;
         // A TCP port is 1..65535. Accepting any positive integer would let a
         // worker pass the handshake without a bindable port.
@@ -114,11 +135,14 @@ async function startServerWorker(
           return;
         }
         resolve(value);
-      });
-      worker.once("error", reject);
-      worker.once("exit", (code) => {
-        reject(new Error(`worker exited with code ${code} before it started listening`));
-      });
+      }));
+      worker.once("error", settle(reject));
+      worker.once(
+        "exit",
+        settle((code: number) => {
+          reject(new Error(`worker exited with code ${code} before it started listening`));
+        }),
+      );
     });
     return { worker, port };
   } catch (error) {
@@ -280,6 +304,20 @@ throw new Error("worker exploded before listen");
     () => startServerWorker(DYING_WORKER_SOURCE, {}),
     /worker exploded before listen/,
   );
+});
+
+test("a worker that never settles fails with a named watchdog error, not a hang", async () => {
+  const STALLED_WORKER_SOURCE = `
+import { parentPort } from "node:worker_threads";
+// never posts, never exits
+setInterval(() => {}, 1000);
+`;
+  const started = Date.now();
+  await assert.rejects(
+    () => startServerWorker(STALLED_WORKER_SOURCE, {}, 50),
+    /never announced a port within 50 ms/,
+  );
+  assert.ok(Date.now() - started < 5_000, "the watchdog fired instead of hanging the shard");
 });
 
 test("a worker that exits cleanly before listening fails with the early-exit error", async () => {
