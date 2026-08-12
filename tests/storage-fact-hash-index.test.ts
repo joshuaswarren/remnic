@@ -244,9 +244,10 @@ test("rebuild preserves an explicit contentHashSource override", async () => {
   }
 });
 
-test("rebuild adds and removes the current alias for a mixed-Unicode legacy fact", async () => {
+test("rebuild replaces the legacy hash for a mixed-Unicode fact", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-fact-hash-mixed-unicode-"));
   const body = "The user prefers café.";
+  const asciiCollision = "The user prefers caf.";
   const legacyHash = computeLegacyContentHash(body);
   const currentHash = ContentHashIndex.computeHash(body);
   try {
@@ -269,23 +270,30 @@ test("rebuild adds and removes the current alias for a mixed-Unicode legacy fact
       "utf8",
     );
 
-    assert.notEqual(legacyHash, currentHash);
+    assert.equal(legacyHash, ContentHashIndex.computeHash(asciiCollision));
     const storage = new StorageManager(dir);
     assert.equal(await storage.hasFactContentHash(body), true);
+    assert.equal(await storage.hasFactContentHash(asciiCollision), false);
     const rebuilt = await readFile(path.join(dir, "state", "fact-hashes.txt"), "utf8");
-    assert.match(rebuilt, new RegExp(`^${legacyHash}$`, "mu"));
+    assert.doesNotMatch(rebuilt, new RegExp(`^${legacyHash}$`, "mu"));
     assert.match(rebuilt, new RegExp(`^${currentHash}$`, "mu"));
 
     const memory = (await storage.readAllMemories()).find((entry) => entry.frontmatter.id === "legacy-cafe");
     assert.ok(memory);
     await storage.removeFactContentHashesForMemories([memory]);
-    assert.equal(await storage.hasFactContentHash(body), false);
+    const afterRemoval = new Set(
+      (await readFile(path.join(dir, "state", "fact-hashes.txt"), "utf8"))
+        .split(/\r?\n/u)
+        .filter(Boolean),
+    );
+    assert.equal(afterRemoval.has(legacyHash), false);
+    assert.equal(afterRemoval.has(currentHash), false);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("rebuild adds the current body alias for an ambiguous pure-CJK legacy hash", async () => {
+test("rebuild replaces an ambiguous pure-CJK legacy hash with the current body hash", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-fact-hash-cjk-rebuild-"));
   const body = "保存された本文は紅茶についてです。";
   const legacyHash = computeLegacyContentHash(body);
@@ -313,7 +321,7 @@ test("rebuild adds the current body alias for an ambiguous pure-CJK legacy hash"
     const storage = new StorageManager(dir);
     assert.equal(await storage.hasFactContentHash(body), true);
     const rebuilt = await readFile(path.join(dir, "state", "fact-hashes.txt"), "utf8");
-    assert.match(rebuilt, new RegExp(`^${legacyHash}$`, "mu"));
+    assert.doesNotMatch(rebuilt, new RegExp(`^${legacyHash}$`, "mu"));
     assert.match(rebuilt, new RegExp(`^${bodyHash}$`, "mu"));
   } finally {
     await rm(dir, { recursive: true, force: true });

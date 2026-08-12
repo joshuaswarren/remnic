@@ -41,7 +41,7 @@
 // ---------------------------------------------------------------------------
 
 import { serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
-import { isUnambiguousLegacyContentHash } from "../content-hash.js";
+import { computeLegacyContentHash } from "../content-hash.js";
 
 /** Why a tombstone was emitted. */
 export type TombstoneReason =
@@ -434,6 +434,7 @@ export class TombstoneStore {
           return initial;
         }
         const latest = this.parseEntries(latestRaw);
+        if (latest.corruptedLines > 0) return latest;
         let changed = false;
         const migrated = latest.entries.map((entry) => {
           if (
@@ -445,26 +446,19 @@ export class TombstoneStore {
           }
           const source = sourceContents.get(entry.sourceMemoryId);
           if (source === undefined) return entry;
-          changed = true;
           const currentHash = this.options.hashContent(source);
           const currentNormalizedText = this.options.normalizeText(source);
-          const legacyIdentityIsSafe = isUnambiguousLegacyContentHash(
-            source,
-            entry.contentHash,
-            currentNormalizedText,
-          );
-          const migratedEntry: TombstoneEntry = {
+          const sourceIdentifiesEntry =
+            entry.contentHash === currentHash ||
+            entry.contentHash === computeLegacyContentHash(source);
+          if (!sourceIdentifiesEntry) return entry;
+          changed = true;
+          return {
             ...entry,
-            normalizerVersion: TOMBSTONE_NORMALIZER_VERSION,
+            contentHash: currentHash,
             normalizedText: currentNormalizedText,
+            normalizerVersion: TOMBSTONE_NORMALIZER_VERSION,
           };
-          if (entry.contentHash === currentHash) return migratedEntry;
-          if (legacyIdentityIsSafe) {
-            migratedEntry.contentHash = currentHash;
-          } else {
-            migratedEntry.currentContentHashAlias = currentHash;
-          }
-          return migratedEntry;
         });
         if (!changed) return latest;
         const serialized =
@@ -897,11 +891,10 @@ export class TombstoneStore {
           const currentHash = this.options.hashContent(m.rawContent);
           const currentNormalizedText = this.options.normalizeText(m.rawContent);
           const persistedHash = m.contentHash;
-          const legacyIdentityIsSafe =
-            persistedHash !== undefined &&
-            isUnambiguousLegacyContentHash(m.rawContent, persistedHash, currentNormalizedText);
           const preserveOverride =
-            persistedHash !== undefined && persistedHash !== currentHash && !legacyIdentityIsSafe;
+            persistedHash !== undefined &&
+            persistedHash !== currentHash &&
+            persistedHash !== computeLegacyContentHash(m.rawContent);
           return {
             id:
               existingBySource.get(`${m.memoryId}\u{0000}${m.supersessionKey ?? ""}`) ??

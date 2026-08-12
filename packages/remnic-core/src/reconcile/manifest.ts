@@ -15,13 +15,12 @@ import {
 
 export const RECONCILE_MANIFEST_FORMAT = "remnic-reconcile-manifest";
 export const RECONCILE_MANIFEST_SCHEMA_VERSION = 1;
-const CONTENT_HASH_NORMALIZER_VERSION = 2;
+const CONTENT_HASH_NORMALIZER_VERSION = 3;
 
 export interface ReconcileMemoryIdentity {
   id: string;
   category: string;
   contentHash: string;
-  contentHashAliases?: string[];
   normalizerVersion?: number;
   status: MemoryStatus;
 }
@@ -70,27 +69,23 @@ function parsedMemoryIdentity(
   const parsed = parseMemory(Buffer.isBuffer(raw) ? raw.toString("utf8") : raw);
   if (!parsed?.frontmatter.id) return undefined;
 
-  const storedHash = parsed.frontmatter.contentHash;
+  const storedHash =
+    parsed.frontmatter.contentHash &&
+    SHA256_PATTERN.test(parsed.frontmatter.contentHash)
+      ? parsed.frontmatter.contentHash.toLowerCase()
+      : undefined;
   const bodyHash = ContentHashIndex.computeHash(parsed.content);
-  const contentHash =
-    storedHash && SHA256_PATTERN.test(storedHash)
-      ? storedHash.toLowerCase()
-      : bodyHash;
-  const legacyNormalized = normalizeLegacyContent(parsed.content);
   const legacyHash = computeLegacyContentHash(parsed.content);
-  const aliases = new Set<string>();
-  if (contentHash === legacyHash) aliases.add(bodyHash);
-  if (legacyNormalized.length > 0 && contentHash === bodyHash) {
-    aliases.add(legacyHash);
-  }
-  aliases.delete(contentHash);
+  const contentHash =
+    storedHash === undefined || storedHash === legacyHash
+      ? bodyHash
+      : storedHash;
 
   return {
     id: parsed.frontmatter.id,
     category: parsed.frontmatter.category,
     contentHash,
     normalizerVersion: CONTENT_HASH_NORMALIZER_VERSION,
-    ...(aliases.size > 0 ? { contentHashAliases: [...aliases] } : {}),
     status: inferMemoryStatus(parsed.frontmatter, filePath),
   };
 }
@@ -154,7 +149,7 @@ function activeFactByPath(manifest: ReconcileManifest | undefined): Map<string, 
 }
 
 function memoryIdentityHashes(memory: ReconcileMemoryIdentity): string[] {
-  return [memory.contentHash, ...(memory.contentHashAliases ?? [])];
+  return [memory.contentHash];
 }
 
 function contentHashRows(

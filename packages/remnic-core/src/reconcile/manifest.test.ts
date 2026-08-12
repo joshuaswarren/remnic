@@ -48,7 +48,7 @@ test("reconcile manifest keeps file identity separate from canonical semantic id
     id: "fact-a",
     category: "fact",
     contentHash: semanticHash,
-    normalizerVersion: 2,
+    normalizerVersion: 3,
     status: "active",
   });
 });
@@ -99,12 +99,14 @@ test("reconcile manifest reparses cached pre-version identities after Unicode mi
   });
 
   assert.equal(reads, 1);
-  assert.deepEqual(manifest.files[0]?.memory?.contentHashAliases, [
+  assert.equal(
+    manifest.files[0]?.memory?.contentHash,
     ContentHashIndex.computeHash(content),
-  ]);
+  );
+  assert.equal("contentHashAliases" in (manifest.files[0]?.memory ?? {}), false);
 });
 
-test("reconcile manifest publishes a current alias for a pure-CJK legacy identity", async () => {
+test("reconcile manifest replaces a pure-CJK legacy identity with its current hash", async () => {
   const content = "利用者は紅茶を好む。";
   const serialized = memoryFile({
     id: "legacy-cjk",
@@ -117,9 +119,32 @@ test("reconcile manifest publishes a current alias for a pure-CJK legacy identit
     readFile: async () => serialized,
   });
 
-  assert.deepEqual(manifest.files[0]?.memory?.contentHashAliases, [
+  assert.equal(
+    manifest.files[0]?.memory?.contentHash,
     ContentHashIndex.computeHash(content),
-  ]);
+  );
+  assert.equal("contentHashAliases" in (manifest.files[0]?.memory ?? {}), false);
+});
+
+test("reconcile manifest does not add a legacy alias to a current Unicode identity", async () => {
+  const unicode = "The user prefers café.";
+  const ascii = "The user prefers caf.";
+  const serialized = memoryFile({
+    id: "current-unicode",
+    content: unicode,
+    contentHash: ContentHashIndex.computeHash(unicode),
+  });
+  const manifest = await buildReconcileManifest({
+    files: [{ path: "facts/current-unicode.md", sha256: fileHash(serialized) }],
+    parseMemory: parseFrontmatter,
+    readFile: async () => serialized,
+  });
+
+  assert.notEqual(
+    manifest.files[0]?.memory?.contentHash,
+    ContentHashIndex.computeHash(ascii),
+  );
+  assert.equal("contentHashAliases" in (manifest.files[0]?.memory ?? {}), false);
 });
 
 test("reconcile manifest keeps file identity when memory bytes cannot be trusted", async () => {

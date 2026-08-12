@@ -119,7 +119,6 @@ import {
   sortStructuredSectionsBySchema,
 } from "./entity-schema.js";
 import {
-  hasCitation,
   hasCitationForTemplate,
   stripCitationForTemplate,
   DEFAULT_CITATION_FORMAT,
@@ -3013,33 +3012,43 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   }
 
   private buildTombstoneStore(): TombstoneStore {
-    const sourcePathsPromise = this.memoryReadStore.collectTombstoneMigrationPaths();
+    let sourcePathsPromise: Promise<string[]> | undefined;
+    let sourceContentsByIdPromise: Promise<Map<string, string>> | undefined;
     const options: TombstoneStoreOptions = {
       enabled: this.tombstonesConfig.enabled,
       semanticMatch: this.tombstonesConfig.semanticMatch,
       semanticThreshold: this.tombstonesConfig.semanticThreshold,
-      // Wire the SAME helpers the dedup index uses (rule 23 / checklist §13):
-      // hashContent = ContentHashIndex.computeHash, normalizeText =
-      // ContentHashIndex.normalizeContent. Importing them here (not copying)
-      // guarantees the tombstone tiers can never drift from dedup.
       hashContent: ContentHashIndex.computeHash,
       normalizeText: ContentHashIndex.normalizeContent,
       sourceContentsForMemoryIds: async (sourceMemoryIds) => {
         const requested = new Set(sourceMemoryIds);
-        const matchingPaths: string[] = [];
-        const found = new Set<string>();
-        const collectMatches = (filePaths: readonly string[]): void => {
-          for (const filePath of filePaths) {
-            const id = path.basename(filePath, ".md");
-            if (!requested.has(id) || found.has(id)) continue;
-            matchingPaths.push(filePath);
-            found.add(id);
-          }
-        };
-        collectMatches(await sourcePathsPromise);
+        const sourcePaths = await (sourcePathsPromise ??=
+          this.memoryReadStore.collectTombstoneMigrationPaths());
+        const directPaths = sourcePaths.filter((filePath) =>
+          requested.has(path.basename(filePath, ".md"))
+        );
         const contents = new Map<string, string>();
-        for (const memory of await this.readParsedMemoriesFromPaths(matchingPaths, 50)) {
-          contents.set(memory.frontmatter.id, stripCitationForTemplate(memory.content, this.citationTemplate));
+        for (const memory of await this.readParsedMemoriesFromPaths(directPaths, 50)) {
+          const id = memory.frontmatter.id;
+          if (requested.has(id) && !contents.has(id)) {
+            contents.set(id, stripCitationForTemplate(memory.content, this.citationTemplate));
+          }
+        }
+        if (contents.size === requested.size) return contents;
+        sourceContentsByIdPromise ??= (async () => {
+          const allContents = new Map<string, string>();
+          for (const memory of await this.readParsedMemoriesFromPaths(sourcePaths, 50)) {
+            const id = memory.frontmatter.id;
+            if (!allContents.has(id)) {
+              allContents.set(id, stripCitationForTemplate(memory.content, this.citationTemplate));
+            }
+          }
+          return allContents;
+        })();
+        const allContents = await sourceContentsByIdPromise;
+        for (const id of requested) {
+          const content = allContents.get(id);
+          if (content !== undefined) contents.set(id, content);
         }
         return contents;
       },
@@ -3048,7 +3057,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       read: (filePath) => this.readStorageSecureFile(filePath),
       append: (filePath, content) => this.appendStorageSecureFile(filePath, content),
       write: (filePath, content) => this.writeStorageSecureFile(filePath, content),
-      // stat lets the store own its cross-process staleness probe (#1579).
       stat: (filePath) => statSync(filePath),
     };
     return new TombstoneStore(this.tombstonesPath, this.tombstonesConfig.namespace, options, io);
@@ -3375,10 +3383,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       if (inferMemoryStatus(memory.frontmatter, memory.path) !== "active") continue;
       const hashes = this.corpusRegisteredHashes(memory);
       if (hashes.length === 0) {
-        // Body carries a citation from an unknown/custom template we cannot
-        // safely strip — skip rather than register a wrong hash. A
-        // false-negative miss beats a wrong entry that would permanently
-        // suppress legitimate duplicate writes (see corpusRegisteredHashes).
+        // Skip bodies whose configured citation cannot be stripped safely.
         legacyRecovered++;
         continue;
       }
@@ -3393,25 +3398,23 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       );
     }
   }
-  /**
-   * Returns persisted identities plus a current body alias when the legacy hash matches.
-   * The current alias prevents upgrade duplicates while retaining the old identity.
-   */
+  /** Returns the current body identity while preserving explicit external identities. */
   private corpusRegisteredHashes(memory: MemoryFile): string[] {
-    const content = stripAttributesSuffix(memory.content);
-    const stripped = stripCitationForTemplate(content, this.citationTemplate);
-    const canonicalContent =
-      stripped !== content || !hasCitation(content)
-        ? sanitizeMemoryContent(stripped !== content ? stripped : content).text
-        : null;
     const persistedHash = memory.frontmatter.contentHash;
-    if (canonicalContent === null) return persistedHash ? [persistedHash] : [];
-
+    const content = stripAttributesSuffix(memory.content);
+    const hasKnownCitation = hasCitationForTemplate(content, this.citationTemplate);
+    const stripped = hasKnownCitation
+      ? stripCitationForTemplate(content, this.citationTemplate)
+      : content;
+    if (hasKnownCitation && stripped === content) return persistedHash ? [persistedHash] : [];
+    const canonicalContent = sanitizeMemoryContent(stripped).text;
     const currentHash = ContentHashIndex.computeHash(canonicalContent);
-    if (!persistedHash || persistedHash === currentHash) return [currentHash];
-
-    if (persistedHash === computeLegacyContentHash(canonicalContent)) {
-      return [persistedHash, currentHash];
+    if (!persistedHash) return [currentHash];
+    if (
+      persistedHash === currentHash ||
+      persistedHash === computeLegacyContentHash(canonicalContent)
+    ) {
+      return [currentHash];
     }
     return [persistedHash];
   }

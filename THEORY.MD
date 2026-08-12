@@ -28,17 +28,19 @@ The system preserves ambiguous persisted identities but does not query them as a
 
 The tombstone store reads legacy sources from hot, cold, and archive storage.
 
-It reads source IDs in bounded batches but migrates every available batch before publishing its index.
+It reads source IDs in bounded batches and completes every available batch before publishing its index.
+
+The source resolver scans paths lazily. It caches the complete ID map when direct filename lookup cannot resolve a frontmatter ID.
 
 Unavailable sources remain unversioned. A later load retries them after the source becomes available.
 
-The migration preserves an explicit `contentHashSource` identity as the primary hash.
+Malformed JSONL prevents a migration rewrite. The store preserves every malformed row byte-for-byte.
 
-It also stores current body hash and normalized aliases when the source body is known.
+The migration preserves an explicit `contentHashSource` identity because the stored body cannot prove a distinct external identity.
 
-Source reconstruction retains persisted structured attributes because default writes include them in the content identity.
+The fact-hash index rebuild replaces a verified legacy body hash with the current body hash.
 
-The fact-hash index rebuild treats legacy hashes as authoritative only when the current body proves the same identity.
+It derives current body hashes for old files that have no stored hash.
 
 Ambiguous legacy hashes never suppress a current Unicode write.
 
@@ -56,8 +58,12 @@ Terminal sentence punctuation remains compatible with normalized exact matches.
 
 ## Verification state
 
-The focused migration and non-resurrection suite passes 101 tests.
+The focused migration and non-resurrection suite passes 105 tests.
 
-The core type check passes.
+The core type check and build pass.
 
-The final mandatory gates and complete workspace suite are running against the latest review fixes.
+`preflight:quick` and the 339-test entity hardening gate pass.
+
+The first complete workspace run found one stale normalizer-version expectation. Its focused test now passes.
+
+The complete workspace test rerun is pending.

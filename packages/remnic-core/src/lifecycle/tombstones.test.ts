@@ -292,6 +292,131 @@ describe("TombstoneStore — Unicode migration safety", () => {
     );
   });
 
+  it("replaces a mixed-Unicode legacy hash instead of blocking its ASCII collision", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "tomb-mixed-unicode-alias-safety-"));
+    const filePath = path.join(dir, "tombstones.jsonl");
+    const source = "The user prefers café.";
+    const asciiCollision = "The user prefers caf.";
+    await writeFile(
+      filePath,
+      `${JSON.stringify({
+        id: "tomb-mixed-unicode",
+        kind: "tombstone",
+        reason: "correction",
+        sourceMemoryId: "fact-mixed-unicode",
+        contentHash: computeLegacyContentHash(source),
+        normalizedText: normalizeLegacyContent(source),
+        namespace: "default",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        createdBy: "user_correction",
+      })}\n`,
+      "utf8",
+    );
+    const store = new TombstoneStore(
+      filePath,
+      "default",
+      {
+        enabled: true,
+        semanticMatch: false,
+        semanticThreshold: 0.9,
+        hashContent: computeHash,
+        normalizeText: normalizeContent,
+        sourceContentsForMemoryIds: async () =>
+          new Map<string, string>([["fact-mixed-unicode", source]]),
+      },
+      makeIo(),
+    );
+    await store.load();
+
+    assert.equal(
+      store.lookup({ namespace: "default", contentHash: computeHash(source) })?.matchedTier,
+      "exact",
+    );
+    assert.equal(
+      store.lookup({ namespace: "default", contentHash: computeHash(asciiCollision) }),
+      null,
+    );
+  });
+
+  it("does not finalize migration from a body with an unrecognized stale citation", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "tomb-stale-citation-migration-"));
+    const filePath = path.join(dir, "tombstones.jsonl");
+    const source = "The user prefers café.";
+    const storedBody = `${source} [legacy-source:planner]`;
+    await writeFile(
+      filePath,
+      `${JSON.stringify({
+        id: "tomb-stale-citation",
+        kind: "tombstone",
+        reason: "correction",
+        sourceMemoryId: "fact-stale-citation",
+        contentHash: computeLegacyContentHash(source),
+        normalizedText: normalizeLegacyContent(source),
+        namespace: "default",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        createdBy: "user_correction",
+      })}\n`,
+      "utf8",
+    );
+    const store = new TombstoneStore(
+      filePath,
+      "default",
+      {
+        enabled: true,
+        semanticMatch: false,
+        semanticThreshold: 0.9,
+        hashContent: computeHash,
+        normalizeText: normalizeContent,
+        sourceContentsForMemoryIds: async () =>
+          new Map<string, string>([["fact-stale-citation", storedBody]]),
+      },
+      makeIo(),
+    );
+    await store.load();
+
+    const entry = store.snapshot()[0];
+    assert.equal(entry?.normalizerVersion, undefined);
+    assert.equal(entry?.currentContentHashAlias, undefined);
+  });
+
+  it("preserves malformed JSONL rows instead of rewriting a partial migration", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "tomb-corrupt-migration-"));
+    const filePath = path.join(dir, "tombstones.jsonl");
+    const source = "The user prefers café.";
+    const valid = JSON.stringify({
+      id: "tomb-corrupt-migration",
+      kind: "tombstone",
+      reason: "correction",
+      sourceMemoryId: "fact-corrupt-migration",
+      contentHash: computeLegacyContentHash(source),
+      normalizedText: normalizeLegacyContent(source),
+      namespace: "default",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      createdBy: "user_correction",
+    });
+    const original = `${valid}\n{not-json}\n`;
+    await writeFile(filePath, original, "utf8");
+    const store = new TombstoneStore(
+      filePath,
+      "default",
+      {
+        enabled: true,
+        semanticMatch: false,
+        semanticThreshold: 0.9,
+        hashContent: computeHash,
+        normalizeText: normalizeContent,
+        sourceContentsForMemoryIds: async () =>
+          new Map<string, string>([["fact-corrupt-migration", source]]),
+      },
+      makeIo(),
+    );
+    await store.load();
+
+    assert.equal(await readFile(filePath, "utf8"), original);
+    assert.equal(store.snapshot()[0]?.normalizerVersion, undefined);
+    assert.equal(store.stats().corruptedLines, 1);
+  });
+
   it("blocks the same pure-CJK body without cross-blocking an unrelated body", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "tomb-cjk-override-safety-"));
     const filePath = path.join(dir, "tombstones.jsonl");

@@ -194,7 +194,7 @@ test("offline manifest streams body-free active, archived, old, bad, and encrypt
       id: "active-memory",
       category: "fact",
       contentHash: activeContentHash,
-      normalizerVersion: 2,
+      normalizerVersion: 3,
       status: "active",
     });
     assert.notEqual(rowsByPath.get("facts/active.md")?.sha256, activeContentHash);

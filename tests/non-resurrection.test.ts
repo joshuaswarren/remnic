@@ -467,7 +467,7 @@ test("legacy migration resolves retired source content from archive storage", as
     const archiveDir = path.join(dir, "archive", "facts");
     await mkdir(archiveDir, { recursive: true });
     await writeFile(
-      path.join(archiveDir, `${sourceMemoryId}.md`),
+      path.join(archiveDir, "retired-record.md"),
       [
         "---",
         `id: ${sourceMemoryId}`,
