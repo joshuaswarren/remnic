@@ -152,6 +152,45 @@ test("listing linkless drafts does not rescan the corpus by card ID", async () =
   }
 });
 
+test("listing a pending replacement does not add a final unchanged-corpus reload", async () => {
+  const subject = await makeSubject();
+  try {
+    const draft = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Plan changes",
+      statement: "Tell me before plans change.",
+      category: "transitions",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const active = await subject.service.approveCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+    });
+    await subject.service.replaceCard({
+      principal: "owner:alice",
+      cardId: active.cardId,
+      expectedRevision: active.revision,
+      title: "Plan changes",
+      statement: "Tell me early when plans change.",
+      category: "transitions",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const readAllMemories = subject.aliceStorage.readAllMemories.bind(subject.aliceStorage);
+    let corpusReads = 0;
+    subject.aliceStorage.readAllMemories = async (...args) => {
+      corpusReads += 1;
+      return await readAllMemories(...args);
+    };
+
+    await subject.service.listCards({ principal: "owner:alice" });
+
+    assert.equal(corpusReads, 4);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("card mutations reject stale revisions and invalid lifecycle changes", async () => {
   const subject = await makeSubject();
   try {
@@ -235,6 +274,12 @@ test("an approved replacement retires the prior card and withdrawal removes the 
         memory.frontmatter.lineage.includes(replacement.cardId)
     );
     assert.ok(replacementAudit);
+    assert.equal(
+      (await subject.aliceStorage.readAllMemoryLifecycleEvents()).find(
+        (event) => event.memoryId === active.cardId && event.reasonCode === "support-passport-replacement"
+      )?.actor,
+      "owner:alice"
+    );
 
     subject.advance();
     await subject.service.withdrawCard({
@@ -394,10 +439,7 @@ test("approval rolls an active replacement back to review after a durable predec
     subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = originalWrite;
     assert.equal((await subject.aliceStorage.getMemoryById(replacement.cardId))?.frontmatter.status, "pending_review");
     assert.deepEqual(
-      (await subject.service.listCards({ principal: "owner:alice" })).map((card) => [
-        card.cardId,
-        card.status,
-      ]),
+      (await subject.service.listCards({ principal: "owner:alice" })).map((card) => [card.cardId, card.status]),
       [[replacement.cardId, "pending_review"]]
     );
   } finally {
@@ -1018,10 +1060,13 @@ test("listing rolls back an incomplete active replacement when retirement return
     const visible = await subject.service.listCards({ principal: "owner:alice" });
 
     subject.aliceStorage.supersedeMemory = originalSupersede;
-    assert.deepEqual(visible.map((card) => [card.cardId, card.status]), [
-      [active.cardId, "active"],
-      [replacement.cardId, "pending_review"],
-    ]);
+    assert.deepEqual(
+      visible.map((card) => [card.cardId, card.status]),
+      [
+        [active.cardId, "active"],
+        [replacement.cardId, "pending_review"],
+      ]
+    );
     assert.equal((await subject.aliceStorage.getMemoryById(active.cardId))?.frontmatter.status, "active");
   } finally {
     await subject.cleanup();

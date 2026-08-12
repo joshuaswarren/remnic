@@ -417,12 +417,13 @@ export class SupportPassportCardService {
     lock: HeldFileLockController,
     principal: string
   ): Promise<StoredSupportPassportCard[]> {
+    const initialVersion = storage.getCorpusScanVersion();
     const initial = await storage.readAllMemories();
-    let recovered = false;
     for (const memory of initial) {
-      if ((await this.recoverReplacementTransition(storage, memory, lock, principal)) !== memory) recovered = true;
+      await this.recoverReplacementTransition(storage, memory, lock, principal);
     }
-    const memories: MemoryFile[] = recovered ? await storage.readAllMemories() : initial;
+    const memories: MemoryFile[] =
+      storage.getCorpusScanVersion() === initialVersion ? initial : await storage.readAllMemories();
     const projected = memories
       .map(projectSupportPassportCard)
       .filter((card): card is StoredSupportPassportCard => card !== null);
@@ -556,7 +557,7 @@ export class SupportPassportCardService {
     principal: string
   ): Promise<void> {
     const priorId = await this.preparePriorForReplacement(storage, replacement, lock, principal);
-    if (priorId && !(await this.completePriorRetirement(storage, priorId, replacement, lock))) {
+    if (priorId && !(await this.completePriorRetirement(storage, priorId, replacement, lock, principal))) {
       throw new SupportPassportError("storage_conflict", "The prior support card changed before replacement.", 409);
     }
     await this.markReplacementComplete(storage, replacement.card.cardId, lock, principal);
@@ -613,7 +614,8 @@ export class SupportPassportCardService {
     storage: StorageManager,
     priorId: string,
     replacement: StoredSupportPassportCard,
-    lock: HeldFileLockController
+    lock: HeldFileLockController,
+    principal: string
   ): Promise<boolean> {
     const replacementId = replacement.card.cardId;
     const prior = await storage.getMemoryById(priorId);
@@ -624,7 +626,7 @@ export class SupportPassportCardService {
       replacementId,
       "support-passport-replacement",
       { supersessionCause: "direct" },
-      { requireActive: true, acceptExactReplay: true, expectedSnapshot: prior }
+      { actor: principal, requireActive: true, acceptExactReplay: true, expectedSnapshot: prior }
     );
     if (!completed) log.warn("support passport could not complete replacement retirement side effects");
     return completed;

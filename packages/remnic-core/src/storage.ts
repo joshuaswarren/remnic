@@ -6917,7 +6917,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     reason: string,
     supersessionMetadata?: Pick<MemoryFrontmatter, "supersessionCause" | "invalidatedBy">,
     options: {
-      requireActive?: boolean;
+      actor?: string; requireActive?: boolean;
       acceptExactReplay?: boolean;
       expectedSnapshot?: Pick<MemoryFile, "content" | "frontmatter"> & Partial<Pick<MemoryFile, "path">>;
     } = {},
@@ -7094,7 +7094,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
             memoryId: oldMemoryId,
             eventType: "superseded",
             timestamp: supersededAt,
-            actor: "storage.supersedeMemory",
+            actor: options.actor ?? "storage.supersedeMemory",
             reasonCode: reason,
             before: exactReplay ? { ...beforeState, status: "active" } : beforeState,
             after: afterState,
@@ -7108,13 +7108,11 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         writeSealedMemory: (envelope, extras) => this.writeSealedMemory(envelope, extras),
       });
       return sideEffectsComplete || options.acceptExactReplay !== true;
-
     } catch (err) {
       log.error(`failed to supersede memory ${oldMemoryId}:`, err);
       return false;
     }
   }
-
 
   private get summariesDir(): string {
     return path.join(this.baseDir, "summaries");
