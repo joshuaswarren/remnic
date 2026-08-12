@@ -212,6 +212,93 @@ test("an approved replacement retires the prior card and withdrawal removes the 
   }
 });
 
+test("approval returns success when the committed card cannot be reloaded", async () => {
+  const subject = await makeSubject();
+  try {
+    const draft = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Quiet space",
+      statement: "Offer me a quiet place and time.",
+      category: "environment",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const originalWrite = subject.aliceStorage.writeMemoryFrontmatterIfUnchanged.bind(subject.aliceStorage);
+    const originalRead = subject.aliceStorage.getMemoryById.bind(subject.aliceStorage);
+    let failNextRead = false;
+    subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = async (memory, patch, lifecycle) => {
+      const result = await originalWrite(memory, patch, lifecycle);
+      if (result && lifecycle?.actor === "support-passport.approve") failNextRead = true;
+      return result;
+    };
+    subject.aliceStorage.getMemoryById = async (memoryId) => {
+      if (failNextRead && memoryId === draft.cardId) {
+        failNextRead = false;
+        throw new Error("simulated post-commit read failure");
+      }
+      return await originalRead(memoryId);
+    };
+
+    const approved = await subject.service.approveCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+    });
+
+    assert.equal(approved.status, "active");
+    assert.notEqual(approved.revision, draft.revision);
+    assert.equal((await originalRead(draft.cardId))?.frontmatter.status, "active");
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("approval returns success when committed replacement cleanup fails", async () => {
+  const subject = await makeSubject();
+  try {
+    const draft = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Plan changes",
+      statement: "Tell me before plans change.",
+      category: "transitions",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const active = await subject.service.approveCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+    });
+    const replacement = await subject.service.replaceCard({
+      principal: "owner:alice",
+      cardId: active.cardId,
+      expectedRevision: active.revision,
+      title: "Plan changes",
+      statement: "Tell me early when plans change.",
+      category: "transitions",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const originalSupersede = subject.aliceStorage.supersedeMemory.bind(subject.aliceStorage);
+    subject.aliceStorage.supersedeMemory = async () => {
+      throw new Error("simulated replacement cleanup failure");
+    };
+
+    const approved = await subject.service.approveCard({
+      principal: "owner:alice",
+      cardId: replacement.cardId,
+      expectedRevision: replacement.revision,
+    });
+
+    assert.equal(approved.status, "active");
+    assert.equal((await subject.aliceStorage.getMemoryById(replacement.cardId))?.frontmatter.status, "active");
+    subject.aliceStorage.supersedeMemory = originalSupersede;
+    assert.deepEqual(
+      (await subject.service.listCards({ principal: "owner:alice" })).map((card) => card.cardId),
+      [replacement.cardId]
+    );
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("a rejected draft leaves no owner-visible card", async () => {
   const subject = await makeSubject();
   try {
