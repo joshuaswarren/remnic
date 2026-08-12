@@ -299,7 +299,7 @@ export class SupportPassportCardService {
     if (written.tombstoneBlocked) {
       throw new SupportPassportError("storage_conflict", "The support card needs memory review before use.", 409);
     }
-    return (await this.requireCard(storage, written.id)).card;
+    return this.projectRequiredCard(written.memory).card;
   }
 
   private async changeStatus(
