@@ -1,10 +1,5 @@
 import { resolveLocalLlmCapabilities } from "../capabilities.js";
-import {
-  FallbackLlmClient,
-  type FallbackLlmOptions,
-  fallbackLlmRuntimeContextFromConfig,
-  gatewayTaskChainOptions,
-} from "../fallback-llm.js";
+import { FallbackLlmClient, type FallbackLlmOptions } from "../fallback-llm.js";
 import { extractJsonCandidates } from "../json-extract.js";
 import { LocalLlmClient } from "../local-llm.js";
 import type { GatewayConfig, PluginConfig } from "../types.js";
@@ -99,12 +94,12 @@ export class SupportPassportModelCallError extends SupportPassportError {
 
 type ModelRoutePlanConfig = Pick<
   PluginConfig,
-  "modelSource" | "localLlmEnabled" | "localLlmFallback" | "openaiApiKey" | "gatewayConfig"
+  "modelSource" | "localLlmEnabled" | "localLlmFallback" | "openaiApiKey"
 >;
 
 export interface SupportPassportModelClients {
   localLlm?: LocalLlmClient;
-  gatewayLlm?: FallbackLlmClient;
+  gatewayRoute?: SupportPassportModelRoute;
   directLlm?: FallbackLlmClient;
 }
 
@@ -204,15 +199,18 @@ function invalidOutput(metadata: Omit<SupportPassportModelFailureMetadata, "erro
   return modelFailure("model_output_invalid", metadata);
 }
 
-export function resolveSupportPassportModelRoutePlan(config: ModelRoutePlanConfig): SupportPassportModelRouteKind[] {
-  if (config.modelSource === "gateway") return ["gateway"];
+export function resolveSupportPassportModelRoutePlan(
+  config: ModelRoutePlanConfig,
+  availability: { gateway: boolean } = { gateway: false }
+): SupportPassportModelRouteKind[] {
+  if (config.modelSource === "gateway") return availability.gateway ? ["gateway"] : [];
   const routes: SupportPassportModelRouteKind[] = [];
   if (resolveLocalLlmCapabilities(config).localLlm) {
     routes.push("local");
     if (!config.localLlmFallback) return routes;
   }
   if (typeof config.openaiApiKey === "string" && config.openaiApiKey.trim().length > 0) routes.push("direct");
-  if (config.gatewayConfig) routes.push("gateway");
+  if (availability.gateway) routes.push("gateway");
   return routes;
 }
 
@@ -250,11 +248,11 @@ export function createSupportPassportModelAdapter(
   config: PluginConfig,
   clients: SupportPassportModelClients = {}
 ): SupportPassportModelAdapter {
-  const plan = resolveSupportPassportModelRoutePlan(config);
+  if (clients.gatewayRoute && clients.gatewayRoute.kind !== "gateway") {
+    throw new Error("The injected gateway model route must use the gateway route kind.");
+  }
+  const plan = resolveSupportPassportModelRoutePlan(config, { gateway: Boolean(clients.gatewayRoute) });
   const localLlm = plan.includes("local") ? (clients.localLlm ?? new LocalLlmClient(config)) : undefined;
-  const gatewayLlm = plan.includes("gateway")
-    ? (clients.gatewayLlm ?? new FallbackLlmClient(config.gatewayConfig, fallbackLlmRuntimeContextFromConfig(config)))
-    : undefined;
   const directConfig = buildSupportPassportDirectGatewayConfig(config);
   const directLlm = clients.directLlm ?? (directConfig ? new FallbackLlmClient(directConfig) : undefined);
   const routes = plan.map((kind): SupportPassportModelRoute => {
@@ -291,7 +289,11 @@ export function createSupportPassportModelAdapter(
         },
       };
     }
-    const client = kind === "direct" ? directLlm : gatewayLlm;
+    if (kind === "gateway") {
+      if (!clients.gatewayRoute) throw new Error("The gateway model route is unavailable.");
+      return clients.gatewayRoute;
+    }
+    const client = directLlm;
     return {
       kind,
       invoke: async (messages, options) => {
@@ -305,7 +307,6 @@ export function createSupportPassportModelAdapter(
           responsesJsonSchema: options.jsonSchema,
           redactProviderErrors: true,
           acceptResponse: options.acceptResponse,
-          ...(kind === "gateway" ? gatewayTaskChainOptions(config) : {}),
         };
         return await client.chatCompletion(messages, routeOptions);
       },

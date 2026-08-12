@@ -189,12 +189,7 @@ export async function readPrivateFileNoFollow(
       throw error;
     }
     const fileMetadata = await fileHandle.stat();
-    assertStableDirectory(
-      stableDirectory.before,
-      stableDirectory.opened,
-      await lstat(directory),
-      errorMessage
-    );
+    assertStableDirectory(stableDirectory.before, stableDirectory.opened, await lstat(directory), errorMessage);
     if (!fileMetadata.isFile() || fileMetadata.nlink !== 1) throw new Error(errorMessage);
     return await fileHandle.readFile("utf8");
   } finally {
@@ -218,9 +213,10 @@ export async function appendPrivateFileNoFollow(
     const stableDirectory = await openStableDirectoryFromRoot(trustedRoot, directory, errorMessage);
     directoryHandles = stableDirectory.handles;
     const pinnedDirectory = await pinnedDirectoryPath(stableDirectory.handle, stableDirectory.opened, errorMessage);
+    const targetPath = path.join(pinnedDirectory, targetName);
     try {
       fileHandle = await open(
-        path.join(pinnedDirectory, targetName),
+        targetPath,
         fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW,
         0o600
       );
@@ -229,16 +225,13 @@ export async function appendPrivateFileNoFollow(
       throw error;
     }
     const fileMetadata = await fileHandle.stat();
-    assertStableDirectory(
-      stableDirectory.before,
-      stableDirectory.opened,
-      await lstat(directory),
-      errorMessage
-    );
+    assertStableDirectory(stableDirectory.before, stableDirectory.opened, await lstat(directory), errorMessage);
     if (!fileMetadata.isFile() || fileMetadata.nlink !== 1) throw new Error(errorMessage);
     await fileHandle.chmod(0o600);
     await fileHandle.appendFile(content, "utf8");
+    await fileHandle.sync();
     assertStableDirectory(stableDirectory.before, stableDirectory.opened, await lstat(directory), errorMessage);
+    await syncDirectoryHandle(stableDirectory.handle);
   } finally {
     await fileHandle?.close().catch(() => undefined);
     await closeDirectoryHandles(directoryHandles);
@@ -301,7 +294,8 @@ export async function removePrivateFilesNoFollow(
 ): Promise<void> {
   if (
     fileNames.some(
-      (fileName) => fileName.length === 0 || fileName === "." || fileName === ".." || path.basename(fileName) !== fileName
+      (fileName) =>
+        fileName.length === 0 || fileName === "." || fileName === ".." || path.basename(fileName) !== fileName
     )
   ) {
     throw new Error(errorMessage);

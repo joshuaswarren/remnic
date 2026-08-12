@@ -314,36 +314,53 @@ test("helper answer output rejects foreign citations and invented uncovered answ
 });
 
 test("route planning preserves Remnic model-source and local fallback rules", () => {
-  const gatewayConfig = { agents: { defaults: { model: { primary: "openai/gpt-test" } } } };
   assert.deepEqual(
-    resolveSupportPassportModelRoutePlan({
-      modelSource: "gateway",
-      localLlmEnabled: true,
-      localLlmFallback: true,
-      openaiApiKey: "direct-key",
-      gatewayConfig,
-    }),
+    resolveSupportPassportModelRoutePlan(
+      {
+        modelSource: "gateway",
+        localLlmEnabled: true,
+        localLlmFallback: true,
+        openaiApiKey: "direct-key",
+      },
+      { gateway: true }
+    ),
     ["gateway"]
   );
   assert.deepEqual(
-    resolveSupportPassportModelRoutePlan({
-      modelSource: "plugin",
-      localLlmEnabled: true,
-      localLlmFallback: true,
-      openaiApiKey: "direct-key",
-      gatewayConfig,
-    }),
+    resolveSupportPassportModelRoutePlan(
+      {
+        modelSource: "plugin",
+        localLlmEnabled: true,
+        localLlmFallback: true,
+        openaiApiKey: "direct-key",
+      },
+      { gateway: true }
+    ),
     ["local", "direct", "gateway"]
   );
   assert.deepEqual(
-    resolveSupportPassportModelRoutePlan({
-      modelSource: "plugin",
-      localLlmEnabled: true,
-      localLlmFallback: false,
-      openaiApiKey: "direct-key",
-      gatewayConfig,
-    }),
+    resolveSupportPassportModelRoutePlan(
+      {
+        modelSource: "plugin",
+        localLlmEnabled: true,
+        localLlmFallback: false,
+        openaiApiKey: "direct-key",
+      },
+      { gateway: true }
+    ),
     ["local"]
+  );
+  assert.deepEqual(
+    resolveSupportPassportModelRoutePlan(
+      {
+        modelSource: "gateway",
+        localLlmEnabled: false,
+        localLlmFallback: false,
+        openaiApiKey: undefined,
+      },
+      { gateway: false }
+    ),
+    []
   );
 });
 
@@ -391,8 +408,9 @@ test("local support models work with direct OpenAI disabled", async () => {
 
 test("gateway support models work with direct OpenAI disabled", async () => {
   let optionsSeen: Record<string, unknown> | undefined;
-  const gatewayLlm = {
-    chatCompletion: async (_messages: unknown, options: Record<string, unknown>) => {
+  const gatewayRoute: NonNullable<SupportPassportModelClients["gatewayRoute"]> = {
+    kind: "gateway",
+    invoke: async (_messages, options) => {
       optionsSeen = options;
       return {
         content: JSON.stringify({
@@ -408,7 +426,7 @@ test("gateway support models work with direct OpenAI disabled", async () => {
         modelUsed: "gateway/test-model",
       };
     },
-  } as unknown as NonNullable<SupportPassportModelClients["gatewayLlm"]>;
+  };
   const adapter = createSupportPassportModelAdapter(
     parseConfig({
       modelSource: "gateway",
@@ -426,7 +444,7 @@ test("gateway support models work with direct OpenAI disabled", async () => {
         },
       },
     }),
-    { gatewayLlm }
+    { gatewayRoute }
   );
 
   const result = await adapter.draftCards({
@@ -437,121 +455,7 @@ test("gateway support models work with direct OpenAI disabled", async () => {
   assert.equal(result.route, "gateway");
   assert.equal(result.modelUsed, "gateway/test-model");
   assert.equal(optionsSeen?.timeoutMs, 30_000);
-  assert.equal(optionsSeen?.store, false);
-  assert.equal(optionsSeen?.redactProviderErrors, true);
-  assert.equal((optionsSeen?.responsesJsonSchema as { name?: string } | undefined)?.name, "support_passport_drafts");
-});
-
-test("gateway model chains continue after invalid structured output", { concurrency: false }, async () => {
-  const originalFetch = globalThis.fetch;
-  const models: string[] = [];
-  globalThis.fetch = (async (_url, init) => {
-    const body = JSON.parse(String(init?.body)) as { model: string };
-    models.push(body.model);
-    const content =
-      body.model === "primary"
-        ? JSON.stringify({ cards: [{ sourceMemoryIds: ["foreign-memory"] }] })
-        : JSON.stringify({
-            cards: [
-              {
-                title: "Plan changes",
-                statement: "Tell me before plans change.",
-                category: "transitions",
-                sourceMemoryIds: ["memory-1"],
-              },
-            ],
-          });
-    return new Response(JSON.stringify({ choices: [{ message: { content } }] }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
-  }) as typeof fetch;
-  try {
-    const adapter = createSupportPassportModelAdapter(
-      parseConfig({
-        modelSource: "gateway",
-        openaiApiKey: false,
-        gatewayConfig: {
-          agents: { defaults: { model: { primary: "gateway/primary", fallbacks: ["gateway/fallback"] } } },
-          models: {
-            providers: {
-              gateway: {
-                baseUrl: "https://models.example.test/v1",
-                apiKey: "test-key",
-                api: "openai-completions",
-                models: [
-                  { id: "primary", name: "primary" },
-                  { id: "fallback", name: "fallback" },
-                ],
-              },
-            },
-          },
-        },
-      })
-    );
-
-    const result = await adapter.draftCards({
-      consent: true,
-      memories: [{ memoryId: "memory-1", content: "Tell me before plans change." }],
-    });
-
-    assert.deepEqual(models, ["primary", "fallback"]);
-    assert.equal(result.modelUsed, "gateway/fallback");
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("gateway model chains report invalid output when every model response is rejected", { concurrency: false }, async () => {
-  const originalFetch = globalThis.fetch;
-  const models: string[] = [];
-  globalThis.fetch = (async (_url, init) => {
-    const body = JSON.parse(String(init?.body)) as { model: string };
-    models.push(body.model);
-    return new Response(
-      JSON.stringify({ choices: [{ message: { content: JSON.stringify({ cards: [] }) } }] }),
-      { status: 200, headers: { "content-type": "application/json" } }
-    );
-  }) as typeof fetch;
-  try {
-    const adapter = createSupportPassportModelAdapter(
-      parseConfig({
-        modelSource: "gateway",
-        openaiApiKey: false,
-        gatewayConfig: {
-          agents: { defaults: { model: { primary: "gateway/primary", fallbacks: ["gateway/fallback"] } } },
-          models: {
-            providers: {
-              gateway: {
-                baseUrl: "https://models.example.test/v1",
-                apiKey: "test-key",
-                api: "openai-completions",
-                models: [
-                  { id: "primary", name: "primary" },
-                  { id: "fallback", name: "fallback" },
-                ],
-              },
-            },
-          },
-        },
-      })
-    );
-
-    await assert.rejects(
-      adapter.draftCards({
-        consent: true,
-        memories: [{ memoryId: "memory-1", content: "Tell me before plans change." }],
-      }),
-      (error: unknown) =>
-        error instanceof SupportPassportError &&
-        error.code === "model_output_invalid" &&
-        "metadata" in error &&
-        (error.metadata as { modelUsed?: string }).modelUsed === "gateway/fallback"
-    );
-    assert.deepEqual(models, ["primary", "fallback"]);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  assert.equal((optionsSeen?.jsonSchema as { name?: string } | undefined)?.name, "support_passport_drafts");
 });
 
 test("gateway model chains preserve invalid output when a later fallback times out", async () => {
@@ -607,7 +511,6 @@ test("direct model routing rejects whitespace-only API keys", () => {
       localLlmEnabled: false,
       localLlmFallback: false,
       openaiApiKey: "   ",
-      gatewayConfig: undefined,
     }),
     []
   );
