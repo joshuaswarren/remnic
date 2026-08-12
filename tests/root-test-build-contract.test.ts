@@ -27,6 +27,18 @@ test("root test script builds core before running package tests", () => {
   );
 });
 
+test("root build creates the OpenClaw adapter before bundling its public route", () => {
+  const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as {
+    scripts?: Record<string, string>;
+  };
+
+  const buildScript = pkg.scripts?.build ?? "";
+  assert.match(
+    buildScript,
+    /^pnpm --filter @remnic\/core build && pnpm --filter @remnic\/plugin-openclaw build && /,
+  );
+});
+
 test("root test runner applies remnic source conditions and test globs portably", () => {
   const helperCheck = spawnSync(
     process.execPath,
