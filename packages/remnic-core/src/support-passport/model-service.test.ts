@@ -386,6 +386,111 @@ test("drafting rejects missing sources and absent consent before the model runs"
   }
 });
 
+test("drafting stops before owner resolution when the request is already cancelled", async () => {
+  const subject = await makeSubject();
+  try {
+    let ownerResolutions = 0;
+    let modelCalls = 0;
+    const service = new SupportPassportDraftService({
+      cardService: subject.cardService,
+      modelAdapter: new SupportPassportModelAdapter({
+        routes: [
+          {
+            kind: "local",
+            invoke: async () => {
+              modelCalls += 1;
+              return null;
+            },
+          },
+        ],
+      }),
+      resolveOwner: async (principal) => {
+        ownerResolutions += 1;
+        return await subject.resolveOwner(principal);
+      },
+      audit: { record: async () => undefined },
+      now: subject.now,
+    });
+    const controller = new AbortController();
+    controller.abort();
+
+    await assert.rejects(
+      service.draftCards({
+        principal: "owner:alice",
+        sourceMemoryIds: ["selected-memory"],
+        sourceMemoryRevisions: [{ memoryId: "selected-memory", revision: "a".repeat(64) }],
+        consent: true,
+        signal: controller.signal,
+      }),
+      (error: unknown) => error instanceof Error && error.name === "AbortError"
+    );
+    assert.equal(ownerResolutions, 0);
+    assert.equal(modelCalls, 0);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("drafting cancellation races a selected source read", async () => {
+  const subject = await makeSubject();
+  const sourceReadStarted = Promise.withResolvers<void>();
+  const releaseSourceRead = Promise.withResolvers<void>();
+  try {
+    const selected = await subject.aliceStorage.writeMemory("preference", "Give me time to answer.", {
+      source: "test",
+    });
+    const getMemoryById = subject.aliceStorage.getMemoryById.bind(subject.aliceStorage);
+    subject.aliceStorage.getMemoryById = async (memoryId: string) => {
+      sourceReadStarted.resolve();
+      await releaseSourceRead.promise;
+      return await getMemoryById(memoryId);
+    };
+    let modelCalls = 0;
+    const service = new SupportPassportDraftService({
+      cardService: subject.cardService,
+      modelAdapter: new SupportPassportModelAdapter({
+        routes: [
+          {
+            kind: "local",
+            invoke: async () => {
+              modelCalls += 1;
+              return null;
+            },
+          },
+        ],
+      }),
+      resolveOwner: subject.resolveOwner,
+      audit: { record: async () => undefined },
+      now: subject.now,
+    });
+    const controller = new AbortController();
+    const drafting = service.draftCards({
+      principal: "owner:alice",
+      sourceMemoryIds: [selected.id],
+      sourceMemoryRevisions: sourceRevision(selected.id, "Give me time to answer."),
+      consent: true,
+      signal: controller.signal,
+    });
+    await sourceReadStarted.promise;
+    controller.abort();
+
+    await assert.rejects(
+      Promise.race([
+        drafting,
+        new Promise<never>((_resolve, reject) =>
+          setTimeout(() => reject(new Error("Draft cancellation waited for the source read.")), 100)
+        ),
+      ]),
+      (error: unknown) => error instanceof Error && error.name === "AbortError"
+    );
+    assert.equal(modelCalls, 0);
+  } finally {
+    releaseSourceRead.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await subject.cleanup();
+  }
+});
+
 test("drafting rejects a memory changed after the owner reviewed it", async () => {
   const subject = await makeSubject();
   try {
@@ -883,6 +988,60 @@ test("helper questions honor cancellation during final grant validation", async 
     assert.equal(records[0]?.errorClass, "aborted");
   } finally {
     releaseFinalRead.resolve();
+    await subject.cleanup();
+  }
+});
+
+test("helper question cancellation races the initial grant read", async () => {
+  const subject = await makeSubject();
+  const grantReadStarted = Promise.withResolvers<void>();
+  const releaseGrantRead = Promise.withResolvers<void>();
+  try {
+    let modelCalls = 0;
+    subject.grantService.readGrant = async () => {
+      grantReadStarted.resolve();
+      await releaseGrantRead.promise;
+      throw new Error("released stalled grant read");
+    };
+    const service = new SupportPassportQuestionService({
+      grantService: subject.grantService,
+      modelAdapter: new SupportPassportModelAdapter({
+        routes: [
+          {
+            kind: "gateway",
+            invoke: async () => {
+              modelCalls += 1;
+              return null;
+            },
+          },
+        ],
+      }),
+      audit: { record: async () => undefined },
+      now: subject.now,
+    });
+    const controller = new AbortController();
+    const answer = service.askGrant({
+      grantId: "00000000-0000-4000-8000-000000000001",
+      secret: "x".repeat(43),
+      question: "What can help?",
+      signal: controller.signal,
+    });
+    await grantReadStarted.promise;
+    controller.abort();
+
+    await assert.rejects(
+      Promise.race([
+        answer,
+        new Promise<never>((_resolve, reject) =>
+          setTimeout(() => reject(new Error("Question cancellation waited for the grant read.")), 100)
+        ),
+      ]),
+      (error: unknown) => error instanceof Error && error.name === "AbortError"
+    );
+    assert.equal(modelCalls, 0);
+  } finally {
+    releaseGrantRead.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
     await subject.cleanup();
   }
 });

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 
-import { throwIfAborted } from "../abort-error.js";
+import { raceAbort, throwIfAborted } from "../abort-error.js";
 import { log } from "../logger.js";
 import { stripAttributesSuffix } from "../structured-attributes.js";
 import type { MemoryFile } from "../types.js";
@@ -163,13 +163,18 @@ export class SupportPassportDraftService {
       consent: input.consent,
     });
     if (!parsed.success) throw new SupportPassportError("invalid_input", "The drafting request is invalid.", 400);
-    const owner = await this.resolveOwner(parsed.data.principal);
+    const cancellationMessage = "The support guide draft was cancelled.";
+    throwIfAborted(input.signal, cancellationMessage);
+    const owner = await raceAbort(this.resolveOwner(parsed.data.principal), input.signal, cancellationMessage);
+    throwIfAborted(input.signal, cancellationMessage);
     const revisions = new Map(
       parsed.data.sourceMemoryRevisions.map((source) => [source.memoryId, source.revision] as const)
     );
     const memories: Array<{ memoryId: string; content: string }> = [];
     for (const memoryId of parsed.data.sourceMemoryIds) {
-      const memory = await owner.storage.getMemoryById(memoryId);
+      throwIfAborted(input.signal, cancellationMessage);
+      const memory = await raceAbort(owner.storage.getMemoryById(memoryId), input.signal, cancellationMessage);
+      throwIfAborted(input.signal, cancellationMessage);
       if (!memory || !isEligibleSource(memory)) {
         throw new SupportPassportError("invalid_input", "A selected memory is not available.", 400);
       }
@@ -218,7 +223,8 @@ export class SupportPassportDraftService {
         owner,
         cards: modelResult.cards,
         signal: input.signal,
-        validateSources: async () => await this.revalidateSources(owner.storage, memories),
+        validateSources: async () =>
+          await this.revalidateSources(owner.storage, memories, input.signal, cancellationMessage),
       });
       scheduleAudit(this.audit, { ...auditBase, outcome: "success" });
       return cards;
@@ -234,10 +240,14 @@ export class SupportPassportDraftService {
 
   private async revalidateSources(
     storage: SupportPassportOwnerScope["storage"],
-    expected: Array<{ memoryId: string; content: string }>
+    expected: Array<{ memoryId: string; content: string }>,
+    signal: AbortSignal | undefined,
+    cancellationMessage: string
   ): Promise<void> {
     for (const source of expected) {
-      const memory = await storage.getMemoryById(source.memoryId);
+      throwIfAborted(signal, cancellationMessage);
+      const memory = await raceAbort(storage.getMemoryById(source.memoryId), signal, cancellationMessage);
+      throwIfAborted(signal, cancellationMessage);
       if (!memory || !isEligibleSource(memory) || stripAttributesSuffix(memory.content) !== source.content) {
         throw new SupportPassportError("invalid_input", "A selected memory is not available.", 400);
       }
@@ -264,7 +274,10 @@ export class SupportPassportQuestionService {
     question: string;
     signal?: AbortSignal;
   }): Promise<SupportPassportAnswerOutput> {
-    const guide = await this.grantService.readGrant(input);
+    const cancellationMessage = "The helper question was cancelled.";
+    throwIfAborted(input.signal, cancellationMessage);
+    const guide = await raceAbort(this.grantService.readGrant(input), input.signal, cancellationMessage);
+    throwIfAborted(input.signal, cancellationMessage);
     const startedAt = Date.now();
     let modelResult: Awaited<ReturnType<SupportPassportModelAdapter["answerQuestion"]>>;
     try {
@@ -301,9 +314,9 @@ export class SupportPassportQuestionService {
       usage: modelResult.usage,
     };
     try {
-      throwIfAborted(input.signal, "The helper question was cancelled.");
-      await this.grantService.readGrant(input);
-      throwIfAborted(input.signal, "The helper question was cancelled.");
+      throwIfAborted(input.signal, cancellationMessage);
+      await raceAbort(this.grantService.readGrant(input), input.signal, cancellationMessage);
+      throwIfAborted(input.signal, cancellationMessage);
       const answer = {
         answer: modelResult.answer,
         citedCardIds: modelResult.citedCardIds,
