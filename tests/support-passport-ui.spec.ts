@@ -292,7 +292,7 @@ test("a saved manual draft stays successful when its list refresh fails", async 
   await page.getByLabel("What helps me").fill("Offer me a quiet place and time.");
   await page.getByRole("button", { name: "Save draft" }).click();
 
-  await expect(page.getByText("Draft saved. Review and approve it before sharing.")).toBeVisible();
+  await expect(page.locator("#toast")).toHaveText("Draft saved. Review and approve it before sharing.");
   await expect(page.locator("#generateError")).toContainText("The draft was saved, but the card list did not refresh.");
   await expect(page.getByText("The draft did not save.")).toHaveCount(0);
   await expect(page.locator("#cardDialog")).toBeHidden();
@@ -338,7 +338,7 @@ test("an overdue card can be edited without changing its review reminder", async
     reviewBy: overdueReview,
     expectedRevision: card.revision,
   });
-  await expect(page.getByText("Draft saved. Review and approve it before sharing.")).toBeVisible();
+  await expect(page.locator("#toast")).toHaveText("Draft saved. Review and approve it before sharing.");
   await expect(page.getByText("Choose a future review reminder.")).toHaveCount(0);
 });
 
@@ -401,7 +401,7 @@ test("successful owner mutations stay successful when their list refresh fails",
 
   failCardRefresh = true;
   await page.getByRole("button", { name: "Approve" }).click();
-  await expect(page.getByText("Approved Plan changes. It can now be shared.", { exact: true })).toBeVisible();
+  await expect(page.locator("#toast")).toHaveText("Approved Plan changes. It can now be shared.");
   await expect(page.locator("#generateError")).toContainText("The card list did not refresh.");
   await expect(page.getByText("The support card did not change.")).toHaveCount(0);
 
@@ -410,13 +410,13 @@ test("successful owner mutations stay successful when their list refresh fails",
   await page.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
   failCardRefresh = true;
   await page.getByRole("button", { name: "Draft my support cards" }).click();
-  await expect(page.getByText("Drafts ready. Review each card before approval.", { exact: true })).toBeVisible();
+  await expect(page.locator("#toast")).toHaveText("Drafts ready. Review each card before approval.");
   await expect(page.locator("#generateError")).toContainText("The card list did not refresh.");
   await expect(page.getByText("The configured model did not return valid drafts.")).toHaveCount(0);
 
   failCardRefresh = true;
   await page.getByRole("button", { name: "Stop sharing" }).click();
-  await expect(page.getByText("Sharing stopped. The helper link is now locked.", { exact: true })).toBeVisible();
+  await expect(page.locator("#toast")).toHaveText("Sharing stopped. The helper link is now locked.");
   await expect(page.locator("#shareError")).toContainText("The share list did not refresh.");
   await expect(page.getByText("The share link did not stop.")).toHaveCount(0);
 });

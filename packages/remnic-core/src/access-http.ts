@@ -3552,7 +3552,12 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
   ): Promise<void> {
     try {
       let body = await readFile(path.join(this.adminConsolePublicDir, relativePath), "utf-8");
-      const canPrefillToken = this.adminConsolePrefillToken && this.isAuthorized(req, pathname);
+      const matched = this.resolveAuthorizedEntry(req, pathname);
+      const canPrefillToken =
+        this.adminConsolePrefillToken &&
+        matched !== null &&
+        matched.capabilities === undefined &&
+        this.timingSafeStringEqual(matched.token, this.adminConsolePrefillToken);
       if (canPrefillToken) {
         const script = `<script>window.__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__=${JSON.stringify(this.adminConsolePrefillToken)};</script>`;
         body = body.includes("</head>")

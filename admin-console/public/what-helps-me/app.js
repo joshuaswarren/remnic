@@ -19,8 +19,6 @@
   const HELPER_READ_TIMEOUT_MS = 10_000;
   const HELPER_QUESTION_TIMEOUT_MS = 60_000;
   const OWNER_READ_TIMEOUT_MS = 30_000;
-  const OWNER_WRITE_TIMEOUT_MS = 60_000;
-  const OWNER_MODEL_TIMEOUT_MS = 15 * 60_000;
   const MAX_VISIBLE_GRANTS = 100;
   const MAX_SHARED_CARDS = 8;
   const PAGE_HIDDEN_ABORT = new Error("The helper page was hidden.");
@@ -103,7 +101,7 @@
     const method = options.method ?? "GET";
     const timeoutMs =
       options.timeoutMs ??
-      (options.owner ? (method === "GET" ? OWNER_READ_TIMEOUT_MS : OWNER_WRITE_TIMEOUT_MS) : undefined);
+      (options.owner && method === "GET" ? OWNER_READ_TIMEOUT_MS : undefined);
     const controller = Number.isFinite(timeoutMs) ? new AbortController() : null;
     let timedOut = false;
     let timeout;
@@ -179,8 +177,6 @@
         owner: true,
         method: "POST",
         body: input,
-        timeoutMs: OWNER_MODEL_TIMEOUT_MS,
-        timeoutMessage: "The configured model took too long. Try again.",
       }),
     replaceCard: (cardId, input) =>
       fetchJson(`/engram/v1/support-passport/cards/${encodeURIComponent(cardId)}`, {
