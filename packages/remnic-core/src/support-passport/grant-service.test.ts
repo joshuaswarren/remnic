@@ -849,6 +849,37 @@ test("helper guide assembly fails when owner-lock ownership is lost", async () =
   }
 });
 
+test("helper guide assembly refreshes the owner lock after its final card read", async () => {
+  const subject = await makeSubject();
+  try {
+    const card = await createActiveCard(subject);
+    const created = await subject.grantService.createGrant({
+      principal: "owner:alice",
+      cards: [{ cardId: card.cardId, revision: card.revision }],
+      expiresAt: expiryAfter(subject, 3_600_000),
+    });
+    const getMemoryById = subject.aliceStorage.getMemoryById.bind(subject.aliceStorage);
+    let reads = 0;
+    subject.aliceStorage.getMemoryById = async (memoryId: string) => {
+      const memory = await getMemoryById(memoryId);
+      reads += 1;
+      if (reads === 2) {
+        const lockPath = path.join(subject.aliceStorage.dir, "state", "support-passport-cards.lock");
+        await writeFile(lockPath, `${process.pid} 00000000-0000-4000-8000-000000000000 peer\n`);
+      }
+      return memory;
+    };
+
+    await assert.rejects(
+      subject.grantService.readGrant({ grantId: created.grant.grantId, secret: created.secret }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
+    );
+    assert.equal(reads, 2);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("a changed card makes the whole grant stale without a partial guide", async () => {
   const subject = await makeSubject();
   try {
@@ -905,6 +936,74 @@ test("unrelated memory writes do not invalidate an unchanged shared guide", asyn
     });
 
     assert.equal(guide.cards[0]?.cardId, card.cardId);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("grant creation rejects an approved card with an invalid update timestamp", async () => {
+  const subject = await makeSubject();
+  try {
+    const card = await createActiveCard(subject);
+    const memory = await subject.aliceStorage.getMemoryById(card.cardId);
+    assert.ok(memory);
+    assert.equal(
+      await subject.aliceStorage.writeMemoryFrontmatterIfUnchanged(memory, {
+        updated: "2026-08-11T12:00:00+99:99",
+      }),
+      true
+    );
+    const [invalidCard] = await subject.cardService.listCards({ principal: "owner:alice" });
+    assert.ok(invalidCard);
+
+    await assert.rejects(
+      subject.grantService.createGrant({
+        principal: "owner:alice",
+        cards: [{ cardId: invalidCard.cardId, revision: invalidCard.revision }],
+        expiresAt: expiryAfter(subject, 3_600_000),
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "card_data_invalid"
+    );
+    assert.deepEqual(await subject.grantService.listGrants({ principal: "owner:alice" }), []);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("public guides compare card update timestamps as instants", async () => {
+  const subject = await makeSubject();
+  try {
+    const first = await createActiveCard(subject, "Earlier card");
+    const second = await createActiveCard(subject, "Later card");
+    const firstMemory = await subject.aliceStorage.getMemoryById(first.cardId);
+    const secondMemory = await subject.aliceStorage.getMemoryById(second.cardId);
+    assert.ok(firstMemory);
+    assert.ok(secondMemory);
+    assert.equal(
+      await subject.aliceStorage.writeMemoryFrontmatterIfUnchanged(firstMemory, {
+        updated: "2026-08-11T12:00:00+05:00",
+      }),
+      true
+    );
+    assert.equal(
+      await subject.aliceStorage.writeMemoryFrontmatterIfUnchanged(secondMemory, {
+        updated: "2026-08-11T10:00:00Z",
+      }),
+      true
+    );
+    const cards = await subject.cardService.listCards({ principal: "owner:alice" });
+    const created = await subject.grantService.createGrant({
+      principal: "owner:alice",
+      cards: cards.map((card) => ({ cardId: card.cardId, revision: card.revision })),
+      expiresAt: expiryAfter(subject, 3_600_000),
+    });
+
+    const guide = await subject.grantService.readGrant({
+      grantId: created.grant.grantId,
+      secret: created.secret,
+    });
+
+    assert.equal(guide.updatedAt, "2026-08-11T10:00:00Z");
   } finally {
     await subject.cleanup();
   }

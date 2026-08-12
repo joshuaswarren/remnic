@@ -10,6 +10,7 @@ import {
   SupportPassportListGrantsInputSchema,
   type SupportPassportOwnerGrant,
   SupportPassportOwnerGrantSchema,
+  SupportPassportPublicCardSchema,
   type SupportPassportPublicGuide,
   SupportPassportPublicGuideSchema,
   type SupportPassportRevokeGrantInput,
@@ -58,6 +59,9 @@ export class SupportPassportGrantService {
         }
         if (stored.card.revision !== cardRef.revision) {
           throw new SupportPassportError("revision_conflict", "A support card changed after it was selected.", 409);
+        }
+        if (!this.publicCard(stored.card).success) {
+          throw new SupportPassportError("card_data_invalid", "The support card data is invalid.", 500);
         }
       }
       const created = await this.grantStore.create(
@@ -112,10 +116,9 @@ export class SupportPassportGrantService {
     const cards = await this.readGrantCards(storage, initialState);
     const firstCard = cards[0];
     if (!firstCard) throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
-    const updatedAt = cards.reduce(
-      (latest, card) => (card.updatedAt > latest ? card.updatedAt : latest),
-      firstCard.updatedAt
-    );
+    const updatedAt = cards.reduce((latest, card) => {
+      return Date.parse(card.updatedAt) > Date.parse(latest) ? card.updatedAt : latest;
+    }, firstCard.updatedAt);
     return await withSupportPassportOwnerLock(storage, async (ownerLock) => {
       return await this.grantStore.withAuthenticatedGrant(input.grantId, input.secret, async (finalState) => {
         if (finalState.namespace !== initialState.namespace) {
@@ -123,6 +126,7 @@ export class SupportPassportGrantService {
         }
         await requireSupportPassportOwnerLock(ownerLock);
         const currentCards = await this.readGrantCards(storage, finalState);
+        await requireSupportPassportOwnerLock(ownerLock);
         if (JSON.stringify(currentCards) !== JSON.stringify(cards)) {
           throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
         }
@@ -144,14 +148,28 @@ export class SupportPassportGrantService {
       if (!stored || stored.card.status !== "active" || stored.card.revision !== cardRef.revision) {
         throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
       }
-      return {
-        cardId: stored.card.cardId,
-        title: stored.card.title,
-        statement: stored.card.statement,
-        category: stored.card.category,
-        updatedAt: stored.card.updatedAt,
-      };
+      const publicCard = this.publicCard(stored.card);
+      if (!publicCard.success) {
+        throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
+      }
+      return publicCard.data;
     }));
+  }
+
+  private publicCard(card: {
+    cardId: string;
+    title: string;
+    statement: string;
+    category: string;
+    updatedAt: string;
+  }): ReturnType<typeof SupportPassportPublicCardSchema.safeParse> {
+    return SupportPassportPublicCardSchema.safeParse({
+      cardId: card.cardId,
+      title: card.title,
+      statement: card.statement,
+      category: card.category,
+      updatedAt: card.updatedAt,
+    });
   }
 
   private ownerGrant(state: SupportPassportGrantState): SupportPassportOwnerGrant {
