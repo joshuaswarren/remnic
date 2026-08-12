@@ -11,6 +11,7 @@ import { pathMayCarryEntityRefs, requestEntityCanonicalIdReconcile } from "./ent
 import { withRawEntityPageMutation } from "./entity-canonical-id-lock.js";
 import { readMaybeEncryptedFileFromChunks, writeMaybeEncryptedFileFromChunks } from "../secure-store/secure-fs.js";
 import * as archiveMutation from "../archive-mutation-version.js";
+import { invalidationCommitFingerprint } from "./deletion-revision-store.js";
 import {
   buildExplicitCaptureDedupKey,
   buildCapturePathLockIdentity,
@@ -234,6 +235,29 @@ export abstract class TombstoneBlockedCaptureIndexHost {
     identity?: string | readonly string[]
   ): Promise<T> {
     return await this.getTombstoneBlockedCaptureIndex().withCaptureWriteLock(task, identity);
+  }
+
+  /** Read selected memories while their mutation locks remain held. */
+  async readMemorySnapshotsIfUnchanged(expected: readonly MemoryFile[]): Promise<MemoryFile[] | null> {
+    if (expected.length === 0) return [];
+    const pathnames = [...new Set(expected.map((memory) => memory.path))];
+    if (pathnames.length !== expected.length) return null;
+    return await this.withTombstoneBlockedCaptureWriteLock(async () => {
+      const current = await Promise.all(pathnames.map((pathname) => this.readMemoryByPath(pathname)));
+      for (let index = 0; index < expected.length; index += 1) {
+        const actual = current[index];
+        const snapshot = expected[index];
+        if (
+          !actual ||
+          !snapshot ||
+          actual.frontmatter.id !== snapshot.frontmatter.id ||
+          invalidationCommitFingerprint(actual) !== invalidationCommitFingerprint(snapshot)
+        ) {
+          return null;
+        }
+      }
+      return current as MemoryFile[];
+    }, pathnames.map(buildCapturePathLockIdentity));
   }
 
   protected async withTombstoneBlockedCaptureWriteLockAndHashes<T>(
