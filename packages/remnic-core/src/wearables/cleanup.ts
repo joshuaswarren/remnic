@@ -100,6 +100,11 @@ function escapeRegExp(value: string): string {
 /**
  * Build one alternation from `tokens`, or `null` when none remain.
  *
+ * Each token contributes BOTH its composed and its decomposed spelling,
+ * so `ähm` also matches an ASR that emits `a\u0308hm`. Matching both
+ * forms keeps the surrounding transcript byte-identical, which
+ * normalizing the text before stripping would not.
+ *
  * JavaScript alternation is first-match, not longest-match, so the
  * tokens are sorted longest-first. Without that a built-in prefix such
  * as 「あのー」 would match ahead of a longer operator token that starts
@@ -110,7 +115,12 @@ function buildAlternation(
   tokens: readonly string[],
   shape: (pattern: string) => { source: string; flags: string },
 ): RegExp | null {
-  const unique = [...new Set(tokens)].sort(
+  const forms = new Set<string>();
+  for (const token of tokens) {
+    forms.add(token.normalize("NFC"));
+    forms.add(token.normalize("NFD"));
+  }
+  const unique = [...forms].sort(
     (left, right) => right.length - left.length || (left < right ? -1 : left > right ? 1 : 0),
   );
   if (unique.length === 0) return null;

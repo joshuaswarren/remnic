@@ -251,3 +251,11 @@ test("a Hebrew operator token is a whole token, never a substring", () => {
   assert.equal(stripFillerTokens("נראה טוב", ["אה"]), "נראה טוב");
   assert.equal(stripFillerTokens("אה טוב", ["אה"]), "טוב");
 });
+
+test("a decomposed accented filler is stripped without rewriting the rest", () => {
+  const decomposed = "a\u0308hm weiter mit dem cafe\u0301";
+  const cleaned = stripFillerTokens(decomposed);
+  assert.equal(cleaned, "weiter mit dem cafe\u0301");
+  // The surviving text keeps the ASR's own bytes: no NFC rewrite.
+  assert.ok(cleaned.includes("\u0301"));
+});
