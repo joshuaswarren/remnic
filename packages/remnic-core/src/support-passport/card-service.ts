@@ -3,7 +3,7 @@ import path from "node:path";
 import type { StorageManager } from "../index.js";
 import { log } from "../logger.js";
 import type { MemoryFile } from "../types.js";
-import { serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
+import { type HeldFileLockController, serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
 import { composeMemoryEnvelope } from "../write-envelope.js";
 import {
   SUPPORT_PASSPORT_ATTRIBUTE_KEYS,
@@ -58,8 +58,8 @@ export class SupportPassportCardService {
     const parsed = SupportPassportListCardsInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
     const { storage } = await this.resolveOwner(parsed.data.principal);
-    return await this.withOwnerLock(storage, async () => {
-      const stored = await this.readStoredCards(storage);
+    return await this.withOwnerLock(storage, async (lock) => {
+      const stored = await this.readStoredCards(storage, lock);
       const cards = this.ownerVisibleCards(stored)
         .sort((a, b) => a.order - b.order || a.card.cardId.localeCompare(b.card.cardId))
         .map((item) => item.card);
@@ -75,14 +75,18 @@ export class SupportPassportCardService {
     const parsed = SupportPassportManualDraftInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
     const { storage } = await this.resolveOwner(parsed.data.principal);
-    return await this.withOwnerLock(storage, () =>
-      this.createDraft(storage, {
-        title: parsed.data.title,
-        statement: parsed.data.statement,
-        category: parsed.data.category,
-        reviewBy: parsed.data.reviewBy,
-        sourceMemoryIds: [],
-      })
+    return await this.withOwnerLock(storage, (lock) =>
+      this.createDraft(
+        storage,
+        {
+          title: parsed.data.title,
+          statement: parsed.data.statement,
+          category: parsed.data.category,
+          reviewBy: parsed.data.reviewBy,
+          sourceMemoryIds: [],
+        },
+        lock
+      )
     );
   }
 
@@ -90,11 +94,11 @@ export class SupportPassportCardService {
     const parsed = SupportPassportReplaceCardInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
     const { storage } = await this.resolveOwner(parsed.data.principal);
-    return await this.withOwnerLock(storage, async () => {
+    return await this.withOwnerLock(storage, async (lock) => {
       const loadedPrior = await this.requireCard(storage, parsed.data.cardId);
       this.requireRevision(loadedPrior, parsed.data.expectedRevision);
       if (loadedPrior.card.status === "pending_review" || loadedPrior.card.status === "active") {
-        const storedCards = await this.readStoredCards(storage);
+        const storedCards = await this.readStoredCards(storage, lock);
         const interruptedReplacements = storedCards.filter(
           (item) =>
             item.card.status === "pending_review" &&
@@ -128,7 +132,7 @@ export class SupportPassportCardService {
       }
       const refreshedPrior = await this.requireCard(storage, parsed.data.cardId);
       this.requireRevision(refreshedPrior, parsed.data.expectedRevision);
-      const recoveredMemory = await this.recoverReplacementTransition(storage, refreshedPrior.memory);
+      const recoveredMemory = await this.recoverReplacementTransition(storage, refreshedPrior.memory, lock);
       const prior = this.projectRequiredCard(recoveredMemory);
       if (prior.card.status !== "active" && prior.card.status !== "pending_review") {
         throw new SupportPassportError(
@@ -137,19 +141,24 @@ export class SupportPassportCardService {
           409
         );
       }
-      const replacement = await this.createDraft(storage, {
-        title: parsed.data.title,
-        statement: parsed.data.statement,
-        category: parsed.data.category,
-        reviewBy: parsed.data.reviewBy,
-        sourceMemoryIds: prior.sourceMemoryIds,
-        supersedes: prior.card.status === "active" ? prior.card.cardId : prior.memory.frontmatter.supersedes,
-        replacesDraftId: prior.card.status === "pending_review" ? prior.card.cardId : undefined,
-        order: prior.order,
-      });
+      const replacement = await this.createDraft(
+        storage,
+        {
+          title: parsed.data.title,
+          statement: parsed.data.statement,
+          category: parsed.data.category,
+          reviewBy: parsed.data.reviewBy,
+          sourceMemoryIds: prior.sourceMemoryIds,
+          supersedes: prior.card.status === "active" ? prior.card.cardId : prior.memory.frontmatter.supersedes,
+          replacesDraftId: prior.card.status === "pending_review" ? prior.card.cardId : undefined,
+          order: prior.order,
+        },
+        lock
+      );
       if (prior.card.status === "active") return replacement;
 
       const replacedAt = this.now().toISOString();
+      await this.requireOwnerLock(lock);
       const rejected = await storage.writeMemoryFrontmatterIfUnchanged(
         prior.memory,
         { status: "rejected", updated: replacedAt },
@@ -159,7 +168,7 @@ export class SupportPassportCardService {
       const currentPrior = await storage.getMemoryById(prior.card.cardId);
       if (currentPrior?.frontmatter.status === "rejected") return replacement;
 
-      await this.rejectCreatedDraft(storage, replacement.cardId, "draft-replacement-failed");
+      await this.rejectCreatedDraft(storage, replacement.cardId, "draft-replacement-failed", lock);
       throw new SupportPassportError("storage_conflict", "The support card changed before it was edited.", 409);
     });
   }
@@ -168,16 +177,17 @@ export class SupportPassportCardService {
     const parsed = SupportPassportCardMutationInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
     const { storage } = await this.resolveOwner(parsed.data.principal);
-    return await this.withOwnerLock(storage, async () => {
+    return await this.withOwnerLock(storage, async (lock) => {
       const loadedCard = await this.requireCard(storage, parsed.data.cardId);
       this.requireRevision(loadedCard, parsed.data.expectedRevision);
       this.requireStatus(loadedCard, "pending_review");
-      const recoveredMemory = await this.recoverReplacementTransition(storage, loadedCard.memory);
+      const recoveredMemory = await this.recoverReplacementTransition(storage, loadedCard.memory, lock);
       const card = this.projectRequiredCard(recoveredMemory);
       if (card.card.status === "active") return card.card;
       this.requireStatus(card, "pending_review");
       await this.validatePriorForReplacement(storage, card);
       const updatedAt = this.now().toISOString();
+      await this.requireOwnerLock(lock);
       let approved: boolean;
       try {
         approved = await storage.writeMemoryFrontmatterIfUnchanged(
@@ -189,7 +199,7 @@ export class SupportPassportCardService {
         const current = await storage.getMemoryById(card.card.cardId);
         const currentCard = current ? projectSupportPassportCard(current) : null;
         if (currentCard?.card.status === "active") {
-          return await this.finishCommittedApproval(storage, currentCard);
+          return await this.finishCommittedApproval(storage, currentCard, lock);
         }
         throw error;
       }
@@ -197,7 +207,7 @@ export class SupportPassportCardService {
         const current = await storage.getMemoryById(card.card.cardId);
         const currentCard = current ? projectSupportPassportCard(current) : null;
         if (currentCard?.card.status === "active") {
-          return await this.finishCommittedApproval(storage, currentCard);
+          return await this.finishCommittedApproval(storage, currentCard, lock);
         }
         throw new SupportPassportError("storage_conflict", "The support card changed before approval.", 409);
       }
@@ -209,7 +219,7 @@ export class SupportPassportCardService {
       };
       try {
         const current = await this.requireCard(storage, card.card.cardId);
-        return await this.finishCommittedApproval(storage, current);
+        return await this.finishCommittedApproval(storage, current, lock);
       } catch (error) {
         log.warn(
           `support passport could not finish replacement approval side effects: ${error instanceof Error ? error.message : String(error)}`
@@ -238,11 +248,12 @@ export class SupportPassportCardService {
       supersedes?: string;
       replacesDraftId?: string;
       order?: number;
-    }
+    },
+    lock: HeldFileLockController
   ): Promise<SupportPassportCard> {
     const now = this.now();
     const reviewBy = input.reviewBy ?? now.toISOString();
-    const storedCards = await this.readStoredCards(storage);
+    const storedCards = await this.readStoredCards(storage, lock);
     const visibleCards = this.ownerVisibleCards(storedCards);
     const replacesVisibleCard = visibleCards.some(
       (item) =>
@@ -273,6 +284,7 @@ export class SupportPassportCardService {
       { source: "support-passport", now: this.now }
     );
     if (envelope.sanitizeViolations.length > 0) throw invalidInput();
+    await this.requireOwnerLock(lock);
     const written = await storage.writeSealedMemory(envelope, {
       actor: "support-passport.create-draft",
       status: "pending_review",
@@ -294,14 +306,15 @@ export class SupportPassportCardService {
     const parsed = SupportPassportCardMutationInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
     const { storage } = await this.resolveOwner(parsed.data.principal);
-    return await this.withOwnerLock(storage, async () => {
+    return await this.withOwnerLock(storage, async (lock) => {
       let card = await this.requireCard(storage, parsed.data.cardId);
       this.requireRevision(card, parsed.data.expectedRevision);
       if (expectedStatus === "pending_review") {
-        card = this.projectRequiredCard(await this.recoverReplacementTransition(storage, card.memory));
+        card = this.projectRequiredCard(await this.recoverReplacementTransition(storage, card.memory, lock));
       }
       this.requireStatus(card, expectedStatus);
       const updatedAt = this.now().toISOString();
+      await this.requireOwnerLock(lock);
       const changed = await storage.writeMemoryFrontmatterIfUnchanged(
         card.memory,
         {
@@ -338,9 +351,15 @@ export class SupportPassportCardService {
     });
   }
 
-  private async rejectCreatedDraft(storage: StorageManager, cardId: string, reasonCode: string): Promise<void> {
+  private async rejectCreatedDraft(
+    storage: StorageManager,
+    cardId: string,
+    reasonCode: string,
+    lock: HeldFileLockController
+  ): Promise<void> {
     try {
       const current = await this.requireCard(storage, cardId);
+      await this.requireOwnerLock(lock);
       const rejected = await storage.writeMemoryFrontmatterIfUnchanged(
         current.memory,
         { status: "rejected", updated: this.now().toISOString() },
@@ -379,11 +398,14 @@ export class SupportPassportCardService {
     }
   }
 
-  private async readStoredCards(storage: StorageManager): Promise<StoredSupportPassportCard[]> {
+  private async readStoredCards(
+    storage: StorageManager,
+    lock: HeldFileLockController
+  ): Promise<StoredSupportPassportCard[]> {
     const initial = await storage.readAllMemories();
     let recovered = false;
     for (const memory of initial) {
-      if ((await this.recoverReplacementTransition(storage, memory)) !== memory) recovered = true;
+      if ((await this.recoverReplacementTransition(storage, memory, lock)) !== memory) recovered = true;
     }
     const memories: MemoryFile[] = recovered ? await storage.readAllMemories() : initial;
     const projected = memories
@@ -415,7 +437,8 @@ export class SupportPassportCardService {
 
   private async preparePriorForReplacement(
     storage: StorageManager,
-    replacement: StoredSupportPassportCard
+    replacement: StoredSupportPassportCard,
+    lock: HeldFileLockController
   ): Promise<string | null> {
     const priorId = replacement.memory.frontmatter.supersedes;
     if (!priorId) return null;
@@ -430,6 +453,7 @@ export class SupportPassportCardService {
     }
     if (alreadyRetired) return priorId;
     const retiredAt = this.now().toISOString();
+    await this.requireOwnerLock(lock);
     const retired = await storage.writeMemoryFrontmatterIfUnchanged(
       priorMemory,
       {
@@ -468,43 +492,58 @@ export class SupportPassportCardService {
     }
   }
 
-  private async recoverReplacementTransition(storage: StorageManager, memory: MemoryFile): Promise<MemoryFile> {
+  private async recoverReplacementTransition(
+    storage: StorageManager,
+    memory: MemoryFile,
+    lock: HeldFileLockController
+  ): Promise<MemoryFile> {
     const replacement = projectSupportPassportCard(memory);
     if (replacement?.card.status !== "pending_review" && replacement?.card.status !== "active") return memory;
     if (!replacement.replacesDraftId && !memory.frontmatter.supersedes) return memory;
-    await this.recoverReplacedDraft(storage, replacement);
+    if (
+      replacement.card.status === "active" &&
+      memory.frontmatter.structuredAttributes?.[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.replacementComplete] === "true"
+    ) {
+      return memory;
+    }
+    await this.recoverReplacedDraft(storage, replacement, lock);
     const currentMemory = (await storage.getMemoryById(replacement.card.cardId)) ?? memory;
     const currentCard = projectSupportPassportCard(currentMemory);
     if (currentCard?.card.status !== "pending_review" && currentCard?.card.status !== "active") {
       return currentMemory;
     }
-    const priorId = currentMemory.frontmatter.supersedes;
-    if (!priorId) return currentMemory;
-    const prior = await storage.getMemoryById(priorId);
     if (currentCard.card.status === "pending_review") {
+      const priorId = currentMemory.frontmatter.supersedes;
+      if (!priorId) return currentMemory;
+      const prior = await storage.getMemoryById(priorId);
       if (prior?.frontmatter.status === "superseded" && prior.frontmatter.supersededBy === replacement.card.cardId) {
-        await this.restorePriorAfterApprovalFailure(storage, priorId, replacement.card.cardId);
+        await this.restorePriorAfterApprovalFailure(storage, priorId, replacement.card.cardId, lock);
       }
       return (await storage.getMemoryById(replacement.card.cardId)) ?? currentMemory;
     }
-    await this.retirePriorAfterActivation(storage, currentCard);
+    await this.completeReplacementAfterActivation(storage, currentCard, lock);
     return (await storage.getMemoryById(replacement.card.cardId)) ?? currentMemory;
   }
 
-  private async retirePriorAfterActivation(
+  private async completeReplacementAfterActivation(
     storage: StorageManager,
-    replacement: StoredSupportPassportCard
+    replacement: StoredSupportPassportCard,
+    lock: HeldFileLockController
   ): Promise<void> {
-    const priorId = await this.preparePriorForReplacement(storage, replacement);
-    if (priorId) await this.completePriorRetirement(storage, priorId, replacement.card.cardId);
+    const priorId = await this.preparePriorForReplacement(storage, replacement, lock);
+    if (priorId && !(await this.completePriorRetirement(storage, priorId, replacement, lock))) return;
+    await this.markReplacementComplete(storage, replacement.card.cardId, lock);
   }
 
   private async finishCommittedApproval(
     storage: StorageManager,
-    replacement: StoredSupportPassportCard
+    replacement: StoredSupportPassportCard,
+    lock: HeldFileLockController
   ): Promise<SupportPassportCard> {
     try {
-      await this.retirePriorAfterActivation(storage, replacement);
+      if (replacement.replacesDraftId || replacement.memory.frontmatter.supersedes) {
+        await this.completeReplacementAfterActivation(storage, replacement, lock);
+      }
     } catch (error) {
       log.warn(
         `support passport could not finish replacement approval side effects: ${error instanceof Error ? error.message : String(error)}`
@@ -516,10 +555,13 @@ export class SupportPassportCardService {
   private async completePriorRetirement(
     storage: StorageManager,
     priorId: string,
-    replacementId: string
-  ): Promise<void> {
+    replacement: StoredSupportPassportCard,
+    lock: HeldFileLockController
+  ): Promise<boolean> {
+    const replacementId = replacement.card.cardId;
     const prior = await storage.getMemoryById(priorId);
-    if (prior?.frontmatter.status !== "superseded" || prior.frontmatter.supersededBy !== replacementId) return;
+    if (prior?.frontmatter.status !== "superseded" || prior.frontmatter.supersededBy !== replacementId) return false;
+    await this.requireOwnerLock(lock);
     const completed = await storage.supersedeMemory(
       priorId,
       replacementId,
@@ -528,13 +570,19 @@ export class SupportPassportCardService {
       { requireActive: true, acceptExactReplay: true, expectedSnapshot: prior }
     );
     if (!completed) log.warn("support passport could not complete replacement retirement side effects");
+    return completed;
   }
 
-  private async recoverReplacedDraft(storage: StorageManager, replacement: StoredSupportPassportCard): Promise<void> {
+  private async recoverReplacedDraft(
+    storage: StorageManager,
+    replacement: StoredSupportPassportCard,
+    lock: HeldFileLockController
+  ): Promise<void> {
     if (!replacement.replacesDraftId) return;
     const replacedDraft = await storage.getMemoryById(replacement.replacesDraftId);
     const projectedDraft = replacedDraft ? projectSupportPassportCard(replacedDraft) : null;
     if (replacedDraft && projectedDraft?.card.status === "pending_review") {
+      await this.requireOwnerLock(lock);
       const rejected = await storage.writeMemoryFrontmatterIfUnchanged(
         replacedDraft,
         { status: "rejected", updated: this.now().toISOString() },
@@ -547,13 +595,18 @@ export class SupportPassportCardService {
     if (currentDraft?.frontmatter.status === "pending_review") {
       throw new SupportPassportError("storage_conflict", "The replaced draft changed during recovery.", 409);
     }
-    await this.rejectOrphanedReplacement(storage, replacement.card.cardId);
+    await this.rejectOrphanedReplacement(storage, replacement.card.cardId, lock);
   }
 
-  private async rejectOrphanedReplacement(storage: StorageManager, replacementId: string): Promise<void> {
+  private async rejectOrphanedReplacement(
+    storage: StorageManager,
+    replacementId: string,
+    lock: HeldFileLockController
+  ): Promise<void> {
     const currentReplacement = await this.requireCard(storage, replacementId);
     if (currentReplacement.card.status === "rejected") return;
     this.requireStatus(currentReplacement, "pending_review");
+    await this.requireOwnerLock(lock);
     const rejected = await storage.writeMemoryFrontmatterIfUnchanged(
       currentReplacement.memory,
       { status: "rejected", updated: this.now().toISOString() },
@@ -566,17 +619,20 @@ export class SupportPassportCardService {
     }
   }
 
-  private async withOwnerLock<T>(storage: StorageManager, task: () => Promise<T>): Promise<T> {
+  private async withOwnerLock<T>(
+    storage: StorageManager,
+    task: (lock: HeldFileLockController) => Promise<T>
+  ): Promise<T> {
     const lockPath = path.join(storage.dir, "state", "support-passport-cards.lock");
     return await serializeMutations(lockPath, () =>
       withHeldFileLock(
         lockPath,
         { staleMs: CARD_MUTATION_LOCK_STALE_MS, maxWaitMs: CARD_MUTATION_LOCK_MAX_WAIT_MS },
-        async (acquired) => {
+        async (acquired, lock) => {
           if (!acquired) {
             throw new SupportPassportError("storage_conflict", "The support passport is busy. Try again.", 409);
           }
-          return await task();
+          return await task(lock);
         }
       )
     );
@@ -585,13 +641,15 @@ export class SupportPassportCardService {
   private async restorePriorAfterApprovalFailure(
     storage: StorageManager,
     priorId: string,
-    replacementId: string
+    replacementId: string,
+    lock: HeldFileLockController
   ): Promise<void> {
     try {
       const replacement = await storage.getMemoryById(replacementId);
       if (replacement?.frontmatter.status === "active") return;
       const prior = await storage.getMemoryById(priorId);
       if (prior?.frontmatter.status !== "superseded" || prior.frontmatter.supersededBy !== replacementId) return;
+      await this.requireOwnerLock(lock);
       const restored = await storage.writeMemoryFrontmatterIfUnchanged(
         prior,
         {
@@ -610,5 +668,36 @@ export class SupportPassportCardService {
         `support passport could not restore a prior card after replacement approval failed: ${error instanceof Error ? error.message : String(error)}`
       );
     }
+  }
+
+  private async markReplacementComplete(
+    storage: StorageManager,
+    replacementId: string,
+    lock: HeldFileLockController
+  ): Promise<void> {
+    const replacement = await this.requireCard(storage, replacementId);
+    if (
+      replacement.memory.frontmatter.structuredAttributes?.[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.replacementComplete] ===
+      "true"
+    ) {
+      return;
+    }
+    await this.requireOwnerLock(lock);
+    const marked = await storage.writeMemoryFrontmatterIfUnchanged(
+      replacement.memory,
+      {
+        structuredAttributes: {
+          ...replacement.memory.frontmatter.structuredAttributes,
+          [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.replacementComplete]: "true",
+        },
+      },
+      { actor: "support-passport.approve-complete", reasonCode: "replacement-side-effects-complete" }
+    );
+    if (!marked) log.warn("support passport could not mark replacement side effects complete");
+  }
+
+  private async requireOwnerLock(lock: HeldFileLockController): Promise<void> {
+    if (await lock.refresh()) return;
+    throw new SupportPassportError("storage_conflict", "The support passport lock changed. Try again.", 409);
   }
 }
