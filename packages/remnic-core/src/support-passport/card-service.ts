@@ -28,8 +28,8 @@ import {
   computeSupportPassportCardRevision,
 } from "./contracts.js";
 import { SupportPassportError } from "./errors.js";
-import { withSupportPassportOwnerLock } from "./owner-lock.js";
 import { type SupportPassportDraftCard, SupportPassportDraftOutputSchema } from "./model-contracts.js";
+import { withSupportPassportOwnerLock } from "./owner-lock.js";
 
 export interface SupportPassportOwnerScope {
   principal: string;
@@ -107,10 +107,15 @@ export class SupportPassportCardService {
     const principal = SupportPassportListCardsInputSchema.safeParse({ principal: input.principal });
     if (!principal.success) throw invalidInput();
     const owner = await this.resolveOwnerScope(principal.data.principal);
-    return await this.createGeneratedDraftsForOwner({ owner, cards: input.cards });
+    return await this.createGeneratedDraftsForOwner({
+      authenticatedPrincipal: principal.data.principal,
+      owner,
+      cards: input.cards,
+    });
   }
 
   async createGeneratedDraftsForOwner(input: {
+    authenticatedPrincipal: string;
     owner: SupportPassportOwnerScope;
     cards: SupportPassportDraftCard[];
     signal?: AbortSignal;
@@ -118,7 +123,8 @@ export class SupportPassportCardService {
   }): Promise<SupportPassportCard[]> {
     const output = SupportPassportDraftOutputSchema.safeParse({ cards: input.cards });
     if (!output.success) throw invalidInput();
-    const { storage } = input.owner;
+    const owner = this.validateOwnerScope(input.owner, input.authenticatedPrincipal);
+    const { principal, namespace, storage } = owner;
     return await this.withOwnerLock(storage, async (lock) => {
       const created: SupportPassportCard[] = [];
       const createdIds: string[] = [];
@@ -126,23 +132,34 @@ export class SupportPassportCardService {
         input.signal?.throwIfAborted();
         await input.validateSources?.();
         input.signal?.throwIfAborted();
+        const storedCards = await this.readStoredCards(storage, lock, principal, namespace);
+        if (this.ownerVisibleCards(storedCards).length + output.data.cards.length > MAX_OWNER_VISIBLE_CARDS) {
+          throw new SupportPassportError(
+            "invalid_input",
+            "A support passport can contain at most 100 visible cards.",
+            400
+          );
+        }
+        let nextOrder = storedCards.reduce((maximum, card) => Math.max(maximum, card.order), -1) + 1;
         for (const card of output.data.cards) {
           input.signal?.throwIfAborted();
           created.push(
-            await this.createDraft(
+            await this.persistDraft(
               storage,
               {
                 title: card.title,
                 statement: card.statement,
                 category: card.category,
                 sourceMemoryIds: card.sourceMemoryIds,
+                order: nextOrder,
                 onPersisted: (cardId) => createdIds.push(cardId),
               },
               lock,
-              input.owner.principal,
-              input.owner.namespace
+              principal,
+              namespace
             )
           );
+          nextOrder += 1;
         }
         await input.validateSources?.();
         input.signal?.throwIfAborted();
@@ -151,15 +168,7 @@ export class SupportPassportCardService {
         let rollbackIncomplete = false;
         for (const cardId of createdIds) {
           try {
-            if (
-              !(await this.rejectGeneratedDraft(
-                storage,
-                cardId,
-                lock,
-                input.owner.principal,
-                input.owner.namespace
-              ))
-            ) {
+            if (!(await this.rejectGeneratedDraft(storage, cardId, lock, principal, namespace))) {
               rollbackIncomplete = true;
             }
           } catch {
@@ -397,8 +406,32 @@ export class SupportPassportCardService {
     if (visibleCards.length - (replacesVisibleCard ? 1 : 0) >= MAX_OWNER_VISIBLE_CARDS) {
       throw new SupportPassportError("invalid_input", "A support passport can contain at most 100 visible cards.", 400);
     }
-    const maximumOrder = storedCards.reduce((maximum, card) => Math.max(maximum, card.order), -1);
-    const order = input.order ?? maximumOrder + 1;
+    const order = input.order ?? storedCards.reduce((maximum, card) => Math.max(maximum, card.order), -1) + 1;
+    return await this.persistDraft(storage, { ...input, order }, lock, principal, namespace);
+  }
+
+  private async persistDraft(
+    storage: StorageManager,
+    input: {
+      title: string;
+      statement: string;
+      category: SupportPassportCardCategory;
+      reviewBy?: string;
+      sourceMemoryIds: string[];
+      supersedes?: string;
+      replacesDraftId?: string;
+      replacedRevision?: string;
+      order: number;
+      draftReplacementPrepared?: boolean;
+      onPersisted?: (cardId: string) => void;
+    },
+    lock: HeldFileLockController,
+    principal: string,
+    namespace: string
+  ): Promise<SupportPassportCard> {
+    const now = this.now();
+    const reviewBy = input.reviewBy ?? now.toISOString();
+    const order = input.order;
     if (!Number.isSafeInteger(order)) {
       throw new SupportPassportError("storage_conflict", "The support card order range is exhausted.", 409);
     }
@@ -521,8 +554,12 @@ export class SupportPassportCardService {
   }
 
   private async resolveOwnerScope(principal: string): Promise<SupportPassportOwnerScope> {
-    const requestedPrincipal = SupportPassportListCardsInputSchema.safeParse({ principal });
     const owner = await this.resolveOwner(principal);
+    return this.validateOwnerScope(owner, principal);
+  }
+
+  private validateOwnerScope(owner: SupportPassportOwnerScope, principal: string): SupportPassportOwnerScope {
+    const requestedPrincipal = SupportPassportListCardsInputSchema.safeParse({ principal });
     const namespace = SupportPassportNamespaceSchema.safeParse(owner.namespace);
     const ownerPrincipal = SupportPassportListCardsInputSchema.safeParse({ principal: owner.principal });
     if (
@@ -570,7 +607,7 @@ export class SupportPassportCardService {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const memory = await storage.getMemoryById(cardId);
       if (!memory) return true;
-      const stored = this.projectOwnedCard(memory, namespace);
+      const stored = this.projectOwnedCard(memory, namespace, principal);
       if (!stored) return false;
       if (stored.card.status === "rejected") return true;
       if (stored.card.status !== "pending_review") return false;

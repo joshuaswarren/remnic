@@ -7,7 +7,12 @@ import { log } from "../logger.js";
 import { stripAttributesSuffix } from "../structured-attributes.js";
 import type { MemoryFile } from "../types.js";
 import type { SupportPassportCardService, SupportPassportOwnerScope } from "./card-service.js";
-import { type SupportPassportCard, SupportPassportMemoryIdSchema } from "./contracts.js";
+import {
+  type SupportPassportCard,
+  SupportPassportListCardsInputSchema,
+  SupportPassportMemoryIdSchema,
+  SupportPassportNamespaceSchema,
+} from "./contracts.js";
 import { SupportPassportError } from "./errors.js";
 import type { SupportPassportGrantService } from "./grant-service.js";
 import { type SupportPassportModelAdapter, SupportPassportModelCallError } from "./model-adapter.js";
@@ -165,7 +170,8 @@ export class SupportPassportDraftService {
     if (!parsed.success) throw new SupportPassportError("invalid_input", "The drafting request is invalid.", 400);
     const cancellationMessage = "The support guide draft was cancelled.";
     throwIfAborted(input.signal, cancellationMessage);
-    const owner = await raceAbort(this.resolveOwner(parsed.data.principal), input.signal, cancellationMessage);
+    const resolvedOwner = await raceAbort(this.resolveOwner(parsed.data.principal), input.signal, cancellationMessage);
+    const owner = this.validateOwnerScope(resolvedOwner, parsed.data.principal);
     throwIfAborted(input.signal, cancellationMessage);
     const revisions = new Map(
       parsed.data.sourceMemoryRevisions.map((source) => [source.memoryId, source.revision] as const)
@@ -223,6 +229,7 @@ export class SupportPassportDraftService {
     };
     try {
       const cards = await this.cardService.createGeneratedDraftsForOwner({
+        authenticatedPrincipal: owner.principal,
         owner,
         cards: modelResult.cards,
         signal: input.signal,
@@ -253,6 +260,16 @@ export class SupportPassportDraftService {
     if (!memories || memories.some((memory) => !isEligibleSource(memory))) {
       throw new SupportPassportError("invalid_input", "A selected memory is not available.", 400);
     }
+  }
+
+  private validateOwnerScope(owner: SupportPassportOwnerScope, principal: string): SupportPassportOwnerScope {
+    const requestedPrincipal = SupportPassportListCardsInputSchema.safeParse({ principal });
+    const ownerPrincipal = SupportPassportListCardsInputSchema.safeParse({ principal: owner.principal });
+    const namespace = SupportPassportNamespaceSchema.safeParse(owner.namespace);
+    if (!requestedPrincipal.success || !ownerPrincipal.success || !namespace.success) {
+      throw new SupportPassportError("card_data_invalid", "The support passport owner scope is invalid.", 500);
+    }
+    return { ...owner, principal: ownerPrincipal.data.principal, namespace: namespace.data };
   }
 }
 

@@ -276,6 +276,47 @@ test("drafting audits the authenticated owner principal", async () => {
   }
 });
 
+test("drafting rejects a non-canonical authenticated owner scope before model disclosure", async () => {
+  const subject = await makeSubject();
+  try {
+    let modelCalls = 0;
+    const service = new SupportPassportDraftService({
+      cardService: subject.cardService,
+      modelAdapter: new SupportPassportModelAdapter({
+        routes: [
+          {
+            kind: "local",
+            invoke: async () => {
+              modelCalls += 1;
+              return null;
+            },
+          },
+        ],
+      }),
+      resolveOwner: async (principal) => ({
+        principal,
+        namespace: " alice ",
+        storage: subject.aliceStorage,
+      }),
+      audit: { record: async () => undefined },
+      now: subject.now,
+    });
+
+    await assert.rejects(
+      service.draftCards({
+        principal: "owner:alice",
+        sourceMemoryIds: ["selected-memory"],
+        sourceMemoryRevisions: [{ memoryId: "selected-memory", revision: "a".repeat(64) }],
+        consent: true,
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "card_data_invalid"
+    );
+    assert.equal(modelCalls, 0);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("model failures produce a content-free audit record with an error class", async () => {
   const subject = await makeSubject();
   try {
@@ -976,6 +1017,7 @@ test("helper questions honor cancellation during final grant validation", async 
   const subject = await makeSubject();
   const finalReadStarted = Promise.withResolvers<void>();
   const releaseFinalRead = Promise.withResolvers<void>();
+  const finalReadSettled = Promise.withResolvers<void>();
   try {
     const draft = await subject.cardService.createManualDraft({
       principal: "owner:alice",
@@ -1001,6 +1043,11 @@ test("helper questions honor cancellation during final grant validation", async 
       if (reads === 2) {
         finalReadStarted.resolve();
         await releaseFinalRead.promise;
+        try {
+          return await readGrant(input);
+        } finally {
+          finalReadSettled.resolve();
+        }
       }
       return await readGrant(input);
     };
@@ -1046,6 +1093,8 @@ test("helper questions honor cancellation during final grant validation", async 
     assert.equal(records[0]?.errorClass, "aborted");
   } finally {
     releaseFinalRead.resolve();
+    await finalReadSettled.promise;
+    await flushAudit();
     await subject.cleanup();
   }
 });

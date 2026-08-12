@@ -412,6 +412,41 @@ test("generated draft creation rejects a non-canonical resolved namespace before
   }
 });
 
+test("generated draft batches scan the owner corpus once", async () => {
+  const subject = await makeSubject();
+  try {
+    const readAllMemories = subject.aliceStorage.readAllMemories.bind(subject.aliceStorage);
+    let corpusScans = 0;
+    subject.aliceStorage.readAllMemories = async (...args) => {
+      corpusScans += 1;
+      return await readAllMemories(...args);
+    };
+
+    const cards = await subject.service.createGeneratedDrafts({
+      principal: "owner:alice",
+      cards: [
+        {
+          title: "Quiet place",
+          statement: "Offer me a quiet place.",
+          category: "environment",
+          sourceMemoryIds: ["source-1"],
+        },
+        {
+          title: "Plan changes",
+          statement: "Tell me before plans change.",
+          category: "transitions",
+          sourceMemoryIds: ["source-2"],
+        },
+      ],
+    });
+
+    assert.equal(cards.length, 2);
+    assert.equal(corpusScans, 1);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("manual draft creation returns the committed card without a post-write corpus reload", async () => {
   const subject = await makeSubject();
   try {
