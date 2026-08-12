@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import test from "node:test";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import test from "node:test";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -37,6 +37,15 @@ test("root build creates the OpenClaw adapter before bundling its public route",
     buildScript,
     /^pnpm --filter @remnic\/core build && pnpm --filter @remnic\/plugin-openclaw build && /,
   );
+});
+
+test("root development creates the OpenClaw adapter before watching its public route", () => {
+  const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as {
+    scripts?: Record<string, string>;
+  };
+
+  const devScript = pkg.scripts?.dev ?? "";
+  assert.match(devScript, /^pnpm --filter @remnic\/plugin-openclaw build && tsup --watch$/);
 });
 
 test("root test runner applies remnic source conditions and test globs portably", () => {
