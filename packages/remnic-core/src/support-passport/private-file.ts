@@ -178,3 +178,30 @@ export async function writePrivateFileAtomicallyNoFollow(
     await directoryHandle?.close().catch(() => undefined);
   }
 }
+
+export async function removePrivateFilesNoFollow(
+  directory: string,
+  fileNames: string[],
+  errorMessage: string
+): Promise<void> {
+  if (
+    fileNames.some(
+      (fileName) => fileName.length === 0 || fileName === "." || fileName === ".." || path.basename(fileName) !== fileName
+    )
+  ) {
+    throw new Error(errorMessage);
+  }
+  let directoryHandle: FileHandle | undefined;
+  try {
+    const stableDirectory = await openStableDirectory(directory, errorMessage);
+    directoryHandle = stableDirectory.handle;
+    const pinnedDirectory = await pinnedDirectoryPath(directory, directoryHandle, stableDirectory.opened, errorMessage);
+    for (const fileName of fileNames) {
+      await rm(path.join(pinnedDirectory, fileName), { force: true });
+    }
+    assertStableDirectory(stableDirectory.before, stableDirectory.opened, await lstat(directory), errorMessage);
+    await syncDirectoryHandle(directoryHandle);
+  } finally {
+    await directoryHandle?.close().catch(() => undefined);
+  }
+}

@@ -788,6 +788,45 @@ test("the grant store rejects a symlinked grant directory", async () => {
   }
 });
 
+test("grant cleanup never follows a swapped grant directory", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-cleanup-swap-"));
+  try {
+    const grantId = "00000000-0000-4000-8000-000000000001";
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({
+      memoryDir: root,
+      makeGrantId: () => grantId,
+      now: () => now,
+    });
+    await store.create({
+      namespace: "alice",
+      principal: "owner:alice",
+      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+      expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
+    });
+    const grantsDir = path.join(root, "state", "support-passport", "grants");
+    const parkedDir = path.join(root, "parked-grants");
+    const outsideDir = path.join(root, "outside");
+    const fileName = `${grantId}.json`;
+    await mkdir(outsideDir);
+    await writeFile(path.join(outsideDir, fileName), "outside must remain", { mode: 0o600 });
+    renameSync(grantsDir, parkedDir);
+    symlinkSync(outsideDir, grantsDir, "dir");
+    const inspected = store as unknown as {
+      removeGrantStates(grantIds: string[]): Promise<void>;
+    };
+
+    await assert.rejects(
+      inspected.removeGrantStates([grantId]),
+      /regular files in a stable directory/
+    );
+    assert.equal(await readFile(path.join(outsideDir, fileName), "utf8"), "outside must remain");
+    assert.equal((await lstat(path.join(parkedDir, fileName))).isFile(), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("grant writes reject a directory swapped after the initial safety check", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-swap-"));
   try {
