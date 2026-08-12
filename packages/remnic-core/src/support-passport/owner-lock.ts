@@ -1,11 +1,7 @@
 import path from "node:path";
 
 import type { StorageManager } from "../index.js";
-import {
-  type HeldFileLockController,
-  serializeMutations,
-  withHeldFileLock,
-} from "../utils/serialize-mutations.js";
+import { type HeldFileLockController, serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
 import { SupportPassportError } from "./errors.js";
 
 const CARD_MUTATION_LOCK_STALE_MS = 60_000;
