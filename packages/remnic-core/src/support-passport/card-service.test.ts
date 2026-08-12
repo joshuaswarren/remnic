@@ -1018,6 +1018,63 @@ test("rejecting after a durable prior retirement restores the prior card", async
   }
 });
 
+test("rejection stops when a retired predecessor cannot be restored", async () => {
+  const subject = await makeSubject();
+  try {
+    const draft = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Plan changes",
+      statement: "Tell me before plans change.",
+      category: "transitions",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const active = await subject.service.approveCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+    });
+    const replacement = await subject.service.replaceCard({
+      principal: "owner:alice",
+      cardId: active.cardId,
+      expectedRevision: active.revision,
+      title: "Plan changes",
+      statement: "Tell me early when plans change.",
+      category: "transitions",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const prior = await subject.aliceStorage.getMemoryById(active.cardId);
+    assert.ok(prior);
+    assert.equal(
+      await subject.aliceStorage.supersedeMemory(
+        active.cardId,
+        replacement.cardId,
+        "support-passport-replacement",
+        { supersessionCause: "direct" },
+        { requireActive: true, expectedSnapshot: prior }
+      ),
+      true
+    );
+    const originalWrite = subject.aliceStorage.writeMemoryFrontmatterIfUnchanged.bind(subject.aliceStorage);
+    subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = async (memory, patch, lifecycle) => {
+      if (lifecycle?.actor === "support-passport.approve-rollback") return false;
+      return await originalWrite(memory, patch, lifecycle);
+    };
+
+    await assert.rejects(
+      subject.service.rejectCard({
+        principal: "owner:alice",
+        cardId: replacement.cardId,
+        expectedRevision: replacement.revision,
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
+    );
+    assert.equal((await subject.aliceStorage.getMemoryById(active.cardId))?.frontmatter.status, "superseded");
+    assert.equal((await subject.aliceStorage.getMemoryById(replacement.cardId))?.frontmatter.status, "pending_review");
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("an orphaned replacement is rejected when its replaced draft was approved", async () => {
   const subject = await makeSubject();
   try {
