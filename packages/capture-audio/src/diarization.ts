@@ -152,6 +152,28 @@ export class SpeakerClusterer {
     return cluster.id;
   }
 
+  /**
+   * Replace every cluster with `snapshot` (issue #2145).
+   *
+   * `assign` mutates centroids and counts in place, so a diarization commit
+   * that rolls back in SQLite must roll back here too — otherwise the retry
+   * counts the same embeddings twice. Deep-copied, so the caller's snapshot
+   * cannot alias internal state.
+   */
+  restore(snapshot: readonly SpeakerCluster[]): void {
+    this.#clusters = snapshot.map((cluster) => ({
+      ...cluster,
+      centroid: cluster.centroid.slice(),
+      examples: cluster.examples.map((example) => example.slice()),
+    }));
+    let highest = 0;
+    for (const cluster of this.#clusters) {
+      const parsed = /^spk_(\d+)$/.exec(cluster.id);
+      if (parsed) highest = Math.max(highest, Number(parsed[1]));
+    }
+    this.#next = highest + 1;
+  }
+
   /** Snapshot for persistence. */
   clusters(): SpeakerCluster[] {
     return this.#clusters.map((c) => ({

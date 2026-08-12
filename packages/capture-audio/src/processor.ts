@@ -20,7 +20,7 @@ import { createHash } from "node:crypto";
 import type { AssemblySegment, ConversationAssembler } from "./assembly.js";
 import { dedupeCrossChannel } from "./dedup.js";
 import { CaptureInputError } from "./errors.js";
-import type { Embedding, SpeakerClusterer } from "./diarization.js";
+import type { Embedding, SpeakerCluster, SpeakerClusterer } from "./diarization.js";
 import type { ChunkEvent } from "./native.js";
 import type { Spool } from "./spool.js";
 import type { TranscribedSegment } from "./stt.js";
@@ -55,6 +55,12 @@ export interface ChunkProcessorDeps {
   embed?: (event: ChunkEvent, segment: TranscribedSegment) => Embedding | Promise<Embedding>;
   /** Speaker clusterer (seeded from the spool); its clusters are persisted on finalize. */
   diarizer?: SpeakerClusterer;
+  /**
+   * Roll the clusterer back to a snapshot after a failed diarization commit
+   * (issue #2145). Supplied by the owner of the clusterer, which is the only
+   * place that may replace its internal state.
+   */
+  restoreDiarizer?: (clusters: readonly SpeakerCluster[]) => void;
   /** Cross-channel dedup window in ms; defaults to the dedup module's tolerance. */
   dedupWindowMs?: number;
   /**
@@ -175,6 +181,11 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     if (!diarizer) return;
     const pending = deps.spool.conversationSegmentsForDiarization(id);
     if (pending.length === 0) return;
+    // `assign` mutates the in-memory centroids and counts. If the commit rolls
+    // back, those mutations must roll back too — otherwise the retry counts
+    // the same embeddings against an already-advanced clusterer and persists
+    // skewed snapshots. The snapshot below is the undo log.
+    const before = diarizer.clusters();
     // A label-only enrolled self can never match live audio, so the mic
     // heuristic stays the wearer signal until voice enrollment lands.
     const selfVoiceEnrolled = diarizer.clusters().some((c) => c.isSelf && c.embeddingCount > 0);
@@ -204,7 +215,14 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
         centroid: cluster.centroid,
         examples: cluster.examples,
       }));
-    deps.spool.commitDiarization({ clusters, assignments });
+    try {
+      deps.spool.commitDiarization({ clusters, assignments });
+    } catch (err) {
+      // Restore the clusterer to its pre-assign state so the next finalize
+      // starts from the same place SQLite did.
+      deps.restoreDiarizer?.(before);
+      throw err;
+    }
   };
   const finalizeConv = (id: string): void => {
     dedupeConversation(id);
@@ -226,6 +244,21 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     // transcription + diarization entirely. A PARTIAL replay (crash between
     // group appends) has no marker, so it falls through and per-group
     // idempotency re-appends only the missing groups below.
+    // Pre-#2145 runs keyed appends per GROUP (`chunkId` or `chunkId:<n>`).
+    // Those keys cannot be mapped onto the new per-segment keys, so a chunk
+    // carrying one is treated as already applied: re-appending under new keys
+    // would duplicate its segments, which is worse than leaving the tail of
+    // one in-flight chunk unsent across the upgrade.
+    if (deps.spool.isChunkApplied(chunkId) || deps.spool.isChunkApplied(`${chunkId}:0`)) {
+      processedThisRun.add(chunkId);
+      deps.spool.markChunkComplete(chunkId, openConversationId ?? "-");
+      try {
+        await deps.cleanupRawAudio(event);
+      } catch (err) {
+        report(err, event);
+      }
+      return;
+    }
     if (deps.spool.isChunkApplied(`${chunkId}:done`)) {
       processedThisRun.add(chunkId);
       // Retry raw-WAV reclaim: the marker is written before cleanup, so if the
@@ -350,53 +383,53 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       entry: BufferedChunk;
       id: string;
       startedAtUtc: string;
-      items: Array<{ seg: AssemblySegment; raw: TranscribedSegment }>;
+      items: Array<{ seg: AssemblySegment; raw: TranscribedSegment; index: number }>;
     }> = [];
-    for (const { entry, item } of stream) {
+    for (const { entry, item, index } of stream) {
       const conv = deps.assembler.add(item.seg);
+      const carried = { ...item, index };
       const last = runs[runs.length - 1];
-      if (last && last.id === conv.id && last.entry === entry) last.items.push(item);
-      else runs.push({ entry, id: conv.id, startedAtUtc: conv.startedAtUtc, items: [item] });
+      if (last && last.id === conv.id && last.entry === entry) last.items.push(carried);
+      else runs.push({ entry, id: conv.id, startedAtUtc: conv.startedAtUtc, items: [carried] });
     }
 
-    const runsPerChunk = new Map<string, number>();
-    for (const run of runs) {
-      runsPerChunk.set(run.entry.chunkId, (runsPerChunk.get(run.entry.chunkId) ?? 0) + 1);
-    }
-    const emitted = new Map<string, number>();
+    // Idempotency keys are derived from each segment's position in ITS OWN
+    // chunk, never from the batch: `chunkId:i<index>`. A key must mean the
+    // same bytes on every replay, and a replay rarely reproduces the same
+    // batch — so a positional `chunkId:g` could skip a group that now holds
+    // different segments, or miss an applied one and append twice. One append
+    // per segment costs one extra row per segment and makes the guard exact.
     for (const run of runs) {
       const { chunkId, event } = run.entry;
-      const index = emitted.get(chunkId) ?? 0;
-      emitted.set(chunkId, index + 1);
-      const key = runsPerChunk.get(chunkId) === 1 ? chunkId : `${chunkId}:${index}`;
-      if (deps.spool.isChunkApplied(key)) {
-        openConversationId = run.id;
-        continue;
-      }
-      if (openConversationId !== null && openConversationId !== run.id) {
-        finalizeConv(openConversationId);
-      }
-      // Embed now — this is where the audio exists — but do NOT cluster.
-      // Clustering runs at finalize over the segments that SURVIVE
-      // cross-channel dedup (issue #2145), so a mic loopback duplicate that
-      // is later pruned can no longer inflate a centroid or invent a
-      // phantom speaker. The embedding rides along on the segment row.
-      if (deps.embed) {
-        for (const item of run.items) {
+      for (const item of run.items) {
+        const key = `${chunkId}:i${item.index}`;
+        if (deps.spool.isChunkApplied(key)) {
+          openConversationId = run.id;
+          continue;
+        }
+        if (openConversationId !== null && openConversationId !== run.id) {
+          finalizeConv(openConversationId);
+        }
+        // Embed now — this is where the audio exists — but do NOT cluster.
+        // Clustering runs at finalize over the segments that SURVIVE
+        // cross-channel dedup (issue #2145), so a mic loopback duplicate that
+        // is later pruned can no longer inflate a centroid or invent a
+        // phantom speaker. The embedding rides along on the segment row.
+        if (deps.embed) {
           item.seg.embedding = await deps.embed(event, item.raw);
         }
+        deps.spool.appendAssembledSegments({
+          idempotencyKey: key,
+          chunkId: key,
+          conversationId: run.id,
+          startedAtUtc: run.startedAtUtc,
+          state: "capturing",
+          device: event.device,
+          wavPath: event.path,
+          segments: [item.seg],
+        });
+        openConversationId = run.id;
       }
-      deps.spool.appendAssembledSegments({
-        idempotencyKey: key,
-        chunkId: key,
-        conversationId: run.id,
-        startedAtUtc: run.startedAtUtc,
-        state: "capturing",
-        device: event.device,
-        wavPath: event.path,
-        segments: run.items.map((it) => it.seg),
-      });
-      openConversationId = run.id;
     }
 
     for (const entry of batch) {
@@ -407,7 +440,7 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       // applied (a partial crash) must NOT be marked done, or the missing tail
       // groups would be stranded forever.
       const fullyProcessed =
-        entry.built.length > 0 || !deps.spool.isChunkApplied(`${entry.chunkId}:0`);
+        entry.built.length > 0 || !deps.spool.isChunkApplied(`${entry.chunkId}:i0`);
       processedThisRun.add(entry.chunkId);
       if (!fullyProcessed) continue;
       // The chunk is fully durably transcribed: record completion and reclaim

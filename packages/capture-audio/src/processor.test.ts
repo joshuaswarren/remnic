@@ -573,16 +573,17 @@ test("a durable replay does not re-consume the embedding or corrupt the cluster"
   }
 });
 
-test("partial-chunk replay appends the missing tail group instead of skipping the whole chunk", async () => {
+test("partial-chunk replay appends the missing tail segment instead of duplicating the first", async () => {
   const spool = new Spool(":memory:");
   try {
     const ev = chunk({ path: "/tmp/raw/multi.wav" });
     const cid = chunkStableId(ev);
-    // Simulate a kill-9 AFTER group 0 appended but BEFORE group 1 / the :done
-    // marker: persist only group 0 under its per-group key.
+    // Simulate a kill-9 AFTER segment 0 appended but BEFORE segment 1 / the
+    // :done marker. Keys are per-segment (`chunkId:i<index>`) so they mean the
+    // same bytes on every replay, whatever batch the chunk lands in (#2145).
     spool.appendAssembledSegments({
-      idempotencyKey: `${cid}:0`,
-      chunkId: `${cid}:0`,
+      idempotencyKey: `${cid}:i0`,
+      chunkId: `${cid}:i0`,
       conversationId: "conv_grp0",
       startedAtUtc: t(1),
       state: "capturing",
@@ -590,7 +591,6 @@ test("partial-chunk replay appends the missing tail group instead of skipping th
     });
     assert.equal(spool.stats().segments, 1);
     assert.equal(spool.isChunkApplied(`${cid}:done`), false);
-    // Replay the whole chunk; gapMinutes 0 splits its two segments into two groups.
     const proc = createChunkProcessor(
       deps(spool, {
         assembler: new ConversationAssembler({ gapMinutes: 0 }),
@@ -602,7 +602,7 @@ test("partial-chunk replay appends the missing tail group instead of skipping th
     );
     proc.enqueue(ev);
     await proc.finalize();
-    assert.equal(spool.stats().segments, 2, "the previously-lost tail group was appended; group 0 not duplicated");
+    assert.equal(spool.stats().segments, 2, "the lost tail segment was appended; segment 0 not duplicated");
     assert.equal(spool.isChunkApplied(`${cid}:done`), true, "the chunk is now marked complete");
   } finally {
     spool.close();
@@ -615,8 +615,8 @@ test("a zero-segment replay of a partially-applied chunk does NOT mark it done (
     const ev = chunk({ path: "/tmp/raw/multi.wav" });
     const cid = chunkStableId(ev);
     spool.appendAssembledSegments({
-      idempotencyKey: `${cid}:0`,
-      chunkId: `${cid}:0`,
+      idempotencyKey: `${cid}:i0`,
+      chunkId: `${cid}:i0`,
       conversationId: "conv_grp0",
       startedAtUtc: t(1),
       state: "capturing",
@@ -629,7 +629,7 @@ test("a zero-segment replay of a partially-applied chunk does NOT mark it done (
     empty.enqueue(ev);
     await empty.finalize();
     assert.equal(spool.isChunkApplied(`${cid}:done`), false, "not marked done while the tail is still missing");
-    // A later correct replay still recovers the missing tail group.
+    // A later correct replay still recovers the missing tail segment.
     const fixed = createChunkProcessor(
       deps(spool, {
         assembler: new ConversationAssembler({ gapMinutes: 0 }),
@@ -641,8 +641,43 @@ test("a zero-segment replay of a partially-applied chunk does NOT mark it done (
     );
     fixed.enqueue(ev);
     await fixed.finalize();
-    assert.equal(spool.stats().segments, 2, "the tail group was recovered on a correct replay");
+    assert.equal(spool.stats().segments, 2, "the tail segment was recovered on a correct replay");
     assert.equal(spool.isChunkApplied(`${cid}:done`), true);
+  } finally {
+    spool.close();
+  }
+});
+
+test("a chunk applied under the pre-#2145 group keys is never re-appended", async () => {
+  // Legacy `chunkId` / `chunkId:<n>` keys cannot be mapped onto per-segment
+  // keys, so such a chunk is treated as applied and closed out. Losing the
+  // tail of one in-flight chunk across the upgrade beats duplicating the
+  // segments that were already stored.
+  const spool = new Spool(":memory:");
+  try {
+    const ev = chunk({ path: "/tmp/raw/legacy.wav" });
+    const cid = chunkStableId(ev);
+    spool.appendAssembledSegments({
+      idempotencyKey: `${cid}:0`,
+      chunkId: `${cid}:0`,
+      conversationId: "conv_legacy",
+      startedAtUtc: t(1),
+      state: "capturing",
+      segments: [{ channel: "mic", text: "legacy group", startUtc: t(1), endUtc: t(2), isWearer: true }],
+    });
+    const proc = createChunkProcessor(
+      deps(spool, {
+        assembler: new ConversationAssembler({ gapMinutes: 0 }),
+        transcribe: async () => [
+          { text: "legacy group", startUtc: t(1), endUtc: t(2) },
+          { text: "tail", startUtc: t(30), endUtc: t(31) },
+        ],
+      }),
+    );
+    proc.enqueue(ev);
+    await proc.finalize();
+    assert.equal(spool.stats().segments, 1, "no duplicate of the legacy-applied segment");
+    assert.equal(spool.isChunkApplied(`${cid}:done`), true, "and the chunk is closed out");
   } finally {
     spool.close();
   }
@@ -855,9 +890,11 @@ test("a crash between cluster and assignment cannot double-count embeddings", as
   const spool = new Spool(":memory:");
   try {
     const voice: Embedding = [1, 0, 0, 0];
+    const clusterer = new SpeakerClusterer(0.7);
     const failing = createChunkProcessor(
       deps(spool, {
-        diarizer: new SpeakerClusterer(0.7),
+        diarizer: clusterer,
+        restoreDiarizer: (clusters) => clusterer.restore(clusters),
         embed: () => voice,
         transcribe: async () => [{ text: "one utterance", startUtc: t(1), endUtc: t(2) }],
       }),
@@ -877,9 +914,16 @@ test("a crash between cluster and assignment cannot double-count embeddings", as
     };
     await assert.rejects(() => failing.finalize(), /sqlite exploded mid-commit/);
     assert.deepEqual(spool.readSpeakerClusters(), [], "the cluster write rolled back with the assignment");
+    assert.deepEqual(clusterer.clusters(), [], "and the in-memory clusterer rolled back with it");
 
+    // Reuse the SAME clusterer: a daemon that keeps running after the failure
+    // must not count the embedding twice on the retry.
     const recovered = createChunkProcessor(
-      deps(spool, { diarizer: new SpeakerClusterer(0.7), embed: () => voice }),
+      deps(spool, {
+        diarizer: clusterer,
+        restoreDiarizer: (clusters) => clusterer.restore(clusters),
+        embed: () => voice,
+      }),
     );
     await recovered.finalize();
     const clusters = spool.readSpeakerClusters();
