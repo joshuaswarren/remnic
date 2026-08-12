@@ -45,6 +45,10 @@ function invalidInput(): SupportPassportError {
   return new SupportPassportError("invalid_input", "The support card request is invalid.", 400);
 }
 
+function isStorageConflict(error: unknown): error is SupportPassportError {
+  return error instanceof SupportPassportError && error.code === "storage_conflict";
+}
+
 export class SupportPassportCardService {
   private readonly resolveOwner: SupportPassportCardServiceDependencies["resolveOwner"];
   private readonly now: () => Date;
@@ -221,6 +225,7 @@ export class SupportPassportCardService {
         const current = await this.requireCard(storage, card.card.cardId);
         return await this.finishCommittedApproval(storage, current, lock);
       } catch (error) {
+        if (isStorageConflict(error)) throw error;
         log.warn(
           `support passport could not finish replacement approval side effects: ${error instanceof Error ? error.message : String(error)}`
         );
@@ -309,7 +314,10 @@ export class SupportPassportCardService {
     return await this.withOwnerLock(storage, async (lock) => {
       let card = await this.requireCard(storage, parsed.data.cardId);
       this.requireRevision(card, parsed.data.expectedRevision);
-      if (expectedStatus === "pending_review") {
+      if (
+        expectedStatus === "pending_review" ||
+        (expectedStatus === "active" && (card.replacesDraftId || card.memory.frontmatter.supersedes))
+      ) {
         card = this.projectRequiredCard(await this.recoverReplacementTransition(storage, card.memory, lock));
       }
       this.requireStatus(card, expectedStatus);
@@ -545,11 +553,39 @@ export class SupportPassportCardService {
         await this.completeReplacementAfterActivation(storage, replacement, lock);
       }
     } catch (error) {
+      if (isStorageConflict(error)) {
+        await this.rollbackConflictedApproval(storage, replacement.card.cardId, lock);
+        throw error;
+      }
       log.warn(
         `support passport could not finish replacement approval side effects: ${error instanceof Error ? error.message : String(error)}`
       );
     }
     return replacement.card;
+  }
+
+  private async rollbackConflictedApproval(
+    storage: StorageManager,
+    replacementId: string,
+    lock: HeldFileLockController
+  ): Promise<void> {
+    const replacement = await this.requireCard(storage, replacementId);
+    if (replacement.card.status !== "active") return;
+    await this.requireOwnerLock(lock);
+    const rolledBack = await storage.writeMemoryFrontmatterIfUnchanged(
+      replacement.memory,
+      { status: "pending_review", updated: this.now().toISOString() },
+      { actor: "support-passport.approve-rollback", reasonCode: "replacement-predecessor-conflict" }
+    );
+    if (!rolledBack) {
+      throw new SupportPassportError(
+        "storage_conflict",
+        "The replacement changed while its approval was rolled back.",
+        409
+      );
+    }
+    const priorId = replacement.memory.frontmatter.supersedes;
+    if (priorId) await this.restorePriorAfterApprovalFailure(storage, priorId, replacementId, lock);
   }
 
   private async completePriorRetirement(
