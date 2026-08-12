@@ -564,10 +564,7 @@ test("retrying an interrupted pending-draft replacement reuses one approvable dr
     const replacement = beforeRecovery.find((memory) => memory.frontmatter.id !== draft.cardId);
     assert.ok(replacement);
     assert.equal(replacement.frontmatter.supersedes, undefined);
-    assert.equal(
-      replacement.frontmatter.structuredAttributes?.["support-passport-replaces-draft-id"],
-      draft.cardId
-    );
+    assert.equal(replacement.frontmatter.structuredAttributes?.["support-passport-replaces-draft-id"], draft.cardId);
     assert.equal(replacement.frontmatter.status, "pending_review");
 
     const retried = await subject.service.replaceCard({
@@ -907,7 +904,10 @@ test("an orphaned replacement is rejected when its replaced draft was approved",
       expectedRevision: draft.revision,
     });
     const visible = await subject.service.listCards({ principal: "owner:alice" });
-    assert.deepEqual(visible.map((card) => card.cardId), [approved.cardId]);
+    assert.deepEqual(
+      visible.map((card) => card.cardId),
+      [approved.cardId]
+    );
     assert.equal(
       (await subject.aliceStorage.getMemoryById(replacement.frontmatter.id))?.frontmatter.status,
       "rejected"
@@ -1242,8 +1242,14 @@ test("editing an active card remains available at the 100-card limit", async () 
     assert.equal((await subject.aliceStorage.getMemoryById(active.cardId))?.frontmatter.status, "active");
     const firstVisible = await subject.service.listCards({ principal: "owner:alice" });
     assert.equal(firstVisible.length, 100);
-    assert.equal(firstVisible.some((card) => card.cardId === active.cardId), false);
-    assert.equal(firstVisible.some((card) => card.cardId === replacement.cardId), true);
+    assert.equal(
+      firstVisible.some((card) => card.cardId === active.cardId),
+      false
+    );
+    assert.equal(
+      firstVisible.some((card) => card.cardId === replacement.cardId),
+      true
+    );
 
     const editedReplacement = await subject.service.replaceCard({
       principal: "owner:alice",
@@ -1256,9 +1262,18 @@ test("editing an active card remains available at the 100-card limit", async () 
     });
     const secondVisible = await subject.service.listCards({ principal: "owner:alice" });
     assert.equal(secondVisible.length, 100);
-    assert.equal(secondVisible.some((card) => card.cardId === active.cardId), false);
-    assert.equal(secondVisible.some((card) => card.cardId === replacement.cardId), false);
-    assert.equal(secondVisible.some((card) => card.cardId === editedReplacement.cardId), true);
+    assert.equal(
+      secondVisible.some((card) => card.cardId === active.cardId),
+      false
+    );
+    assert.equal(
+      secondVisible.some((card) => card.cardId === replacement.cardId),
+      false
+    );
+    assert.equal(
+      secondVisible.some((card) => card.cardId === editedReplacement.cardId),
+      true
+    );
 
     const approved = await subject.service.approveCard({
       principal: "owner:alice",
@@ -1267,7 +1282,10 @@ test("editing an active card remains available at the 100-card limit", async () 
     });
     const approvedVisible = await subject.service.listCards({ principal: "owner:alice" });
     assert.equal(approvedVisible.length, 100);
-    assert.equal(approvedVisible.some((card) => card.cardId === approved.cardId && card.status === "active"), true);
+    assert.equal(
+      approvedVisible.some((card) => card.cardId === approved.cardId && card.status === "active"),
+      true
+    );
     subject.aliceStorage.readAllMemories = originalRead;
   } finally {
     await subject.cleanup();
@@ -1338,6 +1356,93 @@ test("concurrent draft creation cannot exceed the 100-card limit", async () => {
     });
     assert.ok(recoveryCard.cardId);
     assert.equal((await originalRead()).length, 3);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("completed replacements do not replay retirement during later listings", async () => {
+  const subject = await makeSubject();
+  try {
+    const draft = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Plan changes",
+      statement: "Tell me before plans change.",
+      category: "transitions",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const active = await subject.service.approveCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+    });
+    const replacement = await subject.service.replaceCard({
+      principal: "owner:alice",
+      cardId: active.cardId,
+      expectedRevision: active.revision,
+      title: "Plan changes",
+      statement: "Tell me early when plans change.",
+      category: "transitions",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const approved = await subject.service.approveCard({
+      principal: "owner:alice",
+      cardId: replacement.cardId,
+      expectedRevision: replacement.revision,
+    });
+    const stored = await subject.aliceStorage.getMemoryById(approved.cardId);
+    assert.equal(stored?.frontmatter.structuredAttributes?.["support-passport-replacement-complete"], "true");
+
+    let cardReads = 0;
+    let retirementWrites = 0;
+    const getMemoryById = subject.aliceStorage.getMemoryById.bind(subject.aliceStorage);
+    const supersedeMemory = subject.aliceStorage.supersedeMemory.bind(subject.aliceStorage);
+    subject.aliceStorage.getMemoryById = async (memoryId) => {
+      cardReads += 1;
+      return await getMemoryById(memoryId);
+    };
+    subject.aliceStorage.supersedeMemory = async (...args) => {
+      retirementWrites += 1;
+      return await supersedeMemory(...args);
+    };
+
+    assert.deepEqual(
+      (await subject.service.listCards({ principal: "owner:alice" })).map((card) => card.cardId),
+      [approved.cardId]
+    );
+    assert.equal(cardReads, 0);
+    assert.equal(retirementWrites, 0);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("draft creation aborts when the owner lock is lost before its write", async () => {
+  const subject = await makeSubject();
+  try {
+    const readAllMemories = subject.aliceStorage.readAllMemories.bind(subject.aliceStorage);
+    let removedLock = false;
+    subject.aliceStorage.readAllMemories = async () => {
+      const memories = await readAllMemories();
+      if (!removedLock) {
+        removedLock = true;
+        await rm(path.join(subject.aliceStorage.dir, "state", "support-passport-cards.lock"), { force: true });
+      }
+      return memories;
+    };
+
+    await assert.rejects(
+      subject.service.createManualDraft({
+        principal: "owner:alice",
+        title: "Lost lock",
+        statement: "This card must not be written.",
+        category: "other",
+        reviewBy: OWNER_REVIEW_BY,
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
+    );
+    subject.aliceStorage.readAllMemories = readAllMemories;
+    assert.deepEqual(await readAllMemories(), []);
   } finally {
     await subject.cleanup();
   }
