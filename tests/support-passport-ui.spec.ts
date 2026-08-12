@@ -190,9 +190,14 @@ test("the owner cannot select more than eight cards for one share link", async (
   const choices = page.locator('input[name="shareCard"]');
   for (let index = 0; index < 8; index += 1) await choices.nth(index).check();
   await expect(choices.nth(8)).toBeDisabled();
-  expect(await choices.evaluateAll((inputs) => inputs.filter((input) => input.checked).length)).toBe(8);
+  expect(
+    await choices.evaluateAll(
+      (inputs) => inputs.filter((input) => input instanceof HTMLInputElement && input.checked).length
+    )
+  ).toBe(8);
 
   await choices.nth(8).evaluate((input) => {
+    if (!(input instanceof HTMLInputElement)) throw new Error("The share choice must be a checkbox.");
     input.disabled = false;
     input.checked = true;
   });
