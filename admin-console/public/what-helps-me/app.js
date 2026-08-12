@@ -288,7 +288,9 @@
       const snapshot = replayStore.exportSharedGuide(request.grantId, request.secret);
       if (snapshot) replayChannel.postMessage({ type: "grant-state", requestId: request.requestId, snapshot });
     });
-    window.addEventListener("pagehide", () => replayChannel.close(), { once: true });
+    window.addEventListener("pagehide", (event) => {
+      if (!event.persisted) replayChannel.close();
+    });
   }
 
   function renderSelectedNotes() {
@@ -974,15 +976,15 @@
       showLocked(error);
       return;
     }
-    if (replayMode) {
-      const sharedState = await requestReplaySharedGuide();
-      replayStore.seedSharedGuide(state.helperGrantId, state.helperSecret, sharedState);
-    }
     const controller = new AbortController();
     state.helperLoadController?.abort();
     state.helperLoadController = controller;
     const timeout = window.setTimeout(() => controller.abort(), HELPER_READ_TIMEOUT_MS);
     try {
+      if (replayMode) {
+        const sharedState = await requestReplaySharedGuide();
+        replayStore.seedSharedGuide(state.helperGrantId, state.helperSecret, sharedState);
+      }
       state.guide = await readHelperGuide(controller.signal);
       renderGuide(state.guide);
       if (!state.guide) return;

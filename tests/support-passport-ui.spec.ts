@@ -1009,6 +1009,35 @@ test("a replay helper fails closed without owner share state", async ({ page }, 
 
   await expect(page.getByRole("heading", { name: "The support passport did not load." })).toBeVisible();
   await expect(page.locator(".public-card")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Try again" }).click();
+
+  await expect(page.getByRole("heading", { name: "The support passport did not load." })).toBeVisible();
+  await expect(page.locator(".public-card")).toHaveCount(0);
+});
+
+test("a restored replay owner keeps the share bridge active", async ({ page, context }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers replay owner restoration.");
+  await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
+  await page.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
+  await page.getByRole("button", { name: "Draft my support cards" }).click();
+  await page.getByRole("button", { name: "Approve" }).first().click();
+  await page.locator('input[name="shareCard"]').first().check();
+  await page.getByRole("button", { name: "Create share link" }).click();
+  const shareUrl = await page.locator("#shareLinkInput").inputValue();
+
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })));
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })));
+
+  const helper = await context.newPage();
+  try {
+    await helper.goto(shareUrl);
+    await expect(helper.locator(".public-card")).toHaveCount(1);
+    await page.getByRole("button", { name: "Stop sharing" }).click();
+    await expect(helper.getByRole("heading", { name: "This support passport is locked." })).toBeVisible();
+  } finally {
+    await helper.close();
+  }
 });
 
 test("a bad helper link has a clear locked view", async ({ page }, testInfo) => {
