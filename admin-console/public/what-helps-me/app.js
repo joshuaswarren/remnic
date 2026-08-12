@@ -276,17 +276,24 @@
           action
         )
       );
-      await loadOwnerState();
-      const message =
-        action === "approve"
-          ? `Approved ${card.title}. It can now be shared.`
-          : action === "reject"
-            ? `Rejected ${card.title}. It stays private.`
-            : `Withdrew ${card.title}. Existing links will lock.`;
-      toast(message);
-      announce(message);
     } catch (error) {
       setError("generateError", errorMessage(error, "The support card did not change."));
+      return;
+    }
+    const message =
+      action === "approve"
+        ? `Approved ${card.title}. It can now be shared.`
+        : action === "reject"
+          ? `Rejected ${card.title}. It stays private.`
+          : `Withdrew ${card.title}. Existing links will lock.`;
+    toast(message);
+    announce(message);
+    try {
+      await loadOwnerState();
+    } catch {
+      const warning = `${message} The card list did not refresh. Refresh the guide before another change.`;
+      setError("generateError", warning);
+      announce(warning);
     }
   }
 
@@ -385,13 +392,20 @@
             await withBusy(event.currentTarget, "Stopping sharing…", () =>
               api.revokeGrant(grant.grantId, { expectedVersion: grant.stateVersion })
             );
-            replayChannel?.postMessage({ type: "grant-revoked", grantId: grant.grantId });
-            await loadOwnerState();
-            const message = "Sharing stopped. The helper link is now locked.";
-            toast(message);
-            announce(message);
           } catch (error) {
             setError("shareError", errorMessage(error, "The share link did not stop."));
+            return;
+          }
+          replayChannel?.postMessage({ type: "grant-revoked", grantId: grant.grantId });
+          const message = "Sharing stopped. The helper link is now locked.";
+          toast(message);
+          announce(message);
+          try {
+            await loadOwnerState();
+          } catch {
+            const warning = `${message} The share list did not refresh. Refresh the guide before another change.`;
+            setError("shareError", warning);
+            announce(warning);
           }
         });
         article.append(stop);
@@ -532,14 +546,21 @@
           consent: true,
         })
       );
-      byId("consentInput").checked = false;
-      await loadOwnerState();
-      byId("reviewCards").scrollIntoView({ behavior: "smooth", block: "start" });
-      const message = "Drafts ready. Review each card before approval.";
-      toast(message);
-      announce(message);
     } catch (error) {
       setError("generateError", errorMessage(error, "The configured model did not return valid drafts."));
+      return;
+    }
+    byId("consentInput").checked = false;
+    const message = "Drafts ready. Review each card before approval.";
+    toast(message);
+    announce(message);
+    try {
+      await loadOwnerState();
+      byId("reviewCards").scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch {
+      const warning = `${message} The card list did not refresh. Refresh the guide before another change.`;
+      setError("generateError", warning);
+      announce(warning);
     }
   }
 

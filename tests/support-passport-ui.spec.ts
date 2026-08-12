@@ -292,6 +292,85 @@ test("a saved manual draft stays successful when its list refresh fails", async 
   expect(draftWrites).toBe(1);
 });
 
+test("successful owner mutations stay successful when their list refresh fails", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers owner mutation recovery.");
+  const now = new Date();
+  const card = {
+    cardId: "card-pending",
+    title: "Plan changes",
+    statement: "Tell me before plans change.",
+    category: "transitions",
+    status: "pending_review",
+    updatedAt: now.toISOString(),
+    reviewBy: new Date(now.getTime() + 24 * 60 * 60_000).toISOString(),
+    revision: "a".repeat(64),
+  };
+  const grant = {
+    grantId: "grant-active",
+    stateVersion: 1,
+    cards: [{ cardId: card.cardId, revision: card.revision }],
+    createdAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
+    status: "active",
+  };
+  let failCardRefresh = false;
+  await page.route("**/engram/v1/support-passport/cards", async (route) => {
+    if (failCardRefresh) {
+      failCardRefresh = false;
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "offline" }) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ cards: [card] }) });
+  });
+  await page.route("**/engram/v1/support-passport/grants", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grants: [grant] }) });
+  });
+  await page.route("**/engram/v1/support-passport/cards/card-pending/approve", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ card }) });
+  });
+  await page.route("**/engram/v1/support-passport/grants/grant-active/revoke", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grant }) });
+  });
+  await page.route("**/engram/v1/support-passport/memories/note-one", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        found: true,
+        memory: { id: "note-one", content: "Tell me before plans change.", revision: "b".repeat(64) },
+      }),
+    });
+  });
+  await page.route("**/engram/v1/support-passport/drafts/generate", async (route) => {
+    await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ cards: [] }) });
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await page.getByLabel("Bearer token").fill("owner-token");
+  await page.getByRole("button", { name: "Open my guide" }).click();
+
+  failCardRefresh = true;
+  await page.getByRole("button", { name: "Approve" }).click();
+  await expect(page.getByText("Approved Plan changes. It can now be shared.", { exact: true })).toBeVisible();
+  await expect(page.locator("#generateError")).toContainText("The card list did not refresh.");
+  await expect(page.getByText("The support card did not change.")).toHaveCount(0);
+
+  await page.getByLabel("Memory ID").fill("note-one");
+  await page.getByRole("button", { name: "Add selected note" }).click();
+  await page.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
+  failCardRefresh = true;
+  await page.getByRole("button", { name: "Draft my support cards" }).click();
+  await expect(page.getByText("Drafts ready. Review each card before approval.", { exact: true })).toBeVisible();
+  await expect(page.locator("#generateError")).toContainText("The card list did not refresh.");
+  await expect(page.getByText("The configured model did not return valid drafts.")).toHaveCount(0);
+
+  failCardRefresh = true;
+  await page.getByRole("button", { name: "Stop sharing" }).click();
+  await expect(page.getByText("Sharing stopped. The helper link is now locked.", { exact: true })).toBeVisible();
+  await expect(page.locator("#shareError")).toContainText("The share list did not refresh.");
+  await expect(page.getByText("The share link did not stop.")).toHaveCount(0);
+});
+
 test("a stalled owner read aborts and restores the connect action", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers the owner request timeout.");
   await page.clock.install({ time: new Date("2026-08-11T12:00:00.000Z") });
