@@ -220,6 +220,10 @@ test("owner grant history stays bounded while an inactive link frees capacity", 
     assert.equal(listed.length, 100);
     assert.equal(listed.some((state) => state.grantId === first.state.grantId), false);
     assert.equal(listed.some((state) => state.grantId === replacement.state.grantId), true);
+    await assert.rejects(
+      lstat(path.join(root, "state", "support-passport", "grants", `${first.state.grantId}.json`)),
+      (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT"
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

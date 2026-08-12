@@ -291,8 +291,18 @@ export class SupportPassportGrantStore {
       ];
     }
     const grantIds = [...retained, state.grantId];
+    const retainedIds = new Set(grantIds);
+    const evictedGrantIds = current.filter((grantId) => !retainedIds.has(grantId));
+    await this.requireMutationLock(lock);
+    await this.removeEvictedGrantStates(evictedGrantIds);
     await this.requireMutationLock(lock);
     await this.writeOwnerIndex(ownerHash, grantIds);
+  }
+
+  private async removeEvictedGrantStates(grantIds: string[]): Promise<void> {
+    if (grantIds.length === 0) return;
+    await Promise.all(grantIds.map((grantId) => rm(this.filePath(grantId), { force: true })));
+    await syncDirectoryForDurability(this.grantsDir);
   }
 
   private async readOwnerIndex(namespace: string, principalHash: string): Promise<string[]> {
