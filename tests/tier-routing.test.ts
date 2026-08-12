@@ -103,6 +103,30 @@ test("decideTierTransition promotes cold tier at promotion boundary", () => {
   assert.equal(decision.reason, "value_above_promotion_threshold");
 });
 
+test("decideTierTransition keeps live support passport cards in the hot tier", () => {
+  const now = new Date("2026-02-01T00:00:00.000Z");
+  for (const status of ["active", "pending_review"] as const) {
+    const supportCard = memory({
+      status,
+      tags: ["support-passport-card"],
+      confidence: 0,
+      confidenceTier: "speculative",
+      accessCount: 0,
+      lastAccessed: "2025-01-01T00:00:00.000Z",
+      importance: { score: 0 },
+    });
+    const hot = decideTierTransition(supportCard, "hot", policy, now);
+    assert.equal(hot.nextTier, "hot");
+    assert.equal(hot.changed, false);
+    assert.equal(hot.reason, "support_passport_card_requires_hot_tier");
+
+    const cold = decideTierTransition(supportCard, "cold", policy, now);
+    assert.equal(cold.nextTier, "hot");
+    assert.equal(cold.changed, true);
+    assert.equal(cold.reason, "support_passport_card_requires_hot_tier");
+  }
+});
+
 test("decideTierTransition is no-op when policy is disabled", () => {
   const now = new Date("2026-02-01T00:00:00.000Z");
   const decision = decideTierTransition(memory(), "cold", { ...policy, enabled: false }, now);

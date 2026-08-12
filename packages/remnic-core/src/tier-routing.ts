@@ -1,4 +1,5 @@
 import type { MemoryFile } from "./types.js";
+import { SUPPORT_PASSPORT_CARD_TAG } from "./support-passport/card-projection.js";
 import {
   clamp01,
   computeLifecycleValueInputs,
@@ -21,6 +22,11 @@ export interface TierTransitionDecision {
   valueScore: number;
   changed: boolean;
   reason: string;
+}
+
+function requiresHotTier(memory: Pick<MemoryFile, "frontmatter">): boolean {
+  const { status, tags } = memory.frontmatter;
+  return (status === "active" || status === "pending_review") && tags?.includes(SUPPORT_PASSPORT_CARD_TAG) === true;
 }
 
 export function computeTierValueScore(
@@ -60,6 +66,16 @@ export function decideTierTransition(
       valueScore,
       changed: false,
       reason: "tier_migration_disabled",
+    };
+  }
+
+  if (requiresHotTier(memory)) {
+    return {
+      currentTier,
+      nextTier: "hot",
+      valueScore,
+      changed: currentTier !== "hot",
+      reason: "support_passport_card_requires_hot_tier",
     };
   }
 
