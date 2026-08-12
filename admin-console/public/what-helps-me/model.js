@@ -102,6 +102,13 @@
     return typeof value === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(value);
   }
 
+  function isGrantId(value) {
+    return (
+      typeof value === "string" &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+    );
+  }
+
   function isRevision(value) {
     return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
   }
@@ -209,6 +216,23 @@
       throw new Error("The share link list has an unexpected shape.");
     }
     return payload.grants.map(assertGrant);
+  }
+
+  function parseCreatedGrant(payload) {
+    if (!hasExactKeys(payload, ["grantId", "secret", "expiresAt", "version"])) {
+      throw new Error("The new share link response has an unexpected shape.");
+    }
+    if (
+      !isGrantId(payload.grantId) ||
+      typeof payload.secret !== "string" ||
+      !/^[A-Za-z0-9_-]{43}$/.test(payload.secret) ||
+      !isIsoTimestamp(payload.expiresAt) ||
+      !Number.isInteger(payload.version) ||
+      payload.version < 1
+    ) {
+      throw new Error("The new share link response is invalid.");
+    }
+    return payload;
   }
 
   function assertPublicCard(value) {
@@ -467,7 +491,7 @@
           selected.some((card) => !card || card.status !== "active" || revisions.get(card.cardId) !== card.revision)
         )
           throw new Error("Only approved support cards can be shared.");
-        const grantId = replayId("replay-grant");
+        const grantId = globalScope.crypto.randomUUID();
         const secret = replayId("replay-secret").padEnd(43, "x");
         const grant = {
           grantId,
@@ -545,6 +569,7 @@
     lockState,
     parseAnswer,
     parseCardList,
+    parseCreatedGrant,
     parseGrantList,
     parseMemoryPreview,
     parsePublicGuide,

@@ -584,6 +584,9 @@
   async function createShare(event) {
     event.preventDefault();
     setError("shareError");
+    byId("newLinkPanel").hidden = true;
+    byId("shareLinkInput").value = "";
+    byId("openLinkButton").removeAttribute("href");
     const selectedInputs = [...document.querySelectorAll('input[name="shareCard"]:checked')];
     const cardIds = selectedInputs.map((input) => input.value);
     if (cardIds.length === 0) {
@@ -613,7 +616,9 @@
     const button = event.currentTarget.querySelector('button[type="submit"]');
     let created;
     try {
-      created = await withBusy(button, "Creating link…", () => api.createGrant({ cardIds, cardRevisions, expiresAt }));
+      created = model.parseCreatedGrant(
+        await withBusy(button, "Creating link…", () => api.createGrant({ cardIds, cardRevisions, expiresAt }))
+      );
     } catch (error) {
       setError("shareError", errorMessage(error, "The share link was not created."));
       return;

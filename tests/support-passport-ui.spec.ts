@@ -236,7 +236,7 @@ test("a created share link remains visible when its list refresh fails", async (
         status: 201,
         contentType: "application/json",
         body: JSON.stringify({
-          grantId: "grant-created",
+          grantId: "3b998a98-d48d-4f5c-887c-617af9228847",
           secret: "s".repeat(43),
           expiresAt: new Date(now.getTime() + 2 * 60 * 60_000).toISOString(),
           version: 1,
@@ -259,9 +259,118 @@ test("a created share link remains visible when its list refresh fails", async (
     expiresAt: expect.any(String),
   });
   await expect(page.getByText("Share link ready")).toBeVisible();
-  await expect(page.getByLabel("Copy this link once")).toHaveValue(/grant=grant-created#secret=/);
+  await expect(page.getByLabel("Copy this link once")).toHaveValue(
+    /grant=3b998a98-d48d-4f5c-887c-617af9228847#secret=/
+  );
   await expect(page.getByText("The share link was created, but the share list did not refresh.")).toBeVisible();
   await expect(page.getByText("The share link was not created.")).toHaveCount(0);
+});
+
+test("a malformed grant response never becomes a share link", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers response validation.");
+  const now = new Date();
+  const card = {
+    cardId: "card-approved",
+    title: "Quiet place",
+    statement: "Offer me a quiet place and time.",
+    category: "environment",
+    status: "active",
+    updatedAt: now.toISOString(),
+    reviewBy: new Date(now.getTime() + 24 * 60 * 60_000).toISOString(),
+    revision: "a".repeat(64),
+  };
+  await page.route("**/engram/v1/support-passport/cards", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ cards: [card] }) });
+  });
+  await page.route("**/engram/v1/support-passport/grants", async (route) => {
+    if (route.request().method() === "POST") {
+      await route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({
+          grantId: "3b998a98-d48d-4f5c-887c-617af9228847",
+          secret: "not-a-share-secret",
+          expiresAt: new Date(now.getTime() + 2 * 60 * 60_000).toISOString(),
+          version: 1,
+        }),
+      });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grants: [] }) });
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await page.getByLabel("Bearer token").fill("owner-token");
+  await page.getByRole("button", { name: "Open my guide" }).click();
+  await page.locator('input[name="shareCard"]').check();
+  await page.getByRole("button", { name: "Create share link" }).click();
+
+  await expect(page.getByText("The new share link response is invalid.")).toBeVisible();
+  await expect(page.getByText("Share link ready")).toBeHidden();
+  await expect(page.getByLabel("Copy this link once")).toHaveValue("");
+});
+
+test("a new share attempt clears the prior link before a later failure", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers stale share-link cleanup.");
+  const now = new Date();
+  const card = {
+    cardId: "card-approved",
+    title: "Quiet place",
+    statement: "Offer me a quiet place and time.",
+    category: "environment",
+    status: "active",
+    updatedAt: now.toISOString(),
+    reviewBy: new Date(now.getTime() + 24 * 60 * 60_000).toISOString(),
+    revision: "b".repeat(64),
+  };
+  let createCalls = 0;
+  const secondResponse = Promise.withResolvers<void>();
+  await page.route("**/engram/v1/support-passport/cards", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ cards: [card] }) });
+  });
+  await page.route("**/engram/v1/support-passport/grants", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grants: [] }) });
+      return;
+    }
+    createCalls += 1;
+    if (createCalls === 1) {
+      await route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({
+          grantId: "3b998a98-d48d-4f5c-887c-617af9228847",
+          secret: "s".repeat(43),
+          expiresAt: new Date(now.getTime() + 2 * 60 * 60_000).toISOString(),
+          version: 1,
+        }),
+      });
+      return;
+    }
+    await secondResponse.promise;
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "The share service is unavailable." }),
+    });
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await page.getByLabel("Bearer token").fill("owner-token");
+  await page.getByRole("button", { name: "Open my guide" }).click();
+  await page.locator('input[name="shareCard"]').check();
+  await page.getByRole("button", { name: "Create share link" }).click();
+  await expect(page.getByText("Share link ready")).toBeVisible();
+  await expect(page.locator('input[name="shareCard"]')).not.toBeChecked();
+  await page.locator('input[name="shareCard"]').check();
+
+  await page.getByRole("button", { name: "Create share link" }).click();
+  await expect(page.getByText("Share link ready")).toBeHidden();
+  await expect(page.getByLabel("Copy this link once")).toHaveValue("");
+  secondResponse.resolve();
+
+  await expect(page.getByText("The share service is unavailable.")).toBeVisible();
+  await expect(page.getByText("Share link ready")).toBeHidden();
 });
 
 test("a saved manual draft stays successful when its list refresh fails", async ({ page }, testInfo) => {
