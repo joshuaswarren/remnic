@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -15,6 +15,7 @@ import {
 } from "@remnic/core";
 import { loadConfigFile, startServer } from "@remnic/server";
 import { z } from "zod";
+import { readCleanCommitSha, runCleanupSteps, runWithReservedOutput, waitForResult } from "./live-demo-runtime.mjs";
 import {
   ExpectedPublicCardsFixtureSchema,
   SourceMemoriesFixtureSchema,
@@ -24,12 +25,6 @@ import {
   receiptStatusSequence,
   sha256,
 } from "./receipt-schema.mjs";
-import {
-  readCleanCommitSha,
-  runCleanupSteps,
-  validateOutputDirectory,
-  waitForResult,
-} from "./live-demo-runtime.mjs";
 import { validateReceiptConsistency } from "./verify-receipt.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -37,6 +32,18 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "../..");
 const RevisionSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const GrantIdSchema = z.string().uuid();
+const MemoryPreviewResponseSchema = z
+  .object({
+    found: z.literal(true),
+    memory: z
+      .object({
+        id: z.string().min(1),
+        content: z.string(),
+        revision: RevisionSchema,
+      })
+      .strict(),
+  })
+  .strict();
 const DraftResponseSchema = z.object({ cards: z.array(SupportPassportCardSchema).min(1).max(8) }).strict();
 const CardResponseSchema = z.object({ card: SupportPassportCardSchema }).strict();
 const GrantResponseSchema = z
@@ -120,15 +127,6 @@ async function readJson(filePath, schema) {
   const result = schema.safeParse(parsed);
   if (!result.success) throw new DemoFailure("A support passport fixture does not match its strict schema.");
   return result.data;
-}
-
-async function fileExists(filePath) {
-  try {
-    await access(filePath);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 async function findAvailablePort() {
@@ -291,12 +289,8 @@ function restoreEnvironment(name, previous) {
   else process.env[name] = previous;
 }
 
-async function run(options) {
-  const outputDir = path.resolve(expandTildePath(options.output));
-  const receiptPath = path.join(outputDir, "receipt.json");
-  await validateOutputDirectory(outputDir);
-  if (await fileExists(receiptPath)) throw new DemoFailure("The output directory already contains receipt.json.");
-
+async function runReserved(options, reservation) {
+  const { receiptPath } = reservation;
   const sourceMemories = await readJson(
     path.join(repoRoot, "fixtures/support-passport/source-memories.json"),
     SourceMemoriesFixtureSchema
@@ -305,9 +299,7 @@ async function run(options) {
     path.join(repoRoot, "fixtures/support-passport/expected-public-cards.json"),
     ExpectedPublicCardsFixtureSchema
   );
-  const commitSha = await readCleanCommitSha(repoRoot, (args, execOptions) =>
-    execFileAsync("git", args, execOptions)
-  );
+  const commitSha = await readCleanCommitSha(repoRoot, (args, execOptions) => execFileAsync("git", args, execOptions));
   const sourceConfig = resolveInputConfig(options);
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "remnic-support-passport-live-"));
   const memoryDir = path.join(tempRoot, "memory");
@@ -316,8 +308,7 @@ async function run(options) {
   const previousMemoryDir = process.env.REMNIC_MEMORY_DIR;
   const previousLegacyMemoryDir = process.env.ENGRAM_MEMORY_DIR;
   let server;
-  let receiptWritten = false;
-  let receiptValidated = false;
+  let runFailed = false;
   let runError;
 
   try {
@@ -351,6 +342,7 @@ async function run(options) {
 
     console.log("[1/9] Started a fresh loopback Remnic server.");
     const sourceMemoryIds = [];
+    const sourceMemoryRevisions = [];
     for (const memory of sourceMemories.memories) {
       const imported = await requestJson(
         `${baseUrl}/engram/v1/memories`,
@@ -369,16 +361,28 @@ async function run(options) {
         201,
         "Fixture import"
       );
-      sourceMemoryIds.push(parseBody(MemoryStoreResponseSchema, imported, "Fixture import").memoryId);
+      const memoryId = parseBody(MemoryStoreResponseSchema, imported, "Fixture import").memoryId;
+      sourceMemoryIds.push(memoryId);
+      const previewRequest = await requestJson(
+        `${baseUrl}/engram/v1/support-passport/memories/${encodeURIComponent(memoryId)}`,
+        { method: "GET", headers },
+        200,
+        "Memory preview"
+      );
+      const preview = parseBody(MemoryPreviewResponseSchema, previewRequest, "Memory preview").memory;
+      if (preview.id !== memoryId || preview.content !== memory.content) {
+        throw new DemoFailure("A reviewed memory did not match the imported fixture.");
+      }
+      sourceMemoryRevisions.push({ memoryId, revision: preview.revision });
     }
-    console.log(`[2/9] Imported ${sourceMemoryIds.length} synthetic memories.`);
+    console.log(`[2/9] Imported and reviewed ${sourceMemoryIds.length} synthetic memories.`);
 
     const draftedRequest = await requestJson(
       `${baseUrl}/engram/v1/support-passport/drafts/generate`,
       {
         method: "POST",
         headers,
-        body: JSON.stringify({ sourceMemoryIds, consent: true }),
+        body: JSON.stringify({ sourceMemoryIds, sourceMemoryRevisions, consent: true }),
       },
       200,
       "Model draft"
@@ -564,33 +568,29 @@ async function run(options) {
       audits.answer.modelUsed,
     ]);
 
-    await mkdir(outputDir, { recursive: true, mode: 0o700 });
-    await writeFile(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, {
-      encoding: "utf8",
-      flag: "wx",
-      mode: 0o600,
-    });
-    receiptWritten = true;
+    await reservation.writeReceipt(`${JSON.stringify(receipt, null, 2)}\n`);
     await validateReceiptConsistency({ receiptPath });
-    receiptValidated = true;
+    await reservation.retainReceipt();
     console.log(`Saved receipt.json and validated its self-consistency for commit ${commitSha}.`);
   } catch (error) {
+    runFailed = true;
     runError = error;
-    throw error;
-  } finally {
-    const cleanupError = await runCleanupSteps([
-      async () => {
-        if (server) await server.stop();
-      },
-      async () => restoreEnvironment("REMNIC_MEMORY_DIR", previousMemoryDir),
-      async () => restoreEnvironment("ENGRAM_MEMORY_DIR", previousLegacyMemoryDir),
-      async () => rm(tempRoot, { recursive: true, force: true }),
-      async () => {
-        if (receiptWritten && !receiptValidated) await rm(receiptPath, { force: true });
-      },
-    ]);
-    if (!runError && cleanupError) throw cleanupError;
   }
+  const cleanupError = await runCleanupSteps([
+    async () => {
+      if (server) await server.stop();
+    },
+    async () => restoreEnvironment("REMNIC_MEMORY_DIR", previousMemoryDir),
+    async () => restoreEnvironment("ENGRAM_MEMORY_DIR", previousLegacyMemoryDir),
+    async () => rm(tempRoot, { recursive: true, force: true }),
+  ]);
+  if (runFailed) throw runError;
+  if (cleanupError) throw cleanupError;
+}
+
+async function run(options) {
+  const outputDir = path.resolve(expandTildePath(options.output));
+  await runWithReservedOutput(outputDir, (reservation) => runReserved(options, reservation));
 }
 
 async function main() {

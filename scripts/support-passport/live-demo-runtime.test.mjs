@@ -1,28 +1,89 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
-import {
-  readCleanCommitSha,
-  runCleanupSteps,
-  validateOutputDirectory,
-  waitForResult,
-} from "./live-demo-runtime.mjs";
+import { readCleanCommitSha, runCleanupSteps, runWithReservedOutput, waitForResult } from "./live-demo-runtime.mjs";
 
 const execFileAsync = promisify(execFile);
 
-test("validateOutputDirectory rejects an existing file before a demo run", async (t) => {
+test("runWithReservedOutput reserves and retains a new receipt", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-live-demo-output-"));
   t.after(async () => rm(root, { recursive: true, force: true }));
-  await validateOutputDirectory(path.join(root, "missing"));
-  await validateOutputDirectory(root);
-  const filePath = path.join(root, "receipt-target");
-  await writeFile(filePath, "not a directory\n");
-  await assert.rejects(validateOutputDirectory(filePath), /output path must be a directory/);
+  const outputDir = path.join(root, "new-output");
+
+  await runWithReservedOutput(outputDir, async (reservation) => {
+    await reservation.writeReceipt("receipt\n");
+    await reservation.retainReceipt();
+  });
+
+  assert.equal(await readFile(path.join(outputDir, "receipt.json"), "utf8"), "receipt\n");
+});
+
+test("runWithReservedOutput cleans only its failed reservation", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-live-demo-cleanup-"));
+  t.after(async () => rm(root, { recursive: true, force: true }));
+  await writeFile(path.join(root, "keep.txt"), "keep\n");
+
+  await assert.rejects(
+    runWithReservedOutput(root, async () => {
+      throw new Error("model failed");
+    }),
+    /model failed/
+  );
+
+  assert.equal(await readFile(path.join(root, "keep.txt"), "utf8"), "keep\n");
+  await assert.rejects(access(path.join(root, "receipt.json")), { code: "ENOENT" });
+});
+
+test("runWithReservedOutput removes nested directories created for a failed run", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-live-demo-new-output-cleanup-"));
+  t.after(async () => rm(root, { recursive: true, force: true }));
+  const outputDir = path.join(root, "new", "nested", "output");
+
+  await assert.rejects(
+    runWithReservedOutput(outputDir, async () => {
+      throw new Error("model failed");
+    }),
+    /model failed/
+  );
+
+  await assert.rejects(access(path.join(root, "new")), { code: "ENOENT" });
+});
+
+test("an invalid output destination prevents every model invocation", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-live-demo-invalid-output-"));
+  t.after(async () => rm(root, { recursive: true, force: true }));
+  const fileParent = path.join(root, "not-a-directory");
+  await writeFile(fileParent, "file\n");
+  let modelInvocations = 0;
+
+  await assert.rejects(
+    runWithReservedOutput(path.join(fileParent, "output"), async () => {
+      modelInvocations += 1;
+    })
+  );
+
+  assert.equal(modelInvocations, 0);
+});
+
+test("an existing receipt prevents every model invocation", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-live-demo-existing-receipt-"));
+  t.after(async () => rm(root, { recursive: true, force: true }));
+  await writeFile(path.join(root, "receipt.json"), "existing\n");
+  let modelInvocations = 0;
+
+  await assert.rejects(
+    runWithReservedOutput(root, async () => {
+      modelInvocations += 1;
+    }),
+    /already contains receipt.json/
+  );
+
+  assert.equal(modelInvocations, 0);
 });
 
 test("waitForResult polls until an asynchronous result is durable", async () => {

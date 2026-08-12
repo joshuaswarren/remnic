@@ -1,15 +1,113 @@
-import { lstat } from "node:fs/promises";
+import { lstat, mkdir, open, rm, rmdir } from "node:fs/promises";
+import path from "node:path";
 
-export async function validateOutputDirectory(outputDir) {
+function listCreatedDirectories(outputDir, firstCreatedDirectory) {
+  if (!firstCreatedDirectory) return [];
+  const directories = [];
+  let current = outputDir;
+  for (;;) {
+    directories.push(current);
+    if (current === firstCreatedDirectory) return directories;
+    const parent = path.dirname(current);
+    if (parent === current) return [];
+    current = parent;
+  }
+}
+
+async function removeCreatedDirectories(directories) {
+  for (const directory of directories) {
+    await rmdir(directory).catch(() => undefined);
+  }
+}
+
+async function reserveOutput(outputDir) {
+  let createdDirectories = [];
+  let receiptHandle;
+  const receiptPath = path.join(outputDir, "receipt.json");
+
   try {
+    let firstCreatedDirectory;
+    try {
+      firstCreatedDirectory = await mkdir(outputDir, { recursive: true, mode: 0o700 });
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      const metadata = await lstat(outputDir);
+      if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+        throw new Error("The output path must be a directory.");
+      }
+      throw error;
+    }
+    createdDirectories = listCreatedDirectories(outputDir, firstCreatedDirectory);
     const metadata = await lstat(outputDir);
     if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
       throw new Error("The output path must be a directory.");
     }
+    try {
+      receiptHandle = await open(receiptPath, "wx", 0o600);
+    } catch (error) {
+      if (error?.code === "EEXIST") {
+        throw new Error("The output directory already contains receipt.json.");
+      }
+      throw error;
+    }
   } catch (error) {
-    if (error?.code === "ENOENT") return;
+    if (receiptHandle) await receiptHandle.close().catch(() => undefined);
+    await removeCreatedDirectories(createdDirectories);
     throw error;
   }
+
+  let retained = false;
+  let closed = false;
+  return {
+    outputDir,
+    receiptPath,
+    async writeReceipt(content) {
+      await receiptHandle.truncate(0);
+      await receiptHandle.writeFile(content, { encoding: "utf8" });
+      await receiptHandle.sync();
+    },
+    async retainReceipt() {
+      await receiptHandle.close();
+      closed = true;
+      retained = true;
+    },
+    async release() {
+      const cleanupError = await runCleanupSteps([
+        async () => {
+          if (!closed) await receiptHandle.close();
+        },
+        async () => {
+          if (!retained) await rm(receiptPath, { force: true });
+        },
+        async () => {
+          if (!retained) await removeCreatedDirectories(createdDirectories);
+        },
+      ]);
+      if (cleanupError) throw cleanupError;
+    },
+  };
+}
+
+export async function runWithReservedOutput(outputDir, task) {
+  const reservation = await reserveOutput(outputDir);
+  let taskFailed = false;
+  let taskError;
+  let result;
+  try {
+    result = await task(reservation);
+  } catch (error) {
+    taskFailed = true;
+    taskError = error;
+  }
+  let cleanupError;
+  try {
+    await reservation.release();
+  } catch (error) {
+    cleanupError = error;
+  }
+  if (taskFailed) throw taskError;
+  if (cleanupError) throw cleanupError;
+  return result;
 }
 
 export async function waitForResult(
