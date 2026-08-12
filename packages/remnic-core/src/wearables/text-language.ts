@@ -18,26 +18,37 @@ export type ScriptHint =
   | "cyrillic";
 
 /**
- * Whether a phrase edge needs a word boundary is decided per EDGE, not
- * per script, because scripts differ at each end.
+ * Whether a phrase edge needs a word boundary is decided per EDGE and per
+ * script, because scripts attach material at different ends.
  *
- * Leading edge: a guard is added only where nothing attaches in front
- * of a word. Arabic and Hebrew are excluded — both write proclitics
- * (`و`, `ف`, `ب`, `ל`) with no space, so a lead guard would stop
- * `وبدون تسجيل` from matching the built-in `بدون تسجيل`. Hangul is
- * excluded for the same reason (attached particles).
+ * Leading edge: guarded for every script that spaces its words, so a
+ * marker cannot match at the tail of a longer word — Korean `기록` must
+ * not fire inside `신기록`, Arabic `خاص` must not fire inside `أشخاص`.
+ * Arabic and Hebrew additionally write single-letter proclitics (`و`,
+ * `ف`, `ב`, `ל`) with no space, so their guard admits ONE such letter
+ * when that letter itself starts a word: `وبدون تسجيل` still reaches the
+ * built-in `بدون تسجيل`.
  *
- * Trailing edge: a guard is added wherever the script spaces its words,
- * Arabic and Hebrew included, so `بدون تسجيل` does not match inside
- * `بدون تسجيلات`.
+ * Trailing edge: guarded for the space-delimited scripts, so `بدون تسجيل`
+ * does not match inside `بدون تسجيلات`. Hangul is excluded — Korean
+ * particles attach to the END of a word, and guarding there would stop
+ * `기록을` from matching `기록`.
  *
- * Han, Kana, and Hangul running text has no boundary at all: requiring
- * one there is the bug that made every non-Latin marker unreachable.
+ * Han and Kana running text has no boundary at either end: requiring one
+ * is the bug that made every non-Latin marker unreachable.
  */
 const PREFIXABLE_EDGE_CHAR =
-  /[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{N}]/u;
+  /[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Arabic}\p{Script=Hebrew}\p{Script=Hangul}\p{N}]/u;
 const SUFFIXABLE_EDGE_CHAR =
   /[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Arabic}\p{Script=Hebrew}\p{N}\p{M}]/u;
+const PROCLITIC_EDGE_CHAR = /[\p{Script=Arabic}\p{Script=Hebrew}]/u;
+
+/**
+ * Single-letter proclitics that attach to the following word in Arabic
+ * and Hebrew. Kept to the unambiguous conjunctions and prepositions;
+ * a longer prefix is a different word, not a clitic.
+ */
+const PROCLITIC_LETTERS = "وفبكلسהוכלמשב";
 
 /**
  * Combining marks count as word characters. Without `\p{M}` a decomposed
@@ -46,6 +57,8 @@ const SUFFIXABLE_EDGE_CHAR =
  */
 const BOUNDARY_LOOKBEHIND = "(?<![\\p{L}\\p{M}\\p{N}])";
 const BOUNDARY_LOOKAHEAD = "(?![\\p{L}\\p{M}\\p{N}])";
+/** Word start, or exactly one word-initial proclitic before the phrase. */
+const PROCLITIC_LOOKBEHIND = `(?:${BOUNDARY_LOOKBEHIND}|(?<=${BOUNDARY_LOOKBEHIND}[${PROCLITIC_LETTERS}]))`;
 
 const HAS_KANA = /[\p{Script=Hiragana}\p{Script=Katakana}]/u;
 const HAS_HAN = /\p{Script=Han}/u;
@@ -103,9 +116,12 @@ export function buildPhraseMatcher(
       .split(/\s+/)
       .map((word) => escapeRegExp(word))
       .join("\\s+");
-    const lead = PREFIXABLE_EDGE_CHAR.test(characters[0])
-      ? BOUNDARY_LOOKBEHIND
-      : "";
+    const first = characters[0];
+    const lead = PROCLITIC_EDGE_CHAR.test(first)
+      ? PROCLITIC_LOOKBEHIND
+      : PREFIXABLE_EDGE_CHAR.test(first)
+        ? BOUNDARY_LOOKBEHIND
+        : "";
     const tail = SUFFIXABLE_EDGE_CHAR.test(characters[characters.length - 1])
       ? BOUNDARY_LOOKAHEAD
       : "";

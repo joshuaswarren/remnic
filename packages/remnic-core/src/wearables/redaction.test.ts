@@ -222,3 +222,16 @@ test("a decomposed transcript still reaches a composed marker", () => {
   assert.equal(result.conversation.segments[0]?.text, "[off the record — segment elided]");
   assert.equal(result.conversation.segments[1]?.text, "[back on the record]");
 });
+
+test("a marker never fires at the tail of a longer word", () => {
+  // Korean particles attach at the END, so the leading guard is safe there
+  // while the trailing edge stays open.
+  const korean = compileOffTheRecordMarkers({ start: ["기록"], useBuiltIns: false });
+  assert.equal(applyOffTheRecord(conversation(["신기록 입니다", "x"]), korean).droppedSegments, 0);
+  assert.equal(applyOffTheRecord(conversation(["기록을 멈춰주세요", "비밀"]), korean).droppedSegments, 1);
+
+  // Arabic admits ONE word-initial proclitic and nothing longer.
+  const arabic = compileOffTheRecordMarkers({ start: ["خاص"], useBuiltIns: false });
+  assert.equal(applyOffTheRecord(conversation(["أشخاص كثيرون", "x"]), arabic).droppedSegments, 0);
+  assert.equal(applyOffTheRecord(conversation(["وخاص جدا", "سر"]), arabic).droppedSegments, 1);
+});
