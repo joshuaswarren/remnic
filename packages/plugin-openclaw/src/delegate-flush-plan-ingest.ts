@@ -152,7 +152,7 @@ async function ingestUnderLock(
   // here would leave the transcript flush that follows with its 1 ms fallback.
   for (let pass = 0; pass < MAX_RECLAIM_PASSES; pass++) {
     if (options.remainingTimeoutMs() <= 0) return;
-    const claimed = await claimPendingNotes(paths, options.serviceId);
+    const claimed = await claimPendingNotes(paths, options.serviceId, lock);
     if (claimed.trim().length === 0) {
       // Even a delete needs a live claim: a replacement holder may have just
       // recovered this snapshot.
@@ -294,10 +294,14 @@ function isRefusal(status: number): boolean {
  * merge is written with temp-then-rename BEFORE the source is unlinked, so no
  * crash window leaves the notes only in memory.
  */
-async function claimPendingNotes(paths: SnapshotPaths, serviceId: string): Promise<string> {
+async function claimPendingNotes(
+  paths: SnapshotPaths,
+  serviceId: string,
+  lock: HeldFileLockController,
+): Promise<string> {
   // 1. Fold any stranded rotate target into the snapshot first. A previous run
   //    that died between its rename and its merge left the notes only there.
-  if (await mergeRotatedIntoInflight(paths)) {
+  if (await mergeRotatedIntoInflight(paths, lock)) {
     log.warn(`[${serviceId}] recovered flush-plan notes left by an interrupted ingestion`);
   }
   // 2. Claim the live plan file. Rename is atomic, so a host append either
@@ -308,7 +312,7 @@ async function claimPendingNotes(paths: SnapshotPaths, serviceId: string): Promi
     if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
     return (await readIfPresent(paths.inflight)) ?? "";
   }
-  await mergeRotatedIntoInflight(paths);
+  await mergeRotatedIntoInflight(paths, lock);
   return (await readIfPresent(paths.inflight)) ?? "";
 }
 
@@ -316,12 +320,19 @@ async function claimPendingNotes(paths: SnapshotPaths, serviceId: string): Promi
  * Append `.rotating` to `.inflight` and remove it. Returns true when there was
  * something to recover. Safe to call when neither file exists.
  */
-async function mergeRotatedIntoInflight(paths: SnapshotPaths): Promise<boolean> {
+async function mergeRotatedIntoInflight(
+  paths: SnapshotPaths,
+  lock: HeldFileLockController,
+): Promise<boolean> {
   const rotated = await readIfPresent(paths.rotating);
   if (rotated === undefined) return false;
   const existing = (await readIfPresent(paths.inflight)) ?? "";
   let merged = `${existing}${rotated}`;
   if (merged.length > 0) {
+    // Reading recovery files can outlast the stale interval on a paused
+    // process, so ownership is re-checked before the write rather than
+    // assumed from the acquire.
+    if (!(await lock.refresh())) return false;
     await atomicWrite(paths.inflight, merged);
   }
   // A host descriptor opened just before the rename still points at THIS
@@ -331,10 +342,12 @@ async function mergeRotatedIntoInflight(paths: SnapshotPaths): Promise<boolean> 
   // rather than the whole merge.
   const late = await readIfPresent(paths.rotating);
   if (late !== undefined && late.length > rotated.length) {
+    if (!(await lock.refresh())) return false;
     merged = `${existing}${late}`;
     await atomicWrite(paths.inflight, merged);
   }
   // Only now: the content is durable under `.inflight`.
+  if (!(await lock.refresh())) return false;
   await discard(paths.rotating);
   return merged.length > 0;
 }
