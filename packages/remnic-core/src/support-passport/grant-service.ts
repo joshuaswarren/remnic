@@ -18,10 +18,6 @@ import {
 import type { SupportPassportGrantStore } from "./grant-store.js";
 import { requireSupportPassportOwnerLock, withSupportPassportOwnerLock } from "./owner-lock.js";
 
-const MAX_GUIDE_READ_ATTEMPTS = 3;
-
-class SupportPassportGuideReadChanged extends Error {}
-
 export interface SupportPassportGrantServiceDependencies {
   grantStore: SupportPassportGrantStore;
   resolveOwner(principal: string): Promise<{ principal: string; namespace: string; storage: StorageManager }>;
@@ -107,20 +103,12 @@ export class SupportPassportGrantService {
     if (!input || typeof input.grantId !== "string" || typeof input.secret !== "string") {
       throw new SupportPassportError("grant_not_found", "The share link was not found.", 404);
     }
-    for (let attempt = 0; attempt < MAX_GUIDE_READ_ATTEMPTS; attempt += 1) {
-      try {
-        return await this.readGrantAttempt(input);
-      } catch (error) {
-        if (!(error instanceof SupportPassportGuideReadChanged)) throw error;
-      }
-    }
-    throw new SupportPassportError("storage_conflict", "The support passport changed during the request.", 409);
+    return await this.readGrantAttempt(input);
   }
 
   private async readGrantAttempt(input: { grantId: string; secret: string }): Promise<SupportPassportPublicGuide> {
     const initialState = await this.grantStore.authenticate(input.grantId, input.secret);
     const storage = await this.resolveNamespace(initialState.namespace);
-    const corpusVersion = storage.getMemoryCorpusVersion();
     const cards = await this.readGrantCards(storage, initialState);
     const firstCard = cards[0];
     if (!firstCard) throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
@@ -133,8 +121,11 @@ export class SupportPassportGrantService {
         if (finalState.namespace !== initialState.namespace) {
           throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
         }
-        if (storage.getMemoryCorpusVersion() !== corpusVersion) throw new SupportPassportGuideReadChanged();
         await requireSupportPassportOwnerLock(ownerLock);
+        const currentCards = await this.readGrantCards(storage, finalState);
+        if (JSON.stringify(currentCards) !== JSON.stringify(cards)) {
+          throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
+        }
         return SupportPassportPublicGuideSchema.parse({
           schemaVersion: 1,
           grantId: finalState.grantId,
