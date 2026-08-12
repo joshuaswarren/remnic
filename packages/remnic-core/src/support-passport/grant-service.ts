@@ -16,10 +16,7 @@ import {
   SupportPassportRevokeGrantInputSchema,
 } from "./grant-contracts.js";
 import type { SupportPassportGrantStore } from "./grant-store.js";
-import {
-  requireSupportPassportOwnerLock,
-  withSupportPassportOwnerLock,
-} from "./owner-lock.js";
+import { requireSupportPassportOwnerLock, withSupportPassportOwnerLock } from "./owner-lock.js";
 
 export interface SupportPassportGrantServiceDependencies {
   grantStore: SupportPassportGrantStore;
@@ -106,35 +103,28 @@ export class SupportPassportGrantService {
     if (!input || typeof input.grantId !== "string" || typeof input.secret !== "string") {
       throw new SupportPassportError("grant_not_found", "The share link was not found.", 404);
     }
-    const state = await this.grantStore.authenticate(input.grantId, input.secret);
-    const storage = await this.resolveNamespace(state.namespace);
-    const cards = await this.readGrantCards(storage, state);
-    const confirmedState = await this.grantStore.authenticate(input.grantId, input.secret);
-    if (confirmedState.stateVersion !== state.stateVersion) {
-      throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
-    }
+    const initialState = await this.grantStore.authenticate(input.grantId, input.secret);
+    const storage = await this.resolveNamespace(initialState.namespace);
     return await withSupportPassportOwnerLock(storage, async (ownerLock) => {
-      const confirmedCards = await this.readGrantCards(storage, confirmedState);
-      if (JSON.stringify(confirmedCards) !== JSON.stringify(cards)) {
-        throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
-      }
-      const finalState = await this.grantStore.authenticate(input.grantId, input.secret);
-      if (finalState.stateVersion !== confirmedState.stateVersion) {
-        throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
-      }
-      const firstCard = confirmedCards[0];
-      if (!firstCard) throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
-      const updatedAt = confirmedCards.reduce(
-        (latest, card) => (card.updatedAt > latest ? card.updatedAt : latest),
-        firstCard.updatedAt
-      );
-      await requireSupportPassportOwnerLock(ownerLock);
-      return SupportPassportPublicGuideSchema.parse({
-        schemaVersion: 1,
-        grantId: finalState.grantId,
-        expiresAt: finalState.expiresAt,
-        updatedAt,
-        cards: confirmedCards,
+      return await this.grantStore.withAuthenticatedGrant(input.grantId, input.secret, async (finalState) => {
+        if (finalState.namespace !== initialState.namespace) {
+          throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
+        }
+        const cards = await this.readGrantCards(storage, finalState);
+        const firstCard = cards[0];
+        if (!firstCard) throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
+        const updatedAt = cards.reduce(
+          (latest, card) => (card.updatedAt > latest ? card.updatedAt : latest),
+          firstCard.updatedAt
+        );
+        await requireSupportPassportOwnerLock(ownerLock);
+        return SupportPassportPublicGuideSchema.parse({
+          schemaVersion: 1,
+          grantId: finalState.grantId,
+          expiresAt: finalState.expiresAt,
+          updatedAt,
+          cards,
+        });
       });
     });
   }
