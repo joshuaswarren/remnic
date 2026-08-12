@@ -445,7 +445,11 @@ async function runReserved(options, reservation) {
       {
         method: "POST",
         headers,
-        body: JSON.stringify({ cardIds: [approved.cardId], expiresAt: requestedExpiry }),
+        body: JSON.stringify({
+          cardIds: [approved.cardId],
+          cardRevisions: [{ cardId: approved.cardId, revision: approved.revision }],
+          expiresAt: requestedExpiry,
+        }),
       },
       200,
       "Share link creation"
