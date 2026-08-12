@@ -52,6 +52,71 @@ test("failure-semantics: getMemoryById on empty store returns null (not throw)",
   }
 });
 
+test("failure-semantics: selected memory snapshots reject a changed member", async () => {
+  const { storage, cleanup } = await makeStorage();
+  try {
+    const first = await storage.writeMemory("preference", "First source");
+    const second = await storage.writeMemory("preference", "Second source");
+    const firstSnapshot = await storage.readMemoryByPath(first.memory.path);
+    const secondSnapshot = await storage.readMemoryByPath(second.memory.path);
+    assert.ok(firstSnapshot);
+    assert.ok(secondSnapshot);
+    assert.equal(await storage.updateMemory(second.id, "Changed source"), true);
+
+    assert.equal(await storage.readMemorySnapshotsIfUnchanged([firstSnapshot, secondSnapshot]), null);
+    assert.deepEqual(
+      (await storage.readMemorySnapshotsIfUnchanged([firstSnapshot]))?.map((memory) => memory.frontmatter.id),
+      [first.id]
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+test("failure-semantics: selected memory snapshots block member writes until every read completes", async () => {
+  const { storage, cleanup } = await makeStorage();
+  const secondReadStarted = Promise.withResolvers<void>();
+  const releaseSecondRead = Promise.withResolvers<void>();
+  try {
+    const first = await storage.writeMemory("preference", "First source");
+    const second = await storage.writeMemory("preference", "Second source");
+    const firstSnapshot = await storage.readMemoryByPath(first.memory.path);
+    const secondSnapshot = await storage.readMemoryByPath(second.memory.path);
+    assert.ok(firstSnapshot);
+    assert.ok(secondSnapshot);
+    const readMemoryByPath = storage.readMemoryByPath.bind(storage);
+    let pauseSecond = true;
+    storage.readMemoryByPath = async (filePath) => {
+      const memory = await readMemoryByPath(filePath);
+      if (pauseSecond && filePath === second.memory.path) {
+        pauseSecond = false;
+        secondReadStarted.resolve();
+        await releaseSecondRead.promise;
+      }
+      return memory;
+    };
+
+    const snapshotPromise = storage.readMemorySnapshotsIfUnchanged([firstSnapshot, secondSnapshot]);
+    await secondReadStarted.promise;
+    let writeSettled = false;
+    const writePromise = storage.updateMemoryIfUnchanged(firstSnapshot, "Changed source").finally(() => {
+      writeSettled = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(writeSettled, false);
+
+    releaseSecondRead.resolve();
+    assert.deepEqual(
+      (await snapshotPromise)?.map((memory) => memory.frontmatter.id),
+      [first.id, second.id]
+    );
+    assert.equal(await writePromise, true);
+  } finally {
+    releaseSecondRead.resolve();
+    await cleanup();
+  }
+});
+
 test("failure-semantics: readMemoryByPath on a non-existent file returns null (not throw)", async () => {
   const { storage, baseDir, cleanup } = await makeStorage();
   try {
