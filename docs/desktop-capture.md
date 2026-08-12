@@ -349,6 +349,36 @@ table in [config-reference.md](config-reference.md) and [meetings.md](meetings.m
 }
 ```
 
+### Capture-audio daemon: cross-channel ordering
+
+`@remnic/capture-audio` has its own daemon config file, separate from the
+Remnic plugin config above.
+
+With `captureChannel: "both"` the native helper records the microphone and the
+system output as two independent chunk streams. A system chunk for an earlier
+window can arrive after a later microphone chunk. The daemon therefore holds
+each transcribed chunk in a bounded reorder buffer and releases it only when
+the newest observed chunk end is `reorderWindowSeconds` past its own end. The
+assembler then always sees a chronological stream, so a delayed segment is
+grouped into the conversation it belongs to (issue #2145).
+
+```jsonc
+{
+  "conversationGapMinutes": 10,   // silence that starts a new conversation
+  "reorderWindowSeconds": 60      // 0 releases every chunk on arrival
+}
+```
+
+Two consequences to know:
+
+- A held chunk is not marked complete and keeps its raw WAV, so a crash before
+  release replays it from the audio. Raising the window delays WAV reclaim by
+  the same amount.
+- Speaker clustering runs at finalize over the segments that survive
+  cross-channel dedup. A microphone copy of system audio that dedup prunes
+  therefore contributes nothing to a speaker cluster. Segment embeddings are
+  persisted so a restart re-derives the same clusters.
+
 ## Installation hints
 
 Base installs never pull a capture or connector package. Install only what you

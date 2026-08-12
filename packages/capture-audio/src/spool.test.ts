@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import nodePath from "node:path";
 import { test } from "node:test";
 
+import { SPOOL_SCHEMA_VERSION } from "./constants.js";
 import { CaptureConfigError, CaptureInputError } from "./errors.js";
 import { Spool } from "./spool.js";
 import type { ChunkStatus, ConversationState, SegmentInput } from "./spool.js";
@@ -17,7 +18,7 @@ const seg = (text: string): SegmentInput => ({
 
 test("schema is created with meta schema_version and instance_id", () => {
   const spool = new Spool(":memory:");
-  assert.equal(spool.meta("schema_version"), "1");
+  assert.equal(spool.meta("schema_version"), String(SPOOL_SCHEMA_VERSION));
   assert.ok(spool.meta("instance_id"));
   spool.close();
 });

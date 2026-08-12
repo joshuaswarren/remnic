@@ -33,6 +33,13 @@ export type ChunkStatus = "pending" | "transcribed" | "failed" | "deleted";
 export interface SegmentInput {
   speakerCluster?: string | null;
   isWearer?: boolean;
+  /**
+   * Speaker embedding for this segment, persisted as a JSON BLOB (issue
+   * #2145). Clustering runs at finalize over the segments that SURVIVE
+   * cross-channel dedup, so a pruned loopback duplicate never inflates a
+   * cluster's centroid or count.
+   */
+  embedding?: readonly number[] | null;
   channel: string;
   text: string;
   startUtc: string;
@@ -161,7 +168,8 @@ CREATE TABLE IF NOT EXISTS segments (
   text TEXT NOT NULL,
   start_utc TEXT NOT NULL,
   end_utc TEXT NOT NULL,
-  ordinal INTEGER NOT NULL DEFAULT 0
+  ordinal INTEGER NOT NULL DEFAULT 0,
+  embedding BLOB
 );
 CREATE TABLE IF NOT EXISTS speaker_clusters (
   id TEXT PRIMARY KEY,
@@ -179,6 +187,28 @@ CREATE TABLE IF NOT EXISTS applied_chunks (
 CREATE INDEX IF NOT EXISTS idx_conv_keyset ON conversations(started_at_utc, id);
 CREATE INDEX IF NOT EXISTS idx_seg_conv ON segments(conversation_id, ordinal);
 `;
+
+/**
+ * Encode a speaker embedding for the `segments.embedding` BLOB. `null` and an
+ * empty vector both persist as NULL: an absent embedding must not look like a
+ * zero-length one at finalize.
+ */
+function encodeEmbedding(embedding: readonly number[] | null | undefined): Buffer | null {
+  if (!embedding || embedding.length === 0) return null;
+  return Buffer.from(JSON.stringify(embedding));
+}
+
+/** Decode a JSON-encoded numeric vector BLOB; corrupt rows decode to null. */
+function decodeEmbedding(blob: Buffer | Uint8Array | null): number[] | null {
+  if (!blob || blob.byteLength === 0) return null;
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(blob).toString("utf8"));
+    if (!Array.isArray(parsed)) return null;
+    return parsed.every((n) => typeof n === "number" && Number.isFinite(n)) ? (parsed as number[]) : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Canonical instant required at the Spool boundary: a full date + time with a
@@ -245,8 +275,15 @@ export class Spool {
         // filesystem without POSIX perms (e.g. some Windows mounts)
       }
     }
+    // Additive migration for a spool created before segment embeddings existed
+    // (issue #2145). CREATE TABLE IF NOT EXISTS leaves an existing table alone,
+    // so the column is added explicitly; ALTER is skipped when it is present.
+    const segmentColumns = this.#db.prepare("PRAGMA table_info(segments)").all() as Array<{ name: string }>;
+    if (!segmentColumns.some((column) => column.name === "embedding")) {
+      this.#db.exec("ALTER TABLE segments ADD COLUMN embedding BLOB");
+    }
     this.#db
-      .prepare("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)")
+      .prepare("INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
       .run("schema_version", String(SPOOL_SCHEMA_VERSION));
     this.#db.prepare("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)").run("instance_id", ulid());
   }
@@ -334,7 +371,7 @@ export class Spool {
         "INSERT INTO conversations(id, started_at_utc, ended_at_utc, state, segment_count) VALUES (?,?,?,?,?)",
       ).run(convId, startedAtUtc, endedAtUtc, state, segments.length);
       const segStmt = db.prepare(
-        "INSERT INTO segments(id, chunk_id, conversation_id, speaker_cluster, is_wearer, channel, text, start_utc, end_utc, ordinal) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO segments(id, chunk_id, conversation_id, speaker_cluster, is_wearer, channel, text, start_utc, end_utc, ordinal, embedding) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
       );
       for (let i = 0; i < segments.length; i++) {
         const seg = segments[i];
@@ -349,6 +386,7 @@ export class Spool {
           seg.startUtc,
           seg.endUtc,
           i,
+          encodeEmbedding(seg.embedding),
         );
       }
       db.exec("COMMIT");
@@ -430,7 +468,7 @@ export class Spool {
         .get(convId) as { n: number };
       const nextOrdinal = Number(ordinalRow.n);
       const segStmt = db.prepare(
-        "INSERT INTO segments(id, chunk_id, conversation_id, speaker_cluster, is_wearer, channel, text, start_utc, end_utc, ordinal) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO segments(id, chunk_id, conversation_id, speaker_cluster, is_wearer, channel, text, start_utc, end_utc, ordinal, embedding) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
       );
       for (let i = 0; i < segments.length; i++) {
         const seg = segments[i];
@@ -445,6 +483,7 @@ export class Spool {
           seg.startUtc,
           seg.endUtc,
           nextOrdinal + i,
+          encodeEmbedding(seg.embedding),
         );
       }
       db.prepare(
@@ -528,6 +567,52 @@ export class Spool {
       throw err;
     }
     return removed;
+  }
+
+  /**
+   * Segments of one conversation that still need a speaker, chronological.
+   *
+   * Only rows with a stored embedding and no cluster yet: clustering runs at
+   * finalize over the segments that SURVIVED dedup (issue #2145), and skipping
+   * already-assigned rows keeps a repeated finalize from double-counting a
+   * centroid.
+   */
+  conversationSegmentsForDiarization(
+    conversationId: string,
+  ): Array<{ id: string; channel: string; embedding: number[] }> {
+    const rows = this.#db
+      .prepare(
+        "SELECT id, channel, embedding FROM segments " +
+          "WHERE conversation_id = ? AND embedding IS NOT NULL AND speaker_cluster IS NULL " +
+          "ORDER BY start_utc ASC, ordinal ASC, id ASC",
+      )
+      .all(conversationId) as Array<{ id: string; channel: string; embedding: Buffer | null }>;
+    const out: Array<{ id: string; channel: string; embedding: number[] }> = [];
+    for (const row of rows) {
+      const embedding = decodeEmbedding(row.embedding);
+      if (embedding !== null) out.push({ id: row.id, channel: row.channel, embedding });
+    }
+    return out;
+  }
+
+  /** Write finalize-time diarization results back onto their segments. */
+  assignSegmentSpeakers(
+    assignments: ReadonlyArray<{ id: string; speakerCluster: string; isWearer: boolean }>,
+  ): number {
+    if (assignments.length === 0) return 0;
+    const stmt = this.#db.prepare("UPDATE segments SET speaker_cluster = ?, is_wearer = ? WHERE id = ?");
+    let updated = 0;
+    this.#db.exec("BEGIN");
+    try {
+      for (const assignment of assignments) {
+        updated += Number(stmt.run(assignment.speakerCluster, assignment.isWearer ? 1 : 0, assignment.id).changes);
+      }
+      this.#db.exec("COMMIT");
+    } catch (err) {
+      this.#db.exec("ROLLBACK");
+      throw err;
+    }
+    return updated;
   }
 
   /** Ids of every still-`capturing` conversation (dedup-before-finalize sweep). */

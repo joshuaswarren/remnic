@@ -409,7 +409,11 @@ test("cross-channel dedup is order-independent: a mic chunk processed BEFORE its
   }
 });
 
-test("kill-9 durability: a diarized append persists its speaker cluster before finalize", async () => {
+test("kill-9 durability: an appended segment keeps the embedding its cluster is derived from", async () => {
+  // Clustering moved to finalize (issue #2145), so a kill before finalize
+  // leaves no cluster — but the EMBEDDING is durable, so the next finalize
+  // derives the same cluster. Nothing is lost, and a duplicate that dedup
+  // later prunes never got to move a centroid.
   const spool = new Spool(":memory:");
   try {
     const guest: Embedding = [0, 1, 0, 0];
@@ -422,9 +426,53 @@ test("kill-9 durability: a diarized append persists its speaker cluster before f
     );
     proc.enqueue(chunk());
     await proc.drain(); // process is killed (-9) here: no finalize() runs
+    assert.deepEqual(spool.readSpeakerClusters(), [], "no cluster before finalize");
+    const open = spool.latestCapturingConversation();
+    assert.ok(open);
+    assert.equal(
+      spool.conversationSegmentsForDiarization(open.id).length,
+      1,
+      "the embedding survived the crash and is still pending clustering",
+    );
+
+    // Restart: a fresh processor + clusterer over the same spool.
+    const restarted = createChunkProcessor(
+      deps(spool, { diarizer: new SpeakerClusterer(0.7), embed: () => guest }),
+    );
+    await restarted.finalize();
     const clusters = spool.readSpeakerClusters();
-    assert.equal(clusters.length, 1, "the new cluster is durable as soon as its segment is appended");
+    assert.equal(clusters.length, 1, "finalize derived the cluster from the persisted embedding");
     assert.equal(clusters[0].isSelf, false);
+    assert.equal(clusters[0].embeddingCount, 1, "counted exactly once");
+  } finally {
+    spool.close();
+  }
+});
+
+test("a pruned loopback duplicate contributes nothing to any speaker cluster (issue #2145)", async () => {
+  // The same utterance heard on both channels: dedup keeps the system copy.
+  // With append-time clustering the mic copy still moved the centroid and
+  // bumped the count before it was pruned.
+  const spool = new Spool(":memory:");
+  try {
+    const voice: Embedding = [1, 0, 0, 0];
+    const proc = createChunkProcessor(
+      deps(spool, {
+        diarizer: new SpeakerClusterer(0.7),
+        embed: () => voice,
+        transcribe: async () => [{ text: "hello there world", startUtc: t(1), endUtc: t(3) }],
+      }),
+    );
+    proc.enqueue(chunk({ path: "/tmp/raw/sys.wav", channel: "system", startedAtUtc: t(0), endedAtUtc: t(4) }));
+    proc.enqueue(chunk({ path: "/tmp/raw/mic.wav", channel: "mic", startedAtUtc: t(0), endedAtUtc: t(4) }));
+    await proc.drain();
+    assert.equal(spool.stats().segments, 2, "both copies are stored before dedup");
+    await proc.finalize();
+
+    assert.equal(finalSegments(spool).length, 1, "the loopback dup was pruned");
+    const clusters = spool.readSpeakerClusters();
+    assert.equal(clusters.length, 1, "one speaker, not a phantom pair");
+    assert.equal(clusters[0].embeddingCount, 1, "the pruned duplicate never counted");
   } finally {
     spool.close();
   }
@@ -643,3 +691,118 @@ test("pruning the earliest duplicate recomputes the conversation's time bounds",
     spool.close();
   }
 });
+
+test("a delayed cross-channel chunk groups by time, not arrival (issue #2145)", async () => {
+  // conversationGapMinutes: 0 splits on ANY gap, so arrival order decides the
+  // grouping outright. The mic chunk covering 00:01 arrives first; the system
+  // chunk covering 00:00 arrives after it. Without the reorder buffer the
+  // earlier system segment is appended to the LATER conversation.
+  const spool = new Spool(":memory:");
+  try {
+    let minted = 0;
+    const byPath: Record<string, TranscribedSegment[]> = {
+      "/tmp/raw/mic-late.wav": [
+        { text: "second", startUtc: "2026-07-24T00:01:00.000Z", endUtc: "2026-07-24T00:01:05.000Z" },
+      ],
+      "/tmp/raw/sys-early.wav": [
+        { text: "first", startUtc: "2026-07-24T00:00:00.000Z", endUtc: "2026-07-24T00:00:05.000Z" },
+      ],
+    };
+    const proc = createChunkProcessor(
+      deps(spool, {
+        assembler: new ConversationAssembler({ gapMinutes: 0, makeId: () => `conv_${++minted}` }),
+        reorderWindowMs: 120_000,
+        transcribe: async ({ wavPath }) => byPath[wavPath] ?? [],
+      }),
+    );
+    // Arrival order is deliberately reversed relative to capture time.
+    proc.enqueue(
+      chunk({
+        path: "/tmp/raw/mic-late.wav",
+        channel: "mic",
+        startedAtUtc: "2026-07-24T00:01:00.000Z",
+        endedAtUtc: "2026-07-24T00:01:30.000Z",
+      }),
+    );
+    proc.enqueue(
+      chunk({
+        path: "/tmp/raw/sys-early.wav",
+        channel: "system",
+        startedAtUtc: "2026-07-24T00:00:00.000Z",
+        endedAtUtc: "2026-07-24T00:00:30.000Z",
+      }),
+    );
+    await proc.drain();
+    // Still inside the reorder window: nothing has been released yet, so the
+    // WAVs are retained and no conversation exists.
+    assert.equal(spool.stats().segments, 0, "held until the watermark passes");
+    await proc.finalize();
+    // Ids are minted in RELEASE order, so conv_1 must hold the earlier
+    // (system) segment even though its chunk arrived second.
+    assert.equal(minted, 2, "each segment opened its own conversation at gap 0");
+    assert.deepEqual(
+      spool.conversationSegmentsForDedup("conv_1").map((seg) => seg.text),
+      ["first"],
+    );
+    assert.deepEqual(
+      spool.conversationSegmentsForDedup("conv_2").map((seg) => seg.text),
+      ["second"],
+    );
+  } finally {
+    spool.close();
+  }
+});
+
+test("the reorder buffer releases once the watermark passes a held chunk", async () => {
+  const spool = new Spool(":memory:");
+  try {
+    const byPath: Record<string, TranscribedSegment[]> = {
+      "/tmp/raw/a.wav": [
+        { text: "early", startUtc: "2026-07-24T00:00:00.000Z", endUtc: "2026-07-24T00:00:05.000Z" },
+      ],
+      "/tmp/raw/b.wav": [
+        { text: "later", startUtc: "2026-07-24T00:02:00.000Z", endUtc: "2026-07-24T00:02:05.000Z" },
+      ],
+    };
+    const cleaned: string[] = [];
+    const proc = createChunkProcessor(
+      deps(spool, {
+        reorderWindowMs: 30_000,
+        transcribe: async ({ wavPath }) => byPath[wavPath] ?? [],
+        cleanupRawAudio: async (event) => {
+          cleaned.push(event.path);
+        },
+      }),
+    );
+    proc.enqueue(chunk({ path: "/tmp/raw/a.wav", endedAtUtc: "2026-07-24T00:00:30.000Z" }));
+    await proc.drain();
+    assert.equal(spool.stats().segments, 0, "the newest chunk is never its own watermark");
+    assert.deepEqual(cleaned, [], "a held chunk keeps its WAV for replay");
+
+    proc.enqueue(
+      chunk({
+        path: "/tmp/raw/b.wav",
+        startedAtUtc: "2026-07-24T00:02:00.000Z",
+        endedAtUtc: "2026-07-24T00:02:30.000Z",
+      }),
+    );
+    await proc.drain();
+    assert.equal(spool.stats().segments, 1, "the older chunk released once the watermark passed it");
+    assert.deepEqual(cleaned, ["/tmp/raw/a.wav"], "and only then is its WAV reclaimed");
+  } finally {
+    spool.close();
+  }
+});
+
+test("reorderWindowMs 0 keeps the pre-#2145 release-on-arrival behavior", async () => {
+  const spool = new Spool(":memory:");
+  try {
+    const proc = createChunkProcessor(deps(spool, { reorderWindowMs: 0 }));
+    proc.enqueue(chunk());
+    await proc.drain();
+    assert.equal(spool.stats().segments, 2, "released without waiting for a later chunk");
+  } finally {
+    spool.close();
+  }
+});
+
