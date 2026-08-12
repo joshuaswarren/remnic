@@ -382,6 +382,36 @@ test("card operations reject a resolved principal that differs from the authenti
   }
 });
 
+test("generated draft creation rejects a non-canonical resolved namespace before writing", async () => {
+  StorageManager.clearAllStaticCaches();
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-passport-generated-namespace-"));
+  const storage = new StorageManager(path.join(root, "shared"));
+  await storage.ensureDirectories();
+  const service = new SupportPassportCardService({
+    resolveOwner: async (principal) => ({ principal, namespace: " alice ", storage }),
+  });
+  try {
+    await assert.rejects(
+      service.createGeneratedDrafts({
+        principal: "owner:alice",
+        cards: [
+          {
+            title: "Quiet place",
+            statement: "Offer me a quiet place.",
+            category: "environment",
+            sourceMemoryIds: ["source-1"],
+          },
+        ],
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "card_data_invalid"
+    );
+    assert.deepEqual(await storage.readAllMemories(), []);
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("manual draft creation returns the committed card without a post-write corpus reload", async () => {
   const subject = await makeSubject();
   try {

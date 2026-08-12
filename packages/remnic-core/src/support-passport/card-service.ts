@@ -106,7 +106,7 @@ export class SupportPassportCardService {
   }): Promise<SupportPassportCard[]> {
     const principal = SupportPassportListCardsInputSchema.safeParse({ principal: input.principal });
     if (!principal.success) throw invalidInput();
-    const owner = await this.resolveOwner(principal.data.principal);
+    const owner = await this.resolveOwnerScope(principal.data.principal);
     return await this.createGeneratedDraftsForOwner({ owner, cards: input.cards });
   }
 
