@@ -177,7 +177,7 @@ export class SupportPassportCardService {
       const card = this.projectRequiredCard(recoveredMemory);
       if (card.card.status === "active") return card.card;
       this.requireStatus(card, "pending_review");
-      const retiredPriorId = await this.retirePriorForReplacement(storage, card);
+      const retiredPriorId = await this.preparePriorForReplacement(storage, card);
       const updatedAt = this.now().toISOString();
       let approved: boolean;
       try {
@@ -188,6 +188,12 @@ export class SupportPassportCardService {
         );
       } catch (error) {
         if (retiredPriorId) {
+          const current = await storage.getMemoryById(card.card.cardId);
+          const currentCard = current ? projectSupportPassportCard(current) : null;
+          if (currentCard?.card.status === "active") {
+            await this.completePriorRetirement(storage, retiredPriorId, card.card.cardId);
+            return currentCard.card;
+          }
           await this.restorePriorAfterApprovalFailure(storage, retiredPriorId, card.card.cardId);
         }
         throw error;
@@ -195,11 +201,19 @@ export class SupportPassportCardService {
       if (!approved) {
         const current = await storage.getMemoryById(card.card.cardId);
         const currentCard = current ? projectSupportPassportCard(current) : null;
-        if (currentCard?.card.status === "active") return currentCard.card;
+        if (currentCard?.card.status === "active") {
+          if (retiredPriorId) {
+            await this.completePriorRetirement(storage, retiredPriorId, card.card.cardId);
+          }
+          return currentCard.card;
+        }
         if (retiredPriorId) {
           await this.restorePriorAfterApprovalFailure(storage, retiredPriorId, card.card.cardId);
         }
         throw new SupportPassportError("storage_conflict", "The support card changed before approval.", 409);
+      }
+      if (retiredPriorId) {
+        await this.completePriorRetirement(storage, retiredPriorId, card.card.cardId);
       }
       return (await this.requireCard(storage, card.card.cardId)).card;
     });
@@ -385,7 +399,7 @@ export class SupportPassportCardService {
     return projected;
   }
 
-  private async retirePriorForReplacement(
+  private async preparePriorForReplacement(
     storage: StorageManager,
     replacement: StoredSupportPassportCard
   ): Promise<string | null> {
@@ -400,15 +414,21 @@ export class SupportPassportCardService {
     if (!priorMemory || (!alreadyRetired && prior?.card.status !== "active")) {
       throw new SupportPassportError("storage_conflict", "The prior support card changed before replacement.", 409);
     }
-    const retired = await storage.supersedeMemory(
-      priorId,
-      replacement.card.cardId,
-      "support-passport-replacement",
-      { supersessionCause: "direct" },
+    if (alreadyRetired) return priorId;
+    const retiredAt = this.now().toISOString();
+    const retired = await storage.writeMemoryFrontmatterIfUnchanged(
+      priorMemory,
       {
-        requireActive: true,
-        acceptExactReplay: true,
-        expectedSnapshot: priorMemory,
+        status: "superseded",
+        supersededBy: replacement.card.cardId,
+        supersededAt: retiredAt,
+        supersessionCause: "direct",
+        updated: retiredAt,
+      },
+      {
+        actor: "support-passport.approve-prepare",
+        reasonCode: "support-passport-replacement-pending",
+        relatedMemoryIds: [replacement.card.cardId],
       }
     );
     if (!retired) {
@@ -419,24 +439,47 @@ export class SupportPassportCardService {
 
   private async recoverReplacementTransition(storage: StorageManager, memory: MemoryFile): Promise<MemoryFile> {
     const replacement = projectSupportPassportCard(memory);
-    if (replacement?.card.status !== "pending_review") return memory;
+    if (replacement?.card.status !== "pending_review" && replacement?.card.status !== "active") return memory;
     if (!replacement.replacesDraftId && !memory.frontmatter.supersedes) return memory;
     await this.recoverReplacedDraft(storage, replacement);
     const currentMemory = (await storage.getMemoryById(replacement.card.cardId)) ?? memory;
-    if (projectSupportPassportCard(currentMemory)?.card.status !== "pending_review") return currentMemory;
+    const currentCard = projectSupportPassportCard(currentMemory);
+    if (currentCard?.card.status !== "pending_review" && currentCard?.card.status !== "active") {
+      return currentMemory;
+    }
     const priorId = currentMemory.frontmatter.supersedes;
     if (!priorId) return currentMemory;
     const prior = await storage.getMemoryById(priorId);
     if (prior?.frontmatter.status !== "superseded" || prior.frontmatter.supersededBy !== replacement.card.cardId) {
       return currentMemory;
     }
-    const recovered = await storage.writeMemoryFrontmatterIfUnchanged(
-      currentMemory,
-      { status: "active", updated: this.now().toISOString() },
-      { actor: "support-passport.approve-recovery", reasonCode: "complete-replacement-approval" }
-    );
-    if (!recovered) return (await storage.getMemoryById(replacement.card.cardId)) ?? currentMemory;
+    if (currentCard.card.status === "pending_review") {
+      const recovered = await storage.writeMemoryFrontmatterIfUnchanged(
+        currentMemory,
+        { status: "active", updated: this.now().toISOString() },
+        { actor: "support-passport.approve-recovery", reasonCode: "complete-replacement-approval" }
+      );
+      if (!recovered) return (await storage.getMemoryById(replacement.card.cardId)) ?? currentMemory;
+    }
+    await this.completePriorRetirement(storage, priorId, replacement.card.cardId);
     return (await storage.getMemoryById(replacement.card.cardId)) ?? currentMemory;
+  }
+
+  private async completePriorRetirement(
+    storage: StorageManager,
+    priorId: string,
+    replacementId: string
+  ): Promise<void> {
+    const prior = await storage.getMemoryById(priorId);
+    if (prior?.frontmatter.status !== "superseded" || prior.frontmatter.supersededBy !== replacementId) return;
+    const completed = await storage.supersedeMemory(
+      priorId,
+      replacementId,
+      "support-passport-replacement",
+      { supersessionCause: "direct" },
+      { requireActive: true, acceptExactReplay: true, expectedSnapshot: prior }
+    );
+    if (!completed) log.warn("support passport could not complete replacement retirement side effects");
   }
 
   private async recoverReplacedDraft(storage: StorageManager, replacement: StoredSupportPassportCard): Promise<void> {
