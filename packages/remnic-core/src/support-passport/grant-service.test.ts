@@ -10,6 +10,7 @@ import { SupportPassportCardService } from "./card-service.js";
 import { SupportPassportError } from "./errors.js";
 import { SupportPassportGrantService } from "./grant-service.js";
 import { SupportPassportGrantStore, syncDirectoryForDurability } from "./grant-store.js";
+import { requirePrivateFileDescriptorRoot } from "./private-file.js";
 import { withHeldFileLock } from "../utils/serialize-mutations.js";
 
 async function makeSubject() {
@@ -508,6 +509,35 @@ test("bad secrets return not found, while valid revoked and expired grants revea
   }
 });
 
+test("a grant that expires during guide assembly does not return a guide", async () => {
+  const subject = await makeSubject();
+  try {
+    const card = await createActiveCard(subject);
+    const created = await subject.grantService.createGrant({
+      principal: "owner:alice",
+      cards: [{ cardId: card.cardId, revision: card.revision }],
+      expiresAt: expiryAfter(subject, 300_000),
+    });
+    const getMemoryById = subject.aliceStorage.getMemoryById.bind(subject.aliceStorage);
+    let advanced = false;
+    subject.aliceStorage.getMemoryById = async (memoryId) => {
+      const memory = await getMemoryById(memoryId);
+      if (!advanced) {
+        advanced = true;
+        subject.advance(300_000);
+      }
+      return memory;
+    };
+
+    await assert.rejects(
+      subject.grantService.readGrant({ grantId: created.grant.grantId, secret: created.secret }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "grant_expired"
+    );
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("revocation waits until helper guide assembly completes", async () => {
   const subject = await makeSubject();
   const cardReadStarted = Promise.withResolvers<void>();
@@ -740,6 +770,15 @@ test("the grant store rejects a symlinked grant directory", async () => {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("private file operations fail closed without descriptor-relative directory paths", () => {
+  assert.throws(
+    () => requirePrivateFileDescriptorRoot("win32", "private file directory cannot be pinned"),
+    /private file directory cannot be pinned/
+  );
+  assert.equal(requirePrivateFileDescriptorRoot("linux", "unreachable"), "/proc/self/fd");
+  assert.equal(requirePrivateFileDescriptorRoot("darwin", "unreachable"), "/dev/fd");
 });
 
 test("grant cleanup never follows a swapped grant directory", async () => {
