@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { constants as fsConstants, type Stats } from "node:fs";
-import { lstat, mkdir, open, rename, rm, stat, type FileHandle } from "node:fs/promises";
+import { type Stats, constants as fsConstants } from "node:fs";
+import { type FileHandle, lstat, mkdir, open, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 
 const UNSUPPORTED_DIRECTORY_SYNC_ERRORS = new Set(["EINVAL", "ENOSYS", "ENOTSUP", "EOPNOTSUPP"]);
@@ -20,7 +20,10 @@ function assertStableDirectory(before: Stats, opened: Stats, after: Stats, error
   }
 }
 
-async function openDirectoryNoFollow(directory: string, errorMessage: string): Promise<{
+async function openDirectoryNoFollow(
+  directory: string,
+  errorMessage: string
+): Promise<{
   before: Stats;
   opened: Stats;
   handle: FileHandle;
@@ -51,12 +54,26 @@ async function syncDirectoryHandle(handle: FileHandle): Promise<void> {
   }
 }
 
-async function pinnedDirectoryPath(
+export async function resolvePrivateDirectoryPath(
+  directory: string,
   handle: FileHandle,
   opened: Stats,
-  errorMessage: string
+  errorMessage: string,
+  platform: NodeJS.Platform = process.platform
 ): Promise<string> {
-  const descriptorRoot = requirePrivateFileDescriptorRoot(process.platform, errorMessage);
+  const descriptorRoot = requirePrivateFileDescriptorRoot(platform, errorMessage);
+  if (descriptorRoot === null) {
+    const current = await lstat(directory);
+    if (
+      current.isSymbolicLink() ||
+      !current.isDirectory() ||
+      current.dev !== opened.dev ||
+      current.ino !== opened.ino
+    ) {
+      throw new Error(errorMessage);
+    }
+    return directory;
+  }
   const pinnedPath = path.join(descriptorRoot, String(handle.fd));
   const metadata = await stat(pinnedPath);
   if (!metadata.isDirectory() || metadata.dev !== opened.dev || metadata.ino !== opened.ino) {
@@ -65,9 +82,9 @@ async function pinnedDirectoryPath(
   return pinnedPath;
 }
 
-export function requirePrivateFileDescriptorRoot(platform: NodeJS.Platform, errorMessage: string): string {
+export function requirePrivateFileDescriptorRoot(platform: NodeJS.Platform, errorMessage: string): string | null {
   if (platform === "linux") return "/proc/self/fd";
-  if (platform === "darwin") return "/dev/fd";
+  if (platform === "darwin") return null;
   throw new Error(errorMessage);
 }
 
@@ -94,7 +111,7 @@ async function openStableDirectoryFromRoot(
     let current = await openDirectoryNoFollow(root, errorMessage);
     handles.push(current.handle);
     for (const component of components) {
-      const pinnedParent = await pinnedDirectoryPath(current.handle, current.opened, errorMessage);
+      const pinnedParent = await resolvePrivateDirectoryPath(currentPath, current.handle, current.opened, errorMessage);
       const child = await openDirectoryNoFollow(path.join(pinnedParent, component), errorMessage);
       handles.push(child.handle);
       assertStableDirectory(current.before, current.opened, await lstat(currentPath), errorMessage);
@@ -128,7 +145,7 @@ export async function ensurePrivateDirectoryNoFollow(
     let current = await openDirectoryNoFollow(root, errorMessage);
     handles.push(current.handle);
     for (const component of components) {
-      const pinnedParent = await pinnedDirectoryPath(current.handle, current.opened, errorMessage);
+      const pinnedParent = await resolvePrivateDirectoryPath(currentPath, current.handle, current.opened, errorMessage);
       const childPath = path.join(pinnedParent, component);
       try {
         await mkdir(childPath, { mode: 0o700 });
@@ -159,7 +176,12 @@ export async function withPrivateDirectoryNoFollow<T>(
   try {
     const stableDirectory = await openStableDirectoryFromRoot(trustedRoot, directory, errorMessage);
     directoryHandles = stableDirectory.handles;
-    const pinnedDirectory = await pinnedDirectoryPath(stableDirectory.handle, stableDirectory.opened, errorMessage);
+    const pinnedDirectory = await resolvePrivateDirectoryPath(
+      directory,
+      stableDirectory.handle,
+      stableDirectory.opened,
+      errorMessage
+    );
     const result = await task(pinnedDirectory);
     assertStableDirectory(stableDirectory.before, stableDirectory.opened, await lstat(directory), errorMessage);
     return result;
@@ -181,7 +203,12 @@ export async function readPrivateFileNoFollow(
   try {
     const stableDirectory = await openStableDirectoryFromRoot(trustedRoot, directory, errorMessage);
     directoryHandles = stableDirectory.handles;
-    const pinnedDirectory = await pinnedDirectoryPath(stableDirectory.handle, stableDirectory.opened, errorMessage);
+    const pinnedDirectory = await resolvePrivateDirectoryPath(
+      directory,
+      stableDirectory.handle,
+      stableDirectory.opened,
+      errorMessage
+    );
     try {
       fileHandle = await open(path.join(pinnedDirectory, targetName), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
     } catch (error) {
@@ -189,12 +216,7 @@ export async function readPrivateFileNoFollow(
       throw error;
     }
     const fileMetadata = await fileHandle.stat();
-    assertStableDirectory(
-      stableDirectory.before,
-      stableDirectory.opened,
-      await lstat(directory),
-      errorMessage
-    );
+    assertStableDirectory(stableDirectory.before, stableDirectory.opened, await lstat(directory), errorMessage);
     if (!fileMetadata.isFile() || fileMetadata.nlink !== 1) throw new Error(errorMessage);
     return await fileHandle.readFile("utf8");
   } finally {
@@ -217,7 +239,12 @@ export async function appendPrivateFileNoFollow(
   try {
     const stableDirectory = await openStableDirectoryFromRoot(trustedRoot, directory, errorMessage);
     directoryHandles = stableDirectory.handles;
-    const pinnedDirectory = await pinnedDirectoryPath(stableDirectory.handle, stableDirectory.opened, errorMessage);
+    const pinnedDirectory = await resolvePrivateDirectoryPath(
+      directory,
+      stableDirectory.handle,
+      stableDirectory.opened,
+      errorMessage
+    );
     try {
       fileHandle = await open(
         path.join(pinnedDirectory, targetName),
@@ -229,12 +256,7 @@ export async function appendPrivateFileNoFollow(
       throw error;
     }
     const fileMetadata = await fileHandle.stat();
-    assertStableDirectory(
-      stableDirectory.before,
-      stableDirectory.opened,
-      await lstat(directory),
-      errorMessage
-    );
+    assertStableDirectory(stableDirectory.before, stableDirectory.opened, await lstat(directory), errorMessage);
     if (!fileMetadata.isFile() || fileMetadata.nlink !== 1) throw new Error(errorMessage);
     await fileHandle.chmod(0o600);
     await fileHandle.appendFile(content, "utf8");
@@ -261,7 +283,12 @@ export async function writePrivateFileAtomicallyNoFollow(
   try {
     const stableDirectory = await openStableDirectoryFromRoot(trustedRoot, directory, errorMessage);
     directoryHandles = stableDirectory.handles;
-    const pinnedDirectory = await pinnedDirectoryPath(stableDirectory.handle, stableDirectory.opened, errorMessage);
+    const pinnedDirectory = await resolvePrivateDirectoryPath(
+      directory,
+      stableDirectory.handle,
+      stableDirectory.opened,
+      errorMessage
+    );
     tempPath = path.join(pinnedDirectory, tempName);
     const targetPath = path.join(pinnedDirectory, targetName);
     try {
@@ -301,7 +328,8 @@ export async function removePrivateFilesNoFollow(
 ): Promise<void> {
   if (
     fileNames.some(
-      (fileName) => fileName.length === 0 || fileName === "." || fileName === ".." || path.basename(fileName) !== fileName
+      (fileName) =>
+        fileName.length === 0 || fileName === "." || fileName === ".." || path.basename(fileName) !== fileName
     )
   ) {
     throw new Error(errorMessage);
@@ -310,7 +338,12 @@ export async function removePrivateFilesNoFollow(
   try {
     const stableDirectory = await openStableDirectoryFromRoot(trustedRoot, directory, errorMessage);
     directoryHandles = stableDirectory.handles;
-    const pinnedDirectory = await pinnedDirectoryPath(stableDirectory.handle, stableDirectory.opened, errorMessage);
+    const pinnedDirectory = await resolvePrivateDirectoryPath(
+      directory,
+      stableDirectory.handle,
+      stableDirectory.opened,
+      errorMessage
+    );
     for (const fileName of fileNames) {
       await rm(path.join(pinnedDirectory, fileName), { force: true });
     }
