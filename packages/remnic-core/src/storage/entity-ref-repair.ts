@@ -60,7 +60,7 @@ export class EntityRefRepair {
    */
   async gate(
     fm: MemoryFrontmatter,
-    hashSource: string,
+    canonicalBody: string,
     structuredAttributes?: Record<string, string>,
   ): Promise<TombstoneMatch | null> {
     if (!this.deps.tombstonesEnabled()) return null;
@@ -73,7 +73,7 @@ export class EntityRefRepair {
           ? supersessionKeysForFact({ entityRef: fm.entityRef, structuredAttributes })
           : [];
       const match = applyTombstoneResurrectionGate(store, fm, {
-        normalizedText: ContentHashIndex.normalizeContent(hashSource),
+        normalizedText: ContentHashIndex.normalizeContent(canonicalBody),
         supersessionKeys,
         namespace: this.deps.tombstonesNamespace(),
       });
@@ -109,7 +109,7 @@ export class EntityRefRepair {
         frontmatter: fm,
         rewrite: async () => {
           if (opts.regateFact && fm.category === "fact") {
-            await this.gate(fm, body, undefined);
+            await this.gate(fm, body, fm.structuredAttributes);
           }
           // Blocked-capture surface: a repair rewrite of a tombstone-blocked
           // record must keep TombstoneBlockedCaptureIndex consistent.

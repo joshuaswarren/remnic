@@ -128,6 +128,19 @@ test("content-hash: normalizeContent produces stable text for equivalent inputs"
   assert.equal(a, b, "normalizeContent must collapse whitespace consistently");
 });
 
+test("content-hash: distinct Japanese facts keep distinct hashes", () => {
+  assert.notEqual(
+    ContentHashIndex.computeHash("利用者は紅茶を好む。"),
+    ContentHashIndex.computeHash("利用者は珈琲を好む。"),
+  );
+});
+
+test("content-hash: NFC and NFD forms share one hash", () => {
+  const nfc = "Café au lait";
+  const nfd = "Cafe\u0301 au lait";
+  assert.equal(ContentHashIndex.computeHash(nfc), ContentHashIndex.computeHash(nfd));
+});
+
 test("content-hash: the frontmatter contentHash matches computeHash of the raw content", async () => {
   const { storage, cleanup } = await makeStorage();
   try {

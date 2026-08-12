@@ -1,65 +1,83 @@
-# Theory: Durable Dependency Revalidation
+# Theory: Safe Unicode Identity Migration
 
 ## Problem
 
-Remnic stores dependency links, but old lifecycle paths treated them as write-only metadata.
+Remnic used an ASCII-only normalizer for content hashes and duplicate checks.
 
-When support memory becomes invalid, a dependent claim can remain active and recallable.
+That normalizer erased CJK and other non-ASCII text. Distinct facts could share the empty-string hash.
 
-The primary mutation and the dependent revalidation must also survive different crash windows.
+Equivalent Unicode forms could also miss each other without canonical composition.
+
+Changing the normalizer fixes new writes but makes persisted identities stale.
+
+Tombstones and fact-hash indexes must migrate without trusting lossy legacy aliases.
 
 ## Operating theory
 
-Dependency propagation is an orchestration task. Storage changes one memory atomically. The extraction engine judges dependent claims.
+NFC normalization makes canonically equivalent Unicode text stable.
 
-Each trigger captures the source before mutation. It prepares a durable job before the source changes.
+Unicode letter, mark, and number classes retain meaningful text across scripts.
 
-After the primary mutation commits, the job becomes ready. A worker scans one namespace snapshot and one-hop link neighborhood.
+Legacy hashes are evidence only when the old and current normalized text are equal and non-empty.
 
-The worker revalidates all bounded dependents in one LLM call. `still_valid` keeps the memory active. `invalidated` supersedes it.
+An empty or changed legacy form cannot identify Unicode content safely.
 
-Malformed, missing, or uncertain verdicts preserve active memory. This keeps the failure mode fail-open for user data.
+The system preserves ambiguous persisted identities but does not query them as aliases for new content.
 
-## Durable state model
+## Migration strategy
 
-The queue uses explicit `prepared`, `ready`, `leased`, `retryable`, and terminal states.
+Stored content has up to three verified identity forms: raw content, cited content, and the full attributed body.
 
-Preparation records the exact source snapshot and replacement identity. Reservations prevent one caller from canceling another caller's job.
+The persisted hash selects the historic identity form. The system computes a current hash only after that match.
 
-Recovery first proves whether the primary mutation committed. It replays missing primary effects only from the captured snapshot.
+This rule preserves explicit `contentHashSource` identities and old full-body hashes without making legacy hashes global aliases.
 
-Recovered consolidation work also repairs index visibility. It uses the captured source path for deindex and gates temporal index work by capability.
+Tombstones can retain a current alias only when both forms come from the same source memory.
 
-The queue writes with atomic JSON replacement. Write failures return no preparation token, so callers do not report false durability.
+The tombstone store reads legacy sources from hot, cold, and archive storage.
 
-## Trigger coverage
+It reads source IDs in bounded batches and completes every available batch before publishing its index.
 
-Contradiction resolution captures the active hot or cold source before supersession.
+Unavailable sources remain unversioned. A later load retries them after the source becomes available.
 
-Temporal supersession prepares before mutation and retries preparation when a transient survivor lookup fails.
+Unverified entries remain in the ledger and keyed tier.
 
-Consolidation invalidate and merge paths prepare before mutation. Merge recovery verifies the survivor fingerprint before replay.
+Their exact, normalized, and semantic tiers stay hidden until source verification succeeds.
 
-Startup recovery scans durable jobs. Shutdown drains extraction first, then waits for propagation work.
+Migration or ledger-read failures leave the tombstone store unloaded.
 
-## Rebase integration
+The failed call returns the error. The next call retries before any legacy identity becomes authoritative.
 
-Current `main` moved supersession side effects and recovery work into focused modules.
+Malformed JSONL rows stay byte-for-byte while valid rows migrate in place.
 
-The branch now uses those boundaries instead of restoring old monolithic code.
+The fact-hash index registers every stored identity form that matches an ambiguous legacy hash.
 
-Supersession remains active-only under the file lock. Exact replay repairs missing lifecycle, tombstone, audit, and cache effects.
+This bounded set preserves recoverable explicit sources without making a lossy hash a global alias.
 
-The final branch must preserve the storage ratchet. `storage.ts` and `orchestrator.ts` stay below their enforced line limits.
+The reconcile manifest uses the same source-verified identity selection.
+
+Ambiguous legacy hashes never suppress unrelated current Unicode content.
+
+Entity repair re-runs the tombstone gate with the final entity reference and structured attributes.
+
+## Deduplication strategy
+
+Duplicate comparison tokenizes Unicode letters, marks, and numbers.
+
+It supports scripts without whitespace, including Japanese and Korean.
+
+Embedded punctuation records both the mark and its semantic character position.
+
+Terminal sentence punctuation remains compatible with normalized exact matches.
 
 ## Verification state
 
-Core type checks pass. The focused replay suite passes 170 tests.
+The 111-test focused identity suite passes, including unavailable-source, migration, and ledger-read recovery.
 
-The entity hardening gate passes. The lifecycle coverage suite passes 41 tests.
+The core type check passes.
 
-The complete second package shard passes 722 tests, with 17 skips and no failures.
+The storage line ratchet passes at 7,314 lines, below its 7,315-line ceiling.
 
-The archive replay test and the active-state race regression both pass after the rebase fix.
+The mandatory preflight and entity-hardening gates passed before the final review fixes.
 
-The final sequential `preflight:quick` run passes.
+They require one fresh run on the final commit before merge.

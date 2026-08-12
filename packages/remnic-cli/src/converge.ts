@@ -269,6 +269,7 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
         const manifest = await buildReconcileManifest({
           files,
           parseMemory: parseFrontmatter,
+          citationTemplate: config.inlineSourceAttributionFormat,
           readFile: async (file) => {
             const readFile = io.readFile;
             if (!readFile) {
@@ -333,6 +334,7 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
         peerManifest = await buildReconcileManifest({
           files: peerFiles,
           parseMemory: parseFrontmatter,
+          citationTemplate: config?.inlineSourceAttributionFormat,
           cachedFiles: localManifests.get(ns)?.files,
           readFile: async (file) => {
             let remote: PeerFileContent | null;

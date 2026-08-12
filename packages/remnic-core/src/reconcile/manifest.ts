@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
+import { computeLegacyContentHash, normalizeLegacyContent } from "../content-hash.js";
 import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import { ContentHashIndex, type ContentHashPathEntry } from "../storage/content-hash-index.js";
+import { DEFAULT_CITATION_FORMAT, stripCitationForTemplate } from "../source-attribution.js";
+import { storedContentIdentityCandidates } from "../structured-attributes.js";
 import type { MemoryFrontmatter, MemoryStatus } from "../types.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import {
@@ -14,11 +17,13 @@ import {
 
 export const RECONCILE_MANIFEST_FORMAT = "remnic-reconcile-manifest";
 export const RECONCILE_MANIFEST_SCHEMA_VERSION = 1;
+const CONTENT_HASH_NORMALIZER_VERSION = 4;
 
 export interface ReconcileMemoryIdentity {
   id: string;
   category: string;
   contentHash: string;
+  normalizerVersion?: number;
   status: MemoryStatus;
 }
 
@@ -43,6 +48,7 @@ export interface BuildReconcileManifestOptions {
   readFile: (file: ReconcileFileState) => Promise<Buffer | string | null>;
   parseMemory: ReconcileMemoryParser;
   cachedFiles?: Iterable<ReconcileManifestFile>;
+  citationTemplate?: string;
 }
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/i;
@@ -61,19 +67,38 @@ function parsedMemoryIdentity(
   filePath: string,
   raw: Buffer | string,
   parseMemory: ReconcileMemoryParser,
+  citationTemplate: string,
 ): ReconcileMemoryIdentity | undefined {
   if (!isMemoryPath(filePath)) return undefined;
   const parsed = parseMemory(Buffer.isBuffer(raw) ? raw.toString("utf8") : raw);
   if (!parsed?.frontmatter.id) return undefined;
-  const storedHash = parsed.frontmatter.contentHash;
-  const contentHash =
-    storedHash && SHA256_PATTERN.test(storedHash)
-      ? storedHash.toLowerCase()
-      : ContentHashIndex.computeHash(parsed.content);
+
+  const storedHash =
+    parsed.frontmatter.contentHash &&
+    SHA256_PATTERN.test(parsed.frontmatter.contentHash)
+      ? parsed.frontmatter.contentHash.toLowerCase()
+      : undefined;
+  const candidates = storedContentIdentityCandidates(parsed.content, (content) =>
+    stripCitationForTemplate(content, citationTemplate)
+  );
+  const bodyHash = ContentHashIndex.computeHash(candidates[0] ?? "");
+  const currentMatch = candidates.find(
+    (content) => ContentHashIndex.computeHash(content) === storedHash
+  );
+  const legacyMatch = [...candidates].reverse().find(
+    (content) => computeLegacyContentHash(content) === storedHash
+  );
+  const contentHash = currentMatch
+    ? ContentHashIndex.computeHash(currentMatch)
+    : legacyMatch
+      ? ContentHashIndex.computeHash(legacyMatch)
+      : storedHash ?? bodyHash;
+
   return {
     id: parsed.frontmatter.id,
     category: parsed.frontmatter.category,
     contentHash,
+    normalizerVersion: CONTENT_HASH_NORMALIZER_VERSION,
     status: inferMemoryStatus(parsed.frontmatter, filePath),
   };
 }
@@ -82,6 +107,7 @@ export async function buildReconcileManifestFile(
   file: ReconcileFileState,
   readFile: (file: ReconcileFileState) => Promise<Buffer | string | null>,
   parseMemory: ReconcileMemoryParser,
+  citationTemplate = DEFAULT_CITATION_FORMAT,
 ): Promise<ReconcileManifestFile> {
   let raw: Buffer | string | null = null;
   if (isMemoryPath(file.path)) {
@@ -94,7 +120,7 @@ export async function buildReconcileManifestFile(
   if (raw !== null && createHash("sha256").update(raw).digest("hex") !== file.sha256.toLowerCase()) {
     raw = null;
   }
-  const memory = raw === null ? undefined : parsedMemoryIdentity(file.path, raw, parseMemory);
+  const memory = raw === null ? undefined : parsedMemoryIdentity(file.path, raw, parseMemory, citationTemplate);
   return { ...file, ...(memory ? { memory } : {}) };
 }
 
@@ -107,12 +133,21 @@ export async function buildReconcileManifest(options: BuildReconcileManifestOpti
   const files: ReconcileManifestFile[] = [];
   for (const file of options.files) {
     const cached = cachedByPath.get(file.path);
-    if (cached?.sha256.toLowerCase() === file.sha256.toLowerCase()) {
+    if (
+      cached?.sha256.toLowerCase() === file.sha256.toLowerCase() &&
+      (cached.memory === undefined ||
+        cached.memory.normalizerVersion === CONTENT_HASH_NORMALIZER_VERSION)
+    ) {
       files.push({ ...file, ...(cached.memory ? { memory: cached.memory } : {}) });
       continue;
     }
 
-    files.push(await buildReconcileManifestFile(file, options.readFile, options.parseMemory));
+    files.push(await buildReconcileManifestFile(
+      file,
+      options.readFile,
+      options.parseMemory,
+      options.citationTemplate,
+    ));
   }
   files.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
   return {
@@ -132,10 +167,17 @@ function activeFactByPath(manifest: ReconcileManifest | undefined): Map<string, 
   return result;
 }
 
-function contentHashRows(files: Iterable<ActiveFactManifestFile>): ContentHashPathEntry[] {
+function memoryIdentityHashes(memory: ReconcileMemoryIdentity): string[] {
+  return [memory.contentHash];
+}
+
+function contentHashRows(
+  files: Iterable<ActiveFactManifestFile>,
+  contentHash: string,
+): ContentHashPathEntry[] {
   const rows: ContentHashPathEntry[] = [];
   for (const file of files) {
-    rows.push({ path: file.path, contentHash: file.memory.contentHash });
+    rows.push({ path: file.path, contentHash });
   }
   return rows;
 }
@@ -194,35 +236,47 @@ export function collapseActiveFactDuplicates(
     const peerByHash = new Map<string, ActiveFactManifestFile[]>();
 
     for (const file of localByPath.values()) {
-      const hash = file.memory.contentHash;
-      const bucket = localByHash.get(hash) ?? [];
-      bucket.push(file);
-      localByHash.set(hash, bucket);
+      for (const hash of memoryIdentityHashes(file.memory)) {
+        const bucket = localByHash.get(hash) ?? [];
+        bucket.push(file);
+        localByHash.set(hash, bucket);
+      }
     }
     for (const file of peerByPath.values()) {
-      const hash = file.memory.contentHash;
-      const bucket = peerByHash.get(hash) ?? [];
-      bucket.push(file);
-      peerByHash.set(hash, bucket);
+      for (const hash of memoryIdentityHashes(file.memory)) {
+        const bucket = peerByHash.get(hash) ?? [];
+        bucket.push(file);
+        peerByHash.set(hash, bucket);
+      }
     }
 
     const removed = new Set<ReconcilePlanEntry>();
     const replacements: ReconcilePlanEntry[] = [];
+    const processedPathPairs = new Set<string>();
     for (const hash of new Set([...localByHash.keys(), ...peerByHash.keys()])) {
       const localCandidates = (localByHash.get(hash) ?? []).filter((file) => {
         const opposite = peerFilesByPath.get(file.path);
         const activeOpposite = peerByPath.get(file.path);
-        return opposite === undefined || activeOpposite?.memory.contentHash === hash;
+        return opposite === undefined || (
+          activeOpposite !== undefined &&
+          memoryIdentityHashes(activeOpposite.memory).includes(hash)
+        );
       });
       const peerCandidates = (peerByHash.get(hash) ?? []).filter((file) => {
         const opposite = localFilesByPath.get(file.path);
         const activeOpposite = localByPath.get(file.path);
-        return opposite === undefined || activeOpposite?.memory.contentHash === hash;
+        return opposite === undefined || (
+          activeOpposite !== undefined &&
+          memoryIdentityHashes(activeOpposite.memory).includes(hash)
+        );
       });
-      const localPath = ContentHashIndex.resolvePathByHash(hash, contentHashRows(localCandidates));
-      const peerPath = ContentHashIndex.resolvePathByHash(hash, contentHashRows(peerCandidates));
+      const localPath = ContentHashIndex.resolvePathByHash(hash, contentHashRows(localCandidates, hash));
+      const peerPath = ContentHashIndex.resolvePathByHash(hash, contentHashRows(peerCandidates, hash));
 
       if (localPath && peerPath && localPath !== peerPath) {
+        const pathPair = `${localPath}\0${peerPath}`;
+        if (processedPathPairs.has(pathPair)) continue;
+        processedPathPairs.add(pathPair);
         const localFile = localByPath.get(localPath);
         const peerFile = peerByPath.get(peerPath);
         if (!localFile || !peerFile) continue;

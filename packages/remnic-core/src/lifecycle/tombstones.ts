@@ -41,6 +41,7 @@
 // ---------------------------------------------------------------------------
 
 import { serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
+import { computeLegacyContentHash } from "../content-hash.js";
 
 /** Why a tombstone was emitted. */
 export type TombstoneReason =
@@ -72,10 +73,14 @@ export interface TombstoneEntry {
   reason: TombstoneReason;
   /** The memory that was retired. */
   sourceMemoryId: string;
-  /** sha256 of the retired memory's rawContent (rule 23). */
+  /** sha256 of the retired identity; explicit contentHashSource may define it. */
   contentHash: string;
-  /** `ContentHashIndex.normalizeContent(rawContent)` — the pre-hash form. */
+  /** Current body hash retained alongside an ambiguous or explicit primary hash. */
+  currentContentHashAlias?: string;
+  /** Current normalized body used by the normalized lookup tier. */
   normalizedText: string;
+  /** Version of the current body identity fields. */
+  normalizerVersion?: number;
   entityRef?: string;
   /** Structured-attribute supersession key when one existed. */
   supersessionKey?: string;
@@ -111,7 +116,7 @@ export interface TombstoneLookupQuery {
   /** Single supersession key (direct/unit callers). */
   supersessionKey?: string;
   /** All derived supersession keys (write chokepoint). The keyed tier is
-   *  checked for each; the first active match wins. */
+   * checked for each; the first active match wins. */
   supersessionKeys?: string[];
   namespace: string;
 }
@@ -131,6 +136,15 @@ export interface TombstoneStoreOptions {
    * skipped entirely.
    */
   semanticSimilarity?: (a: string, b: string) => number;
+  /**
+   * Resolve source identity candidates for bounded legacy sourceMemoryIds.
+   * StorageManager reads the corpus before the tombstone write lock.
+   */
+  readonly sourceContentsForMemoryIds?: (
+    sourceMemoryIds: readonly string[],
+  ) => Promise<ReadonlyMap<string, string | readonly string[]>>;
+  /** Maximum number of legacy entries considered during one load. */
+  readonly legacyMigrationLimit?: number;
   /**
    * Cross-process write-lock timings for the tombstone JSONL mutation lock
    * (issue #1639). The secure-store append is a read-merge-write (read
@@ -167,6 +181,9 @@ export interface TombstoneStats {
   /** Whether the in-memory index matches the on-disk file (rebuild check). */
   loaded: boolean;
 }
+
+const TOMBSTONE_NORMALIZER_VERSION = 2;
+const DEFAULT_LEGACY_MIGRATION_LIMIT = 10_000;
 
 const TOMBSTONE_PREFIX = "tomb";
 
@@ -235,6 +252,12 @@ export function parseTombstoneLine(line: string): TombstoneEntry | null {
     createdAt: e.createdAt,
     createdBy: e.createdBy,
   };
+  if (typeof e.currentContentHashAlias === "string") {
+    out.currentContentHashAlias = e.currentContentHashAlias;
+  }
+  if (typeof e.normalizerVersion === "number" && Number.isInteger(e.normalizerVersion)) {
+    out.normalizerVersion = e.normalizerVersion;
+  }
   if (typeof e.operationKey === "string") out.operationKey = e.operationKey;
   if (typeof e.entityRef === "string") out.entityRef = e.entityRef;
   if (typeof e.supersessionKey === "string") out.supersessionKey = e.supersessionKey;
@@ -279,6 +302,10 @@ export class TombstoneStore {
     private readonly options: TombstoneStoreOptions,
     private readonly io: TombstoneFileIo,
   ) {
+    const limit = this.options.legacyMigrationLimit;
+    if (limit !== undefined && (!Number.isFinite(limit) || !Number.isInteger(limit) || limit < 0)) {
+      throw new Error("legacyMigrationLimit must be a finite non-negative integer");
+    }
     this.lockStaleMs = this.options.lockStaleMs ?? 30_000;
     this.lockMaxWaitMs = this.options.lockMaxWaitMs ?? 5_000;
     this.lockHeartbeatMs =
@@ -318,39 +345,132 @@ export class TombstoneStore {
     }
   }
 
-  private async loadInternal(): Promise<void> {
-    // Record the file's mtime so the staleness probe does not immediately
-    // invalidate on the next access (fileMtimeMs starts at 0; without this,
-    // any non-zero mtime would trigger a spurious reload). Done before the
-    // read so an ENOENT still records 0.
+  private async loadInternal(migrateLegacy = true): Promise<void> {
+    // Record the file mtime before reading so an ENOENT still records 0 and
+    // a successful load does not immediately trigger a staleness reload.
     this.recordFileMtime();
     let raw: string;
     try {
       raw = await this.io.read(this.filePath);
     } catch (err) {
-      // ENOENT is fine — fresh store. Other errors leave the store empty
-      // rather than crashing the write path (rule 34 spirit: degrade to
-      // "no tombstones known" rather than blocking all writes).
       const code = (err as NodeJS.ErrnoException)?.code;
-      if (code !== "ENOENT") {
-        // Swallow — the write path must not crash on a corrupt tombstone file.
-        // Rebuild will repair on the next doctor/maintenance run.
-      }
+      if (code !== "ENOENT") throw err;
       this.loaded = true;
       return;
     }
+    const initial = this.parseEntries(raw);
+    const migrated = migrateLegacy
+      ? await this.migrateLegacyEntries(initial)
+      : initial;
     this.resetIndex();
-    let corrupted = 0;
+    for (const entry of migrated.entries) this.indexEntry(entry);
+    this.corruptedLines = migrated.corruptedLines;
+    this.loaded = true;
+  }
+
+  private parseEntries(raw: string): {
+    entries: TombstoneEntry[];
+    corruptedLines: number;
+  } {
+    const entries: TombstoneEntry[] = [];
+    let corruptedLines = 0;
     for (const line of raw.split("\n")) {
       const entry = parseTombstoneLine(line);
       if (!entry) {
-        if (line.trim().length > 0) corrupted += 1;
+        if (line.trim().length > 0) corruptedLines += 1;
         continue;
       }
-      this.indexEntry(entry);
+      entries.push(entry);
     }
-    this.corruptedLines = corrupted;
-    this.loaded = true;
+    return { entries, corruptedLines };
+  }
+
+  /**
+   * Re-index pre-Unicode records from retired source content.
+   * Source reads stay bounded, but every batch finishes before the store
+   * publishes its in-memory index. Missing sources remain eligible on restart.
+   */
+  private async migrateLegacyEntries(initial: {
+    entries: TombstoneEntry[];
+    corruptedLines: number;
+  }): Promise<{ entries: TombstoneEntry[]; corruptedLines: number }> {
+    const limit = this.options.legacyMigrationLimit ?? DEFAULT_LEGACY_MIGRATION_LIMIT;
+    if (limit === 0 || !this.options.sourceContentsForMemoryIds) return initial;
+    const sourceMemoryIds: string[] = [];
+    const requested = new Set<string>();
+    for (const entry of initial.entries) {
+      if (
+        entry.kind !== "tombstone" ||
+        entry.normalizerVersion === TOMBSTONE_NORMALIZER_VERSION
+      ) {
+        continue;
+      }
+      if (requested.has(entry.sourceMemoryId)) continue;
+      requested.add(entry.sourceMemoryId);
+      sourceMemoryIds.push(entry.sourceMemoryId);
+    }
+    if (sourceMemoryIds.length === 0) return initial;
+    const sourceContents = new Map<string, string | readonly string[]>();
+    for (let offset = 0; offset < sourceMemoryIds.length; offset += limit) {
+      const batch = sourceMemoryIds.slice(offset, offset + limit);
+      const fetched = await this.options.sourceContentsForMemoryIds(batch);
+      for (const [sourceMemoryId, content] of fetched) sourceContents.set(sourceMemoryId, content);
+    }
+    return await serializeMutations(`tombstone:${this.filePath}`, () =>
+      this.withWriteLock(async () => {
+        const latestRaw = await this.io.read(this.filePath);
+        const latest = this.parseEntries(latestRaw);
+        let changed = false;
+        const migrateEntry = (entry: TombstoneEntry): TombstoneEntry => {
+          if (
+            entry.kind !== "tombstone" ||
+            entry.normalizerVersion === TOMBSTONE_NORMALIZER_VERSION ||
+            !requested.has(entry.sourceMemoryId)
+          ) {
+            return entry;
+          }
+          const resolved = sourceContents.get(entry.sourceMemoryId);
+          if (resolved === undefined) return entry;
+          const candidates = typeof resolved === "string" ? [resolved] : resolved;
+          const matches = candidates.filter((source) =>
+            entry.contentHash === this.options.hashContent(source) ||
+            entry.contentHash === computeLegacyContentHash(source)
+          );
+          const explicitPrimary =
+            matches.length === 0 &&
+            entry.contentHash !== this.options.hashContent(entry.normalizedText);
+          const source = matches[0] ?? (explicitPrimary ? candidates[0] : undefined);
+          if (source === undefined) return entry;
+          const currentHash = this.options.hashContent(source);
+          const alias = explicitPrimary
+            ? currentHash
+            : matches
+              .map((candidate) => this.options.hashContent(candidate))
+              .find((hash) => hash !== currentHash);
+          changed = true;
+          return {
+            ...entry,
+            contentHash: explicitPrimary ? entry.contentHash : currentHash,
+            ...(alias ? { currentContentHashAlias: alias } : {}),
+            normalizedText: this.options.normalizeText(source),
+            normalizerVersion: TOMBSTONE_NORMALIZER_VERSION,
+          };
+        };
+        const serialized = latestRaw
+          .split("\n")
+          .map((line) => {
+            const entry = parseTombstoneLine(line);
+            if (!entry) return line;
+            const migrated = migrateEntry(entry);
+            return migrated === entry ? line : JSON.stringify(migrated);
+          })
+          .join("\n");
+        if (!changed) return latest;
+        await this.io.write(this.filePath, serialized);
+        this.markWritten();
+        return this.parseEntries(serialized);
+      }),
+    );
   }
 
   private resetIndex(): void {
@@ -384,8 +504,13 @@ export class TombstoneStore {
     // entry — otherwise A's lookup finds B's id, rejects it on namespace
     // mismatch, and misses its own still-active tombstone (resurrection).
     const ns = entry.namespace;
-    if (entry.contentHash) this.byHash.set(`${ns}\0${entry.contentHash}`, entry.id);
-    if (entry.normalizedText) this.byNormalized.set(`${ns}\0${entry.normalizedText}`, entry.id);
+    if (entry.normalizerVersion === TOMBSTONE_NORMALIZER_VERSION) {
+      if (entry.contentHash) this.byHash.set(`${ns}\0${entry.contentHash}`, entry.id);
+      if (entry.currentContentHashAlias) {
+        this.byHash.set(`${ns}\0${entry.currentContentHashAlias}`, entry.id);
+      }
+      if (entry.normalizedText) this.byNormalized.set(`${ns}\0${entry.normalizedText}`, entry.id);
+    }
     if (entry.entityRef && entry.supersessionKey) {
       this.byKey.set(keyedTierKey(ns, entry.entityRef, entry.supersessionKey), entry.id);
     }
@@ -400,15 +525,11 @@ export class TombstoneStore {
 
   /**
    * Cross-process staleness probe (#1579). If the file's mtime advanced since
-   * the last load/own-write, a peer process appended and our in-memory index is
-   * stale — invalidate AND reload in place so the next lookup sees the new
-   * entries. Best-effort: a stat error is swallowed (the loaded index is
-   * retained rather than crashing the write path). No-op when no `stat` was
-   * injected or when the mtime is unchanged. After our own append/revoke/rebuild
-   * `markWritten` records the new mtime, so this probe does not fire for our
-   * own writes (only for peer-process appends).
+   * the last load/own-write, a peer process appended and our in-memory index
+   * is stale — invalidate and reload before the next access. Mutation callers
+   * pass `migrate: false` to avoid nested serializer/lock acquisition.
    */
-  async ensureFreshAgainstDisk(): Promise<void> {
+  async ensureFreshAgainstDisk(options: { migrate?: boolean } = {}): Promise<void> {
     if (!this.io.stat) return;
     let mtimeMs: number;
     try {
@@ -419,7 +540,11 @@ export class TombstoneStore {
     if (mtimeMs === this.fileMtimeMs && this.loaded) return;
     this.fileMtimeMs = mtimeMs;
     this.invalidate();
-    await this.load();
+    if (options.migrate === false) {
+      await this.loadInternal(false);
+    } else {
+      await this.load();
+    }
   }
 
   /**
@@ -470,13 +595,19 @@ export class TombstoneStore {
     await this.load();
     const createdAt = input.createdAt ?? new Date().toISOString();
     const id = newTombstoneId();
+    const currentHash = this.options.hashContent(input.rawContent);
+    const currentNormalizedText = this.options.normalizeText(input.rawContent);
     const entry: TombstoneEntry = {
       id,
+      ...(input.contentHash && input.contentHash !== currentHash
+        ? { currentContentHashAlias: currentHash }
+        : {}),
       kind: "tombstone",
       reason: input.reason,
       sourceMemoryId: input.sourceMemoryId,
-      contentHash: input.contentHash ?? this.options.hashContent(input.rawContent),
-      normalizedText: this.options.normalizeText(input.rawContent),
+      contentHash: input.contentHash ?? currentHash,
+      normalizedText: currentNormalizedText,
+      normalizerVersion: TOMBSTONE_NORMALIZER_VERSION,
       ...(input.entityRef ? { entityRef: input.entityRef } : {}),
       ...(input.supersessionKey ? { supersessionKey: input.supersessionKey } : {}),
       ...(input.operationKey ? { operationKey: input.operationKey } : {}),
@@ -487,6 +618,7 @@ export class TombstoneStore {
     await this.serializeAppend(entry);
     this.indexEntry(entry);
     this.markWritten();
+    await this.migrateLoadedLegacyEntries();
     return id;
   }
 
@@ -513,6 +645,7 @@ export class TombstoneStore {
     await this.serializeAppend(entry);
     this.indexEntry(entry);
     this.markWritten();
+    await this.migrateLoadedLegacyEntries();
     return id;
   }
 
@@ -526,10 +659,31 @@ export class TombstoneStore {
     // disk first, so indexEntry builds on the peer's just-appended entries.
     return serializeMutations(`tombstone:${this.filePath}`, () =>
       this.withWriteLock(async () => {
-        await this.ensureFreshAgainstDisk();
+        await this.ensureFreshAgainstDisk({ migrate: false });
         await this.io.append(this.filePath, line);
       }),
     );
+  }
+
+  private async migrateLoadedLegacyEntries(): Promise<void> {
+    const initial = {
+      entries: [...this.entries],
+      corruptedLines: this.corruptedLines,
+    };
+    if (!initial.entries.some(
+      (entry) => entry.kind === "tombstone" && entry.normalizerVersion !== TOMBSTONE_NORMALIZER_VERSION,
+    )) {
+      return;
+    }
+    try {
+      const migrated = await this.migrateLegacyEntries(initial);
+      this.resetIndex();
+      for (const entry of migrated.entries) this.indexEntry(entry);
+      this.corruptedLines = migrated.corruptedLines;
+      this.loaded = true;
+    } catch {
+      // The durable mutation already succeeded; defer migration to next load.
+    }
   }
 
   /**
@@ -635,6 +789,7 @@ export class TombstoneStore {
       let best: { id: string; reason: TombstoneReason; score: number } | null = null;
       for (const entry of this.entries) {
         if (entry.kind !== "tombstone") continue;
+        if (entry.normalizerVersion !== TOMBSTONE_NORMALIZER_VERSION) continue;
         if (entry.namespace !== query.namespace) continue;
         if (this.revokedIds.has(entry.id)) continue;
         if (!entry.normalizedText) continue;
@@ -714,7 +869,7 @@ export class TombstoneStore {
     // interleave in-process either.
     const rebuiltCount = await serializeMutations(`tombstone:${this.filePath}`, () =>
       this.withWriteLock(async () => {
-        await this.ensureFreshAgainstDisk();
+        await this.ensureFreshAgainstDisk({ migrate: false });
         // Preserve existing revocations (all namespaces — ids are globally
         // unique) so a rebuild does not silently un-revoke.
         const existingRevocations = this.entries.filter((e) => e.kind === "revocation");
@@ -737,21 +892,32 @@ export class TombstoneStore {
             existingBySource.set(`${e.sourceMemoryId}\u{0000}${e.supersessionKey ?? ""}`, e.id);
           }
         }
-        const rebuilt: TombstoneEntry[] = retiredMemories.map((m) => ({
-          id:
-            existingBySource.get(`${m.memoryId}\u{0000}${m.supersessionKey ?? ""}`) ??
-            newTombstoneId(),
-          kind: "tombstone" as const,
-          reason: m.reason,
-          sourceMemoryId: m.memoryId,
-          contentHash: m.contentHash ?? this.options.hashContent(m.rawContent),
-          normalizedText: this.options.normalizeText(m.rawContent),
-          ...(m.entityRef ? { entityRef: m.entityRef } : {}),
-          ...(m.supersessionKey ? { supersessionKey: m.supersessionKey } : {}),
-          namespace: this.namespace,
-          createdAt: m.createdAt,
-          createdBy: m.createdBy,
-        }));
+        const rebuilt: TombstoneEntry[] = retiredMemories.map((m) => {
+          const currentHash = this.options.hashContent(m.rawContent);
+          const currentNormalizedText = this.options.normalizeText(m.rawContent);
+          const persistedHash = m.contentHash;
+          const preserveOverride =
+            persistedHash !== undefined &&
+            persistedHash !== currentHash &&
+            persistedHash !== computeLegacyContentHash(m.rawContent);
+          return {
+            id:
+              existingBySource.get(`${m.memoryId}\u{0000}${m.supersessionKey ?? ""}`) ??
+              newTombstoneId(),
+            ...(preserveOverride ? { currentContentHashAlias: currentHash } : {}),
+            kind: "tombstone" as const,
+            reason: m.reason,
+            sourceMemoryId: m.memoryId,
+            contentHash: preserveOverride ? persistedHash : currentHash,
+            normalizedText: currentNormalizedText,
+            normalizerVersion: TOMBSTONE_NORMALIZER_VERSION,
+            ...(m.entityRef ? { entityRef: m.entityRef } : {}),
+            ...(m.supersessionKey ? { supersessionKey: m.supersessionKey } : {}),
+            namespace: this.namespace,
+            createdAt: m.createdAt,
+            createdBy: m.createdBy,
+          };
+        });
         // Sort deterministically (rule 38): createdAt, then id for stability.
         rebuilt.sort((a, b) =>
           a.createdAt === b.createdAt
@@ -777,6 +943,7 @@ export class TombstoneStore {
         return rebuilt.length;
       }),
     );
+    await this.migrateLoadedLegacyEntries();
     return rebuiltCount;
   }
 }

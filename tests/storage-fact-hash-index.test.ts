@@ -2,11 +2,75 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, writeFile, rm, readFile, unlink } from "node:fs/promises";
 import { ContentHashIndex, StorageManager } from "../src/storage.ts";
 import { clearMemoryCache } from "../src/memory-cache.ts";
 import { sanitizeMemoryContent } from "../src/sanitize.ts";
 import { attachCitation } from "../src/source-attribution.ts";
+import { computeLegacyContentHash } from "../packages/remnic-core/src/content-hash.ts";
+
+test("legacy hash-index entries cannot suppress writes after Unicode normalization migration", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-fact-hash-migration-"));
+  const stateDir = path.join(dir, "state");
+  const content = "利用者は紅茶を好む。";
+
+  try {
+    await mkdir(stateDir, { recursive: true });
+    // Seed a pre-versioned file with a hash that matches the new content.
+    // A legacy entry is not authoritative after the normalization change.
+    await writeFile(path.join(stateDir, "fact-hashes.txt"), `${ContentHashIndex.computeHash(content)}\n`, "utf8");
+
+    const index = new ContentHashIndex(stateDir);
+    await index.load();
+    assert.equal(index.has(content), false);
+
+    index.add(content);
+    await index.saveMergingWithDisk();
+
+    const migrated = new ContentHashIndex(stateDir);
+    await migrated.load();
+    assert.equal(migrated.has(content), true);
+    assert.match(await readFile(path.join(stateDir, "fact-hashes.txt"), "utf8"), /^# remnic-content-hash-index:v2\n/u);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("legacy tombstone-blocked hash indexes rebuild before answering authoritatively", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-tombstone-hash-migration-"));
+  const content = "利用者はこの記憶を再取得しない。";
+  const sourceConnector = "openclaw";
+
+  try {
+    const storage = new StorageManager(dir);
+    const { id } = await storage.writeMemory("fact", content, {
+      source: "explicit-inline-review",
+      sourceConnector,
+      status: "pending_review",
+    });
+    const pending = (await storage.readAllMemories()).find((memory) => memory.frontmatter.id === id);
+    assert.ok(pending);
+    await storage.writeMemoryFrontmatter(pending, {
+      status: "pending_review",
+      blockedBy: "legacy-tombstone",
+      tombstoneBlockTier: "exact",
+    });
+    assert.equal((await storage.checkTombstoneBlockedExplicitCapture(content, "fact", sourceConnector)).has, true);
+
+    const indexPath = path.join(dir, "state", "tombstone-blocked-capture", "fact-hashes.txt");
+    const versioned = await readFile(indexPath, "utf8");
+    await writeFile(indexPath, versioned.split("\n").slice(1).join("\n"), "utf8");
+    clearMemoryCache(dir);
+
+    const restarted = new StorageManager(dir);
+    const result = await restarted.checkTombstoneBlockedExplicitCapture(content, "fact", sourceConnector);
+    assert.deepEqual(result, { has: true, authoritative: true });
+    assert.match(await readFile(indexPath, "utf8"), /^# remnic-content-hash-index:v2\n/u);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("concurrent fact hash lookups wait for a single shared index load", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "engram-fact-hash-"));
@@ -155,6 +219,182 @@ test("rebuild from disk: fact with frontmatter.contentHash is found via rawBody 
       false,
       "citedBody should NOT be found after rebuild",
     );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("rebuild preserves an explicit contentHashSource override", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-fact-hash-override-rebuild-"));
+  const body = "The stored body has a separate external identity.";
+  const override = "External identity for this fact.";
+  try {
+    const storage = new StorageManager(dir);
+    await storage.writeMemory("fact", body, {
+      source: "test",
+      contentHashSource: override,
+    });
+
+    await unlink(path.join(dir, "state", "fact-hashes.txt")).catch(() => {});
+    const restarted = new StorageManager(dir);
+    assert.equal(await restarted.hasFactContentHash(override), true);
+    assert.equal(await restarted.hasFactContentHash(body), false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("rebuild replaces the legacy hash for a mixed-Unicode fact", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-fact-hash-mixed-unicode-"));
+  const body = "The user prefers café.";
+  const asciiCollision = "The user prefers caf.";
+  const legacyHash = computeLegacyContentHash(body);
+  const currentHash = ContentHashIndex.computeHash(body);
+  try {
+    const factsDir = path.join(dir, "facts", "2026-08-11");
+    await mkdir(factsDir, { recursive: true });
+    await writeFile(
+      path.join(factsDir, "legacy-cafe.md"),
+      [
+        "---",
+        "id: legacy-cafe",
+        "category: fact",
+        "created: 2026-08-11T00:00:00.000Z",
+        "updated: 2026-08-11T00:00:00.000Z",
+        `contentHash: ${legacyHash}`,
+        "---",
+        "",
+        body,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    assert.equal(legacyHash, ContentHashIndex.computeHash(asciiCollision));
+    const storage = new StorageManager(dir);
+    assert.equal(await storage.hasFactContentHash(body), true);
+    assert.equal(await storage.hasFactContentHash(asciiCollision), false);
+    const rebuilt = await readFile(path.join(dir, "state", "fact-hashes.txt"), "utf8");
+    assert.doesNotMatch(rebuilt, new RegExp(`^${legacyHash}$`, "mu"));
+    assert.match(rebuilt, new RegExp(`^${currentHash}$`, "mu"));
+
+    const memory = (await storage.readAllMemories()).find((entry) => entry.frontmatter.id === "legacy-cafe");
+    assert.ok(memory);
+    await storage.removeFactContentHashesForMemories([memory]);
+    const afterRemoval = new Set(
+      (await readFile(path.join(dir, "state", "fact-hashes.txt"), "utf8"))
+        .split(/\r?\n/u)
+        .filter(Boolean),
+    );
+    assert.equal(afterRemoval.has(legacyHash), false);
+    assert.equal(afterRemoval.has(currentHash), false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("rebuild replaces an ambiguous pure-CJK legacy hash with the current body hash", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-fact-hash-cjk-rebuild-"));
+  const body = "保存された本文は紅茶についてです。";
+  const legacyHash = computeLegacyContentHash(body);
+  const bodyHash = ContentHashIndex.computeHash(body);
+  try {
+    const factsDir = path.join(dir, "facts", "2026-08-11");
+    await mkdir(factsDir, { recursive: true });
+    await writeFile(
+      path.join(factsDir, "legacy-cjk.md"),
+      [
+        "---",
+        "id: legacy-cjk",
+        "category: fact",
+        "created: 2026-08-11T00:00:00.000Z",
+        "updated: 2026-08-11T00:00:00.000Z",
+        `contentHash: ${legacyHash}`,
+        "---",
+        "",
+        body,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const storage = new StorageManager(dir);
+    assert.equal(await storage.hasFactContentHash(body), true);
+    const rebuilt = await readFile(path.join(dir, "state", "fact-hashes.txt"), "utf8");
+    assert.doesNotMatch(rebuilt, new RegExp(`^${legacyHash}$`, "mu"));
+    assert.match(rebuilt, new RegExp(`^${bodyHash}$`, "mu"));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("rebuild preserves every recoverable identity behind an ambiguous legacy hash", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-fact-hash-ambiguous-source-"));
+  const rawBody = "利用者は紅茶を好む。";
+  const citationTemplate = "【出典：{agent}／{sessionId}】";
+  const storedBody = `${rawBody} 【出典：計画／主】`;
+  const legacyHash = computeLegacyContentHash(rawBody);
+  try {
+    const factsDir = path.join(dir, "facts", "2026-08-11");
+    await mkdir(factsDir, { recursive: true });
+    await writeFile(
+      path.join(factsDir, "legacy-ambiguous-source.md"),
+      [
+        "---",
+        "id: legacy-ambiguous-source",
+        "category: fact",
+        "created: 2026-08-11T00:00:00.000Z",
+        "updated: 2026-08-11T00:00:00.000Z",
+        `contentHash: ${legacyHash}`,
+        "---",
+        "",
+        storedBody,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const storage = new StorageManager(dir);
+    storage.citationTemplate = citationTemplate;
+    assert.equal(await storage.hasFactContentHash(rawBody), true);
+    assert.equal(await storage.hasFactContentHash(storedBody), true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+
+test("rebuild upgrades a legacy hash that includes structured attributes", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-fact-hash-attribute-rebuild-"));
+  const body = "The user prefers café.";
+  const storedBody = `${body}\n[Attributes: topic: coffee]`;
+  const legacyHash = computeLegacyContentHash(storedBody);
+  const currentHash = ContentHashIndex.computeHash(storedBody);
+  try {
+    const factsDir = path.join(dir, "facts", "2026-08-11");
+    await mkdir(factsDir, { recursive: true });
+    await writeFile(
+      path.join(factsDir, "legacy-attributes.md"),
+      [
+        "---",
+        "id: legacy-attributes",
+        "category: fact",
+        "created: 2026-08-11T00:00:00.000Z",
+        "updated: 2026-08-11T00:00:00.000Z",
+        `contentHash: ${legacyHash}`,
+        "---",
+        "",
+        storedBody,
+        "",
+      ].join("\n"),
+      "utf8"
+    );
+
+    const storage = new StorageManager(dir);
+    assert.equal(await storage.hasFactContentHash(storedBody), true);
+    const rebuilt = await readFile(path.join(dir, "state", "fact-hashes.txt"), "utf8");
+    assert.doesNotMatch(rebuilt, new RegExp(`^${legacyHash}$`, "mu"));
+    assert.match(rebuilt, new RegExp(`^${currentHash}$`, "mu"));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -13,7 +13,11 @@ import {
 } from "node:fs/promises";
 import { appendFileSync, createReadStream, mkdirSync, readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { normalizeContent, computeContentHash } from "./content-hash.js";
+import {
+  computeContentHash,
+  computeLegacyContentHash,
+  normalizeContent,
+} from "./content-hash.js";
 import { raceAbort } from "./abort-error.js";
 import { checkCorpusReadAbort, type CorpusReadOptions } from "./corpus-read-cancellation.js";
 import { selectArtifactMatches, type ArtifactSearchOptions } from "./artifact-search.js";
@@ -115,7 +119,6 @@ import {
   sortStructuredSectionsBySchema,
 } from "./entity-schema.js";
 import {
-  hasCitation,
   hasCitationForTemplate,
   stripCitationForTemplate,
   DEFAULT_CITATION_FORMAT,
@@ -1058,7 +1061,7 @@ const FACT_HASH_INDEX_REBUILD_RETRY_BASE_MS = 50;
 // the coding surfaces + wearable service). Imported here so internal callers
 // (snapshotBeforeWrite, snapshotForProvenance) resolve, and re-exported to
 // keep the public storage API stable for existing callers (wearables, dist).
-import { assemblePersistedBody, stripAttributesSuffix } from "./structured-attributes.js";
+import { assemblePersistedBody, storedContentIdentityCandidates, stripAttributesSuffix } from "./structured-attributes.js";
 export { stripAttributesSuffix };
 
 // `normalizeAttributePairs` moved to ./structured-attributes.ts (issue #1989
@@ -3009,22 +3012,51 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   }
 
   private buildTombstoneStore(): TombstoneStore {
+    let sourcePathsPromise: Promise<string[]> | undefined;
+    let sourceContentsByIdPromise: Promise<Map<string, readonly string[]>> | undefined;
     const options: TombstoneStoreOptions = {
       enabled: this.tombstonesConfig.enabled,
       semanticMatch: this.tombstonesConfig.semanticMatch,
       semanticThreshold: this.tombstonesConfig.semanticThreshold,
-      // Wire the SAME helpers the dedup index uses (rule 23 / checklist §13):
-      // hashContent = ContentHashIndex.computeHash, normalizeText =
-      // ContentHashIndex.normalizeContent. Importing them here (not copying)
-      // guarantees the tombstone tiers can never drift from dedup.
       hashContent: ContentHashIndex.computeHash,
       normalizeText: ContentHashIndex.normalizeContent,
+      sourceContentsForMemoryIds: async (sourceMemoryIds) => {
+        const requested = new Set(sourceMemoryIds);
+        const sourcePaths = await (sourcePathsPromise ??=
+          this.memoryReadStore.collectTombstoneMigrationPaths());
+        const directPaths = sourcePaths.filter((filePath) =>
+          requested.has(path.basename(filePath, ".md"))
+        );
+        const contents = new Map<string, readonly string[]>();
+        for (const memory of await this.readParsedMemoriesFromPaths(directPaths, 50)) {
+          const id = memory.frontmatter.id;
+          if (requested.has(id) && !contents.has(id)) {
+            contents.set(id, this.storedContentIdentityCandidates(memory.content));
+          }
+        }
+        if (contents.size === requested.size) return contents;
+        sourceContentsByIdPromise ??= (async () => {
+          const allContents = new Map<string, readonly string[]>();
+          for (const memory of await this.readParsedMemoriesFromPaths(sourcePaths, 50)) {
+            const id = memory.frontmatter.id;
+            if (!allContents.has(id)) {
+              allContents.set(id, this.storedContentIdentityCandidates(memory.content));
+            }
+          }
+          return allContents;
+        })();
+        const allContents = await sourceContentsByIdPromise;
+        for (const id of requested) {
+          const content = allContents.get(id);
+          if (content !== undefined) contents.set(id, content);
+        }
+        return contents;
+      },
     };
     const io: TombstoneFileIo = {
       read: (filePath) => this.readStorageSecureFile(filePath),
       append: (filePath, content) => this.appendStorageSecureFile(filePath, content),
       write: (filePath, content) => this.writeStorageSecureFile(filePath, content),
-      // stat lets the store own its cross-process staleness probe (#1579).
       stat: (filePath) => statSync(filePath),
     };
     return new TombstoneStore(this.tombstonesPath, this.tombstonesConfig.namespace, options, io);
@@ -3263,13 +3295,14 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     }
     this.factHashIndexAuthoritative = false;
     this.factHashIndexAuthoritativePromise = (async () => {
-      // Round 11: ALWAYS rebuild the fact-hash index from the durable corpus on
-      // first use per process — no on-disk "ready" marker is written or trusted,
-      // so a deferred write, crash, or multi-process interleave can never leave a
-      // stale index trusted. The scan AND publish run under the SAME per-index
-      // cross-process lock the reconciling saves use (rebuildUnderLock), so the
-      // rebuild can never overwrite a peer's newer lock-merged or deferred
-      // additions with an unlocked overwrite.
+      // ALWAYS rebuild the index from the durable corpus on first use per
+      // process, preserving the #2016 crash/restart invariant. Markerless
+      // legacy indexes additionally require body-derived hashes because their
+      // frontmatter.contentHash values may use the old normalizer.
+      //
+      // The scan and publish run under the SAME per-index cross-process lock
+      // used by reconcile saves, so migration cannot overwrite a peer's newer
+      // additions with an unlocked write.
       //
       // PR #2016 (findings 1-2): bounded-retry the LOCKED rebuild so transient
       // contention (a peer mid reconcile-save) clears within a short budget
@@ -3284,7 +3317,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       const baseMs = this.factHashIndexLockOptions.retryBaseMs ?? FACT_HASH_INDEX_REBUILD_RETRY_BASE_MS;
       let published = false;
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-        published = await factHashIndex.rebuildUnderLock(() => this.rebuildFactHashIndexFromCorpus(factHashIndex));
+        published = await factHashIndex.rebuildUnderLock(() =>
+          this.rebuildFactHashIndexFromCorpus(factHashIndex)
+        );
         if (published || attempt === maxAttempts - 1) break;
         const wait = Math.min(baseMs * 2 ** attempt, CONTENT_HASH_INDEX_RETRY_MAX_DELAY_MS);
         await new Promise<void>((resolve) => setTimeout(resolve, wait));
@@ -3346,17 +3381,16 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       // citation-strip reconstruction below, hashing the stored persist body
       // (title + steps) exactly as buildProcedurePersistBody registered it.
       if (inferMemoryStatus(memory.frontmatter, memory.path) !== "active") continue;
-      const hash = this.corpusRegisteredHash(memory);
-      if (hash === null) {
-        // Body carries a citation from an unknown/custom template we cannot
-        // safely strip — skip rather than register a wrong hash. A
-        // false-negative miss beats a wrong entry that would permanently
-        // suppress legitimate duplicate writes (see corpusRegisteredHash).
+      const hashes = this.corpusRegisteredHashes(memory);
+      if (hashes.length === 0) {
+        // Skip bodies whose configured citation cannot be stripped safely.
         legacyRecovered++;
         continue;
       }
-      factHashIndex.addByHash(hash);
-      if (memory.frontmatter.category === "fact") this.factOnlyHashes.add(hash);
+      for (const hash of hashes) {
+        factHashIndex.addByHash(hash);
+        if (memory.frontmatter.category === "fact") this.factOnlyHashes.add(hash);
+      }
     }
     if (legacyRecovered > 0) {
       log.info(
@@ -3364,39 +3398,28 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       );
     }
   }
-  /**
-   * The content-hash the corpus rebuild registers for `memory`, or null when the
-   * body carries a citation from an unknown/custom template that cannot be
-   * safely stripped. Shared by the authoritative rebuild and the fact-only
-   * corpus confirmation (`hasFactContentHash`) so both derive the identical
-   * hash for a given stored body.
-   *
-   * Preference order:
-   *  1. frontmatter.contentHash — the raw pre-citation hash writeMemory records
-   *     for facts (issue #369 round 8); matches hasFactContentHash(rawFact).
-   *  2. Reconstruct from the stored body: strip the "[Attributes: …]" suffix
-   *     writeMemory appends for structuredAttributes (registration hashed the
-   *     raw canonical content WITHOUT it — a no-op when absent), then strip a
-   *     recognised citation and hash the bare body, or hash a citation-free
-   *     body as-is.
-   *  3. A body with a citation from an unknown/custom template → null: a
-   *     false-negative miss beats a wrong hash that would permanently suppress
-   *     legitimate duplicate writes.
-   */
-  private corpusRegisteredHash(memory: MemoryFile): string | null {
-    if (memory.frontmatter.contentHash) {
-      return memory.frontmatter.contentHash;
-    }
-    const content = stripAttributesSuffix(memory.content);
-    const stripped = stripCitationForTemplate(content, this.citationTemplate);
-    if (stripped !== content) {
-      return ContentHashIndex.computeHash(sanitizeMemoryContent(stripped).text);
-    }
-    if (!hasCitation(content)) {
-      return ContentHashIndex.computeHash(sanitizeMemoryContent(content).text);
-    }
-    return null;
+  private storedContentIdentityCandidates(content: string): string[] {
+    return storedContentIdentityCandidates(content, (value) =>
+      hasCitationForTemplate(value, this.citationTemplate) ? stripCitationForTemplate(value, this.citationTemplate) : value
+    );
   }
+
+  /** Returns the current body identity while preserving explicit external identities. */
+  private corpusRegisteredHashes(memory: MemoryFile): string[] {
+    const persistedHash = memory.frontmatter.contentHash;
+    const candidates = this.storedContentIdentityCandidates(memory.content)
+      .map((content) => sanitizeMemoryContent(content).text);
+    const currentHashes = candidates.map((content) => ContentHashIndex.computeHash(content));
+    if (persistedHash && currentHashes.includes(persistedHash)) return [persistedHash];
+    if (!persistedHash) return [currentHashes[0] ?? ContentHashIndex.computeHash("")];
+    const legacyMatches = candidates.filter(
+      (content) => computeLegacyContentHash(content) === persistedHash
+    );
+    return legacyMatches.length > 0
+      ? [...new Set(legacyMatches.map((content) => ContentHashIndex.computeHash(content)))]
+      : [persistedHash];
+  }
+
   private get questionsDir(): string {
     return path.join(this.baseDir, "questions");
   }
@@ -3787,10 +3810,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     let tombstoneBlocked = false;
     let gateRef: string | undefined;
     let statusBeforeBlock: MemoryFrontmatter["status"];
-    // Closure so the post-persist repair can RE-RUN it when a journal move
-    // changed the final entityRef: a verdict is only valid for the ref it was
-    // computed under, so reset and re-evaluate (parked mappings fall BACK to
-    // the legacy claimant; entity-independent tiers re-block in the lookup).
+    // Re-run after journal moves that change the final entityRef.
     const applyTombstoneGate = async (): Promise<void> => {
       if (tombstoneBlocked) {
         if (fm.entityRef === gateRef) return;
@@ -3799,11 +3819,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         delete fm.blockedBy;
         delete fm.tombstoneBlockTier;
       }
-      // Status semantics (thread ObteQ: pending_review candidates included,
-      // terminal statuses respected) live in applyTombstoneResurrectionGate.
       if (category !== "fact" || factHashSourceForTombstone === null) return;
       const statusBefore = fm.status;
-      const match = await this.entityRefRepair.gate(fm, factHashSourceForTombstone, options.structuredAttributes);
+      const match = await this.entityRefRepair.gate(fm, sanitized.text, options.structuredAttributes);
       if (match) {
         gateRef = fm.entityRef;
         statusBeforeBlock = statusBefore;
@@ -3980,34 +3998,28 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     for (const memory of existing) {
       if (memory.frontmatter.category !== "fact") continue;
       if (inferMemoryStatus(memory.frontmatter, memory.path) !== "active") continue;
-      if (this.corpusRegisteredHash(memory) === targetHash) return true;
+      if (this.corpusRegisteredHashes(memory).includes(targetHash)) return true;
     }
     return false;
   }
 
-  private factContentHashForRemoval(memory: MemoryFile): string | null {
-    if (memory.frontmatter.category !== "fact") return null;
-    if (typeof memory.frontmatter.contentHash === "string" && memory.frontmatter.contentHash.length > 0) {
-      return memory.frontmatter.contentHash;
-    }
-    const configuredHashSource = stripCitationMarkersForHashRemoval(memory.content, this.citationTemplate);
-    const hashSource =
-      configuredHashSource !== memory.content
-        ? configuredHashSource
-        : stripDefaultCitationMarkersWithoutRegex(memory.content);
-    return ContentHashIndex.computeHash(sanitizeMemoryContent(hashSource).text);
+  private factContentHashesForRemoval(memory: MemoryFile): string[] {
+    if (memory.frontmatter.category !== "fact") return [];
+    return this.corpusRegisteredHashes(memory);
   }
 
   private async addActiveFactContentHash(memory: MemoryFile): Promise<void> {
     if (memory.frontmatter.category !== "fact") return;
     if (inferMemoryStatus(memory.frontmatter, memory.path) !== "active") return;
-    const hash = this.factContentHashForRemoval(memory);
-    if (!hash) return;
+    const hashes = this.factContentHashesForRemoval(memory);
+    if (hashes.length === 0) return;
 
     await this.ensureFactHashIndexAuthoritative();
     const factHashIndex = await this.getFactHashIndex();
-    factHashIndex.addByHash(hash);
-    this.factOnlyHashes.add(hash);
+    for (const hash of hashes) {
+      factHashIndex.addByHash(hash);
+      this.factOnlyHashes.add(hash);
+    }
     // PR #2016 thread SDzOP: flush through the SAME cross-process locked
     // reconcile the write/batch/rebuild paths use, never the unlocked whole-file
     // save() — an unlocked overwrite drops a concurrent extraction's appended
@@ -4045,16 +4057,19 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private async syncFactHashIndexAfterRewrite(before: MemoryFile, after: MemoryFile): Promise<void> {
     if (before.frontmatter.category !== "fact" && after.frontmatter.category !== "fact") return;
 
-    const beforeHash = this.factContentHashForRemoval(before);
-    const afterHash = this.factContentHashForRemoval(after);
+    const beforeHashes = this.factContentHashesForRemoval(before);
+    const afterHashes = this.factContentHashesForRemoval(after);
     const beforeStatus = inferMemoryStatus(before.frontmatter, before.path);
     const afterStatus = inferMemoryStatus(after.frontmatter, after.path);
-    if (beforeHash === afterHash && beforeStatus === afterStatus) return;
+    const hashesChanged =
+      beforeHashes.length !== afterHashes.length ||
+      beforeHashes.some((hash, index) => hash !== afterHashes[index]);
+    if (!hashesChanged && beforeStatus === afterStatus) return;
 
-    if (beforeStatus === "active" && beforeHash && (beforeHash !== afterHash || afterStatus !== "active")) {
+    if (beforeStatus === "active" && beforeHashes.length > 0 && (hashesChanged || afterStatus !== "active")) {
       await this.removeFactContentHashesForMemories([before]);
     }
-    if (afterStatus === "active" && afterHash && (beforeHash !== afterHash || beforeStatus !== "active")) {
+    if (afterStatus === "active" && afterHashes.length > 0 && (hashesChanged || beforeStatus !== "active")) {
       await this.addActiveFactContentHash(after);
     }
   }
@@ -4067,11 +4082,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         .map((memory) => memory.frontmatter.id)
         .filter((id): id is string => typeof id === "string" && id.length > 0)
     );
-    const removedHashes = new Map<MemoryFile, string>();
+    const removedHashes = new Set<string>();
     for (const memory of memories) {
-      const hash = this.factContentHashForRemoval(memory);
-      if (hash) {
-        removedHashes.set(memory, hash);
+      for (const hash of this.factContentHashesForRemoval(memory)) {
+        removedHashes.add(hash);
       }
     }
     if (removedHashes.size === 0) return;
@@ -4082,13 +4096,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       if (memory.frontmatter.category !== "fact") continue;
       if (removedIds.has(memory.frontmatter.id)) continue;
       if (inferMemoryStatus(memory.frontmatter, memory.path) !== "active") continue;
-      const hash = this.factContentHashForRemoval(memory);
-      if (hash) {
+      for (const hash of this.factContentHashesForRemoval(memory)) {
         remainingActiveHashes.add(hash);
       }
     }
 
-    for (const hash of removedHashes.values()) {
+    for (const hash of removedHashes) {
       if (!remainingActiveHashes.has(hash)) {
         factHashIndex.removeByHash(hash);
         this.factOnlyHashes.delete(hash);
@@ -4117,8 +4130,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    */
   removeFactOnlyHashForMemory(memory: MemoryFile): void {
     if (memory.frontmatter.category !== "fact") return;
-    const hash = this.factContentHashForRemoval(memory);
-    if (hash) this.factOnlyHashes.delete(hash);
+    for (const hash of this.factContentHashesForRemoval(memory)) {
+      this.factOnlyHashes.delete(hash);
+    }
   }
 
   async isFactContentHashAuthoritative(): Promise<boolean> {
