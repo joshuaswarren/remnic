@@ -183,7 +183,8 @@ export class SupportPassportGrantStore {
   async withAuthenticatedGrant<T>(
     grantId: string,
     secret: string,
-    task: (state: SupportPassportGrantState) => Promise<T>
+    task: (state: SupportPassportGrantState) => Promise<T>,
+    beforeReturn?: (state: SupportPassportGrantState) => Promise<void>
   ): Promise<T> {
     return await this.withGrantLock(grantId, async (lock) => {
       const state = await this.authenticate(grantId, secret);
@@ -194,6 +195,10 @@ export class SupportPassportGrantStore {
       if (finalState.stateVersion !== state.stateVersion) {
         throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
       }
+      this.requireActiveState(finalState);
+      await beforeReturn?.(finalState);
+      await this.requireMutationLock(lock);
+      this.requireActiveState(finalState);
       return result;
     });
   }
@@ -221,7 +226,7 @@ export class SupportPassportGrantStore {
     namespace: string;
     principal: string;
     expectedStateVersion?: number;
-  }): Promise<SupportPassportGrantState> {
+  }, beforeCommit?: () => Promise<void>): Promise<SupportPassportGrantState> {
     if (!SAFE_GRANT_ID.test(input.grantId)) throw grantNotFound();
     const namespace = normalizeNamespace(input.namespace);
     return await this.withGrantLock(input.grantId, async (lock) => {
@@ -244,6 +249,7 @@ export class SupportPassportGrantStore {
         revokedAt: this.now().toISOString(),
       });
       await this.requireMutationLock(lock);
+      await beforeCommit?.();
       await this.writeState(revoked);
       return revoked;
     });
@@ -485,5 +491,14 @@ export class SupportPassportGrantStore {
   private async requireMutationLock(lock: HeldFileLockController): Promise<void> {
     if (await lock.refresh()) return;
     throw new SupportPassportError("storage_conflict", "The share link store changed during the request.", 409);
+  }
+
+  private requireActiveState(state: SupportPassportGrantState): void {
+    if (state.revokedAt) {
+      throw new SupportPassportError("grant_gone", "The share link is no longer active.", 410);
+    }
+    if (Date.parse(state.expiresAt) <= this.now().getTime()) {
+      throw new SupportPassportError("grant_expired", "The share link has expired.", 410);
+    }
   }
 }
