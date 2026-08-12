@@ -141,3 +141,42 @@ test("the access surface fails closed while the feature flag is off", async () =
     (error: unknown) => error instanceof SupportPassportError && error.code === "grant_not_found"
   );
 });
+
+test("memory preview hides sources that cannot be drafted", async () => {
+  StorageManager.clearAllStaticCaches();
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-preview-"));
+  try {
+    const storage = new StorageManager(path.join(root, "owner"));
+    await storage.ensureDirectories();
+    const source = await storage.writeMemory("preference", "Tell me before plans change.", { source: "test" });
+    const surface = new SupportPassportAccessSurface({
+      config: parseConfig({ memoryDir: root, supportPassport: { enabled: true } }),
+      resolveOwner: async (principal) => ({ principal, namespace: "owner", storage }),
+      resolveNamespace: async () => storage,
+      modelAdapter: new SupportPassportModelAdapter({ routes: [] }),
+      audit: { record: async () => undefined },
+    });
+
+    for (const lifecycle of [
+      { status: "archived" as const, archivedAt: "2026-08-12T12:00:00.000Z" },
+      { status: "active" as const, archivedAt: undefined, blockedBy: "memory-review" },
+      { status: "active" as const, blockedBy: undefined, supersededBy: "replacement-memory" },
+    ]) {
+      const current = await storage.getMemoryById(source.id);
+      assert.ok(current);
+      assert.equal(
+        await storage.writeMemoryFrontmatterIfUnchanged(current, {
+          status: lifecycle.status,
+          archivedAt: lifecycle.archivedAt,
+          blockedBy: lifecycle.blockedBy,
+          supersededBy: lifecycle.supersededBy,
+        }),
+        true
+      );
+      assert.deepEqual(await surface.previewMemory("owner:test", source.id), { found: false });
+    }
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -16,9 +16,10 @@ import { type SupportPassportModelAdapter, createSupportPassportModelAdapter } f
 import { type SupportPassportModelAuditSink, SupportPassportModelAuditStore } from "./model-audit.js";
 import type { SupportPassportAnswerOutput } from "./model-contracts.js";
 import {
-  computeSupportPassportSourceRevision,
   SupportPassportDraftService,
   SupportPassportQuestionService,
+  computeSupportPassportSourceRevision,
+  isSupportPassportSourceEligible,
 } from "./model-service.js";
 
 export interface SupportPassportAccessSurfaceDependencies {
@@ -97,7 +98,7 @@ export class SupportPassportAccessSurface {
     this.requireEnabled();
     const owner = await this.resolveOwner(this.requirePrincipal(principal));
     const memory = await owner.storage.getMemoryById(memoryId);
-    if (!memory) return { found: false };
+    if (!memory || !isSupportPassportSourceEligible(memory)) return { found: false };
     const content = stripAttributesSuffix(memory.content);
     return {
       found: true,

@@ -35,6 +35,11 @@ interface WindowEntry {
   resetAt: number;
 }
 
+interface WindowReservation {
+  commit(): void;
+  release(): void;
+}
+
 class FixedWindowLimiter {
   private readonly entries = new Map<string, WindowEntry>();
 
@@ -45,19 +50,38 @@ class FixedWindowLimiter {
   ) {}
 
   consume(key: string): boolean {
-    const now = this.now();
-    const current = this.entries.get(key);
-    if (!current || current.resetAt <= now) {
-      if (!current && this.entries.size >= PUBLIC_RATE_LIMIT_MAX_KEYS) {
-        this.prune(now);
-        if (this.entries.size >= PUBLIC_RATE_LIMIT_MAX_KEYS) return false;
-      }
-      this.entries.set(key, { count: 1, resetAt: now + this.windowMs });
-      return true;
-    }
-    if (current.count >= this.limit) return false;
-    current.count += 1;
+    const reservation = this.reserve(key);
+    if (!reservation) return false;
+    reservation.commit();
     return true;
+  }
+
+  reserve(key: string): WindowReservation | undefined {
+    const now = this.now();
+    let entry = this.entries.get(key);
+    if (!entry || entry.resetAt <= now) {
+      if (!entry && this.entries.size >= PUBLIC_RATE_LIMIT_MAX_KEYS) {
+        this.prune(now);
+        if (this.entries.size >= PUBLIC_RATE_LIMIT_MAX_KEYS) return undefined;
+      }
+      entry = { count: 0, resetAt: now + this.windowMs };
+      this.entries.set(key, entry);
+    }
+    if (entry.count >= this.limit) return undefined;
+    entry.count += 1;
+    let active = true;
+    return {
+      commit: () => {
+        active = false;
+      },
+      release: () => {
+        if (!active) return;
+        active = false;
+        if (this.entries.get(key) !== entry) return;
+        entry.count -= 1;
+        if (entry.count === 0) this.entries.delete(key);
+      },
+    };
   }
 
   allows(key: string): boolean {
@@ -149,14 +173,34 @@ async function runPublicOperation(
   return output.result;
 }
 
-function consumeAuthenticatedLimits(
+function reserveAuthenticatedLimits(
   networkLimiter: FixedWindowLimiter,
   grantLimiter: FixedWindowLimiter,
   networkKey: string,
   grantId: string
-): void {
-  if (!networkLimiter.allows(networkKey) || !grantLimiter.allows(grantId)) throw rateLimited();
-  if (!networkLimiter.consume(networkKey) || !grantLimiter.consume(grantId)) throw rateLimited();
+): WindowReservation {
+  const network = networkLimiter.reserve(networkKey);
+  if (!network) throw rateLimited();
+  const grant = grantLimiter.reserve(grantId);
+  if (!grant) {
+    network.release();
+    throw rateLimited();
+  }
+  let active = true;
+  return {
+    commit: () => {
+      if (!active) return;
+      active = false;
+      network.commit();
+      grant.commit();
+    },
+    release: () => {
+      if (!active) return;
+      active = false;
+      grant.release();
+      network.release();
+    },
+  };
 }
 
 async function readGrantUnderAuthenticationReservation(
@@ -168,9 +212,8 @@ async function readGrantUnderAuthenticationReservation(
   grantLimiter: FixedWindowLimiter,
   failureLimiter: FixedWindowLimiter
 ) {
-  if (!networkLimiter.allows(networkKey) || !grantLimiter.allows(grantId) || !failureLimiter.allows(networkKey)) {
-    throw rateLimited();
-  }
+  if (!failureLimiter.allows(networkKey)) throw rateLimited();
+  const limits = reserveAuthenticatedLimits(networkLimiter, grantLimiter, networkKey, grantId);
   let guide: Awaited<ReturnType<EngramAccessService["supportPassportReadGrant"]>>;
   try {
     guide = (await runPublicOperation(service, "support_passport_grant_read", { grantId, secret })) as Awaited<
@@ -179,14 +222,17 @@ async function readGrantUnderAuthenticationReservation(
   } catch (error) {
     if (error instanceof SupportPassportError) {
       if (error.code === "grant_not_found") {
+        limits.release();
         if (!failureLimiter.consume(networkKey)) throw rateLimited();
       } else {
-        consumeAuthenticatedLimits(networkLimiter, grantLimiter, networkKey, grantId);
+        limits.commit();
       }
+    } else {
+      limits.release();
     }
     throw error;
   }
-  consumeAuthenticatedLimits(networkLimiter, grantLimiter, networkKey, grantId);
+  limits.commit();
   return guide;
 }
 

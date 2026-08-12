@@ -67,6 +67,40 @@ test("the standalone support passport entry registers its public operations", as
   }
 });
 
+test("a quota slot is reserved before a successful helper read", async () => {
+  const lastReadStarted = Promise.withResolvers<void>();
+  const releaseLastRead = Promise.withResolvers<void>();
+  let reads = 0;
+  const service = {
+    supportPassportReadGrant: async () => {
+      reads += 1;
+      if (reads === 60) {
+        lastReadStarted.resolve();
+        await releaseLastRead.promise;
+      }
+      return GUIDE;
+    },
+  } as unknown as EngramAccessService;
+  const { server, root } = await startPublicServer(service);
+  const url = `${root}/engram/v1/support-passport/public/grants/grant-one`;
+  const headers = { authorization: `SupportPassport ${SECRET}` };
+  try {
+    for (let index = 0; index < 59; index += 1) {
+      assert.equal((await fetch(url, { headers })).status, 200);
+    }
+    const admitted = fetch(url, { headers });
+    await lastReadStarted.promise;
+    const rejected = await fetch(url, { headers });
+    assert.equal(rejected.status, 429);
+    releaseLastRead.resolve();
+    assert.equal((await admitted).status, 200);
+    assert.equal(reads, 60);
+  } finally {
+    releaseLastRead.resolve();
+    await stopServer(server);
+  }
+});
+
 test("long helper answers release authentication capacity after the secret check", async () => {
   const allAnswersStarted = Promise.withResolvers<void>();
   const releaseAnswers = Promise.withResolvers<void>();

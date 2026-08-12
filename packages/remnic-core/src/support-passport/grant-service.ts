@@ -34,6 +34,12 @@ export interface SupportPassportGrantServiceDependencies {
 
 type SupportPassportGrantOwnerScope = Awaited<ReturnType<SupportPassportGrantServiceDependencies["resolveOwner"]>>;
 
+interface SupportPassportCardSnapshot {
+  version: string;
+  cardsById: ReadonlyMap<string, StoredSupportPassportCard>;
+  activeReplacementPredecessors: ReadonlySet<string>;
+}
+
 function invalidInput(): SupportPassportError {
   return new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
 }
@@ -43,6 +49,7 @@ export class SupportPassportGrantService {
   private readonly resolveOwner: SupportPassportGrantServiceDependencies["resolveOwner"];
   private readonly resolveNamespace: SupportPassportGrantServiceDependencies["resolveNamespace"];
   private readonly now: () => Date;
+  private readonly cardSnapshots = new WeakMap<StorageManager, SupportPassportCardSnapshot>();
 
   constructor(dependencies: SupportPassportGrantServiceDependencies) {
     this.grantStore = dependencies.grantStore;
@@ -166,7 +173,8 @@ export class SupportPassportGrantService {
   private async readGrantAttempt(input: { grantId: string; secret: string }): Promise<SupportPassportPublicGuide> {
     const initialState = await this.grantStore.authenticate(input.grantId, input.secret);
     const storage = await this.resolveNamespace(initialState.namespace);
-    const cards = await this.readGrantCards(storage, initialState);
+    const initialSnapshot = await this.readStoredCardSnapshot(storage);
+    const cards = this.readGrantCards(initialSnapshot, initialState);
     const firstCard = cards[0];
     if (!firstCard) throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
     const updatedAt = cards.reduce((latest, card) => {
@@ -181,7 +189,11 @@ export class SupportPassportGrantService {
             throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
           }
           await requireSupportPassportOwnerLock(ownerLock);
-          const currentCards = await this.readGrantCards(storage, finalState);
+          const currentSnapshot =
+            initialSnapshot.version === this.cardSnapshotVersion(storage)
+              ? initialSnapshot
+              : await this.readStoredCardSnapshot(storage);
+          const currentCards = this.readGrantCards(currentSnapshot, finalState);
           await requireSupportPassportOwnerLock(ownerLock);
           if (JSON.stringify(currentCards) !== JSON.stringify(cards)) {
             throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
@@ -199,37 +211,56 @@ export class SupportPassportGrantService {
     });
   }
 
-  private async readGrantCards(storage: StorageManager, state: SupportPassportGrantState) {
-    const activeReplacementPredecessors = activeSupportPassportReplacementPredecessorIds(
-      await this.readStoredCards(storage)
-    );
-    return await Promise.all(
-      state.cards.map(async (cardRef) => {
-        const memory = await storage.getMemoryById(cardRef.cardId);
-        const stored = memory ? projectSupportPassportCard(memory) : null;
-        if (
-          !stored ||
-          stored.namespace !== state.namespace ||
-          stored.owner !== state.principalHash ||
-          stored.card.status !== "active" ||
-          stored.card.revision !== cardRef.revision ||
-          activeReplacementPredecessors.has(cardRef.cardId)
-        ) {
-          throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
-        }
-        const publicCard = this.publicCard(stored.card);
-        if (!publicCard.success) {
-          throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
-        }
-        return publicCard.data;
-      })
-    );
+  private readGrantCards(snapshot: SupportPassportCardSnapshot, state: SupportPassportGrantState) {
+    return state.cards.map((cardRef) => {
+      const stored = snapshot.cardsById.get(cardRef.cardId);
+      if (
+        !stored ||
+        stored.namespace !== state.namespace ||
+        stored.owner !== state.principalHash ||
+        stored.card.status !== "active" ||
+        stored.card.revision !== cardRef.revision ||
+        snapshot.activeReplacementPredecessors.has(cardRef.cardId)
+      ) {
+        throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
+      }
+      const publicCard = this.publicCard(stored.card);
+      if (!publicCard.success) {
+        throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
+      }
+      return publicCard.data;
+    });
+  }
+
+  private async readStoredCardSnapshot(storage: StorageManager): Promise<SupportPassportCardSnapshot> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const before = this.cardSnapshotVersion(storage);
+      const cached = this.cardSnapshots.get(storage);
+      if (cached?.version === before) return cached;
+      const cards = (await storage.readAllMemories())
+        .map(projectSupportPassportCard)
+        .filter((card): card is StoredSupportPassportCard => card !== null);
+      const after = this.cardSnapshotVersion(storage);
+      if (before !== after) continue;
+      const snapshot = {
+        version: after,
+        cardsById: new Map(cards.map((card) => [card.card.cardId, card])),
+        activeReplacementPredecessors: activeSupportPassportReplacementPredecessorIds(cards),
+      };
+      this.cardSnapshots.set(storage, snapshot);
+      return snapshot;
+    }
+    throw new SupportPassportError("storage_conflict", "The support card list changed during review.", 409);
   }
 
   private async readStoredCards(storage: StorageManager): Promise<StoredSupportPassportCard[]> {
     return (await storage.readAllMemories())
       .map(projectSupportPassportCard)
       .filter((card): card is StoredSupportPassportCard => card !== null);
+  }
+
+  private cardSnapshotVersion(storage: StorageManager): string {
+    return `${storage.getCorpusScanVersion()}:${storage.hotCacheKeyId()}`;
   }
 
   private publicCard(card: {
