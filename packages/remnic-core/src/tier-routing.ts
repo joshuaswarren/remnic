@@ -1,11 +1,7 @@
+import { type LifecycleSignals, clamp01, computeLifecycleValueInputs, daysSince } from "./lifecycle.js";
+import { SUPPORT_PASSPORT_ATTRIBUTE_KEYS, SUPPORT_PASSPORT_CARD_TAG } from "./support-passport/card-projection.js";
+import { SupportPassportCardCategorySchema, SupportPassportNamespaceSchema } from "./support-passport/contracts.js";
 import type { MemoryFile } from "./types.js";
-import { SUPPORT_PASSPORT_CARD_TAG } from "./support-passport/card-projection.js";
-import {
-  clamp01,
-  computeLifecycleValueInputs,
-  daysSince,
-  type LifecycleSignals,
-} from "./lifecycle.js";
 
 export type MemoryTier = "hot" | "cold";
 
@@ -25,28 +21,48 @@ export interface TierTransitionDecision {
 }
 
 function requiresHotTier(memory: Pick<MemoryFile, "frontmatter">): boolean {
-  const { status, tags } = memory.frontmatter;
-  return (status === "active" || status === "pending_review") && tags?.includes(SUPPORT_PASSPORT_CARD_TAG) === true;
+  const { category, status, structuredAttributes, tags } = memory.frontmatter;
+  if (
+    category !== "preference" ||
+    (status !== "active" && status !== "pending_review") ||
+    tags?.includes(SUPPORT_PASSPORT_CARD_TAG) !== true ||
+    !structuredAttributes
+  ) {
+    return false;
+  }
+  const namespace = structuredAttributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.namespace];
+  const owner = structuredAttributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.owner];
+  const title = structuredAttributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.title];
+  const cardCategory = structuredAttributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.category];
+  return (
+    SupportPassportNamespaceSchema.safeParse(namespace).success &&
+    typeof owner === "string" &&
+    /^[a-f0-9]{64}$/.test(owner) &&
+    typeof title === "string" &&
+    title.length > 0 &&
+    SupportPassportCardCategorySchema.safeParse(cardCategory).success
+  );
 }
 
 export function computeTierValueScore(
   memory: Pick<MemoryFile, "frontmatter">,
   now: Date,
-  signals?: LifecycleSignals,
+  signals?: LifecycleSignals
 ): number {
   const fm = memory.frontmatter;
   const inputs = computeLifecycleValueInputs(memory, now, signals);
   const correctionBoost = fm.category === "correction" ? 0.08 : 0;
   const confirmedBoost = fm.verificationState === "user_confirmed" ? 0.05 : 0;
 
-  const score = (inputs.confidence * 0.24)
-    + (inputs.access * 0.26)
-    + (inputs.recency * 0.2)
-    + (inputs.importance * 0.2)
-    + (inputs.feedback * 0.1)
-    + correctionBoost
-    + confirmedBoost
-    - (inputs.disputedPenalty * 0.5);
+  const score =
+    inputs.confidence * 0.24 +
+    inputs.access * 0.26 +
+    inputs.recency * 0.2 +
+    inputs.importance * 0.2 +
+    inputs.feedback * 0.1 +
+    correctionBoost +
+    confirmedBoost -
+    inputs.disputedPenalty * 0.5;
 
   return clamp01(score);
 }
@@ -56,7 +72,7 @@ export function decideTierTransition(
   currentTier: MemoryTier,
   policy: TierRoutingPolicy,
   now: Date,
-  signals?: LifecycleSignals,
+  signals?: LifecycleSignals
 ): TierTransitionDecision {
   const valueScore = computeTierValueScore(memory, now, signals);
   if (!policy.enabled) {
