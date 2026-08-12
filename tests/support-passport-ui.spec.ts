@@ -223,6 +223,24 @@ test("a fast owner clock keeps a server-authorized share link visible", async ({
   expect(createInput?.expiresAt).toBe(new Date(Math.floor(customExpiry / 60_000) * 60_000).toISOString());
 });
 
+test("a new replay helper locks after a shared card is withdrawn", async ({ page, context }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers replay share invalidation.");
+  await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
+  await page.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
+  await page.getByRole("button", { name: "Draft my support cards" }).click();
+  await page.getByRole("button", { name: "Approve" }).first().click();
+  await page.locator('input[name="shareCard"]').first().check();
+  await page.getByRole("button", { name: "Create share link" }).click();
+  const shareUrl = await page.getByLabel("Copy this link once").inputValue();
+  await page.getByRole("button", { name: "Withdraw" }).click();
+
+  const helper = await context.newPage();
+  await helper.goto(shareUrl);
+
+  await expect(helper.getByRole("heading", { name: "This share link is no longer current." })).toBeVisible();
+  await expect(helper.getByRole("button", { name: "Try again" })).toBeHidden();
+});
+
 test("the owner note preview preserves API text and binds consent to its revision", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers note preview content.");
 
