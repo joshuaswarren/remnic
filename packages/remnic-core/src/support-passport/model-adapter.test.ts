@@ -549,8 +549,9 @@ test("direct compatible APIs keep their configured fallback transport", () => {
   });
 });
 
-test("direct compatible APIs reject base URLs with queries or fragments", () => {
+test("direct compatible APIs reject base URLs with credentials, queries, or fragments", () => {
   for (const openaiBaseUrl of [
+    "https://user:password@models.example.test/v1",
     "https://models.example.test/v1?token=secret",
     "https://models.example.test/v1#endpoint",
   ]) {

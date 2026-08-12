@@ -228,7 +228,14 @@ export function buildSupportPassportDirectGatewayConfig(
   } catch {
     return undefined;
   }
-  if (parsedBaseUrl.search.length > 0 || parsedBaseUrl.hash.length > 0) return undefined;
+  if (
+    parsedBaseUrl.username.length > 0 ||
+    parsedBaseUrl.password.length > 0 ||
+    parsedBaseUrl.search.length > 0 ||
+    parsedBaseUrl.hash.length > 0
+  ) {
+    return undefined;
+  }
   let baseUrlEnd = baseUrl.length;
   while (baseUrlEnd > 0 && baseUrl.charCodeAt(baseUrlEnd - 1) === 47) baseUrlEnd -= 1;
   const normalizedBaseUrl = baseUrl.slice(0, baseUrlEnd);
