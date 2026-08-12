@@ -369,6 +369,17 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
         return left.index - right.index;
       });
 
+    // Embed FIRST, before a single `assembler.add`. Embedding is the only
+    // await that can throw before persistence, and the assembler has no undo:
+    // a throw after it had consumed segments would leave it advanced, so the
+    // retry would feed earlier timestamps into a later conversation and merge
+    // spans the first attempt had split (issue #2145).
+    if (deps.embed) {
+      for (const { entry, item } of stream) {
+        item.seg.embedding = await deps.embed(entry.event, item.raw);
+      }
+    }
+
     // Assign conversations over the interleaved stream, then cut it into runs
     // that each belong to ONE chunk and ONE conversation. The runs are already
     // in chronological order, so a conversation is only finalized once the
@@ -403,14 +414,6 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
         }
         if (openConversationId !== null && openConversationId !== run.id) {
           finalizeConv(openConversationId);
-        }
-        // Embed now — this is where the audio exists — but do NOT cluster.
-        // Clustering runs at finalize over the segments that SURVIVE
-        // cross-channel dedup (issue #2145), so a mic loopback duplicate that
-        // is later pruned can no longer inflate a centroid or invent a
-        // phantom speaker. The embedding rides along on the segment row.
-        if (deps.embed) {
-          item.seg.embedding = await deps.embed(event, item.raw);
         }
         deps.spool.appendAssembledSegments({
           idempotencyKey: key,
@@ -463,6 +466,10 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
    * `flushAll` ignores the watermark, for `finalize()`.
    */
   async function releaseReady(flushAll: boolean): Promise<void> {
+    // A failed FINAL flush must reach the caller: `stop()` discards the buffer
+    // afterwards, and reporting success would silently drop the retained
+    // chunks (issue #2145). A mid-run failure stays reported-and-retried.
+    let finalFailure: unknown;
     for (;;) {
       const threshold = flushAll ? Number.POSITIVE_INFINITY : watermarkSourceMs - reorderWindowMs;
       const batch: BufferedChunk[] = [];
@@ -485,6 +492,7 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
         await applyBatch(batch);
       } catch (error) {
         report(error, batch[0].event);
+        if (flushAll) finalFailure ??= error;
         // A throw mid-batch leaves the chunks AFTER the failure point applied
         // to nothing: they were already spliced out of the buffer, and the
         // native helper emits each event once. Put every chunk this batch did
@@ -494,6 +502,7 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
           buffer.push(entry);
           bufferedIds.add(entry.chunkId);
         }
+        if (finalFailure !== undefined) throw finalFailure;
         return;
       }
     }
@@ -510,19 +519,35 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
   async function finalize(): Promise<number> {
     // Flush the reorder buffer ON the serialized chain, so a chunk still
     // arriving cannot interleave with the flush.
-    tail = tail.then(() => releaseReady(true));
-    await drain();
+    // `report` runs an operator-supplied callback that may itself throw, so the
+    // chain is recovered explicitly: a rejected `tail` would make every later
+    // drain/finalize reject with the same stale error (AGENTS.md #28).
+    const flush = tail.then(() => releaseReady(true));
+    tail = flush.catch(() => undefined);
+    await flush;
     deps.assembler.finalize();
     // Dedup then cluster EVERY still-capturing conversation before the bulk
     // flip to final — including one left by a crashed prior run that this
     // process never touched (so it has no in-memory openConversationId) — so
     // the served (final-only) output never contains a loopback duplicate and
     // every surviving segment carries its speaker.
+    let sweepFailure: unknown;
+    let closed = 0;
     for (const id of deps.spool.capturingConversationIds()) {
-      dedupeConversation(id);
-      diarizeConversation(id);
+      try {
+        dedupeConversation(id);
+        diarizeConversation(id);
+        // Flipped per conversation, not in bulk: a conversation whose
+        // diarization failed must STAY capturing so a later finalize retries
+        // it, while the ones that succeeded still reach the final-only read
+        // path instead of being stranded behind it.
+        if (deps.spool.finalizeConversation(id)) closed++;
+      } catch (error) {
+        sweepFailure ??= error;
+      }
     }
-    return deps.spool.finalizeOpenConversations();
+    if (sweepFailure !== undefined) throw sweepFailure;
+    return closed + deps.spool.finalizeOpenConversations();
   }
 
   return { enqueue, drain, finalize };

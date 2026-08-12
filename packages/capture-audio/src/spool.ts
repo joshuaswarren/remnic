@@ -275,6 +275,25 @@ export class Spool {
         // filesystem without POSIX perms (e.g. some Windows mounts)
       }
     }
+    // Refuse a spool written by a NEWER binary: migrating it here, and then
+    // stamping our lower version over its higher one, would leave that binary
+    // reading a schema it no longer recognizes (issue #2145).
+    const storedVersion = this.#db
+      .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
+      .get() as { value?: string } | undefined;
+    if (storedVersion?.value !== undefined) {
+      const parsed = Number(storedVersion.value);
+      if (!Number.isInteger(parsed) || parsed < 1) {
+        throw new CaptureConfigError(
+          `spool schema_version is malformed: ${JSON.stringify(storedVersion.value)}`,
+        );
+      }
+      if (parsed > SPOOL_SCHEMA_VERSION) {
+        throw new CaptureConfigError(
+          `spool schema_version ${parsed} is newer than this build supports (${SPOOL_SCHEMA_VERSION})`,
+        );
+      }
+    }
     // Additive migration for a spool created before segment embeddings existed
     // (issue #2145). CREATE TABLE IF NOT EXISTS leaves an existing table alone,
     // so the column is added explicitly; ALTER is skipped when it is present.
