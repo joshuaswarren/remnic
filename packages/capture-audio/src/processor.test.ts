@@ -894,7 +894,6 @@ test("a crash between cluster and assignment cannot double-count embeddings", as
     const failing = createChunkProcessor(
       deps(spool, {
         diarizer: clusterer,
-        restoreDiarizer: (clusters) => clusterer.restore(clusters),
         embed: () => voice,
         transcribe: async () => [{ text: "one utterance", startUtc: t(1), endUtc: t(2) }],
       }),
@@ -921,7 +920,6 @@ test("a crash between cluster and assignment cannot double-count embeddings", as
     const recovered = createChunkProcessor(
       deps(spool, {
         diarizer: clusterer,
-        restoreDiarizer: (clusters) => clusterer.restore(clusters),
         embed: () => voice,
       }),
     );

@@ -20,7 +20,7 @@ import { createHash } from "node:crypto";
 import type { AssemblySegment, ConversationAssembler } from "./assembly.js";
 import { dedupeCrossChannel } from "./dedup.js";
 import { CaptureInputError } from "./errors.js";
-import type { Embedding, SpeakerCluster, SpeakerClusterer } from "./diarization.js";
+import type { Embedding, SpeakerClusterer } from "./diarization.js";
 import type { ChunkEvent } from "./native.js";
 import type { Spool } from "./spool.js";
 import type { TranscribedSegment } from "./stt.js";
@@ -55,12 +55,6 @@ export interface ChunkProcessorDeps {
   embed?: (event: ChunkEvent, segment: TranscribedSegment) => Embedding | Promise<Embedding>;
   /** Speaker clusterer (seeded from the spool); its clusters are persisted on finalize. */
   diarizer?: SpeakerClusterer;
-  /**
-   * Roll the clusterer back to a snapshot after a failed diarization commit
-   * (issue #2145). Supplied by the owner of the clusterer, which is the only
-   * place that may replace its internal state.
-   */
-  restoreDiarizer?: (clusters: readonly SpeakerCluster[]) => void;
   /** Cross-channel dedup window in ms; defaults to the dedup module's tolerance. */
   dedupWindowMs?: number;
   /**
@@ -220,7 +214,7 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     } catch (err) {
       // Restore the clusterer to its pre-assign state so the next finalize
       // starts from the same place SQLite did.
-      deps.restoreDiarizer?.(before);
+      diarizer.restore(before);
       throw err;
     }
   };
@@ -491,6 +485,16 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
         await applyBatch(batch);
       } catch (error) {
         report(error, batch[0].event);
+        // A throw mid-batch leaves the chunks AFTER the failure point applied
+        // to nothing: they were already spliced out of the buffer, and the
+        // native helper emits each event once. Put every chunk this batch did
+        // not finish back so the next release retries it (issue #2145).
+        for (const entry of batch) {
+          if (processedThisRun.has(entry.chunkId) || bufferedIds.has(entry.chunkId)) continue;
+          buffer.push(entry);
+          bufferedIds.add(entry.chunkId);
+        }
+        return;
       }
     }
   }

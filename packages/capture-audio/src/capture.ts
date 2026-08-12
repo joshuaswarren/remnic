@@ -135,7 +135,7 @@ export function createLiveCapture(options: LiveCaptureOptions): LiveCapture {
     reorderWindowMs: config.reorderWindowSeconds * 1000,
     ...(options.detectSpeech ? { detectSpeech: options.detectSpeech } : {}),
     ...(options.embed ? { embed: options.embed } : {}),
-    ...(diarizer ? { diarizer, restoreDiarizer: (clusters) => diarizer.restore(clusters) } : {}),
+    ...(diarizer ? { diarizer } : {}),
     ...(options.onError ? { onError: (error: Error) => options.onError?.(error) } : {}),
   });
 
