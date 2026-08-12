@@ -1,6 +1,18 @@
 import { lstat, mkdir, open, rm, rmdir } from "node:fs/promises";
 import path from "node:path";
 
+const DEFAULT_HTTP_TIMEOUT_MS = 45_000;
+const DEFAULT_MODEL_ROUTE_TIMEOUT_MS = 30_000;
+const MODEL_HTTP_MARGIN_MS = 15_000;
+
+export function modelRequestTimeoutMs(routePlan, localLlmTimeoutMs) {
+  const routeBudgetMs = routePlan.reduce(
+    (total, route) => total + (route === "local" ? localLlmTimeoutMs : DEFAULT_MODEL_ROUTE_TIMEOUT_MS),
+    0
+  );
+  return Math.max(DEFAULT_HTTP_TIMEOUT_MS, routeBudgetMs + MODEL_HTTP_MARGIN_MS);
+}
+
 function listCreatedDirectories(outputDir, firstCreatedDirectory) {
   if (!firstCreatedDirectory) return [];
   const directories = [];

@@ -6,9 +6,21 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
-import { readCleanCommitSha, runCleanupSteps, runWithReservedOutput, waitForResult } from "./live-demo-runtime.mjs";
+import {
+  modelRequestTimeoutMs,
+  readCleanCommitSha,
+  runCleanupSteps,
+  runWithReservedOutput,
+  waitForResult,
+} from "./live-demo-runtime.mjs";
 
 const execFileAsync = promisify(execFile);
+
+test("model HTTP timeouts cover every configured route budget", () => {
+  assert.equal(modelRequestTimeoutMs(["gateway"], 180_000), 45_000);
+  assert.equal(modelRequestTimeoutMs(["local"], 600_000), 615_000);
+  assert.equal(modelRequestTimeoutMs(["local", "direct", "gateway"], 600_000), 675_000);
+});
 
 test("runWithReservedOutput reserves and retains a new receipt", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-live-demo-output-"));

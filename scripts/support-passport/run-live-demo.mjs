@@ -12,10 +12,17 @@ import {
   SupportPassportModelAuditRecordSchema,
   SupportPassportPublicGuideSchema,
   expandTildePath,
+  resolveSupportPassportModelRoutePlan,
 } from "@remnic/core";
 import { loadConfigFile, startServer } from "@remnic/server";
 import { z } from "zod";
-import { readCleanCommitSha, runCleanupSteps, runWithReservedOutput, waitForResult } from "./live-demo-runtime.mjs";
+import {
+  modelRequestTimeoutMs,
+  readCleanCommitSha,
+  runCleanupSteps,
+  runWithReservedOutput,
+  waitForResult,
+} from "./live-demo-runtime.mjs";
 import {
   ExpectedPublicCardsFixtureSchema,
   SourceMemoriesFixtureSchema,
@@ -154,10 +161,10 @@ function resolveInputConfig(options) {
   }
 }
 
-async function requestJson(url, init, expectedStatus, label) {
+async function requestJson(url, init, expectedStatus, label, timeoutMs = 45_000) {
   let response;
   try {
-    response = await fetch(url, { ...init, signal: AbortSignal.timeout(45_000) });
+    response = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
   } catch {
     throw new DemoFailure(`${label} ended before an HTTP response.`);
   }
@@ -338,6 +345,10 @@ async function runReserved(options, reservation) {
     server = await startServer({ configPath, host: "127.0.0.1", port, authToken });
     const baseUrl = `http://127.0.0.1:${server.port}`;
     const headers = ownerHeaders(authToken);
+    const modelTimeoutMs = modelRequestTimeoutMs(
+      resolveSupportPassportModelRoutePlan(server.config),
+      server.config.localLlmTimeoutMs
+    );
     await waitForReady(baseUrl, authToken);
 
     console.log("[1/9] Started a fresh loopback Remnic server.");
@@ -385,7 +396,8 @@ async function runReserved(options, reservation) {
         body: JSON.stringify({ sourceMemoryIds, sourceMemoryRevisions, consent: true }),
       },
       200,
-      "Model draft"
+      "Model draft",
+      modelTimeoutMs
     );
     const drafted = parseBody(DraftResponseSchema, draftedRequest, "Model draft");
     if (drafted.cards.some((card) => card.status !== "pending_review")) {
@@ -469,7 +481,8 @@ async function runReserved(options, reservation) {
         body: JSON.stringify({ question: expectedPublicCards.question }),
       },
       200,
-      "Helper question"
+      "Helper question",
+      modelTimeoutMs
     );
     assertPrivateHelperResponse(helperAskRequest.response, "Helper question");
     const answer = parseBody(SupportPassportAnswerOutputSchema, helperAskRequest, "Helper question");
