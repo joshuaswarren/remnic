@@ -31,8 +31,7 @@ const DraftServiceInputSchema = z
           .strict()
       )
       .min(1)
-      .max(20)
-      .optional(),
+      .max(20),
     consent: z.literal(true),
   })
   .strict()
@@ -44,12 +43,11 @@ const DraftServiceInputSchema = z
         path: ["sourceMemoryIds"],
       });
     }
-    const revisionIds = input.sourceMemoryRevisions?.map((source) => source.memoryId);
+    const revisionIds = input.sourceMemoryRevisions.map((source) => source.memoryId);
     if (
-      revisionIds &&
-      (new Set(revisionIds).size !== revisionIds.length ||
+      new Set(revisionIds).size !== revisionIds.length ||
         revisionIds.length !== input.sourceMemoryIds.length ||
-        input.sourceMemoryIds.some((memoryId) => !revisionIds.includes(memoryId)))
+        input.sourceMemoryIds.some((memoryId) => !revisionIds.includes(memoryId))
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -150,7 +148,7 @@ export class SupportPassportDraftService {
   async draftCards(input: {
     principal: string;
     sourceMemoryIds: string[];
-    sourceMemoryRevisions?: Array<{ memoryId: string; revision: string }>;
+    sourceMemoryRevisions: Array<{ memoryId: string; revision: string }>;
     consent: boolean;
     signal?: AbortSignal;
   }): Promise<SupportPassportCard[]> {
@@ -165,16 +163,16 @@ export class SupportPassportDraftService {
     });
     if (!parsed.success) throw new SupportPassportError("invalid_input", "The drafting request is invalid.", 400);
     const owner = await this.resolveOwner(parsed.data.principal);
-    const revisions = parsed.data.sourceMemoryRevisions
-      ? new Map(parsed.data.sourceMemoryRevisions.map((source) => [source.memoryId, source.revision] as const))
-      : undefined;
+    const revisions = new Map(
+      parsed.data.sourceMemoryRevisions.map((source) => [source.memoryId, source.revision] as const)
+    );
     const memories: Array<{ memoryId: string; content: string }> = [];
     for (const memoryId of parsed.data.sourceMemoryIds) {
       const memory = await owner.storage.getMemoryById(memoryId);
       if (!memory || !isEligibleSource(memory)) {
         throw new SupportPassportError("invalid_input", "A selected memory is not available.", 400);
       }
-      if (revisions && computeSupportPassportSourceRevision(memory.content) !== revisions.get(memoryId)) {
+      if (computeSupportPassportSourceRevision(memory.content) !== revisions.get(memoryId)) {
         throw new SupportPassportError("revision_conflict", "A selected memory changed after it was reviewed.", 409);
       }
       memories.push({ memoryId, content: stripAttributesSuffix(memory.content) });

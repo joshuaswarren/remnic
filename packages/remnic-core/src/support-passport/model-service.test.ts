@@ -284,6 +284,21 @@ test("drafting rejects missing sources and absent consent before the model runs"
     });
 
     await assert.rejects(
+      (
+        service.draftCards as unknown as (input: {
+          principal: string;
+          sourceMemoryIds: string[];
+          consent: boolean;
+        }) => Promise<unknown>
+      )({
+        principal: "owner:alice",
+        sourceMemoryIds: ["missing-memory"],
+        consent: true,
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "invalid_input"
+    );
+
+    await assert.rejects(
       service.draftCards({
         principal: "owner:alice",
         sourceMemoryIds: ["missing-memory"],
