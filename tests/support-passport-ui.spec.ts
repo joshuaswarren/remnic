@@ -634,7 +634,96 @@ test("a stalled manual draft aborts without leaving a retryable duplicate", asyn
   ).toBe(1);
 });
 
-test("a stalled share creation detects the stopped link without exposing a secret", async ({ page }, testInfo) => {
+test("a stalled model draft shows uncertain state without claiming another draft", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers model draft cancellation.");
+  const now = new Date("2026-08-11T12:00:00.000Z");
+  const unrelatedDraft = {
+    cardId: "unrelated-draft",
+    title: "A separate draft",
+    statement: "This draft came from another request.",
+    category: "other",
+    status: "pending_review",
+    updatedAt: now.toISOString(),
+    reviewBy: new Date(now.getTime() + 24 * 60 * 60_000).toISOString(),
+    revision: "c".repeat(64),
+  };
+  await page.clock.install({ time: now });
+  await page.addInitScript(() => {
+    const realFetch = window.fetch.bind(window);
+    Object.assign(window, { __ownerModelAbortObserved: false, __ownerModelCalls: 0 });
+    window.fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/engram/v1/support-passport/drafts/generate") && init?.method === "POST") {
+        Object.assign(window, {
+          __ownerModelCalls:
+            ((window as typeof window & { __ownerModelCalls?: number }).__ownerModelCalls ?? 0) + 1,
+        });
+        return await new Promise((_resolve, reject) => {
+          init.signal?.addEventListener(
+            "abort",
+            () => {
+              Object.assign(window, { __ownerModelAbortObserved: true });
+              reject(new DOMException("The request was aborted.", "AbortError"));
+            },
+            { once: true }
+          );
+        });
+      }
+      return await realFetch(input, init);
+    };
+  });
+  let cardReads = 0;
+  await page.route("**/engram/v1/support-passport/cards", async (route) => {
+    cardReads += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ cards: cardReads === 1 ? [] : [unrelatedDraft] }),
+    });
+  });
+  await page.route("**/engram/v1/support-passport/grants", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grants: [] }) });
+  });
+  await page.route("**/engram/v1/support-passport/memories/note-one", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        found: true,
+        memory: { id: "note-one", content: "Tell me before plans change.", revision: "b".repeat(64) },
+      }),
+    });
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await page.getByLabel("Bearer token").fill("owner-token");
+  await page.getByRole("button", { name: "Open my guide" }).click();
+  await page.getByLabel("Memory ID").fill("note-one");
+  await page.getByRole("button", { name: "Add selected note" }).click();
+  await page.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
+  await page.getByRole("button", { name: "Draft my support cards" }).click();
+  await expect(page.getByRole("button", { name: "Drafting cards…" })).toBeDisabled();
+  await page.clock.fastForward(15 * 60_000);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as typeof window & { __ownerModelAbortObserved?: boolean }).__ownerModelAbortObserved
+      )
+    )
+    .toBe(true);
+
+  await expect(
+    page.getByText("Drafting timed out. Review the current guide before deciding whether to draft again.")
+  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: unrelatedDraft.title })).toBeVisible();
+  await expect(page.locator("#toast")).not.toHaveText("Drafts ready. Review each card before approval.");
+  await expect(page.getByLabel("Send these selected notes to my configured model to draft my cards.")).not.toBeChecked();
+  expect(
+    await page.evaluate(() => (window as typeof window & { __ownerModelCalls?: number }).__ownerModelCalls)
+  ).toBe(1);
+});
+
+test("a stalled share creation shows uncertain state without revoking a grant", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers share write cancellation.");
   const now = new Date("2026-08-11T12:00:00.000Z");
   const expiresAt = new Date(now.getTime() + 2 * 60 * 60_000).toISOString();
@@ -648,19 +737,18 @@ test("a stalled share creation detects the stopped link without exposing a secre
     reviewBy: new Date(now.getTime() + 24 * 60 * 60_000).toISOString(),
     revision: "a".repeat(64),
   };
-  const revokedGrant = {
+  const activeGrant = {
     grantId: "3b998a98-d48d-4f5c-887c-617af9228847",
-    stateVersion: 2,
+    stateVersion: 1,
     cards: [{ cardId: card.cardId, revision: card.revision }],
     createdAt: now.toISOString(),
     expiresAt,
-    revokedAt: new Date(now.getTime() + 60_000).toISOString(),
-    status: "revoked",
+    status: "active",
   };
   await page.clock.install({ time: now });
   await page.addInitScript(() => {
     const realFetch = window.fetch.bind(window);
-    Object.assign(window, { __ownerShareAbortObserved: false, __ownerShareCalls: 0 });
+    Object.assign(window, { __ownerShareAbortObserved: false, __ownerShareCalls: 0, __ownerRevokeCalls: 0 });
     window.fetch = async (input, init) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url.endsWith("/engram/v1/support-passport/grants") && init?.method === "POST") {
@@ -679,6 +767,12 @@ test("a stalled share creation detects the stopped link without exposing a secre
           );
         });
       }
+      if (url.endsWith("/revoke") && init?.method === "POST") {
+        Object.assign(window, {
+          __ownerRevokeCalls:
+            ((window as typeof window & { __ownerRevokeCalls?: number }).__ownerRevokeCalls ?? 0) + 1,
+        });
+      }
       return await realFetch(input, init);
     };
   });
@@ -691,7 +785,7 @@ test("a stalled share creation detects the stopped link without exposing a secre
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ grants: grantReads === 1 ? [] : [revokedGrant] }),
+      body: JSON.stringify({ grants: grantReads === 1 ? [] : [activeGrant] }),
     });
   });
 
@@ -710,13 +804,22 @@ test("a stalled share creation detects the stopped link without exposing a secre
     )
     .toBe(true);
 
-  await expect(page.getByText("The request stopped before any active link remained. Create a new link.")).toBeVisible();
+  await expect(
+    page.getByText(
+      "The server did not confirm whether it created a link. Review the live share list and stop any link you do not recognize before creating another."
+    )
+  ).toBeVisible();
+  await expect(page.getByText("Live share", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Stop sharing" })).toBeVisible();
   await expect(page.getByText("Share link ready")).toBeHidden();
   await expect(page.getByLabel("Copy this link once")).toHaveValue("");
   await expect(page.getByRole("button", { name: "Create share link" })).toBeEnabled();
   expect(
     await page.evaluate(() => (window as typeof window & { __ownerShareCalls?: number }).__ownerShareCalls)
   ).toBe(1);
+  expect(
+    await page.evaluate(() => (window as typeof window & { __ownerRevokeCalls?: number }).__ownerRevokeCalls)
+  ).toBe(0);
 });
 
 test("the owner view bounds rendered share history", async ({ page }, testInfo) => {

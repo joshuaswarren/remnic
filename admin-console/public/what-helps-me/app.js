@@ -20,7 +20,7 @@
   const HELPER_QUESTION_TIMEOUT_MS = 60_000;
   const OWNER_READ_TIMEOUT_MS = 30_000;
   const OWNER_WRITE_TIMEOUT_MS = 60_000;
-  const OWNER_MODEL_WRITE_TIMEOUT_MS = 10 * 60_000;
+  const OWNER_MODEL_WRITE_TIMEOUT_MS = 15 * 60_000;
   const OWNER_RECONCILIATION_ATTEMPTS = 4;
   const OWNER_RECONCILIATION_DELAY_MS = 250;
   const MAX_VISIBLE_GRANTS = 100;
@@ -183,7 +183,7 @@
         method: "POST",
         body: input,
         timeoutMs: OWNER_MODEL_WRITE_TIMEOUT_MS,
-        timeoutMessage: "Drafting took too long. Remnic stopped the model request.",
+        timeoutMessage: "Drafting timed out.",
       }),
     replaceCard: (cardId, input) =>
       fetchJson(`/engram/v1/support-passport/cards/${encodeURIComponent(cardId)}`, {
@@ -436,12 +436,6 @@
     );
   }
 
-  function sameGrantSelection(grant, cardRevisions, expiresAt) {
-    if (grant.expiresAt !== expiresAt || grant.cards.length !== cardRevisions.length) return false;
-    const expected = new Map(cardRevisions.map((card) => [card.cardId, card.revision]));
-    return grant.cards.every((card) => expected.get(card.cardId) === card.revision);
-  }
-
   function renderGrants() {
     const list = byId("grantList");
     clear(list);
@@ -646,8 +640,6 @@
       byId("consentInput").focus();
       return;
     }
-    const priorCardIds = new Set(state.cards.map((card) => card.cardId));
-    let ownerStateFresh = false;
     try {
       await withBusy(byId("generateButton"), "Drafting cards…", () =>
         api.generateDrafts({
@@ -665,26 +657,25 @@
         return;
       }
       byId("consentInput").checked = false;
-      const reconciled = await reconcileOwnerState(() =>
-        state.cards.find((card) => !priorCardIds.has(card.cardId))
+      let refreshed = false;
+      try {
+        await loadOwnerState();
+        refreshed = true;
+      } catch {}
+      setError(
+        "generateError",
+        refreshed
+          ? "Drafting timed out. Review the current guide before deciding whether to draft again."
+          : "Drafting timed out. Refresh the guide before deciding whether to draft again."
       );
-      if (!reconciled.matched) {
-        setError(
-          "generateError",
-          reconciled.refreshed
-            ? "Drafting stopped before any new draft saved. Review the guide before drafting again."
-            : "Drafting stopped without a confirmed result. Refresh the guide before drafting again."
-        );
-        return;
-      }
-      ownerStateFresh = true;
+      return;
     }
     byId("consentInput").checked = false;
     const message = "Drafts ready. Review each card before approval.";
     toast(message);
     announce(message);
     try {
-      if (!ownerStateFresh) await loadOwnerState();
+      await loadOwnerState();
       byId("reviewCards").scrollIntoView({ behavior: SCROLL_BEHAVIOR, block: "start" });
     } catch {
       const warning = `${message} The card list did not refresh. Refresh the guide before another change.`;
@@ -726,7 +717,6 @@
       return;
     }
     const button = event.currentTarget.querySelector('button[type="submit"]');
-    const priorGrantIds = new Set(state.grants.map((grant) => grant.grantId));
     let created;
     try {
       created = model.parseCreatedGrant(
@@ -737,45 +727,16 @@
         setError("shareError", errorMessage(error, "The share link was not created."));
         return;
       }
-      const reconciled = await reconcileOwnerState(() =>
-        state.grants.find(
-          (grant) =>
-            !priorGrantIds.has(grant.grantId) && sameGrantSelection(grant, cardRevisions, expiresAt)
-        )
-      );
-      if (!reconciled.matched) {
-        setError(
-          "shareError",
-          reconciled.refreshed
-            ? "The request stopped before any active link remained. Create a new link."
-            : "The server did not confirm the new link. Refresh the guide before creating another link."
-        );
-        return;
-      }
-      const uncertainGrant = reconciled.value;
-      if (uncertainGrant.status !== "active") {
-        setError("shareError", "The request stopped before any active link remained. Create a new link.");
-        return;
-      }
+      let refreshed = false;
       try {
-        await api.revokeGrant(uncertainGrant.grantId, { expectedVersion: uncertainGrant.stateVersion });
-      } catch {
-        const stopped = await reconcileOwnerState(() => {
-          const current = state.grants.find((grant) => grant.grantId === uncertainGrant.grantId);
-          return !current || current.status === "revoked" ? uncertainGrant : null;
-        });
-        if (!stopped.matched) {
-          setError(
-            "shareError",
-            "The server may have created a link. Stop the matching live share below before creating another."
-          );
-          return;
-        }
-      }
-      replayChannel?.postMessage({ type: "grant-revoked", grantId: uncertainGrant.grantId });
+        await loadOwnerState();
+        refreshed = true;
+      } catch {}
       setError(
         "shareError",
-        "The server created a link but did not return its secret. Remnic stopped that link. Create a new link."
+        refreshed
+          ? "The server did not confirm whether it created a link. Review the live share list and stop any link you do not recognize before creating another."
+          : "The server did not confirm whether it created a link. Refresh the guide and review live shares before creating another."
       );
       return;
     }
