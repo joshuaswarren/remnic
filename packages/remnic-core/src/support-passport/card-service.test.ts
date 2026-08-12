@@ -352,6 +352,86 @@ test("editing an active replacement keeps the original active predecessor", asyn
   }
 });
 
+test("retrying an interrupted active-card replacement is exact and idempotent", async () => {
+  const subject = await makeSubject();
+  try {
+    const draft = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Lighting",
+      statement: "Dim bright lights when you can.",
+      category: "sensory",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const active = await subject.service.approveCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+    });
+    const originalWrite = subject.aliceStorage.writeSealedMemory.bind(subject.aliceStorage);
+    let interrupted = false;
+    subject.aliceStorage.writeSealedMemory = async (envelope, extras) => {
+      const written = await originalWrite(envelope, extras);
+      if (!interrupted) {
+        interrupted = true;
+        throw new Error("simulated process exit after active replacement creation");
+      }
+      return written;
+    };
+
+    await assert.rejects(
+      subject.service.replaceCard({
+        principal: "owner:alice",
+        cardId: active.cardId,
+        expectedRevision: active.revision,
+        title: "Softer lighting",
+        statement: "Use softer lighting when you can.",
+        category: "sensory",
+        reviewBy: OWNER_REVIEW_BY,
+      }),
+      /simulated process exit/
+    );
+    subject.aliceStorage.writeSealedMemory = originalWrite;
+    const replacement = (await subject.aliceStorage.readAllMemories()).find(
+      (memory) => memory.frontmatter.id !== active.cardId
+    );
+    assert.ok(replacement);
+
+    await assert.rejects(
+      subject.service.replaceCard({
+        principal: "owner:alice",
+        cardId: active.cardId,
+        expectedRevision: active.revision,
+        title: "No overhead lighting",
+        statement: "Switch off overhead lighting when you can.",
+        category: "sensory",
+        reviewBy: OWNER_REVIEW_BY,
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
+    );
+    const retried = await subject.service.replaceCard({
+      principal: "owner:alice",
+      cardId: active.cardId,
+      expectedRevision: active.revision,
+      title: "Softer lighting",
+      statement: "Use softer lighting when you can.",
+      category: "sensory",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    assert.equal(retried.cardId, replacement.frontmatter.id);
+    assert.equal((await subject.aliceStorage.readAllMemories()).length, 2);
+
+    const approved = await subject.service.approveCard({
+      principal: "owner:alice",
+      cardId: retried.cardId,
+      expectedRevision: retried.revision,
+    });
+    assert.equal(approved.status, "active");
+    assert.equal((await subject.aliceStorage.getMemoryById(active.cardId))?.frontmatter.status, "superseded");
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("retrying an interrupted pending-draft replacement reuses one approvable draft", async () => {
   const subject = await makeSubject();
   try {
