@@ -30,7 +30,7 @@ Model output is untrusted input. Strict schemas and citation checks validate it.
 | A client supplies another owner or namespace. | Owner inputs contain neither field. The trusted principal resolves the namespace. |
 | A leaked link appears in server logs. | The UI keeps the secret in the URL fragment. It removes the fragment after reading it. |
 | A guessed or stolen grant opens wider access. | Grants use random 32-byte secrets, constant-time hash checks, expiry, and exact card revisions. |
-| A stopped link remains usable through a cache. | Every helper call reads durable state. Open browser views poll every 15 seconds. Public responses use `private, no-store`. |
+| A stopped link remains usable through a cache. | Every helper call reads durable state. Open browser views poll every 30 seconds. Public responses use `private, no-store`. |
 | One changed card leaks a partial guide. | Any state or revision mismatch returns `410 grant_stale` with no cards. |
 | A helper widens the scope. | Public inputs accept only a question. They accept no namespace, memory ID, path, search, or scope. |
 | A prompt attack adds facts or citations. | Prompts mark content as data. Strict schemas reject unknown fields and unknown citations. |

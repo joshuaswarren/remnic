@@ -159,7 +159,7 @@ Each helper request reads durable grant state. The request checks the secret,
 expiry, revocation state, card lifecycle, and exact revision. One mismatch
 locks the full guide. The response never returns a partial card set.
 
-An open live helper view rechecks the grant every 15 seconds. A valid secret
+An open live helper view rechecks the grant every 30 seconds. A valid secret
 gets `grant_expired` for expiry and `grant_gone` after owner revocation.
 
 Public responses set `Cache-Control: private, no-store` and
