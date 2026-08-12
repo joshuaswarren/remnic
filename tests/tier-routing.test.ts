@@ -1,8 +1,9 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import test from "node:test";
 import { computeTierValueScore, decideTierTransition } from "../src/tier-routing.js";
+import type { MemoryFile } from "../src/types.js";
 
-function memory(overrides?: Record<string, unknown>): any {
+function memory(overrides?: Partial<MemoryFile["frontmatter"]>): Pick<MemoryFile, "frontmatter"> {
   return {
     frontmatter: {
       id: "m1",
@@ -16,7 +17,7 @@ function memory(overrides?: Record<string, unknown>): any {
       importance: { score: 0.6 },
       verificationState: "unverified",
       ...(overrides ?? {}),
-    },
+    } as MemoryFile["frontmatter"],
   };
 }
 
@@ -37,10 +38,7 @@ test("computeTierValueScore is lower for disputed memories", () => {
 test("computeTierValueScore boosts correction and confirmed memory signals", () => {
   const now = new Date("2026-02-01T00:00:00.000Z");
   const baseline = computeTierValueScore(memory(), now);
-  const boosted = computeTierValueScore(
-    memory({ category: "correction", verificationState: "user_confirmed" }),
-    now,
-  );
+  const boosted = computeTierValueScore(memory({ category: "correction", verificationState: "user_confirmed" }), now);
   assert.ok(boosted > baseline);
 });
 
@@ -57,7 +55,7 @@ test("decideTierTransition demotes hot tier at threshold boundary when old enoug
     }),
     "hot",
     policy,
-    now,
+    now
   );
   assert.equal(decision.nextTier, "cold");
   assert.equal(decision.changed, true);
@@ -77,7 +75,7 @@ test("decideTierTransition does not demote when minimum age is not met", () => {
     }),
     "hot",
     policy,
-    now,
+    now
   );
   assert.equal(decision.nextTier, "hot");
   assert.equal(decision.reason, "demotion_min_age_not_met");
@@ -96,7 +94,7 @@ test("decideTierTransition promotes cold tier at promotion boundary", () => {
     }),
     "cold",
     policy,
-    now,
+    now
   );
   assert.equal(decision.nextTier, "hot");
   assert.equal(decision.changed, true);
@@ -107,8 +105,15 @@ test("decideTierTransition keeps live support passport cards in the hot tier", (
   const now = new Date("2026-02-01T00:00:00.000Z");
   for (const status of ["active", "pending_review"] as const) {
     const supportCard = memory({
+      category: "preference",
       status,
       tags: ["support-passport-card"],
+      structuredAttributes: {
+        "support-passport-category": "environment",
+        "support-passport-namespace": "default",
+        "support-passport-owner": "a".repeat(64),
+        "support-passport-title": "Quiet space",
+      },
       confidence: 0,
       confidenceTier: "speculative",
       accessCount: 0,
@@ -125,6 +130,27 @@ test("decideTierTransition keeps live support passport cards in the hot tier", (
     assert.equal(cold.changed, true);
     assert.equal(cold.reason, "support_passport_card_requires_hot_tier");
   }
+});
+
+test("decideTierTransition does not pin unrelated tagged memories", () => {
+  const now = new Date("2026-02-01T00:00:00.000Z");
+  const decision = decideTierTransition(
+    memory({
+      status: "active",
+      tags: ["support-passport-card"],
+      confidence: 0,
+      confidenceTier: "speculative",
+      accessCount: 0,
+      lastAccessed: "2025-01-01T00:00:00.000Z",
+      importance: { score: 0 },
+    }),
+    "hot",
+    policy,
+    now
+  );
+
+  assert.equal(decision.nextTier, "cold");
+  assert.equal(decision.reason, "value_below_demotion_threshold");
 });
 
 test("decideTierTransition is no-op when policy is disabled", () => {

@@ -4,7 +4,7 @@ import { test } from "node:test";
 
 import { SupportPassportCardService as PublicSupportPassportCardService } from "../index.js";
 import type { MemoryFile } from "../types.js";
-import { projectSupportPassportCard } from "./card-projection.js";
+import { computeSupportPassportOwnerKey, projectSupportPassportCard } from "./card-projection.js";
 import { SupportPassportCardService } from "./card-service.js";
 import { computeSupportPassportCardRevision } from "./contracts.js";
 
@@ -21,6 +21,7 @@ function makeMemory(
     archivedAt?: string;
     supersededBy?: string;
     namespace?: string;
+    owner?: string | null;
   } = {}
 ): MemoryFile {
   return {
@@ -41,6 +42,9 @@ function makeMemory(
       tags: ["support-passport-card"],
       structuredAttributes: {
         ...(overrides.namespace === "" ? {} : { "support-passport-namespace": overrides.namespace ?? "alice" }),
+        ...(overrides.owner === null
+          ? {}
+          : { "support-passport-owner": overrides.owner ?? computeSupportPassportOwnerKey("owner:alice") }),
         "support-passport-title": overrides.title ?? "Quiet space",
         "support-passport-category": overrides.supportCategory ?? "environment",
         "support-passport-order": overrides.order ?? "0",
@@ -89,6 +93,7 @@ test("card projection rejects invalid lifecycle and category fields", () => {
   assert.equal(projectSupportPassportCard(makeMemory({ blockedBy: "memory-review" })), null);
   assert.equal(projectSupportPassportCard(makeMemory({ archivedAt: "2026-08-12T12:00:00.000Z" })), null);
   assert.equal(projectSupportPassportCard(makeMemory({ supersededBy: "replacement-card" })), null);
+  assert.equal(projectSupportPassportCard(makeMemory({ owner: null })), null);
 });
 
 test("card projection accepts only canonical nonnegative decimal order values", () => {

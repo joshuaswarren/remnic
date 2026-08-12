@@ -64,6 +64,25 @@ async function makeSharedStorageSubject() {
   };
 }
 
+async function makeSharedNamespaceSubject() {
+  StorageManager.clearAllStaticCaches();
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-passport-shared-owner-"));
+  const storage = new StorageManager(path.join(root, "shared"));
+  await storage.ensureDirectories();
+  const service = new SupportPassportCardService({
+    now: () => new Date("2026-08-11T12:00:00.000Z"),
+    resolveOwner: async (principal) => ({ principal, namespace: "team", storage }),
+  });
+  return {
+    service,
+    storage,
+    cleanup: async () => {
+      StorageManager.clearAllStaticCaches();
+      await rm(root, { recursive: true, force: true });
+    },
+  };
+}
+
 async function createOrphanedReplacement(subject: Awaited<ReturnType<typeof makeSubject>>) {
   const draft = await subject.service.createManualDraft({
     principal: "owner:alice",
@@ -224,6 +243,43 @@ test("card reads and mutations stay inside the resolved namespace on shared stor
   }
 });
 
+test("card reads and mutations stay with the authenticated owner inside a shared namespace", async () => {
+  const subject = await makeSharedNamespaceSubject();
+  try {
+    const aliceDraft = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Alice card",
+      statement: "Give Alice advance notice.",
+      category: "transitions",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const bobDraft = await subject.service.createManualDraft({
+      principal: "owner:bob",
+      title: "Bob card",
+      statement: "Give Bob a quiet place.",
+      category: "environment",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+
+    assert.deepEqual(await subject.service.listCards({ principal: "owner:alice" }), [aliceDraft]);
+    assert.deepEqual(await subject.service.listCards({ principal: "owner:bob" }), [bobDraft]);
+    await assert.rejects(
+      subject.service.approveCard({
+        principal: "owner:bob",
+        cardId: aliceDraft.cardId,
+        expectedRevision: aliceDraft.revision,
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "card_not_found"
+    );
+
+    const stored = await subject.storage.getMemoryById(aliceDraft.cardId);
+    assert.match(stored?.frontmatter.structuredAttributes?.["support-passport-owner"] ?? "", /^[a-f0-9]{64}$/);
+    assert.equal(stored?.frontmatter.structuredAttributes?.["support-passport-owner"]?.includes("alice"), false);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("card operations reject a non-canonical resolved namespace before writing", async () => {
   StorageManager.clearAllStaticCaches();
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-passport-namespace-"));
@@ -231,6 +287,32 @@ test("card operations reject a non-canonical resolved namespace before writing",
   await storage.ensureDirectories();
   const service = new SupportPassportCardService({
     resolveOwner: async (principal) => ({ principal, namespace: " alice ", storage }),
+  });
+  try {
+    await assert.rejects(
+      service.createManualDraft({
+        principal: "owner:alice",
+        title: "Quiet place",
+        statement: "Offer me a quiet place.",
+        category: "environment",
+        reviewBy: OWNER_REVIEW_BY,
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "card_data_invalid"
+    );
+    assert.deepEqual(await storage.readAllMemories(), []);
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("card operations reject a resolved principal that differs from the authenticated principal", async () => {
+  StorageManager.clearAllStaticCaches();
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-passport-principal-"));
+  const storage = new StorageManager(path.join(root, "shared"));
+  await storage.ensureDirectories();
+  const service = new SupportPassportCardService({
+    resolveOwner: async () => ({ principal: "owner:bob", namespace: "team", storage }),
   });
   try {
     await assert.rejects(

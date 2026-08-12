@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { stripAttributesSuffix } from "../structured-attributes.js";
 import type { MemoryFile } from "../types.js";
 import {
@@ -13,6 +15,7 @@ import {
 export const SUPPORT_PASSPORT_CARD_TAG = "support-passport-card";
 export const SUPPORT_PASSPORT_ATTRIBUTE_KEYS = Object.freeze({
   namespace: "support-passport-namespace",
+  owner: "support-passport-owner",
   title: "support-passport-title",
   category: "support-passport-category",
   order: "support-passport-order",
@@ -30,9 +33,14 @@ export interface StoredSupportPassportCard {
   order: number;
   sourceMemoryIds: string[];
   namespace: string;
+  owner: string;
   replacesDraftId?: string;
   replacedRevision?: string;
   draftReplacementPrepared: boolean;
+}
+
+export function computeSupportPassportOwnerKey(principal: string): string {
+  return createHash("sha256").update(principal).digest("hex");
 }
 
 function parseSourceMemoryIds(value: string): string[] | null {
@@ -62,6 +70,7 @@ export function projectSupportPassportCard(memory: MemoryFile): StoredSupportPas
   const order = Number(rawOrder);
   const sourceMemoryIds = parseSourceMemoryIds(attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.sourceMemoryIds] ?? "");
   const namespace = SupportPassportNamespaceSchema.safeParse(attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.namespace]);
+  const owner = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.owner];
   let replacesDraftId: string | undefined;
   const rawReplacesDraftId = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.replacesDraftId];
   if (rawReplacesDraftId !== undefined) {
@@ -82,6 +91,8 @@ export function projectSupportPassportCard(memory: MemoryFile): StoredSupportPas
     !/^(?:0|[1-9]\d*)$/.test(rawOrder) ||
     !Number.isSafeInteger(order) ||
     !namespace.success ||
+    typeof owner !== "string" ||
+    !/^[a-f0-9]{64}$/.test(owner) ||
     !sourceMemoryIds
   )
     return null;
@@ -108,6 +119,7 @@ export function projectSupportPassportCard(memory: MemoryFile): StoredSupportPas
     order,
     sourceMemoryIds,
     namespace: namespace.data,
+    owner,
     replacesDraftId,
     replacedRevision,
     draftReplacementPrepared: attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.draftReplacementPrepared] === "true",
