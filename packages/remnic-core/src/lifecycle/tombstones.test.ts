@@ -165,7 +165,7 @@ describe("TombstoneStore — Unicode normalizer migration", () => {
       hashContent: computeHash,
       normalizeText: normalizeContent,
       sourceContentsForMemoryIds: async (ids: readonly string[]) =>
-        new Map(ids.filter((id) => id === "fact-japanese").map((id) => [id, japanese])),
+        new Map(ids.map((id) => [id, id === "fact-japanese" ? japanese : "ASCII survives"])),
     };
     const store = new TombstoneStore(filePath, "default", options, makeIo());
     await store.load();
@@ -391,6 +391,61 @@ describe("TombstoneStore — Unicode migration safety", () => {
     assert.equal(
       store.lookup({ namespace: "default", contentHash: computeHash(source) })?.matchedTier,
       "exact",
+    );
+  });
+
+  it("withholds unverified legacy hash tiers until the source becomes available", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "tomb-unverified-legacy-"));
+    const filePath = path.join(dir, "tombstones.jsonl");
+    const source = "The user prefers café.";
+    const collision = "The user prefers caf.";
+    const legacyEntry = {
+      id: "tomb-unverified-legacy",
+      kind: "tombstone" as const,
+      reason: "correction" as const,
+      sourceMemoryId: "fact-unverified-legacy",
+      contentHash: computeLegacyContentHash(source),
+      normalizedText: normalizeLegacyContent(source),
+      namespace: "default",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      createdBy: "user_correction" as const,
+    };
+    await writeFile(filePath, `${JSON.stringify(legacyEntry)}\n`, "utf8");
+    let sourceAvailable = false;
+    const store = new TombstoneStore(
+      filePath,
+      "default",
+      {
+        enabled: true,
+        semanticMatch: false,
+        semanticThreshold: 0.9,
+        hashContent: computeHash,
+        normalizeText: normalizeContent,
+        sourceContentsForMemoryIds: async () =>
+          sourceAvailable
+            ? new Map<string, string>([[legacyEntry.sourceMemoryId, source]])
+            : new Map(),
+      },
+      makeIo(),
+    );
+
+    await store.load();
+    assert.equal(store.snapshot()[0]?.normalizerVersion, undefined);
+    assert.equal(
+      store.lookup({ namespace: "default", contentHash: computeHash(collision) }),
+      null,
+    );
+
+    sourceAvailable = true;
+    store.invalidate();
+    await store.load();
+    assert.equal(
+      store.lookup({ namespace: "default", contentHash: computeHash(source) })?.matchedTier,
+      "exact",
+    );
+    assert.equal(
+      store.lookup({ namespace: "default", contentHash: computeHash(collision) }),
+      null,
     );
   });
 
@@ -842,6 +897,7 @@ describe("TombstoneStore — corrupted line skipped with counter, not crash", ()
       sourceMemoryId: "fact-1",
       contentHash: computeHash("good content"),
       normalizedText: normalizeContent("good content"),
+      normalizerVersion: 2,
       namespace: "default",
       createdAt: "2026-01-01T00:00:00.000Z",
       createdBy: "user_correction",

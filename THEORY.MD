@@ -40,6 +40,10 @@ It reads source IDs in bounded batches and completes every available batch befor
 
 Unavailable sources remain unversioned. A later load retries them after the source becomes available.
 
+Unverified entries remain in the ledger and keyed tier.
+
+Their hash and normalized tiers stay hidden until source verification succeeds.
+
 Migration or ledger-read failures leave the tombstone store unloaded.
 
 The failed call returns the error. The next call retries before any legacy identity becomes authoritative.
@@ -68,7 +72,7 @@ Terminal sentence punctuation remains compatible with normalized exact matches.
 
 ## Verification state
 
-The 110-test focused identity suite passes, including migration and ledger-read recovery.
+The 111-test focused identity suite passes, including unavailable-source, migration, and ledger-read recovery.
 
 The core type check passes.
 

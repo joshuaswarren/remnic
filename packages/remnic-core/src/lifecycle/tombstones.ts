@@ -436,16 +436,21 @@ export class TombstoneStore {
             entry.contentHash === this.options.hashContent(source) ||
             entry.contentHash === computeLegacyContentHash(source)
           );
-          const source = matches[0];
+          const explicitPrimary =
+            matches.length === 0 &&
+            entry.contentHash !== this.options.hashContent(entry.normalizedText);
+          const source = matches[0] ?? (explicitPrimary ? candidates[0] : undefined);
           if (source === undefined) return entry;
           const currentHash = this.options.hashContent(source);
-          const alias = matches
-            .map((candidate) => this.options.hashContent(candidate))
-            .find((hash) => hash !== currentHash);
+          const alias = explicitPrimary
+            ? currentHash
+            : matches
+              .map((candidate) => this.options.hashContent(candidate))
+              .find((hash) => hash !== currentHash);
           changed = true;
           return {
             ...entry,
-            contentHash: currentHash,
+            contentHash: explicitPrimary ? entry.contentHash : currentHash,
             ...(alias ? { currentContentHashAlias: alias } : {}),
             normalizedText: this.options.normalizeText(source),
             normalizerVersion: TOMBSTONE_NORMALIZER_VERSION,
@@ -499,11 +504,13 @@ export class TombstoneStore {
     // entry — otherwise A's lookup finds B's id, rejects it on namespace
     // mismatch, and misses its own still-active tombstone (resurrection).
     const ns = entry.namespace;
-    if (entry.contentHash) this.byHash.set(`${ns}\0${entry.contentHash}`, entry.id);
-    if (entry.currentContentHashAlias) {
-      this.byHash.set(`${ns}\0${entry.currentContentHashAlias}`, entry.id);
+    if (entry.normalizerVersion === TOMBSTONE_NORMALIZER_VERSION) {
+      if (entry.contentHash) this.byHash.set(`${ns}\0${entry.contentHash}`, entry.id);
+      if (entry.currentContentHashAlias) {
+        this.byHash.set(`${ns}\0${entry.currentContentHashAlias}`, entry.id);
+      }
+      if (entry.normalizedText) this.byNormalized.set(`${ns}\0${entry.normalizedText}`, entry.id);
     }
-    if (entry.normalizedText) this.byNormalized.set(`${ns}\0${entry.normalizedText}`, entry.id);
     if (entry.entityRef && entry.supersessionKey) {
       this.byKey.set(keyedTierKey(ns, entry.entityRef, entry.supersessionKey), entry.id);
     }
