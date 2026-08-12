@@ -966,6 +966,7 @@
     "@orama/orama": "^3.0.0",
     "@orama/plugin-data-persistence": "^3.0.0",
     "@remnic/core": "workspace:^",
+    "@remnic/plugin-openclaw": "workspace:^",
     "@sinclair/typebox": "^0.34.0",
     "apache-arrow": "^18.1.0",
     "better-sqlite3": "^12.6.2",

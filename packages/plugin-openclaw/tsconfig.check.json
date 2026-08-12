@@ -13,6 +13,9 @@
       ],
       "@remnic/core/*": [
         "packages/remnic-core/src/*"
+      ],
+      "@remnic/server": [
+        "packages/remnic-server/src/index.ts"
       ]
     }
   },

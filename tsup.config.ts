@@ -161,6 +161,8 @@ export default defineConfig({
   dts: false,
   external: [
     "openclaw",
+    "@remnic/plugin-openclaw/support-passport-model-route",
+    "@remnic/server",
     "@node-rs/argon2",
     "@lancedb/lancedb",
     "meilisearch",
