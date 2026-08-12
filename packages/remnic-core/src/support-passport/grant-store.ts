@@ -308,7 +308,8 @@ export class SupportPassportGrantStore {
     await removePrivateFilesNoFollow(
       this.grantsDir,
       grantIds.map((grantId) => `${grantId}.json`),
-      "support passport grant files must be regular files in a stable directory"
+      "support passport grant files must be regular files in a stable directory",
+      this.memoryDir
     );
   }
 
@@ -324,7 +325,8 @@ export class SupportPassportGrantStore {
       content = await readPrivateFileNoFollow(
         this.ownerIndexesDir,
         filePath,
-        "support passport owner indexes must be regular files in a stable directory"
+        "support passport owner indexes must be regular files in a stable directory",
+        this.memoryDir
       );
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
@@ -364,7 +366,8 @@ export class SupportPassportGrantStore {
       this.ownerIndexesDir,
       filePath,
       `${JSON.stringify({ schemaVersion: 1, ownerHash, grantIds }, null, 2)}\n`,
-      "support passport owner indexes must be regular files in a stable directory"
+      "support passport owner indexes must be regular files in a stable directory",
+      this.memoryDir
     );
   }
 
@@ -374,7 +377,8 @@ export class SupportPassportGrantStore {
     const content = await readPrivateFileNoFollow(
       this.grantsDir,
       filePath,
-      "support passport grant files must be regular files in a stable directory"
+      "support passport grant files must be regular files in a stable directory",
+      this.memoryDir
     );
     const state = SupportPassportGrantStateSchema.parse(JSON.parse(content));
     if (state.grantId !== grantId) throw new Error("support passport grant ID must match its file name");
@@ -397,7 +401,8 @@ export class SupportPassportGrantStore {
       this.grantsDir,
       filePath,
       `${JSON.stringify(state, null, 2)}\n`,
-      "support passport grant files must be regular files in a stable directory"
+      "support passport grant files must be regular files in a stable directory",
+      this.memoryDir
     );
   }
 

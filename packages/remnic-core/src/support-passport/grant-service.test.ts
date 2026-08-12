@@ -813,6 +813,46 @@ test("grant writes reject a directory swapped after the initial safety check", a
   }
 });
 
+test("grant writes reject an ancestor swapped after the initial safety check", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-ancestor-swap-"));
+  try {
+    const memoryDir = path.join(root, "memory");
+    const passportDir = path.join(memoryDir, "state", "support-passport");
+    const parkedDir = path.join(root, "parked-support-passport");
+    const outside = path.join(root, "outside-support-passport");
+    await mkdir(path.join(outside, "grants", "owners"), { recursive: true });
+    const acceptLock = (async (_lockPath, _options, task) =>
+      await task(true, { refresh: async () => true })) as typeof withHeldFileLock;
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({
+      memoryDir,
+      now: () => now,
+      withHeldFileLock: acceptLock,
+    });
+    const inspected = store as unknown as { addToOwnerIndex(): Promise<void> };
+    inspected.addToOwnerIndex = async () => undefined;
+
+    await assert.rejects(
+      store.create(
+        {
+          namespace: "alice",
+          principal: "owner:alice",
+          cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+          expiresAt: new Date(now.getTime() + 300_000).toISOString(),
+        },
+        async () => {
+          renameSync(passportDir, parkedDir);
+          symlinkSync(outside, passportDir, "dir");
+        }
+      ),
+      /regular files in a stable directory/
+    );
+    assert.deepEqual(await readdir(path.join(outside, "grants")), ["owners"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("the grant store fails closed for corrupt and symlinked grant files", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-state-"));
   try {
