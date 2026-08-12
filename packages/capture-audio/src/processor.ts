@@ -246,6 +246,19 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     // transcription + diarization entirely. A PARTIAL replay (crash between
     // group appends) has no marker, so it falls through and per-group
     // idempotency re-appends only the missing groups below.
+    if (deps.spool.isChunkApplied(`${chunkId}:done`)) {
+      processedThisRun.add(chunkId);
+      // Retry raw-WAV reclaim: the marker is written before cleanup, so if the
+      // first run's cleanup failed (or it died between marking and deleting), a
+      // replay is our chance to remove the file instead of waiting for the janitor.
+      try {
+        await deps.cleanupRawAudio(event);
+      } catch (err) {
+        report(err, event);
+      }
+      return;
+    }
+
     // Pre-#2145 runs keyed appends per GROUP (`chunkId` or `chunkId:<n>`).
     // Those keys cannot be mapped onto the new per-segment keys, so a chunk
     // carrying one is treated as already applied: re-appending under new keys
@@ -263,19 +276,6 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       );
       return;
     }
-    if (deps.spool.isChunkApplied(`${chunkId}:done`)) {
-      processedThisRun.add(chunkId);
-      // Retry raw-WAV reclaim: the marker is written before cleanup, so if the
-      // first run's cleanup failed (or it died between marking and deleting), a
-      // replay is our chance to remove the file instead of waiting for the janitor.
-      try {
-        await deps.cleanupRawAudio(event);
-      } catch (err) {
-        report(err, event);
-      }
-      return;
-    }
-
     // VAD gate: a non-speech chunk skips STT (and model resolution) entirely,
     // flowing through as a zero-segment chunk so idle-close + WAV reclaim still
     // run. Absent detectSpeech -> transcribe every chunk.
@@ -379,13 +379,19 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
         return left.index - right.index;
       });
 
-    // Embed FIRST, before a single `assembler.add`. Embedding is the only
-    // await that can throw before persistence, and the assembler has no undo:
-    // a throw after it had consumed segments would leave it advanced, so the
-    // retry would feed earlier timestamps into a later conversation and merge
-    // spans the first attempt had split (issue #2145).
+    // Durable segments leave the stream before anything else touches them: a
+    // replay must not pay for their embedding again, and an input-specific
+    // embedding failure on an already-persisted segment would requeue the
+    // batch forever and block the segments that ARE missing (issue #2145).
+    const fresh = stream.filter(
+      ({ entry, index }) => !deps.spool.isChunkApplied(`${entry.chunkId}:i${index}`),
+    );
+
+    // Embed before a single `assembler.add`. Embedding is the only await that
+    // can throw before persistence, and the assembler has no undo: a throw
+    // after it had consumed segments would leave it advanced.
     if (deps.embed) {
-      for (const { entry, item } of stream) {
+      for (const { entry, item } of fresh) {
         item.seg.embedding = await deps.embed(entry.event, item.raw);
       }
     }
@@ -407,8 +413,7 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       startedAtUtc: string;
       items: Array<{ seg: AssemblySegment; raw: TranscribedSegment; index: number }>;
     }> = [];
-    for (const { entry, item, index } of stream) {
-      if (deps.spool.isChunkApplied(`${entry.chunkId}:i${index}`)) continue;
+    for (const { entry, item, index } of fresh) {
       const conv = deps.assembler.add(item.seg);
       const carried = { ...item, index };
       const last = runs[runs.length - 1];
@@ -565,7 +570,11 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     for (const id of deps.spool.capturingConversationIds()) {
       try {
         dedupeConversation(id);
-        diarizeConversation(id);
+        // Diarization is deferred while a flush failure means segments are
+        // still buffered: clustering only ever ADDS, so embedding a mic copy
+        // whose system duplicate has not arrived yet would leave that copy's
+        // contribution in the centroid after dedup deletes the segment.
+        if (flushFailure === undefined) diarizeConversation(id);
         // Flipped per conversation, not in bulk: a conversation whose
         // diarization failed must STAY capturing so a later finalize retries
         // it, while the ones that succeeded still reach the final-only read
