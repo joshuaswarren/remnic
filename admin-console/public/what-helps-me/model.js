@@ -151,6 +151,24 @@
     return cards;
   }
 
+  function parseMemoryPreview(payload) {
+    if (hasExactKeys(payload, ["found"]) && payload.found === false) return payload;
+    if (!hasExactKeys(payload, ["found", "memory"]) || payload.found !== true) {
+      throw new Error("The selected note response has an unexpected shape.");
+    }
+    if (
+      !hasExactKeys(payload.memory, ["id", "content", "revision"]) ||
+      !isMemoryId(payload.memory.id) ||
+      typeof payload.memory.content !== "string" ||
+      payload.memory.content.length < 1 ||
+      payload.memory.content.length > 20_000 ||
+      !isRevision(payload.memory.revision)
+    ) {
+      throw new Error("The selected note response is invalid.");
+    }
+    return payload;
+  }
+
   function assertGrant(value) {
     const required = ["grantId", "stateVersion", "cards", "createdAt", "expiresAt", "status"];
     const optional = value?.revokedAt === undefined ? [] : ["revokedAt"];
@@ -379,7 +397,10 @@
     }
 
     return {
-      notes: REPLAY_NOTES.map((note) => ({ ...note })),
+      notes: REPLAY_NOTES.map((note) => ({
+        ...note,
+        revision: replayRevision(`${note.memoryId}:${note.content}`),
+      })),
       async listCards() {
         return {
           cards: cards
@@ -521,6 +542,7 @@
     parseAnswer,
     parseCardList,
     parseGrantList,
+    parseMemoryPreview,
     parsePublicGuide,
     parseSecret,
     stripAttributesSuffix,

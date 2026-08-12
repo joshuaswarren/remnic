@@ -94,7 +94,7 @@ test("the owner reviews one card at a time and controls sharing", async ({ page 
   await expect(page.getByText("Sharing stopped", { exact: true })).toBeVisible();
 });
 
-test("the owner note preview hides stored attribute metadata", async ({ page }, testInfo) => {
+test("the owner note preview binds consent to the reviewed revision", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers note preview content.");
 
   await page.route("**/engram/v1/support-passport/cards", async (route) => {
@@ -103,7 +103,7 @@ test("the owner note preview hides stored attribute metadata", async ({ page }, 
   await page.route("**/engram/v1/support-passport/grants", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grants: [] }) });
   });
-  await page.route("**/engram/v1/memories/note-with-attributes", async (route) => {
+  await page.route("**/engram/v1/support-passport/memories/note-with-attributes", async (route) => {
     expect(route.request().headers().authorization).toBe("Bearer owner-token");
     await route.fulfill({
       status: 200,
@@ -111,10 +111,17 @@ test("the owner note preview hides stored attribute metadata", async ({ page }, 
       body: JSON.stringify({
         found: true,
         memory: {
-          content: "Tell me before plans change.\n[Attributes: support-passport: source]",
+          id: "note-with-attributes",
+          content: "Tell me before plans change.",
+          revision: "b".repeat(64),
         },
       }),
     });
+  });
+  let generationInput: unknown;
+  await page.route("**/engram/v1/support-passport/drafts/generate", async (route) => {
+    generationInput = route.request().postDataJSON();
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ cards: [] }) });
   });
 
   await page.goto(`${origin}/remnic/ui/what-helps-me/`);
@@ -125,6 +132,73 @@ test("the owner note preview hides stored attribute metadata", async ({ page }, 
 
   await expect(page.getByText("Tell me before plans change.", { exact: true })).toBeVisible();
   await expect(page.getByText(/\[Attributes:/)).toHaveCount(0);
+  await page.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
+  await page.getByRole("button", { name: "Draft my support cards" }).click();
+  expect(generationInput).toEqual({
+    sourceMemoryIds: ["note-with-attributes"],
+    sourceMemoryRevisions: [{ memoryId: "note-with-attributes", revision: "b".repeat(64) }],
+    consent: true,
+  });
+});
+
+test("a missing selected memory shows the specific not-found message", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers missing memory feedback.");
+  await page.route("**/engram/v1/support-passport/cards", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ cards: [] }) });
+  });
+  await page.route("**/engram/v1/support-passport/grants", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grants: [] }) });
+  });
+  await page.route("**/engram/v1/support-passport/memories/missing-note", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ found: false }) });
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await page.getByLabel("Bearer token").fill("owner-token");
+  await page.getByRole("button", { name: "Open my guide" }).click();
+  await page.getByLabel("Memory ID").fill("missing-note");
+  await page.getByRole("button", { name: "Add selected note" }).click();
+
+  await expect(page.getByText("That memory was not found in your Remnic scope.")).toBeVisible();
+});
+
+test("the owner cannot select more than eight cards for one share link", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers the share-card limit.");
+  const now = new Date();
+  const cards = Array.from({ length: 9 }, (_, index) => ({
+    cardId: `card-${index + 1}`,
+    title: `Support card ${index + 1}`,
+    statement: `Support statement ${index + 1}.`,
+    category: "other",
+    status: "active",
+    updatedAt: now.toISOString(),
+    reviewBy: new Date(now.getTime() + 24 * 60 * 60_000).toISOString(),
+    revision: String(index + 1).repeat(64),
+  }));
+  let createCalls = 0;
+  await page.route("**/engram/v1/support-passport/cards", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ cards }) });
+  });
+  await page.route("**/engram/v1/support-passport/grants", async (route) => {
+    if (route.request().method() === "POST") createCalls += 1;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grants: [] }) });
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await page.getByLabel("Bearer token").fill("owner-token");
+  await page.getByRole("button", { name: "Open my guide" }).click();
+  const choices = page.locator('input[name="shareCard"]');
+  for (let index = 0; index < 8; index += 1) await choices.nth(index).check();
+  await expect(choices.nth(8)).toBeDisabled();
+  expect(await choices.evaluateAll((inputs) => inputs.filter((input) => input.checked).length)).toBe(8);
+
+  await choices.nth(8).evaluate((input) => {
+    input.disabled = false;
+    input.checked = true;
+  });
+  await page.getByRole("button", { name: "Create share link" }).click();
+  await expect(page.getByText("Select no more than eight approved support cards.")).toBeVisible();
+  expect(createCalls).toBe(0);
 });
 
 test("a created share link remains visible when its list refresh fails", async ({ page }, testInfo) => {

@@ -18,6 +18,7 @@
   const HELPER_READ_TIMEOUT_MS = 10_000;
   const HELPER_QUESTION_TIMEOUT_MS = 60_000;
   const MAX_VISIBLE_GRANTS = 100;
+  const MAX_SHARED_CARDS = 8;
 
   const state = {
     token: "",
@@ -124,7 +125,8 @@
   const liveApi = {
     listCards: () => fetchJson("/engram/v1/support-passport/cards", { owner: true }),
     listGrants: () => fetchJson("/engram/v1/support-passport/grants", { owner: true }),
-    fetchMemory: (memoryId) => fetchJson(`/engram/v1/memories/${encodeURIComponent(memoryId)}`, { owner: true }),
+    fetchMemory: (memoryId) =>
+      fetchJson(`/engram/v1/support-passport/memories/${encodeURIComponent(memoryId)}`, { owner: true }),
     createManualDraft: (input) =>
       fetchJson("/engram/v1/support-passport/drafts", { owner: true, method: "POST", body: input }),
     generateDrafts: (input) =>
@@ -169,7 +171,7 @@
     async fetchMemory(memoryId) {
       const note = replayStore.notes.find((candidate) => candidate.memoryId === memoryId);
       if (!note) return { found: false };
-      return { found: true, memory: { id: note.memoryId, content: note.content } };
+      return { found: true, memory: { id: note.memoryId, content: note.content, revision: note.revision } };
     },
   };
   const api = replayMode ? replayApi : liveApi;
@@ -307,11 +309,19 @@
       input.type = "checkbox";
       input.name = "shareCard";
       input.value = card.cardId;
+      input.addEventListener("change", updateShareCardChoices);
       const copy = element("span");
       copy.append(element("strong", "", card.title), element("small", "", card.statement));
       label.append(input, copy);
       list.append(label);
     }
+    updateShareCardChoices();
+  }
+
+  function updateShareCardChoices() {
+    const choices = [...document.querySelectorAll('input[name="shareCard"]')];
+    const selectedCount = choices.filter((input) => input.checked).length;
+    for (const input of choices) input.disabled = !input.checked && selectedCount >= MAX_SHARED_CARDS;
   }
 
   function renderGrants() {
@@ -430,13 +440,20 @@
     }
     const button = event.currentTarget.querySelector("button");
     try {
-      const payload = await withBusy(button, "Adding note…", () => api.fetchMemory(memoryId));
-      if (payload.found !== true || !payload.memory || typeof payload.memory.content !== "string") {
+      const preview = model.parseMemoryPreview(
+        await withBusy(button, "Adding note…", () => api.fetchMemory(memoryId))
+      );
+      if (!preview.found) {
         throw new Error("That memory was not found in your Remnic scope.");
       }
+      if (preview.memory.id !== memoryId) throw new Error("The selected note response is invalid.");
       state.selectedNotes = [
         ...state.selectedNotes,
-        { memoryId, content: model.stripAttributesSuffix(payload.memory.content) },
+        {
+          memoryId,
+          content: model.stripAttributesSuffix(preview.memory.content),
+          revision: preview.memory.revision,
+        },
       ];
       byId("memoryIdInput").value = "";
       byId("consentInput").checked = false;
@@ -462,6 +479,10 @@
       await withBusy(byId("generateButton"), "Drafting cards…", () =>
         api.generateDrafts({
           sourceMemoryIds: state.selectedNotes.map((note) => note.memoryId),
+          sourceMemoryRevisions: state.selectedNotes.map((note) => ({
+            memoryId: note.memoryId,
+            revision: note.revision,
+          })),
           consent: true,
         })
       );
@@ -482,6 +503,10 @@
     const cardIds = [...document.querySelectorAll('input[name="shareCard"]:checked')].map((input) => input.value);
     if (cardIds.length === 0) {
       setError("shareError", "Select at least one approved support card.");
+      return;
+    }
+    if (cardIds.length > MAX_SHARED_CARDS) {
+      setError("shareError", "Select no more than eight approved support cards.");
       return;
     }
     const choice = document.querySelector('input[name="duration"]:checked')?.value ?? "2h";
