@@ -1,10 +1,11 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { type FileHandle, lstat, mkdir, open } from "node:fs/promises";
+import { type FileHandle, lstat, open } from "node:fs/promises";
 import path from "node:path";
 
 import { log } from "../logger.js";
 import { expandTildePath } from "../utils/path.js";
 import { type HeldFileLockController, serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
+import { SupportPassportNamespaceSchema } from "./contracts.js";
 import { SupportPassportError } from "./errors.js";
 import {
   SupportPassportCreateGrantInputSchema,
@@ -14,6 +15,7 @@ import {
 } from "./grant-contracts.js";
 import {
   ensurePrivateDirectoryNoFollow,
+  ensurePrivateDirectoryTreeNoFollow,
   readPrivateFileNoFollow,
   removePrivateFilesNoFollow,
   withPrivateDirectoryNoFollow,
@@ -58,11 +60,11 @@ function grantNotFound(): SupportPassportError {
 }
 
 function normalizeNamespace(namespace: unknown): string {
-  const normalized = typeof namespace === "string" ? namespace.trim() : "";
-  if (normalized.length < 1 || normalized.length > 256) {
+  const parsed = SupportPassportNamespaceSchema.safeParse(namespace);
+  if (!parsed.success) {
     throw new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
   }
-  return normalized;
+  return parsed.data;
 }
 
 function normalizePrincipal(principal: unknown): string {
@@ -218,7 +220,13 @@ export class SupportPassportGrantStore {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
     }
-    return states.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.grantId.localeCompare(b.grantId));
+    const activeCutoff = this.now().getTime();
+    return states.sort((a, b) => {
+      const aActive = !a.revokedAt && Date.parse(a.expiresAt) > activeCutoff;
+      const bActive = !b.revokedAt && Date.parse(b.expiresAt) > activeCutoff;
+      if (aActive !== bActive) return aActive ? -1 : 1;
+      return b.createdAt.localeCompare(a.createdAt) || a.grantId.localeCompare(b.grantId);
+    });
   }
 
   async revoke(
@@ -436,7 +444,10 @@ export class SupportPassportGrantStore {
   }
 
   private async ensureSafeDirectories(): Promise<void> {
-    await mkdir(this.memoryDir, { recursive: true, mode: 0o700 });
+    await ensurePrivateDirectoryTreeNoFollow(
+      this.memoryDir,
+      "support passport memory directory must be a stable directory"
+    );
     await ensurePrivateDirectoryNoFollow(
       this.memoryDir,
       this.ownerIndexesDir,
