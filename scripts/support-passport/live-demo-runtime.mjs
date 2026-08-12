@@ -4,11 +4,44 @@ import path from "node:path";
 const DEFAULT_HTTP_TIMEOUT_MS = 45_000;
 const DEFAULT_MODEL_ROUTE_TIMEOUT_MS = 30_000;
 const MODEL_HTTP_MARGIN_MS = 15_000;
+const DEMO_MODEL_CONFIG_KEYS = [
+  "openaiApiKey",
+  "openaiBaseUrl",
+  "model",
+  "modelSource",
+  "gatewayAgentId",
+  "taskModelChain",
+  "gatewayConfig",
+  "localLlmEnabled",
+  "localLlmUrl",
+  "localLlmModel",
+  "localLlmApiKey",
+  "localLlmHeaders",
+  "localLlmAuthHeader",
+  "localLlmFallback",
+  "localLlmHomeDir",
+  "localLmsCliPath",
+  "localLmsBinDir",
+  "localLlmTimeoutMs",
+  "localLlmMaxContext",
+  "localLlmRetry5xxCount",
+  "localLlmRetryBackoffMs",
+  "localLlm400TripThreshold",
+  "localLlm400CooldownMs",
+  "localLlmReasoningEffort",
+  "localLlmThinkingThresholdChars",
+  "localLlmDisableThinking",
+];
 
 export function isolateDemoRemnicConfig(sourceConfig, memoryDir) {
+  const modelConfig = {};
+  for (const key of DEMO_MODEL_CONFIG_KEYS) {
+    if (Object.hasOwn(sourceConfig, key)) modelConfig[key] = sourceConfig[key];
+  }
   return {
-    ...sourceConfig,
+    ...modelConfig,
     memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
     qmdEnabled: false,
     qmdDaemonEnabled: false,
     searchBackend: "noop",
