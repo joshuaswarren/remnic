@@ -153,6 +153,28 @@ export async function ensurePrivateDirectoryNoFollow(
   }
 }
 
+export async function ensurePrivateDirectoryTreeNoFollow(
+  directory: string,
+  errorMessage: string,
+  syncVerifiedParent: (handle: FileHandle) => Promise<void> = syncDirectoryHandle
+): Promise<void> {
+  const target = path.resolve(directory);
+  let existingAncestor = target;
+  while (true) {
+    try {
+      const metadata = await lstat(existingAncestor);
+      if (metadata.isSymbolicLink() || !metadata.isDirectory()) throw new Error(errorMessage);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const parent = path.dirname(existingAncestor);
+      if (parent === existingAncestor) throw error;
+      existingAncestor = parent;
+    }
+  }
+  await ensurePrivateDirectoryNoFollow(existingAncestor, target, errorMessage, syncVerifiedParent);
+}
+
 export async function withPrivateDirectoryNoFollow<T>(
   trustedRoot: string,
   directory: string,
