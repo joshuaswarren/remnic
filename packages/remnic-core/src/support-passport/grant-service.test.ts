@@ -892,7 +892,7 @@ test("unrelated memory writes do not invalidate an unchanged shared guide", asyn
       const memory = await getMemoryById(memoryId);
       if (!wroteUnrelated) {
         wroteUnrelated = true;
-        await subject.aliceStorage.writeMemory("An unrelated memory write.", "fact", {
+        await subject.aliceStorage.writeMemory("fact", "An unrelated memory write.", {
           source: "support-passport-test",
         });
       }
