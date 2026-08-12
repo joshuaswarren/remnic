@@ -806,3 +806,86 @@ test("reorderWindowMs 0 keeps the pre-#2145 release-on-arrival behavior", async 
   }
 });
 
+
+test("overlapping cross-channel windows interleave by timestamp (issue #2145)", async () => {
+  // The mic chunk covers 00:00 and 00:20; the system chunk covers 00:10. With
+  // whole-chunk release the 00:10 segment landed AFTER 00:20 and could join the
+  // later conversation, splitting a cross-channel duplicate across two
+  // conversations where finalize-time dedup can no longer see it.
+  const spool = new Spool(":memory:");
+  try {
+    let minted = 0;
+    const byPath: Record<string, TranscribedSegment[]> = {
+      "/tmp/raw/mic-span.wav": [
+        { text: "mic first", startUtc: t(0), endUtc: t(1) },
+        { text: "mic third", startUtc: t(20), endUtc: t(21) },
+      ],
+      "/tmp/raw/sys-mid.wav": [{ text: "system second", startUtc: t(10), endUtc: t(11) }],
+    };
+    const proc = createChunkProcessor(
+      deps(spool, {
+        assembler: new ConversationAssembler({ gapMinutes: 0, makeId: () => `conv_${++minted}` }),
+        reorderWindowMs: 120_000,
+        transcribe: async ({ wavPath }) => byPath[wavPath] ?? [],
+      }),
+    );
+    proc.enqueue(
+      chunk({ path: "/tmp/raw/mic-span.wav", channel: "mic", startedAtUtc: t(0), endedAtUtc: t(30) }),
+    );
+    proc.enqueue(
+      chunk({ path: "/tmp/raw/sys-mid.wav", channel: "system", startedAtUtc: t(10), endedAtUtc: t(12) }),
+    );
+    await proc.drain();
+    await proc.finalize();
+
+    assert.equal(minted, 3, "gap 0 gives each segment its own conversation");
+    assert.deepEqual(
+      [1, 2, 3].map((n) => spool.conversationSegmentsForDedup(`conv_${n}`).map((s) => s.text)),
+      [["mic first"], ["system second"], ["mic third"]],
+      "conversations were minted in capture order, not chunk order",
+    );
+  } finally {
+    spool.close();
+  }
+});
+
+test("a crash between cluster and assignment cannot double-count embeddings", async () => {
+  // The two writes are one transaction: a failure rolls both back, so the next
+  // finalize sees pending segments and unchanged counts (issue #2145).
+  const spool = new Spool(":memory:");
+  try {
+    const voice: Embedding = [1, 0, 0, 0];
+    const failing = createChunkProcessor(
+      deps(spool, {
+        diarizer: new SpeakerClusterer(0.7),
+        embed: () => voice,
+        transcribe: async () => [{ text: "one utterance", startUtc: t(1), endUtc: t(2) }],
+      }),
+    );
+    failing.enqueue(chunk());
+    await failing.drain();
+
+    // Force the assignment half to throw, mid-transaction.
+    const original = spool.commitDiarization.bind(spool);
+    let failed = false;
+    (spool as unknown as { commitDiarization: unknown }).commitDiarization = (input: never) => {
+      if (!failed) {
+        failed = true;
+        throw new Error("sqlite exploded mid-commit");
+      }
+      return original(input);
+    };
+    await assert.rejects(() => failing.finalize(), /sqlite exploded mid-commit/);
+    assert.deepEqual(spool.readSpeakerClusters(), [], "the cluster write rolled back with the assignment");
+
+    const recovered = createChunkProcessor(
+      deps(spool, { diarizer: new SpeakerClusterer(0.7), embed: () => voice }),
+    );
+    await recovered.finalize();
+    const clusters = spool.readSpeakerClusters();
+    assert.equal(clusters.length, 1);
+    assert.equal(clusters[0].embeddingCount, 1, "counted exactly once across the failure");
+  } finally {
+    spool.close();
+  }
+});

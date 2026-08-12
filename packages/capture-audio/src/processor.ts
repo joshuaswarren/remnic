@@ -188,23 +188,23 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       assignments.push({ id: segment.id, speakerCluster: clusterId, isWearer });
       touched.add(clusterId);
     }
-    // Clusters first: a segment row must never reference a cluster that is
-    // not persisted yet, so a crash between the two leaves the segments
-    // unassigned and the next finalize redoes them.
+    // ONE transaction: a crash between persisting the cluster counts and
+    // persisting the assignments would leave the counts advanced while the
+    // segments still look pending, and the next finalize would count the same
+    // embeddings again (issue #2145).
     const byId = new Map(diarizer.clusters().map((c) => [c.id, c]));
-    for (const clusterId of touched) {
-      const cluster = byId.get(clusterId);
-      if (!cluster) continue;
-      deps.spool.upsertSpeaker({
+    const clusters = [...touched]
+      .map((clusterId) => byId.get(clusterId))
+      .filter((cluster): cluster is NonNullable<typeof cluster> => cluster !== undefined)
+      .map((cluster) => ({
         id: cluster.id,
         label: cluster.label,
         isSelf: cluster.isSelf,
         embeddingCount: cluster.embeddingCount,
         centroid: cluster.centroid,
         examples: cluster.examples,
-      });
-    }
-    deps.spool.assignSegmentSpeakers(assignments);
+      }));
+    deps.spool.commitDiarization({ clusters, assignments });
   };
   const finalizeConv = (id: string): void => {
     dedupeConversation(id);
@@ -286,15 +286,23 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
   }
 
   /**
-   * Apply one buffered chunk: assemble, append, mark complete, reclaim the
-   * WAV. Everything here runs on the RELEASE timeline, not the arrival
-   * timeline, so a delayed chunk is assembled at its own place in time.
+   * Apply one batch of released chunks.
+   *
+   * Whole-chunk release alone is not enough: two chunks can COVER THE SAME
+   * WINDOW on different channels, so a mic segment at 00:00 and 00:20 must not
+   * be applied ahead of a system segment at 00:10 (issue #2145). The batch's
+   * segments are therefore interleaved into one chronological stream, fed to
+   * the assembler in that order, and appended as runs that each belong to one
+   * chunk — so the per-chunk idempotency keys (`chunkId`, `chunkId:g`,
+   * `chunkId:done`) keep their existing shape and a lone chunk still uses the
+   * bare `chunkId` exactly as before.
+   *
+   * Everything here runs on the RELEASE timeline, not the arrival timeline.
    */
-  async function applyChunk(entry: BufferedChunk): Promise<void> {
-    const { event, chunkId, built } = entry;
+  async function applyBatch(batch: readonly BufferedChunk[]): Promise<void> {
     // Recover the newest still-open conversation once (any chunk, incl. silent)
     // so a post-restart chunk continues it; then finalize a stale open
-    // conversation when this chunk is released a gap past it. Pure-silence runs
+    // conversation when this batch is released a gap past it. Pure-silence runs
     // never call assembler.add, so closeIfIdle is what closes them.
     if (!recovered) {
       recovered = true;
@@ -304,139 +312,154 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
         openConversationId = prior.id;
       }
     }
-    const closed = deps.assembler.closeIfIdle(event.startedAtUtc);
+    const earliestStart = batch.reduce(
+      (earliest, entry) => (entry.startMs < earliest.startMs ? entry : earliest),
+      batch[0],
+    );
+    const closed = deps.assembler.closeIfIdle(earliestStart.event.startedAtUtc);
     if (closed !== null && closed === openConversationId) {
       finalizeConv(closed);
       openConversationId = null;
     }
 
+    // One chronological stream across the batch. The comparator is total —
+    // start, then end, then chunk id, then position — so the same batch always
+    // interleaves the same way (rule 12).
+    const stream = batch
+      .flatMap((entry) =>
+        entry.built.map((item, index) => ({ entry, item, index })),
+      )
+      .sort((left, right) => {
+        if (left.item.seg.startUtc !== right.item.seg.startUtc) {
+          return left.item.seg.startUtc < right.item.seg.startUtc ? -1 : 1;
+        }
+        if (left.item.seg.endUtc !== right.item.seg.endUtc) {
+          return left.item.seg.endUtc < right.item.seg.endUtc ? -1 : 1;
+        }
+        if (left.entry.chunkId !== right.entry.chunkId) {
+          return left.entry.chunkId < right.entry.chunkId ? -1 : 1;
+        }
+        return left.index - right.index;
+      });
 
-    if (built.length > 0) {
-      // Segments usually land in one conversation, but a gap >= threshold (or
-      // conversationGapMinutes = 0) can split them intra-chunk. Group by the
-      // conversation the assembler places each segment in.
-      const groups: Array<{
-        id: string;
-        startedAtUtc: string;
-        items: Array<{ seg: AssemblySegment; raw: TranscribedSegment }>;
-      }> = [];
-      for (const item of built) {
-        const conv = deps.assembler.add(item.seg);
-        const last = groups[groups.length - 1];
-        if (last && last.id === conv.id) last.items.push(item);
-        else groups.push({ id: conv.id, startedAtUtc: conv.startedAtUtc, items: [item] });
-      }
-      // Append each group, finalizing a conversation only once we move past it
-      // (AFTER its rows are appended). A group already applied in a prior run is
-      // skipped so the SAME chunk's later, unpersisted groups still append.
-      for (let g = 0; g < groups.length; g++) {
-        const grp = groups[g];
-        const key = groups.length === 1 ? chunkId : `${chunkId}:${g}`;
-        if (deps.spool.isChunkApplied(key)) {
-          openConversationId = grp.id;
-          continue;
-        }
-        if (openConversationId !== null && openConversationId !== grp.id) {
-          finalizeConv(openConversationId);
-        }
-        // Embed now — this is where the audio exists — but do NOT cluster.
-        // Clustering runs at finalize over the segments that SURVIVE
-        // cross-channel dedup (issue #2145), so a mic loopback duplicate that
-        // is later pruned can no longer inflate a centroid or invent a
-        // phantom speaker. The embedding rides along on the segment row.
-        if (deps.embed) {
-          for (const item of grp.items) {
-            item.seg.embedding = await deps.embed(event, item.raw);
-          }
-        }
-        deps.spool.appendAssembledSegments({
-          idempotencyKey: key,
-          chunkId: key,
-          conversationId: grp.id,
-          startedAtUtc: grp.startedAtUtc,
-          state: "capturing",
-          device: event.device,
-          wavPath: event.path,
-          segments: grp.items.map((it) => it.seg),
-        });
-        openConversationId = grp.id;
-      }
+    // Assign conversations over the interleaved stream, then cut it into runs
+    // that each belong to ONE chunk and ONE conversation. The runs are already
+    // in chronological order, so a conversation is only finalized once the
+    // stream has truly moved past it.
+    const runs: Array<{
+      entry: BufferedChunk;
+      id: string;
+      startedAtUtc: string;
+      items: Array<{ seg: AssemblySegment; raw: TranscribedSegment }>;
+    }> = [];
+    for (const { entry, item } of stream) {
+      const conv = deps.assembler.add(item.seg);
+      const last = runs[runs.length - 1];
+      if (last && last.id === conv.id && last.entry === entry) last.items.push(item);
+      else runs.push({ entry, id: conv.id, startedAtUtc: conv.startedAtUtc, items: [item] });
     }
 
-    // Mark the whole chunk complete only when it is safe: either we processed
-    // real segments this run (so every group of this chunk is now applied), or
-    // it is a genuinely fresh silent chunk with no prior partial application. A
-    // zero-segment run over a chunk whose earlier groups were already applied
-    // (a partial crash) must NOT be marked done, or the missing tail groups
-    // would be stranded forever.
-    const chunkFullyProcessed = built.length > 0 || !deps.spool.isChunkApplied(`${chunkId}:0`);
-    processedThisRun.add(chunkId);
-    if (chunkFullyProcessed) {
+    const runsPerChunk = new Map<string, number>();
+    for (const run of runs) {
+      runsPerChunk.set(run.entry.chunkId, (runsPerChunk.get(run.entry.chunkId) ?? 0) + 1);
+    }
+    const emitted = new Map<string, number>();
+    for (const run of runs) {
+      const { chunkId, event } = run.entry;
+      const index = emitted.get(chunkId) ?? 0;
+      emitted.set(chunkId, index + 1);
+      const key = runsPerChunk.get(chunkId) === 1 ? chunkId : `${chunkId}:${index}`;
+      if (deps.spool.isChunkApplied(key)) {
+        openConversationId = run.id;
+        continue;
+      }
+      if (openConversationId !== null && openConversationId !== run.id) {
+        finalizeConv(openConversationId);
+      }
+      // Embed now — this is where the audio exists — but do NOT cluster.
+      // Clustering runs at finalize over the segments that SURVIVE
+      // cross-channel dedup (issue #2145), so a mic loopback duplicate that
+      // is later pruned can no longer inflate a centroid or invent a
+      // phantom speaker. The embedding rides along on the segment row.
+      if (deps.embed) {
+        for (const item of run.items) {
+          item.seg.embedding = await deps.embed(event, item.raw);
+        }
+      }
+      deps.spool.appendAssembledSegments({
+        idempotencyKey: key,
+        chunkId: key,
+        conversationId: run.id,
+        startedAtUtc: run.startedAtUtc,
+        state: "capturing",
+        device: event.device,
+        wavPath: event.path,
+        segments: run.items.map((it) => it.seg),
+      });
+      openConversationId = run.id;
+    }
+
+    for (const entry of batch) {
+      // Mark the whole chunk complete only when it is safe: either we processed
+      // real segments this run (so every run of this chunk is now applied), or
+      // it is a genuinely fresh silent chunk with no prior partial application.
+      // A zero-segment run over a chunk whose earlier groups were already
+      // applied (a partial crash) must NOT be marked done, or the missing tail
+      // groups would be stranded forever.
+      const fullyProcessed =
+        entry.built.length > 0 || !deps.spool.isChunkApplied(`${entry.chunkId}:0`);
+      processedThisRun.add(entry.chunkId);
+      if (!fullyProcessed) continue;
       // The chunk is fully durably transcribed: record completion and reclaim
       // the raw WAV. A partial chunk (earlier groups applied, this run added
-      // nothing) must RETAIN its WAV so a later full replay can still transcribe
-      // the missing tail groups. Cleanup is best-effort; the janitor is the backstop.
-      deps.spool.markChunkComplete(chunkId, openConversationId ?? "-");
+      // nothing) must RETAIN its WAV so a later full replay can still
+      // transcribe the missing tail. Cleanup is best-effort; the janitor is
+      // the backstop.
+      deps.spool.markChunkComplete(entry.chunkId, openConversationId ?? "-");
       try {
-        await deps.cleanupRawAudio(event);
+        await deps.cleanupRawAudio(entry.event);
       } catch (err) {
-        report(err, event);
+        report(err, entry.event);
       }
     }
   }
 
   /**
-   * Release every buffered chunk the watermark has passed, oldest first.
+   * Release every buffered chunk the watermark has passed, as one batch.
    *
-   * Release is whole-chunk: a chunk's own segments are already chronological,
-   * and holding until its END clears the watermark is what makes the released
-   * stream chronological ACROSS chunks. Whole-chunk release also keeps the
-   * per-chunk idempotency keys (`chunkId`, `chunkId:g`, `chunkId:done`)
-   * exactly as they were, so replay and crash recovery are unchanged.
+   * A chunk becomes releasable when the newest observed chunk end is
+   * `reorderWindowMs` past its own end. Releasing the whole releasable set
+   * together is what lets `applyBatch` interleave overlapping cross-channel
+   * windows; holding until the END clears the watermark is what bounds how far
+   * out of order an arrival can be.
    *
    * `flushAll` ignores the watermark, for `finalize()`.
    */
   async function releaseReady(flushAll: boolean): Promise<void> {
-    const threshold = flushAll ? Number.POSITIVE_INFINITY : watermarkSourceMs - reorderWindowMs;
     for (;;) {
-      const readyIndex = pickNextReleasable(threshold);
-      if (readyIndex === -1) return;
-      const [entry] = buffer.splice(readyIndex, 1);
-      if (entry === undefined) return;
-      bufferedIds.delete(entry.chunkId);
+      const threshold = flushAll ? Number.POSITIVE_INFINITY : watermarkSourceMs - reorderWindowMs;
+      const batch: BufferedChunk[] = [];
+      for (let i = buffer.length - 1; i >= 0; i--) {
+        const candidate = buffer[i];
+        if (candidate.endMs > threshold) continue;
+        buffer.splice(i, 1);
+        bufferedIds.delete(candidate.chunkId);
+        batch.push(candidate);
+      }
+      if (batch.length === 0) return;
+      // Total order so the same batch always applies the same way (rule 12).
+      batch.sort(
+        (left, right) =>
+          left.startMs - right.startMs ||
+          left.endMs - right.endMs ||
+          (left.chunkId < right.chunkId ? -1 : left.chunkId > right.chunkId ? 1 : 0),
+      );
       try {
-        await applyChunk(entry);
+        await applyBatch(batch);
       } catch (error) {
-        report(error, entry.event);
+        report(error, batch[0].event);
       }
     }
-  }
-
-  /**
-   * Index of the oldest releasable chunk, or -1. Ordering is by first
-   * segment start, then chunk end, then id: a total comparator, so the
-   * release order is identical across runs (rule 12).
-   */
-  function pickNextReleasable(threshold: number): number {
-    let best = -1;
-    for (let i = 0; i < buffer.length; i++) {
-      const candidate = buffer[i];
-      if (candidate.endMs > threshold) continue;
-      if (best === -1) {
-        best = i;
-        continue;
-      }
-      const incumbent = buffer[best];
-      if (
-        candidate.startMs < incumbent.startMs ||
-        (candidate.startMs === incumbent.startMs &&
-          (candidate.endMs < incumbent.endMs ||
-            (candidate.endMs === incumbent.endMs && candidate.chunkId < incumbent.chunkId)))
-      ) {
-        best = i;
-      }
-    }
-    return best;
   }
 
   function enqueue(event: ChunkEvent): void {

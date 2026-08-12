@@ -595,16 +595,28 @@ export class Spool {
     return out;
   }
 
-  /** Write finalize-time diarization results back onto their segments. */
-  assignSegmentSpeakers(
-    assignments: ReadonlyArray<{ id: string; speakerCluster: string; isWearer: boolean }>,
-  ): number {
-    if (assignments.length === 0) return 0;
+  /**
+   * Commit one conversation's diarization: cluster snapshots and the segment
+   * assignments that produced them, in ONE transaction.
+   *
+   * Splitting the two lets a crash persist an updated `embedding_count` while
+   * its segments stay unassigned; the next finalize would select the same rows
+   * and count the same embeddings again (issue #2145). Atomicity is what makes
+   * the repeated-finalize idempotency claim true.
+   */
+  commitDiarization(input: {
+    clusters: readonly SpeakerInput[];
+    assignments: ReadonlyArray<{ id: string; speakerCluster: string; isWearer: boolean }>;
+  }): number {
+    if (input.assignments.length === 0 && input.clusters.length === 0) return 0;
     const stmt = this.#db.prepare("UPDATE segments SET speaker_cluster = ?, is_wearer = ? WHERE id = ?");
     let updated = 0;
     this.#db.exec("BEGIN");
     try {
-      for (const assignment of assignments) {
+      // Clusters first inside the transaction, so the segments' foreign
+      // reference is already present when they are written.
+      for (const cluster of input.clusters) this.#upsertSpeakerUnlocked(cluster);
+      for (const assignment of input.assignments) {
         updated += Number(stmt.run(assignment.speakerCluster, assignment.isWearer ? 1 : 0, assignment.id).changes);
       }
       this.#db.exec("COMMIT");
@@ -666,6 +678,11 @@ export class Spool {
   }
 
   upsertSpeaker(input: SpeakerInput): void {
+    this.#upsertSpeakerUnlocked(input);
+  }
+
+  /** `upsertSpeaker` without its own transaction, for use inside one. */
+  #upsertSpeakerUnlocked(input: SpeakerInput): void {
     const current = this.#db
       .prepare(
         "SELECT label, embedding_count AS embeddingCount, is_self AS isSelf, centroid, example_embeddings AS examples FROM speaker_clusters WHERE id = ?",

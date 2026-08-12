@@ -161,12 +161,6 @@ export function parseDaemonConfig(raw: unknown): DaemonConfig {
 
   if (obj.vad !== undefined) {
     const vad = asObject(obj.vad, "vad");
-  if (obj.reorderWindowSeconds !== undefined) {
-    cfg.reorderWindowSeconds = coerceNumber(obj.reorderWindowSeconds, "reorderWindowSeconds", {
-      min: 0,
-      max: 3600,
-    });
-  }
     warnUnknownKeys(
       vad,
       {
