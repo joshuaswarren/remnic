@@ -161,26 +161,6 @@ export class ConversationAssembler {
     });
   }
 
-  /**
-   * Deep snapshot for rollback (issue #2145).
-   *
-   * `add` mutates the open conversation in place, so a caller that fails
-   * AFTER feeding a batch must be able to rewind — otherwise the retry feeds
-   * earlier timestamps into an advanced assembler and merges spans the first
-   * attempt had split.
-   */
-  checkpoint(): AssembledConversation[] {
-    return this.#conversations.map((conv) => ({ ...conv, segments: conv.segments.slice() }));
-  }
-
-  /** Rewind to a {@link checkpoint}. */
-  rewind(snapshot: readonly AssembledConversation[]): void {
-    this.#conversations.length = 0;
-    for (const conv of snapshot) {
-      this.#conversations.push({ ...conv, segments: conv.segments.slice() });
-    }
-  }
-
   /** Ordered snapshot; segments are cloned so callers cannot mutate internal state. */
   conversations(): AssembledConversation[] {
     return this.#conversations.map((conv) => ({ ...conv, segments: conv.segments.slice() }));

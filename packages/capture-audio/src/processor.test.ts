@@ -648,11 +648,10 @@ test("a zero-segment replay of a partially-applied chunk does NOT mark it done (
   }
 });
 
-test("a chunk applied under the pre-#2145 group keys is never re-appended", async () => {
-  // Legacy `chunkId` / `chunkId:<n>` keys cannot be mapped onto per-segment
-  // keys, so such a chunk is treated as applied and closed out. Losing the
-  // tail of one in-flight chunk across the upgrade beats duplicating the
-  // segments that were already stored.
+test("a chunk applied under the pre-#2145 group keys is left strictly alone", async () => {
+  // Legacy `chunkId` / `chunkId:<n>` keys prove only that SOME group persisted,
+  // so the chunk is neither re-appended (duplicating stored groups) nor closed
+  // out (discarding an unpersisted tail). Its raw audio stays for replay.
   const spool = new Spool(":memory:");
   try {
     const ev = chunk({ path: "/tmp/raw/legacy.wav" });
@@ -665,9 +664,13 @@ test("a chunk applied under the pre-#2145 group keys is never re-appended", asyn
       state: "capturing",
       segments: [{ channel: "mic", text: "legacy group", startUtc: t(1), endUtc: t(2), isWearer: true }],
     });
+    const cleaned: string[] = [];
     const proc = createChunkProcessor(
       deps(spool, {
         assembler: new ConversationAssembler({ gapMinutes: 0 }),
+        cleanupRawAudio: async (event) => {
+          cleaned.push(event.path);
+        },
         transcribe: async () => [
           { text: "legacy group", startUtc: t(1), endUtc: t(2) },
           { text: "tail", startUtc: t(30), endUtc: t(31) },
@@ -676,8 +679,13 @@ test("a chunk applied under the pre-#2145 group keys is never re-appended", asyn
     );
     proc.enqueue(ev);
     await proc.finalize();
+    assert.deepEqual(cleaned, [], "the raw audio is retained for replay");
     assert.equal(spool.stats().segments, 1, "no duplicate of the legacy-applied segment");
-    assert.equal(spool.isChunkApplied(`${cid}:done`), true, "and the chunk is closed out");
+    assert.equal(
+      spool.isChunkApplied(`${cid}:done`),
+      false,
+      "and it is NOT closed out, so the unpersisted tail stays recoverable",
+    );
   } finally {
     spool.close();
   }

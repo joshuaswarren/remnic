@@ -17,6 +17,8 @@
 
 import { createHash } from "node:crypto";
 
+import { log } from "@remnic/core/logger";
+
 import type { AssemblySegment, ConversationAssembler } from "./assembly.js";
 import { dedupeCrossChannel } from "./dedup.js";
 import { CaptureInputError } from "./errors.js";
@@ -225,7 +227,13 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
   };
 
   const report = (error: unknown, event: ChunkEvent): void => {
-    deps.onError?.(error instanceof Error ? error : new Error(String(error)), event);
+    // A throwing operator callback must not become a pipeline failure: it would
+    // propagate into the serialized chain and stall every later chunk.
+    try {
+      deps.onError?.(error instanceof Error ? error : new Error(String(error)), event);
+    } catch {
+      // nothing left to report it to
+    }
   };
 
   async function process(event: ChunkEvent): Promise<void> {
@@ -244,13 +252,15 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     // would duplicate its segments, which is worse than leaving the tail of
     // one in-flight chunk unsent across the upgrade.
     if (deps.spool.isChunkApplied(chunkId) || deps.spool.isChunkApplied(`${chunkId}:0`)) {
+      // Legacy group keys prove only that SOME group persisted, so this chunk
+      // is left strictly alone: not re-appended (which would duplicate the
+      // stored groups), and not marked done or reclaimed (which would discard
+      // an unpersisted tail). The WAV stays for a rebuild or manual replay,
+      // and the operator is told once.
       processedThisRun.add(chunkId);
-      deps.spool.markChunkComplete(chunkId, openConversationId ?? "-");
-      try {
-        await deps.cleanupRawAudio(event);
-      } catch (err) {
-        report(err, event);
-      }
+      log.warn(
+        `[capture-audio] chunk ${chunkId} was partially applied under the pre-#2145 key scheme; leaving it and its raw audio in place for replay`,
+      );
       return;
     }
     if (deps.spool.isChunkApplied(`${chunkId}:done`)) {
@@ -384,6 +394,13 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     // that each belong to ONE chunk and ONE conversation. The runs are already
     // in chronological order, so a conversation is only finalized once the
     // stream has truly moved past it.
+    //
+    // Already-applied segments are dropped BEFORE the assembler sees them.
+    // They live in a durable conversation already, so re-adding them would
+    // either duplicate in-memory state or — if the assembler were rewound to
+    // undo them — mint a second id for a conversation that is already on disk
+    // and split it. Skipping is the only option that keeps the in-memory ids
+    // and the persisted ids identical (issue #2145).
     const runs: Array<{
       entry: BufferedChunk;
       id: string;
@@ -391,6 +408,7 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       items: Array<{ seg: AssemblySegment; raw: TranscribedSegment; index: number }>;
     }> = [];
     for (const { entry, item, index } of stream) {
+      if (deps.spool.isChunkApplied(`${entry.chunkId}:i${index}`)) continue;
       const conv = deps.assembler.add(item.seg);
       const carried = { ...item, index };
       const last = runs[runs.length - 1];
@@ -408,10 +426,6 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       const { chunkId, event } = run.entry;
       for (const item of run.items) {
         const key = `${chunkId}:i${item.index}`;
-        if (deps.spool.isChunkApplied(key)) {
-          openConversationId = run.id;
-          continue;
-        }
         if (openConversationId !== null && openConversationId !== run.id) {
           finalizeConv(openConversationId);
         }
@@ -488,16 +502,9 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
           left.endMs - right.endMs ||
           (left.chunkId < right.chunkId ? -1 : left.chunkId > right.chunkId ? 1 : 0),
       );
-      // Rewind point: persistence inside applyBatch is synchronous but can
-      // still throw (a busy/IO error from SQLite) AFTER segments have passed
-      // through the assembler. Without this the retry feeds earlier
-      // timestamps into an advanced assembler and merges spans the first
-      // attempt had split (issue #2145).
-      const assemblerCheckpoint = deps.assembler.checkpoint();
       try {
         await applyBatch(batch);
       } catch (error) {
-        deps.assembler.rewind(assemblerCheckpoint);
         // Requeue FIRST: `report` runs an operator callback that may itself
         // throw, and losing the batch to a broken telemetry sink would turn an
         // observer failure into data loss. A throw mid-batch leaves the chunks
