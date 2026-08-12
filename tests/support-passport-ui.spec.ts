@@ -828,8 +828,14 @@ test("a stalled share creation shows uncertain state without revoking a grant", 
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ cards: [card] }) });
   });
   let grantReads = 0;
+  const reconciliationStarted = Promise.withResolvers<void>();
+  const releaseReconciliation = Promise.withResolvers<void>();
   await page.route("**/engram/v1/support-passport/grants", async (route) => {
     grantReads += 1;
+    if (grantReads === 2) {
+      reconciliationStarted.resolve();
+      await releaseReconciliation.promise;
+    }
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -851,6 +857,9 @@ test("a stalled share creation shows uncertain state without revoking a grant", 
       )
     )
     .toBe(true);
+  await reconciliationStarted.promise;
+  await expect(page.getByRole("button", { name: "Creating link…" })).toBeDisabled();
+  releaseReconciliation.resolve();
 
   await expect(
     page.getByText(
