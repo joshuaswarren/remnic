@@ -60,8 +60,7 @@ export class SupportPassportCardService {
     const { storage } = await this.resolveOwner(parsed.data.principal);
     return await this.withOwnerLock(storage, async () => {
       const stored = await this.readStoredCards(storage);
-      const cards = stored
-        .filter((item) => OWNER_VISIBLE_STATUSES.has(item.card.status))
+      const cards = this.ownerVisibleCards(stored)
         .sort((a, b) => a.order - b.order || a.card.cardId.localeCompare(b.card.cardId))
         .map((item) => item.card);
       const output = SupportPassportCardListSchema.safeParse(cards);
@@ -234,13 +233,13 @@ export class SupportPassportCardService {
     const now = this.now();
     const reviewBy = input.reviewBy ?? now.toISOString();
     const storedCards = await this.readStoredCards(storage);
-    const visibleCardCount = storedCards.filter((item) => OWNER_VISIBLE_STATUSES.has(item.card.status)).length;
-    const replacesVisibleCard = storedCards.some(
+    const visibleCards = this.ownerVisibleCards(storedCards);
+    const replacesVisibleCard = visibleCards.some(
       (item) =>
         (input.replacesDraftId === item.card.cardId && item.card.status === "pending_review") ||
         (input.supersedes === item.card.cardId && item.card.status === "active")
     );
-    if (visibleCardCount - (replacesVisibleCard ? 1 : 0) >= MAX_OWNER_VISIBLE_CARDS) {
+    if (visibleCards.length - (replacesVisibleCard ? 1 : 0) >= MAX_OWNER_VISIBLE_CARDS) {
       throw new SupportPassportError("invalid_input", "A support passport can contain at most 100 visible cards.", 400);
     }
     const order = input.order ?? storedCards.reduce((maximum, card) => Math.max(maximum, card.order), -1) + 1;
@@ -388,6 +387,20 @@ export class SupportPassportCardService {
       ids.add(item.card.cardId);
     }
     return projected;
+  }
+
+  private ownerVisibleCards(storedCards: StoredSupportPassportCard[]): StoredSupportPassportCard[] {
+    const visibleCards = storedCards.filter((item) => OWNER_VISIBLE_STATUSES.has(item.card.status));
+    if (visibleCards.length <= MAX_OWNER_VISIBLE_CARDS) return visibleCards;
+    const activeCardsWithPendingReplacements = new Set(
+      visibleCards
+        .filter((item) => item.card.status === "pending_review")
+        .map((item) => item.memory.frontmatter.supersedes)
+        .filter((cardId): cardId is string => typeof cardId === "string")
+    );
+    return visibleCards.filter(
+      (item) => item.card.status !== "active" || !activeCardsWithPendingReplacements.has(item.card.cardId)
+    );
   }
 
   private async preparePriorForReplacement(
