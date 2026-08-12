@@ -189,6 +189,13 @@ test("an approved replacement retires the prior card and withdrawal removes the 
     });
     assert.equal(approvedReplacement.status, "active");
     assert.equal((await subject.aliceStorage.getMemoryById(active.cardId))?.frontmatter.status, "superseded");
+    const replacementAudit = (await subject.aliceStorage.readAllMemories()).find(
+      (memory) =>
+        memory.frontmatter.category === "correction" &&
+        memory.frontmatter.lineage?.includes(active.cardId) &&
+        memory.frontmatter.lineage.includes(replacement.cardId)
+    );
+    assert.ok(replacementAudit);
 
     subject.advance();
     await subject.service.withdrawCard({
@@ -867,6 +874,59 @@ test("a rollback failure does not replace the approval conflict", async () => {
         error instanceof SupportPassportError && error.code === "storage_conflict" && error.status === 409
     );
     assert.equal(rollbackAttempts, 1);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("failed replacement activation does not leave a false supersession audit", async () => {
+  const subject = await makeSubject();
+  try {
+    const draft = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Quiet space",
+      statement: "Offer me a quiet place.",
+      category: "environment",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const active = await subject.service.approveCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+    });
+    const replacement = await subject.service.replaceCard({
+      principal: "owner:alice",
+      cardId: active.cardId,
+      expectedRevision: active.revision,
+      title: "Quiet space",
+      statement: "Offer me a quiet place and time.",
+      category: "environment",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const originalWrite = subject.aliceStorage.writeMemoryFrontmatterIfUnchanged.bind(subject.aliceStorage);
+    subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = async (memory, patch, lifecycle) => {
+      if (lifecycle?.actor === "support-passport.approve") return false;
+      return await originalWrite(memory, patch, lifecycle);
+    };
+
+    await assert.rejects(
+      subject.service.approveCard({
+        principal: "owner:alice",
+        cardId: replacement.cardId,
+        expectedRevision: replacement.revision,
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
+    );
+
+    assert.equal((await subject.aliceStorage.getMemoryById(active.cardId))?.frontmatter.status, "active");
+    assert.equal((await subject.aliceStorage.getMemoryById(replacement.cardId))?.frontmatter.status, "pending_review");
+    const falseAudit = (await subject.aliceStorage.readAllMemories()).find(
+      (memory) =>
+        memory.frontmatter.category === "correction" &&
+        memory.frontmatter.lineage?.includes(active.cardId) &&
+        memory.frontmatter.lineage.includes(replacement.cardId)
+    );
+    assert.equal(falseAudit, undefined);
   } finally {
     await subject.cleanup();
   }
