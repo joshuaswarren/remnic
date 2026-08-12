@@ -870,6 +870,54 @@ test("a live helper view locks after the owner revokes its grant", async ({ page
   await expect(page.locator(".public-card")).toHaveCount(0);
 });
 
+test("a restored helper view immediately revalidates its grant", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers browser-cache restoration.");
+  const now = new Date();
+  let revoked = false;
+  let reads = 0;
+  await page.route("**/engram/v1/support-passport/public/grants/replay-grant-restored", async (route) => {
+    reads += 1;
+    if (revoked) {
+      await route.fulfill({
+        status: 410,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "ended", code: "grant_gone" }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      headers: { date: now.toUTCString() },
+      contentType: "application/json",
+      body: JSON.stringify({
+        schemaVersion: 1,
+        grantId: "replay-grant-restored",
+        expiresAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
+        updatedAt: now.toISOString(),
+        cards: [
+          {
+            cardId: "card-restored",
+            title: "Quiet place",
+            statement: "Offer me a quiet place and time.",
+            category: "environment",
+            updatedAt: now.toISOString(),
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.goto(helperUrl("-restored").replace("mode=replay&", ""));
+  await expect(page.locator(".public-card")).toHaveCount(1);
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })));
+  revoked = true;
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })));
+
+  await expect(page.getByRole("heading", { name: "This support passport is locked." })).toBeVisible();
+  expect(reads).toBeGreaterThanOrEqual(2);
+  await expect(page.locator(".public-card")).toHaveCount(0);
+});
+
 test("helper revalidation backs off after a rate limit", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers helper polling backoff.");
   const now = new Date("2026-08-11T12:00:00.000Z");

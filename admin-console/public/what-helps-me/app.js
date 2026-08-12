@@ -23,6 +23,7 @@
   const OWNER_MODEL_TIMEOUT_MS = 15 * 60_000;
   const MAX_VISIBLE_GRANTS = 100;
   const MAX_SHARED_CARDS = 8;
+  const PAGE_HIDDEN_ABORT = new Error("The helper page was hidden.");
 
   const state = {
     token: "",
@@ -39,6 +40,7 @@
     helperRevalidationController: null,
     helperRevalidationTimer: null,
     helperRevalidationDelayMs: HELPER_REVALIDATION_MS,
+    helperLifecyclePaused: false,
     toastTimer: null,
   };
 
@@ -692,7 +694,7 @@
   function scheduleHelperExpiry() {
     window.clearTimeout(state.helperExpiryTimer);
     state.helperExpiryTimer = null;
-    if (!state.guide) return;
+    if (!state.guide || state.helperLifecyclePaused) return;
     const serverNow = Date.now() + (state.helperServerOffsetMs ?? 0);
     const remainingMs = Date.parse(state.guide.expiresAt) - serverNow;
     if (remainingMs <= 0 && !replayMode && state.helperServerOffsetMs === null) return;
@@ -733,13 +735,13 @@
   function scheduleHelperRevalidation() {
     window.clearTimeout(state.helperRevalidationTimer);
     state.helperRevalidationTimer = null;
-    if (replayMode || !state.guide) return;
+    if (replayMode || !state.guide || state.helperLifecyclePaused) return;
     state.helperRevalidationTimer = window.setTimeout(revalidateHelper, state.helperRevalidationDelayMs);
   }
 
   async function revalidateHelper() {
     state.helperRevalidationTimer = null;
-    if (!state.guide) return;
+    if (!state.guide || state.helperLifecyclePaused) return;
     const controller = new AbortController();
     state.helperRevalidationController?.abort();
     state.helperRevalidationController = controller;
@@ -770,8 +772,8 @@
   }
 
   async function loadHelper() {
-    byId("connectPanel").remove();
-    byId("ownerView").remove();
+    byId("connectPanel")?.remove();
+    byId("ownerView")?.remove();
     byId("helperView").hidden = false;
     byId("viewMarkerText").textContent = replayMode ? "Helper replay" : "Helper view";
     document.title = "Shared support passport · What Helps Me";
@@ -793,6 +795,7 @@
       scheduleHelperRevalidation();
       announce(`Support passport loaded with ${state.guide.cards.length} cards.`);
     } catch (error) {
+      if (controller.signal.reason === PAGE_HIDDEN_ABORT) return;
       showLocked(error);
     } finally {
       window.clearTimeout(timeout);
@@ -836,6 +839,7 @@
       announce("Answer ready with support card citations.");
     } catch (error) {
       if (!state.guide) return;
+      if (controller.signal.reason === PAGE_HIDDEN_ABORT) return;
       if (timedOut) {
         setError("questionError", "The question took too long. Try again.");
         return;
@@ -887,18 +891,25 @@
         showLocked(error);
       }
     });
-    window.addEventListener(
-      "pagehide",
-      () => {
-        window.clearTimeout(state.helperExpiryTimer);
-        window.clearTimeout(state.helperRevalidationTimer);
-        state.helperLoadController?.abort();
-        state.helperQuestionController?.abort();
-        state.helperRevalidationController?.abort();
-        replayChannel?.close();
-      },
-      { once: true }
-    );
+    window.addEventListener("pagehide", (event) => {
+      state.helperLifecyclePaused = true;
+      window.clearTimeout(state.helperExpiryTimer);
+      window.clearTimeout(state.helperRevalidationTimer);
+      state.helperLoadController?.abort(PAGE_HIDDEN_ABORT);
+      state.helperQuestionController?.abort(PAGE_HIDDEN_ABORT);
+      state.helperRevalidationController?.abort(PAGE_HIDDEN_ABORT);
+      if (!event.persisted) replayChannel?.close();
+    });
+    window.addEventListener("pageshow", (event) => {
+      if (!event.persisted) return;
+      state.helperLifecyclePaused = false;
+      if (!state.guide) {
+        if (byId("helperView")) void loadHelper();
+        return;
+      }
+      scheduleHelperExpiry();
+      if (state.guide && !replayMode) void revalidateHelper();
+    });
   }
 
   async function init() {
