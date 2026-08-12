@@ -1299,8 +1299,8 @@ test("retrying an interrupted pending-draft replacement rejects changed content"
     );
     const visible = await subject.service.listCards({ principal: "owner:alice" });
     assert.equal(visible.length, 1);
-    assert.equal(visible[0]?.cardId, replacement.frontmatter.id);
-    assert.equal(visible[0]?.statement, "Offer me a quiet place and time.");
+    assert.equal(visible[0]?.cardId, draft.cardId);
+    assert.equal(visible[0]?.statement, "Offer me a quiet place.");
     assert.equal((await subject.aliceStorage.readAllMemories()).length, 2);
   } finally {
     await subject.cleanup();
@@ -1888,7 +1888,7 @@ test("failed replacement activation stays pending through recovery", async () =>
   }
 });
 
-test("a draft rollback failure recovers to one visible card", async () => {
+test("a draft rollback failure keeps one visible card", async () => {
   const subject = await makeSubject();
   try {
     const draft = await subject.service.createManualDraft({
@@ -1925,13 +1925,13 @@ test("a draft rollback failure recovers to one visible card", async () => {
     assert.equal(rollbackAttempts, 1);
     const visible = await subject.service.listCards({ principal: "owner:alice" });
     assert.equal(visible.length, 1);
-    assert.notEqual(visible[0]?.cardId, draft.cardId);
+    assert.equal(visible[0]?.cardId, draft.cardId);
     const cards = (await subject.aliceStorage.readAllMemories()).filter((memory) =>
       memory.frontmatter.tags?.includes("support-passport-card")
     );
     assert.equal(cards.length, 2);
-    assert.equal(cards.filter((memory) => memory.frontmatter.status === "pending_review").length, 1);
-    assert.equal(cards.filter((memory) => memory.frontmatter.status === "rejected").length, 1);
+    assert.equal(cards.filter((memory) => memory.frontmatter.status === "pending_review").length, 2);
+    assert.equal(cards.filter((memory) => memory.frontmatter.status === "rejected").length, 0);
   } finally {
     await subject.cleanup();
   }

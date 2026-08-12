@@ -382,17 +382,23 @@ export function buildSupportPassportPublicRequestHandler(
         );
         respondJson(res, 200, guide);
       } else {
-        const question = await readQuestionBody(req, lifecycle.signal);
-        await readGrantWithRateLimits(
-          service,
-          grantId,
-          secret,
-          digest,
-          rateLimits.networkQuestions,
-          rateLimits.grantQuestions,
-          rateLimits.networkQuestionFailures,
-          rateLimits.authentications
-        );
+        const releaseAuthentication = rateLimits.authentications.reserve(digest);
+        if (!releaseAuthentication) throw rateLimited();
+        let question: string;
+        try {
+          question = await readQuestionBody(req, lifecycle.signal);
+          await readGrantUnderAuthenticationReservation(
+            service,
+            grantId,
+            secret,
+            digest,
+            rateLimits.networkQuestions,
+            rateLimits.grantQuestions,
+            rateLimits.networkQuestionFailures
+          );
+        } finally {
+          releaseAuthentication();
+        }
         const answer = await runPublicOperation(
           service,
           "support_passport_grant_ask",

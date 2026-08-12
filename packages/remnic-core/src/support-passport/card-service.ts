@@ -334,7 +334,14 @@ export class SupportPassportCardService {
       const currentPrior = await storage.getMemoryById(prior.card.cardId);
       const currentPriorCard = currentPrior ? this.projectOwnedCard(currentPrior, namespace, principal) : null;
       if (currentPriorCard?.card.status === "rejected") {
-        return await this.finishPreparedDraftReplacement(storage, replacement.cardId, lock, principal, namespace);
+        return await this.finishPreparedDraftReplacement(
+          storage,
+          replacement.cardId,
+          lock,
+          principal,
+          namespace,
+          onCommitted
+        );
       }
 
       await this.rejectCreatedDraft(
@@ -805,7 +812,12 @@ export class SupportPassportCardService {
   private ownerListCards(storedCards: StoredSupportPassportCard[]): StoredSupportPassportCard[] {
     const visibleCards = this.ownerVisibleCards(storedCards);
     const byId = new Map(storedCards.map((item) => [item.card.cardId, item]));
-    const activeReplacementPredecessors = activeSupportPassportReplacementPredecessorIds(visibleCards);
+    const activeReplacementPredecessors = new Set(
+      visibleCards
+        .filter((item) => item.card.status === "active")
+        .map((item) => item.memory.frontmatter.supersedes)
+        .filter((cardId): cardId is string => typeof cardId === "string")
+    );
     const replacedDraftIds = new Set(
       visibleCards
         .filter(

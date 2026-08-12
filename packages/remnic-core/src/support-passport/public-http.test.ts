@@ -111,6 +111,61 @@ test("long helper answers release authentication capacity after the secret check
   }
 });
 
+test("slow helper bodies cannot bypass authentication capacity", async () => {
+  const requestsStarted = Promise.withResolvers<void>();
+  const unexpectedErrors: unknown[] = [];
+  let requestCount = 0;
+  const service = {
+    supportPassportReadGrant: async () => GUIDE,
+    supportPassportAskGrant: async () => ({ answer: "The guide says to give advance notice." }),
+  } as unknown as EngramAccessService;
+  const { server, root } = await startPublicServer(
+    service,
+    (error) => {
+      if (!isAbortError(error)) unexpectedErrors.push(error);
+    },
+    () => {
+      requestCount += 1;
+      if (requestCount === 8) requestsStarted.resolve();
+    }
+  );
+  const url = new URL(`${root}/engram/v1/support-passport/public/grants/grant-one/ask`);
+  const slowClients = Array.from({ length: 8 }, () => {
+    const client = request({
+      hostname: url.hostname,
+      port: url.port,
+      path: url.pathname,
+      method: "POST",
+      headers: {
+        authorization: `SupportPassport ${SECRET}`,
+        "content-type": "application/json",
+        "content-length": "100",
+      },
+    });
+    client.on("error", () => {});
+    client.flushHeaders();
+    client.write('{"question":"partial');
+    return client;
+  });
+  try {
+    await requestsStarted.promise;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        authorization: `SupportPassport ${SECRET}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ question: "Can you help?" }),
+      signal: AbortSignal.timeout(2_000),
+    });
+    assert.equal(response.status, 429);
+  } finally {
+    for (const client of slowClients) client.destroy();
+    await stopServer(server);
+  }
+  assert.deepEqual(unexpectedErrors, []);
+});
+
 test("a helper disconnect during the question body becomes an abort", async () => {
   const caught = Promise.withResolvers<unknown>();
   const requestStarted = Promise.withResolvers<void>();
