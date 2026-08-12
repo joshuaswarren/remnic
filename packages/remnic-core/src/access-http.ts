@@ -220,7 +220,6 @@ export interface RemnicAdminControls {
 export function resolveDefaultAdminConsolePublicDir(sourceUrl = import.meta.url): string {
   const thisDir = path.dirname(fileURLToPath(sourceUrl));
   const candidates = [
-    // Repository source layout when package symlinks are not present.
     path.resolve(thisDir, "../../../admin-console/public"),
     // Standard: admin-console sibling to src/ (development layout)
     path.resolve(thisDir, "../admin-console/public"),
