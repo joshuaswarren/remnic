@@ -466,7 +466,7 @@
             }
             const reconciled = await reconcileOwnerState(() => {
               const current = state.grants.find((candidate) => candidate.grantId === grant.grantId);
-              return !current || current.status === "revoked" ? grant : null;
+              return !current || current.status !== "active" ? grant : null;
             });
             if (!reconciled.matched) {
               setError(
