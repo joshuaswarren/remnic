@@ -42,6 +42,7 @@ export const SupportPassportNamespaceSchema = z
   .string()
   .min(1)
   .max(256)
+  .regex(/^[A-Za-z0-9._-]+$/, "namespaces cannot contain path or attribute delimiters")
   .refine((namespace) => namespace === namespace.trim(), {
     message: "namespaces must be canonical",
   });
