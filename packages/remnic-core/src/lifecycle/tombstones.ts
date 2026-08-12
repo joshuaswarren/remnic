@@ -79,8 +79,6 @@ export interface TombstoneEntry {
   currentContentHashAlias?: string;
   /** Current normalized body used by the normalized lookup tier. */
   normalizedText: string;
-  /** Version at which migration was attempted but the source was unavailable. */
-  legacyMigrationAttemptedVersion?: number;
   /** Version of the current body identity fields. */
   normalizerVersion?: number;
   entityRef?: string;
@@ -257,12 +255,6 @@ export function parseTombstoneLine(line: string): TombstoneEntry | null {
   if (typeof e.currentContentHashAlias === "string") {
     out.currentContentHashAlias = e.currentContentHashAlias;
   }
-  if (
-    typeof e.legacyMigrationAttemptedVersion === "number" &&
-    Number.isInteger(e.legacyMigrationAttemptedVersion)
-  ) {
-    out.legacyMigrationAttemptedVersion = e.legacyMigrationAttemptedVersion;
-  }
   if (typeof e.normalizerVersion === "number" && Number.isInteger(e.normalizerVersion)) {
     out.normalizerVersion = e.normalizerVersion;
   }
@@ -401,9 +393,9 @@ export class TombstoneStore {
   }
 
   /**
-   * Re-index pre-Unicode records once from a bounded batch of retired source
-   * content fetched before the write lock. The rewrite is serialized under
-   * the same lock as append/revoke.
+   * Re-index pre-Unicode records from retired source content.
+   * Source reads stay bounded, but every batch finishes before the store
+   * publishes its in-memory index. Missing sources remain eligible on restart.
    */
   private async migrateLegacyEntries(initial: {
     entries: TombstoneEntry[];
@@ -416,18 +408,23 @@ export class TombstoneStore {
     for (const entry of initial.entries) {
       if (
         entry.kind !== "tombstone" ||
-        entry.normalizerVersion === TOMBSTONE_NORMALIZER_VERSION ||
-        entry.legacyMigrationAttemptedVersion === TOMBSTONE_NORMALIZER_VERSION
+        entry.normalizerVersion === TOMBSTONE_NORMALIZER_VERSION
       ) {
         continue;
       }
       if (requested.has(entry.sourceMemoryId)) continue;
       requested.add(entry.sourceMemoryId);
       sourceMemoryIds.push(entry.sourceMemoryId);
-      if (sourceMemoryIds.length >= limit) break;
     }
     if (sourceMemoryIds.length === 0) return initial;
-    const sourceContents = await this.options.sourceContentsForMemoryIds(sourceMemoryIds);
+    const sourceContents = new Map<string, string>();
+    for (let offset = 0; offset < sourceMemoryIds.length; offset += limit) {
+      const batch = sourceMemoryIds.slice(offset, offset + limit);
+      const fetched = await this.options.sourceContentsForMemoryIds(batch);
+      for (const [sourceMemoryId, content] of fetched) {
+        sourceContents.set(sourceMemoryId, content);
+      }
+    }
     return await serializeMutations(`tombstone:${this.filePath}`, () =>
       this.withWriteLock(async () => {
         let latestRaw: string;
@@ -438,26 +435,17 @@ export class TombstoneStore {
         }
         const latest = this.parseEntries(latestRaw);
         let changed = false;
-        let migratedCount = 0;
         const migrated = latest.entries.map((entry) => {
           if (
             entry.kind !== "tombstone" ||
             entry.normalizerVersion === TOMBSTONE_NORMALIZER_VERSION ||
-            entry.legacyMigrationAttemptedVersion === TOMBSTONE_NORMALIZER_VERSION ||
-            !requested.has(entry.sourceMemoryId) ||
-            migratedCount >= limit
+            !requested.has(entry.sourceMemoryId)
           ) {
             return entry;
           }
           const source = sourceContents.get(entry.sourceMemoryId);
+          if (source === undefined) return entry;
           changed = true;
-          migratedCount += 1;
-          if (source === undefined) {
-            return {
-              ...entry,
-              legacyMigrationAttemptedVersion: TOMBSTONE_NORMALIZER_VERSION,
-            };
-          }
           const currentHash = this.options.hashContent(source);
           const currentNormalizedText = this.options.normalizeText(source);
           const legacyIdentityIsSafe = isUnambiguousLegacyContentHash(

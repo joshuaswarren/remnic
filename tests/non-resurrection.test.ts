@@ -20,7 +20,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { StorageManager } from "../src/storage.ts";
 import { computeSupersessionKey } from "../packages/remnic-core/src/temporal-supersession.ts";
 import { computeLegacyContentHash, normalizeLegacyContent } from "../packages/remnic-core/src/content-hash.ts";
@@ -447,6 +447,55 @@ test("legacy migration preserves structured attributes in the retired content id
 
     const migrated = await readFile(path.join(dir, "state", "tombstones.jsonl"), "utf8");
     assert.match(migrated, /"normalizerVersion":2/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("legacy migration resolves retired source content from archive storage", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-tombstone-archive-source-"));
+  const content = "The user prefers café.";
+  const sourceMemoryId = "fact-archived-source";
+  try {
+    const seed = new StorageManager(dir);
+    await seed.ensureDirectories();
+    const archiveDir = path.join(dir, "archive", "facts");
+    await mkdir(archiveDir, { recursive: true });
+    await writeFile(
+      path.join(archiveDir, `${sourceMemoryId}.md`),
+      [
+        "---",
+        `id: ${sourceMemoryId}`,
+        "category: fact",
+        "status: archived",
+        "---",
+        "",
+        content,
+      ].join("\n"),
+      "utf8",
+    );
+    await writeFile(
+      path.join(dir, "state", "tombstones.jsonl"),
+      `${JSON.stringify({
+        id: "tomb-archived-source",
+        kind: "tombstone",
+        reason: "correction",
+        createdBy: "user_correction",
+        sourceMemoryId,
+        contentHash: computeLegacyContentHash(content),
+        normalizedText: normalizeLegacyContent(content),
+        namespace: NAMESPACE,
+        createdAt: "2026-08-11T00:00:00.000Z",
+      })}\n`,
+      "utf8",
+    );
+
+    const restarted = new StorageManager(dir);
+    enableTombstones(restarted);
+    const result = await restarted.writeMemory("fact", content, { source: "extraction" });
+
+    assert.equal(result.tombstoneBlocked, true);
+    assertBlocked(await readBack(restarted, result.id), "exact");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

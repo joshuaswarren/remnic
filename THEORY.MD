@@ -26,9 +26,11 @@ The system preserves ambiguous persisted identities but does not query them as a
 
 ## Migration strategy
 
-The tombstone store upgrades bounded legacy entries from known source memories.
+The tombstone store reads legacy sources from hot, cold, and archive storage.
 
-It records the migration version when a source is unavailable. Later loads do not repeat the same failed scan.
+It reads source IDs in bounded batches but migrates every available batch before publishing its index.
+
+Unavailable sources remain unversioned. A later load retries them after the source becomes available.
 
 The migration preserves an explicit `contentHashSource` identity as the primary hash.
 
@@ -54,12 +56,8 @@ Terminal sentence punctuation remains compatible with normalized exact matches.
 
 ## Verification state
 
-The focused migration and non-resurrection suite passes 90 tests.
+The focused migration and non-resurrection suite passes 101 tests.
 
 The core type check passes.
 
-`preflight:quick` and `test:entity-hardening` pass after the final migration-source fix.
-
-The complete workspace suite passes 18,422 tests, with 43 skips.
-
-An adversarial branch review found no remaining branch-introduced defect.
+The final mandatory gates and complete workspace suite are running against the latest review fixes.

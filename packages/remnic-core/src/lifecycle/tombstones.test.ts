@@ -356,9 +356,10 @@ describe("TombstoneStore — Unicode migration safety", () => {
     );
   });
 
-  it("marks a missing migration source once and skips the request after restart", async () => {
+  it("retries a missing migration source after restart and upgrades when it appears", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "tomb-migration-missing-source-"));
     const filePath = path.join(dir, "tombstones.jsonl");
+    const source = "The user prefers café.";
     await writeFile(
       filePath,
       `${JSON.stringify({
@@ -366,8 +367,8 @@ describe("TombstoneStore — Unicode migration safety", () => {
         kind: "tombstone",
         reason: "correction",
         sourceMemoryId: "fact-missing-source",
-        contentHash: computeLegacyContentHash("missing source"),
-        normalizedText: normalizeLegacyContent("missing source"),
+        contentHash: computeLegacyContentHash(source),
+        normalizedText: normalizeLegacyContent(source),
         namespace: "default",
         createdAt: "2026-01-01T00:00:00.000Z",
         createdBy: "user_correction",
@@ -375,6 +376,7 @@ describe("TombstoneStore — Unicode migration safety", () => {
       "utf8",
     );
     let requests = 0;
+    let sourceAvailable = false;
     const options = {
       enabled: true,
       semanticMatch: false,
@@ -383,19 +385,74 @@ describe("TombstoneStore — Unicode migration safety", () => {
       normalizeText: normalizeContent,
       sourceContentsForMemoryIds: async () => {
         requests += 1;
-        return new Map<string, string>();
+        return new Map<string, string>(
+          sourceAvailable ? [["fact-missing-source", source]] : [],
+        );
       },
     };
     const first = new TombstoneStore(filePath, "default", options, makeIo());
     await first.load();
     assert.equal(requests, 1);
-    const persisted = JSON.parse(await readFile(filePath, "utf8").then((text) => text.trim())) as {
-      legacyMigrationAttemptedVersion?: number;
-    };
-    assert.equal(persisted.legacyMigrationAttemptedVersion, 2);
+    assert.equal(first.lookup({ namespace: "default", contentHash: computeHash(source) }), null);
+
+    sourceAvailable = true;
     const restarted = new TombstoneStore(filePath, "default", options, makeIo());
     await restarted.load();
-    assert.equal(requests, 1);
+    assert.equal(requests, 2);
+    assert.equal(
+      restarted.lookup({ namespace: "default", contentHash: computeHash(source) })?.matchedTier,
+      "exact",
+    );
+  });
+
+  it("migrates every legacy entry before one load becomes authoritative", async (t) => {
+    const dir = await mkdtemp(path.join(tmpdir(), "tomb-migration-all-batches-"));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const filePath = path.join(dir, "tombstones.jsonl");
+    const sources = new Map([
+      ["fact-first", "利用者は紅茶を好む。"],
+      ["fact-second", "利用者は珈琲を好む。"],
+    ]);
+    const entries = [...sources].map(([sourceMemoryId, content], index) => ({
+      id: `tomb-batch-${index}`,
+      kind: "tombstone",
+      reason: "correction",
+      sourceMemoryId,
+      contentHash: computeLegacyContentHash(content),
+      normalizedText: normalizeLegacyContent(content),
+      namespace: "default",
+      createdAt: `2026-01-0${index + 1}T00:00:00.000Z`,
+      createdBy: "user_correction",
+    }));
+    await writeFile(filePath, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
+    const requestedBatches: string[][] = [];
+    const store = new TombstoneStore(
+      filePath,
+      "default",
+      {
+        enabled: true,
+        semanticMatch: false,
+        semanticThreshold: 0.9,
+        hashContent: computeHash,
+        normalizeText: normalizeContent,
+        legacyMigrationLimit: 1,
+        sourceContentsForMemoryIds: async (sourceMemoryIds) => {
+          requestedBatches.push([...sourceMemoryIds]);
+          return new Map(sourceMemoryIds.map((id) => [id, sources.get(id) as string]));
+        },
+      },
+      makeIo(),
+    );
+
+    await store.load();
+
+    assert.deepEqual(requestedBatches, [["fact-first"], ["fact-second"]]);
+    for (const content of sources.values()) {
+      assert.equal(
+        store.lookup({ namespace: "default", contentHash: computeHash(content) })?.matchedTier,
+        "exact",
+      );
+    }
   });
 });
 
