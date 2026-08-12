@@ -419,6 +419,134 @@ test("drafting revalidates selected memories after the model returns", async () 
   }
 });
 
+test("drafting rolls back when a selected memory changes during persistence", async () => {
+  const subject = await makeSubject();
+  try {
+    const selected = await subject.aliceStorage.writeMemory("preference", "Tell me before plans change.", {
+      source: "test",
+    });
+    const writeSealedMemory = subject.aliceStorage.writeSealedMemory.bind(subject.aliceStorage);
+    subject.aliceStorage.writeSealedMemory = async (...args) => {
+      const written = await writeSealedMemory(...args);
+      const source = await subject.aliceStorage.getMemoryById(selected.id);
+      assert.ok(source);
+      assert.equal(
+        await subject.aliceStorage.writeMemoryFrontmatterIfUnchanged(source, {
+          status: "archived",
+          archivedAt: "2026-08-11T12:00:00.000Z",
+          updated: "2026-08-11T12:00:00.000Z",
+        }),
+        true
+      );
+      return written;
+    };
+    const service = new SupportPassportDraftService({
+      cardService: subject.cardService,
+      modelAdapter: new SupportPassportModelAdapter({
+        routes: [
+          {
+            kind: "local",
+            invoke: async () => ({
+              modelUsed: "local/test-model",
+              content: JSON.stringify({
+                cards: [
+                  {
+                    title: "Plan changes",
+                    statement: "Tell me before plans change.",
+                    category: "transitions",
+                    sourceMemoryIds: [selected.id],
+                  },
+                ],
+              }),
+            }),
+          },
+        ],
+      }),
+      resolveOwner: subject.resolveOwner,
+      audit: { record: async () => undefined },
+      now: subject.now,
+    });
+
+    await assert.rejects(
+      service.draftCards({
+        principal: "owner:alice",
+        sourceMemoryIds: [selected.id],
+        sourceMemoryRevisions: sourceRevision(selected.id, "Tell me before plans change."),
+        consent: true,
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "invalid_input"
+    );
+    assert.deepEqual(await subject.cardService.listCards({ principal: "owner:alice" }), []);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("cancellation rolls back a generated batch before the next draft write", async () => {
+  const subject = await makeSubject();
+  try {
+    const selected = await subject.aliceStorage.writeMemory("preference", "Give me time to answer.", {
+      source: "test",
+    });
+    const controller = new AbortController();
+    const writeSealedMemory = subject.aliceStorage.writeSealedMemory.bind(subject.aliceStorage);
+    let draftWrites = 0;
+    subject.aliceStorage.writeSealedMemory = async (...args) => {
+      const written = await writeSealedMemory(...args);
+      draftWrites += 1;
+      controller.abort(new Error("cancelled during draft persistence"));
+      return written;
+    };
+    const service = new SupportPassportDraftService({
+      cardService: subject.cardService,
+      modelAdapter: new SupportPassportModelAdapter({
+        routes: [
+          {
+            kind: "local",
+            invoke: async () => ({
+              modelUsed: "local/test-model",
+              content: JSON.stringify({
+                cards: [
+                  {
+                    title: "Processing time",
+                    statement: "Give me time to answer.",
+                    category: "communication",
+                    sourceMemoryIds: [selected.id],
+                  },
+                  {
+                    title: "Pause before repeating",
+                    statement: "Pause before you repeat a question.",
+                    category: "communication",
+                    sourceMemoryIds: [selected.id],
+                  },
+                ],
+              }),
+            }),
+          },
+        ],
+      }),
+      resolveOwner: subject.resolveOwner,
+      audit: { record: async () => undefined },
+      now: subject.now,
+    });
+
+    await assert.rejects(
+      service.draftCards({
+        principal: "owner:alice",
+        sourceMemoryIds: [selected.id],
+        sourceMemoryRevisions: sourceRevision(selected.id, "Give me time to answer."),
+        consent: true,
+        signal: controller.signal,
+      }),
+      /cancelled during draft persistence/
+    );
+    assert.equal(draftWrites, 1);
+    assert.deepEqual(await subject.cardService.listCards({ principal: "owner:alice" }), []);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("audit write failures do not block successful drafts or replace model errors", async () => {
   const subject = await makeSubject();
   try {
@@ -597,6 +725,66 @@ test("helper questions recheck the grant after the model call", async () => {
     assert.equal(records.length, 1);
     assert.equal(records[0]?.outcome, "error");
     assert.equal(records[0]?.errorClass, "grant_gone");
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("invalid helper questions use the invalid-input audit class", async () => {
+  const subject = await makeSubject();
+  try {
+    const draft = await subject.cardService.createManualDraft({
+      principal: "owner:alice",
+      title: "Quiet space",
+      statement: "Offer me a quiet place and time.",
+      category: "environment",
+      reviewBy: "2026-09-01T12:00:00.000Z",
+    });
+    const active = await subject.cardService.approveCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+    });
+    const created = await subject.grantService.createGrant({
+      principal: "owner:alice",
+      cards: [{ cardId: active.cardId, revision: active.revision }],
+      expiresAt: "2026-08-11T13:00:00.000Z",
+    });
+    let modelCalls = 0;
+    const records: SupportPassportModelAuditRecord[] = [];
+    const service = new SupportPassportQuestionService({
+      grantService: subject.grantService,
+      modelAdapter: new SupportPassportModelAdapter({
+        routes: [
+          {
+            kind: "local",
+            invoke: async () => {
+              modelCalls += 1;
+              return null;
+            },
+          },
+        ],
+      }),
+      audit: {
+        record: async (record) => {
+          records.push(SupportPassportModelAuditRecordSchema.parse(record));
+        },
+      },
+      now: subject.now,
+    });
+
+    await assert.rejects(
+      service.askGrant({
+        grantId: created.grant.grantId,
+        secret: created.secret,
+        question: "   ",
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "invalid_input"
+    );
+    await flushAudit();
+    assert.equal(modelCalls, 0);
+    assert.equal(records.length, 1);
+    assert.equal(records[0]?.errorClass, "invalid_input");
   } finally {
     await subject.cleanup();
   }

@@ -107,6 +107,8 @@ export class SupportPassportCardService {
   async createGeneratedDraftsForOwner(input: {
     owner: SupportPassportOwnerScope;
     cards: SupportPassportDraftCard[];
+    signal?: AbortSignal;
+    validateSources?: () => Promise<void>;
   }): Promise<SupportPassportCard[]> {
     const output = SupportPassportDraftOutputSchema.safeParse({ cards: input.cards });
     if (!output.success) throw invalidInput();
@@ -115,7 +117,11 @@ export class SupportPassportCardService {
       const created: SupportPassportCard[] = [];
       const createdIds: string[] = [];
       try {
+        input.signal?.throwIfAborted();
+        await input.validateSources?.();
+        input.signal?.throwIfAborted();
         for (const card of output.data.cards) {
+          input.signal?.throwIfAborted();
           created.push(
             await this.createDraft(
               storage,
@@ -130,6 +136,8 @@ export class SupportPassportCardService {
             )
           );
         }
+        await input.validateSources?.();
+        input.signal?.throwIfAborted();
         return created;
       } catch (error) {
         let rollbackIncomplete = false;

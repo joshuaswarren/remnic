@@ -95,6 +95,14 @@ function modelFailureAuditFields(error: unknown, signal: AbortSignal | undefined
   if (error instanceof SupportPassportModelCallError) {
     return { ...error.metadata, latencyMs };
   }
+  if (error instanceof SupportPassportError) {
+    return {
+      modelUsed: "unavailable",
+      route: "unavailable" as const,
+      latencyMs,
+      errorClass: error.code,
+    };
+  }
   return {
     modelUsed: "unavailable",
     route: "unavailable" as const,
@@ -207,10 +215,11 @@ export class SupportPassportDraftService {
       usage: modelResult.usage,
     };
     try {
-      await this.revalidateSources(owner.storage, memories);
       const cards = await this.cardService.createGeneratedDraftsForOwner({
         owner,
         cards: modelResult.cards,
+        signal: input.signal,
+        validateSources: async () => await this.revalidateSources(owner.storage, memories),
       });
       scheduleAudit(this.audit, { ...auditBase, outcome: "success" });
       return cards;
@@ -218,7 +227,7 @@ export class SupportPassportDraftService {
       scheduleAudit(this.audit, {
         ...auditBase,
         outcome: "error",
-        errorClass: operationErrorClass(error),
+        errorClass: input.signal?.aborted ? "aborted" : operationErrorClass(error),
       });
       throw error;
     }
