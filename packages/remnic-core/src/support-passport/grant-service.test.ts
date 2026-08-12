@@ -1192,19 +1192,41 @@ test("private file operations fail closed without descriptor-relative directory 
   assert.equal(requirePrivateFileDescriptorRoot("darwin", "unreachable"), "/dev/fd");
 });
 
-test("private directory creation syncs each new parent entry", async () => {
+test("private directory creation syncs every verified parent entry", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-private-directory-sync-"));
   try {
     const target = path.join(root, "state", "support-passport", "grants");
     let syncs = 0;
-    const syncCreatedParent = async () => {
+    const syncVerifiedParent = async () => {
       syncs += 1;
     };
 
-    await ensurePrivateDirectoryNoFollow(root, target, "private directory creation failed", syncCreatedParent);
+    await ensurePrivateDirectoryNoFollow(root, target, "private directory creation failed", syncVerifiedParent);
     assert.equal(syncs, 3);
-    await ensurePrivateDirectoryNoFollow(root, target, "private directory creation failed", syncCreatedParent);
-    assert.equal(syncs, 3);
+    await ensurePrivateDirectoryNoFollow(root, target, "private directory creation failed", syncVerifiedParent);
+    assert.equal(syncs, 6);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("private directory creation retries a failed parent sync", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-private-directory-sync-retry-"));
+  try {
+    const target = path.join(root, "state", "support-passport", "grants");
+    await assert.rejects(
+      ensurePrivateDirectoryNoFollow(root, target, "private directory creation failed", async () => {
+        throw Object.assign(new Error("simulated directory sync failure"), { code: "EIO" });
+      }),
+      (error: unknown) => (error as NodeJS.ErrnoException).code === "EIO"
+    );
+    assert.equal((await lstat(path.join(root, "state"))).isDirectory(), true);
+
+    let retrySyncs = 0;
+    await ensurePrivateDirectoryNoFollow(root, target, "private directory creation failed", async () => {
+      retrySyncs += 1;
+    });
+    assert.equal(retrySyncs, 3);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
