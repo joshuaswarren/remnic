@@ -132,6 +132,7 @@
         method,
         headers,
         body,
+        cache: "no-store",
         signal: controller?.signal ?? options.signal,
       });
       let payload = {};

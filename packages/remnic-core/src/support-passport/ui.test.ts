@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -141,4 +141,9 @@ test("What Helps Me assets stay hidden while support passport is disabled", asyn
       await server.stop();
     }
   });
+});
+
+test("What Helps Me disables the browser cache for credentialed API requests", async () => {
+  const source = await readFile(path.join(adminConsolePublicDir, "what-helps-me", "app.js"), "utf8");
+  assert.match(source, /fetch\(path, \{[\s\S]*?cache: "no-store"/);
 });
