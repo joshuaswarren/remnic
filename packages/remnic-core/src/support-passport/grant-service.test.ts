@@ -10,7 +10,7 @@ import { SupportPassportCardService } from "./card-service.js";
 import { SupportPassportError } from "./errors.js";
 import { SupportPassportGrantService } from "./grant-service.js";
 import { SupportPassportGrantStore, syncDirectoryForDurability } from "./grant-store.js";
-import { requirePrivateFileDescriptorRoot } from "./private-file.js";
+import { ensurePrivateDirectoryNoFollow, requirePrivateFileDescriptorRoot } from "./private-file.js";
 import { withHeldFileLock } from "../utils/serialize-mutations.js";
 
 async function makeSubject() {
@@ -819,6 +819,58 @@ test("final helper guide assembly blocks card withdrawal", async () => {
   }
 });
 
+test("final helper guide assembly blocks owner revocation", async () => {
+  const subject = await makeSubject();
+  const finalAuthenticationStarted = Promise.withResolvers<void>();
+  const releaseFinalAuthentication = Promise.withResolvers<void>();
+  try {
+    const card = await createActiveCard(subject);
+    const created = await subject.grantService.createGrant({
+      principal: "owner:alice",
+      cards: [{ cardId: card.cardId, revision: card.revision }],
+      expiresAt: expiryAfter(subject, 3_600_000),
+    });
+    const authenticate = subject.grantStore.authenticate.bind(subject.grantStore);
+    let authentications = 0;
+    subject.grantStore.authenticate = async (grantId, secret) => {
+      const state = await authenticate(grantId, secret);
+      authentications += 1;
+      if (authentications === 2) {
+        finalAuthenticationStarted.resolve();
+        await releaseFinalAuthentication.promise;
+      }
+      return state;
+    };
+
+    const readPromise = subject.grantService.readGrant({
+      grantId: created.grant.grantId,
+      secret: created.secret,
+    });
+    await finalAuthenticationStarted.promise;
+    let revocationSettled = false;
+    const revocationPromise = subject.grantService
+      .revokeGrant({
+        principal: "owner:alice",
+        grantId: created.grant.grantId,
+        expectedStateVersion: created.grant.stateVersion,
+      })
+      .finally(() => {
+        revocationSettled = true;
+      });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(revocationSettled, false);
+
+    releaseFinalAuthentication.resolve();
+    const guide = await readPromise;
+    assert.equal(guide.cards[0]?.cardId, card.cardId);
+    await revocationPromise;
+    assert.equal(revocationSettled, true);
+  } finally {
+    releaseFinalAuthentication.resolve();
+    await subject.cleanup();
+  }
+});
+
 test("helper guide assembly fails when owner-lock ownership is lost", async () => {
   const subject = await makeSubject();
   try {
@@ -906,6 +958,31 @@ test("helper guide assembly refreshes the owner lock after its final card read",
       (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
     );
     assert.equal(reads, 2);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("helper guide assembly rechecks expiry after its final owner-lock refresh", async () => {
+  const subject = await makeSubject();
+  try {
+    const card = await createActiveCard(subject);
+    const created = await subject.grantService.createGrant({
+      principal: "owner:alice",
+      cards: [{ cardId: card.cardId, revision: card.revision }],
+      expiresAt: expiryAfter(subject, 300_000),
+    });
+    const withAuthenticatedGrant = subject.grantStore.withAuthenticatedGrant.bind(subject.grantStore);
+    subject.grantStore.withAuthenticatedGrant = async (grantId, secret, task, beforeReturn) =>
+      await withAuthenticatedGrant(grantId, secret, task, async (state) => {
+        subject.advance(300_000);
+        await beforeReturn?.(state);
+      });
+
+    await assert.rejects(
+      subject.grantService.readGrant({ grantId: created.grant.grantId, secret: created.secret }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "grant_expired"
+    );
   } finally {
     await subject.cleanup();
   }
@@ -1113,6 +1190,24 @@ test("private file operations fail closed without descriptor-relative directory 
   );
   assert.equal(requirePrivateFileDescriptorRoot("linux", "unreachable"), "/proc/self/fd");
   assert.equal(requirePrivateFileDescriptorRoot("darwin", "unreachable"), "/dev/fd");
+});
+
+test("private directory creation syncs each new parent entry", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-private-directory-sync-"));
+  try {
+    const target = path.join(root, "state", "support-passport", "grants");
+    let syncs = 0;
+    const syncCreatedParent = async () => {
+      syncs += 1;
+    };
+
+    await ensurePrivateDirectoryNoFollow(root, target, "private directory creation failed", syncCreatedParent);
+    assert.equal(syncs, 3);
+    await ensurePrivateDirectoryNoFollow(root, target, "private directory creation failed", syncCreatedParent);
+    assert.equal(syncs, 3);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("grant cleanup never follows a swapped grant directory", async () => {
