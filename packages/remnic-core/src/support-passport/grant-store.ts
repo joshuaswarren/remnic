@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { chmod, lstat, mkdir, open, rm, type FileHandle } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 
 import { log } from "../logger.js";
@@ -16,7 +16,11 @@ import {
   type SupportPassportGrantState,
   SupportPassportGrantStateSchema,
 } from "./grant-contracts.js";
-import { readPrivateFileNoFollow, writePrivateFileAtomicallyNoFollow } from "./private-file.js";
+import {
+  readPrivateFileNoFollow,
+  removePrivateFilesNoFollow,
+  writePrivateFileAtomicallyNoFollow,
+} from "./private-file.js";
 
 const GRANT_LOCK_STALE_MS = 30_000;
 const GRANT_LOCK_WAIT_MS = 5_000;
@@ -150,7 +154,7 @@ export class SupportPassportGrantStore {
       try {
         await this.addToOwnerIndex(state, lock);
       } catch (error) {
-        await rm(this.filePath(state.grantId), { force: true }).catch(() => undefined);
+        await this.removeGrantStates([state.grantId]).catch(() => undefined);
         throw error;
       }
       return { state, secret };
@@ -285,7 +289,7 @@ export class SupportPassportGrantStore {
     await this.requireMutationLock(lock);
     await this.writeOwnerIndex(ownerHash, grantIds);
     try {
-      await this.removeEvictedGrantStates(evictedGrantIds);
+      await this.removeGrantStates(evictedGrantIds);
     } catch (error) {
       log.warn(
         `support passport could not remove inactive grant state: ${error instanceof Error ? error.message : String(error)}`
@@ -293,10 +297,16 @@ export class SupportPassportGrantStore {
     }
   }
 
-  private async removeEvictedGrantStates(grantIds: string[]): Promise<void> {
+  private async removeGrantStates(grantIds: string[]): Promise<void> {
     if (grantIds.length === 0) return;
-    await Promise.all(grantIds.map((grantId) => rm(this.filePath(grantId), { force: true })));
-    await syncDirectoryForDurability(this.grantsDir);
+    for (const grantId of grantIds) {
+      if (!SAFE_GRANT_ID.test(grantId)) throw grantNotFound();
+    }
+    await removePrivateFilesNoFollow(
+      this.grantsDir,
+      grantIds.map((grantId) => `${grantId}.json`),
+      "support passport grant files must be regular files in a stable directory"
+    );
   }
 
   private async readOwnerIndex(namespace: string, principalHash: string): Promise<string[]> {
