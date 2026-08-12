@@ -1,17 +1,32 @@
 import assert from "node:assert/strict";
 import { renameSync, symlinkSync } from "node:fs";
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  type FileHandle,
+  lstat,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
 import { StorageManager } from "../storage.js";
+import type { withHeldFileLock } from "../utils/serialize-mutations.js";
 import { SupportPassportCardService } from "./card-service.js";
 import { SupportPassportError } from "./errors.js";
 import { SupportPassportGrantService } from "./grant-service.js";
 import { SupportPassportGrantStore, syncDirectoryForDurability } from "./grant-store.js";
-import { ensurePrivateDirectoryNoFollow, requirePrivateFileDescriptorRoot } from "./private-file.js";
-import { withHeldFileLock } from "../utils/serialize-mutations.js";
+import {
+  ensurePrivateDirectoryNoFollow,
+  requirePrivateFileDescriptorRoot,
+  resolvePrivateDirectoryPath,
+} from "./private-file.js";
 
 async function makeSubject() {
   StorageManager.clearAllStaticCaches();
@@ -270,6 +285,54 @@ test("owner grant history stays bounded while an inactive link frees capacity", 
   }
 });
 
+test("owner grant rollover rejects a foreign grant without deleting it", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-foreign-index-"));
+  try {
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    let nextGrantId = 1;
+    const store = new SupportPassportGrantStore({
+      memoryDir: root,
+      makeGrantId: () => `00000000-0000-4000-8000-${String(nextGrantId++).padStart(12, "0")}`,
+      now: () => now,
+    });
+    const common = {
+      namespace: "shared",
+      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+      expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
+    };
+    const aliceGrants = [];
+    for (let index = 0; index < 99; index += 1) {
+      aliceGrants.push(await store.create({ ...common, principal: "owner:alice" }));
+    }
+    const bob = await store.create({ ...common, principal: "owner:bob" });
+    await store.revoke({
+      grantId: bob.state.grantId,
+      namespace: common.namespace,
+      principal: "owner:bob",
+    });
+    const inspected = store as unknown as {
+      ownerHash(namespace: string, principalHash: string): string;
+      writeOwnerIndex(ownerHash: string, grantIds: string[]): Promise<void>;
+    };
+    const firstAliceGrant = aliceGrants[0];
+    assert.ok(firstAliceGrant);
+    const aliceOwnerHash = inspected.ownerHash(common.namespace, firstAliceGrant.state.principalHash);
+    await inspected.writeOwnerIndex(aliceOwnerHash, [
+      ...aliceGrants.map((grant) => grant.state.grantId),
+      bob.state.grantId,
+    ]);
+    const bobGrantPath = path.join(root, "state", "support-passport", "grants", `${bob.state.grantId}.json`);
+
+    await assert.rejects(
+      store.create({ ...common, principal: "owner:alice" }),
+      /owner index references a foreign grant/
+    );
+    assert.equal((await lstat(bobGrantPath)).isFile(), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("owner grant history uses one expiry cutoff while it prunes old links", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-cutoff-"));
   try {
@@ -323,8 +386,14 @@ test("owner grant history uses one expiry cutoff while it prunes old links", asy
 
     assert.equal(listed.length, 100);
     assert.equal(new Set(listed.map((state) => state.grantId)).size, 100);
-    assert.equal(listed.some((state) => state.grantId === crossing.state.grantId), true);
-    assert.equal(listed.some((state) => state.grantId === created.state.grantId), true);
+    assert.equal(
+      listed.some((state) => state.grantId === crossing.state.grantId),
+      true
+    );
+    assert.equal(
+      listed.some((state) => state.grantId === created.state.grantId),
+      true
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -653,13 +722,12 @@ test("revocation wins while an optimistic helper card read is still pending", as
       secret: created.secret,
     });
     await cardReadStarted.promise;
-    const revokePromise = peerStore
-      .revoke({
-        namespace: "alice",
-        principal: "owner:alice",
-        grantId: created.grant.grantId,
-        expectedStateVersion: created.grant.stateVersion,
-      });
+    const revokePromise = peerStore.revoke({
+      namespace: "alice",
+      principal: "owner:alice",
+      grantId: created.grant.grantId,
+      expectedStateVersion: created.grant.stateVersion,
+    });
     await revokePromise;
 
     releaseCardRead.resolve();
@@ -1183,13 +1251,26 @@ test("the grant store rejects a symlinked grant directory", async () => {
   }
 });
 
-test("private file operations fail closed without descriptor-relative directory paths", () => {
+test("private file operations select supported directory access strategies", () => {
   assert.throws(
     () => requirePrivateFileDescriptorRoot("win32", "private file directory cannot be pinned"),
     /private file directory cannot be pinned/
   );
   assert.equal(requirePrivateFileDescriptorRoot("linux", "unreachable"), "/proc/self/fd");
-  assert.equal(requirePrivateFileDescriptorRoot("darwin", "unreachable"), "/dev/fd");
+  assert.equal(requirePrivateFileDescriptorRoot("darwin", "unreachable"), null);
+});
+
+test("macOS private files use a verified directory path", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-private-darwin-"));
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(root, "r");
+    const opened = await handle.stat();
+    assert.equal(await resolvePrivateDirectoryPath(root, handle, opened, "private directory changed", "darwin"), root);
+  } finally {
+    await handle?.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("private directory creation syncs every verified parent entry", async () => {
@@ -1408,10 +1489,7 @@ test("the grant store rejects a state file whose grant ID does not match its fil
     );
 
     await assert.rejects(store.authenticate(secondGrantId, second.secret), /grant ID must match its file name/);
-    await assert.rejects(
-      store.listForOwner("alice", "owner:alice"),
-      /grant ID must match its file name/
-    );
+    await assert.rejects(store.listForOwner("alice", "owner:alice"), /grant ID must match its file name/);
     assert.equal(first.state.grantId, firstGrantId);
   } finally {
     await rm(root, { recursive: true, force: true });

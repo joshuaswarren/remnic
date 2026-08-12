@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { lstat, mkdir, open, type FileHandle } from "node:fs/promises";
+import { type FileHandle, lstat, mkdir, open } from "node:fs/promises";
 import path from "node:path";
 
 import { log } from "../logger.js";
@@ -221,12 +221,15 @@ export class SupportPassportGrantStore {
     return states.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.grantId.localeCompare(b.grantId));
   }
 
-  async revoke(input: {
-    grantId: string;
-    namespace: string;
-    principal: string;
-    expectedStateVersion?: number;
-  }, beforeCommit?: () => Promise<void>): Promise<SupportPassportGrantState> {
+  async revoke(
+    input: {
+      grantId: string;
+      namespace: string;
+      principal: string;
+      expectedStateVersion?: number;
+    },
+    beforeCommit?: () => Promise<void>
+  ): Promise<SupportPassportGrantState> {
     if (!SAFE_GRANT_ID.test(input.grantId)) throw grantNotFound();
     const namespace = normalizeNamespace(input.namespace);
     return await this.withGrantLock(input.grantId, async (lock) => {
@@ -278,15 +281,20 @@ export class SupportPassportGrantStore {
       const indexedStates: SupportPassportGrantState[] = [];
       for (const grantId of current) {
         try {
-          indexedStates.push(await this.readState(grantId));
+          const indexedState = await this.readState(grantId);
+          if (
+            indexedState.namespace !== state.namespace ||
+            !hashesMatch(indexedState.principalHash, state.principalHash)
+          ) {
+            throw new Error("support passport owner index references a foreign grant");
+          }
+          indexedStates.push(indexedState);
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         }
       }
       const expiryCutoff = this.now().getTime();
-      const active = indexedStates.filter(
-        (item) => !item.revokedAt && Date.parse(item.expiresAt) > expiryCutoff
-      );
+      const active = indexedStates.filter((item) => !item.revokedAt && Date.parse(item.expiresAt) > expiryCutoff);
       if (active.length >= MAX_OWNER_GRANT_HISTORY) {
         throw new SupportPassportError(
           "invalid_input",
@@ -446,10 +454,7 @@ export class SupportPassportGrantStore {
     );
   }
 
-  private async withGrantLock<T>(
-    grantId: string,
-    task: (lock: HeldFileLockController) => Promise<T>
-  ): Promise<T> {
+  private async withGrantLock<T>(grantId: string, task: (lock: HeldFileLockController) => Promise<T>): Promise<T> {
     if (!SAFE_GRANT_ID.test(grantId)) throw grantNotFound();
     await this.ensureSafeDirectories();
     return await withPrivateDirectoryNoFollow(
