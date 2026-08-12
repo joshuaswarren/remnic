@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { chmod, lstat, mkdir, open, type FileHandle } from "node:fs/promises";
+import { lstat, mkdir, open, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 
 import { log } from "../logger.js";
@@ -13,8 +13,10 @@ import {
   SupportPassportGrantStateSchema,
 } from "./grant-contracts.js";
 import {
+  ensurePrivateDirectoryNoFollow,
   readPrivateFileNoFollow,
   removePrivateFilesNoFollow,
+  withPrivateDirectoryNoFollow,
   writePrivateFileAtomicallyNoFollow,
 } from "./private-file.js";
 
@@ -207,7 +209,9 @@ export class SupportPassportGrantStore {
         if (state.namespace === normalizedNamespace && hashesMatch(state.principalHash, principalHash)) {
           states.push(state);
         }
-      } catch {}
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
     }
     return states.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.grantId.localeCompare(b.grantId));
   }
@@ -413,26 +417,27 @@ export class SupportPassportGrantStore {
   }
 
   private async ensureSafeDirectories(): Promise<void> {
-    const directories = [
+    await mkdir(this.memoryDir, { recursive: true, mode: 0o700 });
+    await ensurePrivateDirectoryNoFollow(
       this.memoryDir,
-      path.join(this.memoryDir, "state"),
-      path.join(this.memoryDir, "state", "support-passport"),
-      this.grantsDir,
       this.ownerIndexesDir,
-    ];
-    for (const directory of directories) {
-      await mkdir(directory, { recursive: true, mode: 0o700 });
-      const metadata = await lstat(directory);
-      if (metadata.isSymbolicLink()) throw new Error("support passport grant directories must not be a symbolic link");
-      if (!metadata.isDirectory()) throw new Error("support passport grant paths must be directories");
-    }
-    await Promise.all(directories.slice(1).map((directory) => chmod(directory, 0o700)));
+      "support passport grant directories must remain inside the memory directory"
+    );
   }
 
   private async withMutationLock<T>(task: (lock: HeldFileLockController) => Promise<T>): Promise<T> {
     await this.ensureSafeDirectories();
-    const lockPath = path.join(this.grantsDir, ".grants.lock");
-    return await this.withExclusiveLock(`support-passport-grants:${this.grantsDir}`, lockPath, task);
+    return await withPrivateDirectoryNoFollow(
+      this.memoryDir,
+      this.grantsDir,
+      "support passport grant lock directory must remain inside the memory directory",
+      async (pinnedDirectory) =>
+        await this.withExclusiveLock(
+          `support-passport-grants:${this.grantsDir}`,
+          path.join(pinnedDirectory, ".grants.lock"),
+          task
+        )
+    );
   }
 
   private async withGrantLock<T>(
@@ -441,8 +446,17 @@ export class SupportPassportGrantStore {
   ): Promise<T> {
     if (!SAFE_GRANT_ID.test(grantId)) throw grantNotFound();
     await this.ensureSafeDirectories();
-    const lockPath = path.join(this.grantsDir, `.${grantId}.lock`);
-    return await this.withExclusiveLock(`support-passport-grant:${this.grantsDir}:${grantId}`, lockPath, task);
+    return await withPrivateDirectoryNoFollow(
+      this.memoryDir,
+      this.grantsDir,
+      "support passport grant lock directory must remain inside the memory directory",
+      async (pinnedDirectory) =>
+        await this.withExclusiveLock(
+          `support-passport-grant:${this.grantsDir}:${grantId}`,
+          path.join(pinnedDirectory, `.${grantId}.lock`),
+          task
+        )
+    );
   }
 
   private async withExclusiveLock<T>(

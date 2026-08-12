@@ -22,8 +22,8 @@ async function makeSubject() {
   let currentTime = Date.parse("2026-08-11T12:00:00.000Z");
   const now = () => new Date(currentTime);
   const resolveOwner = async (principal: string) => {
-    if (principal === "owner:alice") return { namespace: "alice", storage: aliceStorage };
-    if (principal === "owner:bob") return { namespace: "bob", storage: bobStorage };
+    if (principal === "owner:alice") return { principal, namespace: "alice", storage: aliceStorage };
+    if (principal === "owner:bob") return { principal, namespace: "bob", storage: bobStorage };
     throw new Error("unknown test principal");
   };
   const cardService = new SupportPassportCardService({ resolveOwner, now });
@@ -141,6 +141,32 @@ test("owner grant listings read only the indexed owner grants", async () => {
     );
     assert.deepEqual(readGrantIds, [alice.state.grantId]);
     assert.notEqual(alice.state.grantId, bob.state.grantId);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("owner grant listings propagate indexed grant read failures", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-list-error-"));
+  try {
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({ memoryDir: root, now: () => now });
+    const created = await store.create({
+      namespace: "alice",
+      principal: "owner:alice",
+      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+      expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
+    });
+    const inspected = store as unknown as { readState(grantId: string): Promise<unknown> };
+    inspected.readState = async (grantId) => {
+      assert.equal(grantId, created.state.grantId);
+      throw Object.assign(new Error("simulated grant read failure"), { code: "EIO" });
+    };
+
+    await assert.rejects(
+      store.listForOwner("alice", "owner:alice"),
+      (error: unknown) => (error as NodeJS.ErrnoException).code === "EIO"
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -598,7 +624,7 @@ test("a grant that expires during guide assembly does not return a guide", async
   }
 });
 
-test("revocation waits until helper guide assembly completes", async () => {
+test("revocation wins while an optimistic helper card read is still pending", async () => {
   const subject = await makeSubject();
   const cardReadStarted = Promise.withResolvers<void>();
   const releaseCardRead = Promise.withResolvers<void>();
@@ -627,27 +653,18 @@ test("revocation waits until helper guide assembly completes", async () => {
       secret: created.secret,
     });
     await cardReadStarted.promise;
-    let revokeSettled = false;
     const revokePromise = peerStore
       .revoke({
         namespace: "alice",
         principal: "owner:alice",
         grantId: created.grant.grantId,
         expectedStateVersion: created.grant.stateVersion,
-      })
-      .finally(() => {
-        revokeSettled = true;
       });
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    assert.equal(revokeSettled, false);
+    await revokePromise;
 
     releaseCardRead.resolve();
-    const guide = await readPromise;
-    assert.equal(guide.cards[0]?.cardId, card.cardId);
-    await revokePromise;
-    assert.equal(revokeSettled, true);
     await assert.rejects(
-      subject.grantService.readGrant({ grantId: created.grant.grantId, secret: created.secret }),
+      readPromise,
       (error: unknown) => error instanceof SupportPassportError && error.code === "grant_gone"
     );
   } finally {
@@ -657,38 +674,49 @@ test("revocation waits until helper guide assembly completes", async () => {
 });
 
 test("helper reads for different grants do not block each other", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-read-lock-"));
+  const subject = await makeSubject();
   const releaseFirst = Promise.withResolvers<void>();
   try {
-    const now = new Date("2026-08-11T12:00:00.000Z");
-    const store = new SupportPassportGrantStore({ memoryDir: root, now: () => now });
-    const input = {
-      namespace: "alice",
+    const firstCard = await createActiveCard(subject, "First card");
+    const secondCard = await createActiveCard(subject, "Second card");
+    const first = await subject.grantService.createGrant({
       principal: "owner:alice",
-      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
-      expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
-    };
-    const first = await store.create(input);
-    const second = await store.create(input);
-    const firstStarted = Promise.withResolvers<void>();
-    const firstRead = store.withAuthenticatedGrant(first.state.grantId, first.secret, async () => {
-      firstStarted.resolve();
-      await releaseFirst.promise;
-      return "first";
+      cards: [{ cardId: firstCard.cardId, revision: firstCard.revision }],
+      expiresAt: expiryAfter(subject, 3_600_000),
     });
+    const second = await subject.grantService.createGrant({
+      principal: "owner:alice",
+      cards: [{ cardId: secondCard.cardId, revision: secondCard.revision }],
+      expiresAt: expiryAfter(subject, 3_600_000),
+    });
+    const firstStarted = Promise.withResolvers<void>();
+    const secondStarted = Promise.withResolvers<void>();
+    const getMemoryById = subject.aliceStorage.getMemoryById.bind(subject.aliceStorage);
+    subject.aliceStorage.getMemoryById = async (memoryId: string) => {
+      const memory = await getMemoryById(memoryId);
+      if (memoryId === firstCard.cardId) {
+        firstStarted.resolve();
+        await releaseFirst.promise;
+      }
+      if (memoryId === secondCard.cardId) secondStarted.resolve();
+      return memory;
+    };
+    const firstRead = subject.grantService.readGrant({ grantId: first.grant.grantId, secret: first.secret });
     await firstStarted.promise;
-    const secondRead = store.withAuthenticatedGrant(second.state.grantId, second.secret, async () => "second");
+    const secondRead = subject.grantService.readGrant({ grantId: second.grant.grantId, secret: second.secret });
     const observedConcurrentRead = await Promise.race([
-      secondRead.then(() => true),
+      secondStarted.promise.then(() => true),
       new Promise<false>((resolve) => setTimeout(() => resolve(false), 500)),
     ]);
     releaseFirst.resolve();
 
-    assert.deepEqual(await Promise.all([firstRead, secondRead]), ["first", "second"]);
+    const [firstGuide, secondGuide] = await Promise.all([firstRead, secondRead]);
     assert.equal(observedConcurrentRead, true);
+    assert.equal(firstGuide.cards[0]?.cardId, firstCard.cardId);
+    assert.equal(secondGuide.cards[0]?.cardId, secondCard.cardId);
   } finally {
     releaseFirst.resolve();
-    await rm(root, { recursive: true, force: true });
+    await subject.cleanup();
   }
 });
 
@@ -861,7 +889,7 @@ test("the grant store rejects a symlinked grant directory", async () => {
         cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
         expiresAt: new Date(now.getTime() + 300_000).toISOString(),
       }),
-      /must not be a symbolic link/
+      /must remain inside the memory directory/
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -1019,7 +1047,7 @@ test("the grant store fails closed for corrupt and symlinked grant files", async
     await rm(linkedPath);
     await symlink(outsidePath, linkedPath);
     await assert.rejects(store.authenticate(secondGrantId, linked.secret), /must be regular files/);
-    assert.deepEqual(await store.listForOwner("alice", "owner:alice"), []);
+    await assert.rejects(store.listForOwner("alice", "owner:alice"));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1053,10 +1081,11 @@ test("the grant store rejects a state file whose grant ID does not match its fil
     );
 
     await assert.rejects(store.authenticate(secondGrantId, second.secret), /grant ID must match its file name/);
-    assert.deepEqual(
-      (await store.listForOwner("alice", "owner:alice")).map((state) => state.grantId),
-      [first.state.grantId]
+    await assert.rejects(
+      store.listForOwner("alice", "owner:alice"),
+      /grant ID must match its file name/
     );
+    assert.equal(first.state.grantId, firstGrantId);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
