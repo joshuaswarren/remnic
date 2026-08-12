@@ -5,3 +5,7 @@ export * from "./errors.js";
 export * from "./grant-contracts.js";
 export * from "./grant-service.js";
 export * from "./grant-store.js";
+export * from "./model-adapter.js";
+export * from "./model-contracts.js";
+export * from "./model-audit.js";
+export * from "./model-service.js";

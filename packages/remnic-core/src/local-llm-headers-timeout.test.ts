@@ -13,6 +13,7 @@ import {
 
 import { LocalLlmClient } from "./local-llm.js";
 import { ChatTransport } from "./local-llm-transport.js";
+import { initLogger, resetLogger } from "./logger.js";
 import type { PluginConfig } from "./types.js";
 
 /**
@@ -509,5 +510,43 @@ test("availability probes stop after the caller aborts", async () => {
     assert.equal(requests, 1, "an aborted availability check must not start later probes");
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("sensitive local requests do not log provider error bodies", { concurrency: false }, async () => {
+  const original = globalThis.fetch;
+  const privateMarker = "private-local-support-note-must-not-log";
+  const lines: string[] = [];
+  initLogger(
+    {
+      info: (message) => lines.push(message),
+      warn: (message) => lines.push(message),
+      error: (message) => lines.push(message),
+      debug: (message) => lines.push(message),
+    },
+    true,
+    { timestamps: false },
+  );
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ error: { message: privateMarker } }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    })) as typeof fetch;
+  const client = new LocalLlmClient(createConfig());
+
+  try {
+    primeClient(client);
+    assert.equal(
+      await client.chatCompletion(
+        [{ role: "user", content: privateMarker }],
+        { redactProviderErrors: true },
+      ),
+      null,
+    );
+    assert.equal(lines.join("\n").includes(privateMarker), false);
+  } finally {
+    globalThis.fetch = original;
+    resetLogger();
+    await dispatcherOf(client).close();
   }
 });
