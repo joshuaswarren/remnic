@@ -2434,7 +2434,7 @@ test("generated draft rollback retries a compare-and-swap conflict", async () =>
     const writeFrontmatter = subject.aliceStorage.writeMemoryFrontmatterIfUnchanged.bind(subject.aliceStorage);
     let rollbackAttempts = 0;
     subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = async (memory, patch, lifecycle) => {
-      if (lifecycle?.actor === "support-passport.draft-rollback") {
+      if (lifecycle?.reasonCode === "draft-batch-failed") {
         rollbackAttempts += 1;
         if (rollbackAttempts === 1) return false;
       }
@@ -2463,6 +2463,10 @@ test("generated draft rollback retries a compare-and-swap conflict", async () =>
     );
     assert.equal(rollbackAttempts, 2);
     assert.deepEqual(await subject.service.listCards({ principal: "owner:alice" }), []);
+    const rollbackEvent = (await subject.aliceStorage.readAllMemoryLifecycleEvents()).find(
+      (event) => event.reasonCode === "draft-batch-failed"
+    );
+    assert.equal(rollbackEvent?.actor, "owner:alice");
   } finally {
     await subject.cleanup();
   }
@@ -2481,7 +2485,7 @@ test("generated draft rollback continues after one cleanup throws", async () => 
     const writeFrontmatter = subject.aliceStorage.writeMemoryFrontmatterIfUnchanged.bind(subject.aliceStorage);
     let rollbackAttempts = 0;
     subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = async (memory, patch, lifecycle) => {
-      if (lifecycle?.actor === "support-passport.draft-rollback") {
+      if (lifecycle?.reasonCode === "draft-batch-failed") {
         rollbackAttempts += 1;
         if (rollbackAttempts === 1) throw new Error("first cleanup failed");
       }
