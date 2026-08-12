@@ -5,8 +5,8 @@ import { LocalLlmClient } from "../local-llm.js";
 import type { GatewayConfig, PluginConfig } from "../types.js";
 import { SupportPassportError } from "./errors.js";
 import {
-  type SupportPassportAnswerModelInput,
   SUPPORT_PASSPORT_NOT_IN_GUIDE_ANSWER,
+  type SupportPassportAnswerModelInput,
   SupportPassportAnswerModelInputSchema,
   type SupportPassportAnswerOutput,
   SupportPassportAnswerOutputSchema,
@@ -92,10 +92,7 @@ export class SupportPassportModelCallError extends SupportPassportError {
   }
 }
 
-type ModelRoutePlanConfig = Pick<
-  PluginConfig,
-  "modelSource" | "localLlmEnabled" | "localLlmFallback" | "openaiApiKey"
->;
+type ModelRoutePlanConfig = Pick<PluginConfig, "modelSource" | "localLlmEnabled" | "localLlmFallback" | "openaiApiKey">;
 
 export interface SupportPassportModelClients {
   localLlm?: LocalLlmClient;
@@ -449,7 +446,7 @@ export class SupportPassportModelAdapter {
           usage: rejectedResponse.usage,
         };
       }
-      if (!response?.content.trim()) continue;
+      if (!response?.content?.trim()) continue;
       invalidResponse = true;
       failureMetadata = {
         modelUsed: response.modelUsed,
