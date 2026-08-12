@@ -753,21 +753,23 @@
         return;
       }
       const uncertainGrant = reconciled.value;
-      if (uncertainGrant.status === "active") {
-        try {
-          await api.revokeGrant(uncertainGrant.grantId, { expectedVersion: uncertainGrant.stateVersion });
-        } catch {
-          const stopped = await reconcileOwnerState(() => {
-            const current = state.grants.find((grant) => grant.grantId === uncertainGrant.grantId);
-            return !current || current.status === "revoked" ? uncertainGrant : null;
-          });
-          if (!stopped.matched) {
-            setError(
-              "shareError",
-              "The server may have created a link. Stop the matching live share below before creating another."
-            );
-            return;
-          }
+      if (uncertainGrant.status !== "active") {
+        setError("shareError", "The request stopped before any active link remained. Create a new link.");
+        return;
+      }
+      try {
+        await api.revokeGrant(uncertainGrant.grantId, { expectedVersion: uncertainGrant.stateVersion });
+      } catch {
+        const stopped = await reconcileOwnerState(() => {
+          const current = state.grants.find((grant) => grant.grantId === uncertainGrant.grantId);
+          return !current || current.status === "revoked" ? uncertainGrant : null;
+        });
+        if (!stopped.matched) {
+          setError(
+            "shareError",
+            "The server may have created a link. Stop the matching live share below before creating another."
+          );
+          return;
         }
       }
       replayChannel?.postMessage({ type: "grant-revoked", grantId: uncertainGrant.grantId });

@@ -923,13 +923,13 @@ test("share links use the canonical path and reserve time for grant creation", a
     const model = (window as typeof window & { WhatHelpsMeModel: WhatHelpsMeBrowserModel }).WhatHelpsMeModel;
     let boundaryError = "";
     try {
-      model.expiryForChoice("custom", new Date(now + 300_000).toISOString(), now);
+      model.expiryForChoice("custom", new Date(now + 359_999).toISOString(), now);
     } catch (error) {
       boundaryError = error instanceof Error ? error.message : "unknown error";
     }
     return {
       boundaryError,
-      expiresAt: model.expiryForChoice("custom", new Date(now + 305_000).toISOString(), now),
+      expiresAt: model.expiryForChoice("custom", new Date(now + 360_000).toISOString(), now),
       shareUrl: model.buildShareUrl(
         "https://example.test/engram/ui/what-helps-me/?old=value#old=value",
         "grant-one",
@@ -943,8 +943,8 @@ test("share links use the canonical path and reserve time for grant creation", a
   });
 
   expect(result).toEqual({
-    boundaryError: "Choose a share time at least five minutes from now and no more than seven days away.",
-    expiresAt: "2026-08-11T12:05:05.000Z",
+    boundaryError: "Choose a share time at least six minutes from now and no more than seven days away.",
+    expiresAt: "2026-08-11T12:06:00.000Z",
     shareUrl: "https://example.test/remnic/ui/what-helps-me/?grant=grant-one#secret=secret-one",
     notePreview: "Tell me before plans change.",
   });
