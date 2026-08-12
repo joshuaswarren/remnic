@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { chmod, lstat, mkdir, open, rm, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 
+import { log } from "../logger.js";
 import { expandTildePath } from "../utils/path.js";
 import {
   type HeldFileLockController,
@@ -282,9 +283,14 @@ export class SupportPassportGrantStore {
     const retainedIds = new Set(grantIds);
     const evictedGrantIds = current.filter((grantId) => !retainedIds.has(grantId));
     await this.requireMutationLock(lock);
-    await this.removeEvictedGrantStates(evictedGrantIds);
-    await this.requireMutationLock(lock);
     await this.writeOwnerIndex(ownerHash, grantIds);
+    try {
+      await this.removeEvictedGrantStates(evictedGrantIds);
+    } catch (error) {
+      log.warn(
+        `support passport could not remove inactive grant state: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
   }
 
   private async removeEvictedGrantStates(grantIds: string[]): Promise<void> {
