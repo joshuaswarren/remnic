@@ -145,72 +145,12 @@ export interface DelegateHookApi extends DelegateCapabilityApi {
 }
 const DELEGATE_BATCH_FLUSH_CACHE_TTL_MS = 30_000;
 
-export async function postJson(
-  target: DelegateDaemonTarget,
-  serviceId: string,
-  pathname: string,
-  body: Record<string, unknown>,
-  timeoutMs: number,
-): Promise<Record<string, unknown> | null> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  const auth = target.resolveAuthToken();
-  if (auth.token) headers.Authorization = `Bearer ${auth.token}`;
-  const res = await fetch(daemonUrl(target, pathname), {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!res.ok) {
-    if (res.status === 401 || res.status === 403) {
-      const status = res.status === 401 ? 401 : 403;
-      await res.body?.cancel();
-      reportDaemonAuthorizationFailure(serviceId, pathname, status, auth.source);
-      return null;
-    }
-    throw new Error(`daemon ${pathname} responded ${res.status}`);
-  }
-  const parsed: unknown = await res.json().catch(() => null);
-  return typeof parsed === "object" && parsed !== null
-    ? (parsed as Record<string, unknown>)
-    : null;
-}
-interface DelegateJsonResponse {
-  status: number;
-  body: Record<string, unknown> | null;
-}
-async function getJson(
-  target: DelegateDaemonTarget,
-  serviceId: string,
-  pathname: string,
-  timeoutMs: number,
-): Promise<DelegateJsonResponse> {
-  const headers: Record<string, string> = {};
-  const auth = target.resolveAuthToken();
-  if (auth.token) headers.Authorization = `Bearer ${auth.token}`;
-  const res = await fetch(daemonUrl(target, pathname), {
-    headers,
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!res.ok) {
-    if (res.status === 401 || res.status === 403) {
-      const status = res.status === 401 ? 401 : 403;
-      await res.body?.cancel();
-      reportDaemonAuthorizationFailure(serviceId, pathname, status, auth.source);
-      return { status: res.status, body: null };
-    }
-    await res.body?.cancel();
-    return { status: res.status, body: null };
-  }
-  const parsed: unknown = await res.json().catch(() => null);
-  return {
-    status: res.status,
-    body:
-      typeof parsed === "object" && parsed !== null
-        ? (parsed as Record<string, unknown>)
-        : null,
-  };
-}
+import {
+  getJson,
+  postJson,
+  postJsonWithStatus,
+  type DelegateJsonResponse,
+} from "./delegate-http.js";
 
 function sessionKeyFrom(
   event: Record<string, unknown>,

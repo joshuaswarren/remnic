@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import http from "node:http";
@@ -82,6 +82,12 @@ async function startDaemonStub(
     batchFlush?: boolean;
     batchResponse?: boolean;
     capabilityResponses?: Array<{ status: number; body: Record<string, unknown> }>;
+    /**
+     * Answer a request with a real HTTP status. Returning `null` from
+     * `respond` still yields 200, which is acceptance — a test that means
+     * "the daemon refused" must say so with a status (issue #2303).
+     */
+    statusFor?: (pathname: string, body: Record<string, unknown>) => number | undefined;
   } = {},
 ): Promise<DaemonStub> {
   const calls: RecordedCall[] = [];
@@ -145,7 +151,7 @@ async function startDaemonStub(
       void responsePromise
         .then(({ status, body: response }) => {
           if (res.destroyed) return;
-          res.statusCode = status;
+          res.statusCode = options.statusFor?.(req.url ?? "", body) ?? status;
           res.setHeader("content-type", "application/json");
           res.end(JSON.stringify(response));
         })
@@ -3191,6 +3197,22 @@ test("a rotated UNIT credential reaches delegate routes without a gateway restar
   }
 });
 
+/**
+ * The plan file's contents, treating a missing file as drained.
+ *
+ * Ingestion claims the notes by renaming the file aside (issue #2303), so a
+ * fully-delivered plan leaves no file behind unless the host appended again.
+ * Both states mean the same thing to the host: nothing is pending.
+ */
+async function readPlanOrEmpty(planPath: string): Promise<string> {
+  try {
+    return await readFile(planPath, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return "";
+    throw err;
+  }
+}
+
 test("the host's flush-plan notes reach the daemon and the file is cleared", async () => {
   // The capability advertises a flush plan, so OpenClaw appends durable notes
   // to the gateway workspace. Embedded mode ingests that file from
@@ -3221,7 +3243,7 @@ test("the host's flush-plan notes reach the daemon and the file is cleared", asy
       String((observed[0]?.messages as Array<{ content?: string }>)?.[0]?.content),
       /terse commit messages/,
     );
-    assert.equal(await readFile(planPath, "utf8"), "", "and the file was cleared after acceptance");
+    assert.equal(await readPlanOrEmpty(planPath), "", "and the file was cleared after acceptance");
   } finally {
     await stub.close();
     await rm(workspaceDir, { recursive: true, force: true });
@@ -3275,8 +3297,14 @@ test("a non-string search session key cannot inherit another session's binding",
 
 test("flush-plan notes survive a rejection, a concurrent append, and a symlink", async () => {
   // Three ways the ingestion could destroy notes the daemon never took.
-  const stub = await startDaemonStub((pathname) =>
-    pathname.startsWith("/engram/v1/observe") ? null : { flushed: true },
+  const stub = await startDaemonStub(
+    (pathname) => (pathname.startsWith("/engram/v1/observe") ? null : { flushed: true }),
+    {
+      // A refusal is an HTTP status, not a null body: a 200 means the
+      // daemon TOOK the notes (issue #2303).
+      statusFor: (pathname) =>
+        pathname.startsWith("/engram/v1/observe") ? 403 : undefined,
+    },
   );
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-fp-guard-"));
   const planPath = path.join(workspaceDir, "state", "plugins", "guard-svc", "flush-plan.md");
@@ -3292,10 +3320,10 @@ test("flush-plan notes survive a rejection, a concurrent append, and a symlink",
 
   let accepting: Awaited<ReturnType<typeof startDaemonStub>> | undefined;
   try {
-    // 1. A REJECTED observe (401/403 resolves null) must keep the notes.
+    // 1. A REFUSED observe (403) must keep the notes.
     await writeFile(planPath, "- keep me\n", "utf8");
     await ingestFlushPlanNotes(options);
-    assert.equal(await readFile(planPath, "utf8"), "- keep me\n", "rejected notes were kept");
+    assert.equal(await readPlanOrEmpty(planPath), "- keep me\n", "rejected notes were kept");
 
     // 2. An append that lands mid-flight must survive the truncation.
     await stub.close();
@@ -3308,7 +3336,10 @@ test("flush-plan notes survive a rejection, a concurrent append, and a symlink",
         );
         if (appended) {
           appended = false;
-          await writeFile(planPath, "- sent\n- appended later\n", "utf8");
+          // A real host APPENDS; it never rewrites the file. Rotation has
+          // already moved the claimed notes aside, so this creates a fresh
+          // plan file holding only the new note (issue #2303).
+          await appendFile(planPath, "- appended later\n", "utf8");
         }
       }
       return { ok: true };
@@ -3327,7 +3358,7 @@ test("flush-plan notes survive a rejection, a concurrent append, and a symlink",
       ["- sent\n", "- appended later\n"],
       "the mid-flight append was delivered rather than truncated away",
     );
-    assert.equal(await readFile(planPath, "utf8"), "", "and the file drained");
+    assert.equal(await readPlanOrEmpty(planPath), "", "and the file drained");
 
     // 3. A symlinked plan file is refused outright.
     await rm(planPath, { force: true });
@@ -3388,7 +3419,151 @@ test("oversized flush-plan notes drain in chunks instead of deadlocking", async 
       "every chunk fit the daemon's body limit",
     );
     assert.equal(bodies.join(""), notes, "and together they carry every note exactly once");
-    assert.equal(await readFile(planPath, "utf8"), "", "the file drained");
+    assert.equal(await readPlanOrEmpty(planPath), "", "the file drained");
+  } finally {
+    await stub.close();
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("a 413 halves the chunk while an auth refusal stops immediately", async () => {
+  // The old contract collapsed every failure to `null`, so an auth refusal
+  // ran the halving ladder and a real 413 threw instead of adapting
+  // (issue #2303).
+  const observeSizes: number[] = [];
+  const limit = 8 * 1024;
+  const stub = await startDaemonStub(
+    (pathname, body) => {
+      if (pathname.startsWith("/engram/v1/observe")) {
+        observeSizes.push(
+          Buffer.byteLength(
+            String((body.messages as Array<{ content?: string }> | undefined)?.[0]?.content ?? ""),
+            "utf8",
+          ),
+        );
+      }
+      return { ok: true };
+    },
+    {
+      statusFor: (pathname, body) => {
+        if (!pathname.startsWith("/engram/v1/observe")) return undefined;
+        const content = String(
+          (body.messages as Array<{ content?: string }> | undefined)?.[0]?.content ?? "",
+        );
+        return Buffer.byteLength(content, "utf8") > limit ? 413 : undefined;
+      },
+    },
+  );
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-fp-413-"));
+  const planPath = path.join(workspaceDir, "state", "plugins", "s413", "flush-plan.md");
+  await mkdir(path.dirname(planPath), { recursive: true });
+  const line = `- ${"note ".repeat(40)}\n`;
+  const notes = line.repeat(Math.ceil((40 * 1024) / line.length));
+  await writeFile(planPath, notes, "utf8");
+
+  let refusing: Awaited<ReturnType<typeof startDaemonStub>> | undefined;
+  let firstClosed = false;
+  try {
+    const target = {
+      host: "127.0.0.1",
+      port: stub.port,
+      resolveAuthToken: () => ({ token: "t", source: "daemon configuration" as const }),
+    };
+    await ingestFlushPlanNotes({
+      target,
+      serviceId: "s413",
+      workspaceDir,
+      sessionKey: "s",
+      namespace: undefined,
+      remainingTimeoutMs: () => 10_000,
+    });
+    assert.ok(
+      observeSizes.some((size) => size > limit),
+      "the first attempt used the large chunk",
+    );
+    assert.ok(
+      observeSizes.filter((size) => size <= limit).length >= 4,
+      `halved down to the daemon's limit, sizes: ${observeSizes.join(",")}`,
+    );
+    assert.equal(await readPlanOrEmpty(planPath), "", "and every note drained");
+
+    // An auth refusal must NOT walk the halving ladder.
+    await stub.close();
+    firstClosed = true;
+    const authAttempts: number[] = [];
+    refusing = await startDaemonStub(
+      (pathname, body) => {
+        if (pathname.startsWith("/engram/v1/observe")) {
+          authAttempts.push(
+            Buffer.byteLength(
+              String((body.messages as Array<{ content?: string }> | undefined)?.[0]?.content ?? ""),
+              "utf8",
+            ),
+          );
+        }
+        return { ok: true };
+      },
+      {
+        statusFor: (pathname) =>
+          pathname.startsWith("/engram/v1/observe") ? 401 : undefined,
+      },
+    );
+    await writeFile(planPath, notes, "utf8");
+    await ingestFlushPlanNotes({
+      target: { ...target, port: refusing.port },
+      serviceId: "s413",
+      workspaceDir,
+      sessionKey: "s",
+      namespace: undefined,
+      remainingTimeoutMs: () => 10_000,
+    });
+    assert.equal(authAttempts.length, 1, "a refused credential is not retried at smaller sizes");
+    assert.equal(await readPlanOrEmpty(planPath), notes, "and the notes were kept");
+  } finally {
+    if (!firstClosed) await stub.close();
+    await refusing?.close();
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("an interrupted ingestion's notes are recovered on the next run", async () => {
+  // Rotation claims the notes by rename. A crash between the rename and the
+  // post would strand them without this recovery (issue #2303).
+  const delivered: string[] = [];
+  const stub = await startDaemonStub((pathname, body) => {
+    if (pathname.startsWith("/engram/v1/observe")) {
+      delivered.push(
+        String((body.messages as Array<{ content?: string }> | undefined)?.[0]?.content ?? ""),
+      );
+    }
+    return { ok: true };
+  });
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-fp-recover-"));
+  const planPath = path.join(workspaceDir, "state", "plugins", "recov", "flush-plan.md");
+  await mkdir(path.dirname(planPath), { recursive: true });
+  try {
+    // Simulate the crash: an inflight snapshot with no plan file.
+    await writeFile(`${planPath}.inflight`, "- stranded note\n", "utf8");
+    await writeFile(planPath, "- fresh note\n", "utf8");
+    await ingestFlushPlanNotes({
+      target: {
+        host: "127.0.0.1",
+        port: stub.port,
+        resolveAuthToken: () => ({ token: "t", source: "daemon configuration" as const }),
+      },
+      serviceId: "recov",
+      workspaceDir,
+      sessionKey: "s",
+      namespace: undefined,
+      remainingTimeoutMs: () => 5_000,
+    });
+    assert.deepEqual(
+      delivered,
+      ["- stranded note\n- fresh note\n"],
+      "the stranded note was recovered ahead of the newer one",
+    );
+    assert.equal(await readPlanOrEmpty(planPath), "", "and the plan drained");
+    assert.equal(await readPlanOrEmpty(`${planPath}.inflight`), "", "the snapshot was removed");
   } finally {
     await stub.close();
     await rm(workspaceDir, { recursive: true, force: true });
