@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 
@@ -8,6 +7,7 @@ import { serializeMutations, withHeldFileLock } from "../utils/serialize-mutatio
 import {
   appendPrivateFileNoFollow,
   ensurePrivateDirectoryNoFollow,
+  ensurePrivateDirectoryTreeNoFollow,
   withPrivateDirectoryNoFollow,
 } from "./private-file.js";
 
@@ -118,7 +118,10 @@ export class SupportPassportModelAuditStore implements SupportPassportModelAudit
   }
 
   private async ensureSafeDirectories(): Promise<void> {
-    await mkdir(this.memoryDir, { recursive: true, mode: 0o700 });
+    await ensurePrivateDirectoryTreeNoFollow(
+      this.memoryDir,
+      "support passport memory directory must be a stable directory"
+    );
     await ensurePrivateDirectoryNoFollow(
       this.memoryDir,
       this.auditDir,
