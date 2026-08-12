@@ -90,9 +90,13 @@ export async function ingestFlushPlanNotes(options: {
     return;
   }
 
+  // Never wait longer than the caller's own budget: the transcript flush that
+  // runs after this shares the same deadline, and burning it here would leave
+  // that flush with the 1 ms fallback.
+  const lockWaitMs = Math.max(1, Math.min(LOCK_MAX_WAIT_MS, Math.floor(options.remainingTimeoutMs() / 2)));
   await withHeldFileLock(
     paths.lock,
-    { staleMs: LOCK_STALE_MS, maxWaitMs: LOCK_MAX_WAIT_MS },
+    { staleMs: LOCK_STALE_MS, maxWaitMs: lockWaitMs },
     async (acquired, lock) => {
       if (!acquired) {
         // Another flush owns the snapshot. Declining is correct: the notes stay
@@ -143,7 +147,9 @@ async function ingestUnderLock(
     if (options.remainingTimeoutMs() <= 0) return;
     const claimed = await claimPendingNotes(paths, options.serviceId);
     if (claimed.trim().length === 0) {
-      await discard(paths.inflight);
+      // Even a delete needs a live claim: a replacement holder may have just
+      // recovered this snapshot.
+      if (await lock.refresh()) await discard(paths.inflight);
       return;
     }
     let pending = claimed;
@@ -240,9 +246,18 @@ async function ingestUnderLock(
         await atomicWrite(paths.inflight, pending);
       }
     } finally {
-      // Never write after ownership is lost: the replacement holder owns the
-      // snapshot now, and a stale write would clobber its progress.
-      if (!lockLost) await releasePendingNotes(paths, pending, options.serviceId);
+      // Never touch the snapshot after ownership is lost. `lockLost` covers the
+      // paths that already checked; every OTHER exit — a refusal, a spent
+      // deadline, a transport throw, a clean drain — re-checks here, because a
+      // long observe await is exactly when a stale-break can hand the snapshot
+      // to a replacement holder.
+      if (!lockLost && (await lock.refresh())) {
+        await releasePendingNotes(paths, pending, options.serviceId);
+      } else if (!lockLost) {
+        log.warn(
+          `[${options.serviceId}] flush-plan lock was lost before the snapshot could be updated; its new owner drains the remainder`,
+        );
+      }
     }
     if (stop) return;
   }
