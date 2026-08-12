@@ -132,7 +132,8 @@ export class SupportPassportCardService {
                 sourceMemoryIds: card.sourceMemoryIds,
                 onPersisted: (cardId) => createdIds.push(cardId),
               },
-              lock
+              lock,
+              input.owner.principal
             )
           );
         }

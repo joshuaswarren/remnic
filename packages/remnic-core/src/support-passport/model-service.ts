@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 
+import { throwIfAborted } from "../abort-error.js";
 import { log } from "../logger.js";
 import { stripAttributesSuffix } from "../structured-attributes.js";
 import type { MemoryFile } from "../types.js";
@@ -300,7 +301,9 @@ export class SupportPassportQuestionService {
       usage: modelResult.usage,
     };
     try {
+      throwIfAborted(input.signal, "The helper question was cancelled.");
       await this.grantService.readGrant(input);
+      throwIfAborted(input.signal, "The helper question was cancelled.");
       const answer = {
         answer: modelResult.answer,
         citedCardIds: modelResult.citedCardIds,
@@ -313,7 +316,7 @@ export class SupportPassportQuestionService {
         ...auditBase,
         schemaVersion: 1,
         outcome: "error",
-        errorClass: operationErrorClass(error),
+        errorClass: input.signal?.aborted ? "aborted" : operationErrorClass(error),
       });
       throw error;
     }

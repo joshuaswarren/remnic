@@ -5,6 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { StorageManager } from "../storage.js";
+import type { HeldFileLockController } from "../utils/serialize-mutations.js";
 import { SupportPassportCardService } from "./card-service.js";
 import { SupportPassportError } from "./errors.js";
 import { SupportPassportGrantService } from "./grant-service.js";
@@ -53,7 +54,7 @@ async function makeSubject() {
   const now = () => new Date("2026-08-11T12:00:00.000Z");
   const resolveOwner = async (principal: string) => {
     if (principal !== "owner:alice") throw new Error("unknown test principal");
-    return { namespace: "alice", storage: aliceStorage };
+    return { principal, namespace: "alice", storage: aliceStorage };
   };
   const cardService = new SupportPassportCardService({ resolveOwner, now });
   const grantStore = new SupportPassportGrantStore({ memoryDir: path.join(root, "shared"), now });
@@ -166,11 +167,11 @@ test("drafting persists into the owner scope used for source reads", async () =>
       source: "test",
     });
     let ownerResolutions = 0;
-    const resolveOwner = async () => {
+    const resolveOwner = async (principal: string) => {
       ownerResolutions += 1;
       return ownerResolutions === 1
-        ? { namespace: "alice", storage: aliceStorage }
-        : { namespace: "bob", storage: bobStorage };
+        ? { principal, namespace: "alice", storage: aliceStorage }
+        : { principal, namespace: "bob", storage: bobStorage };
     };
     const cardService = new SupportPassportCardService({ resolveOwner });
     const service = new SupportPassportDraftService({
@@ -745,6 +746,84 @@ test("helper questions recheck the grant after the model call", async () => {
   }
 });
 
+test("helper questions honor cancellation during final grant validation", async () => {
+  const subject = await makeSubject();
+  const finalReadStarted = Promise.withResolvers<void>();
+  const releaseFinalRead = Promise.withResolvers<void>();
+  try {
+    const draft = await subject.cardService.createManualDraft({
+      principal: "owner:alice",
+      title: "Quiet space",
+      statement: "Offer me a quiet place and time.",
+      category: "environment",
+      reviewBy: "2026-09-01T12:00:00.000Z",
+    });
+    const active = await subject.cardService.approveCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+    });
+    const created = await subject.grantService.createGrant({
+      principal: "owner:alice",
+      cards: [{ cardId: active.cardId, revision: active.revision }],
+      expiresAt: "2026-08-11T13:00:00.000Z",
+    });
+    const readGrant = subject.grantService.readGrant.bind(subject.grantService);
+    let reads = 0;
+    subject.grantService.readGrant = async (input) => {
+      reads += 1;
+      if (reads === 2) {
+        finalReadStarted.resolve();
+        await releaseFinalRead.promise;
+      }
+      return await readGrant(input);
+    };
+    const records: SupportPassportModelAuditRecord[] = [];
+    const service = new SupportPassportQuestionService({
+      grantService: subject.grantService,
+      modelAdapter: new SupportPassportModelAdapter({
+        routes: [
+          {
+            kind: "local",
+            invoke: async () => ({
+              modelUsed: "local/test-model",
+              content: JSON.stringify({
+                answer: "Offer a quiet place.",
+                citedCardIds: [active.cardId],
+                coverage: "grounded",
+              }),
+            }),
+          },
+        ],
+      }),
+      audit: {
+        record: async (record) => {
+          records.push(SupportPassportModelAuditRecordSchema.parse(record));
+        },
+      },
+      now: subject.now,
+    });
+    const controller = new AbortController();
+    const answer = service.askGrant({
+      grantId: created.grant.grantId,
+      secret: created.secret,
+      question: "What can help?",
+      signal: controller.signal,
+    });
+    await finalReadStarted.promise;
+    controller.abort();
+    releaseFinalRead.resolve();
+
+    await assert.rejects(answer, (error: unknown) => error instanceof Error && error.name === "AbortError");
+    await flushAudit();
+    assert.equal(records[0]?.outcome, "error");
+    assert.equal(records[0]?.errorClass, "aborted");
+  } finally {
+    releaseFinalRead.resolve();
+    await subject.cleanup();
+  }
+});
+
 test("invalid helper questions use the invalid-input audit class", async () => {
   const subject = await makeSubject();
   try {
@@ -963,6 +1042,25 @@ test("the model audit store rejects symlinked and hard-linked audit files", asyn
     await link(outsidePath, auditPath);
     await assert.rejects(store.record(makeAuditRecord()), /regular files in a stable directory/);
     assert.equal(await readFile(outsidePath, "utf8"), "outside\n");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the model audit lock uses the pinned audit directory", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-model-audit-lock-"));
+  try {
+    let lockPath = "";
+    const acceptLock = (async (candidate, _options, task) => {
+      lockPath = candidate;
+      return await task(true, { refresh: async () => true } as HeldFileLockController);
+    }) as typeof import("../utils/serialize-mutations.js").withHeldFileLock;
+    const store = new SupportPassportModelAuditStore({ memoryDir: root, withHeldFileLock: acceptLock });
+
+    await store.record(makeAuditRecord());
+
+    assert.equal(lockPath.startsWith("/proc/self/fd/") || lockPath.startsWith("/dev/fd/"), true);
+    assert.equal(lockPath.includes(path.join(root, "state")), false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

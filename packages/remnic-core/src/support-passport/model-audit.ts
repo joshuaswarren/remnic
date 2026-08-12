@@ -1,11 +1,15 @@
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 
 import { expandTildePath } from "../utils/path.js";
 import { serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
-import { appendPrivateFileNoFollow } from "./private-file.js";
+import {
+  appendPrivateFileNoFollow,
+  ensurePrivateDirectoryNoFollow,
+  withPrivateDirectoryNoFollow,
+} from "./private-file.js";
 
 const HashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 
@@ -72,10 +76,12 @@ export function hashSupportPassportAuditValues(domain: string, values: string[])
 export class SupportPassportModelAuditStore implements SupportPassportModelAuditSink {
   private readonly memoryDir: string;
   private readonly auditDir: string;
+  private readonly runWithHeldFileLock: typeof withHeldFileLock;
 
-  constructor(options: { memoryDir: string }) {
+  constructor(options: { memoryDir: string; withHeldFileLock?: typeof withHeldFileLock }) {
     this.memoryDir = path.resolve(expandTildePath(options.memoryDir));
     this.auditDir = path.join(this.memoryDir, "state", "support-passport", "audit");
+    this.runWithHeldFileLock = options.withHeldFileLock ?? withHeldFileLock;
   }
 
   async record(input: SupportPassportModelAuditRecord): Promise<void> {
@@ -83,42 +89,40 @@ export class SupportPassportModelAuditStore implements SupportPassportModelAudit
     await this.ensureSafeDirectories();
     const day = record.occurredAt.slice(0, 10);
     const filePath = path.join(this.auditDir, `${day}.jsonl`);
-    const lockPath = path.join(this.auditDir, `.${day}.lock`);
     await serializeMutations(`support-passport-audit:${filePath}`, () =>
-      withHeldFileLock(
-        lockPath,
-        {
-          staleMs: 30_000,
-          maxWaitMs: 5_000,
-          heartbeatMs: 10_000,
-        },
-        async (acquired) => {
-          if (!acquired) throw new Error("could not acquire the support passport audit lock");
-          await appendPrivateFileNoFollow(
-            this.auditDir,
-            filePath,
-            `${JSON.stringify(record)}\n`,
-            "support passport audit paths must be regular files in a stable directory",
-            this.memoryDir
-          );
-        }
+      withPrivateDirectoryNoFollow(
+        this.memoryDir,
+        this.auditDir,
+        "support passport audit directory must remain inside the memory directory",
+        async (pinnedDirectory) =>
+          await this.runWithHeldFileLock(
+            path.join(pinnedDirectory, `.${day}.lock`),
+            {
+              staleMs: 30_000,
+              maxWaitMs: 5_000,
+              heartbeatMs: 10_000,
+            },
+            async (acquired) => {
+              if (!acquired) throw new Error("could not acquire the support passport audit lock");
+              await appendPrivateFileNoFollow(
+                this.auditDir,
+                filePath,
+                `${JSON.stringify(record)}\n`,
+                "support passport audit paths must be regular files in a stable directory",
+                this.memoryDir
+              );
+            }
+          )
       )
     );
   }
 
   private async ensureSafeDirectories(): Promise<void> {
-    const directories = [
+    await mkdir(this.memoryDir, { recursive: true, mode: 0o700 });
+    await ensurePrivateDirectoryNoFollow(
       this.memoryDir,
-      path.join(this.memoryDir, "state"),
-      path.join(this.memoryDir, "state", "support-passport"),
       this.auditDir,
-    ];
-    for (const directory of directories) {
-      await mkdir(directory, { recursive: true, mode: 0o700 });
-      const metadata = await lstat(directory);
-      if (metadata.isSymbolicLink()) throw new Error("support passport audit directories must not be symbolic links");
-      if (!metadata.isDirectory()) throw new Error("support passport audit paths must be directories");
-    }
-    await Promise.all(directories.slice(1).map((directory) => chmod(directory, 0o700)));
+      "support passport audit directory must remain inside the memory directory"
+    );
   }
 }
