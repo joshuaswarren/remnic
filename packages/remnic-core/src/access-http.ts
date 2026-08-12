@@ -195,10 +195,7 @@ export interface RemnicAdminFeatureStatus {
 }
 
 export interface RemnicAdminConfigStatus {
-  path: string;
-  exists: boolean;
-  writable: boolean;
-  restartRequired: boolean;
+  path: string; exists: boolean; writable: boolean; restartRequired: boolean;
   values: Record<string, string | number | boolean | null>;
 }
 
@@ -826,9 +823,7 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
     const pathname = parsed.pathname;
     if (await this.handleSupportPassportUi(req, res, pathname)) return;
 
-    if (this.adminConsoleEnabled && await this.handleAdminConsole(req, res, pathname)) {
-      return;
-    }
+    if (this.adminConsoleEnabled && await this.handleAdminConsole(req, res, pathname)) return;
 
     if (req.method === "GET" && (pathname === "/engram/v1/live" || pathname === "/engram/v1/health")) {
       const { ready, warmupAttempts, lastError } = this.readiness();
