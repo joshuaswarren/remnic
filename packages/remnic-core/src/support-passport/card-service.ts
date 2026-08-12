@@ -535,7 +535,12 @@ export class SupportPassportCardService {
       }
       return (await storage.getMemoryById(replacement.card.cardId)) ?? currentMemory;
     }
-    await this.completeReplacementAfterActivation(storage, currentCard, lock, principal);
+    try {
+      await this.completeReplacementAfterActivation(storage, currentCard, lock, principal);
+    } catch (error) {
+      if (!isStorageConflict(error)) throw error;
+      await this.rollbackConflictedApproval(storage, currentCard.card.cardId, lock, principal);
+    }
     return (await storage.getMemoryById(replacement.card.cardId)) ?? currentMemory;
   }
 
