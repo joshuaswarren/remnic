@@ -577,7 +577,11 @@
             coverage: "grounded",
           };
         }
-        const quietCard = guide.cards.find((card) => card.category === "communication") || guide.cards[0];
+        const quietCard = guide.cards.find(
+          (card) =>
+            (card.category === "communication" || card.category === "regulation") &&
+            /quiet|speak|respond|pause|space|time|settle/i.test(`${card.title} ${card.statement}`)
+        );
         if (!quietCard || !/overwhelm|speaking|quiet/i.test(question)) {
           return {
             answer: "That is not covered in this person's support guide.",
@@ -586,7 +590,7 @@
           };
         }
         return {
-          answer: "Offer a quiet place and time. Give the person space to respond.",
+          answer: quietCard.statement,
           citedCardIds: [quietCard.cardId],
           coverage: "grounded",
         };
