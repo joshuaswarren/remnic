@@ -40,6 +40,10 @@ It reads source IDs in bounded batches and completes every available batch befor
 
 Unavailable sources remain unversioned. A later load retries them after the source becomes available.
 
+Migration or ledger-read failures leave the tombstone store unloaded.
+
+The failed call returns the error. The next call retries before any legacy identity becomes authoritative.
+
 Malformed JSONL rows stay byte-for-byte while valid rows migrate in place.
 
 The fact-hash index registers every stored identity form that matches an ambiguous legacy hash.
@@ -64,7 +68,7 @@ Terminal sentence punctuation remains compatible with normalized exact matches.
 
 ## Verification state
 
-The 108-test focused identity suite passes after the corruption and ambiguous-source fixes.
+The 110-test focused identity suite passes, including migration and ledger-read recovery.
 
 The core type check passes.
 

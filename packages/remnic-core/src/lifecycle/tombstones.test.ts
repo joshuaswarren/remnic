@@ -292,6 +292,108 @@ describe("TombstoneStore — Unicode migration safety", () => {
     );
   });
 
+  it("does not publish legacy identities when migration fails and retries on the next load", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "tomb-migration-retry-"));
+    const filePath = path.join(dir, "tombstones.jsonl");
+    const source = "利用者は緑茶を好む。";
+    const legacyEntry = {
+      id: "tomb-migration-retry",
+      kind: "tombstone" as const,
+      reason: "correction" as const,
+      sourceMemoryId: "fact-migration-retry",
+      contentHash: computeLegacyContentHash(source),
+      normalizedText: normalizeLegacyContent(source),
+      namespace: "default",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      createdBy: "user_correction" as const,
+    };
+    await writeFile(filePath, `${JSON.stringify(legacyEntry)}\n`, "utf8");
+    let sourceReadAttempts = 0;
+    const store = new TombstoneStore(
+      filePath,
+      "default",
+      {
+        enabled: true,
+        semanticMatch: false,
+        semanticThreshold: 0.9,
+        hashContent: computeHash,
+        normalizeText: normalizeContent,
+        sourceContentsForMemoryIds: async () => {
+          sourceReadAttempts += 1;
+          if (sourceReadAttempts === 1) throw new Error("transient source read failure");
+          return new Map<string, string>([[legacyEntry.sourceMemoryId, source]]);
+        },
+      },
+      makeIo(),
+    );
+
+    await assert.rejects(store.load(), /transient source read failure/);
+    assert.deepEqual(store.snapshot(), []);
+    assert.equal(
+      store.lookup({ namespace: "default", contentHash: computeHash(source) }),
+      null,
+    );
+
+    await store.load();
+    assert.equal(sourceReadAttempts, 2);
+    assert.equal(
+      store.lookup({ namespace: "default", contentHash: computeHash(source) })?.matchedTier,
+      "exact",
+    );
+  });
+
+  it("does not publish an empty index after a transient ledger read failure", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "tomb-load-retry-"));
+    const filePath = path.join(dir, "tombstones.jsonl");
+    const source = "Current tombstone identity";
+    const entry = {
+      id: "tomb-load-retry",
+      kind: "tombstone" as const,
+      reason: "correction" as const,
+      sourceMemoryId: "fact-load-retry",
+      contentHash: computeHash(source),
+      normalizedText: normalizeContent(source),
+      normalizerVersion: 2,
+      namespace: "default",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      createdBy: "user_correction" as const,
+    };
+    await writeFile(filePath, `${JSON.stringify(entry)}\n`, "utf8");
+    let readAttempts = 0;
+    const io = makeIo();
+    io.read = async (target) => {
+      readAttempts += 1;
+      if (readAttempts === 1) {
+        const error = new Error("transient ledger read failure") as NodeJS.ErrnoException;
+        error.code = "EACCES";
+        throw error;
+      }
+      return readFile(target, "utf8");
+    };
+    const store = new TombstoneStore(
+      filePath,
+      "default",
+      {
+        enabled: true,
+        semanticMatch: false,
+        semanticThreshold: 0.9,
+        hashContent: computeHash,
+        normalizeText: normalizeContent,
+      },
+      io,
+    );
+
+    await assert.rejects(store.load(), /transient ledger read failure/);
+    assert.deepEqual(store.snapshot(), []);
+
+    await store.load();
+    assert.equal(readAttempts, 2);
+    assert.equal(
+      store.lookup({ namespace: "default", contentHash: computeHash(source) })?.matchedTier,
+      "exact",
+    );
+  });
+
   it("replaces a mixed-Unicode legacy hash instead of blocking its ASCII collision", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "tomb-mixed-unicode-alias-safety-"));
     const filePath = path.join(dir, "tombstones.jsonl");

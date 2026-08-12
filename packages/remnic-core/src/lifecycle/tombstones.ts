@@ -354,21 +354,14 @@ export class TombstoneStore {
       raw = await this.io.read(this.filePath);
     } catch (err) {
       const code = (err as NodeJS.ErrnoException)?.code;
-      if (code !== "ENOENT") {
-        // Rebuild repairs unreadable/corrupt state; loading remains fail-open.
-      }
+      if (code !== "ENOENT") throw err;
       this.loaded = true;
       return;
     }
     const initial = this.parseEntries(raw);
-    let migrated = initial;
-    if (migrateLegacy) {
-      try {
-        migrated = await this.migrateLegacyEntries(initial);
-      } catch {
-        // Keep loading the old entry if source lookup or atomic rewrite fails.
-      }
-    }
+    const migrated = migrateLegacy
+      ? await this.migrateLegacyEntries(initial)
+      : initial;
     this.resetIndex();
     for (const entry of migrated.entries) this.indexEntry(entry);
     this.corruptedLines = migrated.corruptedLines;
@@ -425,12 +418,7 @@ export class TombstoneStore {
     }
     return await serializeMutations(`tombstone:${this.filePath}`, () =>
       this.withWriteLock(async () => {
-        let latestRaw: string;
-        try {
-          latestRaw = await this.io.read(this.filePath);
-        } catch {
-          return initial;
-        }
+        const latestRaw = await this.io.read(this.filePath);
         const latest = this.parseEntries(latestRaw);
         let changed = false;
         const migrateEntry = (entry: TombstoneEntry): TombstoneEntry => {
