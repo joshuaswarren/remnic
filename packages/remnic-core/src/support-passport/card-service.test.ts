@@ -89,6 +89,33 @@ test("manual support cards stay private until their owner approves them", async 
   }
 });
 
+test("manual draft creation returns the committed card without a post-write corpus reload", async () => {
+  const subject = await makeSubject();
+  try {
+    const originalRead = subject.aliceStorage.getMemoryById.bind(subject.aliceStorage);
+    subject.aliceStorage.getMemoryById = async () => {
+      throw new Error("simulated post-commit corpus read failure");
+    };
+
+    const draft = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Plan changes",
+      statement: "Tell me before plans change.",
+      category: "transitions",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+
+    assert.equal(draft.status, "pending_review");
+    assert.equal(draft.statement, "Tell me before plans change.");
+    const stored = await originalRead(draft.cardId);
+    assert.ok(stored);
+    assert.equal(stored.frontmatter.status, "pending_review");
+    assert.equal(draft.updatedAt, stored.frontmatter.updated);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("listing linkless drafts does not rescan the corpus by card ID", async () => {
   const subject = await makeSubject();
   try {

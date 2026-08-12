@@ -106,6 +106,7 @@ export {
   normalizeAttributePairs,
   parseEntityFile,
   serializeEntityFile,
+  type CommittedMemoryWriteResult,
   type MemoryWriteResult,
 } from "./storage.js";
 export { withRawEntityPageMutation } from "./storage/entity-canonical-id-lock.js";
