@@ -42,7 +42,7 @@ Unavailable sources remain unversioned. A later load retries them after the sour
 
 Unverified entries remain in the ledger and keyed tier.
 
-Their hash and normalized tiers stay hidden until source verification succeeds.
+Their exact, normalized, and semantic tiers stay hidden until source verification succeeds.
 
 Migration or ledger-read failures leave the tombstone store unloaded.
 

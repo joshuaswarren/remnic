@@ -789,6 +789,7 @@ export class TombstoneStore {
       let best: { id: string; reason: TombstoneReason; score: number } | null = null;
       for (const entry of this.entries) {
         if (entry.kind !== "tombstone") continue;
+        if (entry.normalizerVersion !== TOMBSTONE_NORMALIZER_VERSION) continue;
         if (entry.namespace !== query.namespace) continue;
         if (this.revokedIds.has(entry.id)) continue;
         if (!entry.normalizedText) continue;

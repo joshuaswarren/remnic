@@ -417,10 +417,11 @@ describe("TombstoneStore — Unicode migration safety", () => {
       "default",
       {
         enabled: true,
-        semanticMatch: false,
+        semanticMatch: true,
         semanticThreshold: 0.9,
         hashContent: computeHash,
         normalizeText: normalizeContent,
+        semanticSimilarity: () => 1,
         sourceContentsForMemoryIds: async () =>
           sourceAvailable
             ? new Map<string, string>([[legacyEntry.sourceMemoryId, source]])
@@ -433,6 +434,10 @@ describe("TombstoneStore — Unicode migration safety", () => {
     assert.equal(store.snapshot()[0]?.normalizerVersion, undefined);
     assert.equal(
       store.lookup({ namespace: "default", contentHash: computeHash(collision) }),
+      null,
+    );
+    assert.equal(
+      store.lookup({ namespace: "default", normalizedText: normalizeContent(collision) }),
       null,
     );
 
