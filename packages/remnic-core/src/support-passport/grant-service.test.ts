@@ -1439,9 +1439,29 @@ test("private directory tree creation syncs missing memory-root ancestors", asyn
       syncs += 1;
     });
 
-    assert.equal(syncs, 2);
+    const ancestorCount = path.relative(path.parse(target).root, target).split(path.sep).length;
+    assert.equal(syncs, ancestorCount);
     assert.equal((await lstat(target)).isDirectory(), true);
     assert.equal((await lstat(target)).mode & 0o777, 0o700);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("private directory tree creation rejects a symlink in the ancestor chain", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-private-root-link-"));
+  try {
+    const outside = path.join(root, "outside");
+    const linked = path.join(root, "linked");
+    const target = path.join(linked, "new-parent", "memory");
+    await mkdir(outside);
+    await symlink(outside, linked);
+
+    await assert.rejects(
+      ensurePrivateDirectoryTreeNoFollow(target, "private directory creation failed"),
+      /private directory creation failed/
+    );
+    assert.deepEqual(await readdir(outside), []);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1649,6 +1669,55 @@ test("the grant store rejects unsafe durations and grant ID collisions", async (
     );
     await assert.rejects(
       store.create({ ...input, expiresAt: new Date(now.getTime() + 299_999).toISOString() }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "invalid_input"
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the grant store canonicalizes UUID letter case", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-id-case-"));
+  try {
+    const uppercaseGrantId = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA";
+    const lowercaseGrantId = uppercaseGrantId.toLowerCase();
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({
+      memoryDir: root,
+      makeGrantId: () => uppercaseGrantId,
+      now: () => now,
+    });
+    const created = await store.create({
+      namespace: "alice",
+      principal: "owner:alice",
+      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+      expiresAt: new Date(now.getTime() + 300_000).toISOString(),
+    });
+
+    assert.equal(created.state.grantId, lowercaseGrantId);
+    assert.equal((await store.authenticate(uppercaseGrantId, created.secret)).grantId, lowercaseGrantId);
+    assert.equal(
+      (await store.revoke({ grantId: uppercaseGrantId, namespace: "alice", principal: "owner:alice" })).grantId,
+      lowercaseGrantId
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the grant store rejects invalid calendar dates", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-date-"));
+  try {
+    const now = new Date("2026-02-28T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({ memoryDir: root, now: () => now });
+
+    await assert.rejects(
+      store.create({
+        namespace: "alice",
+        principal: "owner:alice",
+        cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+        expiresAt: "2026-02-31T12:00:00.000Z",
+      }),
       (error: unknown) => error instanceof SupportPassportError && error.code === "invalid_input"
     );
   } finally {

@@ -117,7 +117,8 @@ export async function ensurePrivateDirectoryNoFollow(
   trustedRoot: string,
   directory: string,
   errorMessage: string,
-  syncVerifiedParent: (handle: FileHandle) => Promise<void> = syncDirectoryHandle
+  syncVerifiedParent: (handle: FileHandle) => Promise<void> = syncDirectoryHandle,
+  hardenExistingChildren = true
 ): Promise<void> {
   const root = path.resolve(trustedRoot);
   const target = path.resolve(directory);
@@ -134,15 +135,17 @@ export async function ensurePrivateDirectoryNoFollow(
     for (const component of components) {
       const pinnedParent = await resolvePrivateDirectoryPath(currentPath, current.handle, current.opened, errorMessage);
       const childPath = path.join(pinnedParent, component);
+      let created = false;
       try {
         await mkdir(childPath, { mode: 0o700 });
+        created = true;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       }
       await syncVerifiedParent(current.handle);
       const child = await openDirectoryNoFollow(childPath, errorMessage);
       handles.push(child.handle);
-      await child.handle.chmod(0o700);
+      if (created || hardenExistingChildren) await child.handle.chmod(0o700);
       assertStableDirectory(current.before, current.opened, await lstat(currentPath), errorMessage);
       currentPath = path.join(currentPath, component);
       current = child;
@@ -159,20 +162,7 @@ export async function ensurePrivateDirectoryTreeNoFollow(
   syncVerifiedParent: (handle: FileHandle) => Promise<void> = syncDirectoryHandle
 ): Promise<void> {
   const target = path.resolve(directory);
-  let existingAncestor = target;
-  while (true) {
-    try {
-      const metadata = await lstat(existingAncestor);
-      if (metadata.isSymbolicLink() || !metadata.isDirectory()) throw new Error(errorMessage);
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      const parent = path.dirname(existingAncestor);
-      if (parent === existingAncestor) throw error;
-      existingAncestor = parent;
-    }
-  }
-  await ensurePrivateDirectoryNoFollow(existingAncestor, target, errorMessage, syncVerifiedParent);
+  await ensurePrivateDirectoryNoFollow(path.parse(target).root, target, errorMessage, syncVerifiedParent, false);
 }
 
 export async function withPrivateDirectoryNoFollow<T>(
@@ -228,48 +218,6 @@ export async function readPrivateFileNoFollow(
     assertStableDirectory(stableDirectory.before, stableDirectory.opened, await lstat(directory), errorMessage);
     if (!fileMetadata.isFile() || fileMetadata.nlink !== 1) throw new Error(errorMessage);
     return await fileHandle.readFile("utf8");
-  } finally {
-    await fileHandle?.close().catch(() => undefined);
-    await closeDirectoryHandles(directoryHandles);
-  }
-}
-
-export async function appendPrivateFileNoFollow(
-  directory: string,
-  filePath: string,
-  content: string,
-  errorMessage: string,
-  trustedRoot = directory
-): Promise<void> {
-  if (path.dirname(filePath) !== path.resolve(directory)) throw new Error(errorMessage);
-  const targetName = path.basename(filePath);
-  let directoryHandles: FileHandle[] = [];
-  let fileHandle: FileHandle | undefined;
-  try {
-    const stableDirectory = await openStableDirectoryFromRoot(trustedRoot, directory, errorMessage);
-    directoryHandles = stableDirectory.handles;
-    const pinnedDirectory = await resolvePrivateDirectoryPath(
-      directory,
-      stableDirectory.handle,
-      stableDirectory.opened,
-      errorMessage
-    );
-    try {
-      fileHandle = await open(
-        path.join(pinnedDirectory, targetName),
-        fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW,
-        0o600
-      );
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ELOOP") throw new Error(errorMessage);
-      throw error;
-    }
-    const fileMetadata = await fileHandle.stat();
-    assertStableDirectory(stableDirectory.before, stableDirectory.opened, await lstat(directory), errorMessage);
-    if (!fileMetadata.isFile() || fileMetadata.nlink !== 1) throw new Error(errorMessage);
-    await fileHandle.chmod(0o600);
-    await fileHandle.appendFile(content, "utf8");
-    assertStableDirectory(stableDirectory.before, stableDirectory.opened, await lstat(directory), errorMessage);
   } finally {
     await fileHandle?.close().catch(() => undefined);
     await closeDirectoryHandles(directoryHandles);

@@ -25,7 +25,8 @@ import {
 const GRANT_LOCK_STALE_MS = 30_000;
 const GRANT_LOCK_WAIT_MS = 5_000;
 const GRANT_LOCK_HEARTBEAT_MS = 10_000;
-const SAFE_GRANT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SAFE_GRANT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const UUID_INPUT = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SAFE_OWNER_INDEX_HASH = /^[0-9a-f]{64}$/;
 const UNSUPPORTED_DIRECTORY_SYNC_ERRORS = new Set(["EINVAL", "ENOSYS", "ENOTSUP", "EOPNOTSUPP"]);
 const MAX_OWNER_GRANT_HISTORY = 100;
@@ -57,6 +58,11 @@ function hashesMatch(left: string, right: string): boolean {
 
 function grantNotFound(): SupportPassportError {
   return new SupportPassportError("grant_not_found", "The share link was not found.", 404);
+}
+
+function normalizeGrantId(grantId: unknown): string {
+  if (typeof grantId !== "string" || !UUID_INPUT.test(grantId)) throw grantNotFound();
+  return grantId.toLowerCase();
 }
 
 function normalizeNamespace(namespace: unknown): string {
@@ -129,8 +135,9 @@ export class SupportPassportGrantStore {
       if (!Buffer.isBuffer(secretBytes) || secretBytes.length !== 32) {
         throw new Error("SupportPassportGrantStore.makeSecret must return 32 bytes");
       }
-      const grantId = this.makeGrantId();
-      if (!SAFE_GRANT_ID.test(grantId)) throw new Error("SupportPassportGrantStore.makeGrantId must return a UUID");
+      const rawGrantId = this.makeGrantId();
+      if (!UUID_INPUT.test(rawGrantId)) throw new Error("SupportPassportGrantStore.makeGrantId must return a UUID");
+      const grantId = rawGrantId.toLowerCase();
       const secret = secretBytes.toString("base64url");
       const createdAt = this.now();
       const durationMs = Date.parse(parsed.data.expiresAt) - createdAt.getTime();
@@ -162,7 +169,7 @@ export class SupportPassportGrantStore {
   }
 
   async authenticate(grantId: string, secret: string): Promise<SupportPassportGrantState> {
-    if (!SAFE_GRANT_ID.test(grantId)) throw grantNotFound();
+    grantId = normalizeGrantId(grantId);
     if (typeof secret !== "string" || secret.length > 512) throw grantNotFound();
     let state: SupportPassportGrantState;
     try {
@@ -238,7 +245,7 @@ export class SupportPassportGrantStore {
     },
     beforeCommit?: () => Promise<void>
   ): Promise<SupportPassportGrantState> {
-    if (!SAFE_GRANT_ID.test(input.grantId)) throw grantNotFound();
+    input = { ...input, grantId: normalizeGrantId(input.grantId) };
     const namespace = normalizeNamespace(input.namespace);
     return await this.withGrantLock(input.grantId, async (lock) => {
       let state: SupportPassportGrantState;
@@ -267,7 +274,7 @@ export class SupportPassportGrantStore {
   }
 
   private filePath(grantId: string): string {
-    if (!SAFE_GRANT_ID.test(grantId)) throw grantNotFound();
+    grantId = normalizeGrantId(grantId);
     return path.join(this.grantsDir, `${grantId}.json`);
   }
 
@@ -471,7 +478,7 @@ export class SupportPassportGrantStore {
   }
 
   private async withGrantLock<T>(grantId: string, task: (lock: HeldFileLockController) => Promise<T>): Promise<T> {
-    if (!SAFE_GRANT_ID.test(grantId)) throw grantNotFound();
+    grantId = normalizeGrantId(grantId);
     await this.ensureSafeDirectories();
     return await withPrivateDirectoryNoFollow(
       this.memoryDir,
