@@ -286,7 +286,7 @@ test("a saved manual draft stays successful when its list refresh fails", async 
   await page.getByRole("button", { name: "Save draft" }).click();
 
   await expect(page.getByText("Draft saved. Review and approve it before sharing.")).toBeVisible();
-  await expect(page.getByText("The draft was saved, but the card list did not refresh.")).toBeVisible();
+  await expect(page.locator("#generateError")).toContainText("The draft was saved, but the card list did not refresh.");
   await expect(page.getByText("The draft did not save.")).toHaveCount(0);
   await expect(page.locator("#cardDialog")).toBeHidden();
   expect(draftWrites).toBe(1);
