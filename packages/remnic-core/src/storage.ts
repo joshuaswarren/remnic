@@ -1606,6 +1606,11 @@ export interface MemoryWriteResult {
   duplicateOf?: string;
 }
 
+/** A durable write receipt with the exact memory snapshot that storage committed. */
+export interface CommittedMemoryWriteResult extends MemoryWriteResult {
+  memory: MemoryFile;
+}
+
 /**
  * Defensively parse the persisted per-fingerprint extraction retry state from
  * meta.json. Mirrors the tolerance of the `processedExtractionFingerprints`
@@ -3682,7 +3687,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     category: MemoryCategory,
     content: string,
     options: WriteMemoryOptions = {}
-  ): Promise<MemoryWriteResult> {
+  ): Promise<CommittedMemoryWriteResult> {
     await this.ensureDirectories();
     const rawEntityRef = options.entityRef;
     let refIds = typeof options.entityRef === "string" ? this.currentHistoricalIds() : null;
@@ -3883,6 +3888,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         tombstoneBlocked: true,
         blockedBy: duplicateBlocked.frontmatter.blockedBy,
         duplicateOf: duplicateBlocked.frontmatter.id,
+        memory: duplicateBlocked,
       };
     }
     await this.patchHotMemoriesCache({ addedPath: filePath }, "memory-create");
@@ -3937,7 +3943,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       }
     }
     log.debug(`wrote memory ${id} to ${filePath}`);
-    return { id, tombstoneBlocked, ...(fm.blockedBy ? { blockedBy: fm.blockedBy } : {}) };
+    return {
+      id,
+      tombstoneBlocked,
+      ...(fm.blockedBy ? { blockedBy: fm.blockedBy } : {}),
+      memory: { path: filePath, frontmatter: fm, content: sanitized.text },
+    };
   }
 
   /**
@@ -3959,7 +3970,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    * `envelope.sourceReason` is access-layer metadata with no frontmatter
    * field and is deliberately not persisted here.
    */
-  async writeSealedMemory(envelope: SealedMemoryEnvelope, extras: SealedWriteExtras = {}): Promise<MemoryWriteResult> {
+  async writeSealedMemory(
+    envelope: SealedMemoryEnvelope,
+    extras: SealedWriteExtras = {}
+  ): Promise<CommittedMemoryWriteResult> {
     if (!isSealedMemoryEnvelope(envelope)) {
       throw new Error(
         "writeSealedMemory: value is not a valid sealed memory envelope (fails the composeMemoryEnvelope contract)"
