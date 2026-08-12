@@ -357,6 +357,7 @@
       input.type = "checkbox";
       input.name = "shareCard";
       input.value = card.cardId;
+      input.dataset.revision = card.revision;
       input.addEventListener("change", updateShareCardChoices);
       const copy = element("span");
       copy.append(element("strong", "", card.title), element("small", "", card.statement));
@@ -576,13 +577,22 @@
   async function createShare(event) {
     event.preventDefault();
     setError("shareError");
-    const cardIds = [...document.querySelectorAll('input[name="shareCard"]:checked')].map((input) => input.value);
+    const selectedInputs = [...document.querySelectorAll('input[name="shareCard"]:checked')];
+    const cardIds = selectedInputs.map((input) => input.value);
     if (cardIds.length === 0) {
       setError("shareError", "Select at least one approved support card.");
       return;
     }
     if (cardIds.length > MAX_SHARED_CARDS) {
       setError("shareError", "Select no more than eight approved support cards.");
+      return;
+    }
+    const cardRevisions = selectedInputs.map((input) => ({
+      cardId: input.value,
+      revision: input.dataset.revision ?? "",
+    }));
+    if (cardRevisions.some((card) => !card.revision)) {
+      setError("shareError", "A selected support card changed. Refresh the guide and select it again.");
       return;
     }
     const choice = document.querySelector('input[name="duration"]:checked')?.value ?? "2h";
@@ -596,7 +606,7 @@
     const button = event.currentTarget.querySelector('button[type="submit"]');
     let created;
     try {
-      created = await withBusy(button, "Creating link…", () => api.createGrant({ cardIds, expiresAt }));
+      created = await withBusy(button, "Creating link…", () => api.createGrant({ cardIds, cardRevisions, expiresAt }));
     } catch (error) {
       setError("shareError", errorMessage(error, "The share link was not created."));
       return;

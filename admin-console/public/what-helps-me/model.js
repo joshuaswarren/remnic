@@ -461,14 +461,18 @@
       },
       async createGrant(input) {
         const selected = input.cardIds.map((cardId) => cards.find((card) => card.cardId === cardId));
-        if (selected.some((card) => !card || card.status !== "active"))
+        const revisions = new Map(input.cardRevisions.map((card) => [card.cardId, card.revision]));
+        if (
+          revisions.size !== input.cardIds.length ||
+          selected.some((card) => !card || card.status !== "active" || revisions.get(card.cardId) !== card.revision)
+        )
           throw new Error("Only approved support cards can be shared.");
         const grantId = replayId("replay-grant");
         const secret = replayId("replay-secret").padEnd(43, "x");
         const grant = {
           grantId,
           stateVersion: 1,
-          cards: selected.map((card) => ({ cardId: card.cardId, revision: card.revision })),
+          cards: input.cardRevisions.map((card) => ({ ...card })),
           createdAt: now().toISOString(),
           expiresAt: input.expiresAt,
           status: "active",

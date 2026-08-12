@@ -220,6 +220,7 @@ test("a created share link remains visible when its list refresh fails", async (
     revision: "a".repeat(64),
   };
   let cardReads = 0;
+  let grantInput: unknown;
   await page.route("**/engram/v1/support-passport/cards", async (route) => {
     cardReads += 1;
     if (cardReads > 1) {
@@ -230,6 +231,7 @@ test("a created share link remains visible when its list refresh fails", async (
   });
   await page.route("**/engram/v1/support-passport/grants", async (route) => {
     if (route.request().method() === "POST") {
+      grantInput = route.request().postDataJSON();
       await route.fulfill({
         status: 201,
         contentType: "application/json",
@@ -251,6 +253,11 @@ test("a created share link remains visible when its list refresh fails", async (
   await page.locator('input[name="shareCard"]').check();
   await page.getByRole("button", { name: "Create share link" }).click();
 
+  expect(grantInput).toEqual({
+    cardIds: [card.cardId],
+    cardRevisions: [{ cardId: card.cardId, revision: card.revision }],
+    expiresAt: expect.any(String),
+  });
   await expect(page.getByText("Share link ready")).toBeVisible();
   await expect(page.getByLabel("Copy this link once")).toHaveValue(/grant=grant-created#secret=/);
   await expect(page.getByText("The share link was created, but the share list did not refresh.")).toBeVisible();
