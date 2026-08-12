@@ -290,6 +290,51 @@ export async function readPrivateFileNoFollow(
   }
 }
 
+export async function appendPrivateFileNoFollow(
+  directory: string,
+  filePath: string,
+  content: string,
+  errorMessage: string,
+  trustedRoot = directory
+): Promise<void> {
+  if (path.dirname(filePath) !== path.resolve(directory)) throw new Error(errorMessage);
+  const targetName = path.basename(filePath);
+  let directoryHandles: FileHandle[] = [];
+  let fileHandle: FileHandle | undefined;
+  try {
+    const stableDirectory = await openStableDirectoryFromRoot(trustedRoot, directory, errorMessage);
+    directoryHandles = stableDirectory.handles;
+    const pinnedDirectory = await resolvePrivateDirectoryPath(
+      directory,
+      stableDirectory.handle,
+      stableDirectory.opened,
+      errorMessage
+    );
+    const targetPath = path.join(pinnedDirectory, targetName);
+    try {
+      fileHandle = await open(
+        targetPath,
+        fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW,
+        0o600
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ELOOP") throw new Error(errorMessage);
+      throw error;
+    }
+    const fileMetadata = await fileHandle.stat();
+    assertStableDirectory(stableDirectory.before, stableDirectory.opened, await lstat(directory), errorMessage);
+    if (!fileMetadata.isFile() || fileMetadata.nlink !== 1) throw new Error(errorMessage);
+    await fileHandle.chmod(0o600);
+    await fileHandle.appendFile(content, "utf8");
+    await fileHandle.sync();
+    assertStableDirectory(stableDirectory.before, stableDirectory.opened, await lstat(directory), errorMessage);
+    await syncDirectoryHandle(stableDirectory.handle);
+  } finally {
+    await fileHandle?.close().catch(() => undefined);
+    await closeDirectoryHandles(directoryHandles);
+  }
+}
+
 export async function writePrivateFileAtomicallyNoFollow(
   directory: string,
   filePath: string,

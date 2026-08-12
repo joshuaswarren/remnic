@@ -2460,3 +2460,105 @@ test("draft creation aborts when the owner lock is lost before its write", async
     await subject.cleanup();
   }
 });
+
+test("generated draft rollback retries a compare-and-swap conflict", async () => {
+  const subject = await makeSubject();
+  try {
+    const writeSealedMemory = subject.aliceStorage.writeSealedMemory.bind(subject.aliceStorage);
+    let writes = 0;
+    subject.aliceStorage.writeSealedMemory = async (...args) => {
+      writes += 1;
+      if (writes === 2) throw new Error("second draft write failed");
+      return await writeSealedMemory(...args);
+    };
+    const writeFrontmatter = subject.aliceStorage.writeMemoryFrontmatterIfUnchanged.bind(subject.aliceStorage);
+    let rollbackAttempts = 0;
+    subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = async (memory, patch, lifecycle) => {
+      if (lifecycle?.actor === "support-passport.draft-rollback") {
+        rollbackAttempts += 1;
+        if (rollbackAttempts === 1) return false;
+      }
+      return await writeFrontmatter(memory, patch, lifecycle);
+    };
+
+    await assert.rejects(
+      subject.service.createGeneratedDrafts({
+        principal: "owner:alice",
+        cards: [
+          {
+            title: "First draft",
+            statement: "Give me time to answer.",
+            category: "communication",
+            sourceMemoryIds: ["source-1"],
+          },
+          {
+            title: "Second draft",
+            statement: "Tell me before plans change.",
+            category: "transitions",
+            sourceMemoryIds: ["source-2"],
+          },
+        ],
+      }),
+      /second draft write failed/
+    );
+    assert.equal(rollbackAttempts, 2);
+    assert.deepEqual(await subject.service.listCards({ principal: "owner:alice" }), []);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("generated draft rollback continues after one cleanup throws", async () => {
+  const subject = await makeSubject();
+  try {
+    const writeSealedMemory = subject.aliceStorage.writeSealedMemory.bind(subject.aliceStorage);
+    let writes = 0;
+    subject.aliceStorage.writeSealedMemory = async (...args) => {
+      writes += 1;
+      if (writes === 3) throw new Error("third draft write failed");
+      return await writeSealedMemory(...args);
+    };
+    const writeFrontmatter = subject.aliceStorage.writeMemoryFrontmatterIfUnchanged.bind(subject.aliceStorage);
+    let rollbackAttempts = 0;
+    subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = async (memory, patch, lifecycle) => {
+      if (lifecycle?.actor === "support-passport.draft-rollback") {
+        rollbackAttempts += 1;
+        if (rollbackAttempts === 1) throw new Error("first cleanup failed");
+      }
+      return await writeFrontmatter(memory, patch, lifecycle);
+    };
+
+    await assert.rejects(
+      subject.service.createGeneratedDrafts({
+        principal: "owner:alice",
+        cards: [
+          {
+            title: "First draft",
+            statement: "Give me time to answer.",
+            category: "communication",
+            sourceMemoryIds: ["source-1"],
+          },
+          {
+            title: "Second draft",
+            statement: "Tell me before plans change.",
+            category: "transitions",
+            sourceMemoryIds: ["source-2"],
+          },
+          {
+            title: "Third draft",
+            statement: "Dim bright lights when possible.",
+            category: "sensory",
+            sourceMemoryIds: ["source-3"],
+          },
+        ],
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
+    );
+    assert.equal(rollbackAttempts, 2);
+    const remaining = await subject.service.listCards({ principal: "owner:alice" });
+    assert.equal(remaining.length, 1);
+    assert.equal(remaining[0]?.title, "First draft");
+  } finally {
+    await subject.cleanup();
+  }
+});
