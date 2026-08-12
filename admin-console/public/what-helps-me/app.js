@@ -34,7 +34,7 @@
     "grant_stale",
     "missing_link",
   ]);
-  const REPLAY_SYNC_TIMEOUT_MS = 250;
+  const REPLAY_SYNC_TIMEOUT_MS = 2_000;
 
   const state = {
     token: "",
@@ -240,28 +240,36 @@
   }
 
   function requestReplaySharedGuide() {
-    if (!replayChannel) return Promise.resolve(null);
+    if (!replayChannel) return Promise.reject(new Error("The replay share state is unavailable."));
     const requestId = crypto.randomUUID();
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       let timeout;
-      const finish = (snapshot) => {
+      const finish = (callback, value) => {
         window.clearTimeout(timeout);
         replayChannel.removeEventListener("message", receive);
-        resolve(snapshot);
+        callback(value);
       };
       const receive = (event) => {
         if (event.data?.type === "grant-state" && event.data.requestId === requestId) {
-          finish(event.data.snapshot ?? null);
+          if (event.data.snapshot) finish(resolve, event.data.snapshot);
+          else finish(reject, new Error("The replay share state is unavailable."));
         }
       };
       replayChannel.addEventListener("message", receive);
-      timeout = window.setTimeout(() => finish(null), REPLAY_SYNC_TIMEOUT_MS);
-      replayChannel.postMessage({
-        type: "grant-request",
-        requestId,
-        grantId: state.helperGrantId,
-        secret: state.helperSecret,
-      });
+      timeout = window.setTimeout(
+        () => finish(reject, new Error("The replay share state is unavailable.")),
+        REPLAY_SYNC_TIMEOUT_MS
+      );
+      try {
+        replayChannel.postMessage({
+          type: "grant-request",
+          requestId,
+          grantId: state.helperGrantId,
+          secret: state.helperSecret,
+        });
+      } catch (error) {
+        finish(reject, error);
+      }
     });
   }
 

@@ -847,21 +847,36 @@ test("the owner view bounds rendered share history", async ({ page }, testInfo) 
   await expect(page.locator(".grant-card")).toHaveCount(100);
 });
 
-test("the helper sees only shared cards and grounded citations", async ({ page }, testInfo) => {
-  await page.goto(helperUrl());
+test("the helper sees only shared cards and grounded citations", async ({ page, context }, testInfo) => {
+  await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
+  await page.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
+  await page.getByRole("button", { name: "Draft my support cards" }).click();
+  for (const title of ["Lighting", "Plan changes", "When I stop speaking"]) {
+    await page.locator(".support-card").filter({ hasText: title }).getByRole("button", { name: "Approve" }).click();
+  }
+  const choices = page.locator('input[name="shareCard"]');
+  for (let index = 0; index < 3; index += 1) await choices.nth(index).check();
+  await page.getByRole("button", { name: "Create share link" }).click();
+  const shareUrl = await page.locator("#shareLinkInput").inputValue();
 
-  await expect(page.getByRole("heading", { name: "What helps me" })).toBeVisible();
-  await expect(page.locator(".public-card")).toHaveCount(3);
-  await expect(page.locator("#tokenInput")).toHaveCount(0);
-  await expect(page.getByText("Selected notes", { exact: true })).toHaveCount(0);
+  const helper = await context.newPage();
+  try {
+    await helper.goto(shareUrl);
+    await expect(helper.getByRole("heading", { name: "What helps me" })).toBeVisible();
+    await expect(helper.locator(".public-card")).toHaveCount(3);
+    await expect(helper.locator("#tokenInput")).toHaveCount(0);
+    await expect(helper.getByText("Selected notes", { exact: true })).toHaveCount(0);
 
-  await page.getByLabel("Your question").fill("What should I do when this person is overwhelmed?");
-  await page.getByRole("button", { name: "Ask from this guide" }).click();
-  await expect(page.locator("#answerCopy")).toHaveText("If I stop speaking, offer a quiet place and time.");
-  await expect(page.locator(".citation")).toContainText("Support card");
+    await helper.getByLabel("Your question").fill("What should I do when this person is overwhelmed?");
+    await helper.getByRole("button", { name: "Ask from this guide" }).click();
+    await expect(helper.locator("#answerCopy")).toHaveText("If I stop speaking, offer a quiet place and time.");
+    await expect(helper.locator(".citation")).toContainText("Support card");
 
-  await expectNoSeriousAxeFindings(page);
-  await page.screenshot({ path: testInfo.outputPath(`helper-${testInfo.project.name}.png`), fullPage: true });
+    await expectNoSeriousAxeFindings(helper);
+    await helper.screenshot({ path: testInfo.outputPath(`helper-${testInfo.project.name}.png`), fullPage: true });
+  } finally {
+    await helper.close();
+  }
 });
 
 test("a new helper question clears the prior answer before dispatch", async ({ page }, testInfo) => {
@@ -985,6 +1000,15 @@ test("replay helpers never cite an unrelated selected card", async ({ page, cont
   } finally {
     await helper.close();
   }
+});
+
+test("a replay helper fails closed without owner share state", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers replay synchronization failure.");
+
+  await page.goto(helperUrl("-without-owner"));
+
+  await expect(page.getByRole("heading", { name: "The support passport did not load." })).toBeVisible();
+  await expect(page.locator(".public-card")).toHaveCount(0);
 });
 
 test("a bad helper link has a clear locked view", async ({ page }, testInfo) => {

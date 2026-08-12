@@ -470,35 +470,21 @@
         return { card: { ...card } };
       },
       seedSharedGuide(grantId, secret, sharedState) {
-        if (sharedState !== null && sharedState !== undefined) {
-          if (!hasExactKeys(sharedState, ["grant", "cards"])) {
-            throw new Error("The replay share state is invalid.");
-          }
-          const sharedGrant = assertGrant(sharedState.grant);
-          const sharedCards = parseCardList({ cards: sharedState.cards });
-          const cardsById = new Map(sharedCards.map((card) => [card.cardId, card]));
-          if (
-            sharedGrant.grantId !== grantId ||
-            sharedCards.length !== sharedGrant.cards.length ||
-            sharedGrant.cards.some((reference) => cardsById.get(reference.cardId)?.revision !== reference.revision)
-          ) {
-            throw new Error("The replay share state is invalid.");
-          }
-          cards = sharedCards.map((card) => ({ ...card }));
-          grants = [{ ...sharedGrant, cards: sharedGrant.cards.map((card) => ({ ...card })) }];
-        } else {
-          cards = REPLAY_DRAFTS.map((draft) => makeCard(draft, "active"));
-          grants = [
-            {
-              grantId,
-              stateVersion: 1,
-              cards: cards.map((card) => ({ cardId: card.cardId, revision: card.revision })),
-              createdAt: now().toISOString(),
-              expiresAt: new Date(now().getTime() + 2 * 60 * 60_000).toISOString(),
-              status: "active",
-            },
-          ];
+        if (!hasExactKeys(sharedState, ["grant", "cards"])) {
+          throw new Error("The replay share state is invalid.");
         }
+        const sharedGrant = assertGrant(sharedState.grant);
+        const sharedCards = parseCardList({ cards: sharedState.cards });
+        const cardsById = new Map(sharedCards.map((card) => [card.cardId, card]));
+        if (
+          sharedGrant.grantId !== grantId ||
+          sharedCards.length !== sharedGrant.cards.length ||
+          sharedGrant.cards.some((reference) => cardsById.get(reference.cardId)?.revision !== reference.revision)
+        ) {
+          throw new Error("The replay share state is invalid.");
+        }
+        cards = sharedCards.map((card) => ({ ...card }));
+        grants = [{ ...sharedGrant, cards: sharedGrant.cards.map((card) => ({ ...card })) }];
         secrets.set(grantId, secret);
       },
       exportSharedGuide(grantId, secret) {
