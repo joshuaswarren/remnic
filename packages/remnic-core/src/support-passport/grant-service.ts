@@ -138,22 +138,20 @@ export class SupportPassportGrantService {
   }
 
   private async readGrantCards(storage: StorageManager, state: SupportPassportGrantState) {
-    const cards = [];
-    for (const cardRef of state.cards) {
+    return await Promise.all(state.cards.map(async (cardRef) => {
       const memory = await storage.getMemoryById(cardRef.cardId);
       const stored = memory ? projectSupportPassportCard(memory) : null;
       if (!stored || stored.card.status !== "active" || stored.card.revision !== cardRef.revision) {
         throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
       }
-      cards.push({
+      return {
         cardId: stored.card.cardId,
         title: stored.card.title,
         statement: stored.card.statement,
         category: stored.card.category,
         updatedAt: stored.card.updatedAt,
-      });
-    }
-    return cards;
+      };
+    }));
   }
 
   private ownerGrant(state: SupportPassportGrantState): SupportPassportOwnerGrant {

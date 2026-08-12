@@ -720,6 +720,53 @@ test("helper reads for different grants do not block each other", async () => {
   }
 });
 
+test("helper guide snapshots read selected cards in parallel", async () => {
+  const subject = await makeSubject();
+  const pairedReads = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+  try {
+    const firstCard = await createActiveCard(subject, "First card");
+    const secondCard = await createActiveCard(subject, "Second card");
+    const created = await subject.grantService.createGrant({
+      principal: "owner:alice",
+      cards: [
+        { cardId: firstCard.cardId, revision: firstCard.revision },
+        { cardId: secondCard.cardId, revision: secondCard.revision },
+      ],
+      expiresAt: expiryAfter(subject, 3_600_000),
+    });
+    const getMemoryById = subject.aliceStorage.getMemoryById.bind(subject.aliceStorage);
+    let selectedReads = 0;
+    subject.aliceStorage.getMemoryById = async (memoryId: string) => {
+      const selectedRead = selectedReads;
+      selectedReads += 1;
+      const pair = pairedReads[Math.floor(selectedRead / 2)];
+      if (selectedRead % 2 === 1) pair?.resolve();
+      else {
+        const concurrent = await Promise.race([
+          pair?.promise.then(() => true),
+          new Promise<false>((resolve) => setTimeout(() => resolve(false), 500)),
+        ]);
+        assert.equal(concurrent, true);
+      }
+      return await getMemoryById(memoryId);
+    };
+
+    const guide = await subject.grantService.readGrant({
+      grantId: created.grant.grantId,
+      secret: created.secret,
+    });
+
+    assert.deepEqual(
+      guide.cards.map((card) => card.cardId),
+      [firstCard.cardId, secondCard.cardId]
+    );
+    assert.equal(selectedReads, 4);
+  } finally {
+    for (const pair of pairedReads) pair.resolve();
+    await subject.cleanup();
+  }
+});
+
 test("final helper guide assembly blocks card withdrawal", async () => {
   const subject = await makeSubject();
   const finalAuthenticationStarted = Promise.withResolvers<void>();
