@@ -717,41 +717,47 @@
       return;
     }
     const button = event.currentTarget.querySelector('button[type="submit"]');
-    let created;
+    const priorLabel = button.textContent;
+    button.disabled = true;
+    button.textContent = "Creating link…";
     try {
-      created = model.parseCreatedGrant(
-        await withBusy(button, "Creating link…", () => api.createGrant({ cardIds, cardRevisions, expiresAt }))
-      );
-    } catch (error) {
-      if (error?.code !== "request_timeout") {
-        setError("shareError", errorMessage(error, "The share link was not created."));
+      let created;
+      try {
+        created = model.parseCreatedGrant(await api.createGrant({ cardIds, cardRevisions, expiresAt }));
+      } catch (error) {
+        if (error?.code !== "request_timeout") {
+          setError("shareError", errorMessage(error, "The share link was not created."));
+          return;
+        }
+        let refreshed = false;
+        try {
+          await loadOwnerState();
+          refreshed = true;
+        } catch {}
+        setError(
+          "shareError",
+          refreshed
+            ? "The server did not confirm whether it created a link. Review the live share list and stop any link you do not recognize before creating another."
+            : "The server did not confirm whether it created a link. Refresh the guide and review live shares before creating another."
+        );
         return;
       }
-      let refreshed = false;
+      const url = model.buildShareUrl(window.location.href, created.grantId, created.secret, replayMode);
+      byId("shareLinkInput").value = url;
+      byId("openLinkButton").href = url;
+      byId("newLinkPanel").hidden = false;
+      const message = `Share link created. It ends ${model.formatDate(created.expiresAt)}.`;
+      toast(message);
+      announce(message);
+      byId("newLinkPanel").scrollIntoView({ behavior: SCROLL_BEHAVIOR, block: "nearest" });
       try {
         await loadOwnerState();
-        refreshed = true;
-      } catch {}
-      setError(
-        "shareError",
-        refreshed
-          ? "The server did not confirm whether it created a link. Review the live share list and stop any link you do not recognize before creating another."
-          : "The server did not confirm whether it created a link. Refresh the guide and review live shares before creating another."
-      );
-      return;
-    }
-    const url = model.buildShareUrl(window.location.href, created.grantId, created.secret, replayMode);
-    byId("shareLinkInput").value = url;
-    byId("openLinkButton").href = url;
-    byId("newLinkPanel").hidden = false;
-    const message = `Share link created. It ends ${model.formatDate(created.expiresAt)}.`;
-    toast(message);
-    announce(message);
-    byId("newLinkPanel").scrollIntoView({ behavior: SCROLL_BEHAVIOR, block: "nearest" });
-    try {
-      await loadOwnerState();
-    } catch {
-      setError("shareError", "The share link was created, but the share list did not refresh. Use the link above.");
+      } catch {
+        setError("shareError", "The share link was created, but the share list did not refresh. Use the link above.");
+      }
+    } finally {
+      button.disabled = false;
+      button.textContent = priorLabel;
     }
   }
 

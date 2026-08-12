@@ -157,3 +157,8 @@ test("What Helps Me disables the browser cache for credentialed API requests", a
   const source = await readFile(path.join(adminConsolePublicDir, "what-helps-me", "app.js"), "utf8");
   assert.match(source, /fetch\(path, \{[\s\S]*?cache: "no-store"/);
 });
+
+test("What Helps Me wordmark does not depend on the optional admin console", async () => {
+  const source = await readFile(path.join(adminConsolePublicDir, "what-helps-me", "index.html"), "utf8");
+  assert.doesNotMatch(source, /class="wordmark"[^>]*href=/);
+});
