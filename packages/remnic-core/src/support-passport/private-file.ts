@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { type Stats, constants as fsConstants } from "node:fs";
-import { type FileHandle, lstat, mkdir, open, rename, rm, stat } from "node:fs/promises";
+import { type FileHandle, lstat, mkdir, open, realpath, rename, rm, rmdir, stat } from "node:fs/promises";
 import path from "node:path";
 
 const UNSUPPORTED_DIRECTORY_SYNC_ERRORS = new Set(["EINVAL", "ENOSYS", "ENOTSUP", "EOPNOTSUPP"]);
@@ -142,10 +142,19 @@ export async function ensurePrivateDirectoryNoFollow(
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       }
-      await syncVerifiedParent(current.handle);
+      if (created) {
+        try {
+          await syncVerifiedParent(current.handle);
+        } catch (error) {
+          await rmdir(childPath).catch(() => undefined);
+          throw error;
+        }
+      }
       const child = await openDirectoryNoFollow(childPath, errorMessage);
       handles.push(child.handle);
-      if (created || hardenExistingChildren) await child.handle.chmod(0o700);
+      if (created || (hardenExistingChildren && (child.opened.mode & 0o777) !== 0o700)) {
+        await child.handle.chmod(0o700);
+      }
       assertStableDirectory(current.before, current.opened, await lstat(currentPath), errorMessage);
       currentPath = path.join(currentPath, component);
       current = child;
@@ -153,6 +162,24 @@ export async function ensurePrivateDirectoryNoFollow(
     assertStableDirectory(current.before, current.opened, await lstat(target), errorMessage);
   } finally {
     await closeDirectoryHandles(handles);
+  }
+}
+
+export async function canonicalizePrivateDirectoryTarget(directory: string): Promise<string> {
+  const target = path.resolve(directory);
+  const missingComponents: string[] = [];
+  let existing = target;
+  while (true) {
+    try {
+      const canonicalExisting = await realpath(existing);
+      return path.join(canonicalExisting, ...missingComponents);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const parent = path.dirname(existing);
+      if (parent === existing) throw error;
+      missingComponents.unshift(path.basename(existing));
+      existing = parent;
+    }
   }
 }
 

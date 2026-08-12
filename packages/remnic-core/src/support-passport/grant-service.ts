@@ -1,5 +1,6 @@
 import type { StorageManager } from "../index.js";
-import { projectSupportPassportCard } from "./card-projection.js";
+import { computeSupportPassportOwnerKey, projectSupportPassportCard } from "./card-projection.js";
+import { SupportPassportListCardsInputSchema, SupportPassportNamespaceSchema } from "./contracts.js";
 import { SupportPassportError } from "./errors.js";
 import {
   type SupportPassportCreateGrantInput,
@@ -26,6 +27,8 @@ export interface SupportPassportGrantServiceDependencies {
   now?: () => Date;
 }
 
+type SupportPassportGrantOwnerScope = Awaited<ReturnType<SupportPassportGrantServiceDependencies["resolveOwner"]>>;
+
 function invalidInput(): SupportPassportError {
   return new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
 }
@@ -46,12 +49,17 @@ export class SupportPassportGrantService {
   async createGrant(input: SupportPassportCreateGrantInput): Promise<SupportPassportCreatedGrant> {
     const parsed = SupportPassportCreateGrantInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
-    const owner = await this.resolveOwner(parsed.data.principal);
+    const owner = await this.resolveOwnerScope(parsed.data.principal);
     return await withSupportPassportOwnerLock(owner.storage, async (ownerLock) => {
       for (const cardRef of parsed.data.cards) {
         const memory = await owner.storage.getMemoryById(cardRef.cardId);
         const stored = memory ? projectSupportPassportCard(memory) : null;
-        if (!stored || stored.namespace !== owner.namespace || stored.card.status !== "active") {
+        if (
+          !stored ||
+          stored.namespace !== owner.namespace ||
+          stored.owner !== computeSupportPassportOwnerKey(owner.principal) ||
+          stored.card.status !== "active"
+        ) {
           throw new SupportPassportError("invalid_card_status", "Only approved support cards can be shared.", 409);
         }
         if (stored.card.revision !== cardRef.revision) {
@@ -80,7 +88,7 @@ export class SupportPassportGrantService {
   async listGrants(input: { principal: string }): Promise<SupportPassportOwnerGrant[]> {
     const parsed = SupportPassportListGrantsInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
-    const owner = await this.resolveOwner(parsed.data.principal);
+    const owner = await this.resolveOwnerScope(parsed.data.principal);
     return (await this.grantStore.listForOwner(owner.namespace, owner.principal)).map((state) =>
       this.ownerGrant(state)
     );
@@ -89,7 +97,7 @@ export class SupportPassportGrantService {
   async revokeGrant(input: SupportPassportRevokeGrantInput): Promise<SupportPassportOwnerGrant> {
     const parsed = SupportPassportRevokeGrantInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
-    const owner = await this.resolveOwner(parsed.data.principal);
+    const owner = await this.resolveOwnerScope(parsed.data.principal);
     return await withSupportPassportOwnerLock(owner.storage, async (ownerLock) => {
       const state = await this.grantStore.revoke(
         {
@@ -156,6 +164,7 @@ export class SupportPassportGrantService {
         if (
           !stored ||
           stored.namespace !== state.namespace ||
+          stored.owner !== state.principalHash ||
           stored.card.status !== "active" ||
           stored.card.revision !== cardRef.revision
         ) {
@@ -184,6 +193,22 @@ export class SupportPassportGrantService {
       category: card.category,
       updatedAt: card.updatedAt,
     });
+  }
+
+  private async resolveOwnerScope(principal: string): Promise<SupportPassportGrantOwnerScope> {
+    const requestedPrincipal = SupportPassportListCardsInputSchema.safeParse({ principal });
+    const owner = await this.resolveOwner(principal);
+    const namespace = SupportPassportNamespaceSchema.safeParse(owner.namespace);
+    const ownerPrincipal = SupportPassportListCardsInputSchema.safeParse({ principal: owner.principal });
+    if (
+      !requestedPrincipal.success ||
+      !namespace.success ||
+      !ownerPrincipal.success ||
+      ownerPrincipal.data.principal !== requestedPrincipal.data.principal
+    ) {
+      throw new SupportPassportError("card_data_invalid", "The support passport owner scope is invalid.", 500);
+    }
+    return { ...owner, principal: ownerPrincipal.data.principal, namespace: namespace.data };
   }
 
   private ownerGrant(state: SupportPassportGrantState): SupportPassportOwnerGrant {
