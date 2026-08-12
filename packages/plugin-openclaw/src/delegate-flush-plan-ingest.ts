@@ -44,6 +44,12 @@ const MIN_OBSERVE_CHUNK_BYTES = 4 * 1024;
 /** Bounded wait for the flush-plan lock; a contended flush declines instead. */
 const LOCK_MAX_WAIT_MS = 5_000;
 const LOCK_STALE_MS = 60_000;
+/**
+ * How many times one flush re-claims newly appended notes. One extra pass is
+ * the point of the re-claim; an unbounded loop lets a busy host consume the
+ * deadline the transcript flush needs.
+ */
+const MAX_RECLAIM_PASSES = 4;
 
 interface SnapshotPaths {
   plan: string;
@@ -141,9 +147,10 @@ async function ingestUnderLock(
   // end. Adapting needs no new daemon surface and converges in a few requests.
   let chunkBytes = MAX_OBSERVE_CHUNK_BYTES;
   // Re-claim after each drained snapshot so notes the host appended WHILE we
-  // were posting still leave in this flush. Every pass needs budget and needs
-  // the host to have written something new, so this terminates.
-  for (;;) {
+  // were posting still leave in this flush. Bounded: parallel sessions can
+  // append faster than this drains, and spending the whole shared deadline
+  // here would leave the transcript flush that follows with its 1 ms fallback.
+  for (let pass = 0; pass < MAX_RECLAIM_PASSES; pass++) {
     if (options.remainingTimeoutMs() <= 0) return;
     const claimed = await claimPendingNotes(paths, options.serviceId);
     if (claimed.trim().length === 0) {
@@ -206,6 +213,10 @@ async function ingestUnderLock(
           // note behind it on every future flush, so it is set aside in a
           // sidecar the operator can inspect and the queue keeps draining.
           // Nothing is deleted.
+          pending = await quarantineOversizedLine(paths, pending, options.serviceId);
+          chunkBytes = MAX_OBSERVE_CHUNK_BYTES;
+          // Re-checked AFTER the sidecar write, not before: writing a large
+          // rejected line can itself outlast the stale interval.
           if (!(await lock.refresh())) {
             log.warn(
               `[${options.serviceId}] flush-plan lock was lost mid-flush; the snapshot is left to its new owner`,
@@ -214,8 +225,6 @@ async function ingestUnderLock(
             stop = true;
             return;
           }
-          pending = await quarantineOversizedLine(paths, pending, options.serviceId);
-          chunkBytes = MAX_OBSERVE_CHUNK_BYTES;
           await atomicWrite(paths.inflight, pending);
           continue;
         }
@@ -420,7 +429,9 @@ async function atomicWrite(filePath: string, content: string): Promise<void> {
   try {
     // `wx` implies O_EXCL|O_CREAT, which already refuses to follow a symlink
     // at the temp path; the rename then replaces the target by pathname.
-    await writeFile(tempPath, content, { encoding: "utf8", flag: "wx" });
+    // 0600: the snapshot holds the same durable notes as the plan file, and a
+    // default-mode temp under a 022 umask would widen them to 0644.
+    await writeFile(tempPath, content, { encoding: "utf8", flag: "wx", mode: 0o600 });
     await rename(tempPath, filePath);
   } catch (err) {
     await discard(tempPath);
