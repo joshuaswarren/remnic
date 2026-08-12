@@ -18,9 +18,13 @@ import {
 import type { SupportPassportGrantStore } from "./grant-store.js";
 import { requireSupportPassportOwnerLock, withSupportPassportOwnerLock } from "./owner-lock.js";
 
+const MAX_GUIDE_READ_ATTEMPTS = 3;
+
+class SupportPassportGuideReadChanged extends Error {}
+
 export interface SupportPassportGrantServiceDependencies {
   grantStore: SupportPassportGrantStore;
-  resolveOwner(principal: string): Promise<{ namespace: string; storage: StorageManager }>;
+  resolveOwner(principal: string): Promise<{ principal: string; namespace: string; storage: StorageManager }>;
   resolveNamespace(namespace: string): Promise<StorageManager>;
   now?: () => Date;
 }
@@ -63,7 +67,7 @@ export class SupportPassportGrantService {
       const created = await this.grantStore.create(
         {
           namespace: owner.namespace,
-          principal: parsed.data.principal,
+          principal: owner.principal,
           cards: parsed.data.cards,
           expiresAt: parsed.data.expiresAt,
         },
@@ -81,7 +85,7 @@ export class SupportPassportGrantService {
     const parsed = SupportPassportListGrantsInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
     const owner = await this.resolveOwner(parsed.data.principal);
-    return (await this.grantStore.listForOwner(owner.namespace, parsed.data.principal)).map((state) =>
+    return (await this.grantStore.listForOwner(owner.namespace, owner.principal)).map((state) =>
       this.ownerGrant(state)
     );
   }
@@ -93,7 +97,7 @@ export class SupportPassportGrantService {
     const state = await this.grantStore.revoke({
       grantId: parsed.data.grantId,
       namespace: owner.namespace,
-      principal: parsed.data.principal,
+      principal: owner.principal,
       expectedStateVersion: parsed.data.expectedStateVersion,
     });
     return this.ownerGrant(state);
@@ -103,20 +107,33 @@ export class SupportPassportGrantService {
     if (!input || typeof input.grantId !== "string" || typeof input.secret !== "string") {
       throw new SupportPassportError("grant_not_found", "The share link was not found.", 404);
     }
+    for (let attempt = 0; attempt < MAX_GUIDE_READ_ATTEMPTS; attempt += 1) {
+      try {
+        return await this.readGrantAttempt(input);
+      } catch (error) {
+        if (!(error instanceof SupportPassportGuideReadChanged)) throw error;
+      }
+    }
+    throw new SupportPassportError("storage_conflict", "The support passport changed during the request.", 409);
+  }
+
+  private async readGrantAttempt(input: { grantId: string; secret: string }): Promise<SupportPassportPublicGuide> {
     const initialState = await this.grantStore.authenticate(input.grantId, input.secret);
     const storage = await this.resolveNamespace(initialState.namespace);
+    const corpusVersion = storage.getMemoryCorpusVersion();
+    const cards = await this.readGrantCards(storage, initialState);
+    const firstCard = cards[0];
+    if (!firstCard) throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
+    const updatedAt = cards.reduce(
+      (latest, card) => (card.updatedAt > latest ? card.updatedAt : latest),
+      firstCard.updatedAt
+    );
     return await withSupportPassportOwnerLock(storage, async (ownerLock) => {
       return await this.grantStore.withAuthenticatedGrant(input.grantId, input.secret, async (finalState) => {
         if (finalState.namespace !== initialState.namespace) {
           throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
         }
-        const cards = await this.readGrantCards(storage, finalState);
-        const firstCard = cards[0];
-        if (!firstCard) throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
-        const updatedAt = cards.reduce(
-          (latest, card) => (card.updatedAt > latest ? card.updatedAt : latest),
-          firstCard.updatedAt
-        );
+        if (storage.getMemoryCorpusVersion() !== corpusVersion) throw new SupportPassportGuideReadChanged();
         await requireSupportPassportOwnerLock(ownerLock);
         return SupportPassportPublicGuideSchema.parse({
           schemaVersion: 1,
