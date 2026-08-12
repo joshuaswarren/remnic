@@ -4,7 +4,6 @@ import { test } from "node:test";
 
 import { parseConfig } from "../config.js";
 import { SupportPassportError } from "./errors.js";
-import { SUPPORT_PASSPORT_NOT_IN_GUIDE_ANSWER } from "./model-contracts.js";
 import {
   SupportPassportModelAdapter,
   type SupportPassportModelClients,
@@ -13,6 +12,7 @@ import {
   createSupportPassportModelAdapter,
   resolveSupportPassportModelRoutePlan,
 } from "./model-adapter.js";
+import { SUPPORT_PASSPORT_NOT_IN_GUIDE_ANSWER } from "./model-contracts.js";
 
 function route(
   kind: SupportPassportModelRoute["kind"],
@@ -575,7 +575,7 @@ test(
     let requestBody: Record<string, unknown> = {};
     globalThis.fetch = (async (url, init) => {
       requestUrl = String(url);
-      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      requestBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
       return new Response(
         JSON.stringify({
           output_text: JSON.stringify({

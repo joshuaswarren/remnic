@@ -47,8 +47,8 @@ const DraftServiceInputSchema = z
     const revisionIds = input.sourceMemoryRevisions.map((source) => source.memoryId);
     if (
       new Set(revisionIds).size !== revisionIds.length ||
-        revisionIds.length !== input.sourceMemoryIds.length ||
-        input.sourceMemoryIds.some((memoryId) => !revisionIds.includes(memoryId))
+      revisionIds.length !== input.sourceMemoryIds.length ||
+      input.sourceMemoryIds.some((memoryId) => !revisionIds.includes(memoryId))
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -185,6 +185,7 @@ export class SupportPassportDraftService {
       selectedMemories.push(memory);
       memories.push({ memoryId, content: stripAttributesSuffix(memory.content) });
     }
+    await this.revalidateSources(owner.storage, selectedMemories, input.signal, cancellationMessage);
     const startedAt = Date.now();
     let modelResult: Awaited<ReturnType<SupportPassportModelAdapter["draftCards"]>>;
     try {
