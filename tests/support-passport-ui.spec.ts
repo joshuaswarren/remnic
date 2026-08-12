@@ -292,6 +292,51 @@ test("a saved manual draft stays successful when its list refresh fails", async 
   expect(draftWrites).toBe(1);
 });
 
+test("a stalled owner read aborts and restores the connect action", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers the owner request timeout.");
+  await page.clock.install({ time: new Date("2026-08-11T12:00:00.000Z") });
+  await page.addInitScript(() => {
+    const realFetch = window.fetch.bind(window);
+    Object.assign(window, { __ownerReadAbortObserved: false });
+    window.fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/engram/v1/support-passport/cards")) {
+        return await new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => {
+              Object.assign(window, { __ownerReadAbortObserved: true });
+              reject(new DOMException("The request was aborted.", "AbortError"));
+            },
+            { once: true }
+          );
+        });
+      }
+      return await realFetch(input, init);
+    };
+  });
+  await page.route("**/engram/v1/support-passport/grants", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grants: [] }) });
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await page.getByLabel("Bearer token").fill("owner-token");
+  const button = page.getByRole("button", { name: "Open my guide" });
+  await button.click();
+  await expect(page.getByRole("button", { name: "Opening guide…" })).toBeDisabled();
+  await page.clock.fastForward(30_000);
+
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as typeof window & { __ownerReadAbortObserved?: boolean }).__ownerReadAbortObserved
+      )
+    )
+    .toBe(true);
+  await expect(page.getByText("The owner request took too long. Try again.")).toBeVisible();
+  await expect(button).toBeEnabled();
+});
+
 test("the owner view bounds rendered share history", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers bounded share history.");
   const now = new Date();
@@ -332,6 +377,78 @@ test("the helper sees only shared cards and grounded citations", async ({ page }
 
   await expectNoSeriousAxeFindings(page);
   await page.screenshot({ path: testInfo.outputPath(`helper-${testInfo.project.name}.png`), fullPage: true });
+});
+
+test("a new helper question clears the prior answer before dispatch", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers stale-answer prevention.");
+  const now = new Date();
+  const secondStarted = Promise.withResolvers<void>();
+  const releaseSecond = Promise.withResolvers<void>();
+  let asks = 0;
+  await page.route(
+    /\/engram\/v1\/support-passport\/public\/grants\/replay-grant-new-question(?:\/ask)?$/,
+    async (route) => {
+      if (route.request().method() === "GET") {
+        await route.fulfill({
+          status: 200,
+          headers: { date: now.toUTCString() },
+          contentType: "application/json",
+          body: JSON.stringify({
+            schemaVersion: 1,
+            grantId: "replay-grant-new-question",
+            expiresAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
+            updatedAt: now.toISOString(),
+            cards: [
+              {
+                cardId: "card-quiet",
+                title: "Quiet place",
+                statement: "Offer me a quiet place and time.",
+                category: "environment",
+                updatedAt: now.toISOString(),
+              },
+            ],
+          }),
+        });
+        return;
+      }
+      asks += 1;
+      if (asks === 1) {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            answer: "Offer a quiet place.",
+            citedCardIds: ["card-quiet"],
+            coverage: "grounded",
+          }),
+        });
+        return;
+      }
+      secondStarted.resolve();
+      await releaseSecond.promise;
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "The configured model is unavailable.", code: "provider_unavailable" }),
+      });
+    }
+  );
+
+  await page.goto(
+    `${origin}/remnic/ui/what-helps-me/?grant=replay-grant-new-question#secret=${"s".repeat(43)}`
+  );
+  await page.getByLabel("Your question").fill("What helps right now?");
+  await page.getByRole("button", { name: "Ask from this guide" }).click();
+  await expect(page.getByText("Offer a quiet place.", { exact: true })).toBeVisible();
+
+  await page.getByLabel("Your question").fill("What food helps?");
+  await page.getByRole("button", { name: "Ask from this guide" }).click();
+  await secondStarted.promise;
+  await expect(page.locator("#answerPanel")).toBeHidden();
+  releaseSecond.resolve();
+  await expect(page.getByText("The configured model is unavailable.")).toBeVisible();
+  await expect(page.getByText("Offer a quiet place.", { exact: true })).toHaveCount(0);
+  await expect(page.locator("#answerPanel")).toBeHidden();
 });
 
 test("a bad helper link has a clear locked view", async ({ page }, testInfo) => {

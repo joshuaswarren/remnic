@@ -17,6 +17,9 @@
   const HELPER_REVALIDATION_MS = 15_000;
   const HELPER_READ_TIMEOUT_MS = 10_000;
   const HELPER_QUESTION_TIMEOUT_MS = 60_000;
+  const OWNER_READ_TIMEOUT_MS = 30_000;
+  const OWNER_WRITE_TIMEOUT_MS = 60_000;
+  const OWNER_MODEL_TIMEOUT_MS = 15 * 60_000;
   const MAX_VISIBLE_GRANTS = 100;
   const MAX_SHARED_CARDS = 8;
 
@@ -85,6 +88,26 @@
   }
 
   async function fetchJson(path, options = {}) {
+    const method = options.method ?? "GET";
+    const timeoutMs =
+      options.timeoutMs ??
+      (options.owner ? (method === "GET" ? OWNER_READ_TIMEOUT_MS : OWNER_WRITE_TIMEOUT_MS) : undefined);
+    const controller = Number.isFinite(timeoutMs) ? new AbortController() : null;
+    let timedOut = false;
+    let timeout;
+    let removeCallerAbort = () => {};
+    if (controller && options.signal) {
+      const abortFromCaller = () => controller.abort(options.signal.reason);
+      if (options.signal.aborted) abortFromCaller();
+      else options.signal.addEventListener("abort", abortFromCaller, { once: true });
+      removeCallerAbort = () => options.signal.removeEventListener("abort", abortFromCaller);
+    }
+    if (controller) {
+      timeout = window.setTimeout(() => {
+        timedOut = true;
+        controller.abort(new Error("The request took too long."));
+      }, timeoutMs);
+    }
     const headers = new Headers(options.headers ?? {});
     headers.set("accept", "application/json");
     if (options.owner) headers.set("authorization", `Bearer ${state.token}`);
@@ -94,32 +117,42 @@
       headers.set("content-type", "application/json");
       body = JSON.stringify(options.body);
     }
-    const response = await fetch(path, {
-      method: options.method ?? "GET",
-      headers,
-      body,
-      signal: options.signal,
-    });
-    let payload = {};
     try {
-      payload = await response.json();
-    } catch {
-      if (!response.ok) throw new Error(`The server returned HTTP ${response.status}.`);
+      const response = await fetch(path, {
+        method,
+        headers,
+        body,
+        signal: controller?.signal ?? options.signal,
+      });
+      let payload = {};
+      try {
+        payload = await response.json();
+      } catch {
+        if (!response.ok) throw new Error(`The server returned HTTP ${response.status}.`);
+      }
+      if (!response.ok) {
+        const error = new Error(
+          typeof payload.error === "string" ? payload.error : `The server returned HTTP ${response.status}.`
+        );
+        error.code = typeof payload.code === "string" ? payload.code : "request_failed";
+        error.status = response.status;
+        throw error;
+      }
+      if (!options.captureServerTime) return payload;
+      const serverNowMs = Date.parse(response.headers.get("date") ?? "");
+      return {
+        payload,
+        serverOffsetMs: Number.isFinite(serverNowMs) ? serverNowMs - Date.now() : null,
+      };
+    } catch (error) {
+      if (!timedOut) throw error;
+      const timeoutError = new Error(options.timeoutMessage ?? "The owner request took too long. Try again.");
+      timeoutError.code = "request_timeout";
+      throw timeoutError;
+    } finally {
+      if (timeout) window.clearTimeout(timeout);
+      removeCallerAbort();
     }
-    if (!response.ok) {
-      const error = new Error(
-        typeof payload.error === "string" ? payload.error : `The server returned HTTP ${response.status}.`
-      );
-      error.code = typeof payload.code === "string" ? payload.code : "request_failed";
-      error.status = response.status;
-      throw error;
-    }
-    if (!options.captureServerTime) return payload;
-    const serverNowMs = Date.parse(response.headers.get("date") ?? "");
-    return {
-      payload,
-      serverOffsetMs: Number.isFinite(serverNowMs) ? serverNowMs - Date.now() : null,
-    };
   }
 
   const liveApi = {
@@ -130,7 +163,13 @@
     createManualDraft: (input) =>
       fetchJson("/engram/v1/support-passport/drafts", { owner: true, method: "POST", body: input }),
     generateDrafts: (input) =>
-      fetchJson("/engram/v1/support-passport/drafts/generate", { owner: true, method: "POST", body: input }),
+      fetchJson("/engram/v1/support-passport/drafts/generate", {
+        owner: true,
+        method: "POST",
+        body: input,
+        timeoutMs: OWNER_MODEL_TIMEOUT_MS,
+        timeoutMessage: "The configured model took too long. Try again.",
+      }),
     replaceCard: (cardId, input) =>
       fetchJson(`/engram/v1/support-passport/cards/${encodeURIComponent(cardId)}`, {
         owner: true,
@@ -719,6 +758,9 @@
     setError("questionError");
     const question = byId("questionInput").value.trim();
     if (!question || !state.guide) return;
+    byId("answerPanel").hidden = true;
+    byId("answerCopy").textContent = "";
+    clear(byId("citationList"));
     const button = event.currentTarget.querySelector("button");
     const controller = new AbortController();
     state.helperQuestionController?.abort();
