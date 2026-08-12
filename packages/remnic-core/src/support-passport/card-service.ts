@@ -189,8 +189,7 @@ export class SupportPassportCardService {
         const current = await storage.getMemoryById(card.card.cardId);
         const currentCard = current ? projectSupportPassportCard(current) : null;
         if (currentCard?.card.status === "active") {
-          await this.retirePriorAfterActivation(storage, currentCard);
-          return currentCard.card;
+          return await this.finishCommittedApproval(storage, currentCard);
         }
         throw error;
       }
@@ -198,14 +197,25 @@ export class SupportPassportCardService {
         const current = await storage.getMemoryById(card.card.cardId);
         const currentCard = current ? projectSupportPassportCard(current) : null;
         if (currentCard?.card.status === "active") {
-          await this.retirePriorAfterActivation(storage, currentCard);
-          return currentCard.card;
+          return await this.finishCommittedApproval(storage, currentCard);
         }
         throw new SupportPassportError("storage_conflict", "The support card changed before approval.", 409);
       }
-      const current = await this.requireCard(storage, card.card.cardId);
-      await this.retirePriorAfterActivation(storage, current);
-      return current.card;
+      const committedCard: SupportPassportCard = {
+        ...card.card,
+        status: "active",
+        updatedAt,
+        revision: this.revisionFor(card.card, "active", updatedAt),
+      };
+      try {
+        const current = await this.requireCard(storage, card.card.cardId);
+        return await this.finishCommittedApproval(storage, current);
+      } catch (error) {
+        log.warn(
+          `support passport could not finish replacement approval side effects: ${error instanceof Error ? error.message : String(error)}`
+        );
+        return committedCard;
+      }
     });
   }
 
@@ -487,6 +497,20 @@ export class SupportPassportCardService {
   ): Promise<void> {
     const priorId = await this.preparePriorForReplacement(storage, replacement);
     if (priorId) await this.completePriorRetirement(storage, priorId, replacement.card.cardId);
+  }
+
+  private async finishCommittedApproval(
+    storage: StorageManager,
+    replacement: StoredSupportPassportCard
+  ): Promise<SupportPassportCard> {
+    try {
+      await this.retirePriorAfterActivation(storage, replacement);
+    } catch (error) {
+      log.warn(
+        `support passport could not finish replacement approval side effects: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+    return replacement.card;
   }
 
   private async completePriorRetirement(
