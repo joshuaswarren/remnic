@@ -5,6 +5,21 @@ const DEFAULT_HTTP_TIMEOUT_MS = 45_000;
 const DEFAULT_MODEL_ROUTE_TIMEOUT_MS = 30_000;
 const MODEL_HTTP_MARGIN_MS = 15_000;
 
+export function isolateDemoRemnicConfig(sourceConfig, memoryDir) {
+  return {
+    ...sourceConfig,
+    memoryDir,
+    qmdEnabled: false,
+    qmdDaemonEnabled: false,
+    searchBackend: "noop",
+    namespacesEnabled: false,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    namespacePolicies: [],
+    supportPassport: { enabled: true },
+  };
+}
+
 export function modelRequestTimeoutMs(routePlan, localLlmTimeoutMs) {
   const routeBudgetMs = routePlan.reduce(
     (total, route) => total + (route === "local" ? localLlmTimeoutMs : DEFAULT_MODEL_ROUTE_TIMEOUT_MS),

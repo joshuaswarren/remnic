@@ -7,6 +7,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 
 import {
+  isolateDemoRemnicConfig,
   modelRequestTimeoutMs,
   readCleanCommitSha,
   runCleanupSteps,
@@ -15,6 +16,30 @@ import {
 } from "./live-demo-runtime.mjs";
 
 const execFileAsync = promisify(execFile);
+
+test("the demo preserves model routes but isolates namespace policy", () => {
+  const config = isolateDemoRemnicConfig(
+    {
+      modelSource: "gateway",
+      gatewayAgentId: "configured-agent",
+      namespacesEnabled: true,
+      defaultNamespace: "private",
+      sharedNamespace: "team",
+      namespacePolicies: [
+        { name: "private", readPrincipals: ["configured-owner"], writePrincipals: ["configured-owner"] },
+      ],
+    },
+    "/tmp/fresh-memory",
+  );
+
+  assert.equal(config.modelSource, "gateway");
+  assert.equal(config.gatewayAgentId, "configured-agent");
+  assert.equal(config.memoryDir, "/tmp/fresh-memory");
+  assert.equal(config.namespacesEnabled, false);
+  assert.equal(config.defaultNamespace, "default");
+  assert.equal(config.sharedNamespace, "shared");
+  assert.deepEqual(config.namespacePolicies, []);
+});
 
 test("model HTTP timeouts cover every configured route budget", () => {
   assert.equal(modelRequestTimeoutMs(["gateway"], 180_000), 45_000);

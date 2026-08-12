@@ -17,6 +17,7 @@ import {
 import { loadConfigFile, startServer } from "@remnic/server";
 import { z } from "zod";
 import {
+  isolateDemoRemnicConfig,
   modelRequestTimeoutMs,
   readCleanCommitSha,
   runCleanupSteps,
@@ -323,14 +324,7 @@ async function runReserved(options, reservation) {
     Reflect.deleteProperty(process.env, "ENGRAM_MEMORY_DIR");
     const port = await findAvailablePort();
     const derivedConfig = {
-      remnic: {
-        ...sourceConfig.remnic,
-        memoryDir,
-        qmdEnabled: false,
-        qmdDaemonEnabled: false,
-        searchBackend: "noop",
-        supportPassport: { enabled: true },
-      },
+      remnic: isolateDemoRemnicConfig(sourceConfig.remnic, memoryDir),
       server: {
         host: "127.0.0.1",
         port,
