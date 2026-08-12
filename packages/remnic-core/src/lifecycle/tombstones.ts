@@ -137,12 +137,12 @@ export interface TombstoneStoreOptions {
    */
   semanticSimilarity?: (a: string, b: string) => number;
   /**
-   * Resolve source content for a bounded set of legacy sourceMemoryIds.
+   * Resolve source identity candidates for bounded legacy sourceMemoryIds.
    * StorageManager reads the corpus before the tombstone write lock.
    */
   readonly sourceContentsForMemoryIds?: (
     sourceMemoryIds: readonly string[],
-  ) => Promise<ReadonlyMap<string, string>>;
+  ) => Promise<ReadonlyMap<string, string | readonly string[]>>;
   /** Maximum number of legacy entries considered during one load. */
   readonly legacyMigrationLimit?: number;
   /**
@@ -417,13 +417,11 @@ export class TombstoneStore {
       sourceMemoryIds.push(entry.sourceMemoryId);
     }
     if (sourceMemoryIds.length === 0) return initial;
-    const sourceContents = new Map<string, string>();
+    const sourceContents = new Map<string, string | readonly string[]>();
     for (let offset = 0; offset < sourceMemoryIds.length; offset += limit) {
       const batch = sourceMemoryIds.slice(offset, offset + limit);
       const fetched = await this.options.sourceContentsForMemoryIds(batch);
-      for (const [sourceMemoryId, content] of fetched) {
-        sourceContents.set(sourceMemoryId, content);
-      }
+      for (const [sourceMemoryId, content] of fetched) sourceContents.set(sourceMemoryId, content);
     }
     return await serializeMutations(`tombstone:${this.filePath}`, () =>
       this.withWriteLock(async () => {
@@ -444,19 +442,25 @@ export class TombstoneStore {
           ) {
             return entry;
           }
-          const source = sourceContents.get(entry.sourceMemoryId);
+          const resolved = sourceContents.get(entry.sourceMemoryId);
+          if (resolved === undefined) return entry;
+          const candidates = typeof resolved === "string" ? [resolved] : resolved;
+          const matches = candidates.filter((source) =>
+            entry.contentHash === this.options.hashContent(source) ||
+            entry.contentHash === computeLegacyContentHash(source)
+          );
+          const source = matches[0];
           if (source === undefined) return entry;
           const currentHash = this.options.hashContent(source);
-          const currentNormalizedText = this.options.normalizeText(source);
-          const sourceIdentifiesEntry =
-            entry.contentHash === currentHash ||
-            entry.contentHash === computeLegacyContentHash(source);
-          if (!sourceIdentifiesEntry) return entry;
+          const alias = matches
+            .map((candidate) => this.options.hashContent(candidate))
+            .find((hash) => hash !== currentHash);
           changed = true;
           return {
             ...entry,
             contentHash: currentHash,
-            normalizedText: currentNormalizedText,
+            ...(alias ? { currentContentHashAlias: alias } : {}),
+            normalizedText: this.options.normalizeText(source),
             normalizerVersion: TOMBSTONE_NORMALIZER_VERSION,
           };
         });

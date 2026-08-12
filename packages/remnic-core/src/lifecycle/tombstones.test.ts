@@ -1,11 +1,11 @@
-import { describe, it } from "node:test";
-import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile, rm, mkdir, appendFile, utimes } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
+import { appendFile, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
+import { describe, it } from "node:test";
 import {
   computeContentHash as computeHash,
   computeLegacyContentHash,
@@ -336,6 +336,45 @@ describe("TombstoneStore — Unicode migration safety", () => {
       store.lookup({ namespace: "default", contentHash: computeHash(asciiCollision) }),
       null,
     );
+  });
+
+  it("migrates the raw source identity when a stored fact has structured attributes", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "tomb-attribute-source-migration-"));
+    const filePath = path.join(dir, "tombstones.jsonl");
+    const source = "利用者は紅茶を好む。";
+    const storedBody = `${source}\n[Attributes: topic: 紅茶]`;
+    await writeFile(
+      filePath,
+      `${JSON.stringify({
+        id: "tomb-attribute-source",
+        kind: "tombstone",
+        reason: "correction",
+        sourceMemoryId: "fact-attribute-source",
+        contentHash: computeLegacyContentHash(source),
+        normalizedText: normalizeLegacyContent(source),
+        namespace: "default",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        createdBy: "user_correction",
+      })}\n`,
+      "utf8"
+    );
+    const store = new TombstoneStore(
+      filePath,
+      "default",
+      {
+        enabled: true,
+        semanticMatch: false,
+        semanticThreshold: 0.9,
+        hashContent: computeHash,
+        normalizeText: normalizeContent,
+        sourceContentsForMemoryIds: async () => new Map([["fact-attribute-source", [storedBody, source]]]),
+      },
+      makeIo()
+    );
+    await store.load();
+
+    assert.equal(store.lookup({ namespace: "default", contentHash: computeHash(source) })?.matchedTier, "exact");
+    assert.equal(store.snapshot()[0]?.normalizerVersion, 2);
   });
 
   it("does not finalize migration from a body with an unrecognized stale citation", async () => {

@@ -329,6 +329,42 @@ test("rebuild replaces an ambiguous pure-CJK legacy hash with the current body h
 });
 
 
+test("rebuild upgrades a legacy hash that includes structured attributes", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-fact-hash-attribute-rebuild-"));
+  const body = "The user prefers café.";
+  const storedBody = `${body}\n[Attributes: topic: coffee]`;
+  const legacyHash = computeLegacyContentHash(storedBody);
+  const currentHash = ContentHashIndex.computeHash(storedBody);
+  try {
+    const factsDir = path.join(dir, "facts", "2026-08-11");
+    await mkdir(factsDir, { recursive: true });
+    await writeFile(
+      path.join(factsDir, "legacy-attributes.md"),
+      [
+        "---",
+        "id: legacy-attributes",
+        "category: fact",
+        "created: 2026-08-11T00:00:00.000Z",
+        "updated: 2026-08-11T00:00:00.000Z",
+        `contentHash: ${legacyHash}`,
+        "---",
+        "",
+        storedBody,
+        "",
+      ].join("\n"),
+      "utf8"
+    );
+
+    const storage = new StorageManager(dir);
+    assert.equal(await storage.hasFactContentHash(storedBody), true);
+    const rebuilt = await readFile(path.join(dir, "state", "fact-hashes.txt"), "utf8");
+    assert.doesNotMatch(rebuilt, new RegExp(`^${legacyHash}$`, "mu"));
+    assert.match(rebuilt, new RegExp(`^${currentHash}$`, "mu"));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("rebuild from disk: fact written without contentHashSource uses body hash via frontmatter.contentHash", async () => {
   // NOTE: StorageManager.writeMemory always sets contentHash in frontmatter
   // (using the body as the hash source when no contentHashSource is given).

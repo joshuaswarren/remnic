@@ -1061,7 +1061,7 @@ const FACT_HASH_INDEX_REBUILD_RETRY_BASE_MS = 50;
 // the coding surfaces + wearable service). Imported here so internal callers
 // (snapshotBeforeWrite, snapshotForProvenance) resolve, and re-exported to
 // keep the public storage API stable for existing callers (wearables, dist).
-import { assemblePersistedBody, stripAttributesSuffix } from "./structured-attributes.js";
+import { assemblePersistedBody, storedContentIdentityCandidates, stripAttributesSuffix } from "./structured-attributes.js";
 export { stripAttributesSuffix };
 
 // `normalizeAttributePairs` moved to ./structured-attributes.ts (issue #1989
@@ -3013,7 +3013,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
   private buildTombstoneStore(): TombstoneStore {
     let sourcePathsPromise: Promise<string[]> | undefined;
-    let sourceContentsByIdPromise: Promise<Map<string, string>> | undefined;
+    let sourceContentsByIdPromise: Promise<Map<string, readonly string[]>> | undefined;
     const options: TombstoneStoreOptions = {
       enabled: this.tombstonesConfig.enabled,
       semanticMatch: this.tombstonesConfig.semanticMatch,
@@ -3027,20 +3027,20 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         const directPaths = sourcePaths.filter((filePath) =>
           requested.has(path.basename(filePath, ".md"))
         );
-        const contents = new Map<string, string>();
+        const contents = new Map<string, readonly string[]>();
         for (const memory of await this.readParsedMemoriesFromPaths(directPaths, 50)) {
           const id = memory.frontmatter.id;
           if (requested.has(id) && !contents.has(id)) {
-            contents.set(id, stripCitationForTemplate(memory.content, this.citationTemplate));
+            contents.set(id, this.storedContentIdentityCandidates(memory.content));
           }
         }
         if (contents.size === requested.size) return contents;
         sourceContentsByIdPromise ??= (async () => {
-          const allContents = new Map<string, string>();
+          const allContents = new Map<string, readonly string[]>();
           for (const memory of await this.readParsedMemoriesFromPaths(sourcePaths, 50)) {
             const id = memory.frontmatter.id;
             if (!allContents.has(id)) {
-              allContents.set(id, stripCitationForTemplate(memory.content, this.citationTemplate));
+              allContents.set(id, this.storedContentIdentityCandidates(memory.content));
             }
           }
           return allContents;
@@ -3398,25 +3398,26 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       );
     }
   }
+  private storedContentIdentityCandidates(content: string): string[] {
+    return storedContentIdentityCandidates(content, (value) =>
+      hasCitationForTemplate(value, this.citationTemplate) ? stripCitationForTemplate(value, this.citationTemplate) : value
+    );
+  }
+
   /** Returns the current body identity while preserving explicit external identities. */
   private corpusRegisteredHashes(memory: MemoryFile): string[] {
     const persistedHash = memory.frontmatter.contentHash;
-    const content = stripAttributesSuffix(memory.content);
-    const hasKnownCitation = hasCitationForTemplate(content, this.citationTemplate);
-    const stripped = hasKnownCitation
-      ? stripCitationForTemplate(content, this.citationTemplate)
-      : content;
-    if (hasKnownCitation && stripped === content) return persistedHash ? [persistedHash] : [];
-    const canonicalContent = sanitizeMemoryContent(stripped).text;
-    const currentHash = ContentHashIndex.computeHash(canonicalContent);
-    if (!persistedHash) return [currentHash];
-    if (
-      persistedHash === currentHash ||
-      persistedHash === computeLegacyContentHash(canonicalContent)
-    ) {
-      return [currentHash];
-    }
-    return [persistedHash];
+    const candidates = this.storedContentIdentityCandidates(memory.content)
+      .map((content) => sanitizeMemoryContent(content).text);
+    const currentMatch = candidates.find(
+      (content) => ContentHashIndex.computeHash(content) === persistedHash
+    );
+    if (currentMatch) return [ContentHashIndex.computeHash(currentMatch)];
+    if (!persistedHash) return [ContentHashIndex.computeHash(candidates[0] ?? "")];
+    const legacyMatch = [...candidates].reverse().find(
+      (content) => computeLegacyContentHash(content) === persistedHash
+    );
+    return [legacyMatch ? ContentHashIndex.computeHash(legacyMatch) : persistedHash];
   }
 
   private get questionsDir(): string {

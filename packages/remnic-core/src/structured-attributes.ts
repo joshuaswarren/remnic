@@ -39,6 +39,17 @@ export function stripAttributesSuffix(content: string): string {
   if (inner.includes("]") || inner.includes("\n")) return content.trim();
   return trimmed.slice(0, markerIndex).trim();
 }
+
+/** Return stored-body identity forms, from raw semantic content to full body. */
+export function storedContentIdentityCandidates(
+  content: string,
+  stripCitation: (value: string) => string,
+): string[] {
+  const fullBody = content.trim();
+  const bodyWithoutAttributes = stripAttributesSuffix(fullBody);
+  const rawBody = stripCitation(bodyWithoutAttributes);
+  return [...new Set([rawBody, bodyWithoutAttributes, fullBody])];
+}
 // ---------------------------------------------------------------------------
 // Persisted-body assembly (issue #1989 PR2)
 // ---------------------------------------------------------------------------

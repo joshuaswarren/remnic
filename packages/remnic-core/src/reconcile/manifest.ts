@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { computeLegacyContentHash, normalizeLegacyContent } from "../content-hash.js";
 import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import { ContentHashIndex, type ContentHashPathEntry } from "../storage/content-hash-index.js";
+import { DEFAULT_CITATION_FORMAT, stripCitationForTemplate } from "../source-attribution.js";
+import { storedContentIdentityCandidates } from "../structured-attributes.js";
 import type { MemoryFrontmatter, MemoryStatus } from "../types.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import {
@@ -15,7 +17,7 @@ import {
 
 export const RECONCILE_MANIFEST_FORMAT = "remnic-reconcile-manifest";
 export const RECONCILE_MANIFEST_SCHEMA_VERSION = 1;
-const CONTENT_HASH_NORMALIZER_VERSION = 3;
+const CONTENT_HASH_NORMALIZER_VERSION = 4;
 
 export interface ReconcileMemoryIdentity {
   id: string;
@@ -46,6 +48,7 @@ export interface BuildReconcileManifestOptions {
   readFile: (file: ReconcileFileState) => Promise<Buffer | string | null>;
   parseMemory: ReconcileMemoryParser;
   cachedFiles?: Iterable<ReconcileManifestFile>;
+  citationTemplate?: string;
 }
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/i;
@@ -64,6 +67,7 @@ function parsedMemoryIdentity(
   filePath: string,
   raw: Buffer | string,
   parseMemory: ReconcileMemoryParser,
+  citationTemplate: string,
 ): ReconcileMemoryIdentity | undefined {
   if (!isMemoryPath(filePath)) return undefined;
   const parsed = parseMemory(Buffer.isBuffer(raw) ? raw.toString("utf8") : raw);
@@ -74,12 +78,21 @@ function parsedMemoryIdentity(
     SHA256_PATTERN.test(parsed.frontmatter.contentHash)
       ? parsed.frontmatter.contentHash.toLowerCase()
       : undefined;
-  const bodyHash = ContentHashIndex.computeHash(parsed.content);
-  const legacyHash = computeLegacyContentHash(parsed.content);
-  const contentHash =
-    storedHash === undefined || storedHash === legacyHash
-      ? bodyHash
-      : storedHash;
+  const candidates = storedContentIdentityCandidates(parsed.content, (content) =>
+    stripCitationForTemplate(content, citationTemplate)
+  );
+  const bodyHash = ContentHashIndex.computeHash(candidates[0] ?? "");
+  const currentMatch = candidates.find(
+    (content) => ContentHashIndex.computeHash(content) === storedHash
+  );
+  const legacyMatch = [...candidates].reverse().find(
+    (content) => computeLegacyContentHash(content) === storedHash
+  );
+  const contentHash = currentMatch
+    ? ContentHashIndex.computeHash(currentMatch)
+    : legacyMatch
+      ? ContentHashIndex.computeHash(legacyMatch)
+      : storedHash ?? bodyHash;
 
   return {
     id: parsed.frontmatter.id,
@@ -94,6 +107,7 @@ export async function buildReconcileManifestFile(
   file: ReconcileFileState,
   readFile: (file: ReconcileFileState) => Promise<Buffer | string | null>,
   parseMemory: ReconcileMemoryParser,
+  citationTemplate = DEFAULT_CITATION_FORMAT,
 ): Promise<ReconcileManifestFile> {
   let raw: Buffer | string | null = null;
   if (isMemoryPath(file.path)) {
@@ -106,7 +120,7 @@ export async function buildReconcileManifestFile(
   if (raw !== null && createHash("sha256").update(raw).digest("hex") !== file.sha256.toLowerCase()) {
     raw = null;
   }
-  const memory = raw === null ? undefined : parsedMemoryIdentity(file.path, raw, parseMemory);
+  const memory = raw === null ? undefined : parsedMemoryIdentity(file.path, raw, parseMemory, citationTemplate);
   return { ...file, ...(memory ? { memory } : {}) };
 }
 
@@ -128,7 +142,12 @@ export async function buildReconcileManifest(options: BuildReconcileManifestOpti
       continue;
     }
 
-    files.push(await buildReconcileManifestFile(file, options.readFile, options.parseMemory));
+    files.push(await buildReconcileManifestFile(
+      file,
+      options.readFile,
+      options.parseMemory,
+      options.citationTemplate,
+    ));
   }
   files.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
   return {

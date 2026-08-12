@@ -157,12 +157,10 @@ export function findContradictions(options: ContradictionOptions): Contradiction
 function computeSimilarity(a: string, b: string): number {
   const normA = normalize(a);
   const normB = normalize(b);
-  const embeddedPunctuation = /(?<=[\p{L}\p{M}\p{N}])[^\p{L}\p{M}\p{N}\s']+(?=[\p{L}\p{M}\p{N}])/gu;
-  const punctuationBoundariesA = a.match(embeddedPunctuation)?.join("") ?? "";
-  const punctuationBoundariesB = b.match(embeddedPunctuation)?.join("") ?? "";
+  const punctuationBoundariesA = embeddedPunctuationSignature(a);
+  const punctuationBoundariesB = embeddedPunctuationSignature(b);
 
-  // Compare embedded punctuation before normalization's exact/hash fast paths.
-  // Sentence-ending punctuation stays compatible; a separated phrase cannot collapse to its joined form.
+  // Compare punctuation and positions before normalization's exact/hash paths.
   if (punctuationBoundariesA !== punctuationBoundariesB) return 0;
 
   if (normA === normB) return 1;
@@ -181,6 +179,39 @@ function computeSimilarity(a: string, b: string): number {
 
   if (union.size === 0) return 0;
   return intersection.size / union.size;
+}
+
+function embeddedPunctuationSignature(text: string): string {
+  const chars = [...text.normalize("NFC")];
+  const significant = /[\p{L}\p{M}\p{N}]/u;
+  const ignored = /[\s']/u;
+  const boundaries: string[] = [];
+  let position = 0;
+  for (let index = 0; index < chars.length;) {
+    const char = chars[index];
+    if (char === undefined) break;
+    if (significant.test(char)) {
+      position++;
+      index++;
+      continue;
+    }
+    if (ignored.test(char)) {
+      index++;
+      continue;
+    }
+    const start = index;
+    while (index < chars.length) {
+      const next = chars[index];
+      if (next === undefined || significant.test(next) || ignored.test(next)) break;
+      index++;
+    }
+    const before = chars[start - 1];
+    const after = chars[index];
+    if (before && after && significant.test(before) && significant.test(after)) {
+      boundaries.push(`${position}:${chars.slice(start, index).join("")}`);
+    }
+  }
+  return boundaries.join("\u0000");
 }
 
 function normalize(text: string): string {

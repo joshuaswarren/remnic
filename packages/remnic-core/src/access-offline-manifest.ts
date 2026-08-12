@@ -47,6 +47,7 @@ export async function createOfflineSyncManifestStream(
           file,
           async ({ path }) => storage.readOfflineSyncFile(nodePath.join(storage.dir, path)),
           parseMemory,
+          orchestrator.config.inlineSourceAttributionFormat,
         );
       }
     })(),

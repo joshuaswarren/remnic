@@ -96,6 +96,8 @@ test("dedup keeps duplicate and distinct pairs across Unicode scripts", async ()
       ["korean-punctuation.md", "mem-korean-punctuation", "홍차・커피"],
       ["korean-hyphen.md", "mem-korean-hyphen", "홍차-커피"],
       ["korean-joined.md", "mem-korean-joined", "홍차커피"],
+      ["japanese-boundary-a.md", "mem-japanese-boundary-a", "甲・乙丙"],
+      ["japanese-boundary-b.md", "mem-japanese-boundary-b", "甲乙・丙"],
     ] as const;
 
     for (const [fileName, id, content] of entries) {

@@ -1,9 +1,10 @@
 import * as assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { ContentHashIndex } from "../storage/content-hash-index.js";
 import { computeLegacyContentHash } from "../content-hash.js";
+import { attachCitation, formatCitation } from "../source-attribution.js";
 import { parseFrontmatter } from "../storage.js";
+import { ContentHashIndex } from "../storage/content-hash-index.js";
 import { type ReconcileManifest, buildReconcileManifest, collapseActiveFactDuplicates } from "./manifest.js";
 import { planReconciliation } from "./plan.js";
 
@@ -48,7 +49,7 @@ test("reconcile manifest keeps file identity separate from canonical semantic id
     id: "fact-a",
     category: "fact",
     contentHash: semanticHash,
-    normalizerVersion: 3,
+    normalizerVersion: 4,
     status: "active",
   });
 });
@@ -124,6 +125,51 @@ test("reconcile manifest replaces a pure-CJK legacy identity with its current ha
     ContentHashIndex.computeHash(content),
   );
   assert.equal("contentHashAliases" in (manifest.files[0]?.memory ?? {}), false);
+});
+
+test("reconcile manifest recovers a raw hash source beneath citation and attributes", async () => {
+  const content = "The user prefers café.";
+  const cited = attachCitation(content, {
+    agent: "planner",
+    session: "agent:planner:main",
+    ts: "2026-08-11T00:00:00.000Z",
+  });
+  const storedBody = `${cited}\n[Attributes: topic: coffee]`;
+  const serialized = memoryFile({
+    id: "legacy-enriched",
+    content: storedBody,
+    contentHash: computeLegacyContentHash(content),
+  });
+  const manifest = await buildReconcileManifest({
+    files: [{ path: "facts/legacy-enriched.md", sha256: fileHash(serialized) }],
+    parseMemory: parseFrontmatter,
+    readFile: async () => serialized,
+  });
+
+  assert.equal(manifest.files[0]?.memory?.contentHash, ContentHashIndex.computeHash(content));
+});
+
+test("reconcile manifest recovers raw identity beneath a configured citation", async () => {
+  const content = "The user prefers café.";
+  const citationTemplate = "[src:{agent}/{sessionId}@{date}]";
+  const storedBody = `${content} ${formatCitation({
+    agent: "planner",
+    session: "agent:planner:main",
+    ts: "2026-08-11T00:00:00.000Z",
+  }, citationTemplate)}`;
+  const serialized = memoryFile({
+    id: "legacy-custom-citation",
+    content: storedBody,
+    contentHash: computeLegacyContentHash(content),
+  });
+  const manifest = await buildReconcileManifest({
+    files: [{ path: "facts/legacy-custom-citation.md", sha256: fileHash(serialized) }],
+    parseMemory: parseFrontmatter,
+    readFile: async () => serialized,
+    citationTemplate,
+  });
+
+  assert.equal(manifest.files[0]?.memory?.contentHash, ContentHashIndex.computeHash(content));
 });
 
 test("reconcile manifest does not add a legacy alias to a current Unicode identity", async () => {

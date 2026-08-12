@@ -406,7 +406,7 @@ test("#1579 doctor visibility: getTombstoneStats reports the active count", asyn
   }
 });
 
-test("legacy migration preserves structured attributes in the retired content identity", async () => {
+test("legacy migration recovers raw source identity beneath structured attributes", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-tombstone-attributes-"));
   const content = "利用者は紅茶を好む。";
   const attributes = { region: "東京" };
@@ -416,6 +416,7 @@ test("legacy migration preserves structured attributes in the retired content id
     const { id: sourceMemoryId } = await seed.writeMemory("fact", content, {
       source: "test",
       structuredAttributes: attributes,
+      contentHashSource: content,
     });
     const retired = await readBack(seed, sourceMemoryId);
     assert.match(retired.content, /\[Attributes:/);
@@ -428,8 +429,8 @@ test("legacy migration preserves structured attributes in the retired content id
         reason: "supersession",
         createdBy: "supersession",
         sourceMemoryId,
-        contentHash: computeLegacyContentHash(retired.content),
-        normalizedText: normalizeLegacyContent(retired.content),
+        contentHash: computeLegacyContentHash(content),
+        normalizedText: normalizeLegacyContent(content),
         namespace: NAMESPACE,
         createdAt: "2026-08-11T00:00:00.000Z",
       })}\n`,
@@ -441,6 +442,7 @@ test("legacy migration preserves structured attributes in the retired content id
     const result = await restarted.writeMemory("fact", content, {
       source: "extraction",
       structuredAttributes: attributes,
+      contentHashSource: content,
     });
     assert.equal(result.tombstoneBlocked, true);
     assertBlocked(await readBack(restarted, result.id), "exact");

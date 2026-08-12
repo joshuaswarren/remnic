@@ -26,23 +26,25 @@ The system preserves ambiguous persisted identities but does not query them as a
 
 ## Migration strategy
 
+Stored content has up to three verified identity forms: raw content, cited content, and the full attributed body.
+
+The persisted hash selects the historic identity form. The system computes a current hash only after that match.
+
+This rule preserves explicit `contentHashSource` identities and old full-body hashes without making legacy hashes global aliases.
+
+Tombstones can retain a current alias only when both forms come from the same source memory.
+
 The tombstone store reads legacy sources from hot, cold, and archive storage.
 
 It reads source IDs in bounded batches and completes every available batch before publishing its index.
-
-The source resolver scans paths lazily. It caches the complete ID map when direct filename lookup cannot resolve a frontmatter ID.
 
 Unavailable sources remain unversioned. A later load retries them after the source becomes available.
 
 Malformed JSONL prevents a migration rewrite. The store preserves every malformed row byte-for-byte.
 
-The migration preserves an explicit `contentHashSource` identity because the stored body cannot prove a distinct external identity.
+The fact-hash index and reconcile manifest use the same source-verified identity selection.
 
-The fact-hash index rebuild replaces a verified legacy body hash with the current body hash.
-
-It derives current body hashes for old files that have no stored hash.
-
-Ambiguous legacy hashes never suppress a current Unicode write.
+Ambiguous legacy hashes never suppress unrelated current Unicode content.
 
 Entity repair re-runs the tombstone gate with the final entity reference and structured attributes.
 
@@ -52,18 +54,16 @@ Duplicate comparison tokenizes Unicode letters, marks, and numbers.
 
 It supports scripts without whitespace, including Japanese and Korean.
 
-Only punctuation embedded between letters or numbers separates a phrase identity.
+Embedded punctuation records both the mark and its semantic character position.
 
 Terminal sentence punctuation remains compatible with normalized exact matches.
 
 ## Verification state
 
-The focused migration and non-resurrection suite passes 105 tests.
+The 65-test focused identity suite passes after the citation, attribute, and punctuation fixes.
 
-The core type check and build pass.
+The core type check passes.
 
-`preflight:quick` and the 339-test entity hardening gate pass.
+The storage line ratchet passes at 7,314 lines, below its 7,315-line ceiling.
 
-The first complete workspace run found one stale normalizer-version expectation. Its focused test now passes.
-
-The complete workspace test rerun is pending.
+The wider mandatory gates and complete workspace suite require a fresh run before merge.
