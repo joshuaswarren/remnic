@@ -833,8 +833,6 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
   // Parsed strictly — invalid values abort startup with a precise message.
   const oauthConfig = applyOAuthEnvOverrides((serverConfig as { oauth?: unknown }).oauth);
   const oauthRequestHandler = buildOAuthRequestHandler(oauthConfig);
-
-
   const httpServer = new EngramAccessHttpServer({
     service,
     host: parsedServerConfig.host,
@@ -863,9 +861,9 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
     citationsEnabled: config.citationsEnabled,
     citationsAutoDetect: config.citationsAutoDetect,
     emitLegacyTools: config.emitLegacyTools,
+    externalRequestHandler: oauthRequestHandler,
     ...(oauthConfig.enabled
       ? {
-          externalRequestHandler: oauthRequestHandler,
           resourceMetadataUrl: new URL(
             "/.well-known/oauth-protected-resource/mcp",
             oauthConfig.issuerUrl,
