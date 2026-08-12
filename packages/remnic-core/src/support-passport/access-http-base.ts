@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import path from "node:path";
 
 import { EngramAccessForbiddenError } from "../access-errors.js";
 import type { EngramAccessService } from "../access-service.js";
@@ -25,14 +26,27 @@ const SUPPORT_PASSPORT_QUOTA_LIMITED_WRITE_TOOLS = new Set([
   "engram.support_passport_grant_revoke",
   "remnic.support_passport_grant_revoke",
 ]);
+const SUPPORT_PASSPORT_ADMIN_CONSOLE_ASSETS = new Map<string, string>([
+  ["what-helps-me.css", "text/css; charset=utf-8"],
+  ["model.js", "application/javascript; charset=utf-8"],
+  ["app.js", "application/javascript; charset=utf-8"],
+]);
 
 export abstract class SupportPassportAccessHttpBase {
   private supportPassportPublicHandler: ReturnType<typeof buildSupportPassportPublicRequestHandler> | undefined;
   protected abstract readonly service: EngramAccessService;
+  protected abstract readonly adminConsolePublicDir: string;
   protected abstract resolveRequestPrincipal(req: IncomingMessage): string | undefined;
   protected abstract readJsonBody(req: IncomingMessage, maxBodyBytes?: number): Promise<Record<string, unknown>>;
   protected abstract respondJson(res: ServerResponse, status: number, payload: unknown): void;
   protected abstract reserveWriteRateLimitSlot(req?: IncomingMessage): WriteRateLimitReservation;
+  protected abstract respondAdminConsoleShell(
+    req: IncomingMessage,
+    res: ServerResponse,
+    pathname: string,
+    relativePath?: string
+  ): Promise<void>;
+  protected abstract respondStatic(res: ServerResponse, filePath: string, contentType: string): Promise<void>;
 
   protected handleSupportPassportOwnerRequest(
     req: IncomingMessage,
@@ -84,5 +98,42 @@ export abstract class SupportPassportAccessHttpBase {
 
   protected isSupportPassportQuotaLimitedWriteTool(toolName: string): boolean {
     return SUPPORT_PASSPORT_QUOTA_LIMITED_WRITE_TOOLS.has(toolName);
+  }
+
+  protected async handleSupportPassportUi(
+    req: IncomingMessage,
+    res: ServerResponse,
+    pathname: string
+  ): Promise<boolean> {
+    if (req.method !== "GET") return false;
+    const isSupportPassportPath =
+      pathname === "/remnic/ui/what-helps-me" ||
+      pathname === "/engram/ui/what-helps-me" ||
+      pathname.startsWith("/remnic/ui/what-helps-me/") ||
+      pathname.startsWith("/engram/ui/what-helps-me/");
+    if (!isSupportPassportPath) return false;
+    if (!this.service.supportPassportEnabled) {
+      this.respondJson(res, 404, { error: "not_found" });
+      return true;
+    }
+    if (pathname === "/remnic/ui/what-helps-me" || pathname === "/engram/ui/what-helps-me") {
+      const search = new URL(req.url ?? pathname, "http://placeholder").search;
+      res.statusCode = 301;
+      res.setHeader("location", `${pathname}/${search}`);
+      res.end();
+      return true;
+    }
+    if (pathname === "/remnic/ui/what-helps-me/" || pathname === "/engram/ui/what-helps-me/") {
+      await this.respondAdminConsoleShell(req, res, pathname, "what-helps-me/index.html");
+      return true;
+    }
+    const fileName = pathname.split("/").at(-1) ?? "";
+    const assetType = SUPPORT_PASSPORT_ADMIN_CONSOLE_ASSETS.get(fileName);
+    if (assetType && pathname.split("/").length === 5) {
+      await this.respondStatic(res, path.join(this.adminConsolePublicDir, "what-helps-me", fileName), assetType);
+      return true;
+    }
+    this.respondJson(res, 404, { error: "not_found" });
+    return true;
   }
 }

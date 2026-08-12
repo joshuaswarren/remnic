@@ -615,6 +615,35 @@ test("HTTP admin console safely serializes a prefill token into its inline boots
   }
 });
 
+test("HTTP admin console does not disclose the primary token to a dynamic token", async () => {
+  const service = {} as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "primary-token",
+    authTokenEntriesGetter: () => [
+      {
+        token: "scoped-token",
+        capabilities: { version: 1, ops: ["support_passport_cards_list"] },
+      },
+    ],
+    adminConsolePrefillToken: true,
+  });
+
+  const status = await server.start();
+  try {
+    const shell = await fetch(`http://127.0.0.1:${status.port}/engram/ui/`, {
+      headers: { authorization: "Bearer scoped-token" },
+    });
+    assert.equal(shell.status, 200);
+    const body = await shell.text();
+    assert.doesNotMatch(body, /primary-token/);
+    assert.doesNotMatch(body, /__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__/);
+  } finally {
+    await server.stop();
+  }
+});
+
 test("HTTP admin dashboard endpoints require bearer authentication and apply config patches", async () => {
   const service = {} as EngramAccessService;
   const patches: unknown[] = [];

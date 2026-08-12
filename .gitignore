@@ -86,3 +86,7 @@ docs/research/failure-gate/RESUME-HANDOFF.md
 # packages/bench/profiles/h6-example.json and edit it locally.
 packages/bench/profiles/h6-*.json
 !packages/bench/profiles/h6-example.json
+
+# Browser test artifacts
+.playwright-cli/
+output/playwright/

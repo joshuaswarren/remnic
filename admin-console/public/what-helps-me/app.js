@@ -1,0 +1,1085 @@
+(function startWhatHelpsMe() {
+  const model = window.WhatHelpsMeModel;
+  if (!model) throw new Error("What Helps Me model did not load.");
+
+  const byId = (id) => document.getElementById(id);
+  const params = new URLSearchParams(window.location.search);
+  const replayMode = params.get("mode") === "replay";
+  const grantId = params.get("grant") ?? "";
+  const hasSecretFragment = new URLSearchParams(window.location.hash.slice(1)).has("secret");
+  const secret = model.parseSecret(window.location.hash);
+  if (hasSecretFragment) {
+    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+  }
+  const replayStore = replayMode ? model.createReplayStore() : null;
+  const replayChannel =
+    replayMode && "BroadcastChannel" in window ? new BroadcastChannel("remnic-what-helps-me-replay") : null;
+  const HELPER_REVALIDATION_MS = 30_000;
+  const HELPER_REVALIDATION_MAX_MS = 5 * 60_000;
+  const HELPER_READ_TIMEOUT_MS = 10_000;
+  const HELPER_QUESTION_TIMEOUT_MS = 60_000;
+  const OWNER_READ_TIMEOUT_MS = 30_000;
+  const OWNER_WRITE_TIMEOUT_MS = 60_000;
+  const OWNER_MODEL_WRITE_TIMEOUT_MS = 15 * 60_000;
+  const OWNER_RECONCILIATION_ATTEMPTS = 4;
+  const OWNER_RECONCILIATION_DELAY_MS = 250;
+  const MAX_VISIBLE_GRANTS = 100;
+  const MAX_SHARED_CARDS = 8;
+  const PAGE_HIDDEN_ABORT = new Error("The helper page was hidden.");
+  const SCROLL_BEHAVIOR = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+  const TERMINAL_HELPER_ERROR_CODES = new Set([
+    "grant_expired",
+    "grant_gone",
+    "grant_not_found",
+    "grant_stale",
+    "missing_link",
+  ]);
+
+  const state = {
+    token: "",
+    cards: [],
+    grants: [],
+    selectedNotes: [],
+    guide: null,
+    helperSecret: secret,
+    helperGrantId: grantId,
+    helperServerOffsetMs: null,
+    helperExpiryTimer: null,
+    helperLoadController: null,
+    helperQuestionController: null,
+    helperRevalidationController: null,
+    helperRevalidationTimer: null,
+    helperRevalidationDelayMs: HELPER_REVALIDATION_MS,
+    helperLifecyclePaused: false,
+    toastTimer: null,
+  };
+
+  function element(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  function clear(node) {
+    node.replaceChildren();
+  }
+
+  function setError(id, message = "") {
+    byId(id).textContent = message;
+  }
+
+  function announce(message) {
+    byId("announcer").textContent = "";
+    window.setTimeout(() => {
+      byId("announcer").textContent = message;
+    }, 10);
+  }
+
+  function toast(message) {
+    const node = byId("toast");
+    window.clearTimeout(state.toastTimer);
+    node.textContent = message;
+    node.classList.add("visible");
+    state.toastTimer = window.setTimeout(() => node.classList.remove("visible"), 3_600);
+  }
+
+  function errorMessage(error, fallback) {
+    if (error instanceof Error && error.message.trim()) return error.message;
+    return fallback;
+  }
+
+  async function withBusy(button, label, run) {
+    const prior = button.textContent;
+    button.disabled = true;
+    button.textContent = label;
+    try {
+      return await run();
+    } finally {
+      button.disabled = false;
+      button.textContent = prior;
+    }
+  }
+
+  async function fetchJson(path, options = {}) {
+    const method = options.method ?? "GET";
+    const timeoutMs =
+      options.timeoutMs ??
+      (options.owner ? (method === "GET" ? OWNER_READ_TIMEOUT_MS : OWNER_WRITE_TIMEOUT_MS) : undefined);
+    const controller = Number.isFinite(timeoutMs) ? new AbortController() : null;
+    let timedOut = false;
+    let timeout;
+    let removeCallerAbort = () => {};
+    if (controller && options.signal) {
+      const abortFromCaller = () => controller.abort(options.signal.reason);
+      if (options.signal.aborted) abortFromCaller();
+      else options.signal.addEventListener("abort", abortFromCaller, { once: true });
+      removeCallerAbort = () => options.signal.removeEventListener("abort", abortFromCaller);
+    }
+    if (controller) {
+      timeout = window.setTimeout(() => {
+        timedOut = true;
+        controller.abort(new Error("The request took too long."));
+      }, timeoutMs);
+    }
+    const headers = new Headers(options.headers ?? {});
+    headers.set("accept", "application/json");
+    if (options.owner) headers.set("authorization", `Bearer ${state.token}`);
+    if (options.secret) headers.set("authorization", `SupportPassport ${options.secret}`);
+    let body;
+    if (options.body !== undefined) {
+      headers.set("content-type", "application/json");
+      body = JSON.stringify(options.body);
+    }
+    try {
+      const response = await fetch(path, {
+        method,
+        headers,
+        body,
+        cache: "no-store",
+        signal: controller?.signal ?? options.signal,
+      });
+      let payload = {};
+      try {
+        payload = await response.json();
+      } catch {
+        if (!response.ok) throw new Error(`The server returned HTTP ${response.status}.`);
+      }
+      if (!response.ok) {
+        const error = new Error(
+          typeof payload.error === "string" ? payload.error : `The server returned HTTP ${response.status}.`
+        );
+        error.code = typeof payload.code === "string" ? payload.code : "request_failed";
+        error.status = response.status;
+        throw error;
+      }
+      if (!options.captureServerTime) return payload;
+      const serverNowMs = Date.parse(response.headers.get("date") ?? "");
+      return {
+        payload,
+        serverOffsetMs: Number.isFinite(serverNowMs) ? serverNowMs - Date.now() : null,
+      };
+    } catch (error) {
+      if (!timedOut) throw error;
+      const timeoutError = new Error(options.timeoutMessage ?? "The owner request took too long. Try again.");
+      timeoutError.code = "request_timeout";
+      throw timeoutError;
+    } finally {
+      if (timeout) window.clearTimeout(timeout);
+      removeCallerAbort();
+    }
+  }
+
+  const liveApi = {
+    listCards: () => fetchJson("/engram/v1/support-passport/cards", { owner: true }),
+    listGrants: () => fetchJson("/engram/v1/support-passport/grants", { owner: true }),
+    fetchMemory: (memoryId) =>
+      fetchJson(`/engram/v1/support-passport/memories/${encodeURIComponent(memoryId)}`, { owner: true }),
+    createManualDraft: (input) =>
+      fetchJson("/engram/v1/support-passport/drafts", { owner: true, method: "POST", body: input }),
+    generateDrafts: (input) =>
+      fetchJson("/engram/v1/support-passport/drafts/generate", {
+        owner: true,
+        method: "POST",
+        body: input,
+        timeoutMs: OWNER_MODEL_WRITE_TIMEOUT_MS,
+        timeoutMessage: "Drafting timed out.",
+      }),
+    replaceCard: (cardId, input) =>
+      fetchJson(`/engram/v1/support-passport/cards/${encodeURIComponent(cardId)}`, {
+        owner: true,
+        method: "PUT",
+        body: input,
+      }),
+    mutateCard: (cardId, input, action) =>
+      fetchJson(`/engram/v1/support-passport/cards/${encodeURIComponent(cardId)}/${action}`, {
+        owner: true,
+        method: "POST",
+        body: input,
+      }),
+    createGrant: (input) =>
+      fetchJson("/engram/v1/support-passport/grants", { owner: true, method: "POST", body: input }),
+    revokeGrant: (id, input) =>
+      fetchJson(`/engram/v1/support-passport/grants/${encodeURIComponent(id)}/revoke`, {
+        owner: true,
+        method: "POST",
+        body: input,
+      }),
+    readGrant: (id, helperSecret, signal) =>
+      fetchJson(`/engram/v1/support-passport/public/grants/${encodeURIComponent(id)}`, {
+        secret: helperSecret,
+        signal,
+        captureServerTime: true,
+      }),
+    askGrant: (id, helperSecret, question, signal) =>
+      fetchJson(`/engram/v1/support-passport/public/grants/${encodeURIComponent(id)}/ask`, {
+        secret: helperSecret,
+        method: "POST",
+        body: { question },
+        signal,
+      }),
+  };
+
+  const replayApi = replayStore && {
+    ...replayStore,
+    async fetchMemory(memoryId) {
+      const note = replayStore.notes.find((candidate) => candidate.memoryId === memoryId);
+      if (!note) return { found: false };
+      return { found: true, memory: { id: note.memoryId, content: note.content, revision: note.revision } };
+    },
+  };
+  const api = replayMode ? replayApi : liveApi;
+
+  function showOwner() {
+    byId("connectPanel").hidden = true;
+    byId("helperView").remove();
+    byId("lockedView").remove();
+    byId("ownerView").hidden = false;
+    byId("viewMarkerText").textContent = replayMode ? "Owner replay" : "Owner view";
+  }
+
+  function renderSelectedNotes() {
+    const list = byId("noteList");
+    clear(list);
+    byId("notesEmpty").hidden = state.selectedNotes.length > 0;
+    byId("noteCount").textContent = `${state.selectedNotes.length} selected`;
+    for (const note of state.selectedNotes) {
+      const item = element("li", "note-item");
+      const copy = element("div");
+      copy.append(element("code", "", note.memoryId), element("p", "", note.content));
+      const remove = element("button", "button button-quiet", "Remove");
+      remove.type = "button";
+      remove.setAttribute("aria-label", `Remove selected note ${note.memoryId}`);
+      remove.addEventListener("click", () => {
+        state.selectedNotes = state.selectedNotes.filter((candidate) => candidate.memoryId !== note.memoryId);
+        byId("consentInput").checked = false;
+        renderSelectedNotes();
+        announce("Selected note removed. Consent cleared.");
+      });
+      item.append(copy, remove);
+      list.append(item);
+    }
+  }
+
+  function statusLabel(card) {
+    return card.status === "active" ? "Approved" : "Draft";
+  }
+
+  function cardButton(label, className, handler) {
+    const button = element("button", `button ${className}`, label);
+    button.type = "button";
+    button.addEventListener("click", handler);
+    return button;
+  }
+
+  async function mutateCard(card, action, button) {
+    setError("generateError");
+    const verbs = { approve: "Approving…", reject: "Rejecting…", withdraw: "Stopping…" };
+    let ownerStateFresh = false;
+    try {
+      await withBusy(button, verbs[action], () =>
+        api.mutateCard(
+          card.cardId,
+          {
+            expectedRevision: card.revision,
+            reasonCode:
+              action === "approve"
+                ? "owner-approved-ui"
+                : action === "reject"
+                  ? "owner-rejected-ui"
+                  : "owner-withdrew-ui",
+          },
+          action
+        )
+      );
+    } catch (error) {
+      if (error?.code !== "request_timeout") {
+        setError("generateError", errorMessage(error, "The support card did not change."));
+        return;
+      }
+      const reconciled = await reconcileOwnerState(() => {
+        const current = state.cards.find((candidate) => candidate.cardId === card.cardId);
+        if (action === "approve") {
+          return current?.status === "active" && current.revision !== card.revision ? current : null;
+        }
+        return current ? null : card;
+      });
+      if (!reconciled.matched) {
+        setError(
+          "generateError",
+          reconciled.refreshed
+            ? "The request stopped without a confirmed change. Review the current guide before trying again."
+            : "The request stopped without a confirmed change. Refresh the guide before trying again."
+        );
+        return;
+      }
+      ownerStateFresh = true;
+    }
+    const message =
+      action === "approve"
+        ? `Approved ${card.title}. It can now be shared.`
+        : action === "reject"
+          ? `Rejected ${card.title}. It stays private.`
+          : `Withdrew ${card.title}. Existing links will lock.`;
+    toast(message);
+    announce(message);
+    try {
+      if (!ownerStateFresh) await loadOwnerState();
+    } catch {
+      const warning = `${message} The card list did not refresh. Refresh the guide before another change.`;
+      setError("generateError", warning);
+      announce(warning);
+    }
+  }
+
+  function renderCards() {
+    const list = byId("cardList");
+    clear(list);
+    byId("cardsEmpty").hidden = state.cards.length > 0;
+    const drafts = state.cards.filter((card) => card.status === "pending_review").length;
+    const approved = state.cards.filter((card) => card.status === "active").length;
+    byId("draftCount").textContent = String(drafts);
+    byId("approvedCount").textContent = String(approved);
+
+    for (const card of state.cards) {
+      const article = element("article", "support-card");
+      article.dataset.category = card.category;
+      const top = element("div", "card-topline");
+      const status = element(
+        "span",
+        `status-pill ${card.status === "active" ? "approved" : "draft"}`,
+        statusLabel(card)
+      );
+      const category = element("span", "category-pill", model.CATEGORY_LABELS[card.category]);
+      top.append(status, category);
+      const title = element("h3", "", card.title);
+      const statement = element("blockquote", "", card.statement);
+      const dates = element("div", "card-dates");
+      dates.append(
+        element("span", "", `Updated ${model.formatDate(card.updatedAt)}`),
+        element("span", "", `Review by ${model.formatDate(card.reviewBy)}`)
+      );
+      const actions = element("div", "card-actions");
+      actions.append(cardButton("Edit", "button-quiet", () => openCardDialog(card)));
+      if (card.status === "pending_review") {
+        const approve = cardButton("Approve", "button-primary", (event) =>
+          mutateCard(card, "approve", event.currentTarget)
+        );
+        const reject = cardButton("Reject", "button-danger", (event) =>
+          mutateCard(card, "reject", event.currentTarget)
+        );
+        actions.append(approve, reject);
+      } else {
+        actions.append(
+          cardButton("Withdraw", "button-danger", (event) => mutateCard(card, "withdraw", event.currentTarget))
+        );
+      }
+      article.append(top, title, statement, dates, actions);
+      list.append(article);
+    }
+  }
+
+  function renderShareCards() {
+    const list = byId("shareCardList");
+    clear(list);
+    const approved = state.cards.filter((card) => card.status === "active");
+    byId("shareCardsEmpty").hidden = approved.length > 0;
+    for (const card of approved) {
+      const label = element("label", "card-choice");
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.name = "shareCard";
+      input.value = card.cardId;
+      input.dataset.revision = card.revision;
+      input.addEventListener("change", updateShareCardChoices);
+      const copy = element("span");
+      copy.append(element("strong", "", card.title), element("small", "", card.statement));
+      label.append(input, copy);
+      list.append(label);
+    }
+    updateShareCardChoices();
+  }
+
+  function updateShareCardChoices() {
+    const choices = [...document.querySelectorAll('input[name="shareCard"]')];
+    const selectedCount = choices.filter((input) => input.checked).length;
+    for (const input of choices) input.disabled = !input.checked && selectedCount >= MAX_SHARED_CARDS;
+  }
+
+  function delay(milliseconds) {
+    return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+  }
+
+  async function reconcileOwnerState(match) {
+    let refreshed = false;
+    for (let attempt = 0; attempt < OWNER_RECONCILIATION_ATTEMPTS; attempt += 1) {
+      try {
+        await loadOwnerState();
+        refreshed = true;
+        const value = match();
+        if (value) return { matched: true, value };
+      } catch {}
+      if (attempt + 1 < OWNER_RECONCILIATION_ATTEMPTS) {
+        await delay(OWNER_RECONCILIATION_DELAY_MS);
+      }
+    }
+    return { matched: false, refreshed };
+  }
+
+  function sameCardDraft(card, input) {
+    return (
+      card.status === "pending_review" &&
+      card.title === input.title &&
+      card.statement === input.statement &&
+      card.category === input.category &&
+      card.reviewBy === input.reviewBy
+    );
+  }
+
+  function renderGrants() {
+    const list = byId("grantList");
+    clear(list);
+    byId("grantsEmpty").hidden = state.grants.length > 0;
+    for (const grant of state.grants) {
+      const article = element("article", "grant-card");
+      const stateText =
+        grant.status === "active" ? "Live share" : grant.status === "revoked" ? "Sharing stopped" : "Share time ended";
+      article.append(
+        element("p", "", stateText),
+        element(
+          "div",
+          "grant-meta",
+          `${grant.cards.length} card${grant.cards.length === 1 ? "" : "s"} · Ends ${model.formatDate(grant.expiresAt)}`
+        )
+      );
+      if (grant.status === "active") {
+        const stop = cardButton("Stop sharing", "button-danger", async (event) => {
+          let ownerStateFresh = false;
+          try {
+            await withBusy(event.currentTarget, "Stopping sharing…", () =>
+              api.revokeGrant(grant.grantId, { expectedVersion: grant.stateVersion })
+            );
+          } catch (error) {
+            if (error?.code !== "request_timeout") {
+              setError("shareError", errorMessage(error, "The share link did not stop."));
+              return;
+            }
+            const reconciled = await reconcileOwnerState(() => {
+              const current = state.grants.find((candidate) => candidate.grantId === grant.grantId);
+              return !current || current.status === "revoked" ? grant : null;
+            });
+            if (!reconciled.matched) {
+              setError(
+                "shareError",
+                "The server did not confirm that sharing stopped. Refresh the guide and check this link."
+              );
+              return;
+            }
+            ownerStateFresh = true;
+          }
+          replayChannel?.postMessage({ type: "grant-revoked", grantId: grant.grantId });
+          const message = "Sharing stopped. The helper link is now locked.";
+          toast(message);
+          announce(message);
+          try {
+            if (!ownerStateFresh) await loadOwnerState();
+          } catch {
+            const warning = `${message} The share list did not refresh. Refresh the guide before another change.`;
+            setError("shareError", warning);
+            announce(warning);
+          }
+        });
+        article.append(stop);
+      }
+      list.append(article);
+    }
+  }
+
+  async function loadOwnerState() {
+    const [cardPayload, grantPayload] = await Promise.all([api.listCards(), api.listGrants()]);
+    state.cards = model.parseCardList(cardPayload);
+    state.grants = model.parseGrantList(grantPayload).slice(0, MAX_VISIBLE_GRANTS);
+    renderCards();
+    renderShareCards();
+    renderGrants();
+  }
+
+  function toLocalInputValue(date) {
+    const offset = date.getTimezoneOffset() * 60_000;
+    return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+  }
+
+  function openCardDialog(card = null) {
+    byId("cardDialogTitle").textContent = card ? "Edit this support card" : "Write a support card";
+    byId("cardSaveButton").textContent = "Save draft";
+    byId("cardIdInput").value = card?.cardId ?? "";
+    byId("cardRevisionInput").value = card?.revision ?? "";
+    byId("cardTitleInput").value = card?.title ?? "";
+    byId("cardStatementInput").value = card?.statement ?? "";
+    byId("cardCategoryInput").value = card?.category ?? "communication";
+    byId("cardReviewInput").value = toLocalInputValue(
+      card ? new Date(card.reviewBy) : new Date(Date.now() + 180 * 24 * 60 * 60_000)
+    );
+    setError("cardError");
+    byId("cardDialog").showModal();
+    byId("cardTitleInput").focus();
+  }
+
+  function closeCardDialog() {
+    byId("cardDialog").close();
+  }
+
+  async function saveCard(event) {
+    event.preventDefault();
+    setError("cardError");
+    const cardId = byId("cardIdInput").value;
+    const expectedRevision = byId("cardRevisionInput").value;
+    const reviewValue = byId("cardReviewInput").value;
+    const reviewDate = new Date(reviewValue);
+    const existingCard = state.cards.find((card) => card.cardId === cardId);
+    const keepsExistingReminder =
+      existingCard && reviewValue === toLocalInputValue(new Date(existingCard.reviewBy));
+    if (
+      !Number.isFinite(reviewDate.getTime()) ||
+      (reviewDate.getTime() <= Date.now() && !keepsExistingReminder)
+    ) {
+      setError("cardError", "Choose a future review reminder.");
+      return;
+    }
+    const input = {
+      title: byId("cardTitleInput").value.trim(),
+      statement: byId("cardStatementInput").value.trim(),
+      category: byId("cardCategoryInput").value,
+      reviewBy: keepsExistingReminder ? existingCard.reviewBy : reviewDate.toISOString(),
+      ...(cardId ? { expectedRevision } : {}),
+    };
+    const priorCardIds = new Set(state.cards.map((card) => card.cardId));
+    let ownerStateFresh = false;
+    try {
+      await withBusy(byId("cardSaveButton"), "Saving draft…", () =>
+        cardId ? api.replaceCard(cardId, input) : api.createManualDraft(input)
+      );
+    } catch (error) {
+      if (error?.code !== "request_timeout") {
+        setError("cardError", errorMessage(error, "The draft did not save."));
+        return;
+      }
+      const reconciled = await reconcileOwnerState(() =>
+        state.cards.find((card) => !priorCardIds.has(card.cardId) && sameCardDraft(card, input))
+      );
+      if (!reconciled.matched) {
+        setError(
+          "cardError",
+          reconciled.refreshed
+            ? "The request stopped before the draft saved. Review the current guide before trying again."
+            : "The server did not confirm whether the draft saved. Refresh the guide before saving it again."
+        );
+        return;
+      }
+      ownerStateFresh = true;
+    }
+    closeCardDialog();
+    const message = "Draft saved. Review and approve it before sharing.";
+    toast(message);
+    announce(message);
+    try {
+      if (!ownerStateFresh) await loadOwnerState();
+    } catch {
+      const warning = "The draft was saved, but the card list did not refresh. Refresh the guide before editing it.";
+      setError("generateError", warning);
+      announce(warning);
+    }
+  }
+
+  async function addMemory(event) {
+    event.preventDefault();
+    setError("memoryError");
+    const memoryId = byId("memoryIdInput").value.trim();
+    if (state.selectedNotes.some((note) => note.memoryId === memoryId)) {
+      setError("memoryError", "That note is already selected.");
+      return;
+    }
+    if (state.selectedNotes.length >= 20) {
+      setError("memoryError", "Select no more than 20 notes.");
+      return;
+    }
+    const button = event.currentTarget.querySelector("button");
+    try {
+      const preview = model.parseMemoryPreview(
+        await withBusy(button, "Adding note…", () => api.fetchMemory(memoryId))
+      );
+      if (!preview.found) {
+        throw new Error("That memory was not found in your Remnic scope.");
+      }
+      if (preview.memory.id !== memoryId) throw new Error("The selected note response is invalid.");
+      state.selectedNotes = [
+        ...state.selectedNotes,
+        {
+          memoryId,
+          content: model.stripAttributesSuffix(preview.memory.content),
+          revision: preview.memory.revision,
+        },
+      ];
+      byId("memoryIdInput").value = "";
+      byId("consentInput").checked = false;
+      renderSelectedNotes();
+      announce("Selected note added. Review it before consent.");
+    } catch (error) {
+      setError("memoryError", errorMessage(error, "The selected note did not load."));
+    }
+  }
+
+  async function generateDrafts() {
+    setError("generateError");
+    if (state.selectedNotes.length === 0) {
+      setError("generateError", "Select at least one note first.");
+      return;
+    }
+    if (!byId("consentInput").checked) {
+      setError("generateError", "Select the consent box before any model call.");
+      byId("consentInput").focus();
+      return;
+    }
+    try {
+      await withBusy(byId("generateButton"), "Drafting cards…", () =>
+        api.generateDrafts({
+          sourceMemoryIds: state.selectedNotes.map((note) => note.memoryId),
+          sourceMemoryRevisions: state.selectedNotes.map((note) => ({
+            memoryId: note.memoryId,
+            revision: note.revision,
+          })),
+          consent: true,
+        })
+      );
+    } catch (error) {
+      if (error?.code !== "request_timeout") {
+        setError("generateError", errorMessage(error, "The configured model did not return valid drafts."));
+        return;
+      }
+      byId("consentInput").checked = false;
+      let refreshed = false;
+      try {
+        await loadOwnerState();
+        refreshed = true;
+      } catch {}
+      setError(
+        "generateError",
+        refreshed
+          ? "Drafting timed out. Review the current guide before deciding whether to draft again."
+          : "Drafting timed out. Refresh the guide before deciding whether to draft again."
+      );
+      return;
+    }
+    byId("consentInput").checked = false;
+    const message = "Drafts ready. Review each card before approval.";
+    toast(message);
+    announce(message);
+    try {
+      await loadOwnerState();
+      byId("reviewCards").scrollIntoView({ behavior: SCROLL_BEHAVIOR, block: "start" });
+    } catch {
+      const warning = `${message} The card list did not refresh. Refresh the guide before another change.`;
+      setError("generateError", warning);
+      announce(warning);
+    }
+  }
+
+  async function createShare(event) {
+    event.preventDefault();
+    setError("shareError");
+    byId("newLinkPanel").hidden = true;
+    byId("shareLinkInput").value = "";
+    byId("openLinkButton").removeAttribute("href");
+    const selectedInputs = [...document.querySelectorAll('input[name="shareCard"]:checked')];
+    const cardIds = selectedInputs.map((input) => input.value);
+    if (cardIds.length === 0) {
+      setError("shareError", "Select at least one approved support card.");
+      return;
+    }
+    if (cardIds.length > MAX_SHARED_CARDS) {
+      setError("shareError", "Select no more than eight approved support cards.");
+      return;
+    }
+    const cardRevisions = selectedInputs.map((input) => ({
+      cardId: input.value,
+      revision: input.dataset.revision ?? "",
+    }));
+    if (cardRevisions.some((card) => !card.revision)) {
+      setError("shareError", "A selected support card changed. Refresh the guide and select it again.");
+      return;
+    }
+    const choice = document.querySelector('input[name="duration"]:checked')?.value ?? "2h";
+    let expiresAt;
+    try {
+      expiresAt = model.expiryForChoice(choice, byId("customTimeInput").value);
+    } catch (error) {
+      setError("shareError", errorMessage(error, "Choose a valid share time."));
+      return;
+    }
+    const button = event.currentTarget.querySelector('button[type="submit"]');
+    let created;
+    try {
+      created = model.parseCreatedGrant(
+        await withBusy(button, "Creating link…", () => api.createGrant({ cardIds, cardRevisions, expiresAt }))
+      );
+    } catch (error) {
+      if (error?.code !== "request_timeout") {
+        setError("shareError", errorMessage(error, "The share link was not created."));
+        return;
+      }
+      let refreshed = false;
+      try {
+        await loadOwnerState();
+        refreshed = true;
+      } catch {}
+      setError(
+        "shareError",
+        refreshed
+          ? "The server did not confirm whether it created a link. Review the live share list and stop any link you do not recognize before creating another."
+          : "The server did not confirm whether it created a link. Refresh the guide and review live shares before creating another."
+      );
+      return;
+    }
+    const url = model.buildShareUrl(window.location.href, created.grantId, created.secret, replayMode);
+    byId("shareLinkInput").value = url;
+    byId("openLinkButton").href = url;
+    byId("newLinkPanel").hidden = false;
+    const message = `Share link created. It ends ${model.formatDate(created.expiresAt)}.`;
+    toast(message);
+    announce(message);
+    byId("newLinkPanel").scrollIntoView({ behavior: SCROLL_BEHAVIOR, block: "nearest" });
+    try {
+      await loadOwnerState();
+    } catch {
+      setError("shareError", "The share link was created, but the share list did not refresh. Use the link above.");
+    }
+  }
+
+  async function copyShareLink() {
+    const value = byId("shareLinkInput").value;
+    try {
+      await navigator.clipboard.writeText(value);
+      toast("Share link copied.");
+      announce("Share link copied.");
+    } catch {
+      byId("shareLinkInput").focus();
+      byId("shareLinkInput").select();
+      setError("shareError", "Copy the selected share link manually.");
+    }
+  }
+
+  async function connectOwner(event) {
+    event.preventDefault();
+    setError("connectError");
+    state.token = byId("tokenInput").value.trim();
+    if (!state.token) return;
+    const button = event.currentTarget.querySelector("button");
+    try {
+      await withBusy(button, "Opening guide…", loadOwnerState);
+      showOwner();
+      announce("Owner guide loaded.");
+    } catch (error) {
+      state.token = "";
+      setError("connectError", errorMessage(error, "The owner guide did not load."));
+    }
+  }
+
+  function showLocked(error) {
+    window.clearTimeout(state.helperExpiryTimer);
+    state.helperExpiryTimer = null;
+    window.clearTimeout(state.helperRevalidationTimer);
+    state.helperRevalidationTimer = null;
+    state.helperLoadController?.abort();
+    state.helperLoadController = null;
+    state.helperQuestionController?.abort();
+    state.helperQuestionController = null;
+    state.helperRevalidationController?.abort();
+    state.helperRevalidationController = null;
+    const lastGuide = state.guide;
+    state.guide = null;
+    byId("connectPanel")?.remove();
+    byId("ownerView")?.remove();
+    byId("helperView").hidden = true;
+    byId("helperLoading").hidden = false;
+    clear(byId("guideGroups"));
+    byId("answerPanel").hidden = true;
+    clear(byId("citationList"));
+    const lock = model.lockState(error, lastGuide);
+    const retryable =
+      !lastGuide &&
+      Boolean(state.helperGrantId && state.helperSecret) &&
+      !TERMINAL_HELPER_ERROR_CODES.has(error?.code);
+    byId("lockedEyebrow").textContent = lock.eyebrow;
+    byId("lockedTitle").textContent = lock.title;
+    byId("lockedDetail").textContent = lock.detail;
+    byId("retryHelperButton").hidden = !retryable;
+    byId("lockedView").hidden = false;
+    byId("viewMarkerText").textContent = "Locked helper view";
+    document.title = "Share link locked · What Helps Me";
+    byId("lockedTitle").focus?.();
+    announce(lock.title);
+  }
+
+  async function readHelperGuide(signal) {
+    const result = await api.readGrant(state.helperGrantId, state.helperSecret, signal);
+    if (replayMode) return model.parsePublicGuide(result);
+    if (Number.isFinite(result.serverOffsetMs)) state.helperServerOffsetMs = result.serverOffsetMs;
+    return model.parsePublicGuide(result.payload);
+  }
+
+  function scheduleHelperExpiry() {
+    window.clearTimeout(state.helperExpiryTimer);
+    state.helperExpiryTimer = null;
+    if (!state.guide || state.helperLifecyclePaused) return;
+    const serverNow = Date.now() + (state.helperServerOffsetMs ?? 0);
+    const remainingMs = Date.parse(state.guide.expiresAt) - serverNow;
+    if (remainingMs <= 0 && !replayMode && state.helperServerOffsetMs === null) return;
+    if (remainingMs <= 0) {
+      const error = new Error("The share link has expired.");
+      error.code = "grant_expired";
+      showLocked(error);
+      return;
+    }
+    state.helperExpiryTimer = window.setTimeout(() => {
+      const error = new Error("The share link has expired.");
+      error.code = "grant_expired";
+      showLocked(error);
+    }, remainingMs);
+  }
+
+  function renderGuide(guide) {
+    byId("helperLoading").hidden = true;
+    byId("helperExpiry").textContent = model.formatDate(guide.expiresAt);
+    byId("helperCardCount").textContent = `${guide.cards.length} card${guide.cards.length === 1 ? "" : "s"}`;
+    const groupsNode = byId("guideGroups");
+    clear(groupsNode);
+    for (const group of model.groupCards(guide.cards)) {
+      const section = element("section", "guide-group");
+      section.append(element("h3", "", group.label));
+      for (const card of group.cards) {
+        const article = element("article", "public-card");
+        article.dataset.category = card.category;
+        article.dataset.cardId = card.cardId;
+        article.append(element("h3", "", card.title), element("p", "", card.statement));
+        section.append(article);
+      }
+      groupsNode.append(section);
+    }
+    scheduleHelperExpiry();
+  }
+
+  function scheduleHelperRevalidation() {
+    window.clearTimeout(state.helperRevalidationTimer);
+    state.helperRevalidationTimer = null;
+    if (replayMode || !state.guide || state.helperLifecyclePaused) return;
+    state.helperRevalidationTimer = window.setTimeout(revalidateHelper, state.helperRevalidationDelayMs);
+  }
+
+  async function revalidateHelper() {
+    state.helperRevalidationTimer = null;
+    if (!state.guide || state.helperLifecyclePaused) return;
+    const controller = new AbortController();
+    state.helperRevalidationController?.abort();
+    state.helperRevalidationController = controller;
+    const timeout = window.setTimeout(() => controller.abort(), HELPER_READ_TIMEOUT_MS);
+    try {
+      state.guide = await readHelperGuide(controller.signal);
+      state.helperRevalidationDelayMs = HELPER_REVALIDATION_MS;
+      scheduleHelperExpiry();
+    } catch (error) {
+      if (controller.signal.aborted || !state.guide) return;
+      if (["grant_expired", "grant_gone", "grant_not_found", "grant_stale"].includes(error?.code)) {
+        showLocked(error);
+        return;
+      }
+      if (error?.code === "rate_limited") {
+        state.helperRevalidationDelayMs = Math.min(
+          state.helperRevalidationDelayMs * 2,
+          HELPER_REVALIDATION_MAX_MS
+        );
+      }
+    } finally {
+      window.clearTimeout(timeout);
+      if (state.helperRevalidationController === controller) {
+        state.helperRevalidationController = null;
+        scheduleHelperRevalidation();
+      }
+    }
+  }
+
+  async function loadHelper() {
+    byId("connectPanel")?.remove();
+    byId("ownerView")?.remove();
+    byId("lockedView").hidden = true;
+    byId("retryHelperButton").hidden = true;
+    byId("helperView").hidden = false;
+    byId("viewMarkerText").textContent = replayMode ? "Helper replay" : "Helper view";
+    document.title = "Shared support passport · What Helps Me";
+    if (!state.helperGrantId || !state.helperSecret) {
+      const error = new Error("The share link is incomplete.");
+      error.code = "missing_link";
+      showLocked(error);
+      return;
+    }
+    if (replayMode) replayStore.seedSharedGuide(state.helperGrantId, state.helperSecret);
+    const controller = new AbortController();
+    state.helperLoadController?.abort();
+    state.helperLoadController = controller;
+    const timeout = window.setTimeout(() => controller.abort(), HELPER_READ_TIMEOUT_MS);
+    try {
+      state.guide = await readHelperGuide(controller.signal);
+      renderGuide(state.guide);
+      if (!state.guide) return;
+      scheduleHelperRevalidation();
+      announce(`Support passport loaded with ${state.guide.cards.length} cards.`);
+    } catch (error) {
+      if (controller.signal.reason === PAGE_HIDDEN_ABORT) return;
+      showLocked(error);
+    } finally {
+      window.clearTimeout(timeout);
+      if (state.helperLoadController === controller) state.helperLoadController = null;
+    }
+  }
+
+  async function askQuestion(event) {
+    event.preventDefault();
+    setError("questionError");
+    const question = byId("questionInput").value.trim();
+    if (!question || !state.guide) return;
+    byId("answerPanel").hidden = true;
+    byId("answerCopy").textContent = "";
+    clear(byId("citationList"));
+    const button = event.currentTarget.querySelector("button");
+    const controller = new AbortController();
+    state.helperQuestionController?.abort();
+    state.helperQuestionController = controller;
+    let timedOut = false;
+    const timeout = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, HELPER_QUESTION_TIMEOUT_MS);
+    try {
+      const payload = await withBusy(button, "Checking shared cards…", () =>
+        api.askGrant(state.helperGrantId, state.helperSecret, question, controller.signal)
+      );
+      const answer = model.parseAnswer(payload, state.guide);
+      byId("answerCopy").textContent = answer.answer;
+      const citations = byId("citationList");
+      clear(citations);
+      for (const cardId of answer.citedCardIds) {
+        const card = state.guide.cards.find((candidate) => candidate.cardId === cardId);
+        citations.append(element("div", "citation", `Support card · ${card?.title ?? cardId}`));
+      }
+      if (answer.citedCardIds.length === 0)
+        citations.append(element("div", "citation", "No support card covers this question."));
+      byId("answerPanel").hidden = false;
+      byId("answerPanel").focus();
+      announce("Answer ready with support card citations.");
+    } catch (error) {
+      if (!state.guide) return;
+      if (controller.signal.reason === PAGE_HIDDEN_ABORT) return;
+      if (timedOut) {
+        setError("questionError", "The question took too long. Try again.");
+        return;
+      }
+      if (["grant_expired", "grant_gone", "grant_not_found", "grant_stale"].includes(error?.code)) {
+        showLocked(error);
+        return;
+      }
+      setError("questionError", errorMessage(error, "The question did not complete."));
+    } finally {
+      window.clearTimeout(timeout);
+      if (state.helperQuestionController === controller) state.helperQuestionController = null;
+    }
+  }
+
+  function bindOwnerEvents() {
+    byId("memoryForm").addEventListener("submit", addMemory);
+    byId("generateButton").addEventListener("click", generateDrafts);
+    byId("newCardButton").addEventListener("click", () => openCardDialog());
+    byId("cardForm").addEventListener("submit", saveCard);
+    byId("cardDialogClose").addEventListener("click", closeCardDialog);
+    byId("cardCancelButton").addEventListener("click", closeCardDialog);
+    byId("shareForm").addEventListener("submit", createShare);
+    byId("copyLinkButton").addEventListener("click", copyShareLink);
+    byId("refreshButton").addEventListener("click", async (event) => {
+      try {
+        await withBusy(event.currentTarget, "…", loadOwnerState);
+        announce("Cards and share links refreshed.");
+      } catch (error) {
+        setError("shareError", errorMessage(error, "The guide did not refresh."));
+      }
+    });
+    for (const input of document.querySelectorAll('input[name="duration"]')) {
+      input.addEventListener("change", () => {
+        byId("customTimeField").hidden = input.value !== "custom" || !input.checked;
+      });
+    }
+  }
+
+  function bindHelperEvents() {
+    byId("retryHelperButton").addEventListener("click", async (event) => {
+      await withBusy(event.currentTarget, "Trying again…", loadHelper);
+    });
+    byId("questionForm").addEventListener("submit", askQuestion);
+    byId("questionInput").addEventListener("input", () => {
+      byId("questionCount").textContent = String(byId("questionInput").value.length);
+    });
+    replayChannel?.addEventListener("message", (event) => {
+      if (event.data?.type === "grant-revoked" && event.data.grantId === state.helperGrantId) {
+        const error = new Error("The share link is no longer active.");
+        error.code = "grant_gone";
+        showLocked(error);
+      }
+    });
+    window.addEventListener("pagehide", (event) => {
+      state.helperLifecyclePaused = true;
+      window.clearTimeout(state.helperExpiryTimer);
+      window.clearTimeout(state.helperRevalidationTimer);
+      state.helperLoadController?.abort(PAGE_HIDDEN_ABORT);
+      state.helperQuestionController?.abort(PAGE_HIDDEN_ABORT);
+      state.helperRevalidationController?.abort(PAGE_HIDDEN_ABORT);
+      if (!event.persisted) replayChannel?.close();
+    });
+    window.addEventListener("pageshow", (event) => {
+      if (!event.persisted) return;
+      state.helperLifecyclePaused = false;
+      if (!state.guide) {
+        if (byId("helperView")) void loadHelper();
+        return;
+      }
+      scheduleHelperExpiry();
+      if (state.guide && !replayMode) void revalidateHelper();
+    });
+  }
+
+  async function init() {
+    if (replayMode) byId("replayBanner").hidden = false;
+    if (grantId || hasSecretFragment) {
+      bindHelperEvents();
+      await loadHelper();
+      return;
+    }
+
+    bindOwnerEvents();
+    const prefill =
+      typeof window.__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__ === "string"
+        ? window.__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__.trim()
+        : "";
+    if (replayMode) {
+      state.token = "synthetic-replay";
+      state.selectedNotes = replayStore.notes.map((note) => ({ ...note }));
+      renderSelectedNotes();
+      await loadOwnerState();
+      showOwner();
+      return;
+    }
+    if (prefill) byId("tokenInput").value = prefill;
+    byId("connectForm").addEventListener("submit", connectOwner);
+  }
+
+  void init().catch((error) => {
+    if (grantId || hasSecretFragment) showLocked(error);
+    else setError("connectError", errorMessage(error, "The support passport did not start."));
+  });
+})();
