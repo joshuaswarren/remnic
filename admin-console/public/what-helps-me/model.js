@@ -504,11 +504,12 @@
       },
       exportSharedGuide(grantId, secret) {
         const grant = grants.find((candidate) => candidate.grantId === grantId);
-        if (!grant || secrets.get(grantId) !== secret) return null;
+        if (!grant || secrets.get(grantId) !== secret) return { errorCode: "grant_not_found" };
+        if (grant.status !== "active") return { errorCode: "grant_gone" };
         const selected = grant.cards.map((reference) =>
           cards.find((card) => card.cardId === reference.cardId && card.revision === reference.revision)
         );
-        if (selected.some((card) => !card)) return null;
+        if (selected.some((card) => !card || card.status !== "active")) return { errorCode: "grant_stale" };
         return {
           grant: { ...grant, cards: grant.cards.map((card) => ({ ...card })) },
           cards: selected.map((card) => ({ ...card })),

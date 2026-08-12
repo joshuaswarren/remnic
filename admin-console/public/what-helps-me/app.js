@@ -344,8 +344,13 @@
       };
       const receive = (event) => {
         if (event.data?.type === "grant-state" && event.data.requestId === requestId) {
-          if (event.data.snapshot) finish(resolve, event.data.snapshot);
-          else finish(reject, new Error("The replay share state is unavailable."));
+          if (event.data.snapshot) {
+            finish(resolve, event.data.snapshot);
+            return;
+          }
+          const error = new Error("The replay share state is unavailable.");
+          error.code = event.data.errorCode ?? "grant_not_found";
+          finish(reject, error);
         }
       };
       replayChannel.addEventListener("message", receive);
@@ -378,8 +383,12 @@
       ) {
         return;
       }
-      const snapshot = replayStore.exportSharedGuide(request.grantId, request.secret);
-      if (snapshot) replayChannel.postMessage({ type: "grant-state", requestId: request.requestId, snapshot });
+      const result = replayStore.exportSharedGuide(request.grantId, request.secret);
+      replayChannel.postMessage({
+        type: "grant-state",
+        requestId: request.requestId,
+        ...(result.errorCode ? { errorCode: result.errorCode } : { snapshot: result }),
+      });
     });
     window.addEventListener("pagehide", (event) => {
       if (!event.persisted) replayChannel.close();
