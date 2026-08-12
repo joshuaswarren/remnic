@@ -39,29 +39,29 @@ const DETECT_MEMORY_DIR = await realpath(
 );
 const HEALTH_SERVER_WORKER_SOURCE = `
 import { createServer } from "node:http";
-import { workerData } from "node:worker_threads";
+import { parentPort, workerData } from "node:worker_threads";
 
-const view = new Int32Array(workerData.state);
 const server = createServer((_req, res) => {
   res.writeHead(200, { "content-type": "application/json" });
   res.end(JSON.stringify({ ok: true, memoryDir: workerData.memoryDir }));
 });
 
 server.listen(0, "127.0.0.1", () => {
-  Atomics.store(view, 1, server.address().port);
-  Atomics.store(view, 0, 1);
-  Atomics.notify(view, 0);
+  parentPort.postMessage({ port: server.address().port });
 });
 
 setInterval(() => {}, 1000);
 `;
 const LIVENESS_SERVER_WORKER_SOURCE = `
 import { createServer } from "node:http";
-import { workerData } from "node:worker_threads";
+import { parentPort, workerData } from "node:worker_threads";
 
+// One shared slot records which route was served. It is genuinely shared
+// state: checkDaemonHealthSync BLOCKS the main thread, so the assertion
+// cannot read it over a message channel.
 const view = new Int32Array(workerData.state);
 const server = createServer((req, res) => {
-  Atomics.store(view, 2, req.url === "/engram/v1/live" ? 1 : 2);
+  Atomics.store(view, 0, req.url === "/engram/v1/live" ? 1 : 2);
   if (workerData.legacy) {
     res.writeHead(req.url === "/engram/v1/health" ? 200 : 404);
     res.end();
@@ -79,13 +79,51 @@ const server = createServer((req, res) => {
 });
 
 server.listen(0, "127.0.0.1", () => {
-  Atomics.store(view, 1, server.address().port);
-  Atomics.store(view, 0, 1);
-  Atomics.notify(view, 0);
+  parentPort.postMessage({ port: server.address().port });
 });
 
 setInterval(() => {}, 1000);
 `;
+
+/**
+ * Start a worker-thread HTTP server and resolve once it is actually
+ * listening.
+ *
+ * The startup handshake used to budget 1000 ms of wall clock for a worker to
+ * boot a JS realm, load `node:http`, and bind a socket (issue #2293). A slow
+ * runner blew that budget and the test failed on `port > 0`, which says
+ * nothing about the real cause. Awaiting the worker's own `message` event
+ * removes the guess; an `error` or an early `exit` rejects with the worker's
+ * exception instead of a misleading assertion.
+ */
+async function startServerWorker(
+  source: string,
+  workerData: Record<string, unknown>,
+): Promise<{ worker: Worker; port: number }> {
+  const worker = new Worker(new URL(`data:text/javascript,${encodeURIComponent(source)}`), {
+    workerData,
+  });
+  try {
+    const port = await new Promise<number>((resolve, reject) => {
+      worker.once("message", (message: { port?: unknown }) => {
+        const value = message?.port;
+        if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+          reject(new Error(`worker announced an unusable port: ${JSON.stringify(value)}`));
+          return;
+        }
+        resolve(value);
+      });
+      worker.once("error", reject);
+      worker.once("exit", (code) => {
+        reject(new Error(`worker exited with code ${code} before it started listening`));
+      });
+    });
+    return { worker, port };
+  } catch (error) {
+    await worker.terminate();
+    throw error;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Bridge mode detection — packages/plugin-openclaw/src/bridge.ts
@@ -229,41 +267,45 @@ test("checkDaemonHealth uses liveness without waiting for detailed health", asyn
   }
 });
 
-test("checkDaemonHealthSync uses liveness without waiting for detailed health", async () => {
-  const state = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 3);
-  const view = new Int32Array(state);
-  const serverWorker = new Worker(
-    new URL(`data:text/javascript,${encodeURIComponent(LIVENESS_SERVER_WORKER_SOURCE)}`),
-    { workerData: { state } },
+test("a worker that dies during startup fails with its own error", async () => {
+  // The old handshake waited a fixed 1000 ms and then asserted `port > 0`, so
+  // a worker that threw reported "port was not greater than 0" instead of the
+  // exception (issue #2293).
+  const DYING_WORKER_SOURCE = `
+throw new Error("worker exploded before listen");
+`;
+  await assert.rejects(
+    () => startServerWorker(DYING_WORKER_SOURCE, {}),
+    /worker exploded before listen/,
   );
-  Atomics.wait(view, 0, 0, 1_000);
-  const port = Atomics.load(view, 1);
-  assert.ok(port > 0);
+});
+
+test("checkDaemonHealthSync uses liveness without waiting for detailed health", async () => {
+  const state = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
+  const view = new Int32Array(state);
+  const { worker: serverWorker, port } = await startServerWorker(LIVENESS_SERVER_WORKER_SOURCE, { state });
 
   try {
     const { checkDaemonHealthSync } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
     assert.equal(checkDaemonHealthSync("127.0.0.1", port, PROBE_BUDGET_MS), true);
-    assert.equal(Atomics.load(view, 2), 1);
+    assert.equal(Atomics.load(view, 0), 1);
   } finally {
     await serverWorker.terminate();
   }
 });
 
 test("checkDaemonHealthSync falls back to detailed health for older daemons", async () => {
-  const state = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 3);
+  const state = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
   const view = new Int32Array(state);
-  const serverWorker = new Worker(
-    new URL(`data:text/javascript,${encodeURIComponent(LIVENESS_SERVER_WORKER_SOURCE)}`),
-    { workerData: { state, legacy: true } },
-  );
-  Atomics.wait(view, 0, 0, 1_000);
-  const port = Atomics.load(view, 1);
-  assert.ok(port > 0);
+  const { worker: serverWorker, port } = await startServerWorker(LIVENESS_SERVER_WORKER_SOURCE, {
+    state,
+    legacy: true,
+  });
 
   try {
     const { checkDaemonHealthSync } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
     assert.equal(checkDaemonHealthSync("127.0.0.1", port, PROBE_BUDGET_MS), true);
-    assert.equal(Atomics.load(view, 2), 2);
+    assert.equal(Atomics.load(view, 0), 2);
   } finally {
     await serverWorker.terminate();
   }
@@ -461,15 +503,9 @@ test("detectDaemonBridgeMode delegates when daemon service is installed and heal
   await mkdir(launchAgentsDir, { recursive: true });
   await writeFile(path.join(launchAgentsDir, "ai.remnic.daemon.plist"), "<plist />\n", "utf8");
 
-  const state = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 2);
-  const view = new Int32Array(state);
-  const serverWorker = new Worker(
-    new URL(`data:text/javascript,${encodeURIComponent(HEALTH_SERVER_WORKER_SOURCE)}`),
-    { workerData: { state, memoryDir: DETECT_MEMORY_DIR } },
-  );
-  Atomics.wait(view, 0, 0, 1000);
-  const port = Atomics.load(view, 1);
-  assert.ok(port > 0);
+  const { worker: serverWorker, port } = await startServerWorker(HEALTH_SERVER_WORKER_SOURCE, {
+    memoryDir: DETECT_MEMORY_DIR,
+  });
 
   try {
     process.env.HOME = homeDir;
@@ -504,15 +540,9 @@ test("detectDaemonBridgeMode delegates when legacy ai.remnic.server launchd serv
   await mkdir(launchAgentsDir, { recursive: true });
   await writeFile(path.join(launchAgentsDir, "ai.remnic.server.plist"), "<plist />\n", "utf8");
 
-  const state = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 2);
-  const view = new Int32Array(state);
-  const serverWorker = new Worker(
-    new URL(`data:text/javascript,${encodeURIComponent(HEALTH_SERVER_WORKER_SOURCE)}`),
-    { workerData: { state, memoryDir: DETECT_MEMORY_DIR } },
-  );
-  Atomics.wait(view, 0, 0, 1000);
-  const port = Atomics.load(view, 1);
-  assert.ok(port > 0);
+  const { worker: serverWorker, port } = await startServerWorker(HEALTH_SERVER_WORKER_SOURCE, {
+    memoryDir: DETECT_MEMORY_DIR,
+  });
 
   try {
     process.env.HOME = homeDir;
@@ -543,15 +573,9 @@ test("detectDaemonBridgeMode delegates to a reachable local daemon without servi
   const previousLegacyMode = process.env.ENGRAM_BRIDGE_MODE;
   const homeDir = await mkdtemp(path.join(os.tmpdir(), "bridge-local-health-probe-"));
 
-  const state = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 2);
-  const view = new Int32Array(state);
-  const serverWorker = new Worker(
-    new URL(`data:text/javascript,${encodeURIComponent(HEALTH_SERVER_WORKER_SOURCE)}`),
-    { workerData: { state, memoryDir: DETECT_MEMORY_DIR } },
-  );
-  Atomics.wait(view, 0, 0, 1000);
-  const port = Atomics.load(view, 1);
-  assert.ok(port > 0);
+  const { worker: serverWorker, port } = await startServerWorker(HEALTH_SERVER_WORKER_SOURCE, {
+    memoryDir: DETECT_MEMORY_DIR,
+  });
 
   try {
     process.env.HOME = homeDir;
@@ -588,15 +612,9 @@ test("detectDaemonBridgeMode coerces string config port before service health pr
   await mkdir(remnicConfigDir, { recursive: true });
   await writeFile(path.join(launchAgentsDir, "ai.remnic.daemon.plist"), "<plist />\n", "utf8");
 
-  const state = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 2);
-  const view = new Int32Array(state);
-  const serverWorker = new Worker(
-    new URL(`data:text/javascript,${encodeURIComponent(HEALTH_SERVER_WORKER_SOURCE)}`),
-    { workerData: { state, memoryDir: DETECT_MEMORY_DIR } },
-  );
-  Atomics.wait(view, 0, 0, 1000);
-  const port = Atomics.load(view, 1);
-  assert.ok(port > 0);
+  const { worker: serverWorker, port } = await startServerWorker(HEALTH_SERVER_WORKER_SOURCE, {
+    memoryDir: DETECT_MEMORY_DIR,
+  });
 
   await writeFile(
     path.join(remnicConfigDir, "config.json"),
