@@ -1151,9 +1151,37 @@ test("editing an active card remains available at the 100-card limit", async () 
       reviewBy: OWNER_REVIEW_BY,
     });
 
-    subject.aliceStorage.readAllMemories = originalRead;
     assert.equal(replacement.status, "pending_review");
     assert.equal((await subject.aliceStorage.getMemoryById(active.cardId))?.frontmatter.status, "active");
+    const firstVisible = await subject.service.listCards({ principal: "owner:alice" });
+    assert.equal(firstVisible.length, 100);
+    assert.equal(firstVisible.some((card) => card.cardId === active.cardId), false);
+    assert.equal(firstVisible.some((card) => card.cardId === replacement.cardId), true);
+
+    const editedReplacement = await subject.service.replaceCard({
+      principal: "owner:alice",
+      cardId: replacement.cardId,
+      expectedRevision: replacement.revision,
+      title: "Updated template again",
+      statement: "Use this second updated support statement.",
+      category: "other",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const secondVisible = await subject.service.listCards({ principal: "owner:alice" });
+    assert.equal(secondVisible.length, 100);
+    assert.equal(secondVisible.some((card) => card.cardId === active.cardId), false);
+    assert.equal(secondVisible.some((card) => card.cardId === replacement.cardId), false);
+    assert.equal(secondVisible.some((card) => card.cardId === editedReplacement.cardId), true);
+
+    const approved = await subject.service.approveCard({
+      principal: "owner:alice",
+      cardId: editedReplacement.cardId,
+      expectedRevision: editedReplacement.revision,
+    });
+    const approvedVisible = await subject.service.listCards({ principal: "owner:alice" });
+    assert.equal(approvedVisible.length, 100);
+    assert.equal(approvedVisible.some((card) => card.cardId === approved.cardId && card.status === "active"), true);
+    subject.aliceStorage.readAllMemories = originalRead;
   } finally {
     await subject.cleanup();
   }
