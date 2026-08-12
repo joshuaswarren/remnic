@@ -358,6 +358,9 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     );
     const closed = deps.assembler.closeIfIdle(earliestStart.event.startedAtUtc);
     if (closed !== null && closed === openConversationId) {
+      // Dedupes, diarizes and flips a conversation in the spool — durable, so
+      // the caller must not rewind past it.
+      progress.persisted = true;
       finalizeConv(closed);
       openConversationId = null;
     }
@@ -435,6 +438,7 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       for (const item of run.items) {
         const key = `${chunkId}:i${item.index}`;
         if (openConversationId !== null && openConversationId !== run.id) {
+          progress.persisted = true;
           finalizeConv(openConversationId);
         }
         deps.spool.appendAssembledSegments({
@@ -511,17 +515,30 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
           left.endMs - right.endMs ||
           (left.chunkId < right.chunkId ? -1 : left.chunkId > right.chunkId ? 1 : 0),
       );
-      // Rewind only matters when NOTHING was persisted: then the assembler is
-      // ahead of durable reality and the retry would collapse conversations
-      // the first attempt split. Once a segment is durable its conversation id
-      // is too, so rewinding past it would split that conversation across two
-      // ids instead (issue #2145).
-      const assemblerCheckpoint = deps.assembler.checkpoint();
+      // Rewind only matters when NOTHING durable changed: then the in-memory
+      // state is ahead of the spool and the retry would collapse conversations
+      // the first attempt split. Once anything is durable — an appended
+      // segment OR a finalized conversation — the spool cannot be rewound, so
+      // neither is the memory that mirrors it (issue #2145).
+      //
+      // The snapshot covers every piece of in-memory state `applyBatch`
+      // touches, not just the assembler: `resume()` and `openConversationId`
+      // are set inside it too, and rewinding the assembler alone would leave
+      // the recovery flags claiming a conversation the assembler no longer has.
+      const checkpoint = {
+        assembler: deps.assembler.checkpoint(),
+        recovered,
+        openConversationId,
+      };
       const progress = { persisted: false };
       try {
         await applyBatch(batch, progress);
       } catch (error) {
-        if (!progress.persisted) deps.assembler.rewind(assemblerCheckpoint);
+        if (!progress.persisted) {
+          deps.assembler.rewind(checkpoint.assembler);
+          recovered = checkpoint.recovered;
+          openConversationId = checkpoint.openConversationId;
+        }
         // Requeue FIRST: `report` runs an operator callback that may itself
         // throw, and losing the batch to a broken telemetry sink would turn an
         // observer failure into data loss. A throw mid-batch leaves the chunks

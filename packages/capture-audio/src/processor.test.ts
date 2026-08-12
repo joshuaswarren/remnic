@@ -1001,3 +1001,56 @@ test("a pre-commit failure rewinds the assembler; a partial commit does not", as
     spool.close();
   }
 });
+
+test("a pre-commit failure also rewinds restart-recovery state", async () => {
+  // `resume()` and `openConversationId` are set INSIDE applyBatch, so a
+  // rollback that restored only the assembler would leave the recovery flags
+  // claiming a conversation the assembler no longer holds; the retry would
+  // then mint a new id for a conversation that is durably open (issue #2145).
+  const spool = new Spool(":memory:");
+  try {
+    // A prior run left a capturing conversation.
+    const priorId = spool.insertConversation({
+      startedAtUtc: t(1),
+      endedAtUtc: t(2),
+      state: "capturing",
+      segments: [{ channel: "mic", text: "before restart", startUtc: t(1), endUtc: t(2), isWearer: true }],
+    });
+    let failAppends = true;
+    const guarded = new Proxy(spool, {
+      get(target, prop, receiver) {
+        if (prop === "appendAssembledSegments" && failAppends) {
+          return () => {
+            throw new Error("sqlite busy");
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as Spool;
+    let minted = 0;
+    const assembler = new ConversationAssembler({ gapMinutes: 10, makeId: () => `conv_new_${++minted}` });
+    const withinGap = { ...deps(guarded, { assembler }), transcribe: async () => [
+      { text: "after restart", startUtc: t(3), endUtc: t(4) },
+    ] };
+
+    const failing = createChunkProcessor(withinGap);
+    failing.enqueue(chunk({ startedAtUtc: t(3), endedAtUtc: t(5) }));
+    await failing.drain();
+    assert.equal(spool.stats().segments, 1, "nothing new persisted");
+
+    failAppends = false;
+    const retry = createChunkProcessor(withinGap);
+    retry.enqueue(chunk({ startedAtUtc: t(3), endedAtUtc: t(5) }));
+    await retry.finalize();
+
+    assert.equal(minted, 0, "the retry resumed the durable conversation instead of minting a new id");
+    assert.deepEqual(
+      spool.conversationSegmentsForDedup(priorId).map((seg) => seg.text),
+      ["before restart", "after restart"],
+      "and the within-gap segment joined it",
+    );
+  } finally {
+    spool.close();
+  }
+});
