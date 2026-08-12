@@ -23,9 +23,13 @@ export type ScriptHint =
  * adds letter boundaries. Scripts outside this set (Han, Kana, Hangul
  * syllables in running text) have no such boundary: requiring one there
  * is exactly the bug that made every non-Latin marker unreachable.
+ *
+ * Arabic and Hebrew belong here. Both space their words, so without a
+ * guard the built-in `بدون تسجيل` would match inside `بدون تسجيلات` and
+ * elide a span nobody asked to hide.
  */
 const SPACE_DELIMITED_CHAR =
-  /[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{N}]/u;
+  /[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Arabic}\p{Script=Hebrew}\p{N}]/u;
 
 const HAS_KANA = /[\p{Script=Hiragana}\p{Script=Katakana}]/u;
 const HAS_HAN = /\p{Script=Han}/u;

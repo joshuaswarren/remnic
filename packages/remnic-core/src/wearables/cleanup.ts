@@ -75,9 +75,11 @@ const INLINE_FILLERS: Readonly<Partial<Record<ScriptHint, readonly string[]>>> =
 
 /**
  * Punctuation that trails a filler and collapses with it, so
- * 「えーと、では」 becomes 「では」 rather than 「、では」.
+ * 「えーと、では」 becomes 「では」 rather than 「、では」. Arabic sentence
+ * punctuation is included: an Arabic filler is normally followed by
+ * `،`, and without it the token survives the pass.
  */
-const TRAILING_FILLER_PUNCTUATION = "[,.、。]?";
+const TRAILING_FILLER_PUNCTUATION = "[,.、。،؛؟!?]?";
 
 interface FillerMatchers {
   token: RegExp | null;
@@ -95,11 +97,35 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/**
+ * Build one alternation from `tokens`, or `null` when none remain.
+ *
+ * JavaScript alternation is first-match, not longest-match, so the
+ * tokens are sorted longest-first. Without that a built-in prefix such
+ * as 「あのー」 would match ahead of a longer operator token that starts
+ * with it and leave the tail in the transcript. Ties break on the token
+ * itself so the pattern is stable across runs.
+ */
+function buildAlternation(
+  tokens: readonly string[],
+  shape: (pattern: string) => { source: string; flags: string },
+): RegExp | null {
+  const unique = [...new Set(tokens)].sort(
+    (left, right) => right.length - left.length || (left < right ? -1 : left > right ? 1 : 0),
+  );
+  if (unique.length === 0) return null;
+  const { source, flags } = shape(unique.map((token) => escapeRegExp(token)).join("|"));
+  return new RegExp(source, flags);
+}
+
 function buildFillerMatchers(
   hints: readonly ScriptHint[],
   extraTokens: readonly string[],
 ): FillerMatchers {
-  const key = `${hints.join(",")}\u0000${extraTokens.join(",")}`;
+  // Structural key: comma-joining collapses `["a,b"]` and `["a","b"]`
+  // onto one entry, and the first caller's regex would then clean the
+  // second caller's transcripts.
+  const key = JSON.stringify([hints, extraTokens]);
   const cached = FILLER_MATCHER_CACHE.get(key);
   if (cached) return cached;
 
@@ -119,24 +145,14 @@ function buildFillerMatchers(
   }
 
   const matchers: FillerMatchers = {
-    token:
-      tokens.length > 0
-        ? new RegExp(
-            `(?:^|\\s)(?:${tokens
-              .map((token) => escapeRegExp(token))
-              .join("|")})${TRAILING_FILLER_PUNCTUATION}(?=\\s|$)`,
-            "giu",
-          )
-        : null,
-    inline:
-      inline.length > 0
-        ? new RegExp(
-            `(?:${inline
-              .map((token) => escapeRegExp(token))
-              .join("|")})${TRAILING_FILLER_PUNCTUATION}`,
-            "gu",
-          )
-        : null,
+    token: buildAlternation(tokens, (pattern) => ({
+      source: `(?:^|\\s)(?:${pattern})${TRAILING_FILLER_PUNCTUATION}(?=\\s|$)`,
+      flags: "giu",
+    })),
+    inline: buildAlternation(inline, (pattern) => ({
+      source: `(?:${pattern})${TRAILING_FILLER_PUNCTUATION}`,
+      flags: "gu",
+    })),
   };
   FILLER_MATCHER_CACHE.set(key, matchers);
   return matchers;

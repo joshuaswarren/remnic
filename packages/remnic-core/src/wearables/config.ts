@@ -454,19 +454,36 @@ export function parseWearablesConfig(value: unknown): WearablesConfig {
     raw.offTheRecordMarkers === undefined
       ? {}
       : requireObject(raw.offTheRecordMarkers, "wearables.offTheRecordMarkers");
+  // A typo such as `starts:` would otherwise be dropped without a word,
+  // and the operator would believe a private span is protected. Core and
+  // standalone callers never see OpenClaw's JSON schema, so the check
+  // belongs here. Keys are compared literally so the config-contract
+  // extractor can still enumerate this parser's surface.
+  const {
+    start: rawMarkerStart,
+    end: rawMarkerEnd,
+    useBuiltIns: rawMarkerUseBuiltIns,
+    ...unknownMarkerKeys
+  } = rawMarkers;
+  const unknownMarkerNames = Object.keys(unknownMarkerKeys);
+  if (unknownMarkerNames.length > 0) {
+    throw new Error(
+      `wearables.offTheRecordMarkers has unknown key(s) ${unknownMarkerNames.sort().join(", ")} — valid keys are start, end, useBuiltIns`,
+    );
+  }
   const offTheRecordMarkers: OffTheRecordMarkerSettings = {
     start: parsePhraseList(
-      rawMarkers.start,
+      rawMarkerStart,
       "wearables.offTheRecordMarkers.start",
       MAX_MARKER_PHRASE_LENGTH,
     ),
     end: parsePhraseList(
-      rawMarkers.end,
+      rawMarkerEnd,
       "wearables.offTheRecordMarkers.end",
       MAX_MARKER_PHRASE_LENGTH,
     ),
     useBuiltIns: parseBool(
-      rawMarkers.useBuiltIns,
+      rawMarkerUseBuiltIns,
       "wearables.offTheRecordMarkers.useBuiltIns",
       defaults.offTheRecordMarkers.useBuiltIns,
     ),

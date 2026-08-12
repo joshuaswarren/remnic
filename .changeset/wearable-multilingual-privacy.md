@@ -1,4 +1,6 @@
 ---
+"@joshuaswarren/openclaw-engram": patch
+"@remnic/plugin-openclaw": patch
 "@remnic/core": patch
 ---
 

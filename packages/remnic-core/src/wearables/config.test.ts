@@ -332,3 +332,10 @@ test("disabling built-in markers without a start phrase is rejected, not silent"
   assert.equal(parsed.offTheRecordEnabled, false);
   assert.equal(parsed.offTheRecordMarkers.useBuiltIns, false);
 });
+
+test("an unknown off-the-record marker key is rejected, not dropped", () => {
+  assert.throws(
+    () => parseWearablesConfig({ offTheRecordMarkers: { starts: ["private"] } }),
+    /offTheRecordMarkers has unknown key\(s\) starts/,
+  );
+});

@@ -164,6 +164,13 @@ test("useBuiltIns false honors only the configured phrases", () => {
   );
   assert.equal(result.droppedSegments, 0);
   assert.equal(result.conversation.segments.length, 2);
+  // Non-vacuous: the configured phrase must still start an elision, so
+  // this cannot pass by discarding `start` along with the built-ins.
+  assert.equal(
+    applyOffTheRecord(conversation(["poza protokołem", "secret"]), markers)
+      .droppedSegments,
+    1,
+  );
 });
 
 test("a Latin marker phrase never matches inside a longer word", () => {
@@ -172,4 +179,16 @@ test("a Latin marker phrase never matches inside a longer word", () => {
   );
   assert.equal(result.droppedSegments, 0);
   assert.equal(result.conversation.segments.length, 2);
+});
+
+test("an Arabic marker does not match inside a longer Arabic word", () => {
+  assert.equal(
+    applyOffTheRecord(conversation(["لدينا بدون تسجيلات كثيرة", "كلام عادي"]))
+      .droppedSegments,
+    0,
+  );
+  assert.equal(
+    applyOffTheRecord(conversation(["هذا بدون تسجيل من فضلك", "سر"])).droppedSegments,
+    1,
+  );
 });

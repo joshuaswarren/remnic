@@ -231,3 +231,16 @@ test("cleanConversation strips configured filler tokens", () => {
     ["予算を確認します", "de acuerdo"],
   );
 });
+
+test("an Arabic filler followed by Arabic punctuation is stripped", () => {
+  assert.equal(stripFillerTokens("اه، نعم"), "نعم");
+});
+
+test("a longer operator token wins over a built-in prefix", () => {
+  assert.equal(stripFillerTokens("あのーさあ始めよう", ["あのーさあ"]), "始めよう");
+});
+
+test("matcher cache keys distinguish differently-shaped token lists", () => {
+  assert.equal(stripFillerTokens("uh,um is here", ["uh,um"]), "is here");
+  assert.equal(stripFillerTokens("uh,um is here", ["uh", "um"]), "uh,um is here");
+});
