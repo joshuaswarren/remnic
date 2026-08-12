@@ -18,9 +18,9 @@ import {
   hashSupportPassportAuditValues,
 } from "./model-audit.js";
 import {
-  computeSupportPassportSourceRevision,
   SupportPassportDraftService,
   SupportPassportQuestionService,
+  computeSupportPassportSourceRevision,
 } from "./model-service.js";
 
 async function flushAudit(): Promise<void> {
@@ -269,10 +269,7 @@ test("drafting audits the authenticated owner principal", async () => {
     });
     await flushAudit();
 
-    assert.equal(
-      records[0]?.actorHash,
-      hashSupportPassportAuditValues("owner", ["authenticated:alice"])
-    );
+    assert.equal(records[0]?.actorHash, hashSupportPassportAuditValues("owner", ["authenticated:alice"]));
     assert.notEqual(records[0]?.actorHash, hashSupportPassportAuditValues("owner", ["request:alice"]));
   } finally {
     await subject.cleanup();
@@ -498,10 +495,7 @@ test("drafting rejects a memory changed after the owner reviewed it", async () =
       source: "test",
     });
     const reviewedRevision = sourceRevision(selected.id, "Tell me before plans change.");
-    assert.equal(
-      await subject.aliceStorage.updateMemory(selected.id, "Tell me only after plans change."),
-      true
-    );
+    assert.equal(await subject.aliceStorage.updateMemory(selected.id, "Tell me only after plans change."), true);
     let modelCalls = 0;
     const service = new SupportPassportDraftService({
       cardService: subject.cardService,
@@ -530,6 +524,70 @@ test("drafting rejects a memory changed after the owner reviewed it", async () =
       }),
       (error: unknown) =>
         error instanceof SupportPassportError && error.code === "revision_conflict" && error.status === 409
+    );
+    assert.equal(modelCalls, 0);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("drafting validates the complete source snapshot before model disclosure", async () => {
+  const subject = await makeSubject();
+  try {
+    const first = await subject.aliceStorage.writeMemory("preference", "Give me time to answer.", {
+      source: "test",
+    });
+    const second = await subject.aliceStorage.writeMemory("preference", "Tell me before plans change.", {
+      source: "test",
+    });
+    const getMemoryById = subject.aliceStorage.getMemoryById.bind(subject.aliceStorage);
+    let archivedFirst = false;
+    subject.aliceStorage.getMemoryById = async (memoryId: string) => {
+      if (memoryId === second.id && !archivedFirst) {
+        archivedFirst = true;
+        const current = await getMemoryById(first.id);
+        assert.ok(current);
+        assert.equal(
+          await subject.aliceStorage.writeMemoryFrontmatterIfUnchanged(current, {
+            status: "archived",
+            archivedAt: "2026-08-11T12:00:00.000Z",
+            updated: "2026-08-11T12:00:00.000Z",
+          }),
+          true
+        );
+      }
+      return await getMemoryById(memoryId);
+    };
+    let modelCalls = 0;
+    const service = new SupportPassportDraftService({
+      cardService: subject.cardService,
+      modelAdapter: new SupportPassportModelAdapter({
+        routes: [
+          {
+            kind: "local",
+            invoke: async () => {
+              modelCalls += 1;
+              return null;
+            },
+          },
+        ],
+      }),
+      resolveOwner: subject.resolveOwner,
+      audit: { record: async () => undefined },
+      now: subject.now,
+    });
+
+    await assert.rejects(
+      service.draftCards({
+        principal: "owner:alice",
+        sourceMemoryIds: [first.id, second.id],
+        sourceMemoryRevisions: [
+          ...sourceRevision(first.id, "Give me time to answer."),
+          ...sourceRevision(second.id, "Tell me before plans change."),
+        ],
+        consent: true,
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "invalid_input"
     );
     assert.equal(modelCalls, 0);
   } finally {
