@@ -23,7 +23,8 @@
  *     the newly claimed notes, preserving write order.
  */
 
-import { appendFile, lstat, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, rename, unlink, writeFile, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 
 import { log } from "@remnic/core/logger";
@@ -62,8 +63,9 @@ export async function ingestFlushPlanNotes(options: {
   remainingTimeoutMs: () => number;
 }): Promise<void> {
   if (options.workspaceDir === undefined) return;
+  const workspaceDir = options.workspaceDir;
   const planPath = path.join(
-    options.workspaceDir,
+    workspaceDir,
     ...buildMemoryFlushPlan({ serviceId: options.serviceId }).relativePath.split("/"),
   );
   const paths: SnapshotPaths = {
@@ -81,7 +83,7 @@ export async function ingestFlushPlanNotes(options: {
   // ROOT and every segment below it, never `realpath`, so a link cannot be
   // resolved away before the check.
   for (const candidate of [paths.plan, paths.inflight, paths.rotating, paths.oversized]) {
-    if (await isLinkFreeUnder(options.workspaceDir, candidate)) continue;
+    if (await isLinkFreeUnder(workspaceDir, candidate)) continue;
     log.warn(
       `[${options.serviceId}] flush-plan ingestion skipped: ${candidate}, a parent, or the workspace root is a symlink`,
     );
@@ -97,6 +99,18 @@ export async function ingestFlushPlanNotes(options: {
         // in the plan file and the other run — or the next flush — sends them.
         log.warn(
           `[${options.serviceId}] flush-plan ingestion skipped: another flush holds the lock; the notes drain on the next flush`,
+        );
+        return;
+      }
+      // Re-validate INSIDE the lock: the one-time check above ran before the
+      // lock wait, and a writable workspace lets an attacker swap a checked
+      // path for a symlink during that window. Every read and write below
+      // also opens with O_NOFOLLOW, so the final component cannot be swapped
+      // after this check either.
+      for (const candidate of [paths.plan, paths.inflight, paths.rotating, paths.oversized]) {
+        if (await isLinkFreeUnder(workspaceDir, candidate)) continue;
+        log.warn(
+          `[${options.serviceId}] flush-plan ingestion skipped: ${candidate}, a parent, or the workspace root became a symlink`,
         );
         return;
       }
@@ -134,6 +148,7 @@ async function ingestUnderLock(
     }
     let pending = claimed;
     let stop = false;
+    let lockLost = false;
     try {
       while (pending.trim().length > 0) {
         const timeoutMs = options.remainingTimeoutMs();
@@ -185,6 +200,14 @@ async function ingestUnderLock(
           // note behind it on every future flush, so it is set aside in a
           // sidecar the operator can inspect and the queue keeps draining.
           // Nothing is deleted.
+          if (!(await lock.refresh())) {
+            log.warn(
+              `[${options.serviceId}] flush-plan lock was lost mid-flush; the snapshot is left to its new owner`,
+            );
+            lockLost = true;
+            stop = true;
+            return;
+          }
           pending = await quarantineOversizedLine(paths, pending, options.serviceId);
           chunkBytes = MAX_OBSERVE_CHUNK_BYTES;
           await atomicWrite(paths.inflight, pending);
@@ -199,20 +222,27 @@ async function ingestUnderLock(
         // the lock is HELD — long synchronous chunking between heartbeats can
         // let it go stale, so ownership is re-checked before every destructive
         // write rather than assumed for the whole run.
+        // Drop the accepted chunk BEFORE anything else can return: leaving it
+        // in `pending` would requeue notes the daemon already took.
+        pending = pending.slice(chunk.length);
         if (!(await lock.refresh())) {
+          // Ownership is gone, so this run must not write the snapshot at all —
+          // a replacement holder may already be working on it. The accepted
+          // chunk is resent by whoever owns the snapshot next: observe is
+          // at-least-once here, which is the safe direction.
           log.warn(
-            `[${options.serviceId}] flush-plan lock was lost mid-flush; the remainder drains on the next flush`,
+            `[${options.serviceId}] flush-plan lock was lost mid-flush; the snapshot is left to its new owner`,
           );
+          lockLost = true;
           stop = true;
           return;
         }
-        pending = pending.slice(chunk.length);
         await atomicWrite(paths.inflight, pending);
       }
     } finally {
-      // Whatever is left goes back in FRONT of any note appended while we were
-      // posting, so the daemon still receives them in the order written.
-      await releasePendingNotes(paths, pending, options.serviceId);
+      // Never write after ownership is lost: the replacement holder owns the
+      // snapshot now, and a stale write would clobber its progress.
+      if (!lockLost) await releasePendingNotes(paths, pending, options.serviceId);
     }
     if (stop) return;
   }
@@ -266,13 +296,23 @@ async function mergeRotatedIntoInflight(paths: SnapshotPaths): Promise<boolean> 
   const rotated = await readIfPresent(paths.rotating);
   if (rotated === undefined) return false;
   const existing = (await readIfPresent(paths.inflight)) ?? "";
-  const merged = `${existing}${rotated}`;
+  let merged = `${existing}${rotated}`;
   if (merged.length > 0) {
+    await atomicWrite(paths.inflight, merged);
+  }
+  // A host descriptor opened just before the rename still points at THIS
+  // inode, so a note can land here after the read above. Re-read immediately
+  // before unlinking and fold in anything that arrived; the write would
+  // otherwise vanish with the inode. The window is now one syscall pair
+  // rather than the whole merge.
+  const late = await readIfPresent(paths.rotating);
+  if (late !== undefined && late.length > rotated.length) {
+    merged = `${existing}${late}`;
     await atomicWrite(paths.inflight, merged);
   }
   // Only now: the content is durable under `.inflight`.
   await discard(paths.rotating);
-  return existing.length > 0 || rotated.length > 0;
+  return merged.length > 0;
 }
 
 /**
@@ -321,20 +361,38 @@ async function quarantineOversizedLine(
   const breakAt = pending.indexOf("\n");
   const line = breakAt === -1 ? pending : pending.slice(0, breakAt + 1);
   const rest = breakAt === -1 ? "" : pending.slice(breakAt + 1);
-  await appendFile(paths.oversized, line.endsWith("\n") ? line : `${line}\n`, "utf8");
+  const handle = await open(
+    paths.oversized,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW,
+    0o600,
+  );
+  try {
+    await handle.writeFile(line.endsWith("\n") ? line : `${line}\n`, "utf8");
+  } finally {
+    await handle.close();
+  }
   log.warn(
     `[${serviceId}] a flush-plan note exceeds the daemon's body limit; moved it to ${paths.oversized} so the remaining notes can drain`,
   );
   return rest;
 }
 
-/** File contents, or `undefined` when the file does not exist. */
+/**
+ * File contents, or `undefined` when the file does not exist.
+ *
+ * Opened with `O_NOFOLLOW` so a symlink swapped in after the containment check
+ * fails the open (ELOOP) instead of leaking another file to the daemon.
+ */
 async function readIfPresent(filePath: string): Promise<string | undefined> {
+  let handle: FileHandle | undefined;
   try {
-    return await readFile(filePath, "utf8");
+    handle = await open(filePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    return await handle.readFile("utf8");
   } catch (err) {
     if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return undefined;
     throw err;
+  } finally {
+    await handle?.close();
   }
 }
 
@@ -345,6 +403,8 @@ async function readIfPresent(filePath: string): Promise<string | undefined> {
 async function atomicWrite(filePath: string, content: string): Promise<void> {
   const tempPath = `${filePath}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
   try {
+    // `wx` implies O_EXCL|O_CREAT, which already refuses to follow a symlink
+    // at the temp path; the rename then replaces the target by pathname.
     await writeFile(tempPath, content, { encoding: "utf8", flag: "wx" });
     await rename(tempPath, filePath);
   } catch (err) {
