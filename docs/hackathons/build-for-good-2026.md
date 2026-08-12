@@ -2,10 +2,10 @@
 
 > Submission status: **build complete; external submission blocked**.
 >
-> The [supplied organizer URL](https://x.com/Muskanjain0401/status/2085046817532875061)
-> did not show the rules in issue #2355 when checked on August 11, 2026. Do not
-> submit this entry until a maintainer supplies the correct public announcement.
-> The working deadline below is issue data, not a verified organizer deadline.
+> The supplied URL did not show the rules in issue #2355 when checked on
+> August 11, 2026. Do not submit this entry until a maintainer supplies the
+> correct event-owned announcement URL. The working deadline below is issue
+> data, not a verified organizer deadline.
 
 ## Entry fields
 
