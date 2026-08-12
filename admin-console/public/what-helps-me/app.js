@@ -416,13 +416,20 @@
       await withBusy(byId("cardSaveButton"), "Saving draft…", () =>
         cardId ? api.replaceCard(cardId, input) : api.createManualDraft(input)
       );
-      closeCardDialog();
-      await loadOwnerState();
-      const message = "Draft saved. Review and approve it before sharing.";
-      toast(message);
-      announce(message);
     } catch (error) {
       setError("cardError", errorMessage(error, "The draft did not save."));
+      return;
+    }
+    closeCardDialog();
+    const message = "Draft saved. Review and approve it before sharing.";
+    toast(message);
+    announce(message);
+    try {
+      await loadOwnerState();
+    } catch {
+      const warning = "The draft was saved, but the card list did not refresh. Refresh the guide before editing it.";
+      setError("generateError", warning);
+      announce(warning);
     }
   }
 

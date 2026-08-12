@@ -257,6 +257,41 @@ test("a created share link remains visible when its list refresh fails", async (
   await expect(page.getByText("The share link was not created.")).toHaveCount(0);
 });
 
+test("a saved manual draft stays successful when its list refresh fails", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers draft refresh recovery.");
+  let cardReads = 0;
+  let draftWrites = 0;
+  await page.route("**/engram/v1/support-passport/cards", async (route) => {
+    cardReads += 1;
+    if (cardReads > 1) {
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "offline" }) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ cards: [] }) });
+  });
+  await page.route("**/engram/v1/support-passport/grants", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grants: [] }) });
+  });
+  await page.route("**/engram/v1/support-passport/drafts", async (route) => {
+    draftWrites += 1;
+    await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ cardId: "draft-one" }) });
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await page.getByLabel("Bearer token").fill("owner-token");
+  await page.getByRole("button", { name: "Open my guide" }).click();
+  await page.getByRole("button", { name: "Write a card" }).click();
+  await page.getByLabel("Card title").fill("Quiet place");
+  await page.getByLabel("What helps me").fill("Offer me a quiet place and time.");
+  await page.getByRole("button", { name: "Save draft" }).click();
+
+  await expect(page.getByText("Draft saved. Review and approve it before sharing.")).toBeVisible();
+  await expect(page.getByText("The draft was saved, but the card list did not refresh.")).toBeVisible();
+  await expect(page.getByText("The draft did not save.")).toHaveCount(0);
+  await expect(page.locator("#cardDialog")).toBeHidden();
+  expect(draftWrites).toBe(1);
+});
+
 test("the owner view bounds rendered share history", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers bounded share history.");
   const now = new Date();
