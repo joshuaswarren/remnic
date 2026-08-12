@@ -1,0 +1,148 @@
+import assert from "node:assert/strict";
+import { type Server, createServer, request } from "node:http";
+import type { AddressInfo } from "node:net";
+import test from "node:test";
+
+import { isAbortError } from "../abort-error.js";
+import type { EngramAccessService } from "../access-service.js";
+import { buildSupportPassportPublicRequestHandler } from "./index.js";
+
+const SECRET = "s".repeat(43);
+const GUIDE = {
+  schemaVersion: 1 as const,
+  grantId: "grant-one",
+  expiresAt: "2026-08-13T12:00:00.000Z",
+  updatedAt: "2026-08-12T12:00:00.000Z",
+  cards: [
+    {
+      cardId: "card-one",
+      title: "Plan changes",
+      statement: "Tell me before plans change.",
+      category: "transitions" as const,
+      updatedAt: "2026-08-12T12:00:00.000Z",
+    },
+  ],
+};
+
+async function startPublicServer(
+  service: EngramAccessService,
+  onError: (error: unknown) => void = (error) => {
+    throw error;
+  },
+  onRequest: () => void = () => {}
+): Promise<{ server: Server; root: string }> {
+  const handler = buildSupportPassportPublicRequestHandler(service);
+  const server = createServer((req, res) => {
+    onRequest();
+    void handler(req, res, { authorized: false }).catch((error) => {
+      onError(error);
+      if (!res.destroyed && !res.writableEnded) res.end();
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as AddressInfo;
+  return { server, root: `http://127.0.0.1:${address.port}` };
+}
+
+async function stopServer(server: Server): Promise<void> {
+  server.closeAllConnections();
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+test("the standalone support passport entry registers its public operations", async () => {
+  const service = {
+    supportPassportReadGrant: async () => GUIDE,
+  } as unknown as EngramAccessService;
+  const { server, root } = await startPublicServer(service);
+  try {
+    const response = await fetch(`${root}/engram/v1/support-passport/public/grants/grant-one`, {
+      headers: { authorization: `SupportPassport ${SECRET}` },
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), GUIDE);
+  } finally {
+    await stopServer(server);
+  }
+});
+
+test("long helper answers release authentication capacity after the secret check", async () => {
+  const allAnswersStarted = Promise.withResolvers<void>();
+  const releaseAnswers = Promise.withResolvers<void>();
+  let answerCalls = 0;
+  const service = {
+    supportPassportReadGrant: async () => GUIDE,
+    supportPassportAskGrant: async () => {
+      answerCalls += 1;
+      if (answerCalls === 8) allAnswersStarted.resolve();
+      await releaseAnswers.promise;
+      return { answer: "The guide says to give advance notice." };
+    },
+  } as unknown as EngramAccessService;
+  const { server, root } = await startPublicServer(service);
+  const askUrl = `${root}/engram/v1/support-passport/public/grants/grant-one/ask`;
+  const headers = {
+    authorization: `SupportPassport ${SECRET}`,
+    "content-type": "application/json",
+  };
+  try {
+    const asks = Array.from({ length: 8 }, (_, index) =>
+      fetch(askUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ question: `Question ${index + 1}?` }),
+      })
+    );
+    await allAnswersStarted.promise;
+
+    const read = await fetch(`${root}/engram/v1/support-passport/public/grants/grant-one`, { headers });
+    assert.equal(read.status, 200, "model work must not occupy an authentication slot");
+
+    releaseAnswers.resolve();
+    const responses = await Promise.all(asks);
+    assert.deepEqual(
+      responses.map((response) => response.status),
+      Array(8).fill(200)
+    );
+  } finally {
+    releaseAnswers.resolve();
+    await stopServer(server);
+  }
+});
+
+test("a helper disconnect during the question body becomes an abort", async () => {
+  const caught = Promise.withResolvers<unknown>();
+  const requestStarted = Promise.withResolvers<void>();
+  const service = {
+    supportPassportReadGrant: async () => GUIDE,
+    supportPassportAskGrant: async () => {
+      throw new Error("the disconnected request reached the model");
+    },
+  } as unknown as EngramAccessService;
+  const { server, root } = await startPublicServer(service, caught.resolve, requestStarted.resolve);
+  try {
+    const url = new URL(`${root}/engram/v1/support-passport/public/grants/grant-one/ask`);
+    const client = request({
+      hostname: url.hostname,
+      port: url.port,
+      path: url.pathname,
+      method: "POST",
+      headers: {
+        authorization: `SupportPassport ${SECRET}`,
+        "content-type": "application/json",
+        "content-length": "100",
+      },
+    });
+    client.on("error", () => {});
+    client.flushHeaders();
+    await requestStarted.promise;
+    client.write('{"question":"partial');
+    client.destroy();
+
+    const error = await caught.promise;
+    assert.equal(isAbortError(error), true);
+  } finally {
+    await stopServer(server);
+  }
+});

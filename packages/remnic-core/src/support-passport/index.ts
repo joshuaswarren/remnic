@@ -1,3 +1,5 @@
+import "./access-operations.js";
+
 export * from "./card-projection.js";
 export * from "./access-surface.js";
 export * from "./card-service.js";

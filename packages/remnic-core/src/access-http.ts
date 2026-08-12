@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { log } from "./logger.js";
-import { WriteRateLimiter } from "./write-rate-limiter.js";
+import { WriteRateLimiter, type WriteRateLimitReservation } from "./write-rate-limiter.js";
 import { abortError, isAbortError } from "./abort-error.js";
 import { EngramAccessForbiddenError } from "./access-errors.js";
 import {
@@ -1856,7 +1856,7 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
       if (!op) {
         throw new Error("access-boundary: operation not registered: relay_mission_append");
       }
-      let releaseWriteQuota: (() => void) | undefined;
+      let writeQuota: WriteRateLimitReservation | undefined;
       try {
         const output = (await op.run(
           { missionId, namespace, event: body.event },
@@ -1865,22 +1865,18 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
             authenticatedPrincipal: this.resolveRequestPrincipal(req),
             hooks: {
               enforceWriteQuota: () => {
-                releaseWriteQuota ??= this.reserveWriteRateLimitSlot(req);
+                writeQuota ??= this.reserveWriteRateLimitSlot(req);
               },
             },
           },
         )) as { result: { appended: boolean; replayed: boolean; event: unknown } };
         if (output.result.appended) {
-          // The reservation is now the committed quota hit. Do not record a
-          // second timestamp after the append returns.
-          releaseWriteQuota = undefined;
+          writeQuota?.commit();
+          writeQuota = undefined;
         }
         this.respondJson(res, output.result.appended ? 201 : 200, output.result);
       } finally {
-        // Replays never invoke the hook. If a future store path invokes it but
-        // does not append, or persistence throws after reservation, return the
-        // slot so a failed write cannot exhaust the rolling window.
-        releaseWriteQuota?.();
+        writeQuota?.release();
       }
       return;
     }
@@ -3359,7 +3355,7 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
     const extractionForceFlushWrite =
       toolName === "engram.extraction_force_flush" || toolName === "remnic.extraction_force_flush";
     let writeRateLimitRecorded = false;
-    let releaseSupportPassportQuota: (() => void) | undefined;
+    let supportPassportQuota: WriteRateLimitReservation | undefined;
     const recordCommittedMcpWrite = extractionForceFlushWrite
       ? () => {
           if (writeRateLimitRecorded) return;
@@ -3370,11 +3366,12 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
         ? () => {
             if (writeRateLimitRecorded) return;
             writeRateLimitRecorded = true;
-            releaseSupportPassportQuota = undefined;
+            supportPassportQuota?.commit();
+            supportPassportQuota = undefined;
           }
       : undefined;
     if (isMcpWrite && !observeSelfEnforcesQuota) {
-      if (supportPassportQuotaLimitedWrite) releaseSupportPassportQuota = this.reserveWriteRateLimitSlot(req);
+      if (supportPassportQuotaLimitedWrite) supportPassportQuota = this.reserveWriteRateLimitSlot(req);
       else this.ensureWriteRateLimitAvailable(req);
     }
 
@@ -3420,7 +3417,7 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
       sourceConnector: this.resolveConnector(req),
       abortSignal,
     }).catch((error) => {
-      releaseSupportPassportQuota?.();
+      supportPassportQuota?.release();
       throw error;
     });
 
@@ -3442,12 +3439,16 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
       // dryRun/idempotencyReplay guards.
       const counts = structured ? this.shouldCountWriteRateLimit(structured) : true;
       if (!writeRateLimitRecorded && !isError && !isRejectedCodegraph && counts) {
-        if (releaseSupportPassportQuota) releaseSupportPassportQuota = undefined;
-        else this.recordWriteRateLimitHit(req);
+        if (supportPassportQuota) {
+          supportPassportQuota.commit();
+          supportPassportQuota = undefined;
+        } else {
+          this.recordWriteRateLimitHit(req);
+        }
         writeRateLimitRecorded = true;
       }
     }
-    releaseSupportPassportQuota?.();
+    supportPassportQuota?.release();
     // A mutating tool may have committed just before the client disconnected.
     // Record that side effect above, then honor cancellation before emitting
     // any response. Read-only calls reach this guard without accounting.
@@ -3978,12 +3979,12 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
     this.writeLimiter.record(this.principalForRateLimit(req));
   }
 
-  protected reserveWriteRateLimitSlot(req?: IncomingMessage): () => void {
-    const release = this.writeLimiter.reserve(this.principalForRateLimit(req));
-    if (!release) {
+  protected reserveWriteRateLimitSlot(req?: IncomingMessage): WriteRateLimitReservation {
+    const reservation = this.writeLimiter.reserve(this.principalForRateLimit(req));
+    if (!reservation) {
       throw new HttpError(429, "write_rate_limited", "write_rate_limited");
     }
-    return release;
+    return reservation;
   }
 
   private principalForRateLimit(req?: IncomingMessage): string | undefined {

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isIP } from "node:net";
 
-import { abortError } from "../abort-error.js";
+import { abortError, isAbortError } from "../abort-error.js";
 import { type OperationName, getOperation } from "../access-boundary.js";
 import type { EngramAccessService } from "../access-service.js";
 import { SupportPassportError } from "./errors.js";
@@ -168,11 +168,7 @@ async function readGrantUnderAuthenticationReservation(
   grantLimiter: FixedWindowLimiter,
   failureLimiter: FixedWindowLimiter
 ) {
-  if (
-    !networkLimiter.allows(networkKey) ||
-    !grantLimiter.allows(grantId) ||
-    !failureLimiter.allows(networkKey)
-  ) {
+  if (!networkLimiter.allows(networkKey) || !grantLimiter.allows(grantId) || !failureLimiter.allows(networkKey)) {
     throw rateLimited();
   }
   let guide: Awaited<ReturnType<EngramAccessService["supportPassportReadGrant"]>>;
@@ -272,16 +268,23 @@ function respondJson(res: ServerResponse, status: number, payload: unknown): voi
   res.end(body);
 }
 
-async function readQuestionBody(req: IncomingMessage): Promise<string> {
+async function readQuestionBody(req: IncomingMessage, signal: AbortSignal): Promise<string> {
   const chunks: Buffer[] = [];
   let bytes = 0;
-  for await (const chunk of req) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    bytes += buffer.length;
-    if (bytes > 4_096) {
-      throw new SupportPassportError("invalid_input", "The helper question is invalid.", 400);
+  try {
+    for await (const chunk of req) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      bytes += buffer.length;
+      if (bytes > 4_096) {
+        throw new SupportPassportError("invalid_input", "The helper question is invalid.", 400);
+      }
+      chunks.push(buffer);
     }
-    chunks.push(buffer);
+  } catch (error) {
+    if (signal.aborted || req.aborted) {
+      throw isAbortError(signal.reason) ? signal.reason : abortError("The helper left.");
+    }
+    throw error;
   }
   let parsed: unknown;
   try {
@@ -379,29 +382,24 @@ export function buildSupportPassportPublicRequestHandler(
         );
         respondJson(res, 200, guide);
       } else {
-        const releaseAuthentication = rateLimits.authentications.reserve(digest);
-        if (!releaseAuthentication) throw rateLimited();
-        try {
-          const question = await readQuestionBody(req);
-          await readGrantUnderAuthenticationReservation(
-            service,
-            grantId,
-            secret,
-            digest,
-            rateLimits.networkQuestions,
-            rateLimits.grantQuestions,
-            rateLimits.networkQuestionFailures
-          );
-          const answer = await runPublicOperation(
-            service,
-            "support_passport_grant_ask",
-            { grantId, secret, question },
-            lifecycle.signal
-          );
-          respondJson(res, 200, answer);
-        } finally {
-          releaseAuthentication();
-        }
+        const question = await readQuestionBody(req, lifecycle.signal);
+        await readGrantWithRateLimits(
+          service,
+          grantId,
+          secret,
+          digest,
+          rateLimits.networkQuestions,
+          rateLimits.grantQuestions,
+          rateLimits.networkQuestionFailures,
+          rateLimits.authentications
+        );
+        const answer = await runPublicOperation(
+          service,
+          "support_passport_grant_ask",
+          { grantId, secret, question },
+          lifecycle.signal
+        );
+        respondJson(res, 200, answer);
       }
     } catch (error) {
       if (!(error instanceof SupportPassportError)) throw error;

@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { EngramAccessForbiddenError } from "../access-errors.js";
 import type { EngramAccessService } from "../access-service.js";
 import { enforceNamespaceAllowList, tokenCapabilityStore } from "../access-token-capabilities.js";
+import type { WriteRateLimitReservation } from "../write-rate-limiter.js";
 import { handleSupportPassportOwnerHttp } from "./access-http.js";
 import { buildSupportPassportPublicRequestHandler } from "./public-http.js";
 
@@ -29,7 +30,7 @@ export abstract class SupportPassportAccessHttpBase {
   protected abstract resolveRequestPrincipal(req: IncomingMessage): string | undefined;
   protected abstract readJsonBody(req: IncomingMessage, maxBodyBytes?: number): Promise<Record<string, unknown>>;
   protected abstract respondJson(res: ServerResponse, status: number, payload: unknown): void;
-  protected abstract reserveWriteRateLimitSlot(req?: IncomingMessage): () => void;
+  protected abstract reserveWriteRateLimitSlot(req?: IncomingMessage): WriteRateLimitReservation;
 
   protected handleSupportPassportOwnerRequest(
     req: IncomingMessage,
@@ -48,20 +49,7 @@ export abstract class SupportPassportAccessHttpBase {
       abortSignal,
       readJsonBody: () => this.readJsonBody(req),
       respondJson: (status, payload) => this.respondJson(res, status, payload),
-      reserveWriteRateLimitSlot: () => {
-        const release = this.reserveWriteRateLimitSlot(req);
-        let active = true;
-        return {
-          commit: () => {
-            active = false;
-          },
-          release: () => {
-            if (!active) return;
-            active = false;
-            release();
-          },
-        };
-      },
+      reserveWriteRateLimitSlot: () => this.reserveWriteRateLimitSlot(req),
     });
   }
 
@@ -76,7 +64,11 @@ export abstract class SupportPassportAccessHttpBase {
       throw new EngramAccessForbiddenError("A trusted principal is required for support passport access.");
     }
     const owner = await this.service.getWritableStorageForNamespace(undefined, principal);
-    enforceNamespaceAllowList(tokenCapabilityStore.getStore(), owner.namespace, this.service.configRef.defaultNamespace);
+    enforceNamespaceAllowList(
+      tokenCapabilityStore.getStore(),
+      owner.namespace,
+      this.service.configRef.defaultNamespace
+    );
   }
 
   protected isSupportPassportQuotaLimitedWriteTool(toolName: string): boolean {
