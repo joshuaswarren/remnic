@@ -586,8 +586,79 @@ test("a bad helper link has a clear locked view", async ({ page }, testInfo) => 
   await expect(page.getByRole("heading", { name: "This link does not open a support passport." })).toBeVisible();
   await expect(page.locator("#tokenInput")).toHaveCount(0);
   expect(new URL(page.url()).hash).toBe("");
+  await expect(page.locator("#lockedTitle")).toBeFocused();
   await expectNoSeriousAxeFindings(page);
   await page.screenshot({ path: testInfo.outputPath(`locked-${testInfo.project.name}.png`), fullPage: true });
+});
+
+test("a transient initial helper failure can retry without the removed URL secret", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers initial helper retry.");
+  const now = new Date();
+  let reads = 0;
+  await page.route("**/engram/v1/support-passport/public/grants/replay-grant-retry", async (route) => {
+    reads += 1;
+    expect(route.request().headers().authorization).toBe(`SupportPassport ${"s".repeat(43)}`);
+    if (reads === 1) {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "The service is temporarily unavailable.", code: "provider_unavailable" }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      headers: { date: now.toUTCString() },
+      contentType: "application/json",
+      body: JSON.stringify({
+        schemaVersion: 1,
+        grantId: "replay-grant-retry",
+        expiresAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
+        updatedAt: now.toISOString(),
+        cards: [
+          {
+            cardId: "card-retry",
+            title: "Quiet place",
+            statement: "Offer me a quiet place and time.",
+            category: "environment",
+            updatedAt: now.toISOString(),
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.goto(helperUrl("-retry").replace("mode=replay&", ""));
+  expect(new URL(page.url()).hash).toBe("");
+  await expect(page.getByRole("heading", { name: "The support passport did not load." })).toBeVisible();
+  await page.getByRole("button", { name: "Try again" }).click();
+
+  await expect(page.getByRole("heading", { name: "What helps me" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Quiet place" })).toBeVisible();
+  expect(reads).toBe(2);
+});
+
+test("owner navigation avoids smooth scrolling when reduced motion is requested", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers reduced motion.");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.addInitScript(() => {
+    Object.assign(window, { __scrollBehaviors: [] });
+    Element.prototype.scrollIntoView = function (options) {
+      const behavior = typeof options === "object" && options ? options.behavior : undefined;
+      (window as typeof window & { __scrollBehaviors: Array<ScrollBehavior | undefined> }).__scrollBehaviors.push(
+        behavior
+      );
+    };
+  });
+  await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
+  await page.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
+  await page.getByRole("button", { name: "Draft my support cards" }).click();
+
+  expect(
+    await page.evaluate(
+      () => (window as typeof window & { __scrollBehaviors?: Array<ScrollBehavior | undefined> }).__scrollBehaviors
+    )
+  ).toEqual(["auto"]);
 });
 
 test("share links use the canonical path and reserve time for grant creation", async ({ page }, testInfo) => {

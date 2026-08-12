@@ -226,8 +226,9 @@
     <section class="locked-view" id="lockedView" aria-labelledby="lockedTitle" hidden>
       <div class="lock-seal" aria-hidden="true"><span></span></div>
       <p class="eyebrow" id="lockedEyebrow">Share link not found</p>
-      <h1 id="lockedTitle">This link does not open a support passport.</h1>
+      <h1 id="lockedTitle" tabindex="-1">This link does not open a support passport.</h1>
       <p id="lockedDetail">Ask the person who shared it for a new link.</p>
+      <button class="button button-primary" id="retryHelperButton" type="button" hidden>Try again</button>
     </section>
   </main>
 

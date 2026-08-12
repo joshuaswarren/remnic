@@ -24,6 +24,14 @@
   const MAX_VISIBLE_GRANTS = 100;
   const MAX_SHARED_CARDS = 8;
   const PAGE_HIDDEN_ABORT = new Error("The helper page was hidden.");
+  const SCROLL_BEHAVIOR = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+  const TERMINAL_HELPER_ERROR_CODES = new Set([
+    "grant_expired",
+    "grant_gone",
+    "grant_not_found",
+    "grant_stale",
+    "missing_link",
+  ]);
 
   const state = {
     token: "",
@@ -568,7 +576,7 @@
     announce(message);
     try {
       await loadOwnerState();
-      byId("reviewCards").scrollIntoView({ behavior: "smooth", block: "start" });
+      byId("reviewCards").scrollIntoView({ behavior: SCROLL_BEHAVIOR, block: "start" });
     } catch {
       const warning = `${message} The card list did not refresh. Refresh the guide before another change.`;
       setError("generateError", warning);
@@ -620,7 +628,7 @@
     const message = `Share link created. It ends ${model.formatDate(created.expiresAt)}.`;
     toast(message);
     announce(message);
-    byId("newLinkPanel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    byId("newLinkPanel").scrollIntoView({ behavior: SCROLL_BEHAVIOR, block: "nearest" });
     try {
       await loadOwnerState();
     } catch {
@@ -672,11 +680,20 @@
     state.guide = null;
     byId("connectPanel")?.remove();
     byId("ownerView")?.remove();
-    byId("helperView")?.remove();
+    byId("helperView").hidden = true;
+    byId("helperLoading").hidden = false;
+    clear(byId("guideGroups"));
+    byId("answerPanel").hidden = true;
+    clear(byId("citationList"));
     const lock = model.lockState(error, lastGuide);
+    const retryable =
+      !lastGuide &&
+      Boolean(state.helperGrantId && state.helperSecret) &&
+      !TERMINAL_HELPER_ERROR_CODES.has(error?.code);
     byId("lockedEyebrow").textContent = lock.eyebrow;
     byId("lockedTitle").textContent = lock.title;
     byId("lockedDetail").textContent = lock.detail;
+    byId("retryHelperButton").hidden = !retryable;
     byId("lockedView").hidden = false;
     byId("viewMarkerText").textContent = "Locked helper view";
     document.title = "Share link locked · What Helps Me";
@@ -774,6 +791,8 @@
   async function loadHelper() {
     byId("connectPanel")?.remove();
     byId("ownerView")?.remove();
+    byId("lockedView").hidden = true;
+    byId("retryHelperButton").hidden = true;
     byId("helperView").hidden = false;
     byId("viewMarkerText").textContent = replayMode ? "Helper replay" : "Helper view";
     document.title = "Shared support passport · What Helps Me";
@@ -880,6 +899,9 @@
   }
 
   function bindHelperEvents() {
+    byId("retryHelperButton").addEventListener("click", async (event) => {
+      await withBusy(event.currentTarget, "Trying again…", loadHelper);
+    });
     byId("questionForm").addEventListener("submit", askQuestion);
     byId("questionInput").addEventListener("input", () => {
       byId("questionCount").textContent = String(byId("questionInput").value.length);
