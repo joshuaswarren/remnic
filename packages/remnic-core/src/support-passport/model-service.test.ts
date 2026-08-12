@@ -735,6 +735,14 @@ test("the model audit store writes strict private JSONL without text fields", as
   }
 });
 
+test("the model audit store expands a leading tilde in its memory directory", () => {
+  const store = new SupportPassportModelAuditStore({ memoryDir: "~/support-passport-audit-path-test" });
+  const memoryDir = (store as unknown as { memoryDir: string }).memoryDir;
+  assert.equal(memoryDir.includes(`${path.sep}~${path.sep}`), false);
+  assert.equal(path.basename(memoryDir), "support-passport-audit-path-test");
+  assert.equal(path.isAbsolute(memoryDir), true);
+});
+
 test("the model audit store rejects symlinked and hard-linked audit files", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-model-audit-links-"));
   try {

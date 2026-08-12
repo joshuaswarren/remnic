@@ -551,6 +551,38 @@ test("gateway model chains report invalid output when every model response is re
   }
 });
 
+test("gateway model chains preserve invalid output when a later fallback times out", async () => {
+  const adapter = new SupportPassportModelAdapter({
+    timeoutMs: 20,
+    routes: [
+      {
+        kind: "gateway",
+        invoke: async (_messages, options) => {
+          const rejected = {
+            content: JSON.stringify({ cards: [] }),
+            modelUsed: "gateway/primary",
+            usage: { totalTokens: 12 },
+          };
+          assert.equal(options.acceptResponse?.(rejected), false);
+          return await new Promise<never>((_resolve, reject) => {
+            options.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true });
+          });
+        },
+      },
+    ],
+  });
+
+  await assert.rejects(
+    adapter.draftCards({ consent: true, memories: [{ memoryId: "memory-1", content: "Source" }] }),
+    (error: unknown) =>
+      error instanceof SupportPassportError &&
+      error.code === "model_output_invalid" &&
+      "metadata" in error &&
+      (error.metadata as { modelUsed?: string; usage?: { totalTokens?: number } }).modelUsed === "gateway/primary" &&
+      (error.metadata as { usage?: { totalTokens?: number } }).usage?.totalTokens === 12
+  );
+});
+
 test("direct OpenAI models use the existing Responses API transport", () => {
   const config = buildSupportPassportDirectGatewayConfig({
     openaiApiKey: "test-key",
@@ -563,6 +595,27 @@ test("direct OpenAI models use the existing Responses API transport", () => {
     api: "openai-responses",
     models: [{ id: "test-model", name: "test-model" }],
   });
+});
+
+test("direct model routing rejects whitespace-only API keys", () => {
+  assert.deepEqual(
+    resolveSupportPassportModelRoutePlan({
+      modelSource: "plugin",
+      localLlmEnabled: false,
+      localLlmFallback: false,
+      openaiApiKey: "   ",
+      gatewayConfig: undefined,
+    }),
+    []
+  );
+  assert.equal(
+    buildSupportPassportDirectGatewayConfig({
+      openaiApiKey: "   ",
+      openaiBaseUrl: undefined,
+      model: "test-model",
+    }),
+    undefined
+  );
 });
 
 test("direct OpenAI route detection ignores repeated trailing slashes", () => {

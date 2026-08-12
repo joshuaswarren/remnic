@@ -3,6 +3,7 @@ import { chmod, lstat, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 
+import { expandTildePath } from "../utils/path.js";
 import { serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
 import { appendPrivateFileNoFollow } from "./private-file.js";
 
@@ -73,7 +74,7 @@ export class SupportPassportModelAuditStore implements SupportPassportModelAudit
   private readonly auditDir: string;
 
   constructor(options: { memoryDir: string }) {
-    this.memoryDir = path.resolve(options.memoryDir);
+    this.memoryDir = path.resolve(expandTildePath(options.memoryDir));
     this.auditDir = path.join(this.memoryDir, "state", "support-passport", "audit");
   }
 

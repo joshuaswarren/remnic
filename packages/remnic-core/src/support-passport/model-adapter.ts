@@ -210,7 +210,7 @@ export function resolveSupportPassportModelRoutePlan(config: ModelRoutePlanConfi
     routes.push("local");
     if (!config.localLlmFallback) return routes;
   }
-  if (typeof config.openaiApiKey === "string" && config.openaiApiKey.length > 0) routes.push("direct");
+  if (typeof config.openaiApiKey === "string" && config.openaiApiKey.trim().length > 0) routes.push("direct");
   if (config.gatewayConfig) routes.push("gateway");
   return routes;
 }
@@ -218,7 +218,9 @@ export function resolveSupportPassportModelRoutePlan(config: ModelRoutePlanConfi
 export function buildSupportPassportDirectGatewayConfig(
   config: Pick<PluginConfig, "openaiApiKey" | "openaiBaseUrl" | "model">
 ): GatewayConfig | undefined {
-  if (!config.openaiApiKey) return undefined;
+  if (typeof config.openaiApiKey !== "string") return undefined;
+  const apiKey = config.openaiApiKey.trim();
+  if (apiKey.length === 0) return undefined;
   const providerId = "remnic-direct";
   const baseUrl = config.openaiBaseUrl ?? "https://api.openai.com/v1";
   let baseUrlEnd = baseUrl.length;
@@ -234,7 +236,7 @@ export function buildSupportPassportDirectGatewayConfig(
       providers: {
         [providerId]: {
           baseUrl: normalizedBaseUrl,
-          apiKey: config.openaiApiKey,
+          apiKey,
           api,
           models: [{ id: config.model, name: config.model }],
         },
@@ -402,16 +404,33 @@ export class SupportPassportModelAdapter {
     for (const route of this.routes) {
       if (options.signal?.aborted) throw options.signal.reason ?? new Error("The model request was aborted.");
       let response: SupportPassportModelRouteResult | null;
+      let rejectedResponse: SupportPassportModelRouteResult | undefined;
       try {
         response = await this.invokeRoute(
           route,
           messages,
-          { ...options, acceptResponse: (candidate) => parseResponse(candidate.content) !== undefined },
+          {
+            ...options,
+            acceptResponse: (candidate) => {
+              const accepted = parseResponse(candidate.content) !== undefined;
+              if (!accepted && candidate.content.trim()) rejectedResponse = candidate;
+              return accepted;
+            },
+          },
           this.timeoutMs
         );
       } catch (error) {
         if (options.signal?.aborted) throw error;
-        continue;
+        response = null;
+      }
+      if (rejectedResponse) {
+        invalidResponse = true;
+        failureMetadata = {
+          modelUsed: rejectedResponse.modelUsed,
+          route: route.kind,
+          latencyMs: Math.max(0, this.nowMs() - startedAt),
+          usage: rejectedResponse.usage,
+        };
       }
       if (!response?.content.trim()) continue;
       invalidResponse = true;
