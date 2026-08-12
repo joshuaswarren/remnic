@@ -17,6 +17,7 @@ export const SUPPORT_PASSPORT_ATTRIBUTE_KEYS = Object.freeze({
   reviewBy: "support-passport-review-by",
   sourceMemoryIds: "support-passport-source-ids",
   replacesDraftId: "support-passport-replaces-draft-id",
+  replacementComplete: "support-passport-replacement-complete",
 });
 
 export interface StoredSupportPassportCard {
