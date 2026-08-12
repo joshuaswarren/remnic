@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { renameSync, symlinkSync } from "node:fs";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -141,14 +142,14 @@ test("owner grant listings read only the indexed owner grants", async () => {
   }
 });
 
-test("owner grant operations use one trimmed namespace", async () => {
+test("owner grant operations use one trimmed namespace and principal", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-namespace-"));
   try {
     const now = new Date("2026-08-11T12:00:00.000Z");
     const store = new SupportPassportGrantStore({ memoryDir: root, now: () => now });
     const created = await store.create({
       namespace: " alice ",
-      principal: "owner:alice",
+      principal: " owner:alice ",
       cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
       expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
     });
@@ -160,7 +161,7 @@ test("owner grant operations use one trimmed namespace", async () => {
     const revoked = await store.revoke({
       grantId: created.state.grantId,
       namespace: " alice ",
-      principal: "owner:alice",
+      principal: " owner:alice ",
       expectedStateVersion: created.state.stateVersion,
     });
     assert.ok(revoked.revokedAt);
@@ -738,6 +739,41 @@ test("the grant store rejects a symlinked grant directory", async () => {
       }),
       /must not be a symbolic link/
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("grant writes reject a directory swapped after the initial safety check", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-swap-"));
+  try {
+    const memoryDir = path.join(root, "memory");
+    const outside = path.join(root, "outside");
+    const grantsDir = path.join(memoryDir, "state", "support-passport", "grants");
+    const parkedDir = path.join(root, "parked-grants");
+    await mkdir(outside, { recursive: true });
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({
+      memoryDir,
+      now: () => now,
+    });
+
+    await assert.rejects(
+      store.create(
+        {
+          namespace: "alice",
+          principal: "owner:alice",
+          cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+          expiresAt: new Date(now.getTime() + 300_000).toISOString(),
+        },
+        async () => {
+          renameSync(grantsDir, parkedDir);
+          symlinkSync(outside, grantsDir, "dir");
+        }
+      ),
+      /regular files in a stable directory/
+    );
+    assert.deepEqual(await readdir(outside), []);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
