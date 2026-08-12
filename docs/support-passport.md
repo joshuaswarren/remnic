@@ -76,6 +76,10 @@ Set `REMNIC_AUTH_TOKEN` before the server starts. The `principal` value defines
 the owner for every authenticated owner request. When namespaces are enabled,
 give that principal access through the matching namespace policy.
 
+The browser app is available at `/remnic/ui/what-helps-me/`. The legacy
+`/engram/ui/what-helps-me/` path also works. The support passport setting serves
+this app even when the separate admin console stays disabled.
+
 ## Choose a model route
 
 What Helps Me does not require the OpenAI API. It uses the same model routing
@@ -106,6 +110,47 @@ API client.
 Manual cards, approval, sharing, and revocation need no model. Draft and
 question requests return `503 provider_unavailable` when no route can run.
 Remnic never inserts a fixed answer.
+
+## Owner flow
+
+1. Open the browser app and enter the normal Remnic bearer token.
+2. Add one to 20 exact memory IDs.
+3. Review the full selected note text.
+4. Check the outbound consent box.
+5. Draft up to eight support cards.
+6. Edit, approve, or reject each draft.
+7. Select approved cards and choose a share time.
+8. Copy the one-time share link.
+
+The consent box starts unchecked. The request includes `consent: true`. Remnic
+rejects any other value before a model call.
+
+An edit to an approved card creates a new draft. The old approved revision stays
+unchanged until the owner approves the replacement. Existing links become stale
+instead of showing a changed card.
+
+## Helper flow
+
+The link has this shape:
+
+```text
+/remnic/ui/what-helps-me/?grant=<grantId>#secret=<secret>
+```
+
+The fragment keeps the secret out of HTTP request logs. The browser removes the
+fragment after it reads the secret. It keeps the owner token and helper secret
+in memory only. It uses no cookies, local storage, or session storage.
+
+A helper can do two things:
+
+- Read the shared support cards.
+- Ask a question grounded in those cards.
+
+The question model receives the public cards and question only. It receives no
+other Remnic context or tools. A grounded answer must cite an included card. An
+uncovered question returns this exact text:
+
+> That is not covered in this person's support guide.
 
 ## Security model
 
@@ -184,3 +229,19 @@ POST /engram/v1/support-passport/public/grants/:grantId/ask
 
 The same owner actions are available as feature-gated MCP tools. Public helper
 actions never enter the generic operation list.
+
+## Accessibility checks
+
+The browser app uses semantic HTML, keyboard controls, visible focus, large
+touch targets, reduced-motion support, and text labels for every state. The
+Playwright suite runs at 375, 768, 1024, and 1440 pixels. Axe must report no
+serious or critical findings.
+
+```bash
+npm run test:support-passport-ui
+```
+
+The design also follows the NHS
+[Accessible Information Standard](https://www.england.nhs.uk/accessible-information-standard/how-to-meet-the-standard/).
+The [HSSIB investigation](https://www.hssib.org.uk/patient-safety-investigations/caring-for-adults-with-learning-disabilities-in-acute-hospitals/investigation-report/)
+explains why portable, current, accessible support information matters.

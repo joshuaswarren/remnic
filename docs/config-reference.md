@@ -111,7 +111,7 @@ Backward compatibility note:
 | `agentAccessHttp.maxBodyBytes` | `131072` | Maximum accepted JSON request body size |
 | `agentAccessHttp.writeRateLimitMaxRequests` | `30` | Max write requests (memory stores, observes) per rolling window before the HTTP API returns `429 write_rate_limited`. Positive integer; invalid values are rejected at config parse time (issue #1937). |
 | `agentAccessHttp.writeRateLimitWindowMs` | `60000` | Rolling window for the write rate limit, in milliseconds. Positive integer (issue #1937). |
-| `supportPassport.enabled` | `false` | Enable What Helps Me owner routes, MCP tools, and public helper grants. See [support-passport.md](support-passport.md). |
+| `supportPassport.enabled` | `false` | Enable What Helps Me owner routes, MCP tools, public helper grants, and browser assets. See [support-passport.md](support-passport.md). |
 | `supportPassport.trustedProxyAddresses` | `[]` | Exact reverse-proxy IP addresses allowed to supply `X-Forwarded-For` for public helper limits. Leave empty without a trusted proxy. |
 
 When `agentAccessHttp.enabled` is on (or `openclaw engram access http-serve` is running), the same loopback server also serves the browser-based admin console shell at `/engram/ui/`. The shell is static, ships with packaged plugin builds, and still requires the configured bearer token over `/engram/v1/...` for memory data and operator actions.

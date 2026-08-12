@@ -5468,7 +5468,7 @@
           "enabled": {
             "type": "boolean",
             "default": false,
-            "description": "Enable support passport owner routes, MCP tools, and public share links."
+            "description": "Enable support passport owner routes, MCP tools, browser assets, and public share links."
           },
           "trustedProxyAddresses": {
             "type": "array",

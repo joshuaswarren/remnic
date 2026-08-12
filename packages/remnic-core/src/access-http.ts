@@ -213,14 +213,12 @@ export interface RemnicAdminControls {
   update?: (patch: RemnicAdminConfigPatch) => Promise<RemnicAdminDashboardStatus>;
 }
 
-function resolveDefaultAdminConsolePublicDir(): string {
-  const thisDir = path.dirname(fileURLToPath(import.meta.url));
+export function resolveDefaultAdminConsolePublicDir(sourceUrl = import.meta.url): string {
+  const thisDir = path.dirname(fileURLToPath(sourceUrl));
   const candidates = [
-    // Standard: admin-console sibling to src/ (development layout)
-    path.resolve(thisDir, "../admin-console/public"),
-    // Bundled: admin-console inside dist/ alongside the bundle
+    path.resolve(thisDir, "../../../admin-console/public"),
+    path.resolve(thisDir, "../dist/admin-console/public"),
     path.resolve(thisDir, "./admin-console/public"),
-    // Package root: walk up from dist/ to the package root
     path.resolve(thisDir, "../../admin-console/public"),
   ];
   return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
@@ -398,7 +396,7 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
   private readonly authenticatedPrincipal?: string;
   private readonly maxBodyBytes: number;
   private readonly adminConsoleEnabled: boolean;
-  private readonly adminConsolePublicDir: string;
+  protected readonly adminConsolePublicDir: string;
   private readonly adminConsolePrefillToken?: string;
   private readonly adminControls?: RemnicAdminControls;
   private readonly trustPrincipalHeader: boolean;
@@ -815,10 +813,9 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
   ): Promise<void> {
     const parsed = new URL(req.url ?? "/", `http://${hostToUrlAuthority(this.host)}`);
     const pathname = parsed.pathname;
+    if (await this.handleSupportPassportUi(req, res, pathname)) return;
 
-    if (this.adminConsoleEnabled && await this.handleAdminConsole(req, res, pathname)) {
-      return;
-    }
+    if (this.adminConsoleEnabled && await this.handleAdminConsole(req, res, pathname)) return;
 
     if (req.method === "GET" && (pathname === "/engram/v1/live" || pathname === "/engram/v1/health")) {
       const { ready, warmupAttempts, lastError } = this.readiness();
@@ -831,9 +828,7 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
     }
 
     if (await this.handleSupportPassportPublicRequest(req, res)) return;
-
-    // Run any host-supplied pre-auth request handler. It runs AFTER the
-    // admin-console branch (admin assets are public) and BEFORE the
+    // Run any host-supplied pre-auth request handler after public UI assets and before the
     // operator bearer gate. The handler decides whether it has fully
     // owned the response (return true) or wants the request to fall
     // through to the normal pipeline. `ctx.authorized` is computed
@@ -3540,7 +3535,7 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
     return false;
   }
 
-  private async respondAdminConsoleShell(
+  protected async respondAdminConsoleShell(
     req: IncomingMessage,
     res: ServerResponse,
     pathname: string,
@@ -3548,7 +3543,12 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
   ): Promise<void> {
     try {
       let body = await readFile(path.join(this.adminConsolePublicDir, relativePath), "utf-8");
-      const canPrefillToken = this.adminConsolePrefillToken && this.isAuthorized(req, pathname);
+      const matched = this.resolveAuthorizedEntry(req, pathname);
+      const canPrefillToken =
+        this.adminConsolePrefillToken &&
+        matched !== null &&
+        matched.capabilities === undefined &&
+        this.timingSafeStringEqual(matched.token, this.adminConsolePrefillToken);
       if (canPrefillToken) {
         const serializedToken = serializeInlineScriptValue(this.adminConsolePrefillToken);
         const script = `<script>(function(token,script){const key="__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__";const clear=function(){token="";try{delete window[key]}catch{window[key]=""}};window.addEventListener("pagehide",clear,{once:true});window.addEventListener("beforeunload",clear,{once:true});try{Object.defineProperty(window,key,{configurable:true,get:function(){const value=token;clear();return value}})}finally{if(script){script.textContent="";script.remove()}}})(${serializedToken},document.currentScript);</script>`;
@@ -3567,7 +3567,7 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
     }
   }
 
-  private async respondStatic(res: ServerResponse, filePath: string, contentType: string): Promise<void> {
+  protected async respondStatic(res: ServerResponse, filePath: string, contentType: string): Promise<void> {
     try {
       const body = await readFile(filePath, "utf-8");
       res.statusCode = 200;
