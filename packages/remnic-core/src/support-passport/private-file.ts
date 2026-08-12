@@ -62,18 +62,6 @@ export async function resolvePrivateDirectoryPath(
   platform: NodeJS.Platform = process.platform
 ): Promise<string> {
   const descriptorRoot = requirePrivateFileDescriptorRoot(platform, errorMessage);
-  if (descriptorRoot === null) {
-    const current = await lstat(directory);
-    if (
-      current.isSymbolicLink() ||
-      !current.isDirectory() ||
-      current.dev !== opened.dev ||
-      current.ino !== opened.ino
-    ) {
-      throw new Error(errorMessage);
-    }
-    return directory;
-  }
   const pinnedPath = path.join(descriptorRoot, String(handle.fd));
   const metadata = await stat(pinnedPath);
   if (!metadata.isDirectory() || metadata.dev !== opened.dev || metadata.ino !== opened.ino) {
@@ -82,9 +70,8 @@ export async function resolvePrivateDirectoryPath(
   return pinnedPath;
 }
 
-export function requirePrivateFileDescriptorRoot(platform: NodeJS.Platform, errorMessage: string): string | null {
+export function requirePrivateFileDescriptorRoot(platform: NodeJS.Platform, errorMessage: string): string {
   if (platform === "linux") return "/proc/self/fd";
-  if (platform === "darwin") return null;
   throw new Error(errorMessage);
 }
 
