@@ -849,6 +849,37 @@ test("helper guide assembly fails when owner-lock ownership is lost", async () =
   }
 });
 
+test("helper guide assembly rechecks the owner lock after grant reauthentication", async () => {
+  const subject = await makeSubject();
+  try {
+    const card = await createActiveCard(subject);
+    const created = await subject.grantService.createGrant({
+      principal: "owner:alice",
+      cards: [{ cardId: card.cardId, revision: card.revision }],
+      expiresAt: expiryAfter(subject, 3_600_000),
+    });
+    const authenticate = subject.grantStore.authenticate.bind(subject.grantStore);
+    let authentications = 0;
+    subject.grantStore.authenticate = async (grantId, secret) => {
+      const state = await authenticate(grantId, secret);
+      authentications += 1;
+      if (authentications === 3) {
+        const lockPath = path.join(subject.aliceStorage.dir, "state", "support-passport-cards.lock");
+        await writeFile(lockPath, `${process.pid} 00000000-0000-4000-8000-000000000000 peer\n`);
+      }
+      return state;
+    };
+
+    await assert.rejects(
+      subject.grantService.readGrant({ grantId: created.grant.grantId, secret: created.secret }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
+    );
+    assert.equal(authentications, 3);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("helper guide assembly refreshes the owner lock after its final card read", async () => {
   const subject = await makeSubject();
   try {

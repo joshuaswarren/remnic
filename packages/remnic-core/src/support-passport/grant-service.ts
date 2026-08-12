@@ -120,7 +120,7 @@ export class SupportPassportGrantService {
       return Date.parse(card.updatedAt) > Date.parse(latest) ? card.updatedAt : latest;
     }, firstCard.updatedAt);
     return await withSupportPassportOwnerLock(storage, async (ownerLock) => {
-      return await this.grantStore.withAuthenticatedGrant(input.grantId, input.secret, async (finalState) => {
+      const guide = await this.grantStore.withAuthenticatedGrant(input.grantId, input.secret, async (finalState) => {
         if (finalState.namespace !== initialState.namespace) {
           throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
         }
@@ -138,6 +138,8 @@ export class SupportPassportGrantService {
           cards,
         });
       });
+      await requireSupportPassportOwnerLock(ownerLock);
+      return guide;
     });
   }
 
