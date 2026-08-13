@@ -421,8 +421,12 @@ test("delegate shutdown stops transient completion retries", async () => {
   };
   let served = false;
   let completionAttempts = 0;
+  const completionBodies: Array<Record<string, unknown>> = [];
   const server = http.createServer((req, res) => {
-    req.resume();
+    let raw = "";
+    req.on("data", (chunk) => {
+      raw += String(chunk);
+    });
     req.on("end", () => {
       if (req.url?.endsWith("/jobs/next")) {
         if (!served) {
@@ -435,8 +439,9 @@ test("delegate shutdown stops transient completion retries", async () => {
         return;
       }
       completionAttempts += 1;
+      completionBodies.push(JSON.parse(raw) as Record<string, unknown>);
       firstCompletion.resolve();
-      res.statusCode = 503;
+      res.statusCode = completionAttempts === 1 ? 503 : 204;
       res.end();
     });
   });
@@ -462,7 +467,8 @@ test("delegate shutdown stops transient completion retries", async () => {
       service.stop(),
       new Promise((_, reject) => setTimeout(() => reject(new Error("delegate shutdown did not stop retries")), 500)),
     ]);
-    assert.equal(completionAttempts, 1);
+    assert.equal(completionAttempts, 2);
+    assert.equal(completionBodies[1]?.result, null);
   } finally {
     await service.stop();
     server.closeAllConnections();
@@ -534,6 +540,87 @@ test("delegate shutdown settles a claimed job before the worker stops", async ()
     await stopped;
   } finally {
     await service.stop();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("delegate shutdown replaces an aborted result post with a bounded null completion", async () => {
+  const job: SupportPassportModelJob = {
+    id: "b871fab2-2f1c-478c-af4c-8c4a755d8073",
+    claimId: "c871fab2-2f1c-478c-af4c-8c4a755d8074",
+    messages: [{ role: "user", content: "What helps?" }],
+    temperature: 0,
+    maxTokens: 100,
+    timeoutMs: 5_000,
+    operation: "support-passport-answer",
+    jsonSchema: { name: "answer", schema: { type: "object" } },
+  };
+  const firstCompletion = Promise.withResolvers<void>();
+  const shutdownCompletion = Promise.withResolvers<Record<string, unknown>>();
+  let served = false;
+  let completionCount = 0;
+  const server = http.createServer((req, res) => {
+    let raw = "";
+    req.on("data", (chunk) => {
+      raw += String(chunk);
+    });
+    req.on("end", () => {
+      if (req.url?.endsWith("/jobs/next")) {
+        if (!served) {
+          served = true;
+          res.end(JSON.stringify(job));
+        } else {
+          res.statusCode = 204;
+          res.end();
+        }
+        return;
+      }
+      if (req.url?.endsWith("/jobs/ack")) {
+        res.statusCode = 204;
+        res.end();
+        return;
+      }
+      completionCount += 1;
+      if (completionCount === 1) {
+        firstCompletion.resolve();
+        return;
+      }
+      shutdownCompletion.resolve(JSON.parse(raw) as Record<string, unknown>);
+      res.statusCode = 204;
+      res.end();
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("server did not bind");
+  const service = createDelegateSupportPassportModelService({
+    serviceId: "openclaw-remnic",
+    target: {
+      host: "127.0.0.1",
+      port: address.port,
+      resolveAuthToken: () => ({ token: "daemon-token", source: "REMNIC_AUTH_TOKEN" }),
+    },
+    route: {
+      kind: "gateway",
+      invoke: async () => ({ content: "{}", modelUsed: "gateway/local" }),
+    },
+  });
+  try {
+    await service.start();
+    await firstCompletion.promise;
+    const stopped = service.stop();
+    assert.deepEqual(await shutdownCompletion.promise, {
+      id: job.id,
+      claimId: job.claimId,
+      result: null,
+    });
+    await stopped;
+  } finally {
+    await service.stop();
+    server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
