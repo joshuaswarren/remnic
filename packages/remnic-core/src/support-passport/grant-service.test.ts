@@ -885,6 +885,68 @@ test("grant creation reconciles peer state when the owner-index lock is lost aft
   }
 });
 
+test("grant recovery prunes a stale owner-index entry after lock loss", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-stale-index-recovery-"));
+  try {
+    const grantIds = [
+      "00000000-0000-4000-8000-000000000001",
+      "00000000-0000-4000-8000-000000000002",
+    ];
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({
+      memoryDir: root,
+      makeGrantId: () => grantIds.shift() ?? "00000000-0000-4000-8000-000000000003",
+      now: () => now,
+    });
+    const input = {
+      namespace: "alice",
+      principal: "owner:alice",
+      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+      expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
+    };
+    const first = await store.create(input);
+    const inspected = store as unknown as {
+      withOwnerIndexLock<T>(
+        ownerHash: string,
+        task: (lock: { refresh(): Promise<boolean> }) => Promise<T>,
+      ): Promise<T>;
+      writeOwnerIndex(ownerHash: string, indexedGrantIds: string[]): Promise<void>;
+    };
+    const writeOwnerIndex = inspected.writeOwnerIndex.bind(store);
+    let removeStaleState = true;
+    inspected.writeOwnerIndex = async (ownerHash, indexedGrantIds) => {
+      await writeOwnerIndex(ownerHash, indexedGrantIds);
+      if (!removeStaleState) return;
+      removeStaleState = false;
+      await rm(path.join(root, "state", "support-passport", "grants", `${first.state.grantId}.json`));
+    };
+    let ownerLockRun = 0;
+    let firstRunRefreshes = 0;
+    inspected.withOwnerIndexLock = async (_ownerHash, task) => {
+      ownerLockRun += 1;
+      return await task({
+        refresh: async () => {
+          if (ownerLockRun !== 1) return true;
+          firstRunRefreshes += 1;
+          return firstRunRefreshes !== 2;
+        },
+      });
+    };
+
+    const created = await store.create(input);
+
+    assert.equal(ownerLockRun, 2);
+    assert.equal(firstRunRefreshes, 2);
+    assert.deepEqual(
+      (await store.listForOwner(input.namespace, input.principal)).map((state) => state.grantId),
+      [created.state.grantId],
+    );
+    assert.equal((await store.authenticate(created.state.grantId, created.secret)).grantId, created.state.grantId);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("grant recovery reads only the affected owner's index", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-scoped-recovery-"));
   try {

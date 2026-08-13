@@ -467,14 +467,18 @@ export class SupportPassportGrantStore {
       const indexedGrantIds = await this.readOwnerIndexByHash(ownerHash);
       const ownerStates: SupportPassportGrantState[] = [];
       for (const grantId of indexedGrantIds) {
-        const state = await this.readState(grantId);
-        if (
-          state.namespace !== committed.state.namespace ||
-          !hashesMatch(state.principalHash, committed.state.principalHash)
-        ) {
-          throw new Error("support passport owner index references a foreign grant");
+        try {
+          const state = await this.readState(grantId);
+          if (
+            state.namespace !== committed.state.namespace ||
+            !hashesMatch(state.principalHash, committed.state.principalHash)
+          ) {
+            throw new Error("support passport owner index references a foreign grant");
+          }
+          ownerStates.push(state);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         }
-        ownerStates.push(state);
       }
       const committedIndex = ownerStates.findIndex(
         (state) => state.grantId === committed.state.grantId,
