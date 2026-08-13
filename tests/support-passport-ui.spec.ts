@@ -657,6 +657,68 @@ test("successful owner mutations stay successful when their list refresh fails",
   await expect(page.getByText("The share link did not stop.")).toHaveCount(0);
 });
 
+test("an older owner refresh cannot replace newer owner state", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers owner refresh ordering.");
+  const now = new Date();
+  const oldCard = {
+    cardId: "card-current",
+    title: "Old support state",
+    statement: "This response started first.",
+    category: "other",
+    status: "pending_review",
+    updatedAt: now.toISOString(),
+    reviewBy: new Date(now.getTime() + 24 * 60 * 60_000).toISOString(),
+    revision: "a".repeat(64),
+  };
+  const newCard = {
+    ...oldCard,
+    title: "New support state",
+    statement: "This response started second.",
+    status: "active",
+    revision: "b".repeat(64),
+  };
+  let cardReads = 0;
+  const oldReadStarted = Promise.withResolvers<void>();
+  const releaseOldRead = Promise.withResolvers<void>();
+  await page.route("**/engram/v1/support-passport/cards", async (route) => {
+    cardReads += 1;
+    if (cardReads === 2) {
+      oldReadStarted.resolve();
+      await releaseOldRead.promise;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ cards: [oldCard] }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ cards: cardReads === 1 ? [oldCard] : [newCard] }),
+    });
+  });
+  await page.route("**/engram/v1/support-passport/grants", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grants: [] }) });
+  });
+  await page.route("**/engram/v1/support-passport/cards/card-current/approve", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ card: newCard }) });
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await page.getByLabel("Bearer token").fill("owner-token");
+  await page.getByRole("button", { name: "Open my guide" }).click();
+  const refresh = page.getByRole("button", { name: "Refresh cards and share links" });
+  await refresh.click();
+  await oldReadStarted.promise;
+  await page.getByRole("button", { name: "Approve" }).click();
+  await expect(page.getByRole("heading", { name: newCard.title })).toBeVisible();
+  releaseOldRead.resolve();
+  await expect(refresh).toBeEnabled();
+  await expect(page.getByRole("heading", { name: newCard.title })).toBeVisible();
+  await expect(page.getByRole("heading", { name: oldCard.title })).toHaveCount(0);
+});
+
 test("an expired share confirms a timed-out stop request", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers stop reconciliation.");
   const now = new Date("2026-08-11T12:00:00.000Z");

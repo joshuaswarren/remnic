@@ -17,7 +17,7 @@
   const HELPER_REVALIDATION_MS = 30_000;
   const HELPER_REVALIDATION_MAX_MS = 5 * 60_000;
   const HELPER_READ_TIMEOUT_MS = 10_000;
-  const HELPER_QUESTION_TIMEOUT_MS = 60_000;
+  const HELPER_QUESTION_TIMEOUT_MS = 15 * 60_000;
   const OWNER_READ_TIMEOUT_MS = 30_000;
   const OWNER_WRITE_TIMEOUT_MS = 60_000;
   const OWNER_MODEL_WRITE_TIMEOUT_MS = 15 * 60_000;
@@ -58,6 +58,7 @@
     shareCreationCardIds: null,
     ownerLifecyclePaused: false,
     ownerRequestControllers: new Set(),
+    ownerLoadGeneration: 0,
     toastTimer: null,
   };
   initialHelperSecret = "";
@@ -549,12 +550,17 @@
   }
 
   async function loadOwnerState() {
+    const generation = ++state.ownerLoadGeneration;
     const [cardPayload, grantPayload] = await Promise.all([api.listCards(), api.listGrants()]);
-    state.cards = model.parseCardList(cardPayload);
-    state.grants = model.parseGrantList(grantPayload).slice(0, MAX_VISIBLE_GRANTS);
+    const cards = model.parseCardList(cardPayload);
+    const grants = model.parseGrantList(grantPayload).slice(0, MAX_VISIBLE_GRANTS);
+    if (generation !== state.ownerLoadGeneration || state.ownerLifecyclePaused) return false;
+    state.cards = cards;
+    state.grants = grants;
     renderCards();
     renderShareCards();
     renderGrants();
+    return true;
   }
 
   function toLocalInputValue(date) {
@@ -1134,6 +1140,7 @@
 
   function clearOwnerSession() {
     state.ownerLifecyclePaused = true;
+    state.ownerLoadGeneration += 1;
     for (const controller of state.ownerRequestControllers) controller.abort(PAGE_HIDDEN_ABORT);
     state.ownerRequestControllers.clear();
     state.token = "";
