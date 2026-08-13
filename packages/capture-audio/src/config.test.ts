@@ -125,3 +125,11 @@ test("captureChannel defaults to both and rejects anything but mic|system|both",
   assert.throws(() => parseDaemonConfig({ captureChannel: "speaker" }), CaptureConfigError);
   assert.throws(() => parseDaemonConfig({ captureChannel: 1 }), CaptureConfigError);
 });
+
+test("reorderWindowSeconds parses and defaults to a cross-channel window", () => {
+  assert.equal(defaultDaemonConfig().reorderWindowSeconds, 60);
+  assert.equal(parseDaemonConfig({ reorderWindowSeconds: 0 }).reorderWindowSeconds, 0);
+  assert.equal(parseDaemonConfig({ reorderWindowSeconds: 5 }).reorderWindowSeconds, 5);
+  assert.throws(() => parseDaemonConfig({ reorderWindowSeconds: -1 }), /reorderWindowSeconds/);
+  assert.throws(() => parseDaemonConfig({ reorderWindowSeconds: 3601 }), /reorderWindowSeconds/);
+});

@@ -538,7 +538,14 @@ async function cmdStart(
       void replayTask
         .catch(() => undefined)
         .then(() => (live ? live.stop().then(() => undefined) : undefined))
-        .catch(() => undefined)
+        .catch((error: unknown) => {
+          // A failed shutdown flush means chunks are still held in memory and
+          // their raw audio is still on disk. Swallowing that silently made a
+          // recoverable state look like a clean exit (issue #2145).
+          process.stderr.write(
+            `[capture-audio] shutdown flush failed; retained raw audio was NOT ingested: ${describeError(error)}\n`,
+          );
+        })
         .then(() => {
           spool.finalizeOpenConversations();
           return handle.close().catch(() => undefined);

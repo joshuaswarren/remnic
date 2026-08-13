@@ -42,6 +42,15 @@ export interface DaemonConfig {
   chunkSeconds: number;
   captureChannel: "mic" | "system" | "both";
   conversationGapMinutes: number;
+  /**
+   * Bounded reorder window, in seconds, for cross-channel arrival skew
+   * (issue #2145). Chunks are held until the newest observed chunk end is
+   * this far past their own end, then released oldest-first, so a delayed
+   * system chunk is grouped with the conversation it belongs to instead of
+   * a later mic chunk's. 0 disables buffering: every chunk is released on
+   * arrival, which is the pre-#2145 behavior.
+   */
+  reorderWindowSeconds: number;
   rawRetentionHours: number;
   spoolRetentionDays: number;
   vad: VadConfig;
@@ -68,6 +77,7 @@ export function defaultDaemonConfig(): DaemonConfig {
       threshold: 0.5,
       threads: 1,
     },
+    reorderWindowSeconds: 60,
     diarization: { similarityThreshold: 0.4 },
     stt: { engine: "whisper-cpp", modelPath: null, threads: null },
     denyApps: [],
@@ -81,6 +91,7 @@ const KNOWN_TOP_KEYS: Record<string, true> = {
   chunkSeconds: true,
   captureChannel: true,
   conversationGapMinutes: true,
+  reorderWindowSeconds: true,
   rawRetentionHours: true,
   spoolRetentionDays: true,
   vad: true,
@@ -140,6 +151,12 @@ export function parseDaemonConfig(raw: unknown): DaemonConfig {
   }
   if (obj.spoolRetentionDays !== undefined) {
     cfg.spoolRetentionDays = coerceNumber(obj.spoolRetentionDays, "spoolRetentionDays", { integer: true, min: 1 });
+  }
+  if (obj.reorderWindowSeconds !== undefined) {
+    cfg.reorderWindowSeconds = coerceNumber(obj.reorderWindowSeconds, "reorderWindowSeconds", {
+      min: 0,
+      max: 3600,
+    });
   }
 
   if (obj.vad !== undefined) {

@@ -12,7 +12,7 @@ export const DEFAULT_HOST = "127.0.0.1";
 export const DEFAULT_PORT = 4340;
 
 /** Spool schema version, persisted in the `meta` table. */
-export const SPOOL_SCHEMA_VERSION = 1;
+export const SPOOL_SCHEMA_VERSION = 2;
 
 /** Upper bound for the conversations `limit` query parameter. */
 export const MAX_CONVERSATIONS_LIMIT = 500;

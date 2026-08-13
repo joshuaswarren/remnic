@@ -33,6 +33,13 @@ export type ChunkStatus = "pending" | "transcribed" | "failed" | "deleted";
 export interface SegmentInput {
   speakerCluster?: string | null;
   isWearer?: boolean;
+  /**
+   * Speaker embedding for this segment, persisted as a JSON BLOB (issue
+   * #2145). Clustering runs at finalize over the segments that SURVIVE
+   * cross-channel dedup, so a pruned loopback duplicate never inflates a
+   * cluster's centroid or count.
+   */
+  embedding?: readonly number[] | null;
   channel: string;
   text: string;
   startUtc: string;
@@ -161,7 +168,8 @@ CREATE TABLE IF NOT EXISTS segments (
   text TEXT NOT NULL,
   start_utc TEXT NOT NULL,
   end_utc TEXT NOT NULL,
-  ordinal INTEGER NOT NULL DEFAULT 0
+  ordinal INTEGER NOT NULL DEFAULT 0,
+  embedding BLOB
 );
 CREATE TABLE IF NOT EXISTS speaker_clusters (
   id TEXT PRIMARY KEY,
@@ -179,6 +187,28 @@ CREATE TABLE IF NOT EXISTS applied_chunks (
 CREATE INDEX IF NOT EXISTS idx_conv_keyset ON conversations(started_at_utc, id);
 CREATE INDEX IF NOT EXISTS idx_seg_conv ON segments(conversation_id, ordinal);
 `;
+
+/**
+ * Encode a speaker embedding for the `segments.embedding` BLOB. `null` and an
+ * empty vector both persist as NULL: an absent embedding must not look like a
+ * zero-length one at finalize.
+ */
+function encodeEmbedding(embedding: readonly number[] | null | undefined): Buffer | null {
+  if (!embedding || embedding.length === 0) return null;
+  return Buffer.from(JSON.stringify(embedding));
+}
+
+/** Decode a JSON-encoded numeric vector BLOB; corrupt rows decode to null. */
+function decodeEmbedding(blob: Buffer | Uint8Array | null): number[] | null {
+  if (!blob || blob.byteLength === 0) return null;
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(blob).toString("utf8"));
+    if (!Array.isArray(parsed)) return null;
+    return parsed.every((n) => typeof n === "number" && Number.isFinite(n)) ? (parsed as number[]) : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Canonical instant required at the Spool boundary: a full date + time with a
@@ -245,8 +275,34 @@ export class Spool {
         // filesystem without POSIX perms (e.g. some Windows mounts)
       }
     }
+    // Refuse a spool written by a NEWER binary: migrating it here, and then
+    // stamping our lower version over its higher one, would leave that binary
+    // reading a schema it no longer recognizes (issue #2145).
+    const storedVersion = this.#db
+      .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
+      .get() as { value?: string } | undefined;
+    if (storedVersion?.value !== undefined) {
+      const parsed = Number(storedVersion.value);
+      if (!Number.isInteger(parsed) || parsed < 1) {
+        throw new CaptureConfigError(
+          `spool schema_version is malformed: ${JSON.stringify(storedVersion.value)}`,
+        );
+      }
+      if (parsed > SPOOL_SCHEMA_VERSION) {
+        throw new CaptureConfigError(
+          `spool schema_version ${parsed} is newer than this build supports (${SPOOL_SCHEMA_VERSION})`,
+        );
+      }
+    }
+    // Additive migration for a spool created before segment embeddings existed
+    // (issue #2145). CREATE TABLE IF NOT EXISTS leaves an existing table alone,
+    // so the column is added explicitly; ALTER is skipped when it is present.
+    const segmentColumns = this.#db.prepare("PRAGMA table_info(segments)").all() as Array<{ name: string }>;
+    if (!segmentColumns.some((column) => column.name === "embedding")) {
+      this.#db.exec("ALTER TABLE segments ADD COLUMN embedding BLOB");
+    }
     this.#db
-      .prepare("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)")
+      .prepare("INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
       .run("schema_version", String(SPOOL_SCHEMA_VERSION));
     this.#db.prepare("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)").run("instance_id", ulid());
   }
@@ -334,7 +390,7 @@ export class Spool {
         "INSERT INTO conversations(id, started_at_utc, ended_at_utc, state, segment_count) VALUES (?,?,?,?,?)",
       ).run(convId, startedAtUtc, endedAtUtc, state, segments.length);
       const segStmt = db.prepare(
-        "INSERT INTO segments(id, chunk_id, conversation_id, speaker_cluster, is_wearer, channel, text, start_utc, end_utc, ordinal) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO segments(id, chunk_id, conversation_id, speaker_cluster, is_wearer, channel, text, start_utc, end_utc, ordinal, embedding) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
       );
       for (let i = 0; i < segments.length; i++) {
         const seg = segments[i];
@@ -349,6 +405,7 @@ export class Spool {
           seg.startUtc,
           seg.endUtc,
           i,
+          encodeEmbedding(seg.embedding),
         );
       }
       db.exec("COMMIT");
@@ -430,7 +487,7 @@ export class Spool {
         .get(convId) as { n: number };
       const nextOrdinal = Number(ordinalRow.n);
       const segStmt = db.prepare(
-        "INSERT INTO segments(id, chunk_id, conversation_id, speaker_cluster, is_wearer, channel, text, start_utc, end_utc, ordinal) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO segments(id, chunk_id, conversation_id, speaker_cluster, is_wearer, channel, text, start_utc, end_utc, ordinal, embedding) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
       );
       for (let i = 0; i < segments.length; i++) {
         const seg = segments[i];
@@ -445,6 +502,7 @@ export class Spool {
           seg.startUtc,
           seg.endUtc,
           nextOrdinal + i,
+          encodeEmbedding(seg.embedding),
         );
       }
       db.prepare(
@@ -530,12 +588,158 @@ export class Spool {
     return removed;
   }
 
+  /**
+   * Segments of one conversation that still need a speaker, chronological.
+   *
+   * Only rows with a stored embedding and no cluster yet: clustering runs at
+   * finalize over the segments that SURVIVED dedup (issue #2145), and skipping
+   * already-assigned rows keeps a repeated finalize from double-counting a
+   * centroid.
+   */
+  conversationSegmentsForDiarization(
+    conversationId: string,
+  ): Array<{ id: string; channel: string; embedding: number[] }> {
+    const rows = this.#db
+      .prepare(
+        "SELECT id, channel, embedding FROM segments " +
+          "WHERE conversation_id = ? AND embedding IS NOT NULL AND speaker_cluster IS NULL " +
+          "ORDER BY start_utc ASC, ordinal ASC, id ASC",
+      )
+      .all(conversationId) as Array<{ id: string; channel: string; embedding: Buffer | null }>;
+    const out: Array<{ id: string; channel: string; embedding: number[] }> = [];
+    for (const row of rows) {
+      const embedding = decodeEmbedding(row.embedding);
+      if (embedding !== null) out.push({ id: row.id, channel: row.channel, embedding });
+    }
+    return out;
+  }
+
+  /**
+   * Commit one conversation's diarization: cluster snapshots and the segment
+   * assignments that produced them, in ONE transaction.
+   *
+   * Splitting the two lets a crash persist an updated `embedding_count` while
+   * its segments stay unassigned; the next finalize would select the same rows
+   * and count the same embeddings again (issue #2145). Atomicity is what makes
+   * the repeated-finalize idempotency claim true.
+   */
+  commitDiarization(input: {
+    clusters: readonly SpeakerInput[];
+    assignments: ReadonlyArray<{ id: string; speakerCluster: string; isWearer: boolean }>;
+  }): number {
+    if (input.assignments.length === 0 && input.clusters.length === 0) return 0;
+    const stmt = this.#db.prepare("UPDATE segments SET speaker_cluster = ?, is_wearer = ? WHERE id = ?");
+    let updated = 0;
+    this.#db.exec("BEGIN");
+    try {
+      // Clusters first inside the transaction, so the segments' foreign
+      // reference is already present when they are written.
+      for (const cluster of input.clusters) this.#upsertSpeakerUnlocked(cluster);
+      for (const assignment of input.assignments) {
+        updated += Number(stmt.run(assignment.speakerCluster, assignment.isWearer ? 1 : 0, assignment.id).changes);
+      }
+      this.#db.exec("COMMIT");
+    } catch (err) {
+      this.#db.exec("ROLLBACK");
+      throw err;
+    }
+    return updated;
+  }
+
   /** Ids of every still-`capturing` conversation (dedup-before-finalize sweep). */
   capturingConversationIds(): string[] {
     const rows = this.#db
       .prepare("SELECT id FROM conversations WHERE state = 'capturing' ORDER BY id ASC")
       .all() as Array<{ id: string }>;
     return rows.map((r) => r.id);
+  }
+
+  /**
+   * Record a bare idempotency marker (no segments).
+   *
+   * Used to persist facts a later replay cannot re-derive — such as how many
+   * segments a chunk's transcript produced, which is the only way to tell a
+   * legitimately shorter retranscription from a missing tail (issue #2145).
+   */
+  markApplied(idempotencyKey: string, conversationId: string): void {
+    this.#db
+      .prepare("INSERT OR IGNORE INTO applied_chunks(idempotency_key, conversation_id, applied_at_utc) VALUES (?,?,?)")
+      .run(idempotencyKey, conversationId, new Date().toISOString());
+  }
+
+  /**
+   * Whether ANY idempotency key for this chunk was applied.
+   *
+   * Only a SILENT replay needs this — a chunk partially applied by a binary
+   * predating the transcript manifest has no manifest to compare, and a
+   * zero-segment replay has no per-segment key to look up exactly. Speech
+   * chunks use the indexed manifest lookup below, so continuous capture never
+   * pays for this scan (issue #2145).
+   */
+  hasAppliedChunkPrefix(chunkIdPrefix: string): boolean {
+    const escaped = chunkIdPrefix.replace(/[\\%_]/g, "\\$&");
+    const row = this.#db
+      .prepare("SELECT 1 AS present FROM applied_chunks WHERE idempotency_key LIKE ? ESCAPE '\\' LIMIT 1")
+      .get(`${escaped}%`) as { present?: number } | undefined;
+    return row?.present === 1;
+  }
+
+  /**
+   * Conversations a chunk actually contributed stored segments to.
+   *
+   * Used to scope a rebuilt replay hold to the prefix that chunk belongs to,
+   * rather than to every conversation that happens to be capturing (#2145).
+   * Matches the bare chunk id and every per-segment or per-group derivative
+   * (`<chunkId>:h<hash>`, and the pre-manifest `<chunkId>:<n>`).
+   */
+  conversationIdsForChunk(chunkId: string): string[] {
+    const escaped = chunkId.replace(/[\\%_]/g, "\\$&");
+    const rows = this.#db
+      .prepare(
+        `SELECT DISTINCT conversation_id AS conversationId
+           FROM segments
+          WHERE conversation_id IS NOT NULL
+            AND (chunk_id = ? OR chunk_id LIKE ? ESCAPE '\\')
+          ORDER BY conversation_id`,
+      )
+      .all(chunkId, `${escaped}:%`) as { conversationId: string }[];
+    return rows.map((row) => row.conversationId);
+  }
+
+  /**
+   * Chunks whose transcript manifest is recorded but which never completed.
+   *
+   * A restart loses the in-memory record of which chunks are still awaiting a
+   * replay, so it is re-derived from these two durable markers: the manifest is
+   * written before any append, `:done` only after every segment is stored
+   * (issue #2145).
+   */
+  incompleteChunkIds(): string[] {
+    const rows = this.#db
+      .prepare(
+        `SELECT substr(idempotency_key, 1, length(idempotency_key) - 9) AS chunkId
+           FROM applied_chunks
+          WHERE idempotency_key LIKE '%:manifest'
+            AND substr(idempotency_key, 1, length(idempotency_key) - 9) || ':done' NOT IN (
+                  SELECT idempotency_key FROM applied_chunks
+                )`,
+      )
+      .all() as { chunkId: string }[];
+    return rows.map((row) => row.chunkId);
+  }
+
+  /**
+   * The value stored alongside an idempotency marker, or `undefined`.
+   *
+   * `markApplied` uses this column to carry a fact a replay cannot re-derive —
+   * the chunk's transcript manifest hash — and this is the exact, primary-key
+   * lookup that reads it back (issue #2145).
+   */
+  appliedChunkValue(idempotencyKey: string): string | undefined {
+    const row = this.#db
+      .prepare("SELECT conversation_id AS conversationId FROM applied_chunks WHERE idempotency_key = ?")
+      .get(idempotencyKey) as { conversationId?: string } | undefined;
+    return row?.conversationId;
   }
 
   /** Whether a chunk with this idempotency key was already durably applied. */
@@ -573,6 +777,20 @@ export class Spool {
     return { id: row.id, startedAtUtc: row.startedAtUtc, endedAtUtc: row.endedAtUtc ?? row.startedAtUtc };
   }
 
+  /** One capturing conversation by id, for resuming a specific prefix. */
+  capturingConversationById(
+    id: string,
+  ): { id: string; startedAtUtc: string; endedAtUtc: string } | null {
+    const row = this.#db
+      .prepare(
+        "SELECT id, started_at_utc AS startedAtUtc, ended_at_utc AS endedAtUtc FROM conversations " +
+          "WHERE id = ? AND state = 'capturing'",
+      )
+      .get(id) as { id: string; startedAtUtc: string; endedAtUtc: string | null } | undefined;
+    if (!row) return null;
+    return { id: row.id, startedAtUtc: row.startedAtUtc, endedAtUtc: row.endedAtUtc ?? row.startedAtUtc };
+  }
+
   #segmentCount(conversationId: string): number {
     const row = this.#db
       .prepare("SELECT segment_count AS n FROM conversations WHERE id = ?")
@@ -581,6 +799,11 @@ export class Spool {
   }
 
   upsertSpeaker(input: SpeakerInput): void {
+    this.#upsertSpeakerUnlocked(input);
+  }
+
+  /** `upsertSpeaker` without its own transaction, for use inside one. */
+  #upsertSpeakerUnlocked(input: SpeakerInput): void {
     const current = this.#db
       .prepare(
         "SELECT label, embedding_count AS embeddingCount, is_self AS isSelf, centroid, example_embeddings AS examples FROM speaker_clusters WHERE id = ?",

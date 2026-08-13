@@ -78,6 +78,18 @@ export interface AssemblerOptions {
   makeId?: () => string;
 }
 
+/**
+ * Copy a segment for a rollback snapshot. `slice()` alone would keep the same
+ * mutable segment objects — and the same `embedding` array — so a later
+ * mutation would rewrite the snapshot it is supposed to restore from.
+ */
+function cloneSegment(segment: AssemblySegment): AssemblySegment {
+  return {
+    ...segment,
+    ...(segment.embedding ? { embedding: segment.embedding.slice() } : {}),
+  };
+}
+
 /** Parse an ISO-8601 timestamp to epoch ms, rejecting garbage loudly. */
 function epochMs(value: string, field: string): number {
   const ms = Date.parse(value);
@@ -159,6 +171,43 @@ export class ConversationAssembler {
       state: "capturing",
       segments: [],
     });
+  }
+
+  /**
+   * Drop finalized conversations the caller no longer needs.
+   *
+   * A long-running daemon would otherwise retain every conversation and every
+   * segment forever, which makes the rollback snapshot below O(capture
+   * history) and the daemon's per-chunk work quadratic (issue #2145). Only the
+   * open conversation can still be mutated, so nothing else needs keeping.
+   */
+  pruneFinalized(): number {
+    const open = this.#open();
+    const removed = this.#conversations.length - (open ? 1 : 0);
+    this.#conversations.length = 0;
+    if (open) this.#conversations.push(open);
+    return removed;
+  }
+
+  /**
+   * Deep snapshot for rollback (issue #2145).
+   *
+   * `add` mutates the open conversation in place. A caller that fails BEFORE
+   * anything was persisted must be able to rewind, or the retry feeds earlier
+   * timestamps into an advanced assembler and collapses conversations the
+   * first attempt had split. A caller that already persisted something must
+   * NOT rewind: the durable ids would then diverge from the in-memory ones.
+   */
+  checkpoint(): AssembledConversation[] {
+    return this.#conversations.map((conv) => ({ ...conv, segments: conv.segments.map(cloneSegment) }));
+  }
+
+  /** Rewind to a {@link checkpoint}. */
+  rewind(snapshot: readonly AssembledConversation[]): void {
+    this.#conversations.length = 0;
+    for (const conv of snapshot) {
+      this.#conversations.push({ ...conv, segments: conv.segments.map(cloneSegment) });
+    }
   }
 
   /** Ordered snapshot; segments are cloned so callers cannot mutate internal state. */
