@@ -101,6 +101,38 @@ export const SupportPassportCreateGrantRequestSchema = z
     }
   });
 
+export const SupportPassportOwnerCreateGrantRequestSchema = z
+  .object({
+    cardIds: z.array(SupportPassportMemoryIdSchema).min(1).max(8),
+    cardRevisions: z.array(SupportPassportGrantCardRefSchema).min(1).max(8),
+    expiresAt: IsoTimestampSchema.optional(),
+    durationMs: z.number().int().min(300_000).max(604_800_000).optional(),
+  })
+  .strict()
+  .superRefine((input, ctx) => {
+    const cardIds = new Set(input.cardIds);
+    const revisionIds = new Set(input.cardRevisions.map((card) => card.cardId));
+    if (
+      cardIds.size !== input.cardIds.length ||
+      revisionIds.size !== input.cardRevisions.length ||
+      cardIds.size !== revisionIds.size ||
+      input.cardIds.some((cardId) => !revisionIds.has(cardId))
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "card revisions must match the selected card IDs",
+        path: ["cardRevisions"],
+      });
+    }
+    if ((input.expiresAt === undefined) === (input.durationMs === undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "one expiry value is required",
+        path: ["expiresAt"],
+      });
+    }
+  });
+
 export const SupportPassportOwnerGrantSchema = z
   .object({
     grantId: GrantIdSchema,
@@ -158,6 +190,7 @@ export type SupportPassportGrantCardRef = z.infer<typeof SupportPassportGrantCar
 export type SupportPassportGrantState = z.infer<typeof SupportPassportGrantStateSchema>;
 export type SupportPassportCreateGrantInput = z.input<typeof SupportPassportCreateGrantInputSchema>;
 export type SupportPassportCreateGrantRequest = z.input<typeof SupportPassportCreateGrantRequestSchema>;
+export type SupportPassportOwnerCreateGrantRequest = z.input<typeof SupportPassportOwnerCreateGrantRequestSchema>;
 export type SupportPassportOwnerGrant = z.infer<typeof SupportPassportOwnerGrantSchema>;
 export type SupportPassportCreatedGrant = z.infer<typeof SupportPassportCreatedGrantSchema>;
 export type SupportPassportPublicGuide = z.infer<typeof SupportPassportPublicGuideSchema>;

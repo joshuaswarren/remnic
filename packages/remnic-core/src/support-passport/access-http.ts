@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { type OperationName, getOperation } from "../access-boundary.js";
 import type { EngramAccessService } from "../access-service.js";
+import { SupportPassportOwnerCreateGrantRequestSchema } from "./grant-contracts.js";
 import { SupportPassportError } from "./errors.js";
 
 export interface SupportPassportOwnerHttpDependencies {
@@ -132,6 +133,15 @@ export async function handleSupportPassportOwnerHttp(
     }
     if (operation === "support_passport_drafts_generate" && !Object.hasOwn(input, "sourceMemoryRevisions")) {
       throw new SupportPassportError("invalid_input", "Review the selected notes again before drafting.", 400);
+    }
+    if (operation === "support_passport_grant_create") {
+      const grant = SupportPassportOwnerCreateGrantRequestSchema.safeParse(input);
+      if (!grant.success) throw new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
+      input = {
+        cardIds: grant.data.cardIds,
+        cardRevisions: grant.data.cardRevisions,
+        expiresAt: grant.data.expiresAt ?? new Date(Date.now() + grant.data.durationMs!).toISOString(),
+      };
     }
     const result = quotaLimitedWrite
       ? await runWrite(operation, input, dependencies)
