@@ -1,8 +1,45 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
+import { StorageManager } from "../storage.js";
 import { WorkspaceOpsCoordinator, type WorkspaceOpsDeps } from "./workspace-ops.js";
 import type { AccessTrackingEntry, PluginConfig } from "../types.js";
+
+test("gatherTodayFacts excludes support passport cards from day-summary input", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-workspace-passport-"));
+  try {
+    await mkdir(root, { recursive: true });
+    const storage = new StorageManager(root);
+    await storage.writeMemory("preference", "Private support statement", {
+      tags: ["support-passport-card"],
+      source: "support-passport",
+    });
+    await storage.writeMemory("fact", "Public project update", {
+      source: "test",
+    });
+    const coordinator = new WorkspaceOpsCoordinator({
+      config: {
+        defaultNamespace: "default",
+        daySummaryTimezone: "UTC",
+      } as unknown as PluginConfig,
+      storageRouter: {
+        storageFor: async () => storage,
+      },
+    } as unknown as WorkspaceOpsDeps);
+
+    const gathered = await coordinator.gatherTodayFacts(undefined, {
+      now: new Date(),
+      timeZone: "UTC",
+    });
+
+    assert.equal(gathered.includes("Private support statement"), false);
+    assert.equal(gathered.includes("Public project update"), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("flushAccessTracking keeps duplicate memory IDs scoped by memory path", async () => {
   const defaultPath = path.join("/memory", "namespaces", "default", "facts", "same-id.md");

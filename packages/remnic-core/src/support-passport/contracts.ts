@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 
 import { parseIsoOffsetTimestamp } from "../utils/iso-timestamp.js";
+import { STRUCTURED_ATTRIBUTE_LIMITS } from "../write-envelope.js";
 
 export const SUPPORT_PASSPORT_CARD_CATEGORIES = [
   "communication",
@@ -41,6 +42,7 @@ const IsoTimestampSchema = z
 export const SupportPassportNamespaceSchema = z
   .string()
   .min(1)
+  .max(STRUCTURED_ATTRIBUTE_LIMITS.maxValueLength)
   .refine((namespace) => namespace === namespace.trim(), {
     message: "namespaces must be canonical",
   })
