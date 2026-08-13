@@ -148,7 +148,7 @@ export async function commitSupportPassportGeneratedBatch(
   context: GeneratedBatchContext,
   marker: GeneratedBatchMarker,
   cards: readonly StoredSupportPassportCard[],
-  writeMarker: GeneratedBatchMarkerWriter = writeBatchMarker
+  writeMarker: GeneratedBatchMarkerWriter = writeBatchMarker,
 ): Promise<void> {
   const cardIds = cards.map((card) => card.card.cardId);
   if (!sameOwner(marker, context) || cards.length !== marker.size || new Set(cardIds).size !== cards.length) {
@@ -167,7 +167,11 @@ export async function commitSupportPassportGeneratedBatch(
   }
   await context.requireOwnerLock();
   const committed = { ...marker, complete: true };
-  await writeMarker(context.storage, committed);
+  try {
+    await writeMarker(context.storage, committed);
+  } catch (error) {
+    if (!(await isSupportPassportGeneratedBatchCommitted(context, marker))) throw error;
+  }
 }
 
 async function rejectGeneratedDraft(context: GeneratedBatchContext, cardId: string): Promise<boolean> {
