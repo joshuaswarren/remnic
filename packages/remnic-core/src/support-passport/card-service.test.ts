@@ -2530,6 +2530,7 @@ test("generated draft rollback retries a compare-and-swap conflict", async () =>
   const subject = await makeSubject();
   try {
     const writeSealedMemory = subject.aliceStorage.writeSealedMemory.bind(subject.aliceStorage);
+    const readAllMemories = subject.aliceStorage.readAllMemories.bind(subject.aliceStorage);
     let writes = 0;
     subject.aliceStorage.writeSealedMemory = async (...args) => {
       writes += 1;
@@ -2626,6 +2627,56 @@ test("generated draft rollback continues after one cleanup throws", async () => 
     assert.equal(rollbackAttempts, 2);
     const remaining = await subject.service.listCards({ principal: "owner:alice" });
     assert.deepEqual(remaining, []);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("generated draft rollback rejects known cards when the corpus scan fails", async () => {
+  const subject = await makeSubject();
+  try {
+    const writeSealedMemory = subject.aliceStorage.writeSealedMemory.bind(subject.aliceStorage);
+    const readAllMemories = subject.aliceStorage.readAllMemories.bind(subject.aliceStorage);
+    let writes = 0;
+    subject.aliceStorage.writeSealedMemory = async (...args) => {
+      const written = await writeSealedMemory(...args);
+      writes += 1;
+      if (writes === 1) {
+        let failNextCorpusScan = true;
+        subject.aliceStorage.readAllMemories = async (...readArgs) => {
+          if (!failNextCorpusScan) return await readAllMemories(...readArgs);
+          failNextCorpusScan = false;
+          throw new Error("simulated corpus scan failure");
+        };
+      }
+      if (writes === 2) throw new Error("second draft write failed");
+      return written;
+    };
+
+    await assert.rejects(
+      subject.service.createGeneratedDrafts({
+        principal: "owner:alice",
+        cards: [
+          {
+            title: "First draft",
+            statement: "Give me time to answer.",
+            category: "communication",
+            sourceMemoryIds: ["source-1"],
+          },
+          {
+            title: "Second draft",
+            statement: "Tell me before plans change.",
+            category: "transitions",
+            sourceMemoryIds: ["source-2"],
+          },
+        ],
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict",
+    );
+    const persisted = (await readAllMemories()).find(
+      (memory) => memory.frontmatter.tags?.includes("support-passport-card"),
+    );
+    assert.equal(persisted?.frontmatter.status, "rejected");
   } finally {
     await subject.cleanup();
   }
