@@ -57,6 +57,8 @@
     draftGenerationPending: false,
     shareCreationPending: false,
     shareCreationCardIds: null,
+    displayedGrant: null,
+    displayedGrantTimer: null,
     ownerLifecyclePaused: false,
     ownerRequestControllers: new Set(),
     ownerLoadGeneration: 0,
@@ -77,6 +79,47 @@
 
   function setError(id, message = "") {
     byId(id).textContent = message;
+  }
+
+  function clearDisplayedShareLink() {
+    window.clearTimeout(state.displayedGrantTimer);
+    state.displayedGrantTimer = null;
+    state.displayedGrant = null;
+    byId("newLinkPanel").hidden = true;
+    byId("shareLinkInput").value = "";
+    byId("openLinkButton").removeAttribute("href");
+  }
+
+  function scheduleDisplayedShareLinkExpiry() {
+    window.clearTimeout(state.displayedGrantTimer);
+    state.displayedGrantTimer = null;
+    if (!state.displayedGrant) return;
+    const remainingMs = Date.parse(state.displayedGrant.expiresAt) - Date.now();
+    if (remainingMs <= 0) {
+      clearDisplayedShareLink();
+      return;
+    }
+    state.displayedGrantTimer = window.setTimeout(clearDisplayedShareLink, remainingMs);
+  }
+
+  function reconcileDisplayedShareLink() {
+    const displayed = state.displayedGrant;
+    if (!displayed) return;
+    const grant = state.grants.find((candidate) => candidate.grantId === displayed.grantId);
+    const cardsStillCurrent = displayed.cards.every((selected) =>
+      state.cards.some(
+        (card) => card.cardId === selected.cardId && card.revision === selected.revision && card.status === "active"
+      )
+    );
+    if (!grant || grant.status !== "active" || Date.parse(grant.expiresAt) <= Date.now() || !cardsStillCurrent) {
+      clearDisplayedShareLink();
+      return;
+    }
+    scheduleDisplayedShareLinkExpiry();
+  }
+
+  function clearDisplayedShareLinkForCard(cardId) {
+    if (state.displayedGrant?.cards.some((card) => card.cardId === cardId)) clearDisplayedShareLink();
   }
 
   function announce(message) {
@@ -339,6 +382,7 @@
           : action === "reject"
             ? `Rejected ${card.title}. It stays private.`
             : `Withdrew ${card.title}. Existing links will lock.`;
+      if (action === "withdraw") clearDisplayedShareLinkForCard(card.cardId);
       toast(message);
       announce(message);
       try {
@@ -526,6 +570,7 @@
               }
               ownerStateFresh = true;
             }
+            if (state.displayedGrant?.grantId === grant.grantId) clearDisplayedShareLink();
             replayChannel?.postMessage({ type: "grant-revoked", grantId: grant.grantId });
             const message = "Sharing stopped. The helper link is now locked.";
             toast(message);
@@ -559,6 +604,7 @@
     if (generation !== state.ownerLoadGeneration || state.ownerLifecyclePaused) return false;
     state.cards = cards;
     state.grants = grants;
+    reconcileDisplayedShareLink();
     renderCards();
     renderShareCards();
     renderGrants();
@@ -787,9 +833,7 @@
   async function createShare(event) {
     event.preventDefault();
     setError("shareError");
-    byId("newLinkPanel").hidden = true;
-    byId("shareLinkInput").value = "";
-    byId("openLinkButton").removeAttribute("href");
+    clearDisplayedShareLink();
     const selectedInputs = [...document.querySelectorAll('input[name="shareCard"]:checked')];
     const cardIds = selectedInputs.map((input) => input.value);
     if (cardIds.length === 0) {
@@ -846,9 +890,15 @@
       }
       const url = model.buildShareUrl(window.location.href, created.grantId, created.secret, replayMode);
       clearSelection = true;
+      state.displayedGrant = {
+        grantId: created.grantId,
+        expiresAt: created.expiresAt,
+        cards: cardRevisions.map((card) => ({ ...card })),
+      };
       byId("shareLinkInput").value = url;
       byId("openLinkButton").href = url;
       byId("newLinkPanel").hidden = false;
+      scheduleDisplayedShareLinkExpiry();
       const message = `Share link created. It ends ${model.formatDate(created.expiresAt)}.`;
       toast(message);
       announce(message);
@@ -1168,6 +1218,7 @@
     state.draftGenerationPending = false;
     state.shareCreationPending = false;
     state.shareCreationCardIds = null;
+    clearDisplayedShareLink();
     clearPrefillToken();
     window.clearTimeout(state.toastTimer);
     byId("connectForm").reset();
@@ -1176,9 +1227,6 @@
     byId("shareForm").reset();
     byId("customTimeField").hidden = true;
     if (byId("cardDialog").open) byId("cardDialog").close();
-    byId("newLinkPanel").hidden = true;
-    byId("shareLinkInput").value = "";
-    byId("openLinkButton").removeAttribute("href");
     byId("toast").textContent = "";
     byId("toast").classList.remove("visible");
     byId("announcer").textContent = "";
