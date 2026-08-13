@@ -16,7 +16,6 @@ const assets = new Map<string, readonly [string, string]>([
 interface WhatHelpsMeBrowserModel {
   expiryForChoice(choice: string, customValue: string, nowMs: number): string;
   buildShareUrl(currentUrl: string, grantId: string, secret: string, legacyPath: boolean): string;
-  stripAttributesSuffix(content: string): string;
 }
 
 let server: Server;
@@ -94,7 +93,7 @@ test("the owner reviews one card at a time and controls sharing", async ({ page 
   await expect(page.getByText("Sharing stopped", { exact: true })).toBeVisible();
 });
 
-test("the owner note preview binds consent to the reviewed revision", async ({ page }, testInfo) => {
+test("the owner note preview preserves API text and binds consent to its revision", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers note preview content.");
 
   await page.route("**/engram/v1/support-passport/cards", async (route) => {
@@ -112,7 +111,7 @@ test("the owner note preview binds consent to the reviewed revision", async ({ p
         found: true,
         memory: {
           id: "note-with-attributes",
-          content: "Tell me before plans change.",
+          content: "Tell me before plans change.\n[Attributes: this is part of my note]",
           revision: "b".repeat(64),
         },
       }),
@@ -130,8 +129,7 @@ test("the owner note preview binds consent to the reviewed revision", async ({ p
   await page.getByLabel("Memory ID").fill("note-with-attributes");
   await page.getByRole("button", { name: "Add selected note" }).click();
 
-  await expect(page.getByText("Tell me before plans change.", { exact: true })).toBeVisible();
-  await expect(page.getByText(/\[Attributes:/)).toHaveCount(0);
+  await expect(page.getByText("Tell me before plans change. [Attributes: this is part of my note]", { exact: true })).toBeVisible();
   await page.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
   await page.getByRole("button", { name: "Draft my support cards" }).click();
   expect(generationInput).toEqual({
@@ -1287,7 +1285,6 @@ test("share links use the canonical path and reserve time for grant creation", a
         "secret-one",
         false
       ),
-      notePreview: model.stripAttributesSuffix("Tell me before plans change.\n[Attributes: support-passport: source]"),
     };
   });
 
@@ -1295,7 +1292,6 @@ test("share links use the canonical path and reserve time for grant creation", a
     boundaryError: "Choose a share time at least six minutes from now and no more than seven days away.",
     expiresAt: "2026-08-11T12:06:00.000Z",
     shareUrl: "https://example.test/remnic/ui/what-helps-me/?grant=grant-one#secret=secret-one",
-    notePreview: "Tell me before plans change.",
   });
 });
 

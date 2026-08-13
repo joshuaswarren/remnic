@@ -113,17 +113,6 @@
     return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
   }
 
-  function stripAttributesSuffix(content) {
-    const trimmed = content.trimEnd();
-    if (!trimmed.endsWith("]")) return content.trim();
-    const marker = "\n[Attributes: ";
-    const markerIndex = trimmed.lastIndexOf(marker);
-    if (markerIndex === -1) return content.trim();
-    const inner = trimmed.slice(markerIndex + marker.length, -1);
-    if (inner.includes("]") || inner.includes("\n")) return content.trim();
-    return trimmed.slice(0, markerIndex).trim();
-  }
-
   function assertCard(value) {
     const keys = ["cardId", "title", "statement", "category", "status", "updatedAt", "reviewBy", "revision"];
     if (!hasExactKeys(value, keys)) throw new Error("The support card response has an unexpected shape.");
@@ -586,6 +575,5 @@
     parseMemoryPreview,
     parsePublicGuide,
     parseSecret,
-    stripAttributesSuffix,
   });
 })(window);

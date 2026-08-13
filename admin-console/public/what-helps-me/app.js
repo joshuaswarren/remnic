@@ -679,7 +679,7 @@
         ...state.selectedNotes,
         {
           memoryId,
-          content: model.stripAttributesSuffix(preview.memory.content),
+          content: preview.memory.content,
           revision: preview.memory.revision,
         },
       ];
