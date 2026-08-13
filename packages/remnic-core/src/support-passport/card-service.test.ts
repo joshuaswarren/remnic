@@ -6,7 +6,7 @@ import { test } from "node:test";
 
 import { StorageManager } from "../storage.js";
 import { stripAttributesSuffix } from "../structured-attributes.js";
-import { projectSupportPassportCard } from "./card-projection.js";
+import { computeSupportPassportOwnerKey, projectSupportPassportCard } from "./card-projection.js";
 import { SupportPassportCardService } from "./card-service.js";
 import { SupportPassportError } from "./errors.js";
 import { supportPassportOwnerLockPath } from "./owner-lock.js";
@@ -196,6 +196,13 @@ test("card reads and mutations stay inside the resolved namespace on shared stor
     assert.notEqual(
       supportPassportOwnerLockPath(subject.storage, { namespace: "alice", principal: "owner:alice" }),
       supportPassportOwnerLockPath(subject.storage, { namespace: "bob", principal: "owner:bob" })
+    );
+    assert.equal(
+      supportPassportOwnerLockPath(subject.storage, { namespace: "alice", principal: "owner:alice" }),
+      supportPassportOwnerLockPath(subject.storage, {
+        namespace: "alice",
+        ownerKey: computeSupportPassportOwnerKey("owner:alice"),
+      })
     );
     const aliceDraft = await subject.service.createManualDraft({
       principal: "owner:alice",
