@@ -1756,3 +1756,99 @@ test("a restart holds only the conversation each incomplete chunk belongs to", a
     spool.close();
   }
 });
+
+test("a replay resumes its own conversation, not merely the newest", async () => {
+  // The missing tail of an OLDER chunk predates the newest capturing
+  // conversation, so resuming the newest would strand it (issue #2145).
+  const spool = new Spool(":memory:");
+  try {
+    const older = chunk({ path: "/tmp/raw/older.wav" });
+    const cid = chunkStableId(older);
+    const head = { text: "A", startUtc: t(1), endUtc: t(2) };
+    const tailSeg = { text: "tail", startUtc: t(3), endUtc: t(4) };
+    spool.markApplied(transcriptManifestKey(cid), transcriptManifestHash(cid, [head, tailSeg]));
+    spool.appendAssembledSegments({
+      idempotencyKey: segmentStableKey(cid, head),
+      chunkId: segmentStableKey(cid, head),
+      conversationId: "conv_older",
+      startedAtUtc: head.startUtc,
+      state: "capturing",
+      segments: [{ channel: "mic", text: "A", startUtc: head.startUtc, endUtc: head.endUtc, isWearer: true }],
+    });
+    // A NEWER conversation is also capturing, and is what `latestCapturing`
+    // would return.
+    spool.appendAssembledSegments({
+      idempotencyKey: "seg-newer",
+      chunkId: "chunk-newer",
+      conversationId: "conv_newer",
+      startedAtUtc: "2026-07-24T08:00:00.000Z",
+      state: "capturing",
+      segments: [
+        {
+          channel: "mic",
+          text: "later talk",
+          startUtc: "2026-07-24T08:00:00.000Z",
+          endUtc: "2026-07-24T08:00:05.000Z",
+          isWearer: true,
+        },
+      ],
+    });
+
+    const proc = createChunkProcessor(
+      deps(spool, { onError: () => undefined, transcribe: async () => [head, tailSeg] }),
+    );
+    proc.enqueue(older);
+    await proc.finalize();
+    assert.deepEqual(
+      spool.conversationSegmentsForDedup("conv_older").map((seg) => seg.text),
+      ["A", "tail"],
+      "the missing tail joined its own conversation",
+    );
+  } finally {
+    spool.close();
+  }
+});
+
+test("a manifest with no stored segments still holds what a replay could resume", async () => {
+  // A crash between the manifest write and the first append leaves no mapping,
+  // so the hold must fall back to everything resumable (issue #2145).
+  const spool = new Spool(":memory:");
+  try {
+    const ev = chunk();
+    const cid = chunkStableId(ev);
+    spool.markApplied(
+      transcriptManifestKey(cid),
+      transcriptManifestHash(cid, [{ text: "A", startUtc: t(1), endUtc: t(2) }]),
+    );
+    spool.appendAssembledSegments({
+      idempotencyKey: "seg-open",
+      chunkId: "chunk-open",
+      conversationId: "conv_open",
+      startedAtUtc: t(1),
+      state: "capturing",
+      segments: [{ channel: "mic", text: "open", startUtc: t(1), endUtc: t(2), isWearer: true }],
+    });
+    assert.deepEqual(spool.conversationIdsForChunk(cid), [], "the chunk stored nothing yet");
+
+    const later = chunk({
+      path: "/tmp/raw/later.wav",
+      startedAtUtc: "2026-07-24T09:00:00.000Z",
+      endedAtUtc: "2026-07-24T09:00:30.000Z",
+    });
+    const proc = createChunkProcessor(
+      deps(spool, {
+        transcribe: async () => [
+          { text: "later", startUtc: "2026-07-24T09:00:00.000Z", endUtc: "2026-07-24T09:00:05.000Z" },
+        ],
+      }),
+    );
+    proc.enqueue(later);
+    await proc.finalize();
+    assert.ok(
+      [...spool.capturingConversationIds()].includes("conv_open"),
+      "the conversation a replay could still need stayed open",
+    );
+  } finally {
+    spool.close();
+  }
+});

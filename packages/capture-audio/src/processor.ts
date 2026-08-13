@@ -224,7 +224,20 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       retainedChunks.delete(chunkId);
       return;
     }
-    retainedChunks.set(chunkId, new Set(resumable));
+    retainedChunks.set(chunkId, heldFor(chunkId, resumable));
+  }
+
+  /**
+   * The conversations one chunk's replay could still need.
+   *
+   * Scoped to the conversations the chunk actually contributed segments to, so
+   * a hold never keeps unrelated audio off the final-only read path. A chunk
+   * with a manifest but no stored segments — a crash between the two — has no
+   * mapping yet, so it conservatively holds everything currently resumable.
+   */
+  function heldFor(chunkId: string, resumable: ReadonlySet<string>): Set<string> {
+    const own = deps.spool.conversationIdsForChunk(chunkId).filter((id) => resumable.has(id));
+    return own.length > 0 ? new Set(own) : new Set(resumable);
   }
 
   /** Conversations a replay could resume right now. */
@@ -469,7 +482,15 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     // never call assembler.add, so closeIfIdle is what closes them.
     if (!recovered) {
       recovered = true;
-      const prior = deps.spool.latestCapturingConversation();
+      // Prefer the conversation this batch's own chunks already contributed
+      // to: a replay of an OLDER chunk must resume its own prefix, or its
+      // missing tail predates the newest capturing conversation and lands in a
+      // new one instead (issue #2145).
+      const ownPrefix = batch
+        .flatMap((entry) => deps.spool.conversationIdsForChunk(entry.chunkId))
+        .map((id) => deps.spool.capturingConversationById(id))
+        .find((conversation) => conversation !== null);
+      const prior = ownPrefix ?? deps.spool.latestCapturingConversation();
       if (prior) {
         deps.assembler.resume(prior);
         openConversationId = prior.id;
@@ -480,15 +501,10 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       // are the prefixes its replay could still resume (issue #2145).
       const capturingAtStartup = new Set(deps.spool.capturingConversationIds());
       for (const chunkId of deps.spool.incompleteChunkIds()) {
-        // Scope each hold to the conversations that chunk actually contributed
-        // to: attaching every capturing conversation to every incomplete chunk
-        // would keep unrelated audio off the final-only read path, and would
-        // stop a completed conversation from finalizing while any OTHER chunk
-        // is still awaiting replay.
-        const held = deps.spool
-          .conversationIdsForChunk(chunkId)
-          .filter((id) => capturingAtStartup.has(id));
-        if (held.length > 0) retainedChunks.set(chunkId, new Set(held));
+        // Each hold is scoped to that chunk's own conversation, so a completed
+        // one finalizes even while another chunk still awaits replay.
+        const held = heldFor(chunkId, capturingAtStartup);
+        if (held.size > 0) retainedChunks.set(chunkId, held);
       }
     }
     // Decide retention BEFORE anything can close a conversation: a chunk kept

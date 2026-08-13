@@ -777,6 +777,20 @@ export class Spool {
     return { id: row.id, startedAtUtc: row.startedAtUtc, endedAtUtc: row.endedAtUtc ?? row.startedAtUtc };
   }
 
+  /** One capturing conversation by id, for resuming a specific prefix. */
+  capturingConversationById(
+    id: string,
+  ): { id: string; startedAtUtc: string; endedAtUtc: string } | null {
+    const row = this.#db
+      .prepare(
+        "SELECT id, started_at_utc AS startedAtUtc, ended_at_utc AS endedAtUtc FROM conversations " +
+          "WHERE id = ? AND state = 'capturing'",
+      )
+      .get(id) as { id: string; startedAtUtc: string; endedAtUtc: string | null } | undefined;
+    if (!row) return null;
+    return { id: row.id, startedAtUtc: row.startedAtUtc, endedAtUtc: row.endedAtUtc ?? row.startedAtUtc };
+  }
+
   #segmentCount(conversationId: string): number {
     const row = this.#db
       .prepare("SELECT segment_count AS n FROM conversations WHERE id = ?")
