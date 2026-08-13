@@ -674,7 +674,9 @@
   async function addMemory(event) {
     event.preventDefault();
     setError("memoryError");
-    const memoryId = byId("memoryIdInput").value.trim();
+    const memoryInput = byId("memoryIdInput");
+    const submittedValue = memoryInput.value;
+    const memoryId = submittedValue.trim();
     if (state.selectedNotes.some((note) => note.memoryId === memoryId)) {
       setError("memoryError", "That note is already selected.");
       return;
@@ -698,7 +700,7 @@
           revision: preview.memory.revision,
         },
       ];
-      byId("memoryIdInput").value = "";
+      if (memoryInput.value === submittedValue) memoryInput.value = "";
       byId("consentInput").checked = false;
       renderSelectedNotes();
       announce("Selected note added. Review it before consent.");
@@ -1158,6 +1160,7 @@
     byId("memoryForm").reset();
     byId("cardForm").reset();
     byId("shareForm").reset();
+    byId("customTimeField").hidden = true;
     if (byId("cardDialog").open) byId("cardDialog").close();
     byId("newLinkPanel").hidden = true;
     byId("shareLinkInput").value = "";
