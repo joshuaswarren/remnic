@@ -17,7 +17,7 @@ export const SUPPORT_PASSPORT_CARD_TAG = "support-passport-card";
 export const SUPPORT_PASSPORT_AUDIT_TAG = "support-passport-audit";
 
 export function isSupportPassportPrivateMemory(
-  memory: Pick<MemoryFile, "frontmatter">
+  memory: { frontmatter: Pick<MemoryFile["frontmatter"], "tags"> }
 ): boolean {
   const tags = memory.frontmatter.tags;
   return (
