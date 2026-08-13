@@ -28,6 +28,7 @@ const ModelJobSchema = z
     temperature: z.number().finite().min(0).max(2),
     maxTokens: z.number().int().min(1).max(32_000),
     timeoutMs: z.number().int().min(1).max(120_000),
+    claimAckDeadlineAt: z.number().int().positive().optional(),
     operation: z.enum(["support-passport-draft", "support-passport-answer"]),
     jsonSchema: z
       .object({
@@ -252,7 +253,7 @@ export class SupportPassportModelBridge {
     pending.claimId = randomUUID();
     pending.claimTimer = setTimeout(() => pending.requeue(), this.claimAckTimeoutMs);
     pending.claimTimer.unref?.();
-    return { ...job, claimId: pending.claimId };
+    return { ...job, claimId: pending.claimId, claimAckDeadlineAt: Date.now() + this.claimAckTimeoutMs };
   }
 
   private takeAvailable(claimLease: boolean): SupportPassportModelJob | null {

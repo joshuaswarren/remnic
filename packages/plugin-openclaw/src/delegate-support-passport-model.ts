@@ -183,16 +183,29 @@ export function createDelegateSupportPassportModelService(
     signal: AbortSignal,
   ): Promise<boolean> => {
     if (!job.claimId) return true;
-    const response = await post(
-      options.target,
-      options.serviceId,
-      SUPPORT_PASSPORT_MODEL_ACK_PATH,
-      { id: job.id, claimId: job.claimId },
-      signal,
-      Math.min(RESULT_REQUEST_TIMEOUT_MS, job.timeoutMs),
-    );
-    await response.body?.cancel();
-    return response.ok;
+    const deadline = Math.min(Date.now() + job.timeoutMs, job.claimAckDeadlineAt ?? Date.now() + job.timeoutMs);
+    while (!signal.aborted && Date.now() < deadline) {
+      const remainingMs = deadline - Date.now();
+      try {
+        const response = await post(
+          options.target,
+          options.serviceId,
+          SUPPORT_PASSPORT_MODEL_ACK_PATH,
+          { id: job.id, claimId: job.claimId },
+          signal,
+          Math.min(RESULT_REQUEST_TIMEOUT_MS, remainingMs),
+        );
+        const status = response.status;
+        await response.body?.cancel();
+        if (response.ok) return true;
+        if (status !== 408 && status !== 425 && status !== 429 && status < 500) return false;
+      } catch {
+        if (signal.aborted) return false;
+      }
+      const retryDelayMs = Math.min(RESULT_RETRY_DELAY_MS, deadline - Date.now());
+      if (retryDelayMs > 0) await abortableRetryDelay(signal, retryDelayMs);
+    }
+    return false;
   };
   const runPoller = async (signal: AbortSignal): Promise<void> => {
     let consecutiveFailures = 0;
