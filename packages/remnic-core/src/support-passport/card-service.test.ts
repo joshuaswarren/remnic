@@ -2697,10 +2697,54 @@ test("listing rolls back an incomplete generated batch after restart", async () 
       resolveOwner: async (principal) => ({ principal, namespace: "alice", storage: restartedStorage }),
     });
     assert.deepEqual(await restarted.listCards({ principal: "owner:alice" }), []);
+    assert.deepEqual(await restarted.listCards({ principal: "owner:alice" }), []);
     assert.equal((await restartedStorage.getMemoryById(card.frontmatter.id))?.frontmatter.status, "rejected");
     await assert.rejects(readFile(markerPath, "utf8"), (error: unknown) => {
       return (error as NodeJS.ErrnoException).code === "ENOENT";
     });
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("completed generated batches survive individual card withdrawal", async () => {
+  const subject = await makeSubject();
+  try {
+    const drafts = await subject.service.createGeneratedDrafts({
+      principal: "owner:alice",
+      cards: [
+        {
+          title: "Communication",
+          statement: "Give me time to answer.",
+          category: "communication",
+          sourceMemoryIds: ["source-1"],
+        },
+        {
+          title: "Transitions",
+          statement: "Tell me before plans change.",
+          category: "transitions",
+          sourceMemoryIds: ["source-2"],
+        },
+      ],
+    });
+    const active = [];
+    for (const draft of drafts) {
+      active.push(await subject.service.approveCard({
+        principal: "owner:alice",
+        cardId: draft.cardId,
+        expectedRevision: draft.revision,
+      }));
+    }
+    await subject.service.withdrawCard({
+      principal: "owner:alice",
+      cardId: active[0]!.cardId,
+      expectedRevision: active[0]!.revision,
+    });
+
+    assert.deepEqual(
+      (await subject.service.listCards({ principal: "owner:alice" })).map((card) => card.cardId),
+      [active[1]!.cardId]
+    );
   } finally {
     await subject.cleanup();
   }
