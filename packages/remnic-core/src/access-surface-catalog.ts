@@ -22,6 +22,8 @@
  */
 
 import type { OperationName } from "./access-boundary.js";
+import { SUPPORT_PASSPORT_OWNER_HTTP_ROUTES } from "./support-passport/access-http.js";
+import { SUPPORT_PASSPORT_PUBLIC_HTTP_ROUTES } from "./support-passport/public-http.js";
 
 /**
  * One row per MCP tool, keyed by the canonical SHORT name (no `engram.`/
@@ -162,6 +164,17 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { tool: "console_state", operation: "console_state" },
   { tool: "dreams_status", operation: "dreams_status" },
   { tool: "dreams_run", operation: "dreams_run" },
+  { tool: "support_passport_memory_preview", operation: "support_passport_memory_preview" },
+  { tool: "support_passport_cards_list", operation: "support_passport_cards_list" },
+  { tool: "support_passport_draft_create", operation: "support_passport_draft_create" },
+  { tool: "support_passport_drafts_generate", operation: "support_passport_drafts_generate" },
+  { tool: "support_passport_card_replace", operation: "support_passport_card_replace" },
+  { tool: "support_passport_card_approve", operation: "support_passport_card_approve" },
+  { tool: "support_passport_card_reject", operation: "support_passport_card_reject" },
+  { tool: "support_passport_card_withdraw", operation: "support_passport_card_withdraw" },
+  { tool: "support_passport_grant_create", operation: "support_passport_grant_create" },
+  { tool: "support_passport_grants_list", operation: "support_passport_grants_list" },
+  { tool: "support_passport_grant_revoke", operation: "support_passport_grant_revoke" },
 ];
 
 // Each route below corresponds 1:1 to a service-invoking route branch in
@@ -260,6 +273,8 @@ export const HTTP_ROUTES: readonly HttpRouteEntry[] = [
   { method: "GET", pathname: "/engram/v1/graph/events", operation: "graph_events" },
   { method: "POST", pathname: "/engram/v1/chat/message", operation: "chat_message" },
   { method: "GET", pathname: "/engram/v1/chat/events/:id", operation: "chat_events" },
+  ...SUPPORT_PASSPORT_OWNER_HTTP_ROUTES,
+  ...SUPPORT_PASSPORT_PUBLIC_HTTP_ROUTES,
 ];
 
 /**

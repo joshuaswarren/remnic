@@ -317,6 +317,7 @@ import { AccessLcmSurface } from "./access-lcm-surface.js";
 import { AccessAdminOpsSurface } from "./access-admin-ops-surface.js";
 import { AccessRecallSurface } from "./access-recall-surface.js";
 import { AccessIdentityContinuitySurface } from "./access-identity-continuity-surface.js";
+import { SupportPassportAccessServiceBase } from "./support-passport/access-service-base.js";
 import { selfDeps } from "./orchestration/self-deps.js";
 
 import { EngramAccessInputError, NamespaceNotWritableError } from "./access-errors.js";
@@ -1306,7 +1307,7 @@ export function shapeMemorySummary(
   };
 }
 
-export class EngramAccessService {
+export class EngramAccessService extends SupportPassportAccessServiceBase {
   private readonly idempotency: AccessIdempotencyStore;
   private readonly idempotencyLocks = new Map<string, Promise<void>>();
   private readonly recallSemaphores = new Map<string, unknown>();
@@ -1378,6 +1379,7 @@ export class EngramAccessService {
   private readonly extractionLivenessWarn = new ExtractionLivenessWarnThrottle();
 
   constructor(private readonly orchestrator: Orchestrator, options: { resolveSecretRef?: ResolveSecretRefFn | null } = {}) {
+    super();
     this.idempotency = new AccessIdempotencyStore(orchestrator.config.memoryDir);
     // Peer SecretRef tokens resolve at poll time through the host resolver, the
     // same indirection as agentAccessHttp.authToken (review round 1). Absent a
@@ -5272,6 +5274,7 @@ export class EngramAccessService {
   }
 
   async getWritableStorageForNamespace(namespace?: string, principal?: string): Promise<{
+    principal: string;
     namespace: string;
     storage: StorageManager;
   }> {
@@ -5282,7 +5285,7 @@ export class EngramAccessService {
     }
     const resolved = this.writableNamespaceFor(namespace, undefined, principal);
     const storage = await this.orchestrator.getStorage(resolved);
-    return { namespace: resolved, storage };
+    return { principal: principal?.trim() ?? "system", namespace: resolved, storage };
   }
 
   get storageRef(): StorageManager {
@@ -5291,9 +5294,8 @@ export class EngramAccessService {
 
 // #1522: recordCatalogWrite removed — catalog touch handled at the storage chokepoint.
 
-  get configRef(): PluginConfig {
-    return this.orchestrator.config;
-  }
+  get configRef(): PluginConfig { return this.orchestrator.config; }
+  getStorageForResolvedNamespace(namespace: string): Promise<StorageManager> { return this.orchestrator.getStorage(namespace); }
 
   get localLlmRef(): LocalLlmClient | null {
     return this.orchestrator.localLlm ?? null;

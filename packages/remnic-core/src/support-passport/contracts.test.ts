@@ -99,6 +99,7 @@ test("support passport namespaces reject path and attribute delimiters", () => {
     assert.equal(SupportPassportNamespaceSchema.safeParse(namespace).success, false);
   }
   assert.equal(SupportPassportNamespaceSchema.safeParse("team.alpha-1").success, true);
+  assert.equal(SupportPassportNamespaceSchema.safeParse("team support").success, true);
 });
 
 test("support card revisions change when any public field changes", () => {

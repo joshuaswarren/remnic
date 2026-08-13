@@ -28,7 +28,7 @@ test("WriteRateLimiter: capacity check, record, and sampled rejection logging (i
     assert.equal(limiter.hasCapacity(), false);
     assert.ok(
       warnings.some((w) => w.includes("write_rate_limited")),
-      "a refused write is logged server-side",
+      "a refused write is logged server-side"
     );
     assert.equal(warnings.length, 1, "logging is sampled within the interval, not per-refusal");
   } finally {
@@ -38,13 +38,37 @@ test("WriteRateLimiter: capacity check, record, and sampled rejection logging (i
 
 test("WriteRateLimiter: reserve returns a release, refuses at the limit, frees on release", () => {
   const limiter = new WriteRateLimiter(1, 60_000);
-  const release = limiter.reserve();
-  assert.ok(release, "first reservation succeeds");
-  assert.equal(limiter.slotsFor().length, 1);
+  const reservation = limiter.reserve();
+  assert.ok(reservation, "first reservation succeeds");
+  assert.equal(limiter.inFlightFor(), 1);
+  assert.equal(limiter.totalSlots(), 1);
+  assert.equal(limiter.slotsFor().length, 0);
   assert.equal(limiter.reserve(), null, "second reservation refused at the limit");
-  release?.();
-  assert.equal(limiter.slotsFor().length, 0, "release frees the reserved slot");
+  reservation?.release();
+  assert.equal(limiter.inFlightFor(), 0, "release frees the reserved slot");
   assert.ok(limiter.reserve(), "capacity restored after release");
+});
+
+test("WriteRateLimiter: an in-flight write does not expire and commit starts its window", () => {
+  const realNow = Date.now;
+  try {
+    let now = 1_000_000;
+    Date.now = () => now;
+    const limiter = new WriteRateLimiter(1, 1000);
+    const reservation = limiter.reserve();
+    assert.ok(reservation);
+    now += 1001;
+    assert.equal(limiter.reserve(), null, "an active reservation remains capacity-bound");
+
+    reservation.commit();
+    assert.equal(limiter.inFlightFor(), 0);
+    assert.equal(limiter.slotsFor()[0]?.recordedAt, now);
+    assert.equal(limiter.reserve(), null, "the commit starts a new rolling window");
+    now += 1000;
+    assert.ok(limiter.reserve(), "capacity returns when the commit window expires");
+  } finally {
+    Date.now = realNow;
+  }
 });
 
 test("WriteRateLimiter: old slots pruned after the rolling window", () => {
