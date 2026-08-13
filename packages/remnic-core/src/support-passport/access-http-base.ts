@@ -55,7 +55,10 @@ export abstract class SupportPassportAccessHttpBase {
 
   protected handleSupportPassportPublicRequest(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
     this.supportPassportPublicHandler ??= buildSupportPassportPublicRequestHandler(this.service);
-    return this.supportPassportPublicHandler(req, res, { authorized: false });
+    return this.supportPassportPublicHandler(req, res, {
+      authorized: false,
+      tokenAuthorized: false,
+    });
   }
 
   protected async enforceSupportPassportAuthorizationProbe(req: IncomingMessage): Promise<void> {
