@@ -52,13 +52,26 @@ test("openaiBaseUrl falls back to OPENAI_BASE_URL when not set in config", () =>
 
 test("openaiBaseUrl rejects unsupported schemes", () => {
   const { warnings } = withLoggerWarnings();
-  const cfg = parseConfig({
-    openaiApiKey: "sk-test",
-    openaiBaseUrl: "ftp://provider.example.test/v1",
-  });
+  assert.throws(
+    () => parseConfig({
+      openaiApiKey: "sk-test",
+      openaiBaseUrl: "ftp://provider.example.test/v1",
+    }),
+    /openaiBaseUrl must use HTTP or HTTPS/,
+  );
+  assert.equal(warnings.length, 0);
+});
 
-  assert.equal(cfg.openaiBaseUrl, undefined);
-  assert.ok(warnings.some((w) => w.includes("unsupported URL scheme")));
+test("openaiBaseUrl rejects malformed configured URLs", () => {
+  const { warnings } = withLoggerWarnings();
+  assert.throws(
+    () => parseConfig({
+      openaiApiKey: "sk-test",
+      openaiBaseUrl: "not a URL",
+    }),
+    /openaiBaseUrl must be an absolute HTTP or HTTPS URL/,
+  );
+  assert.equal(warnings.length, 0);
 });
 
 test("openaiBaseUrl warns when using insecure http", () => {
