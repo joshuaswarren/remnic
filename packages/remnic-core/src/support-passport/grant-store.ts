@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { type FileHandle, lstat, open, readdir } from "node:fs/promises";
+import { type FileHandle, lstat, open } from "node:fs/promises";
 import path from "node:path";
 
 import { log } from "../logger.js";
@@ -460,20 +460,36 @@ export class SupportPassportGrantStore {
       if (!persisted || !sameGrantState(persisted, committed.state)) {
         throw new SupportPassportError("storage_conflict", "The share link store changed during the request.", 409);
       }
-      let ownerStates = await this.readAllOwnerStates(
-        committed.state.namespace,
-        committed.state.principalHash,
+      const ownerHash = this.ownerHash(committed.state.namespace, committed.state.principalHash);
+      const indexedGrantIds = await this.readOwnerIndexByHash(ownerHash);
+      const ownerStates: SupportPassportGrantState[] = [];
+      for (const grantId of indexedGrantIds) {
+        const state = await this.readState(grantId);
+        if (
+          state.namespace !== committed.state.namespace ||
+          !hashesMatch(state.principalHash, committed.state.principalHash)
+        ) {
+          throw new Error("support passport owner index references a foreign grant");
+        }
+        ownerStates.push(state);
+      }
+      const committedIndex = ownerStates.findIndex(
+        (state) => state.grantId === committed.state.grantId,
       );
+      if (committedIndex === -1) ownerStates.push(committed.state);
+      else ownerStates[committedIndex] = committed.state;
       const activeCutoff = this.now().getTime();
       const active = ownerStates.filter(
         (state) => !state.revokedAt && Date.parse(state.expiresAt) > activeCutoff,
       );
       if (active.length > MAX_OWNER_GRANT_HISTORY) {
         await this.removeGrantStates([committed.state.grantId]);
-        ownerStates = ownerStates.filter((state) => state.grantId !== committed.state.grantId);
+        const committedIndex = ownerStates.findIndex(
+          (state) => state.grantId === committed.state.grantId,
+        );
+        if (committedIndex !== -1) ownerStates.splice(committedIndex, 1);
       }
       const retained = this.retainedOwnerStates(ownerStates, activeCutoff);
-      const ownerHash = this.ownerHash(committed.state.namespace, committed.state.principalHash);
       await this.requireMutationLock(lock);
       await this.writeOwnerIndex(ownerHash, retained.map((state) => state.grantId));
       await this.requireOwnerIndexLock(lock);
@@ -501,29 +517,6 @@ export class SupportPassportGrantStore {
       ...active,
       ...inactive.slice(0, MAX_OWNER_GRANT_HISTORY - active.length),
     ];
-  }
-
-  private async readAllOwnerStates(
-    namespace: string,
-    principalHash: string,
-  ): Promise<SupportPassportGrantState[]> {
-    const grantIds = await withPrivateDirectoryNoFollow(
-      path.parse(this.memoryDir).root,
-      this.grantsDir,
-      "support passport grant files must be regular files in a stable directory",
-      async (pinnedDirectory) => (await readdir(pinnedDirectory, { withFileTypes: true }))
-        .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-        .map((entry) => entry.name.slice(0, -".json".length))
-        .filter((grantId) => SAFE_GRANT_ID.test(grantId)),
-    );
-    const states: SupportPassportGrantState[] = [];
-    for (const grantId of grantIds) {
-      const state = await this.readState(grantId);
-      if (state.namespace === namespace && hashesMatch(state.principalHash, principalHash)) {
-        states.push(state);
-      }
-    }
-    return states;
   }
 
   private async readOwnerIndex(namespace: string, principalHash: string): Promise<string[]> {

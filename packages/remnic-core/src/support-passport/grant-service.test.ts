@@ -882,6 +882,60 @@ test("grant creation reconciles peer state when the owner-index lock is lost aft
   }
 });
 
+test("grant recovery reads only the affected owner's index", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-scoped-recovery-"));
+  try {
+    const grantIds = [
+      "00000000-0000-4000-8000-000000000001",
+      "00000000-0000-4000-8000-000000000002",
+    ];
+    const unindexedGrantId = "00000000-0000-4000-8000-000000000003";
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({
+      memoryDir: root,
+      makeGrantId: () => grantIds.shift() ?? "00000000-0000-4000-8000-000000000004",
+      now: () => now,
+    });
+    const input = {
+      namespace: "alice",
+      principal: "owner:alice",
+      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+      expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
+    };
+    const first = await store.create(input);
+    const grantsDir = path.join(root, "state", "support-passport", "grants");
+    await writeFile(path.join(grantsDir, `${unindexedGrantId}.json`), "not valid JSON", {
+      mode: 0o600,
+    });
+    let lockRun = 0;
+    let firstRunRefreshes = 0;
+    const inspected = store as unknown as {
+      withMutationLock<T>(task: (lock: { refresh(): Promise<boolean> }) => Promise<T>): Promise<T>;
+    };
+    inspected.withMutationLock = async (task) => {
+      lockRun += 1;
+      return await task({
+        refresh: async () => {
+          if (lockRun !== 1) return true;
+          firstRunRefreshes += 1;
+          return firstRunRefreshes !== 4;
+        },
+      });
+    };
+
+    const created = await store.create(input);
+
+    assert.equal(lockRun, 2);
+    assert.deepEqual(
+      new Set((await store.listForOwner(input.namespace, input.principal)).map((state) => state.grantId)),
+      new Set([first.state.grantId, created.state.grantId]),
+    );
+    assert.equal(await readFile(path.join(grantsDir, `${unindexedGrantId}.json`), "utf8"), "not valid JSON");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("grant creation rechecks its mutation lock after the commit callback", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-callback-lock-"));
   try {
