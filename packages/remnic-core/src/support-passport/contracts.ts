@@ -103,6 +103,13 @@ export const SupportPassportCardMutationInputSchema = z
     principal: z.string().trim().min(1).max(512),
     cardId: SupportPassportMemoryIdSchema,
     expectedRevision: z.string().regex(/^[a-f0-9]{64}$/),
+    reasonCode: z
+      .string()
+      .trim()
+      .min(1)
+      .max(64)
+      .regex(/^[a-z0-9-]+$/)
+      .optional(),
   })
   .strict();
 

@@ -269,7 +269,27 @@ export async function projectCommittedSupportPassportCards(
   for (const card of projected) {
     if (await isCommittedGeneratedCard(storage, card, markers)) committed.push(card);
   }
+  const ids = new Set<string>();
+  for (const card of committed) {
+    if (ids.has(card.card.cardId)) {
+      throw new SupportPassportError("card_data_invalid", "Support card IDs must be unique.", 500);
+    }
+    ids.add(card.card.cardId);
+  }
   return committed;
+}
+
+export async function readCommittedSupportPassportCards(
+  storage: StorageManager,
+  namespace: string,
+  principal: string
+): Promise<StoredSupportPassportCard[]> {
+  return await projectCommittedSupportPassportCards(
+    storage,
+    await storage.readAllMemories(),
+    namespace,
+    principal
+  );
 }
 
 export async function recoverSupportPassportGeneratedBatches(

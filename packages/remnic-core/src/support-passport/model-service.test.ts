@@ -956,6 +956,7 @@ test("cancellation rolls back a generated batch and records an aborted audit", a
     });
     const controller = new AbortController();
     const records: SupportPassportModelAuditRecord[] = [];
+    let committed = 0;
     const writeSealedMemory = subject.aliceStorage.writeSealedMemory.bind(subject.aliceStorage);
     let draftWrites = 0;
     subject.aliceStorage.writeSealedMemory = async (...args) => {
@@ -1008,10 +1009,14 @@ test("cancellation rolls back a generated batch and records an aborted audit", a
         sourceMemoryRevisions: sourceRevision(selected.id, "Give me time to answer."),
         consent: true,
         signal: controller.signal,
+        onCommitted: () => {
+          committed += 1;
+        },
       }),
       /cancelled during draft persistence/
     );
     assert.equal(draftWrites, 1);
+    assert.equal(committed, 1);
     assert.deepEqual(await subject.cardService.listCards({ principal: "owner:alice" }), []);
     await flushAudit();
     assert.equal(records[0]?.errorClass, "aborted");
@@ -1329,7 +1334,8 @@ test("helper questions honor cancellation during final grant validation", async 
   const subject = await makeSubject();
   const finalReadStarted = Promise.withResolvers<void>();
   const releaseFinalRead = Promise.withResolvers<void>();
-  const finalReadSettled = Promise.withResolvers<void>();
+  const finalReadFinished = Promise.withResolvers<void>();
+  let finalReadBegan = false;
   try {
     const draft = await subject.cardService.createManualDraft({
       principal: "owner:alice",
@@ -1352,16 +1358,17 @@ test("helper questions honor cancellation during final grant validation", async 
     let reads = 0;
     subject.grantService.readGrant = async (input) => {
       reads += 1;
-      if (reads === 2) {
+      const isFinalRead = reads === 2;
+      if (isFinalRead) {
+        finalReadBegan = true;
         finalReadStarted.resolve();
         await releaseFinalRead.promise;
-        try {
-          return await readGrant(input);
-        } finally {
-          finalReadSettled.resolve();
-        }
       }
-      return await readGrant(input);
+      try {
+        return await readGrant(input);
+      } finally {
+        if (isFinalRead) finalReadFinished.resolve();
+      }
     };
     const records: SupportPassportModelAuditRecord[] = [];
     const service = new SupportPassportQuestionService({
@@ -1400,12 +1407,13 @@ test("helper questions honor cancellation during final grant validation", async 
     releaseFinalRead.resolve();
 
     await assert.rejects(answer, (error: unknown) => error instanceof Error && error.name === "AbortError");
+    await finalReadFinished.promise;
     await flushAudit();
     assert.equal(records[0]?.outcome, "error");
     assert.equal(records[0]?.errorClass, "aborted");
   } finally {
     releaseFinalRead.resolve();
-    await finalReadSettled.promise;
+    if (finalReadBegan) await finalReadFinished.promise;
     await flushAudit();
     await subject.cleanup();
   }

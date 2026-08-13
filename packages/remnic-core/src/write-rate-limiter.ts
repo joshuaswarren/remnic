@@ -27,6 +27,11 @@ const GLOBAL_BUCKET = "";
 
 type Slot = { readonly recordedAt: number };
 
+export interface WriteRateLimitReservation {
+  commit(): void;
+  release(): void;
+}
+
 function sanitizePositiveInteger(value: number | undefined, fallback: number): number {
   return typeof value === "number" && Number.isInteger(value) && value >= 1 ? value : fallback;
 }
@@ -37,6 +42,7 @@ export class WriteRateLimiter {
   // One rolling window per principal. Empty buckets are pruned so the map does
   // not grow without bound.
   private readonly buckets = new Map<string, Slot[]>();
+  private readonly inFlight = new Map<string, number>();
   private lastLogAt = 0;
   private suppressed = 0;
 
@@ -63,9 +69,13 @@ export class WriteRateLimiter {
     }
   }
 
-  /** Live reservation/record count for a principal (test/introspection). */
+  /** Committed slots for a principal (test/introspection). */
   slotsFor(principal?: string): ReadonlyArray<Slot> {
     return this.buckets.get(this.key(principal)) ?? [];
+  }
+
+  inFlightFor(principal?: string): number {
+    return this.inFlight.get(this.key(principal)) ?? 0;
   }
 
   /** Total live reservations across all principals (test/introspection). */
@@ -73,6 +83,7 @@ export class WriteRateLimiter {
     this.sweep(Date.now());
     let total = 0;
     for (const slots of this.buckets.values()) total += slots.length;
+    for (const count of this.inFlight.values()) total += count;
     return total;
   }
 
@@ -81,7 +92,7 @@ export class WriteRateLimiter {
     this.sweep(Date.now());
     const key = this.key(principal);
     const slots = this.buckets.get(key);
-    if (slots && slots.length >= this.maxRequests) {
+    if ((slots?.length ?? 0) + (this.inFlight.get(key) ?? 0) >= this.maxRequests) {
       this.logRejected(key);
       return false;
     }
@@ -92,30 +103,32 @@ export class WriteRateLimiter {
   record(principal?: string): void {
     this.sweep(Date.now());
     const key = this.key(principal);
-    const slots = this.buckets.get(key) ?? this.buckets.set(key, []).get(key)!;
+    let slots = this.buckets.get(key);
+    if (!slots) {
+      slots = [];
+      this.buckets.set(key, slots);
+    }
     slots.push({ recordedAt: Date.now() });
   }
 
   /**
-   * Reserve a slot for an in-flight write. Returns a release function, or
-   * `null` when the principal is already at the limit (caller raises its 429).
+   * Reserve a slot for an in-flight write. Commit starts the rolling window
+   * when persistence finishes. Release restores capacity after a failed write.
    */
-  reserve(principal?: string): (() => void) | null {
+  reserve(principal?: string): WriteRateLimitReservation | null {
     if (!this.hasCapacity(principal)) return null;
     const key = this.key(principal);
-    const slots = this.buckets.get(key) ?? this.buckets.set(key, []).get(key)!;
-    const slot: Slot = { recordedAt: Date.now() };
-    slots.push(slot);
+    this.inFlight.set(key, (this.inFlight.get(key) ?? 0) + 1);
     let active = true;
-    return () => {
+    const finish = (committed: boolean) => {
       if (!active) return;
       active = false;
-      const current = this.buckets.get(key);
-      if (!current) return;
-      const index = current.indexOf(slot);
-      if (index >= 0) current.splice(index, 1);
-      if (current.length === 0) this.buckets.delete(key);
+      const count = this.inFlight.get(key) ?? 0;
+      if (count <= 1) this.inFlight.delete(key);
+      else this.inFlight.set(key, count - 1);
+      if (committed) this.record(principal);
     };
+    return { commit: () => finish(true), release: () => finish(false) };
   }
 
   private logRejected(principal: string): void {
@@ -127,9 +140,7 @@ export class WriteRateLimiter {
     this.lastLogAt = now;
     const who = principal === GLOBAL_BUCKET ? "(no principal)" : principal;
     log.warn(
-      `write_rate_limited: rejected ${rejected} write(s) for principal ${who}; ` +
-        `per-principal limit is ${this.maxRequests} per ${this.windowMs}ms. Raise ` +
-        `server.writeRateLimitMaxRequests (or REMNIC_WRITE_RATE_LIMIT_MAX_REQUESTS) if sustained.`,
+      `write_rate_limited: rejected ${rejected} write(s) for principal ${who}; per-principal limit is ${this.maxRequests} per ${this.windowMs}ms. Raise server.writeRateLimitMaxRequests (or REMNIC_WRITE_RATE_LIMIT_MAX_REQUESTS) if sustained.`
     );
   }
 }
