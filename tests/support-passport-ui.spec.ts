@@ -1586,6 +1586,20 @@ test("share links use the canonical path and keep preset duration independent fr
   });
 });
 
+test("replay share presets create a finite share link", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers replay expiry.");
+  await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
+  await page.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
+  await page.getByRole("button", { name: "Draft my support cards" }).click();
+  await page.getByRole("button", { name: "Approve" }).first().click();
+  await page.locator('input[name="shareCard"]').first().check();
+  await page.getByRole("button", { name: "Create share link" }).click();
+
+  await expect(page.locator("#toast")).toContainText(/Share link created\. It ends/);
+  await expect(page.locator("#shareLinkInput")).toHaveValue(/grant=/);
+  await expect(page.locator("#grantList")).not.toContainText("Invalid Date");
+});
+
 test("helper load, error, stale, stopped, and expired states fail closed", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers the state matrix.");
 
