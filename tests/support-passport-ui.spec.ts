@@ -2105,11 +2105,13 @@ test("replay owner tabs do not answer another owner's helper", async ({ page, co
 test("replay helpers never cite an unrelated selected card", async ({ page, context }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers replay answer grounding.");
   await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
-  await page.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
-  await page.getByRole("button", { name: "Draft my support cards" }).click();
-  const lightingCard = page.locator(".support-card").filter({ hasText: "Lighting" });
-  await lightingCard.getByRole("button", { name: "Approve" }).click();
-  await page.locator(".card-choice").filter({ hasText: "Lighting" }).locator('input[name="shareCard"]').check();
+  await page.getByRole("button", { name: "Write a card" }).click();
+  await page.getByLabel("Card title").fill("Email preference");
+  await page.getByLabel("What helps me").fill("Sometimes I prefer email.");
+  await page.getByRole("button", { name: "Save draft" }).click();
+  const emailCard = page.locator(".support-card").filter({ hasText: "Email preference" });
+  await emailCard.getByRole("button", { name: "Approve" }).click();
+  await page.locator(".card-choice").filter({ hasText: "Email preference" }).locator('input[name="shareCard"]').check();
   await page.getByRole("button", { name: "Create share link" }).click();
   const shareUrl = await page.locator("#shareLinkInput").inputValue();
 
@@ -2121,7 +2123,7 @@ test("replay helpers never cite an unrelated selected card", async ({ page, cont
     await helper.getByRole("button", { name: "Ask from this guide" }).click();
     await expect(helper.locator("#answerCopy")).toHaveText("That is not covered in this person's support guide.");
     await expect(helper.locator(".citation")).toHaveText("No support card covers this question.");
-    await expect(helper.locator(".citation")).not.toContainText("Lighting");
+    await expect(helper.locator(".citation")).not.toContainText("Email preference");
   } finally {
     await helper.close();
   }
