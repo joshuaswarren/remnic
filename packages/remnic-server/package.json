@@ -22,7 +22,8 @@
     "src/index.ts",
     "src/oauth.ts",
     "src/server-env.ts",
-    "src/startup-readiness.ts"
+    "src/startup-readiness.ts",
+    "src/support-passport-runtime.ts"
   ],
   "publishConfig": {
     "access": "public",

@@ -4,11 +4,8 @@ import { Type } from "@sinclair/typebox";
 import type { Orchestrator } from "@remnic/core/orchestrator";
 import type {
   ContinuityImprovementLoop,
-  MemoryActionEligibilityContext,
-  MemoryActionEligibilitySource,
   MemoryActionType,
   MemoryCategory,
-  MemoryFile,
 } from "./types.js";
 import { indexMemoryAsync, indexesExistAsync } from "./temporal-index.js";
 import {
@@ -25,7 +22,11 @@ import { wrapWorkLayerContext } from "@remnic/core/work/boundary";
 import { VALID_MEMORY_CATEGORIES } from "./config.js";
 import { formatProfileTraceAscii } from "./profiling.js";
 import { runMemoryGovernance } from "@remnic/core/maintenance/memory-governance";
-import { isSupportPassportPrivateMemory } from "@remnic/core";
+import {
+  blocksSupportPassportMutation,
+  deriveMemoryActionPolicyEligibility,
+  readReferencedMemoryForPolicyEligibility,
+} from "./memory-action-target.js";
 
 interface ToolApi {
   registerTool(
@@ -70,13 +71,6 @@ function normalizeToolNamespace(value: unknown): string | undefined {
   return asNonEmptyString(value);
 }
 
-function clampUnitInterval(value: unknown, fallback: number): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
-  if (value < 0) return 0;
-  if (value > 1) return 1;
-  return value;
-}
-
 function normalizeProfilingReportLimit(value: unknown): number {
   if (value === undefined) return 5;
   if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value)) {
@@ -91,60 +85,6 @@ function normalizeMemorySearchResultLimit(value: unknown): number {
     return 8;
   }
   return Math.min(Math.max(value, 1), 50);
-}
-
-function normalizeMemoryActionEligibilitySource(value: unknown): MemoryActionEligibilitySource {
-  switch (value) {
-    case "extraction":
-    case "consolidation":
-    case "replay":
-    case "manual":
-      return value;
-    default:
-      return "unknown";
-  }
-}
-
-function deriveMemoryActionPolicyEligibility(
-  memory: Pick<MemoryFile, "frontmatter"> | null | undefined,
-): MemoryActionEligibilityContext | undefined {
-  if (!memory) return undefined;
-  const frontmatter = memory.frontmatter;
-  return {
-    confidence: clampUnitInterval(frontmatter.confidence, 0),
-    lifecycleState:
-      frontmatter.status === "archived" ? "archived" : frontmatter.lifecycleState ?? "candidate",
-    importance: clampUnitInterval(frontmatter.importance?.score, 0),
-    source: normalizeMemoryActionEligibilitySource(frontmatter.source),
-  };
-}
-
-async function readReferencedMemoryForPolicyEligibility(
-  storage: {
-    getMemoryById?: (id: string) => Promise<MemoryFile | null>;
-    readAllMemories?: () => Promise<MemoryFile[]>;
-    readArchivedMemories?: () => Promise<MemoryFile[]>;
-  },
-  memoryId: string | undefined,
-): Promise<MemoryFile | null | undefined> {
-  if (!memoryId) return undefined;
-
-  if (typeof storage.getMemoryById === "function") {
-    const direct = await storage.getMemoryById(memoryId);
-    if (direct) return direct;
-  }
-
-  if (typeof storage.readAllMemories === "function") {
-    const active = (await storage.readAllMemories()).find((memory) => memory.frontmatter.id === memoryId);
-    if (active) return active;
-  }
-
-  if (typeof storage.readArchivedMemories === "function") {
-    const archived = (await storage.readArchivedMemories()).find((memory) => memory.frontmatter.id === memoryId);
-    if (archived) return archived;
-  }
-
-  return undefined;
 }
 
 const WORK_TASK_STATUSES = new Set(["todo", "in_progress", "blocked", "done", "cancelled"]);
@@ -1683,13 +1623,7 @@ Best for:
             ? await orchestrator.getStorage(ns)
             : orchestrator.storage;
         const referencedMemory = await readReferencedMemoryForPolicyEligibility(storage, memoryIdValue);
-        const mutatesReferencedMemory =
-          action === "update_note" || action === "discard" || action === "link_graph";
-        if (
-          mutatesReferencedMemory &&
-          referencedMemory &&
-          isSupportPassportPrivateMemory(referencedMemory)
-        ) {
+        if (blocksSupportPassportMutation(action, referencedMemory)) {
           await orchestrator.appendMemoryActionEvent({
             ...baseEvent,
             outcome: "failed",
