@@ -12,6 +12,11 @@ import {
   computeSupportPassportOwnerKey,
 } from "./card-projection.js";
 import {
+  completeSupportPassportReplacementPrior,
+  prepareSupportPassportReplacementPrior,
+  validateSupportPassportReplacementPrior,
+} from "./card-replacement.js";
+import {
   MAX_OWNER_VISIBLE_CARDS,
   type SupportPassportCardServiceDependencies,
   type SupportPassportOwnerScope,
@@ -51,11 +56,6 @@ import {
   recoverSupportPassportGeneratedBatches,
   rollbackSupportPassportGeneratedBatch,
 } from "./generated-batch.js";
-import {
-  completeSupportPassportReplacementPrior,
-  prepareSupportPassportReplacementPrior,
-  validateSupportPassportReplacementPrior,
-} from "./card-replacement.js";
 import { type SupportPassportDraftCard, SupportPassportDraftOutputSchema } from "./model-contracts.js";
 import { withSupportPassportOwnerLock } from "./owner-lock.js";
 export type { SupportPassportCardServiceDependencies, SupportPassportOwnerScope } from "./card-state.js";
@@ -73,17 +73,9 @@ export class SupportPassportCardService {
     const parsed = SupportPassportListCardsInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
     const { principal, namespace, storage } = await this.resolveOwnerScope(parsed.data.principal);
-    return await withSupportPassportOwnerLock(storage, { namespace, principal }, async (lock) => {
-      const initialVersion = storage.getCorpusScanVersion();
+    return await withSupportPassportOwnerLock(storage, { namespace, principal }, async () => {
       const memories = await storage.readAllMemories();
-      await recoverSupportPassportGeneratedBatches(
-        this.generatedBatchContext(storage, lock, principal, namespace),
-        memories
-      );
-      const stored =
-        storage.getCorpusScanVersion() === initialVersion
-          ? await projectCommittedSupportPassportCards(storage, memories, namespace, principal)
-          : await readCommittedSupportPassportCards(storage, namespace, principal);
+      const stored = await projectCommittedSupportPassportCards(storage, memories, namespace, principal);
       const cards = ownerListCards(stored)
         .sort((a, b) => a.order - b.order || a.card.cardId.localeCompare(b.card.cardId))
         .map((item) => item.card);
@@ -603,14 +595,7 @@ export class SupportPassportCardService {
       requireRevision(card, parsed.data.expectedRevision);
       requireStatus(card, expectedStatus);
       if (expectedStatus === "pending_review" && nextStatus === "rejected") {
-        await this.rejectPendingReplacementForPredecessor(
-          storage,
-          card,
-          lock,
-          principal,
-          namespace,
-          onCommitted
-        );
+        await this.rejectPendingReplacementForPredecessor(storage, card, lock, principal, namespace, onCommitted);
         card = await this.requireCard(storage, card.card.cardId, namespace, principal);
         requireRevision(card, parsed.data.expectedRevision);
         requireStatus(card, expectedStatus);
@@ -638,14 +623,7 @@ export class SupportPassportCardService {
       if (card.card.status === nextStatus) return card.card;
       requireStatus(card, expectedStatus);
       if (expectedStatus === "active" && nextStatus === "archived") {
-        await this.rejectPendingReplacementForPredecessor(
-          storage,
-          card,
-          lock,
-          principal,
-          namespace,
-          onCommitted
-        );
+        await this.rejectPendingReplacementForPredecessor(storage, card, lock, principal, namespace, onCommitted);
         card = await this.requireCard(storage, card.card.cardId, namespace, principal);
         requireRevision(card, parsed.data.expectedRevision);
         requireStatus(card, expectedStatus);
@@ -778,7 +756,7 @@ export class SupportPassportCardService {
     lock: HeldFileLockController,
     principal: string,
     namespace: string,
-    onCommitted?: () => void,
+    onCommitted?: () => void
   ): Promise<void> {
     const storedCards =
       predecessor.card.status === "active"
@@ -794,7 +772,7 @@ export class SupportPassportCardService {
       throw new SupportPassportError(
         "storage_conflict",
         "Multiple support card edits target the card being withdrawn.",
-        409,
+        409
       );
     }
     const [replacement] = replacements;
@@ -805,26 +783,17 @@ export class SupportPassportCardService {
       { status: "rejected", updated: this.now().toISOString() },
       {
         actor: principal,
-        reasonCode:
-          predecessor.card.status === "pending_review"
-            ? "source-draft-rejected"
-            : "predecessor-withdrawn",
-      },
+        reasonCode: predecessor.card.status === "pending_review" ? "source-draft-rejected" : "predecessor-withdrawn",
+      }
     );
     if (rejected) {
       onCommitted?.();
       return;
     }
     const current = await storage.getMemoryById(replacement.card.cardId);
-    const currentCard = current
-      ? projectOwnedCard(current, namespace, principal)
-      : null;
+    const currentCard = current ? projectOwnedCard(current, namespace, principal) : null;
     if (currentCard?.card.status !== "rejected") {
-      throw new SupportPassportError(
-        "storage_conflict",
-        "The pending support card edit could not be cancelled.",
-        409,
-      );
+      throw new SupportPassportError("storage_conflict", "The pending support card edit could not be cancelled.", 409);
     }
   }
 
