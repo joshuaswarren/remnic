@@ -242,7 +242,7 @@ export class SupportPassportDraftService {
       scheduleAudit(this.audit, {
         ...auditBase,
         outcome: "error",
-        errorClass: input.signal?.aborted ? "aborted" : operationErrorClass(error),
+        errorClass: operationErrorClass(error),
       });
       throw error;
     }

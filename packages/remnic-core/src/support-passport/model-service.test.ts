@@ -830,6 +830,69 @@ test("cancellation rolls back a generated batch before the next draft write", as
   }
 });
 
+test("an incomplete cancellation rollback records the storage conflict", async () => {
+  const subject = await makeSubject();
+  try {
+    const selected = await subject.aliceStorage.writeMemory("preference", "Give me time to answer.", {
+      source: "test",
+    });
+    const controller = new AbortController();
+    const records: SupportPassportModelAuditRecord[] = [];
+    const writeSealedMemory = subject.aliceStorage.writeSealedMemory.bind(subject.aliceStorage);
+    subject.aliceStorage.writeSealedMemory = async (...args) => {
+      const written = await writeSealedMemory(...args);
+      controller.abort(new Error("cancelled during draft persistence"));
+      return written;
+    };
+    subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = async () => false;
+    const service = new SupportPassportDraftService({
+      cardService: subject.cardService,
+      modelAdapter: new SupportPassportModelAdapter({
+        routes: [
+          {
+            kind: "local",
+            invoke: async () => ({
+              modelUsed: "local/test-model",
+              content: JSON.stringify({
+                cards: [
+                  {
+                    title: "Processing time",
+                    statement: "Give me time to answer.",
+                    category: "communication",
+                    sourceMemoryIds: [selected.id],
+                  },
+                ],
+              }),
+            }),
+          },
+        ],
+      }),
+      resolveOwner: subject.resolveOwner,
+      audit: {
+        record: async (record) => {
+          records.push(record);
+        },
+      },
+      now: subject.now,
+    });
+
+    await assert.rejects(
+      service.draftCards({
+        principal: "owner:alice",
+        sourceMemoryIds: [selected.id],
+        sourceMemoryRevisions: sourceRevision(selected.id, "Give me time to answer."),
+        consent: true,
+        signal: controller.signal,
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
+    );
+    await flushAudit();
+    assert.equal(records[0]?.errorClass, "storage_conflict");
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("audit write failures do not block successful drafts or replace model errors", async () => {
   const subject = await makeSubject();
   try {
