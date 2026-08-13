@@ -1,7 +1,11 @@
 import type { StorageManager } from "../index.js";
-import { computeSupportPassportOwnerKey, projectSupportPassportCard } from "./card-projection.js";
+import {
+  computeSupportPassportOwnerKey,
+  projectSupportPassportCard,
+} from "./card-projection.js";
 import { SupportPassportListCardsInputSchema, SupportPassportNamespaceSchema } from "./contracts.js";
 import { SupportPassportError } from "./errors.js";
+import { isCommittedGeneratedCard } from "./generated-batch.js";
 import {
   type SupportPassportCreateGrantInput,
   SupportPassportCreateGrantInputSchema,
@@ -57,7 +61,7 @@ export class SupportPassportGrantService {
       async (ownerLock) => {
       for (const cardRef of parsed.data.cards) {
         const memory = await owner.storage.getMemoryById(cardRef.cardId);
-        const stored = memory ? projectSupportPassportCard(memory) : null;
+        const stored = await this.projectCommittedCard(owner.storage, memory);
         if (
           !stored ||
           stored.namespace !== owner.namespace ||
@@ -174,7 +178,7 @@ export class SupportPassportGrantService {
     return await Promise.all(
       state.cards.map(async (cardRef) => {
         const memory = await storage.getMemoryById(cardRef.cardId);
-        const stored = memory ? projectSupportPassportCard(memory) : null;
+        const stored = await this.projectCommittedCard(storage, memory);
         if (
           !stored ||
           stored.namespace !== state.namespace ||
@@ -207,6 +211,12 @@ export class SupportPassportGrantService {
       category: card.category,
       updatedAt: card.updatedAt,
     });
+  }
+
+  private async projectCommittedCard(storage: StorageManager, memory: Awaited<ReturnType<StorageManager["getMemoryById"]>>) {
+    const stored = memory ? projectSupportPassportCard(memory) : null;
+    if (!stored) return null;
+    return (await isCommittedGeneratedCard(storage, stored)) ? stored : null;
   }
 
   private async resolveOwnerScope(principal: string): Promise<SupportPassportGrantOwnerScope> {

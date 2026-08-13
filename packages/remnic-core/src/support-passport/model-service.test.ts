@@ -218,13 +218,13 @@ test("drafting persists into the owner scope used for source reads", async () =>
   }
 });
 
-test("drafting audits the authenticated owner principal", async () => {
+test("drafting rejects a resolved principal that differs from the authenticated principal", async () => {
   const subject = await makeSubject();
   try {
     const selected = await subject.aliceStorage.writeMemory("preference", "Tell me before plans change.", {
       source: "test",
     });
-    const records: SupportPassportModelAuditRecord[] = [];
+    let modelCalls = 0;
     const resolveOwner = async () => ({
       principal: "authenticated:alice",
       namespace: "alice",
@@ -236,41 +236,32 @@ test("drafting audits the authenticated owner principal", async () => {
         routes: [
           {
             kind: "local",
-            invoke: async () => ({
-              modelUsed: "local/test-model",
-              content: JSON.stringify({
-                cards: [
-                  {
-                    title: "Plan changes",
-                    statement: "Tell me before plans change.",
-                    category: "transitions",
-                    sourceMemoryIds: [selected.id],
-                  },
-                ],
-              }),
-            }),
+            invoke: async () => {
+              modelCalls += 1;
+              return null;
+            },
           },
         ],
       }),
       resolveOwner,
-      audit: {
-        record: async (record) => {
-          records.push(SupportPassportModelAuditRecordSchema.parse(record));
-        },
-      },
+      audit: { record: async () => undefined },
       now: subject.now,
     });
 
-    await service.draftCards({
-      principal: "request:alice",
-      sourceMemoryIds: [selected.id],
-      sourceMemoryRevisions: sourceRevision(selected.id, "Tell me before plans change."),
-      consent: true,
-    });
-    await flushAudit();
-
-    assert.equal(records[0]?.actorHash, hashSupportPassportAuditValues("owner", ["authenticated:alice"]));
-    assert.notEqual(records[0]?.actorHash, hashSupportPassportAuditValues("owner", ["request:alice"]));
+    await assert.rejects(
+      service.draftCards({
+        principal: "request:alice",
+        sourceMemoryIds: [selected.id],
+        sourceMemoryRevisions: sourceRevision(selected.id, "Tell me before plans change."),
+        consent: true,
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "card_data_invalid"
+    );
+    assert.equal(modelCalls, 0);
+    assert.deepEqual(
+      (await subject.aliceStorage.readAllMemories()).map((memory) => memory.frontmatter.id),
+      [selected.id]
+    );
   } finally {
     await subject.cleanup();
   }
