@@ -411,6 +411,17 @@
     return intents.some((intent) => intent.test(cardText) && intent.test(question));
   }
 
+  function hasMatchingQuietSupportIntent(cardText, question) {
+    const intents = [
+      /\boverwhelm(?:ed|ing|s)?\b/i,
+      /\bstop(?:s|ped|ping)? speaking\b/i,
+      /\bquiet (?:place|space|room)\b/i,
+      /\b(?:shut(?:s|ting)? down|shutdown)\b/i,
+      /\bsettle(?:s|d|ing)?\b/i,
+    ];
+    return intents.some((intent) => intent.test(cardText) && intent.test(question));
+  }
+
   function createReplayStore(now = () => new Date()) {
     let cards = [];
     let grants = [];
@@ -631,16 +642,9 @@
         const quietCard = guide.cards.find(
           (card) =>
             (card.category === "communication" || card.category === "regulation") &&
-            /\b(?:stop(?:s|ped|ping)? speaking|quiet (?:place|space|room)|overwhelm(?:ed|ing)?|shut(?:s|ting)? down|settle(?:s|d|ing)?)\b/i.test(
-              `${card.title} ${card.statement}`
-            )
+            hasMatchingQuietSupportIntent(`${card.title} ${card.statement}`, question)
         );
-        if (
-          !quietCard ||
-          !/\b(?:overwhelm(?:ed|ing)?|stop(?:s|ped|ping)? speaking|quiet|shut(?:s|ting)? down|settle(?:s|d|ing)?)\b/i.test(
-            question
-          )
-        ) {
+        if (!quietCard) {
           return {
             answer: "That is not covered in this person's support guide.",
             citedCardIds: [],
