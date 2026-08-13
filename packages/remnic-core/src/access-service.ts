@@ -243,6 +243,7 @@ import type {
   RecallPlanMode,
   SourceConnectorProvenance,
 } from "./types.js";
+import type { SupportPassportModelRoute } from "./support-passport/model-adapter.js";
 export type {
   EngramAccessExtractionForceFlushRequest,
   EngramAccessExtractionForceFlushResponse,
@@ -1308,6 +1309,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
   private readonly auditAdapter: AccessAuditAdapter | null;
   private readonly corpusWatermarkCache = new CorpusWatermarkCache();
   private readonly replicaDivergenceMonitor: ReplicaDivergenceMonitor;
+  private readonly injectedSupportPassportGatewayRoute: SupportPassportModelRoute | null;
 
   /** AccessObserveWriteSurface (access-service decomposition). Lazy; selfDeps live wiring. */
   private _accessObserveWriteSurface: AccessObserveWriteSurface | undefined;
@@ -1370,7 +1372,10 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
 
   constructor(
     private readonly orchestrator: Orchestrator,
-    options: { resolveSecretRef?: ResolveSecretRefFn | null } = {}
+    options: {
+      resolveSecretRef?: ResolveSecretRefFn | null;
+      supportPassportGatewayRoute?: SupportPassportModelRoute | null;
+    } = {}
   ) {
     super();
     this.idempotency = new AccessIdempotencyStore(orchestrator.config.memoryDir);
@@ -1379,6 +1384,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     // resolver, string/${ENV} tokens still work and a SecretRef degrades to a
     // per-peer `unreachable` (never a throw).
     this.replicaDivergenceMonitor = new ReplicaDivergenceMonitor({ resolveSecretRef: options.resolveSecretRef });
+    this.injectedSupportPassportGatewayRoute = options.supportPassportGatewayRoute ?? null;
     const accessCaps = resolveAccessSetupCapabilities(orchestrator.config); // #1566 Cluster B
     this.budget = new CrossNamespaceBudget({
       enabled: accessCaps.recallCrossNamespaceBudget,
@@ -1408,6 +1414,10 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     } else {
       this.auditAdapter = null;
     }
+  }
+
+  override get supportPassportGatewayRouteRef(): SupportPassportModelRoute | null {
+    return this.injectedSupportPassportGatewayRoute;
   }
 
   get briefingEnabled(): boolean {

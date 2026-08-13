@@ -6,6 +6,7 @@ import { parseConfig } from "../config.js";
 import { SupportPassportError } from "./errors.js";
 import {
   SupportPassportModelAdapter,
+  acceptsSupportPassportModelResponse,
   type SupportPassportModelClients,
   type SupportPassportModelRoute,
   buildSupportPassportDirectGatewayConfig,
@@ -27,6 +28,46 @@ function route(
     },
   };
 }
+
+test("the cross-process response check rejects invented draft and answer citations", () => {
+  const draftMessages = [
+    { role: "system" as const, content: "Return JSON." },
+    {
+      role: "user" as const,
+      content: JSON.stringify({ sourceNotes: [{ memoryId: "memory-1", content: "Source" }] }),
+    },
+  ];
+  assert.equal(
+    acceptsSupportPassportModelResponse(
+      "support-passport-draft",
+      draftMessages,
+      JSON.stringify({
+        cards: [{
+          title: "Plan changes",
+          statement: "Tell me before plans change.",
+          category: "transitions",
+          sourceMemoryIds: ["invented"],
+        }],
+      }),
+    ),
+    false,
+  );
+  const answerMessages = [
+    { role: "system" as const, content: "Return JSON." },
+    {
+      role: "user" as const,
+      content: JSON.stringify({ cards: [{ cardId: "card-1" }], question: "What helps?" }),
+    },
+  ];
+  assert.equal(
+    acceptsSupportPassportModelResponse(
+      "support-passport-answer",
+      answerMessages,
+      JSON.stringify({ answer: "Use another card.", citedCardIds: ["invented"], coverage: "grounded" }),
+    ),
+    false,
+  );
+});
 
 test("draft generation retries the full job after invalid output", async () => {
   const calls: string[] = [];

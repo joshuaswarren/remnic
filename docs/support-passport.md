@@ -92,6 +92,12 @@ Plugin mode tries the configured local route first. When `localLlmFallback`
 permits fallback, it can continue through configured direct and gateway routes.
 Gateway mode uses only the OpenClaw gateway chain.
 
+OpenClaw delegate mode keeps the same gateway route. The standalone daemon
+queues an authenticated, in-memory model job. The OpenClaw plugin runs that
+job through its existing gateway client and returns the result. The bridge
+does not store prompts or add a provider client. It accepts only an
+unrestricted daemon bearer token.
+
 The OpenClaw example above keeps the current `agents` and `models.providers`
 configuration unchanged. The adapter supplies its gateway configuration and
 native provider auth resolvers to Remnic. What Helps Me does not create another

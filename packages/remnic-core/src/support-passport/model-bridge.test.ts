@@ -1,0 +1,147 @@
+import assert from "node:assert/strict";
+import http from "node:http";
+import test from "node:test";
+
+import {
+  SUPPORT_PASSPORT_MODEL_JOB_PATH,
+  SUPPORT_PASSPORT_MODEL_RESULT_PATH,
+  SupportPassportModelBridge,
+} from "./model-bridge.js";
+
+function startBridgeServer(bridge: SupportPassportModelBridge) {
+  const server = http.createServer((req, res) => {
+    void bridge.requestHandler(req, res, {
+      authorized: req.headers.authorization === "Bearer owner-token",
+      tokenAuthorized:
+        req.headers.authorization === "Bearer owner-token" ||
+        req.headers.authorization === "Bearer scoped-token",
+      ...(req.headers.authorization === "Bearer scoped-token"
+        ? { capabilities: { version: 1 as const, ops: ["recall"] } }
+        : {}),
+    });
+  });
+  return new Promise<{ origin: string; close(): Promise<void> }>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("server did not bind");
+      resolve({
+        origin: `http://127.0.0.1:${address.port}`,
+        close: () => new Promise((done) => server.close(() => done())),
+      });
+    });
+  });
+}
+
+const messages = [
+  { role: "system" as const, content: "Return JSON." },
+  { role: "user" as const, content: JSON.stringify({ sourceNotes: [{ memoryId: "memory-1" }] }) },
+];
+
+test("the model bridge moves a provider-neutral job through authenticated memory only", async () => {
+  const bridge = new SupportPassportModelBridge();
+  const server = await startBridgeServer(bridge);
+  const controller = new AbortController();
+  try {
+    const resultPromise = bridge.route.invoke(messages, {
+      temperature: 0.2,
+      maxTokens: 500,
+      timeoutMs: 5_000,
+      signal: controller.signal,
+      operation: "support-passport-draft",
+      jsonSchema: { name: "drafts", schema: { type: "object" } },
+    });
+    const jobResponse = await fetch(`${server.origin}${SUPPORT_PASSPORT_MODEL_JOB_PATH}`, {
+      method: "POST",
+      headers: { authorization: "Bearer owner-token", "content-type": "application/json" },
+      body: JSON.stringify({ timeoutMs: 0 }),
+    });
+    assert.equal(jobResponse.status, 200);
+    const job = (await jobResponse.json()) as { id: string; messages: unknown };
+    assert.deepEqual(job.messages, messages);
+
+    const completion = await fetch(`${server.origin}${SUPPORT_PASSPORT_MODEL_RESULT_PATH}`, {
+      method: "POST",
+      headers: { authorization: "Bearer owner-token", "content-type": "application/json" },
+      body: JSON.stringify({
+        id: job.id,
+        result: { content: "{\"cards\":[]}", modelUsed: "gateway/test" },
+      }),
+    });
+    assert.equal(completion.status, 204);
+    assert.deepEqual(await resultPromise, {
+      content: "{\"cards\":[]}",
+      modelUsed: "gateway/test",
+    });
+  } finally {
+    controller.abort();
+    bridge.close();
+    await server.close();
+  }
+});
+
+test("the model bridge rejects missing and scoped operator credentials", async () => {
+  const bridge = new SupportPassportModelBridge();
+  const server = await startBridgeServer(bridge);
+  try {
+    const request = (authorization?: string) =>
+      fetch(`${server.origin}${SUPPORT_PASSPORT_MODEL_JOB_PATH}`, {
+        method: "POST",
+        headers: {
+          ...(authorization ? { authorization } : {}),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ timeoutMs: 0 }),
+      });
+    assert.equal((await request()).status, 401);
+    assert.equal((await request("Bearer scoped-token")).status, 403);
+  } finally {
+    bridge.close();
+    await server.close();
+  }
+});
+
+test("an aborted model caller removes its queued job", async () => {
+  const bridge = new SupportPassportModelBridge();
+  const server = await startBridgeServer(bridge);
+  const controller = new AbortController();
+  try {
+    const resultPromise = bridge.route.invoke(messages, {
+      temperature: 0,
+      maxTokens: 500,
+      timeoutMs: 5_000,
+      signal: controller.signal,
+      operation: "support-passport-draft",
+      jsonSchema: { name: "drafts", schema: { type: "object" } },
+    });
+    controller.abort();
+    assert.equal(await resultPromise, null);
+    const response = await fetch(`${server.origin}${SUPPORT_PASSPORT_MODEL_JOB_PATH}`, {
+      method: "POST",
+      headers: { authorization: "Bearer owner-token", "content-type": "application/json" },
+      body: JSON.stringify({ timeoutMs: 0 }),
+    });
+    assert.equal(response.status, 204);
+  } finally {
+    bridge.close();
+    await server.close();
+  }
+});
+
+test("an unclaimed model job expires without relying on the caller's wrapper", async () => {
+  const bridge = new SupportPassportModelBridge();
+  const started = Date.now();
+  try {
+    const result = await bridge.route.invoke(messages, {
+      temperature: 0,
+      maxTokens: 500,
+      timeoutMs: 20,
+      operation: "support-passport-draft",
+      jsonSchema: { name: "drafts", schema: { type: "object" } },
+    });
+    assert.equal(result, null);
+    assert.ok(Date.now() - started < 1_000);
+  } finally {
+    bridge.close();
+  }
+});

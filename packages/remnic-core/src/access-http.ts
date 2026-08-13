@@ -154,7 +154,10 @@ export interface EngramAccessHttpServerOptions {
   externalRequestHandler?: (
     req: IncomingMessage,
     res: ServerResponse,
-    ctx: { authorized: boolean },
+    ctx: {
+      authorized: boolean;
+      tokenAuthorized: boolean;
+    },
   ) => Promise<boolean>;
 }
 
@@ -411,7 +414,10 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
   private readonly externalRequestHandler?: (
     req: IncomingMessage,
     res: ServerResponse,
-    ctx: { authorized: boolean },
+    ctx: {
+      authorized: boolean;
+      tokenAuthorized: boolean;
+    },
   ) => Promise<boolean>;
   private readonly writeLimiter: WriteRateLimiter;
   private readonly mcpServer: EngramMcpServer;
@@ -850,9 +856,13 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
       // Operator-only endpoints (OAuth pending/approve/deny) must only pass
       // for unrestricted tokens — a scoped (least-privileged) token must NOT
       // reach operator surfaces (issue #1837).
-      const authorized = this.isAuthorized(req, pathname) &&
-        !isCapabilityRestricted(this.resolveTokenCapabilities(req, pathname));
-      if (await this.externalRequestHandler(req, res, { authorized })) return;
+      const tokenAuthorized = this.isAuthorized(req, pathname);
+      const capabilities = this.resolveTokenCapabilities(req, pathname);
+      const authorized = tokenAuthorized && !isCapabilityRestricted(capabilities);
+      if (await this.externalRequestHandler(req, res, {
+        authorized,
+        tokenAuthorized,
+      })) return;
     }
 
     if (!this.isAuthorized(req, pathname)) {

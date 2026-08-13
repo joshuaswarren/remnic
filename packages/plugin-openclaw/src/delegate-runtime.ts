@@ -76,6 +76,8 @@ import {
   type DelegateCapabilityApi,
   registerDelegateMemoryCapability,
 } from "./delegate-capability.js";
+import type { SupportPassportModelRoute } from "@remnic/core";
+import { createDelegateSupportPassportModelService } from "./delegate-support-passport-model.js";
 
 export interface DelegateRuntimeOptions {
   serviceId: string;
@@ -131,6 +133,7 @@ export interface DelegateRuntimeOptions {
   };
   /** Injectable clock for capability-cache expiry tests and deterministic hosts. */
   now?: () => number;
+  supportPassportModelRoute?: SupportPassportModelRoute;
 }
 
 export interface DelegateHookApi extends DelegateCapabilityApi {
@@ -142,6 +145,11 @@ export interface DelegateHookApi extends DelegateCapabilityApi {
   // Method syntax (bivariant params) so the real OpenClaw api — whose
   // builder parameter is a wider SDK union — remains assignable.
   registerMemoryPromptSection?(builder: (params: { sessionKey?: string }) => string[] | null): void;
+  registerService?(service: {
+    id: string;
+    start(): Promise<void>;
+    stop(): Promise<void>;
+  }): void;
 }
 const DELEGATE_BATCH_FLUSH_CACHE_TTL_MS = 30_000;
 
@@ -247,6 +255,21 @@ export function registerDelegateRuntime(
       `[${options.serviceId}] bridge mode delegate: memory slot not owned — passive, no hooks registered`,
     );
     return;
+  }
+  if (options.supportPassportModelRoute) {
+    if (typeof api.registerService !== "function") {
+      log.error(
+        `[${options.serviceId}] delegate support passport gateway routing is unavailable: host exposes no service registration surface`,
+      );
+    } else {
+      api.registerService(
+        createDelegateSupportPassportModelService({
+          serviceId: options.serviceId,
+          target,
+          route: options.supportPassportModelRoute,
+        }),
+      );
+    }
   }
 
   // Session-scoped cache of precomputed recall lines, mirroring the embedded
@@ -727,6 +750,7 @@ export interface MaybeRegisterDelegateOptions {
    * mode provides.
    */
   capability: DelegateRuntimeOptions["capability"];
+  supportPassportModelRoute?: SupportPassportModelRoute;
 }
 
 function activeDelegateAuthorizationOperations(
@@ -1105,6 +1129,7 @@ export function maybeRegisterDelegateRuntime(
     recallTimeoutMs: 25_000,
     observeTimeoutMs: 120_000,
     flushTimeoutMs: 55_000,
+    supportPassportModelRoute: options.supportPassportModelRoute,
   });
   let preflightServices = delegateAuthorizationPreflightServices.get(api);
   if (!options.passive && !preflightServices?.has(options.serviceId)) {

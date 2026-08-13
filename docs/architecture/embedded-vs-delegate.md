@@ -68,7 +68,7 @@ works) overrides it. `resolveBridgeMode()` in
 | Value | Behavior |
 |---|---|
 | `embedded` (default) | Boot the in-process orchestrator. |
-| `delegate` | Skip the orchestrator and back the memory loop and memory-slot capability with the daemon. A failed daemon preflight logs an error and falls back to `embedded`. |
+| `delegate` | Skip the orchestrator. Back the memory loop, memory-slot capability, and support passport gateway model route with the daemon. A failed daemon preflight logs an error and falls back to `embedded`. |
 | `auto` | Delegate **only** when a healthy same-host daemon reports the same `memoryDir` this plugin is configured for; stay embedded otherwise, with the reason logged. |
 
 `auto` exists so one shared fleet config can delegate on the hosts that run a

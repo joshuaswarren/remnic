@@ -29,7 +29,10 @@ export const SUPPORT_PASSPORT_PUBLIC_HTTP_ROUTES = [
 export type SupportPassportExternalRequestHandler = (
   req: IncomingMessage,
   res: ServerResponse,
-  ctx: { authorized: boolean }
+  ctx: {
+    authorized: boolean;
+    tokenAuthorized: boolean;
+  }
 ) => Promise<boolean>;
 
 interface WindowEntry {

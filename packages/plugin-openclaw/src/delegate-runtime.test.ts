@@ -58,6 +58,24 @@ interface RecordingApi {
   on: (hook: string, handler: HookHandler, opts?: { timeoutMs?: number }) => void;
 }
 
+test("delegate mode registers the support passport gateway worker as a host service", () => {
+  const api = recordingApi() as RecordingApi & {
+    services: Array<{ id: string }>;
+    registerService(service: { id: string }): void;
+  };
+  api.services = [];
+  api.registerService = (service) => api.services.push(service);
+  registerDelegateRuntime(
+    api,
+    optionsFor(1, {
+      supportPassportModelRoute: { kind: "gateway", invoke: async () => null },
+    }),
+  );
+  assert.deepEqual(api.services.map((service) => service.id), [
+    "openclaw-remnic:support-passport-model",
+  ]);
+});
+
 function recordingApi(): RecordingApi {
   const handlers = new Map<string, HookHandler[]>();
   const hookOpts = new Map<string, unknown>();
