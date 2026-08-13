@@ -21,7 +21,12 @@ export interface DelegateSupportPassportModelOptions {
   serviceId: string;
   target: DelegateDaemonTarget;
   route: SupportPassportModelRoute;
+  requestTimeoutMs?: number;
 }
+
+const MODEL_WORKER_COUNT = 4;
+const DEFAULT_REQUEST_TIMEOUT_MS = 25_000;
+const RESULT_REQUEST_TIMEOUT_MS = 5_000;
 
 async function post(
   target: DelegateDaemonTarget,
@@ -29,8 +34,10 @@ async function post(
   pathname: string,
   body: unknown,
   signal: AbortSignal,
+  timeoutMs: number,
 ): Promise<Response> {
   const auth = target.resolveAuthToken();
+  const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
   const response = await fetch(daemonUrl(target, pathname), {
     method: "POST",
     headers: {
@@ -38,7 +45,7 @@ async function post(
       ...(auth.token ? { Authorization: `Bearer ${auth.token}` } : {}),
     },
     body: JSON.stringify(body),
-    signal,
+    signal: requestSignal,
   });
   if (response.status === 401 || response.status === 403) {
     reportDaemonAuthorizationFailure(serviceId, pathname, response.status, auth.source);
@@ -64,7 +71,61 @@ export function createDelegateSupportPassportModelService(
 ): DelegateSupportPassportModelService {
   let controller: AbortController | undefined;
   let worker: Promise<void> | undefined;
-  const run = async (signal: AbortSignal): Promise<void> => {
+  const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  if (!Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 1) {
+    throw new Error("requestTimeoutMs must be a positive integer");
+  }
+  const invoke = async (
+    job: NonNullable<ReturnType<typeof parseSupportPassportModelJob>>,
+    signal: AbortSignal,
+  ): Promise<SupportPassportModelRouteResult | null> => {
+    const timeoutSignal = AbortSignal.timeout(job.timeoutMs);
+    const modelSignal = AbortSignal.any([signal, timeoutSignal]);
+    if (modelSignal.aborted) return null;
+    let removeAbort = (): void => {};
+    const aborted = new Promise<null>((resolve) => {
+      const onAbort = (): void => resolve(null);
+      modelSignal.addEventListener("abort", onAbort, { once: true });
+      removeAbort = () => modelSignal.removeEventListener("abort", onAbort);
+    });
+    try {
+      return await Promise.race([
+        options.route.invoke(job.messages, {
+          temperature: job.temperature,
+          maxTokens: job.maxTokens,
+          timeoutMs: job.timeoutMs,
+          signal: modelSignal,
+          operation: job.operation,
+          jsonSchema: job.jsonSchema,
+          acceptResponse: (candidate) =>
+            acceptsSupportPassportModelResponse(job.operation, job.messages, candidate.content),
+        }),
+        aborted,
+      ]);
+    } catch (error) {
+      if (!modelSignal.aborted) {
+        log.warn(`delegate support passport model call failed: ${String(error)}`);
+      }
+      return null;
+    } finally {
+      removeAbort();
+    }
+  };
+  const complete = async (
+    job: NonNullable<ReturnType<typeof parseSupportPassportModelJob>>,
+    result: SupportPassportModelRouteResult | null,
+  ): Promise<void> => {
+    const completion = await post(
+      options.target,
+      options.serviceId,
+      SUPPORT_PASSPORT_MODEL_RESULT_PATH,
+      { id: job.id, result },
+      AbortSignal.timeout(RESULT_REQUEST_TIMEOUT_MS),
+      RESULT_REQUEST_TIMEOUT_MS,
+    );
+    await completion.body?.cancel();
+  };
+  const runPoller = async (signal: AbortSignal): Promise<void> => {
     while (!signal.aborted) {
       try {
         const response = await post(
@@ -73,6 +134,7 @@ export function createDelegateSupportPassportModelService(
           SUPPORT_PASSPORT_MODEL_JOB_PATH,
           { timeoutMs: 20_000 },
           signal,
+          requestTimeoutMs,
         );
         if (response.status === 204) continue;
         if (!response.ok) {
@@ -85,38 +147,20 @@ export function createDelegateSupportPassportModelService(
           log.warn("delegate support passport model bridge received an invalid job");
           continue;
         }
-        const timeoutSignal = AbortSignal.timeout(job.timeoutMs);
-        const modelSignal = AbortSignal.any([signal, timeoutSignal]);
-        let result: SupportPassportModelRouteResult | null = null;
         try {
-          result = await options.route.invoke(job.messages, {
-            temperature: job.temperature,
-            maxTokens: job.maxTokens,
-            timeoutMs: job.timeoutMs,
-            signal: modelSignal,
-            operation: job.operation,
-            jsonSchema: job.jsonSchema,
-            acceptResponse: (candidate) =>
-              acceptsSupportPassportModelResponse(job.operation, job.messages, candidate.content),
-          });
+          await complete(job, await invoke(job, signal));
         } catch (error) {
-          if (signal.aborted) break;
-          log.warn(`delegate support passport model call failed: ${String(error)}`);
+          log.warn(`delegate support passport model completion failed: ${String(error)}`);
         }
-        const completion = await post(
-          options.target,
-          options.serviceId,
-          SUPPORT_PASSPORT_MODEL_RESULT_PATH,
-          { id: job.id, result },
-          signal,
-        );
-        await completion.body?.cancel();
       } catch (error) {
         if (signal.aborted) break;
         log.warn(`delegate support passport model bridge failed: ${String(error)}`);
         await abortableRetryDelay(signal);
       }
     }
+  };
+  const run = async (signal: AbortSignal): Promise<void> => {
+    await Promise.all(Array.from({ length: MODEL_WORKER_COUNT }, () => runPoller(signal)));
   };
   return {
     id: `${options.serviceId}:support-passport-model`,
