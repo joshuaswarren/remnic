@@ -3540,11 +3540,13 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
     res: ServerResponse,
     pathname: string,
     relativePath = "index.html",
+    allowPrefill = true,
   ): Promise<void> {
     try {
       let body = await readFile(path.join(this.adminConsolePublicDir, relativePath), "utf-8");
       const matched = this.resolveAuthorizedEntry(req, pathname);
       const canPrefillToken =
+        allowPrefill &&
         this.adminConsolePrefillToken &&
         matched !== null &&
         matched.capabilities === undefined &&

@@ -1159,7 +1159,11 @@
   }
 
   function clearPrefillToken() {
-    window.__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__ = "";
+    try {
+      delete window.__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__;
+    } catch {
+      window.__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__ = "";
+    }
     for (const script of document.scripts) {
       if (script.src || !script.textContent?.includes("__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__")) continue;
       script.textContent = "";
@@ -1290,6 +1294,7 @@
   async function init() {
     if (replayMode) byId("replayBanner").hidden = false;
     if (grantId || hasSecretFragment) {
+      clearPrefillToken();
       bindHelperEvents();
       await loadHelper();
       return;
