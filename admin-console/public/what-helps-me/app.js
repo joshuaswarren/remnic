@@ -51,6 +51,8 @@
     helperRevalidationTimer: null,
     helperRevalidationDelayMs: HELPER_REVALIDATION_MS,
     helperLifecyclePaused: false,
+    pendingCardMutationIds: new Set(),
+    pendingGrantRevocationIds: new Set(),
     shareCreationPending: false,
     shareCreationCardIds: null,
     toastTimer: null,
@@ -277,10 +279,14 @@
   async function mutateCard(card, action, button) {
     setError("generateError");
     const verbs = { approve: "Approving…", reject: "Rejecting…", withdraw: "Stopping…" };
-    let ownerStateFresh = false;
+    const priorLabel = button.textContent;
+    state.pendingCardMutationIds.add(card.cardId);
+    button.disabled = true;
+    button.textContent = verbs[action];
     try {
-      await withBusy(button, verbs[action], () =>
-        api.mutateCard(
+      let ownerStateFresh = false;
+      try {
+        await api.mutateCard(
           card.cardId,
           {
             expectedRevision: card.revision,
@@ -292,45 +298,50 @@
                   : "owner-withdrew-ui",
           },
           action
-        )
-      );
-    } catch (error) {
-      if (error?.code !== "request_timeout") {
-        setError("generateError", errorMessage(error, "The support card did not change."));
-        return;
-      }
-      const reconciled = await reconcileOwnerState(() => {
-        const current = state.cards.find((candidate) => candidate.cardId === card.cardId);
-        if (action === "approve") {
-          return current?.status === "active" && current.revision !== card.revision ? current : null;
-        }
-        return current ? null : card;
-      });
-      if (!reconciled.matched) {
-        setError(
-          "generateError",
-          reconciled.refreshed
-            ? "The request stopped without a confirmed change. Review the current guide before trying again."
-            : "The request stopped without a confirmed change. Refresh the guide before trying again."
         );
-        return;
+      } catch (error) {
+        if (error?.code !== "request_timeout") {
+          setError("generateError", errorMessage(error, "The support card did not change."));
+          return;
+        }
+        const reconciled = await reconcileOwnerState(() => {
+          const current = state.cards.find((candidate) => candidate.cardId === card.cardId);
+          if (action === "approve") {
+            return current?.status === "active" && current.revision !== card.revision ? current : null;
+          }
+          return current ? null : card;
+        });
+        if (!reconciled.matched) {
+          setError(
+            "generateError",
+            reconciled.refreshed
+              ? "The request stopped without a confirmed change. Review the current guide before trying again."
+              : "The request stopped without a confirmed change. Refresh the guide before trying again."
+          );
+          return;
+        }
+        ownerStateFresh = true;
       }
-      ownerStateFresh = true;
-    }
-    const message =
-      action === "approve"
-        ? `Approved ${card.title}. It can now be shared.`
-        : action === "reject"
-          ? `Rejected ${card.title}. It stays private.`
-          : `Withdrew ${card.title}. Existing links will lock.`;
-    toast(message);
-    announce(message);
-    try {
-      if (!ownerStateFresh) await loadOwnerState();
-    } catch {
-      const warning = `${message} The card list did not refresh. Refresh the guide before another change.`;
-      setError("generateError", warning);
-      announce(warning);
+      const message =
+        action === "approve"
+          ? `Approved ${card.title}. It can now be shared.`
+          : action === "reject"
+            ? `Rejected ${card.title}. It stays private.`
+            : `Withdrew ${card.title}. Existing links will lock.`;
+      toast(message);
+      announce(message);
+      try {
+        if (!ownerStateFresh) await loadOwnerState();
+      } catch {
+        const warning = `${message} The card list did not refresh. Refresh the guide before another change.`;
+        setError("generateError", warning);
+        announce(warning);
+      }
+    } finally {
+      state.pendingCardMutationIds.delete(card.cardId);
+      button.disabled = false;
+      button.textContent = priorLabel;
+      renderCards();
     }
   }
 
@@ -345,6 +356,7 @@
 
     for (const card of state.cards) {
       const article = element("article", "support-card");
+      article.dataset.cardId = card.cardId;
       article.dataset.category = card.category;
       const top = element("div", "card-topline");
       const status = element(
@@ -375,6 +387,9 @@
         actions.append(
           cardButton("Withdraw", "button-danger", (event) => mutateCard(card, "withdraw", event.currentTarget))
         );
+      }
+      if (state.pendingCardMutationIds.has(card.cardId)) {
+        for (const button of actions.querySelectorAll("button")) button.disabled = true;
       }
       article.append(top, title, statement, dates, actions);
       list.append(article);
@@ -458,6 +473,7 @@
     byId("grantsEmpty").hidden = state.grants.length > 0;
     for (const grant of state.grants) {
       const article = element("article", "grant-card");
+      article.dataset.grantId = grant.grantId;
       const stateText =
         grant.status === "active" ? "Live share" : grant.status === "revoked" ? "Sharing stopped" : "Share time ended";
       article.append(
@@ -470,41 +486,52 @@
       );
       if (grant.status === "active") {
         const stop = cardButton("Stop sharing", "button-danger", async (event) => {
+          const button = event.currentTarget;
+          const priorLabel = button.textContent;
           let ownerStateFresh = false;
+          state.pendingGrantRevocationIds.add(grant.grantId);
+          button.disabled = true;
+          button.textContent = "Stopping sharing…";
           try {
-            await withBusy(event.currentTarget, "Stopping sharing…", () =>
-              api.revokeGrant(grant.grantId, { expectedVersion: grant.stateVersion })
-            );
-          } catch (error) {
-            if (error?.code !== "request_timeout") {
-              setError("shareError", errorMessage(error, "The share link did not stop."));
-              return;
+            try {
+              await api.revokeGrant(grant.grantId, { expectedVersion: grant.stateVersion });
+            } catch (error) {
+              if (error?.code !== "request_timeout") {
+                setError("shareError", errorMessage(error, "The share link did not stop."));
+                return;
+              }
+              const reconciled = await reconcileOwnerState(() => {
+                const current = state.grants.find((candidate) => candidate.grantId === grant.grantId);
+                return !current || current.status !== "active" ? grant : null;
+              });
+              if (!reconciled.matched) {
+                setError(
+                  "shareError",
+                  "The server did not confirm that sharing stopped. Refresh the guide and check this link."
+                );
+                return;
+              }
+              ownerStateFresh = true;
             }
-            const reconciled = await reconcileOwnerState(() => {
-              const current = state.grants.find((candidate) => candidate.grantId === grant.grantId);
-              return !current || current.status !== "active" ? grant : null;
-            });
-            if (!reconciled.matched) {
-              setError(
-                "shareError",
-                "The server did not confirm that sharing stopped. Refresh the guide and check this link."
-              );
-              return;
+            replayChannel?.postMessage({ type: "grant-revoked", grantId: grant.grantId });
+            const message = "Sharing stopped. The helper link is now locked.";
+            toast(message);
+            announce(message);
+            try {
+              if (!ownerStateFresh) await loadOwnerState();
+            } catch {
+              const warning = `${message} The share list did not refresh. Refresh the guide before another change.`;
+              setError("shareError", warning);
+              announce(warning);
             }
-            ownerStateFresh = true;
-          }
-          replayChannel?.postMessage({ type: "grant-revoked", grantId: grant.grantId });
-          const message = "Sharing stopped. The helper link is now locked.";
-          toast(message);
-          announce(message);
-          try {
-            if (!ownerStateFresh) await loadOwnerState();
-          } catch {
-            const warning = `${message} The share list did not refresh. Refresh the guide before another change.`;
-            setError("shareError", warning);
-            announce(warning);
+          } finally {
+            state.pendingGrantRevocationIds.delete(grant.grantId);
+            button.disabled = false;
+            button.textContent = priorLabel;
+            renderGrants();
           }
         });
+        stop.disabled = state.pendingGrantRevocationIds.has(grant.grantId);
         article.append(stop);
       }
       list.append(article);
