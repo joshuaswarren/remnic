@@ -9,6 +9,7 @@ import { StorageManager } from "../storage.js";
 import { SupportPassportAccessSurface } from "./access-surface.js";
 import { SupportPassportError } from "./errors.js";
 import { SupportPassportModelAdapter, type SupportPassportModelRoute } from "./model-adapter.js";
+import { computeSupportPassportSourceRevision } from "./model-service.js";
 
 test("the access surface runs the owner and helper lifecycle without exposing a secret in owner lists", async () => {
   StorageManager.clearAllStaticCaches();
@@ -175,6 +176,33 @@ test("memory preview hides sources that cannot be drafted", async () => {
       );
       assert.deepEqual(await surface.previewMemory("owner:test", source.id), { found: false });
     }
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("memory preview preserves literal attribute-style text without structured attributes", async () => {
+  StorageManager.clearAllStaticCaches();
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-preview-literal-"));
+  try {
+    const storage = new StorageManager(path.join(root, "owner"));
+    await storage.ensureDirectories();
+    const content = "Give me time to answer.\n[Attributes: this is part of my note]";
+    const source = await storage.writeMemory("preference", content, { source: "test" });
+    const surface = new SupportPassportAccessSurface({
+      config: parseConfig({ memoryDir: root, supportPassport: { enabled: true } }),
+      resolveOwner: async (principal) => ({ principal, namespace: "owner", storage }),
+      resolveNamespace: async () => storage,
+      modelAdapter: new SupportPassportModelAdapter({ routes: [] }),
+      audit: { record: async () => undefined },
+    });
+
+    const preview = await surface.previewMemory("owner:test", source.id);
+    assert.equal(preview.found, true);
+    if (!preview.found) throw new Error("source preview was not found");
+    assert.equal(preview.memory.content, content);
+    assert.equal(preview.memory.revision, computeSupportPassportSourceRevision(content));
   } finally {
     StorageManager.clearAllStaticCaches();
     await rm(root, { recursive: true, force: true });

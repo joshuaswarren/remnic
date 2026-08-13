@@ -101,7 +101,8 @@ export class SupportPassportAccessSurface {
     const owner = validateOwnerScope(await this.resolveOwner(requestedPrincipal), requestedPrincipal);
     const memory = await owner.storage.getMemoryById(memoryId);
     if (!memory || !isSupportPassportSourceEligible(memory)) return { found: false };
-    const content = stripAttributesSuffix(memory.content);
+    const structuredAttributes = memory.frontmatter.structuredAttributes;
+    const content = structuredAttributes ? stripAttributesSuffix(memory.content) : memory.content;
     if (
       !SupportPassportDraftModelInputSchema.safeParse({
         consent: true,
@@ -115,7 +116,7 @@ export class SupportPassportAccessSurface {
       memory: {
         id: memory.frontmatter.id,
         content,
-        revision: computeSupportPassportSourceRevision(content),
+        revision: computeSupportPassportSourceRevision(memory.content, structuredAttributes),
       },
     };
   }
