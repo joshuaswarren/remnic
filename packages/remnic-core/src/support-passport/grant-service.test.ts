@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { renameSync, symlinkSync } from "node:fs";
 import {
-  type FileHandle,
   lstat,
   mkdir,
   mkdtemp,
@@ -27,7 +26,6 @@ import {
   ensurePrivateDirectoryNoFollow,
   ensurePrivateDirectoryTreeNoFollow,
   requirePrivateFileDescriptorRoot,
-  resolvePrivateDirectoryPath,
 } from "./private-file.js";
 
 async function makeSubject() {
@@ -337,6 +335,64 @@ test("owner grant history stays bounded while an inactive link frees capacity", 
     );
     assert.deepEqual(evictedGrantLocks, [first.state.grantId]);
     await assert.rejects(lstat(firstGrantPath), (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("grant creation accepts a state write that committed before its durability error", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-state-commit-"));
+  try {
+    const grantId = "00000000-0000-4000-8000-000000000001";
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({ memoryDir: root, makeGrantId: () => grantId, now: () => now });
+    const inspected = store as unknown as {
+      writeState(state: unknown, requireAbsent: boolean): Promise<void>;
+    };
+    const writeState = inspected.writeState.bind(store);
+    inspected.writeState = async (state, requireAbsent) => {
+      await writeState(state, requireAbsent);
+      throw Object.assign(new Error("simulated post-commit state error"), { code: "EIO" });
+    };
+
+    const created = await store.create({
+      namespace: "alice",
+      principal: "owner:alice",
+      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+      expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
+    });
+
+    assert.equal(created.state.grantId, grantId);
+    assert.deepEqual((await store.listForOwner("alice", "owner:alice")).map((state) => state.grantId), [grantId]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("grant creation accepts an owner index write that committed before its durability error", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-index-commit-"));
+  try {
+    const grantId = "00000000-0000-4000-8000-000000000001";
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({ memoryDir: root, makeGrantId: () => grantId, now: () => now });
+    const inspected = store as unknown as {
+      writeOwnerIndex(ownerHash: string, grantIds: string[]): Promise<void>;
+    };
+    const writeOwnerIndex = inspected.writeOwnerIndex.bind(store);
+    inspected.writeOwnerIndex = async (ownerHash, grantIds) => {
+      await writeOwnerIndex(ownerHash, grantIds);
+      throw Object.assign(new Error("simulated post-commit index error"), { code: "EIO" });
+    };
+
+    const created = await store.create({
+      namespace: "alice",
+      principal: "owner:alice",
+      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+      expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
+    });
+
+    assert.equal(created.state.grantId, grantId);
+    assert.deepEqual((await store.listForOwner("alice", "owner:alice")).map((state) => state.grantId), [grantId]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1418,29 +1474,12 @@ test("the grant store rejects a symlinked grant directory", async () => {
 });
 
 test("private file operations select supported directory access strategies", () => {
-  for (const platform of ["win32", "darwin"] as const) {
-    assert.throws(
-      () => requirePrivateFileDescriptorRoot(platform, "private file directory cannot be pinned"),
-      /private file directory cannot be pinned/
-    );
-  }
+  assert.throws(
+    () => requirePrivateFileDescriptorRoot("win32", "private file directory cannot be pinned"),
+    /private file directory cannot be pinned/
+  );
   assert.equal(requirePrivateFileDescriptorRoot("linux", "unreachable"), "/proc/self/fd");
-});
-
-test("macOS private files fail closed without descriptor-relative operations", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-private-darwin-"));
-  let handle: FileHandle | undefined;
-  try {
-    handle = await open(root, "r");
-    const opened = await handle.stat();
-    await assert.rejects(
-      resolvePrivateDirectoryPath(root, handle, opened, "private directory changed", "darwin"),
-      /private directory changed/
-    );
-  } finally {
-    await handle?.close();
-    await rm(root, { recursive: true, force: true });
-  }
+  assert.equal(requirePrivateFileDescriptorRoot("darwin", "unreachable"), "/dev/fd");
 });
 
 test("private directory creation syncs every verified parent entry", async () => {
@@ -1480,6 +1519,31 @@ test("private directory creation retries a failed parent sync", async () => {
       retrySyncs += 1;
     });
     assert.equal(retrySyncs, 3);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("private directory creation retries parent sync when rollback cannot remove the child", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-private-directory-sync-populated-"));
+  try {
+    const target = path.join(root, "state");
+    let failed = false;
+    await assert.rejects(
+      ensurePrivateDirectoryNoFollow(root, target, "private directory creation failed", async () => {
+        if (failed) return;
+        failed = true;
+        await writeFile(path.join(target, "peer-entry"), "peer");
+        throw Object.assign(new Error("simulated directory sync failure"), { code: "EIO" });
+      }),
+      (error: unknown) => (error as NodeJS.ErrnoException).code === "EIO"
+    );
+
+    let retrySyncs = 0;
+    await ensurePrivateDirectoryNoFollow(root, target, "private directory creation failed", async () => {
+      retrySyncs += 1;
+    });
+    assert.equal(retrySyncs, 1);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
