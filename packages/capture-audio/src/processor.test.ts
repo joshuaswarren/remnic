@@ -1596,3 +1596,101 @@ test("a hold is released once the retained chunk is complete", async () => {
     spool.close();
   }
 });
+
+test("a restart rebuilds replay holds from the durable markers", async () => {
+  // The in-memory record of incomplete chunks dies with the process, so a
+  // later healthy chunk would otherwise close a prefix whose WAV is still
+  // waiting for its replay (issue #2145).
+  const spool = new Spool(":memory:");
+  try {
+    const stale = chunk();
+    const cid = chunkStableId(stale);
+    const segs = [
+      { text: "A", startUtc: t(1), endUtc: t(2) },
+      { text: "B", startUtc: t(40), endUtc: t(41) },
+    ];
+    // A prior run recorded the manifest and a prefix, then died: no `:done`.
+    spool.markApplied(transcriptManifestKey(cid), transcriptManifestHash(cid, segs));
+    spool.appendAssembledSegments({
+      idempotencyKey: segmentStableKey(cid, segs[0]),
+      chunkId: cid,
+      conversationId: "conv_prefix",
+      startedAtUtc: t(1),
+      state: "capturing",
+      segments: [{ channel: "mic", text: "A", startUtc: t(1), endUtc: t(2), isWearer: true }],
+    });
+    assert.deepEqual(spool.incompleteChunkIds(), [cid], "the marker pair names the incomplete chunk");
+
+    // A fresh process sees only a later, healthy chunk.
+    const later = chunk({
+      path: "/tmp/raw/later.wav",
+      startedAtUtc: "2026-07-24T03:00:00.000Z",
+      endedAtUtc: "2026-07-24T03:00:30.000Z",
+    });
+    const restarted = createChunkProcessor(
+      deps(spool, {
+        transcribe: async () => [
+          { text: "later", startUtc: "2026-07-24T03:00:00.000Z", endUtc: "2026-07-24T03:00:10.000Z" },
+        ],
+      }),
+    );
+    restarted.enqueue(later);
+    await restarted.finalize();
+    assert.ok(
+      [...spool.capturingConversationIds()].includes("conv_prefix"),
+      "the incomplete prefix stayed resumable across the restart",
+    );
+  } finally {
+    spool.close();
+  }
+});
+
+test("a hold does not keep an unrelated conversation open", async () => {
+  // `trackRetention` snapshots what is resumable BEFORE the batch appends, so a
+  // conversation opened by a gap split in the same batch still finalizes.
+  const spool = new Spool(":memory:");
+  try {
+    const stale = chunk();
+    const cid = chunkStableId(stale);
+    spool.markApplied(
+      transcriptManifestKey(cid),
+      transcriptManifestHash(cid, [{ text: "A", startUtc: t(1), endUtc: t(2) }]),
+    );
+    spool.appendAssembledSegments({
+      idempotencyKey: segmentStableKey(cid, { text: "A", startUtc: t(1), endUtc: t(2) }),
+      chunkId: cid,
+      conversationId: "conv_prefix",
+      startedAtUtc: t(1),
+      state: "capturing",
+      segments: [{ channel: "mic", text: "A", startUtc: t(1), endUtc: t(2), isWearer: true }],
+    });
+
+    const fresh = chunk({
+      path: "/tmp/raw/fresh.wav",
+      startedAtUtc: "2026-07-24T05:00:00.000Z",
+      endedAtUtc: "2026-07-24T05:00:30.000Z",
+    });
+    const proc = createChunkProcessor(
+      deps(spool, {
+        onError: () => undefined,
+        // A window wider than the span keeps both chunks for ONE batch, which
+        // is where the pre-append snapshot matters.
+        reorderWindowMs: 24 * 60 * 60 * 1000,
+        // The retained chunk replays silently — so it reaches the completion
+        // loop, where retention is recorded — and the fresh one is fine.
+        transcribe: async (input) =>
+          input.wavPath.endsWith("fresh.wav")
+            ? [{ text: "fresh", startUtc: "2026-07-24T05:00:00.000Z", endUtc: "2026-07-24T05:00:10.000Z" }]
+            : [],
+      }),
+    );
+    proc.enqueue(stale);
+    proc.enqueue(fresh);
+    await proc.finalize();
+    const capturing = [...spool.capturingConversationIds()];
+    assert.ok(capturing.includes("conv_prefix"), "the held prefix stayed open");
+    assert.equal(capturing.length, 1, "and the unrelated conversation finalized");
+  } finally {
+    spool.close();
+  }
+});

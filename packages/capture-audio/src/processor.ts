@@ -211,15 +211,27 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     return false;
   }
 
-  /** Record, or clear, the conversations a chunk's replay could still need. */
-  function trackRetention(chunkId: string, retained: boolean): void {
+  /**
+   * Record, or clear, the conversations a chunk's replay could still need.
+   *
+   * `resumable` is snapshotted BEFORE the batch appends anything: a healthy
+   * conversation opened by a gap split in the same batch is not a prefix any
+   * replay can resume, so holding it would keep unrelated audio out of the
+   * final-only read path until the retained chunk completes.
+   */
+  function trackRetention(chunkId: string, retained: boolean, resumable: ReadonlySet<string>): void {
     if (!retained) {
       retainedChunks.delete(chunkId);
       return;
     }
-    const held = new Set(deps.spool.capturingConversationIds());
-    if (openConversationId !== null) held.add(openConversationId);
-    retainedChunks.set(chunkId, held);
+    retainedChunks.set(chunkId, new Set(resumable));
+  }
+
+  /** Conversations a replay could resume right now. */
+  function resumableConversations(): Set<string> {
+    const ids = new Set(deps.spool.capturingConversationIds());
+    if (openConversationId !== null) ids.add(openConversationId);
+    return ids;
   }
   const processedThisRun = new Set<string>();
   // Bounded reorder buffer (issue #2145). With `captureChannel: "both"` the
@@ -307,16 +319,18 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       throw err;
     }
   };
-  const finalizeConv = (id: string): void => {
+  const finalizeConv = (id: string): boolean => {
     // A held prefix must stay `capturing` so a later replay can resume it. This
     // is the single durable choke point: the assembler closes conversations
     // from several paths (idle close, gap split inside `add`, shutdown), and
     // guarding each of them would leave the next one to be found.
-    if (isHeldForReplay(id)) return;
+    if (isHeldForReplay(id)) return false;
     dedupeConversation(id);
     diarizeConversation(id);
     deps.spool.finalizeConversation(id);
+    return true;
   };
+
 
   const report = (error: unknown, event: ChunkEvent): void => {
     // A throwing operator callback must not become a pipeline failure: it would
@@ -460,12 +474,24 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
         deps.assembler.resume(prior);
         openConversationId = prior.id;
       }
+      // A restart loses which chunks are still awaiting a replay, so rebuild
+      // the holds from the durable markers: a manifest without a `:done` is a
+      // chunk whose WAV is retained, and the conversations capturing right now
+      // are the prefixes its replay could still resume (issue #2145).
+      const incomplete = deps.spool.incompleteChunkIds();
+      if (incomplete.length > 0) {
+        const resumableAtStartup = resumableConversations();
+        for (const chunkId of incomplete) {
+          trackRetention(chunkId, true, resumableAtStartup);
+        }
+      }
     }
     // Decide retention BEFORE anything can close a conversation: a chunk kept
     // for a later replay must keep its durable prefix resumable, and both the
     // idle-close below and the gap split inside `assembler.add` would otherwise
     // flip it to final while this batch is still being applied (issue #2145).
-    for (const entry of batch) trackRetention(entry.chunkId, !isFullyProcessed(entry));
+    const resumable = resumableConversations();
+    for (const entry of batch) trackRetention(entry.chunkId, !isFullyProcessed(entry), resumable);
     const earliestStart = batch.reduce(
       (earliest, entry) => (entry.startMs < earliest.startMs ? entry : earliest),
       batch[0],
@@ -475,9 +501,10 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       // Dedupes, diarizes and flips a conversation in the spool — durable, so
       // the caller must not rewind past it. Flagged AFTER the call: a throw
       // inside it leaves nothing durable, and the batch should still rewind.
-      finalizeConv(closed);
-      progress.persisted = true;
-      openConversationId = null;
+      if (finalizeConv(closed)) {
+        progress.persisted = true;
+        openConversationId = null;
+      }
     }
 
     // One chronological stream across the batch. The comparator is total —
@@ -554,8 +581,9 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       for (const item of run.items) {
         const key = segmentStableKey(chunkId, item.seg);
         if (openConversationId !== null && openConversationId !== run.id) {
-          finalizeConv(openConversationId);
-          progress.persisted = true;
+          // A held conversation is left `capturing`, so nothing durable changed
+          // and the batch must still be able to rewind.
+          if (finalizeConv(openConversationId)) progress.persisted = true;
         }
         deps.spool.appendAssembledSegments({
           idempotencyKey: key,
@@ -590,7 +618,7 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       // accounted for may be missing, so the chunk stays open and keeps its
       // audio.
       const fullyProcessed = isFullyProcessed(entry);
-      trackRetention(entry.chunkId, !fullyProcessed);
+      trackRetention(entry.chunkId, !fullyProcessed, resumable);
       if (entry.built.length > 0 && !fullyProcessed) {
         log.warn(
           `[capture-audio] chunk ${entry.chunkId} retranscribed to a different transcript than an earlier run; keeping its raw audio for replay`,
@@ -700,7 +728,7 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
           bufferedIds.delete(candidate.chunkId);
           // The chunk keeps its audio for a matching replay, so its durable
           // prefix must stay resumable — do not let the sweep close it.
-          trackRetention(candidate.chunkId, true);
+          trackRetention(candidate.chunkId, true, resumableConversations());
           report(
             new Error(
               `transcript for chunk ${candidate.chunkId} does not match the recorded manifest; raw audio retained`,

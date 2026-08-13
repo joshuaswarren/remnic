@@ -685,6 +685,28 @@ export class Spool {
   }
 
   /**
+   * Chunks whose transcript manifest is recorded but which never completed.
+   *
+   * A restart loses the in-memory record of which chunks are still awaiting a
+   * replay, so it is re-derived from these two durable markers: the manifest is
+   * written before any append, `:done` only after every segment is stored
+   * (issue #2145).
+   */
+  incompleteChunkIds(): string[] {
+    const rows = this.#db
+      .prepare(
+        `SELECT substr(idempotency_key, 1, length(idempotency_key) - 9) AS chunkId
+           FROM applied_chunks
+          WHERE idempotency_key LIKE '%:manifest'
+            AND substr(idempotency_key, 1, length(idempotency_key) - 9) || ':done' NOT IN (
+                  SELECT idempotency_key FROM applied_chunks
+                )`,
+      )
+      .all() as { chunkId: string }[];
+    return rows.map((row) => row.chunkId);
+  }
+
+  /**
    * The value stored alongside an idempotency marker, or `undefined`.
    *
    * `markApplied` uses this column to carry a fact a replay cannot re-derive —
