@@ -8,6 +8,7 @@ import { type HeldFileLockController, serializeMutations, withHeldFileLock } fro
 import { computeSupportPassportOwnerKey } from "./card-projection.js";
 import { SupportPassportNamespaceSchema } from "./contracts.js";
 import { SupportPassportError } from "./errors.js";
+import { computeSupportPassportOwnerLockKey } from "./owner-lock.js";
 import {
   SupportPassportCreateGrantInputSchema,
   type SupportPassportGrantCardRef,
@@ -39,6 +40,7 @@ export interface SupportPassportGrantStoreOptions {
   makeSecret?: () => Buffer;
   makeGrantId?: () => string;
   withHeldFileLock?: typeof withHeldFileLock;
+  syncDirectory?: typeof syncDirectoryForDurability;
 }
 
 export interface CreateStoredGrantInput {
@@ -46,6 +48,7 @@ export interface CreateStoredGrantInput {
   principal: string;
   cards: SupportPassportGrantCardRef[];
   expiresAt: string;
+  requestedAt?: Date;
 }
 
 function sha256(domain: string, value: string): string {
@@ -113,6 +116,7 @@ export class SupportPassportGrantStore {
   private readonly makeSecret: () => Buffer;
   private readonly makeGrantId: () => string;
   private readonly runWithHeldFileLock: typeof withHeldFileLock;
+  private readonly syncDirectory: typeof syncDirectoryForDurability;
 
   constructor(options: SupportPassportGrantStoreOptions) {
     this.memoryDir = path.resolve(expandTildePath(options.memoryDir));
@@ -122,6 +126,7 @@ export class SupportPassportGrantStore {
     this.makeSecret = options.makeSecret ?? (() => randomBytes(32));
     this.makeGrantId = options.makeGrantId ?? randomUUID;
     this.runWithHeldFileLock = options.withHeldFileLock ?? withHeldFileLock;
+    this.syncDirectory = options.syncDirectory ?? syncDirectoryForDurability;
   }
 
   async create(
@@ -137,6 +142,16 @@ export class SupportPassportGrantStore {
     if (!parsed.success) {
       throw new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
     }
+    const requestedAt = input.requestedAt ?? this.now();
+    const durationMs = Date.parse(parsed.data.expiresAt) - requestedAt.getTime();
+    if (
+      !Number.isFinite(requestedAt.getTime()) ||
+      !Number.isFinite(durationMs) ||
+      durationMs < 300_000 ||
+      durationMs > 604_800_000
+    ) {
+      throw new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
+    }
     return await this.withMutationLock(async (lock) => {
       const secretBytes = this.makeSecret();
       if (!Buffer.isBuffer(secretBytes) || secretBytes.length !== 32) {
@@ -147,16 +162,13 @@ export class SupportPassportGrantStore {
       const grantId = rawGrantId.toLowerCase();
       const secret = secretBytes.toString("base64url");
       const createdAt = this.now();
-      const durationMs = Date.parse(parsed.data.expiresAt) - createdAt.getTime();
-      if (!Number.isFinite(durationMs) || durationMs < 300_000 || durationMs > 604_800_000) {
-        throw new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
-      }
       const state = SupportPassportGrantStateSchema.parse({
         schemaVersion: 1,
         stateVersion: 1,
         grantId,
         namespace,
         principalHash: computeSupportPassportOwnerKey(parsed.data.principal),
+        ownerLockKey: computeSupportPassportOwnerLockKey(namespace, parsed.data.principal),
         secretHash: sha256("support-passport-secret:v1", secret),
         cards: parsed.data.cards,
         createdAt: createdAt.toISOString(),
@@ -170,6 +182,12 @@ export class SupportPassportGrantStore {
       } catch (error) {
         const persisted = await this.readState(state.grantId).catch(() => undefined);
         if (!persisted || !sameGrantState(persisted, state)) throw error;
+        try {
+          await this.syncDirectory(this.grantsDir);
+        } catch {
+          await this.removeGrantStates([state.grantId]).catch(() => undefined);
+          throw error;
+        }
       }
       try {
         await this.addToOwnerIndex(state, lock);
@@ -178,7 +196,7 @@ export class SupportPassportGrantStore {
         const indexed = await this.readOwnerIndexByHash(ownerHash).catch(() => undefined);
         if (indexed?.includes(state.grantId)) {
           try {
-            await syncDirectoryForDurability(this.ownerIndexesDir);
+            await this.syncDirectory(this.ownerIndexesDir);
             return { state, secret };
           } catch {
             await this.removeGrantStates([state.grantId]).catch(() => undefined);

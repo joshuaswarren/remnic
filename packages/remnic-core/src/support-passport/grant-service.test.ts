@@ -9,7 +9,7 @@ import { StorageManager } from "../storage.js";
 import type { withHeldFileLock } from "../utils/serialize-mutations.js";
 import { SupportPassportCardService } from "./card-service.js";
 import { SupportPassportError } from "./errors.js";
-import { supportPassportOwnerLockPath } from "./owner-lock.js";
+import { computeSupportPassportOwnerLockKey, supportPassportOwnerLockPath } from "./owner-lock.js";
 import { SupportPassportGrantService } from "./grant-service.js";
 import { SupportPassportGrantStore, syncDirectoryForDurability } from "./grant-store.js";
 import {
@@ -103,8 +103,15 @@ test("a grant stores only hashed credentials with private file permissions", asy
       `${created.grant.grantId}.json`
     );
     const body = await readFile(filePath, "utf8");
+    const state = JSON.parse(body);
     assert.equal(body.includes(created.secret), false);
-    assert.equal(JSON.parse(body).secretHash.length, 64);
+    assert.equal(body.includes("owner:alice"), false);
+    assert.equal(state.secretHash.length, 64);
+    assert.equal(state.ownerLockKey, computeSupportPassportOwnerLockKey("alice", "owner:alice"));
+    assert.equal(
+      supportPassportOwnerLockPath(subject.aliceStorage, { namespace: "alice", principal: "owner:alice" }),
+      supportPassportOwnerLockPath(subject.aliceStorage, { namespace: "alice", ownerKey: state.ownerLockKey })
+    );
     assert.equal((await lstat(filePath)).mode & 0o777, 0o600);
     assert.equal((await lstat(path.dirname(filePath))).mode & 0o777, 0o700);
   } finally {
@@ -336,7 +343,16 @@ test("grant creation accepts a state write that committed before its durability 
   try {
     const grantId = "00000000-0000-4000-8000-000000000001";
     const now = new Date("2026-08-11T12:00:00.000Z");
-    const store = new SupportPassportGrantStore({ memoryDir: root, makeGrantId: () => grantId, now: () => now });
+    const directorySyncs: string[] = [];
+    const store = new SupportPassportGrantStore({
+      memoryDir: root,
+      makeGrantId: () => grantId,
+      now: () => now,
+      syncDirectory: async (directory) => {
+        directorySyncs.push(directory);
+        await syncDirectoryForDurability(directory);
+      },
+    });
     const inspected = store as unknown as {
       writeState(state: unknown, requireAbsent: boolean): Promise<void>;
     };
@@ -357,6 +373,47 @@ test("grant creation accepts a state write that committed before its durability 
     assert.deepEqual(
       (await store.listForOwner("alice", "owner:alice")).map((state) => state.grantId),
       [grantId]
+    );
+    assert.deepEqual(directorySyncs.map((directory) => path.basename(directory)), ["grants"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("grant creation fails closed when a committed state cannot be re-synced", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-state-sync-"));
+  try {
+    const grantId = "00000000-0000-4000-8000-000000000001";
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({
+      memoryDir: root,
+      makeGrantId: () => grantId,
+      now: () => now,
+      syncDirectory: async () => {
+        throw Object.assign(new Error("simulated directory sync failure"), { code: "EIO" });
+      },
+    });
+    const inspected = store as unknown as {
+      writeState(state: unknown, requireAbsent: boolean): Promise<void>;
+    };
+    const writeState = inspected.writeState.bind(store);
+    inspected.writeState = async (state, requireAbsent) => {
+      await writeState(state, requireAbsent);
+      throw Object.assign(new Error("simulated post-commit state error"), { code: "EIO" });
+    };
+
+    await assert.rejects(
+      store.create({
+        namespace: "alice",
+        principal: "owner:alice",
+        cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+        expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
+      }),
+      (error: unknown) => (error as NodeJS.ErrnoException).code === "EIO"
+    );
+    await assert.rejects(
+      lstat(path.join(root, "state", "support-passport", "grants", `${grantId}.json`)),
+      (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT"
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -565,6 +622,35 @@ test("grant creation rechecks the owner lock immediately before commit", async (
         error instanceof SupportPassportError && error.code === "storage_conflict" && error.status === 409
     );
     assert.deepEqual(await subject.grantService.listGrants({ principal: "owner:alice" }), []);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("grant creation measures its minimum lifetime from request receipt", async () => {
+  const subject = await makeSubject();
+  try {
+    const card = await createActiveCard(subject);
+    const expiresAt = expiryAfter(subject, 300_000);
+    const getMemoryById = subject.aliceStorage.getMemoryById.bind(subject.aliceStorage);
+    let delayed = false;
+    subject.aliceStorage.getMemoryById = async (memoryId: string) => {
+      const memory = await getMemoryById(memoryId);
+      if (!delayed) {
+        delayed = true;
+        subject.advance(1_000);
+      }
+      return memory;
+    };
+
+    const created = await subject.grantService.createGrant({
+      principal: "owner:alice",
+      cards: [{ cardId: card.cardId, revision: card.revision }],
+      expiresAt,
+    });
+
+    assert.equal(created.grant.expiresAt, expiresAt);
+    assert.equal(created.grant.status, "active");
   } finally {
     await subject.cleanup();
   }

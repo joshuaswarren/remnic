@@ -201,7 +201,7 @@ test("card reads and mutations stay inside the resolved namespace on shared stor
       supportPassportOwnerLockPath(subject.storage, { namespace: "alice", principal: "owner:alice" }),
       supportPassportOwnerLockPath(subject.storage, { namespace: "bob", principal: "owner:bob" })
     );
-    assert.equal(
+    assert.notEqual(
       supportPassportOwnerLockPath(subject.storage, { namespace: "alice", principal: "owner:alice" }),
       supportPassportOwnerLockPath(subject.storage, {
         namespace: "alice",

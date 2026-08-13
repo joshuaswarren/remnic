@@ -31,6 +31,7 @@ export const SupportPassportGrantStateSchema = z
     grantId: GrantIdSchema,
     namespace: SupportPassportNamespaceSchema,
     principalHash: RevisionSchema,
+    ownerLockKey: RevisionSchema,
     secretHash: RevisionSchema,
     cards: z.array(SupportPassportGrantCardRefSchema).min(1).max(8),
     createdAt: IsoTimestampSchema,
