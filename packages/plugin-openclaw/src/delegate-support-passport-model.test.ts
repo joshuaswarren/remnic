@@ -22,6 +22,8 @@ test("the delegate worker runs daemon jobs through the injected gateway route", 
   };
   let served = false;
   let acknowledged = false;
+  let acknowledgeStartedAt = 0;
+  let invokeStartedAt = 0;
   let completionAttempts = 0;
   const server = http.createServer((req, res) => {
     let raw = "";
@@ -42,10 +44,13 @@ test("the delegate worker runs daemon jobs through the injected gateway route", 
         return;
       }
       if (req.url?.endsWith("/jobs/ack")) {
+        acknowledgeStartedAt = Date.now();
         const claim = JSON.parse(raw) as { id: string; claimId: string };
         acknowledged = claim.id === job.id && claim.claimId === job.claimId;
-        res.statusCode = 204;
-        res.end();
+        setTimeout(() => {
+          res.statusCode = 204;
+          res.end();
+        }, 30);
         return;
       }
       completionAttempts += 1;
@@ -69,7 +74,9 @@ test("the delegate worker runs daemon jobs through the injected gateway route", 
   const route: SupportPassportModelRoute = {
     kind: "gateway",
     invoke: async (_messages, options) => {
+      invokeStartedAt = Date.now();
       assert.equal(acknowledged, true);
+      assert.ok(options.timeoutMs <= job.timeoutMs - 20);
       const result = {
         content: JSON.stringify({
           cards: [
@@ -100,6 +107,7 @@ test("the delegate worker runs daemon jobs through the injected gateway route", 
     await service.start();
     const posted = await completion.promise;
     assert.equal(accepted, true);
+    assert.ok(invokeStartedAt - acknowledgeStartedAt >= 20);
     assert.equal(completionAttempts, 2);
     assert.equal(posted.id, job.id);
     assert.equal(posted.claimId, job.claimId);
