@@ -807,12 +807,12 @@ test("grant creation rechecks the owner lock immediately before commit", async (
   const subject = await makeSubject();
   try {
     const card = await createActiveCard(subject);
-    const originalRead = subject.aliceStorage.getMemoryById.bind(
+    const originalRead = subject.aliceStorage.readAllMemories.bind(
       subject.aliceStorage,
     );
     let replacedLock = false;
-    subject.aliceStorage.getMemoryById = async (memoryId: string) => {
-      const memory = await originalRead(memoryId);
+    subject.aliceStorage.readAllMemories = async (...args) => {
+      const memories = await originalRead(...args);
       if (!replacedLock) {
         replacedLock = true;
         const lockPath = supportPassportOwnerLockPath(subject.aliceStorage, {
@@ -824,7 +824,7 @@ test("grant creation rechecks the owner lock immediately before commit", async (
           `${process.pid} 00000000-0000-4000-8000-000000000000 peer\n`,
         );
       }
-      return memory;
+      return memories;
     };
 
     await assert.rejects(
@@ -998,15 +998,17 @@ test("grant creation measures its minimum lifetime from request receipt", async 
   try {
     const card = await createActiveCard(subject);
     const expiresAt = expiryAfter(subject, 300_000);
-    const getMemoryById = subject.aliceStorage.getMemoryById.bind(subject.aliceStorage);
+    const readAllMemories = subject.aliceStorage.readAllMemories.bind(
+      subject.aliceStorage,
+    );
     let delayed = false;
-    subject.aliceStorage.getMemoryById = async (memoryId: string) => {
-      const memory = await getMemoryById(memoryId);
+    subject.aliceStorage.readAllMemories = async (...args) => {
+      const memories = await readAllMemories(...args);
       if (!delayed) {
         delayed = true;
         subject.advance(1_000);
       }
-      return memory;
+      return memories;
     };
 
     const created = await subject.grantService.createGrant({
@@ -1886,7 +1888,7 @@ test("grant creation and card withdrawal cannot interleave", async () => {
   const subject = await makeSubject();
   try {
     const card = await createActiveCard(subject);
-    const getMemoryById = subject.aliceStorage.getMemoryById.bind(
+    const readAllMemories = subject.aliceStorage.readAllMemories.bind(
       subject.aliceStorage,
     );
     let releaseRead!: () => void;
@@ -1898,14 +1900,14 @@ test("grant creation and card withdrawal cannot interleave", async () => {
       releaseRead = resolve;
     });
     let pauseRead = true;
-    subject.aliceStorage.getMemoryById = async (memoryId: string) => {
-      const memory = await getMemoryById(memoryId);
+    subject.aliceStorage.readAllMemories = async (...args) => {
+      const memories = await readAllMemories(...args);
       if (pauseRead) {
         pauseRead = false;
         markReadStarted();
         await readReleased;
       }
-      return memory;
+      return memories;
     };
 
     const createPromise = subject.grantService.createGrant({
@@ -2030,17 +2032,17 @@ test("a grant that expires during guide assembly does not return a guide", async
       cards: [{ cardId: card.cardId, revision: card.revision }],
       expiresAt: expiryAfter(subject, 300_000),
     });
-    const readAllMemories = subject.aliceStorage.readAllMemories.bind(
-      subject.aliceStorage,
+    const authenticate = subject.grantStore.authenticate.bind(
+      subject.grantStore,
     );
     let advanced = false;
-    subject.aliceStorage.readAllMemories = async (...args) => {
-      const memories = await readAllMemories(...args);
+    subject.grantStore.authenticate = async (grantId, secret) => {
+      const state = await authenticate(grantId, secret);
       if (!advanced) {
         advanced = true;
         subject.advance(300_000);
       }
-      return memories;
+      return state;
     };
 
     await assert.rejects(
@@ -2071,18 +2073,18 @@ test("revocation wins while an optimistic helper card read is still pending", as
       memoryDir: path.join(subject.root, "shared"),
       now: subject.now,
     });
-    const readAllMemories = subject.aliceStorage.readAllMemories.bind(
-      subject.aliceStorage,
+    const authenticate = subject.grantStore.authenticate.bind(
+      subject.grantStore,
     );
-    let paused = false;
-    subject.aliceStorage.readAllMemories = async (...args) => {
-      const memories = await readAllMemories(...args);
-      if (!paused) {
-        paused = true;
+    let authentications = 0;
+    subject.grantStore.authenticate = async (grantId, secret) => {
+      const state = await authenticate(grantId, secret);
+      authentications += 1;
+      if (authentications === 1) {
         cardReadStarted.resolve();
         await releaseCardRead.promise;
       }
-      return memories;
+      return state;
     };
 
     const readPromise = subject.grantService.readGrant({
@@ -2393,6 +2395,11 @@ test("helper guide assembly refreshes the owner lock after its final snapshot re
       cards: [{ cardId: card.cardId, revision: card.revision }],
       expiresAt: expiryAfter(subject, 3_600_000),
     });
+    await subject.aliceStorage.writeMemory(
+      "fact",
+      "An unrelated memory invalidates the cached card snapshot.",
+      { source: "support-passport-test" },
+    );
     const readAllMemories = subject.aliceStorage.readAllMemories.bind(
       subject.aliceStorage,
     );
@@ -2652,6 +2659,11 @@ test("one unchanged guide read validates a fresh final corpus snapshot", async (
       cards: [{ cardId: card.cardId, revision: card.revision }],
       expiresAt: expiryAfter(subject, 3_600_000),
     });
+    await subject.aliceStorage.writeMemory(
+      "fact",
+      "An unrelated memory invalidates the cached card snapshot.",
+      { source: "support-passport-test" },
+    );
     const readAllMemories = subject.aliceStorage.readAllMemories.bind(
       subject.aliceStorage,
     );
