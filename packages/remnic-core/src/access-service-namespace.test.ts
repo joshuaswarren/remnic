@@ -1349,6 +1349,9 @@ test("offlineSyncSnapshot does not trust client base capture time for server fas
       async readDeletionRevisions() {
         return new Map<string, number>();
       },
+      async readMemoryByPath() {
+        return null;
+      },
       async readOfflineSyncFile(targetPath: string) {
         return readFile(targetPath);
       },
@@ -1415,6 +1418,9 @@ test("offlineSyncSnapshot drains pending recall-impression spills so a recorded 
       },
       async readDeletionRevisions() {
         return new Map<string, number>();
+      },
+      async readMemoryByPath() {
+        return null;
       },
       async readOfflineSyncFile(targetPath: string) {
         return readFile(targetPath);
