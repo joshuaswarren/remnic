@@ -670,16 +670,32 @@ export class Spool {
   /**
    * Whether ANY idempotency key for this chunk was applied.
    *
-   * Per-segment keys are content-derived, so they cannot be enumerated from a
-   * chunk id alone; a zero-segment replay still has to know whether the chunk
-   * was partially applied before (issue #2145).
+   * Only a SILENT replay needs this — a chunk partially applied by a binary
+   * predating the transcript manifest has no manifest to compare, and a
+   * zero-segment replay has no per-segment key to look up exactly. Speech
+   * chunks use the indexed manifest lookup below, so continuous capture never
+   * pays for this scan (issue #2145).
    */
-  hasAppliedChunkPrefix(prefix: string): boolean {
-    return (
-      this.#db
-        .prepare("SELECT 1 FROM applied_chunks WHERE idempotency_key LIKE ? ESCAPE '\\' LIMIT 1")
-        .get(`${prefix.replace(/[\\%_]/g, "\\$&")}%`) !== undefined
-    );
+  hasAppliedChunkPrefix(chunkIdPrefix: string): boolean {
+    const escaped = chunkIdPrefix.replace(/[\\%_]/g, "\\$&");
+    const row = this.#db
+      .prepare("SELECT 1 AS present FROM applied_chunks WHERE idempotency_key LIKE ? ESCAPE '\\' LIMIT 1")
+      .get(`${escaped}%`) as { present?: number } | undefined;
+    return row?.present === 1;
+  }
+
+  /**
+   * The value stored alongside an idempotency marker, or `undefined`.
+   *
+   * `markApplied` uses this column to carry a fact a replay cannot re-derive —
+   * the chunk's transcript manifest hash — and this is the exact, primary-key
+   * lookup that reads it back (issue #2145).
+   */
+  appliedChunkValue(idempotencyKey: string): string | undefined {
+    const row = this.#db
+      .prepare("SELECT conversation_id AS conversationId FROM applied_chunks WHERE idempotency_key = ?")
+      .get(idempotencyKey) as { conversationId?: string } | undefined;
+    return row?.conversationId;
   }
 
   /** Whether a chunk with this idempotency key was already durably applied. */

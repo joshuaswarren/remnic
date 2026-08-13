@@ -174,6 +174,22 @@ export class ConversationAssembler {
   }
 
   /**
+   * Drop finalized conversations the caller no longer needs.
+   *
+   * A long-running daemon would otherwise retain every conversation and every
+   * segment forever, which makes the rollback snapshot below O(capture
+   * history) and the daemon's per-chunk work quadratic (issue #2145). Only the
+   * open conversation can still be mutated, so nothing else needs keeping.
+   */
+  pruneFinalized(): number {
+    const open = this.#open();
+    const removed = this.#conversations.length - (open ? 1 : 0);
+    this.#conversations.length = 0;
+    if (open) this.#conversations.push(open);
+    return removed;
+  }
+
+  /**
    * Deep snapshot for rollback (issue #2145).
    *
    * `add` mutates the open conversation in place. A caller that fails BEFORE

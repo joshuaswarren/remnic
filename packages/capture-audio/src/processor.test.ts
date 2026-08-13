@@ -7,6 +7,7 @@ import {
   chunkStableId,
   createChunkProcessor,
   segmentStableKey,
+  transcriptManifestKey,
   type ChunkProcessorDeps,
 } from "./processor.js";
 import { Spool } from "./spool.js";
@@ -998,10 +999,12 @@ test("a pre-commit failure rewinds the assembler; a partial commit does not", as
     assert.equal(spool.stats().segments, 2);
     // Ids are never reused, so `minted` also counts the discarded attempt; what
     // matters is that the retry produced TWO conversations, not one collapsed.
-    const retried = assembler.conversations();
-    assert.equal(retried.length, 2, "the retry re-split instead of collapsing into one conversation");
+    // The assembler prunes closed conversations, so the spool is the record.
+    assert.equal(spool.stats().conversations, 2, "the retry re-split instead of collapsing into one");
     assert.deepEqual(
-      retried.map((conv) => spool.conversationSegmentsForDedup(conv.id).map((seg) => seg.text)),
+      [`conv_${minted - 1}`, `conv_${minted}`].map((id) =>
+        spool.conversationSegmentsForDedup(id).map((seg) => seg.text),
+      ),
       [["one"], ["two"]],
     );
   } finally {
@@ -1149,7 +1152,7 @@ test("a shortened retranscription keeps the chunk open instead of losing its tai
     partial.enqueue(ev);
     await partial.drain();
     assert.equal(spool.stats().segments, 1, "only A persisted");
-    assert.ok(spool.hasAppliedChunkPrefix(`${cid}:m`), "the transcript manifest was recorded");
+    assert.ok(spool.appliedChunkValue(transcriptManifestKey(cid)) !== undefined, "the transcript manifest was recorded");
     assert.equal(spool.isChunkApplied(`${cid}:done`), false, "and the chunk is not complete");
 
     // The replay now produces only A.
@@ -1294,6 +1297,89 @@ test("a chunk is never released without its transcript manifest", async () => {
     failMarker = false;
     await proc.finalize();
     assert.equal(spool.stats().segments, 2, "the chunk released once its manifest was durable");
+  } finally {
+    spool.close();
+  }
+});
+
+test("a manifest failure holds the whole ready window, not just one chunk", async () => {
+  // applyBatch interleaves the ready set chronologically, so releasing peers
+  // without a held chunk would apply its segments out of order later (#2145).
+  const spool = new Spool(":memory:");
+  try {
+    let blocked: string | undefined = chunkStableId(chunk({ path: "/tmp/raw/a.wav" }));
+    const guarded = new Proxy(spool, {
+      get(target, prop, receiver) {
+        if (prop === "markApplied") {
+          return (key: string, value: string) => {
+            if (blocked !== undefined && key === `${blocked}:manifest`) throw new Error("sqlite busy");
+            target.markApplied(key, value);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as Spool;
+    const proc = createChunkProcessor(
+      deps(guarded, {
+        reorderWindowMs: 0,
+        onError: () => undefined,
+        // Distinct, non-overlapping spans: cross-channel dedup must not be
+        // what makes this assertion pass.
+        transcribe: async (input) =>
+          input.wavPath.endsWith("a.wav")
+            ? [{ text: "first", startUtc: t(1), endUtc: t(2) }]
+            : [{ text: "second", startUtc: t(30), endUtc: t(31) }],
+      }),
+    );
+    proc.enqueue(chunk({ path: "/tmp/raw/a.wav" }));
+    proc.enqueue(chunk({ path: "/tmp/raw/b.wav", channel: "system" }));
+    await proc.drain();
+    assert.equal(spool.stats().segments, 0, "the peer was held with the blocked chunk");
+
+    blocked = undefined;
+    await proc.finalize();
+    assert.equal(spool.stats().segments, 2, "both released together once the manifest was durable");
+  } finally {
+    spool.close();
+  }
+});
+
+test("finalize fails loudly when a chunk cannot be released", async () => {
+  // Reporting success would let the daemon close the spool while a one-shot
+  // event was never appended, and retention would then reclaim its WAV.
+  const spool = new Spool(":memory:");
+  try {
+    const guarded = new Proxy(spool, {
+      get(target, prop, receiver) {
+        if (prop === "markApplied") {
+          return () => {
+            throw new Error("sqlite busy");
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as Spool;
+    const proc = createChunkProcessor(deps(guarded, { onError: () => undefined }));
+    proc.enqueue(chunk());
+    await assert.rejects(() => proc.finalize(), /retained for replay/);
+  } finally {
+    spool.close();
+  }
+});
+
+test("the assembler does not retain closed conversations", async () => {
+  // Otherwise every rollback checkpoint clones the whole capture history and
+  // the daemon's per-chunk work grows without bound (issue #2145).
+  const spool = new Spool(":memory:");
+  try {
+    const assembler = new ConversationAssembler({ gapMinutes: 0 });
+    const proc = createChunkProcessor(deps(spool, { assembler }));
+    proc.enqueue(chunk());
+    await proc.finalize();
+    assert.equal(spool.stats().conversations, 2, "the gap split two conversations");
+    assert.ok(assembler.conversations().length <= 1, "but at most the open one is retained");
   } finally {
     spool.close();
   }

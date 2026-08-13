@@ -111,15 +111,19 @@ export function segmentStableKey(chunkId: string, segment: { startUtc: string; e
  * chunk be marked complete with mixed content. Hashing every segment key
  * catches both a shortened and a changed transcript (issue #2145).
  */
-export function transcriptManifestKey(
+export function transcriptManifestHash(
   chunkId: string,
   segments: readonly { startUtc: string; endUtc: string; text: string }[],
 ): string {
-  const digest = createHash("sha1")
+  return createHash("sha1")
     .update(segments.map((segment) => segmentStableKey(chunkId, segment)).join("\n"))
     .digest("hex")
     .slice(0, 16);
-  return `${chunkId}:m${digest}`;
+}
+
+/** Fixed, indexed key holding a chunk's transcript manifest hash. */
+export function transcriptManifestKey(chunkId: string): string {
+  return `${chunkId}:manifest`;
 }
 
 export function chunkStableId(event: ChunkEvent): string {
@@ -522,14 +526,14 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       // same length with different content. Either way a segment no run has
       // accounted for may be missing, so the chunk stays open and keeps its
       // audio.
-      const manifestMatches = deps.spool.isChunkApplied(
-        transcriptManifestKey(entry.chunkId, entry.built.map((item) => item.seg)),
-      );
+      const manifestMatches =
+        deps.spool.appliedChunkValue(transcriptManifestKey(entry.chunkId)) ===
+        transcriptManifestHash(entry.chunkId, entry.built.map((item) => item.seg));
+      // A chunk partially applied by a binary predating the manifest has none
+      // to match, so a silent replay must not be the first to record one.
       const fullyProcessed =
-        entry.built.length > 0
-          ? manifestMatches
-          : !deps.spool.hasAppliedChunkPrefix(`${entry.chunkId}:`);
-      if (entry.built.length > 0 && !manifestMatches) {
+        entry.built.length > 0 ? manifestMatches : !deps.spool.hasAppliedChunkPrefix(`${entry.chunkId}:`);
+      if (!manifestMatches) {
         retainedForReplay = true;
         log.warn(
           `[capture-audio] chunk ${entry.chunkId} retranscribed to a different transcript than an earlier run; keeping its raw audio for replay`,
@@ -557,14 +561,18 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
    */
   function recordTranscriptManifest(entry: BufferedChunk): boolean {
     if (entry.built.length === 0) {
+      // A silent transcript has nothing to append, so it needs no manifest —
+      // and writing one would let an empty replay of a partially applied chunk
+      // become the authoritative manifest, stranding the real tail.
       entry.manifestRecorded = true;
       return true;
     }
     try {
-      if (!deps.spool.hasAppliedChunkPrefix(`${entry.chunkId}:m`)) {
+      const key = transcriptManifestKey(entry.chunkId);
+      if (deps.spool.appliedChunkValue(key) === undefined) {
         deps.spool.markApplied(
-          transcriptManifestKey(entry.chunkId, entry.built.map((item) => item.seg)),
-          "-",
+          key,
+          transcriptManifestHash(entry.chunkId, entry.built.map((item) => item.seg)),
         );
       }
       entry.manifestRecorded = true;
@@ -594,6 +602,7 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     for (;;) {
       const threshold = flushAll ? Number.POSITIVE_INFINITY : watermarkSourceMs - reorderWindowMs;
       const batch: BufferedChunk[] = [];
+      let manifestBlocked = false;
       for (let i = buffer.length - 1; i >= 0; i--) {
         const candidate = buffer[i];
         if (candidate.endMs > threshold) continue;
@@ -603,12 +612,34 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
         // retranscription record the FIRST manifest and complete a partially
         // applied chunk (issue #2145). The event is not lost — the next pass
         // retries the write.
-        if (!candidate.manifestRecorded && !recordTranscriptManifest(candidate)) continue;
+        if (!candidate.manifestRecorded && !recordTranscriptManifest(candidate)) {
+          // Hold the WHOLE window, not just this entry: applyBatch interleaves
+          // the ready set together, and releasing peers without it would apply
+          // the held chunk's segments out of order later (issue #2145).
+          manifestBlocked = true;
+          break;
+        }
         buffer.splice(i, 1);
         bufferedIds.delete(candidate.chunkId);
         batch.push(candidate);
       }
-      if (batch.length === 0) return;
+      if (manifestBlocked) {
+        // Put back anything already taken so the window releases as one set.
+        for (const entry of batch) {
+          buffer.push(entry);
+          bufferedIds.add(entry.chunkId);
+        }
+        if (flushAll) {
+          throw new Error("flush-plan manifest could not be persisted; chunks are retained for replay");
+        }
+        return;
+      }
+      if (batch.length === 0) {
+        if (flushAll && buffer.length > 0) {
+          throw new Error("buffered chunks could not be released; they are retained for replay");
+        }
+        return;
+      }
       // Total order so the same batch always applies the same way (rule 12).
       batch.sort(
         (left, right) =>
@@ -656,6 +687,11 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
         if (finalFailure !== undefined) throw finalFailure;
         return;
       }
+      // The batch is durable, so no rollback can need the conversations it
+      // closed. Drop them: retaining every conversation for the daemon's
+      // lifetime would make each checkpoint above O(capture history), and the
+      // per-chunk work quadratic (issue #2145).
+      deps.assembler.pruneFinalized();
     }
   }
 
