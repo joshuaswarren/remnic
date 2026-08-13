@@ -130,9 +130,15 @@ function parseSupportPassportCardMetadata(memory: Pick<MemoryFile, "frontmatter"
   };
 }
 
-export function hasLiveSupportPassportCardMetadata(memory: Pick<MemoryFile, "frontmatter">): boolean {
+export function hasLiveSupportPassportCard(
+  memory: Pick<MemoryFile, "frontmatter" | "content">
+): boolean {
   const metadata = parseSupportPassportCardMetadata(memory);
-  return metadata?.fields.status === "active" || metadata?.fields.status === "pending_review";
+  if (metadata?.fields.status !== "active" && metadata?.fields.status !== "pending_review") return false;
+  return SupportPassportCardSchema.omit({ revision: true }).safeParse({
+    ...metadata.fields,
+    statement: stripAttributesSuffix(memory.content),
+  }).success;
 }
 
 export function projectSupportPassportCard(memory: MemoryFile): StoredSupportPassportCard | null {

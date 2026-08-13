@@ -1,5 +1,5 @@
 import { type LifecycleSignals, clamp01, computeLifecycleValueInputs, daysSince } from "./lifecycle.js";
-import { hasLiveSupportPassportCardMetadata } from "./support-passport/card-projection.js";
+import { hasLiveSupportPassportCard } from "./support-passport/card-projection.js";
 import type { MemoryFile } from "./types.js";
 
 export type MemoryTier = "hot" | "cold";
@@ -19,8 +19,8 @@ export interface TierTransitionDecision {
   reason: string;
 }
 
-function requiresHotTier(memory: Pick<MemoryFile, "frontmatter">): boolean {
-  return hasLiveSupportPassportCardMetadata(memory);
+function requiresHotTier(memory: Pick<MemoryFile, "frontmatter" | "content">): boolean {
+  return hasLiveSupportPassportCard(memory);
 }
 
 export function computeTierValueScore(
@@ -47,7 +47,7 @@ export function computeTierValueScore(
 }
 
 export function decideTierTransition(
-  memory: Pick<MemoryFile, "frontmatter">,
+  memory: Pick<MemoryFile, "frontmatter" | "content">,
   currentTier: MemoryTier,
   policy: TierRoutingPolicy,
   now: Date,

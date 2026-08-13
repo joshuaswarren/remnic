@@ -3,8 +3,12 @@ import test from "node:test";
 import { computeTierValueScore, decideTierTransition } from "../src/tier-routing.js";
 import type { MemoryFile } from "../src/types.js";
 
-function memory(overrides?: Partial<MemoryFile["frontmatter"]>): Pick<MemoryFile, "frontmatter"> {
+function memory(
+  overrides?: Partial<MemoryFile["frontmatter"]>,
+  content = "A valid memory statement."
+): Pick<MemoryFile, "frontmatter" | "content"> {
   return {
+    content,
     frontmatter: {
       id: "m1",
       category: "fact",
@@ -171,6 +175,40 @@ test("decideTierTransition does not pin incomplete support passport metadata", (
     );
     assert.equal(decision.nextTier, "cold", requiredAttribute);
   }
+});
+
+test("decideTierTransition does not pin a support passport card with an invalid statement", () => {
+  const now = new Date("2026-02-01T00:00:00.000Z");
+  const decision = decideTierTransition(
+    memory(
+      {
+        category: "preference",
+        status: "active",
+        tags: ["support-passport-card"],
+        structuredAttributes: {
+          "support-passport-category": "environment",
+          "support-passport-namespace": "default",
+          "support-passport-owner": "a".repeat(64),
+          "support-passport-title": "Quiet space",
+          "support-passport-order": "0",
+          "support-passport-review-by": "2026-09-01T12:00:00.000Z",
+          "support-passport-source-ids": "",
+        },
+        confidence: 0,
+        confidenceTier: "speculative",
+        accessCount: 0,
+        lastAccessed: "2025-01-01T00:00:00.000Z",
+        importance: { score: 0, level: "trivial", reasons: [], keywords: [] },
+      },
+      "x".repeat(501)
+    ),
+    "hot",
+    policy,
+    now
+  );
+
+  assert.equal(decision.nextTier, "cold");
+  assert.equal(decision.reason, "value_below_demotion_threshold");
 });
 
 test("decideTierTransition does not pin unrelated tagged memories", () => {
