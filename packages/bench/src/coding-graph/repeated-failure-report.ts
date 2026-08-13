@@ -10,6 +10,7 @@ import {
   calculateJaccardSimilarity,
   computeH6InventoryHash,
   H6_FROZEN_INVENTORY_HASH,
+  H6_TIMING_DECISION_RULE,
   H6_FROZEN_SPLITS,
   loadCommittedH6BenchmarkDataset,
   resolveCommittedH6FixtureDirectory,
@@ -443,14 +444,21 @@ export async function writeRepeatedFailurePaperArtifacts(
     gitDirty: provenance.gitDirty,
     gitDirtyEntryCount: provenance.gitDirtyEntryCount,
   }));
-  if (
-    run.analysisVersion !== REPEATED_FAILURE_ANALYSIS_VERSION
-    || run.harnessVersion !== currentHarnessVersion
-    || run.harnessSourceHash !== currentHarnessSourceHash
-    || run.provenanceHash !== currentProvenanceHash
-  ) {
-    throw new Error("paper report harness provenance does not match run metadata");
+  if (run.analysisVersion !== REPEATED_FAILURE_ANALYSIS_VERSION) {
+    throw new Error("paper report analysis version does not match run metadata");
   }
+  // A newer harness may render the report: the byte-identical statistics
+  // replay above is the drift gate. A provenance difference is recorded in
+  // the report body, never hidden.
+  const renderProvenance = {
+    matchesRun: run.harnessVersion === currentHarnessVersion
+      && run.harnessSourceHash === currentHarnessSourceHash
+      && run.provenanceHash === currentProvenanceHash,
+    runHarnessVersion: run.harnessVersion,
+    runHarnessSourceHash: run.harnessSourceHash,
+    renderHarnessVersion: currentHarnessVersion,
+    renderHarnessSourceHash: currentHarnessSourceHash,
+  };
   const dataset = options.dataset ?? await loadCommittedH6BenchmarkDataset();
   const { inventoryHash: datasetInventoryHash, ...hashableDataset } = dataset;
   if (
@@ -668,6 +676,19 @@ export async function writeRepeatedFailurePaperArtifacts(
         profile.tokenizerImplementation,
       ].join("\u0000")).sort(compareCodePoints)
     : [];
+  const receiptProfileIdentity = (receipt: {
+    modelProfileId: string;
+    modelProfileHash: string;
+    modelDigest: string;
+    tokenizerIdentity: string;
+    tokenizerImplementation: string;
+  }) => [
+    receipt.modelProfileId,
+    receipt.modelProfileHash,
+    receipt.modelDigest,
+    receipt.tokenizerIdentity,
+    receipt.tokenizerImplementation,
+  ].join("\u0000");
   const sortedRunReceipts = [...run.trapAuditReceipts].sort(
     (left, right) => compareCodePoints(stableStringify(left), stableStringify(right)),
   );
@@ -676,11 +697,19 @@ export async function writeRepeatedFailurePaperArtifacts(
         (left, right) => compareCodePoints(stableStringify(left), stableStringify(right)),
       )
     : [];
-  const expectedPilotRunOrder = expectedRegisteredRunOrder(run, dataset, "pilot", designMode);
+  // The transferred pilot ran under the prior rule and harness, so its
+  // receipts differ byte-for-byte by registered design; profile identity is
+  // the continuity that must hold. The pilot always executed the full
+  // seven-row schedule regardless of this run's design mode.
+  const pilotReceiptsMatch = designMode === "timing_only"
+    ? stableStringify(sortedPilotReceipts.map(receiptProfileIdentity).sort(compareCodePoints))
+      === stableStringify(sortedRunReceipts.map(receiptProfileIdentity).sort(compareCodePoints))
+    : stableStringify(sortedPilotReceipts) === stableStringify(sortedRunReceipts);
+  const expectedPilotRunOrder = expectedRegisteredRunOrder(run, dataset, "pilot", "full");
   const pilotContinuityMatched = run.phase !== "main" || (
     mainPowerEvidence.success
     && stableStringify(pilotProfileBindings) === stableStringify(runExecutionProfiles)
-    && stableStringify(sortedPilotReceipts) === stableStringify(sortedRunReceipts)
+    && pilotReceiptsMatch
     && stableStringify(mainPowerEvidence.data.pilotRunOrder)
       === stableStringify(expectedPilotRunOrder)
     && mainPowerEvidence.data.pilotPowerArtifactHash
@@ -689,7 +718,11 @@ export async function writeRepeatedFailurePaperArtifacts(
       === mainPowerEvidence.data.pilotExpectedDesignHash
     && mainPowerEvidence.data.pilot.source.episodesHash
       === mainPowerEvidence.data.pilotEpisodesHash
-    && mainPowerEvidence.data.pilot.source.decisionRuleHash === run.decisionRuleHash
+    && mainPowerEvidence.data.pilot.source.decisionRuleHash === (
+      decisionRule.version === H6_TIMING_DECISION_RULE.version
+        ? decisionRule.power.transferredPilotEvidence.decisionRuleHash
+        : run.decisionRuleHash
+    )
     && mainPowerEvidence.data.pilot.method.analysisVersion === run.analysisVersion
     && mainPowerEvidence.data.pilot.draws === run.statisticsDraws
     && mainPowerEvidence.data.pilot.analysisDraws === run.statisticsDraws
@@ -782,7 +815,7 @@ export async function writeRepeatedFailurePaperArtifacts(
     && stableStringify([...reproManifest.run.runtimeProfiles].sort(compareCodePoints))
       === stableStringify(expectedRuntimeProfiles)
     && stableStringify(manifestWorkItems) === stableStringify(expectedWorkItems)
-    && reproManifest.git.commit === run.gitSha
+    && reproManifest.git.shortCommit === run.gitSha
     && reproManifest.git.dirty === run.gitDirty
     && reproManifest.git.dirtyEntryCount === run.gitDirtyEntryCount
     && reproManifest.results.length === 1
@@ -854,6 +887,7 @@ export async function writeRepeatedFailurePaperArtifacts(
       outcomes,
       invalidRows: rows.filter((row) => row.status === "INVALID").length,
       claimEligibility,
+      renderProvenance,
     })],
     ["claim-eligibility.json", `${JSON.stringify(claimEligibility, null, 2)}\n`],
     ["tables/arm-outcomes.csv", renderArmTable(outcomes)],

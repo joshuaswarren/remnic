@@ -1587,7 +1587,12 @@ test("statistics replay is model-free, fail-closed, and byte-stable", async () =
     const before = await readFile(path.join(outputDir, "statistics.json"), "utf8");
     assert.deepEqual(await replayRepeatedFailureStatistics({ runDir: outputDir }), {
       exitCode: 0,
-      output: JSON.stringify({ statisticsPath: "statistics.json", rows: 7, modelCalls: 0 }),
+      output: JSON.stringify({
+        statisticsPath: "statistics.json",
+        rows: 7,
+        modelCalls: 0,
+        harnessProvenanceMatchesRun: true,
+      }),
     });
     assert.equal(await readFile(path.join(outputDir, "statistics.json"), "utf8"), before);
     await writeFile(path.join(outputDir, "episodes.jsonl"), "{corrupt}\n");

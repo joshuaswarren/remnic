@@ -1,31 +1,34 @@
 # H6 failure-gate final report
 
-Status: **complete**. Registered study decision: **`NOT_ESTIMABLE`**.
+Status: **complete, two registered runs.**
+First registration (decision rule v12): **`NOT_ESTIMABLE`**.
+Timing rerun registration (decision rule v13): **`PASS`. H6-timing `SUPPORTED`, confirmatory.**
 
 ## Answer
 
-This experiment does not support a confirmatory claim that failure memory makes
-agents better.
+A matched failure note delivered just before the related action stops an
+agent from repeating a known mistake. The confirmatory rerun measured a
+repeated-failure reduction of 35.56 percentage points against turn-start
+delivery of the same note. The 95% interval is 16.67 to 55.93 points. The
+relative risk reduction is 100%, with p = 0.0019. The full 18-task design
+completed with zero cuts, zero imputations, and zero invalid rows. This is
+the third consistent measurement of the effect. The bound pilot estimated
+37.78 points. The first main run estimated 38.04 points on its 17 complete
+tasks.
 
-It does show a strong timing signal. On the 17 complete tasks, putting a matched
-failure note just before the related action cut repeated failures by 38.04
-percentage points versus putting the same note at turn start. The 95% interval
-was 18.04 to 59.61 points. The bound v10 pilot found a similar 37.78-point
-benefit.
+The claim stays narrow. Timing is what worked. The same failure fact at turn
+start did not beat a matched success fact under the first registration's
+content rule (`REJECTED`). Fewer repeated failures also did not prove more
+completed tasks. The rerun's task-pass benefit was +1.48 points
+with an interval touching zero. Pre-action failure memory removes a known
+failure mode; it does not make the agent better overall.
 
-But one main-run row in the pre-action arm was invalid. The preregistration
-allows zero primary task cuts. It requires the whole H6-timing result to become
-`NOT_ESTIMABLE` when any compared task has an invalid row. The clean 17-task
-estimate remains useful, but it is exploratory by the registered rule.
-
-The content comparison failed. At turn start, a matched failure fact did not
-beat a matched success fact under the full support rule. It reduced repeated
-failures by 4.81 points, but task pass rate fell by 6.30 points. The registered
-H6-content decision is `REJECTED`.
-
-So the narrow answer is: pre-action failure notes probably reduce repeated
-mistakes, but this run did not prove that they improve task completion or make
-the agent better overall.
+The first registration ended `NOT_ESTIMABLE`: one cap-terminated pre-action
+row returned an unclassifiable check, and the v12 rule allowed zero primary
+task cuts. The rerun registration fixed that rule before any new data existed. An
+unclassifiable check now scores worst-case against the pre-action arm
+instead of voiding the study. The rerun then re-measured on new seeds. The scoring
+change was never exercised: no rerun row needed it.
 
 ## Registered questions
 
@@ -127,7 +130,7 @@ check did not gate main execution after Amendment 4, but the original estimate
 and margin remain on the record. The step result gives no sign of added
 hesitation.
 
-## Why the study is not estimable
+## Why the first registration is not estimable
 
 Two final rows received the deterministic `VAGUE_CHECK` invalid reason after
 their checks returned `INDETERMINATE`:
@@ -145,41 +148,86 @@ retries only for host or API faults. Once a try returns a task result, valid or
 invalid, the runner must not rerun it. A confirmatory answer now requires a new
 manifest and a new run.
 
+## Timing rerun registration
+
+The rerun is a second registration of the same study, fixed before any rerun
+row executed: `preregistration-timing-rerun.md` (SHA-256
+`4cf775705060d53f37fdc993f5a081d3b68b1646b47f9091889f4ecf2e4b2676`) and
+decision rule version 13
+(`df345592bcf156f6e5404fc06b11fbb3e3f9f82a54151fae9e15282f3f883d19`). It
+decides H6-timing alone.
+
+The design keeps the same 18 main tasks, 3 variants, and model profile as
+the first registration. It runs 2 arms (`TURN_START_FAILURE`,
+`PRE_ACTION_FAILURE`) on new seeds 6 through 10, for 540 expected rows. The
+support thresholds, caps, retry rule, statistics seed, and draw counts are
+unchanged. Three things changed. A `VAGUE_CHECK` row is scored worst-case
+against the pre-action arm instead of cutting the task. The hypothesis
+family has one member. The bound pilot's power evidence transfers by pinned
+artifact hashes, and the current harness must replay the pilot's statistics
+and power byte-for-byte before any row runs. Zero-cut handling for every
+other invalid reason is unchanged.
+
+Two manifests executed under this registration:
+
+1. The first manifest completed all 540 rows cleanly, then crashed in the
+   statistics step: a harness defect passed a full-design analysis option
+   into the timing-only analysis, whose guard rejects it. The frozen resume
+   contract binds a run to the exact harness that started it, so the fixed
+   harness cannot finish that run directory and the buggy one cannot compute
+   its statistics. The run is preserved with an operational deviation record;
+   its rows were never analyzed and no arm-level outcome was observed. The
+   fix landed with a finalization test that runs the whole pipeline, and the frozen v12
+   analysis was shown byte-identical before relaunch.
+2. The second manifest (`h6-51d25af1ed731c35a94c28fe`) completed all 540 rows
+   and finalized. Zero invalid rows, zero task cuts, zero imputations, zero
+   unretried host faults, empty deviation log.
+
+## Rerun result
+
+| Claim | Complete tasks | Repeated-failure benefit | Relative reduction | Task-pass benefit | Raw p | Adjusted p | Registered decision |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Timing: pre-action failure vs turn-start failure | 18 | +35.56 pp, 95% CI [16.67, 55.93] | 100%, 95% CI [100, 100] | +1.48 pp, 95% CI [0.00, 4.44] | 0.0019 | 0.0019 | `SUPPORTED` |
+
+Every registered support condition holds on the complete design: the absolute
+benefit clears 0.05, the point relative risk reduction clears 0.30, the
+interval lower bound is above zero, and the adjusted p value is below 0.05.
+The pre-action arm repeated zero known failures in 270 valid rows; the
+turn-start arm repeated them at a 35.56% task-level rate. The study decision
+maps to **`PASS`**, and the generated paper report records the run as
+**`CONFIRMATORY`** with no ineligibility reasons.
+
+After the run finalized, generating the paper report exposed four defects in
+the report layer itself. One eligibility check compared the transferred
+pilot's decision-rule hash against the rerun's rule. One compared a full git
+SHA to a short one and could never pass. The power-evidence schema was
+missing the emitted `requiredPower` field. A schema gate still enforced the
+pre-Amendment-3 content power floor. All four were fixed and the report was
+regenerated. The decision artifacts were never touched: `statistics.json`,
+`power.json`, and `audit.json` are the finalization-time originals, the
+statistics replay is byte-identical under the fixed harness with zero model
+calls, and the report records the executing and rendering harness hashes
+side by side.
+
 ## What the data says
 
-Three findings survive careful wording:
-
-1. **Timing has a large descriptive effect in both runs.** The pilot and main
-   complete-task estimates were +37.78 and +38.04 points. Both favor delivery
-   just before action.
-2. **Failure wording at turn start is not enough.** It did not meet the content
-   support rule and came with a lower task-pass estimate than success wording.
-3. **Fewer repeated failures did not clearly mean more completed tasks.** The
-   timing task-pass interval crossed zero. Turn-start success had the highest
-   raw episode pass rate at 7.04%; `BOTH` reached only 1.48%.
-
-This makes the mechanism promising for reducing repeated mistakes. It does not
-establish an overall agent-quality gain.
-
-## Recommended next experiment
-
-1. Keep pre-action delivery as the main candidate. Do not claim H6 support from
-   this run.
-2. Register invalid-row handling before collecting new data. Validate cap-driven
-   indeterminate checks on the development and pilot splits, then freeze a bounded
-   reserve of independent tasks for the main run.
-3. Add task-pass non-inferiority to the timing support rule. The current rule can
-   support removal of one failure state without proving more task completion.
-4. Keep `BOTH` exploratory. It removed repeated failures but passed only 1.48%
-   of raw episodes.
-5. Drop the turn-start failure-versus-success claim unless the content mechanism
-   changes. This run rejected the current version.
+1. **Pre-action delivery of failure memory prevents repeated failures.** The
+   effect is confirmatory in the rerun (+35.56 points, p = 0.0019) and
+   consistent across the pilot (+37.78) and the first run (+38.04).
+2. **Failure wording at turn start is not enough.** It did not meet the first
+   registration's content support rule and came with a lower task-pass
+   estimate than success wording.
+3. **Fewer repeated failures did not prove more completed tasks.** The rerun
+   task-pass interval touches zero. The claim is failure-mode removal, not
+   overall agent improvement.
 
 ## Evidence and reproducibility
 
 | Receipt | Location or value |
 | --- | --- |
-| Preregistration | `docs/research/failure-gate/preregistration.md` |
+| First preregistration | `docs/research/failure-gate/preregistration.md` |
+| Rerun preregistration | `docs/research/failure-gate/preregistration-timing-rerun.md`, SHA-256 `4cf775705060d53f37fdc993f5a081d3b68b1646b47f9091889f4ecf2e4b2676` |
+| Rerun decision rule | `packages/bench/fixtures/h6-failure-gate/decision-rule-timing.json`, SHA-256 `df345592bcf156f6e5404fc06b11fbb3e3f9f82a54151fae9e15282f3f883d19` |
 | Bound pilot run | `~/.remnic/bench/results/h6-pilot-v10/` |
 | Bound pilot manifest artifact hash | `5bce2c0c20fadf77706ae5dbb503d4f938d40e2d4178c5395b36683cfef75e21` |
 | Bound pilot power artifact hash | `cfaec22f374b353b536dec6067243a1731804f8f1d8d2f4742e1631cf1b27bd5` |
@@ -190,6 +238,13 @@ establish an overall agent-quality gain.
 | `power.json` SHA-256 | `a0d59d946cc71d6fda9762931a75ff80f609b61bdbecb1bec8b4e3e67a8917ce` |
 | `audit.json` SHA-256 | `636a3c6a54d296d74fb36e7d5a1ffca1990b2f6b57dfc16afbda908ea6927968` |
 | Deviation log | `deviations.jsonl`, 0 bytes |
+| Rerun (confirmatory) | `~/.remnic/bench/results/h6-timing-v2/`, run `h6-51d25af1ed731c35a94c28fe` |
+| Rerun executing commit | `73761fd4749ee435f60a890eb0a8ee1f0d9aa44a` |
+| Rerun `statistics.json` SHA-256 | `0cedc1b861a356ec7f4d8eb9de0e0a15ef76c0c5b1b119fdd72c480f6e53d203` |
+| Rerun `power.json` SHA-256 | `2f1630c76b0e38185c05a0014b26d042a1fd5dc87a655143ab1a604bdd56c3bc` |
+| Rerun `audit.json` SHA-256 | `38e14e5a2a865aae2d271e9a7bfafa7a020cd32515791dd0a1a086e65f98d3e0` |
+| Rerun deviation log | `deviations.jsonl`, 0 bytes |
+| Abandoned rerun manifest | `~/.remnic/bench/results/h6-timing-v1/`, operational deviation recorded, never analyzed |
 
 The raw pilot and main bundles are operator-local and are not part of the public
 repository. These hashes support local audit and tamper checks. Public
@@ -210,3 +265,22 @@ It returned:
 
 The replay reproduced the same `statistics.json`, `power.json`, and `audit.json`
 SHA-256 values listed above.
+
+The rerun replays the same way:
+
+```bash
+npx tsx packages/remnic-cli/src/index.ts bench coding repeated-failure stats \
+  --run ~/.remnic/bench/results/h6-timing-v2
+```
+
+It returned:
+
+```json
+{"statisticsPath":"statistics.json","rows":540,"modelCalls":0,"harnessProvenanceMatchesRun":false}
+```
+
+`harnessProvenanceMatchesRun: false` records that the replaying harness is
+newer than the executing one, because it carries the post-run report-layer
+fixes, while the statistics still reproduce byte-for-byte. The paper report at
+`~/.remnic/bench/results/h6-timing-v2/paper/report.md` records the run as
+`CONFIRMATORY` and prints both harness hashes side by side.

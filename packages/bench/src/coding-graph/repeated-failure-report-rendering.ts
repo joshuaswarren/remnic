@@ -181,7 +181,8 @@ const ComputedPilotPowerSchema = z.object({
   }).strict(),
   simulations: z.object({
     timing: z.object({ power: z.number().min(0.8).max(1) }).passthrough(),
-    content: z.object({ power: z.number().min(0.8).max(1) }).passthrough(),
+    // Amendment 3: content power is reported but no longer gates the study.
+    content: z.object({ power: z.number().min(0).max(1) }).passthrough(),
     timidity: z.object({ power: z.number().min(0.8).max(1) }).passthrough(),
   }).strict(),
 }).passthrough();
@@ -198,6 +199,7 @@ export const MainPowerEvidenceSchema = z.object({
   schemaVersion: z.literal(1),
   status: z.literal("VERIFIED_PILOT"),
   phase: z.literal("main"),
+  requiredPower: z.number().min(0).max(1),
   pilotRunId: z.string().min(1),
   pilotManifestArtifactHash: z.string().regex(SHA256),
   pilotPowerArtifactHash: z.string().regex(SHA256),
@@ -673,6 +675,13 @@ export function renderReport(input: {
   outcomes: readonly ArmOutcome[];
   invalidRows: number;
   claimEligibility: ClaimEligibility;
+  renderProvenance?: {
+    matchesRun: boolean;
+    runHarnessVersion: string;
+    runHarnessSourceHash: string;
+    renderHarnessVersion: string;
+    renderHarnessSourceHash: string;
+  };
 }): string {
   const selectedTasks = input.dataset.tasks.filter((task) => input.run.splitTaskIds.includes(task.id));
   const taskList = selectedTasks.map((task) => task.id).sort(compareCodePoints).join(", ");
@@ -702,6 +711,19 @@ Content analysis: not part of this registration.`
   const timidityDescription = timingOnly
     ? "Timidity analysis: not part of this registration."
     : `Timidity equivalence: ${input.statistics.timidity.equivalent === null ? "NOT_ESTIMABLE" : input.statistics.timidity.equivalent ? "PASS" : "FAIL"}. The 90% pass-rate interval is ${formatNumber(input.statistics.timidity.passRateInterval?.lower ?? null, 3)} to ${formatNumber(input.statistics.timidity.passRateInterval?.upper ?? null, 3)} against a margin of ${formatNumber(input.statistics.timidity.passMargin, 3)}. The 90% step interval is ${formatNumber(input.statistics.timidity.stepsInterval?.lower ?? null, 3)} to ${formatNumber(input.statistics.timidity.stepsInterval?.upper ?? null, 3)} against a margin of ${formatNumber(input.statistics.timidity.stepsMargin, 3)}.`;
+  const renderProvenanceNote = input.renderProvenance === undefined
+    || input.renderProvenance.matchesRun
+    ? ""
+    : `
+
+## Report provenance
+
+The report was rendered by a newer harness than the one that executed the run. The statistics above replayed byte-identically from the immutable rows under the rendering harness; that replay is the drift gate.
+
+| Field | Executing harness | Rendering harness |
+|---|---|---|
+| Harness version | ${input.renderProvenance.runHarnessVersion} | ${input.renderProvenance.renderHarnessVersion} |
+| Harness source hash | ${input.renderProvenance.runHarnessSourceHash} | ${input.renderProvenance.renderHarnessSourceHash} |`;
   return `# H6 failure-gate experiment report
 
 This report was generated from the frozen run artifacts. The CSV tables and SVG figures contain the paper data. The report manifest binds every source and generated file by SHA-256 hash.
@@ -767,7 +789,7 @@ The preregistered cut log is [tables/task-cuts.csv](tables/task-cuts.csv). Cut t
 
 ## Scope
 
-The result applies to the frozen local synthetic TypeScript tasks, profiles, prompts, caps, seeds, and decision rule identified above. It does not estimate cross-language, cross-project, learned-gate, hard-block, or production-host effects.
+The result applies to the frozen local synthetic TypeScript tasks, profiles, prompts, caps, seeds, and decision rule identified above. It does not estimate cross-language, cross-project, learned-gate, hard-block, or production-host effects.${renderProvenanceNote}
 `;
 }
 

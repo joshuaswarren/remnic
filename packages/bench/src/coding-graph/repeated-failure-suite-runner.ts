@@ -611,14 +611,15 @@ export async function replayRepeatedFailureStatistics(
     ) {
       throw new Error("registered H6 replay model digests do not match the frozen profile count");
     }
-    if (
-      metadata.analysisVersion !== REPEATED_FAILURE_ANALYSIS_VERSION
-      || metadata.harnessVersion !== harnessVersion
-      || metadata.harnessSourceHash !== harnessSourceHash
-      || metadata.provenanceHash !== provenanceHash
-    ) {
-      throw new Error("analysis or harness provenance drifted since execution");
+    if (metadata.analysisVersion !== REPEATED_FAILURE_ANALYSIS_VERSION) {
+      throw new Error("analysis version drifted since execution");
     }
+    // A newer harness may replay: the byte-identical statistics comparison
+    // below is the drift gate. A provenance difference is reported, not
+    // refused.
+    const harnessProvenanceMatchesRun = metadata.harnessVersion === harnessVersion
+      && metadata.harnessSourceHash === harnessSourceHash
+      && metadata.provenanceHash === provenanceHash;
     if (
       decisionRule.analysis.bootstrap.draws !== metadata.statisticsDraws
       || decisionRule.analysis.shuffle.draws !== metadata.statisticsDraws
@@ -645,7 +646,12 @@ export async function replayRepeatedFailureStatistics(
     }
     return {
       exitCode: 0,
-      output: JSON.stringify({ statisticsPath: "statistics.json", rows: rows.length, modelCalls: 0 }),
+      output: JSON.stringify({
+        statisticsPath: "statistics.json",
+        rows: rows.length,
+        modelCalls: 0,
+        harnessProvenanceMatchesRun,
+      }),
     };
   } catch (error) {
     return { exitCode: 1, output: publicError(error) };
