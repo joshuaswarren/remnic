@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
-import { realpath as fsRealpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
+import { realpath as fsRealpath } from "node:fs/promises";
 import { test } from "node:test";
 
-import { sealedWriteToLegacyArgs } from "../write-envelope.js";
-import { defaultWearableSourceSettings, defaultWearablesConfig } from "./config.js";
 import {
   bodyIsEscaped,
   composeDayTranscriptBody,
@@ -24,15 +22,24 @@ import {
   reconstructFusionInputs,
   serializeFusionDay,
 } from "./fusion/index.js";
-import { clearWearableConnectors, registerWearableConnector } from "./registry.js";
+import { emptySpeakerRegistry } from "./speakers.js";
 import {
-  type WearableStorageIo,
-  WearablesService,
   createWearableMemoryWriter,
   locateTranscriptPath,
+  WearablesService,
+  type WearableStorageIo,
 } from "./service.js";
-import { emptySpeakerRegistry } from "./speakers.js";
-import type { WearableConversation, WearableSourceConnector, WearablesConfig } from "./types.js";
+import { sealedWriteToLegacyArgs } from "../write-envelope.js";
+import { defaultWearablesConfig, defaultWearableSourceSettings } from "./config.js";
+import {
+  clearWearableConnectors,
+  registerWearableConnector,
+} from "./registry.js";
+import type {
+  WearableConversation,
+  WearableSourceConnector,
+  WearablesConfig,
+} from "./types.js";
 
 function makeStorage(memoryDir: string): WearableStorageIo & {
   files: Map<string, string>;
@@ -63,7 +70,9 @@ function makeStorage(memoryDir: string): WearableStorageIo & {
       return fusedFiles.get(filePath)!;
     },
     readDir: async (dirPath) =>
-      [...fusedFiles.keys()].filter((key) => path.dirname(key) === dirPath).map((key) => path.basename(key)),
+      [...fusedFiles.keys()]
+        .filter((key) => path.dirname(key) === dirPath)
+        .map((key) => path.basename(key)),
     deleteFile: async (filePath) => {
       if (!fusedFiles.delete(filePath)) {
         const err = new Error(`ENOENT: ${filePath}`) as NodeJS.ErrnoException;
@@ -76,7 +85,9 @@ function makeStorage(memoryDir: string): WearableStorageIo & {
       // The in-memory mock models no real symlinks: a `_fusion` dir
       // "exists" when at least one fused file lives beneath it, and is
       // never itself a symbolic link.
-      const hasChildren = [...fusedFiles.keys()].some((k) => path.dirname(k) === filePath);
+      const hasChildren = [...fusedFiles.keys()].some(
+        (k) => path.dirname(k) === filePath,
+      );
       if (!hasChildren) {
         const err = new Error(`ENOENT: ${filePath}`) as NodeJS.ErrnoException;
         err.code = "ENOENT";
@@ -131,9 +142,13 @@ function makeStorage(memoryDir: string): WearableStorageIo & {
     async findWearableMemoryByContent(content: string) {
       const needle = content.trim();
       const match = storage.memories.find(
-        (memory) => memory.frontmatter.source.startsWith("wearable:") && memory.content.trim() === needle
+        (memory) =>
+          memory.frontmatter.source.startsWith("wearable:") &&
+          memory.content.trim() === needle,
       );
-      return match ? { id: match.frontmatter.id, status: match.frontmatter.status } : null;
+      return match
+        ? { id: match.frontmatter.id, status: match.frontmatter.status }
+        : null;
     },
     async promoteWearableMemory(id: string) {
       const match = storage.memories.find((memory) => memory.frontmatter.id === id);
@@ -160,7 +175,7 @@ function storeDay(
   sourceId: string,
   date: string,
   texts: string[],
-  timezone = "UTC"
+  timezone = "UTC",
 ): void {
   const registry = emptySpeakerRegistry();
   const conversations: WearableConversation[] = [
@@ -185,12 +200,15 @@ function storeDay(
     conversations,
     registry,
     body,
-    "2026-06-11T01:00:00.000Z"
+    "2026-06-11T01:00:00.000Z",
   );
   storage.files.set(`${sourceId}/${date}`, serializeDayTranscript(meta, body));
 }
 
-function makeService(storage: WearableStorageIo, configOverrides: Partial<WearablesConfig> = {}): WearablesService {
+function makeService(
+  storage: WearableStorageIo,
+  configOverrides: Partial<WearablesConfig> = {},
+): WearablesService {
   return new WearablesService({
     config: { ...defaultWearablesConfig(), enabled: true, ...configOverrides },
     getStorage: async () => storage,
@@ -200,11 +218,14 @@ function makeService(storage: WearableStorageIo, configOverrides: Partial<Wearab
 }
 
 test("locateTranscriptPath maps index hits back to source/date", () => {
-  assert.deepEqual(locateTranscriptPath("/memory/wearables/limitless/2026-06-10.md"), {
-    source: "limitless",
-    date: "2026-06-10",
-  });
-  assert.deepEqual(locateTranscriptPath("wearables\\bee\\2026-06-10.md"), { source: "bee", date: "2026-06-10" });
+  assert.deepEqual(
+    locateTranscriptPath("/memory/wearables/limitless/2026-06-10.md"),
+    { source: "limitless", date: "2026-06-10" },
+  );
+  assert.deepEqual(
+    locateTranscriptPath("wearables\\bee\\2026-06-10.md"),
+    { source: "bee", date: "2026-06-10" },
+  );
   assert.equal(locateTranscriptPath("/memory/facts/2026/06/10/fact-1.md"), null);
   assert.equal(locateTranscriptPath("/memory/wearables/limitless/2026-13-40.md"), null);
 });
@@ -355,11 +376,17 @@ test("indexed search escapes the query and decodes the snippet (#1849)", async (
     // The escaped query form (doubled backslash) must reach the backend.
     assert.ok(
       receivedQueries.some((q) => q === "C:\\\\GAPDIR"),
-      "indexed backend must receive escaped query for backslash content"
+      "indexed backend must receive escaped query for backslash content",
     );
     // The snippet must show the DECODED original (single backslash).
-    assert.ok(results[0].snippet.includes("C:\\GAPDIR"), "snippet shows decoded single backslash");
-    assert.ok(!results[0].snippet.includes("C:\\\\GAPDIR"), "no escaped-backslash leak in snippet");
+    assert.ok(
+      results[0].snippet.includes("C:\\GAPDIR"),
+      "snippet shows decoded single backslash",
+    );
+    assert.ok(
+      !results[0].snippet.includes("C:\\\\GAPDIR"),
+      "no escaped-backslash leak in snippet",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -406,7 +433,7 @@ test("transcriptMemories filters by wearable source and day", async () => {
           tags: [],
         },
         content: "Ordinary live-session memory.",
-      }
+      },
     );
     const service = makeService(storage);
 
@@ -414,26 +441,17 @@ test("transcriptMemories filters by wearable source and day", async () => {
     assert.deepEqual(
       all.map((memory) => memory.id),
       ["fact-1", "fact-2"],
-      "only wearable-derived memories, newest first"
+      "only wearable-derived memories, newest first",
     );
 
     const limitlessOnly = await service.transcriptMemories({ source: "limitless" });
-    assert.deepEqual(
-      limitlessOnly.map((memory) => memory.id),
-      ["fact-1"]
-    );
+    assert.deepEqual(limitlessOnly.map((memory) => memory.id), ["fact-1"]);
 
     const beeOnly = await service.transcriptMemories({ source: "bee" });
-    assert.deepEqual(
-      beeOnly.map((memory) => memory.id),
-      ["fact-2"]
-    );
+    assert.deepEqual(beeOnly.map((memory) => memory.id), ["fact-2"]);
 
     const byDay = await service.transcriptMemories({ date: "2026-06-10" });
-    assert.deepEqual(
-      byDay.map((memory) => memory.id),
-      ["fact-1"]
-    );
+    assert.deepEqual(byDay.map((memory) => memory.id), ["fact-1"]);
 
     await assert.rejects(service.transcriptMemories({ date: "junk" }), /invalid date/);
   } finally {
@@ -444,8 +462,14 @@ test("transcriptMemories filters by wearable source and day", async () => {
 test("support corpus includes pending_review rows and excludes terminal statuses", async () => {
   const { registerWearableConnector, clearWearableConnectors } = await import("./registry.js");
   const dir = mkdtempSync(path.join(tmpdir(), "remnic-service-"));
-  const borderlineFact = "The launch moved to September twelfth after the vendor call.";
-  const makeRow = (id: string, status: string | undefined, content: string, archivedAt?: string) => ({
+  const borderlineFact =
+    "The launch moved to September twelfth after the vendor call.";
+  const makeRow = (
+    id: string,
+    status: string | undefined,
+    content: string,
+    archivedAt?: string,
+  ) => ({
     path: `facts/${id}.md`,
     frontmatter: {
       id,
@@ -458,14 +482,13 @@ test("support corpus includes pending_review rows and excludes terminal statuses
     },
     content,
   });
-  const runSmartSync = async (rows: ReturnType<typeof makeRow>[]): Promise<Record<string, unknown>> => {
+  const runSmartSync = async (
+    rows: ReturnType<typeof makeRow>[],
+  ): Promise<Record<string, unknown>> => {
     const storage = makeStorage(mkdtempSync(path.join(tmpdir(), "remnic-service-mem-")));
     storage.memories.push(...rows);
     const writes: Array<{ options: Record<string, unknown> }> = [];
-    storage.writeSealedMemory = ((
-      envelope: Parameters<WearableStorageIo["writeSealedMemory"]>[0],
-      extras: Record<string, unknown>
-    ) => {
+    storage.writeSealedMemory = ((envelope: Parameters<WearableStorageIo["writeSealedMemory"]>[0], extras: Record<string, unknown>) => {
       const { options } = sealedWriteToLegacyArgs(envelope, extras);
       writes.push({ options });
       return Promise.resolve({ id: `mem-${writes.length}`, tombstoneBlocked: false });
@@ -486,16 +509,8 @@ test("support corpus includes pending_review rows and excludes terminal statuses
                 startIso: "2026-06-10T15:00:00.000Z",
                 endIso: "2026-06-10T15:30:00.000Z",
                 segments: [
-                  {
-                    speakerKey: "user",
-                    isWearer: true,
-                    text: "We are moving the launch to September twelfth after that vendor call wrapped up.",
-                  },
-                  {
-                    speakerKey: "guest",
-                    speakerName: "guest",
-                    text: "Confirmed, the vendor is aligned on the September date for the launch.",
-                  },
+                  { speakerKey: "user", isWearer: true, text: "We are moving the launch to September twelfth after that vendor call wrapped up." },
+                  { speakerKey: "guest", speakerName: "guest", text: "Confirmed, the vendor is aligned on the September date for the launch." },
                 ],
               },
             ],
@@ -538,24 +553,18 @@ test("support corpus includes pending_review rows and excludes terminal statuses
       makeRow(
         "pending-1",
         "pending_review",
-        "The launch moved to September twelfth after the vendor call, noted earlier."
+        "The launch moved to September twelfth after the vendor call, noted earlier.",
       ),
     ]);
     assert.equal(supported.status, "active");
-    assert.equal((supported.structuredAttributes as Record<string, string>).supportingMemoryId, "pending-1");
-
-    const privatePassport = makeRow(
-      "passport-1",
-      "pending_review",
-      "The launch moved to September twelfth after the vendor call, noted earlier."
+    assert.equal(
+      (supported.structuredAttributes as Record<string, string>).supportingMemoryId,
+      "pending-1",
     );
-    privatePassport.frontmatter.tags.push("support-passport-card");
-    const passportUnsupported = await runSmartSync([privatePassport]);
-    assert.equal(passportUnsupported.status, "pending_review");
-    assert.equal((passportUnsupported.structuredAttributes as Record<string, string>).supportingMemoryId, undefined);
 
     // Terminal statuses with the same content are NOT support evidence.
-    const similar = "The launch moved to September twelfth after the vendor call, noted earlier.";
+    const similar =
+      "The launch moved to September twelfth after the vendor call, noted earlier.";
     const unsupported = await runSmartSync([
       makeRow("rejected-1", "rejected", similar),
       makeRow("quarantined-1", "quarantined", similar),
@@ -567,7 +576,10 @@ test("support corpus includes pending_review rows and excludes terminal statuses
       makeRow("archived-implicit-1", undefined, similar, "2026-06-09T00:00:00.000Z"),
     ]);
     assert.equal(unsupported.status, "pending_review");
-    assert.equal((unsupported.structuredAttributes as Record<string, string>).supportingMemoryId, undefined);
+    assert.equal(
+      (unsupported.structuredAttributes as Record<string, string>).supportingMemoryId,
+      undefined,
+    );
 
     // Content matching ONLY through the "[Attributes: ...]" enrichment
     // suffix is not corroboration — the suffix is stripped before
@@ -576,11 +588,14 @@ test("support corpus includes pending_review rows and excludes terminal statuses
       makeRow(
         "pending-2",
         "pending_review",
-        "Unrelated note about quarterly budget planning.\n[Attributes: context: launch moved to September twelfth after the vendor call]"
+        "Unrelated note about quarterly budget planning.\n[Attributes: context: launch moved to September twelfth after the vendor call]",
       ),
     ]);
     assert.equal(suffixOnly.status, "pending_review");
-    assert.equal((suffixOnly.structuredAttributes as Record<string, string>).supportingMemoryId, undefined);
+    assert.equal(
+      (suffixOnly.structuredAttributes as Record<string, string>).supportingMemoryId,
+      undefined,
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -605,8 +620,10 @@ test("the wearable memory writer dedups non-fact categories by content scan", as
     // The fact hash index (always false in this fake) misses moments —
     // the wearable-scoped content scan must catch the duplicate.
     assert.equal(
-      await writer.hasFactContentHash("Wearable day digest — limitless, 2026-06-10: 2 recorded conversations."),
-      true
+      await writer.hasFactContentHash(
+        "Wearable day digest — limitless, 2026-06-10: 2 recorded conversations.",
+      ),
+      true,
     );
     assert.equal(await writer.hasFactContentHash("Novel digest content."), false);
   } finally {
@@ -620,8 +637,14 @@ test("malformed source ids reject as input errors before storage reads", async (
     const service = makeService(makeStorage(dir));
     await assert.rejects(service.dayTranscript("2026-06-10", "../x"), /invalid source id/);
     await assert.rejects(service.listDays("Bad Source"), /invalid source id/);
-    await assert.rejects(service.searchTranscripts("solar", { source: "../escape" }), /invalid source id/);
-    await assert.rejects(service.transcriptMemories({ source: " " }), /invalid source id/);
+    await assert.rejects(
+      service.searchTranscripts("solar", { source: "../escape" }),
+      /invalid source id/,
+    );
+    await assert.rejects(
+      service.transcriptMemories({ source: " " }),
+      /invalid source id/,
+    );
     await assert.rejects(service.sync({ source: "../escape" }), /invalid source id/);
     await assert.rejects(service.checkAuth("../escape"), /invalid source id/);
   } finally {
@@ -673,7 +696,10 @@ test("speaker and correction management round-trips through the service", async 
     await assert.rejects(service.setSpeaker("bee", "1", "  "), /non-empty/);
 
     await service.addCorrection({ match: "remnick", replace: "Remnic" });
-    await assert.rejects(service.addCorrection({ match: "remnick", replace: "Remnic" }), /identical correction rule/);
+    await assert.rejects(
+      service.addCorrection({ match: "remnick", replace: "Remnic" }),
+      /identical correction rule/,
+    );
     let corrections = await service.listCorrections();
     assert.equal(corrections.fromState.length, 1);
     const removed = await service.removeCorrection(0);
@@ -711,12 +737,15 @@ test("fuseDay honors the wearables master gate before the fusion gate (issue #18
       },
       fusion: { enabled: true, proximityGapMs: 300_000, windowToleranceMs: 30_000 },
     });
-    await assert.rejects(() => service.fuseDay("2026-06-10"), /wearables are not enabled/);
+    await assert.rejects(
+      () => service.fuseDay("2026-06-10"),
+      /wearables are not enabled/,
+    );
     // The master-gate refusal must not write or delete any fusion artifact.
     assert.equal(
       await storage.fusionArtifactStore().readFusedDay("2026-06-10"),
       null,
-      "master-gate refusal must not mutate derived fusion state"
+      "master-gate refusal must not mutate derived fusion state",
     );
   } finally {
     rmSync(storage.dir, { recursive: true, force: true });
@@ -753,7 +782,10 @@ test("fuseDay writes a derived artifact, is idempotent, and leaves raw transcrip
     const conversations = await service.fusedConversations("2026-06-10");
     assert.equal(conversations.length, first.conversationCount);
     assert.ok(conversations[0]!.id.startsWith("fusion-"));
-    assert.deepEqual([...conversations[0]!.sources].sort(), ["bee", "limitless"]);
+    assert.deepEqual(
+      [...conversations[0]!.sources].sort(),
+      ["bee", "limitless"],
+    );
 
     // Idempotent re-run: identical inputs -> not written again.
     const second = await service.fuseDay("2026-06-10");
@@ -867,7 +899,7 @@ test("fuseDay regenerates a stale artifact written under an older algorithm vers
           body: parsed?.body ?? raw ?? "",
           escaped: bodyIsEscaped(parsed?.meta),
         };
-      })
+      }),
     );
     const reconstructed = reconstructFusionInputs("2026-06-10", bodies);
     const staleHash = canonicalDayKey(
@@ -878,7 +910,7 @@ test("fuseDay regenerates a stale artifact written under an older algorithm vers
         windowToleranceMs: 30_000,
         sourceTrust: { limitless: DEFAULT_SOURCE_TRUST, bee: DEFAULT_SOURCE_TRUST },
       },
-      "2000-01-01-stale"
+      "2000-01-01-stale",
     );
     assert.notEqual(staleHash, currentHash, "sanity: stale-version hash differs");
     // Sanity: the current-version hash matches what the service produced —
@@ -892,10 +924,10 @@ test("fuseDay regenerates a stale artifact written under an older algorithm vers
           windowToleranceMs: 30_000,
           sourceTrust: { limitless: DEFAULT_SOURCE_TRUST, bee: DEFAULT_SOURCE_TRUST },
         },
-        FUSION_ALGO_VERSION
+        FUSION_ALGO_VERSION,
       ),
       currentHash,
-      "sanity: canonicalDayKey with the current version matches fuseDay output"
+      "sanity: canonicalDayKey with the current version matches fuseDay output",
     );
 
     // Overwrite the stored artifact with the SAME conversations but the stale
@@ -910,9 +942,12 @@ test("fuseDay regenerates a stale artifact written under an older algorithm vers
       parsedArtifact!.conversations,
       [...first.sources].sort(),
       staleHash,
-      parsedArtifact!.meta.fusedAt
+      parsedArtifact!.meta.fusedAt,
     );
-    await store.writeFusedDay("2026-06-10", serializeFusionDay(staleMeta, parsedArtifact!.conversations));
+    await store.writeFusedDay(
+      "2026-06-10",
+      serializeFusionDay(staleMeta, parsedArtifact!.conversations),
+    );
 
     // Re-fuse: the recomputed hash (current version) != stale stored hash, so
     // the artifact is regenerated rather than skipped.
@@ -973,7 +1008,10 @@ test("fuseDay rewrites an artifact whose body is corrupt despite a matching cont
     const conversations = await service.fusedConversations("2026-06-10");
     assert.equal(conversations.length, first.conversationCount);
     assert.ok(conversations[0]!.id.startsWith("fusion-"));
-    assert.deepEqual([...conversations[0]!.sources].sort(), ["bee", "limitless"]);
+    assert.deepEqual(
+      [...conversations[0]!.sources].sort(),
+      ["bee", "limitless"],
+    );
 
     // A final re-run is idempotent again: the repaired body is valid, so
     // it is skipped (written: false), proving the rewrite was a one-off
@@ -1033,7 +1071,11 @@ test("fuseDay rewrites a corrupt body even when the expected conversation count 
     // Re-fuse: matching hash + 0 == 0 but a corrupt body (parseOk:false)
     // => self-repair (written: true), not a silent skip.
     const repaired = await service.fuseDay("2026-06-10");
-    assert.equal(repaired.written, true, "a corrupt body must be rewritten even when the expected count is zero");
+    assert.equal(
+      repaired.written,
+      true,
+      "a corrupt body must be rewritten even when the expected count is zero",
+    );
     assert.equal(repaired.contentHash, hash);
     assert.equal(repaired.conversationCount, 0);
 
@@ -1123,12 +1165,18 @@ test("fusedConversations surfaces a corrupt artifact distinctly, not as a clean 
     assert.ok(validRaw);
     const closeIdx = validRaw!.indexOf("\n---\n", 4);
     assert.ok(closeIdx !== -1);
-    await fusionStore.writeFusedDay("2026-06-10", `${validRaw!.slice(0, closeIdx + 5)}\n{ this is not valid JSON`);
+    await fusionStore.writeFusedDay(
+      "2026-06-10",
+      `${validRaw!.slice(0, closeIdx + 5)}\n{ this is not valid JSON`,
+    );
 
     // The corrupt artifact must NOT look like "no conversations" — it must
     // throw so the caller/CLI can distinguish corruption from absence and
     // prompt a re-fuse, rather than silently returning an empty list.
-    await assert.rejects(service.fusedConversations("2026-06-10"), /corrupt/);
+    await assert.rejects(
+      service.fusedConversations("2026-06-10"),
+      /corrupt/,
+    );
 
     // The "never fused" path is unchanged — still returns [].
     assert.deepEqual(await service.fusedConversations("2026-07-01"), []);
@@ -1166,13 +1214,13 @@ test("fuseDay rewrites an artifact whose body bytes drifted despite matching con
     const closeIdx = validRaw!.indexOf("\n---\n", 4);
     assert.ok(closeIdx !== -1);
     const header = validRaw!.slice(0, closeIdx + 5);
-    const bodyJson = validRaw!
-      .slice(closeIdx + 5)
-      .replace(/^\n/, "")
-      .trimEnd();
+    const bodyJson = validRaw!.slice(closeIdx + 5).replace(/^\n/, "").trimEnd();
     const convs = JSON.parse(bodyJson) as Array<{ segments: Array<{ text: string }> }>;
     convs[0]!.segments[0]!.text += " [tampered]";
-    await fusionStore.writeFusedDay("2026-06-10", `${header}\n${JSON.stringify(convs, null, 2)}\n`);
+    await fusionStore.writeFusedDay(
+      "2026-06-10",
+      `${header}\n${JSON.stringify(convs, null, 2)}\n`,
+    );
 
     // The tampered body still parses cleanly (valid structure + elements),
     // so it is served until the next fuseDay repairs it.
@@ -1183,7 +1231,11 @@ test("fuseDay rewrites an artifact whose body bytes drifted despite matching con
     // Re-fuse: contentHash matches + parseOk true, but the stored body
     // hash no longer matches a recompute over the stored body => rewrite.
     const repaired = await service.fuseDay("2026-06-10");
-    assert.equal(repaired.written, true, "a byte-drifted body must be rewritten via the body-hash check");
+    assert.equal(
+      repaired.written,
+      true,
+      "a byte-drifted body must be rewritten via the body-hash check",
+    );
     assert.equal(repaired.contentHash, hash);
     assert.equal(repaired.conversationCount, first.conversationCount);
 
@@ -1205,8 +1257,20 @@ test("fuseDay skips a day whose sources were rendered under conflicting timezone
     // Two enabled sources recorded the same window but in DIFFERENT
     // timezones whose UTC offsets genuinely differ on this date
     // (America/Los_Angeles is UTC-7 in summer; Asia/Tokyo is UTC+9).
-    storeDay(storage, "limitless", "2026-06-10", ["We agreed to ship Friday."], "America/Los_Angeles");
-    storeDay(storage, "bee", "2026-06-10", ["We agreed to ship Friday."], "Asia/Tokyo");
+    storeDay(
+      storage,
+      "limitless",
+      "2026-06-10",
+      ["We agreed to ship Friday."],
+      "America/Los_Angeles",
+    );
+    storeDay(
+      storage,
+      "bee",
+      "2026-06-10",
+      ["We agreed to ship Friday."],
+      "Asia/Tokyo",
+    );
     const service = makeService(storage, {
       sources: {
         limitless: { ...defaultWearableSourceSettings(), enabled: true },
@@ -1231,8 +1295,20 @@ test("fuseDay clears a stale fused artifact when a later run skips on conflictin
   const storage = makeStorage(mkdtempSync(path.join(tmpdir(), "remnic-fusion-")));
   try {
     // First, both sources share one timezone -> the day fuses successfully.
-    storeDay(storage, "limitless", "2026-06-10", ["We agreed to ship Friday."], "America/Los_Angeles");
-    storeDay(storage, "bee", "2026-06-10", ["We agreed to ship Friday."], "America/Los_Angeles");
+    storeDay(
+      storage,
+      "limitless",
+      "2026-06-10",
+      ["We agreed to ship Friday."],
+      "America/Los_Angeles",
+    );
+    storeDay(
+      storage,
+      "bee",
+      "2026-06-10",
+      ["We agreed to ship Friday."],
+      "America/Los_Angeles",
+    );
     const service = makeService(storage, {
       sources: {
         limitless: { ...defaultWearableSourceSettings(), enabled: true },
@@ -1250,7 +1326,13 @@ test("fuseDay clears a stale fused artifact when a later run skips on conflictin
 
     // Later sync: bee's source is re-rendered under a DIFFERENT timezone
     // (Asia/Tokyo, UTC+9), conflicting with limitless (UTC-7 in summer).
-    storeDay(storage, "bee", "2026-06-10", ["We agreed to ship Friday."], "Asia/Tokyo");
+    storeDay(
+      storage,
+      "bee",
+      "2026-06-10",
+      ["We agreed to ship Friday."],
+      "Asia/Tokyo",
+    );
 
     // Re-fuse: the day is now skipped, and the stale artifact MUST be
     // cleared so fusedConversations() stops serving it (issue #1849).
@@ -1272,8 +1354,20 @@ test("fuseDay skips sources that share a UTC offset but differ in timezone id", 
     // tz-identity model their DIFFERENT IANA ids must skip instead:
     // reconstructFusionInputs only compares local HH:MM clocks safely
     // when every source carries one explicit, identical tz id.
-    storeDay(storage, "limitless", "2026-06-10", ["We agreed to ship Friday."], "America/Los_Angeles");
-    storeDay(storage, "bee", "2026-06-10", ["We agreed to ship Friday."], "America/Tijuana");
+    storeDay(
+      storage,
+      "limitless",
+      "2026-06-10",
+      ["We agreed to ship Friday."],
+      "America/Los_Angeles",
+    );
+    storeDay(
+      storage,
+      "bee",
+      "2026-06-10",
+      ["We agreed to ship Friday."],
+      "America/Tijuana",
+    );
     const service = makeService(storage, {
       sources: {
         limitless: { ...defaultWearableSourceSettings(), enabled: true },
@@ -1302,8 +1396,20 @@ test("fuseDay skips a DST-date pair whose noon offsets coincide (LA vs Phoenix o
     // single-offset guard fused the day — yet recordings before LA's
     // switch sat an hour apart and were misaligned on the fused timeline.
     // Exact tz-id identity now refuses this pair up front.
-    storeDay(storage, "limitless", "2026-03-08", ["Morning standup before the DST switch."], "America/Los_Angeles");
-    storeDay(storage, "bee", "2026-03-08", ["Morning standup before the DST switch."], "America/Phoenix");
+    storeDay(
+      storage,
+      "limitless",
+      "2026-03-08",
+      ["Morning standup before the DST switch."],
+      "America/Los_Angeles",
+    );
+    storeDay(
+      storage,
+      "bee",
+      "2026-03-08",
+      ["Morning standup before the DST switch."],
+      "America/Phoenix",
+    );
     const service = makeService(storage, {
       sources: {
         limitless: { ...defaultWearableSourceSettings(), enabled: true },
@@ -1329,7 +1435,13 @@ test("fuseDay skips when a source lacks a resolvable timezone id", async () => {
     // limitless carries an explicit tz id; bee's transcript is missing the
     // timezone field entirely. The guard must NOT coerce the missing id to
     // a default and silently match — any unresolvable tz fails safe.
-    storeDay(storage, "limitless", "2026-06-10", ["We agreed to ship Friday."], "America/Los_Angeles");
+    storeDay(
+      storage,
+      "limitless",
+      "2026-06-10",
+      ["We agreed to ship Friday."],
+      "America/Los_Angeles",
+    );
     // Build bee's transcript the normal way, then strip the timezone line
     // so the persisted frontmatter has no resolvable tz id.
     const registry = emptySpeakerRegistry();
@@ -1343,7 +1455,13 @@ test("fuseDay skips when a source lacks a resolvable timezone id", async () => {
         segments: [{ speakerKey: "user", isWearer: true, text: "We agreed to ship Friday." }],
       },
     ];
-    const beeBody = composeDayTranscriptBody("bee", "2026-06-10", "UTC", conversations, registry);
+    const beeBody = composeDayTranscriptBody(
+      "bee",
+      "2026-06-10",
+      "UTC",
+      conversations,
+      registry,
+    );
     const beeMeta = composeDayTranscriptMeta(
       "bee",
       "2026-06-10",
@@ -1351,7 +1469,7 @@ test("fuseDay skips when a source lacks a resolvable timezone id", async () => {
       conversations,
       registry,
       beeBody,
-      "2026-06-11T01:00:00.000Z"
+      "2026-06-11T01:00:00.000Z",
     );
     const beeRaw = serializeDayTranscript(beeMeta, beeBody).replace(/^timezone: .*\n/m, "");
     storage.files.set("bee/2026-06-10", beeRaw);
@@ -1379,13 +1497,25 @@ test("fuseDay ignores a zero-conversation source when checking timezone identity
   const storage = makeStorage(mkdtempSync(path.join(tmpdir(), "remnic-fusion-")));
   try {
     // limitless CONTRIBUTES a real conversation under one timezone.
-    storeDay(storage, "limitless", "2026-06-10", ["We agreed to ship Friday."], "America/Los_Angeles");
+    storeDay(
+      storage,
+      "limitless",
+      "2026-06-10",
+      ["We agreed to ship Friday."],
+      "America/Los_Angeles",
+    );
     // bee is an EMPTY (all-elided / zero-conversation) transcript — the
     // sync path writes one explicitly for days whose segments were all
     // dropped. It carries a DIFFERENT timezone, but contributes NO
     // conversations/clocks, so it must not block the fusion.
     const registry = emptySpeakerRegistry();
-    const beeBody = composeDayTranscriptBody("bee", "2026-06-10", "Asia/Tokyo", [], registry);
+    const beeBody = composeDayTranscriptBody(
+      "bee",
+      "2026-06-10",
+      "Asia/Tokyo",
+      [],
+      registry,
+    );
     const beeMeta = composeDayTranscriptMeta(
       "bee",
       "2026-06-10",
@@ -1393,7 +1523,7 @@ test("fuseDay ignores a zero-conversation source when checking timezone identity
       [],
       registry,
       beeBody,
-      "2026-06-11T01:00:00.000Z"
+      "2026-06-11T01:00:00.000Z",
     );
     storage.files.set("bee/2026-06-10", serializeDayTranscript(beeMeta, beeBody));
 
@@ -1424,8 +1554,20 @@ test("fuseDay still skips when two CONTRIBUTING sources disagree on timezone (is
     // timezones — the guard must still skip. This is the contrasting case
     // to ignoring zero-conversation sources: only sources that actually
     // contribute clocks are compared, and two disagreeing contributors skip.
-    storeDay(storage, "limitless", "2026-06-10", ["We agreed to ship Friday."], "America/Los_Angeles");
-    storeDay(storage, "bee", "2026-06-10", ["We agreed to ship Friday."], "Asia/Tokyo");
+    storeDay(
+      storage,
+      "limitless",
+      "2026-06-10",
+      ["We agreed to ship Friday."],
+      "America/Los_Angeles",
+    );
+    storeDay(
+      storage,
+      "bee",
+      "2026-06-10",
+      ["We agreed to ship Friday."],
+      "Asia/Tokyo",
+    );
     const service = makeService(storage, {
       sources: {
         limitless: { ...defaultWearableSourceSettings(), enabled: true },
@@ -1445,6 +1587,7 @@ test("fuseDay still skips when two CONTRIBUTING sources disagree on timezone (is
   }
 });
 
+
 test("dayTranscript returns decoded segment text, not the escaped storage form (#1849)", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "remnic-service-"));
   try {
@@ -1459,7 +1602,7 @@ test("dayTranscript returns decoded segment text, not the escaped storage form (
     assert.ok(views[0].body.includes(original), "view shows the original (decoded) text");
     assert.ok(
       views[0].body.includes("Line one.\\nLine two") === false,
-      "no escaped-newline leak in the user-facing view"
+      "no escaped-newline leak in the user-facing view",
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -1478,7 +1621,10 @@ test("searchTranscripts scan decodes segment text so snippets show the original 
     assert.equal(results.length, 1);
     assert.equal(results[0].backend, "scan");
     assert.ok(results[0].snippet.includes("GAPWORD"));
-    assert.ok(results[0].snippet.includes("Alpha part.\\nBeta") === false, "snippet has no escaped-newline leak");
+    assert.ok(
+      results[0].snippet.includes("Alpha part.\\nBeta") === false,
+      "snippet has no escaped-newline leak",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

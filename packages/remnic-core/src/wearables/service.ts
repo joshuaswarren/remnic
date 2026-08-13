@@ -5,12 +5,14 @@
  * lives here (same renderer-sharing rule as recall explain/xray).
  */
 
-import { log } from "../logger.js";
+import {
+  correctionsFilePath,
+  loadCorrectionsFile,
+  saveCorrectionsFile,
+  compileCorrectionRule,
+} from "./corrections.js";
+import { describeErrorForOperator, WearablesInputError } from "./errors.js";
 import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
-import { stripAttributesSuffix } from "../storage.js";
-import { isSupportPassportPrivateMemory } from "../support-passport/card-projection.js";
-import type { MemoryFrontmatter } from "../types.js";
-import { compileCorrectionRule, correctionsFilePath, loadCorrectionsFile, saveCorrectionsFile } from "./corrections.js";
 import {
   bodyIsEscaped,
   decodeTranscriptBody,
@@ -18,27 +20,38 @@ import {
   isValidTranscriptDate,
   parseDayTranscript,
 } from "./day-store.js";
-import { WearablesInputError, describeErrorForOperator } from "./errors.js";
 import {
-  type FusedWearableConversation,
-  type FusionArtifactStore,
   composeFusionDayMeta,
+  type FusionArtifactStore,
   fuseDay as fuseDayInputs,
   hashFusionBody,
   parseFusionDay,
   reconstructFusionInputs,
   serializeFusionDay,
+  type FusedWearableConversation,
 } from "./fusion/index.js";
+import { stripAttributesSuffix } from "../storage.js";
+import { log } from "../logger.js";
+import type { MemoryFrontmatter } from "../types.js";
 import type { WearableMemoryGenDeps } from "./memory-gen.js";
 import { WEARABLE_SOURCE_PREFIX, wearableSourceLabel } from "./memory-gen.js";
-import { type WearableSyncOptions, defaultTimezone, syncWearableSource } from "./pipeline.js";
+import {
+  defaultTimezone,
+  syncWearableSource,
+  type WearableSyncOptions,
+} from "./pipeline.js";
 import {
   builtInConnectorPackageSpecifier,
   ensureBuiltInWearableConnectors,
   getWearableConnector,
   listWearableConnectors,
 } from "./registry.js";
-import { type SpeakerRegistry, loadSpeakerRegistry, saveSpeakerRegistry, speakerRegistryKey } from "./speakers.js";
+import {
+  loadSpeakerRegistry,
+  saveSpeakerRegistry,
+  speakerRegistryKey,
+  type SpeakerRegistry,
+} from "./speakers.js";
 import { loadSyncState } from "./sync-state.js";
 import type {
   WearableCorrectionRule,
@@ -52,9 +65,18 @@ import type {
 /** Storage capabilities the service needs (satisfied by StorageManager). */
 export interface WearableStorageIo {
   readonly dir: string;
-  writeWearableDayTranscript(sourceId: string, date: string, serialized: string): Promise<void>;
-  readWearableDayTranscript(sourceId: string, date: string): Promise<string | null>;
-  listWearableTranscriptDays(sourceId?: string): Promise<Array<{ source: string; date: string }>>;
+  writeWearableDayTranscript(
+    sourceId: string,
+    date: string,
+    serialized: string,
+  ): Promise<void>;
+  readWearableDayTranscript(
+    sourceId: string,
+    date: string,
+  ): Promise<string | null>;
+  listWearableTranscriptDays(
+    sourceId?: string,
+  ): Promise<Array<{ source: string; date: string }>>;
   fusionArtifactStore(): FusionArtifactStore;
   readAllMemories(): Promise<
     Array<{
@@ -74,14 +96,26 @@ export interface WearableStorageIo {
   >;
   writeSealedMemory: WearableMemoryGenDeps["writer"]["writeSealedMemory"];
   hasFactContentHash(content: string): Promise<boolean>;
-  findWearableMemoryByContent(content: string): Promise<{ id: string; status: string | undefined } | null>;
-  promoteWearableMemory(id: string, attributeUpdates: Record<string, string>, confidence?: number): Promise<boolean>;
-  demoteWearableMemory(id: string, attributeUpdates: Record<string, string>): Promise<boolean>;
+  findWearableMemoryByContent(
+    content: string,
+  ): Promise<{ id: string; status: string | undefined } | null>;
+  promoteWearableMemory(
+    id: string,
+    attributeUpdates: Record<string, string>,
+    confidence?: number,
+  ): Promise<boolean>;
+  demoteWearableMemory(
+    id: string,
+    attributeUpdates: Record<string, string>,
+  ): Promise<boolean>;
 }
 
 export interface WearableSearchBackend {
   /** Full-text search over the memory dir; null when unavailable. */
-  search(query: string, maxResults: number): Promise<Array<{ path: string; score: number; preview: string }> | null>;
+  search(
+    query: string,
+    maxResults: number,
+  ): Promise<Array<{ path: string; score: number; preview: string }> | null>;
 }
 
 export interface WearablesServiceDeps {
@@ -148,14 +182,15 @@ export interface WearableDayTranscriptView {
  * The scan is bounded to wearable-sourced memories and sits on the
  * cached readAllMemories() path.
  */
-export function createWearableMemoryWriter(storage: WearableStorageIo): WearableMemoryGenDeps["writer"] {
+export function createWearableMemoryWriter(
+  storage: WearableStorageIo,
+): WearableMemoryGenDeps["writer"] {
   return {
     writeSealedMemory: storage.writeSealedMemory.bind(storage),
     findWearableMemoryByContent: async (content: string) =>
-      (await storage.findWearableMemoryByContent(content)) as {
-        id: string;
-        status: import("../types.js").MemoryStatus | undefined;
-      } | null,
+      (await storage.findWearableMemoryByContent(content)) as
+        | { id: string; status: import("../types.js").MemoryStatus | undefined }
+        | null,
     promoteWearableMemory: storage.promoteWearableMemory.bind(storage),
     demoteWearableMemory: storage.demoteWearableMemory.bind(storage),
     hasFactContentHash: async (content: string) => {
@@ -170,7 +205,7 @@ export function createWearableMemoryWriter(storage: WearableStorageIo): Wearable
         (memory) =>
           typeof memory.frontmatter.source === "string" &&
           memory.frontmatter.source.startsWith(`${WEARABLE_SOURCE_PREFIX}:`) &&
-          stripAttributesSuffix(memory.content) === needle
+          stripAttributesSuffix(memory.content) === needle,
       );
     },
   };
@@ -181,7 +216,9 @@ const SOURCE_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 
 function assertValidSourceId(source: string): void {
   if (!SOURCE_ID_PATTERN.test(source)) {
-    throw new WearablesInputError(`invalid source id '${source}' — expected lowercase letters, digits, and dashes`);
+    throw new WearablesInputError(
+      `invalid source id '${source}' — expected lowercase letters, digits, and dashes`,
+    );
   }
 }
 
@@ -200,7 +237,7 @@ export class WearablesService {
   private assertEnabled(): void {
     if (!this.deps.config.enabled) {
       throw new WearablesInputError(
-        "wearables are not enabled — set `wearables.enabled: true` (and configure at least one source) in the plugin config"
+        "wearables are not enabled — set `wearables.enabled: true` (and configure at least one source) in the plugin config",
       );
     }
   }
@@ -210,7 +247,9 @@ export class WearablesService {
   }
 
   private enabledSources(): Array<[string, WearableSourceSettings]> {
-    return Object.entries(this.deps.config.sources).filter(([, settings]) => settings.enabled);
+    return Object.entries(this.deps.config.sources).filter(
+      ([, settings]) => settings.enabled,
+    );
   }
 
   /** Status for every configured source (and connector availability). */
@@ -248,7 +287,9 @@ export class WearablesService {
   }
 
   /** Run a sync for one source or all enabled sources. */
-  async sync(options: WearableSyncOptions & { source?: string }): Promise<WearableSyncSummary[]> {
+  async sync(
+    options: WearableSyncOptions & { source?: string },
+  ): Promise<WearableSyncSummary[]> {
     this.assertEnabled();
     await ensureBuiltInWearableConnectors();
     const storage = await this.deps.getStorage();
@@ -261,12 +302,12 @@ export class WearablesService {
         throw new WearablesInputError(
           `unknown wearable source '${options.source}' — configured sources: ${
             Object.keys(this.deps.config.sources).join(", ") || "(none)"
-          }`
+          }`,
         );
       }
       if (!settings.enabled) {
         throw new WearablesInputError(
-          `wearable source '${options.source}' is configured but disabled — set wearables.sources.${options.source}.enabled: true`
+          `wearable source '${options.source}' is configured but disabled — set wearables.sources.${options.source}.enabled: true`,
         );
       }
       targets = [[options.source, settings]];
@@ -274,7 +315,7 @@ export class WearablesService {
       targets = this.enabledSources();
       if (targets.length === 0) {
         throw new WearablesInputError(
-          "no wearable sources are enabled — configure wearables.sources.<id>.enabled: true"
+          "no wearable sources are enabled — configure wearables.sources.<id>.enabled: true",
         );
       }
     }
@@ -283,7 +324,9 @@ export class WearablesService {
       ? {
           extract: this.deps.extract,
           writer: createWearableMemoryWriter(storage),
-          ...(this.deps.judgeFacts !== undefined ? { judgeFacts: this.deps.judgeFacts } : {}),
+          ...(this.deps.judgeFacts !== undefined
+            ? { judgeFacts: this.deps.judgeFacts }
+            : {}),
         }
       : null;
 
@@ -293,73 +336,76 @@ export class WearablesService {
       if (!registration) {
         throw new WearablesInputError(
           `wearable source '${sourceId}' is enabled but its connector package is not installed.\n` +
-            `Install it alongside Remnic:\n  npm install ${builtInConnectorPackageSpecifier(sourceId)}`
+            `Install it alongside Remnic:\n  npm install ${builtInConnectorPackageSpecifier(sourceId)}`,
         );
       }
       const connector = registration.factory({
         settings,
         timezone: this.timezone(),
       });
-      const summary = await syncWearableSource(connector, settings, this.deps.config, options, {
-        memoryDir: storage.dir,
-        readDayContentHash: async (source, date) => {
-          const raw = await storage.readWearableDayTranscript(source, date);
-          if (raw === null) return null;
-          return parseDayTranscript(raw)?.meta.contentHash ?? null;
-        },
-        writeDayTranscript: (source, date, serialized) => storage.writeWearableDayTranscript(source, date, serialized),
-        afterWrites: this.deps.reindexSearch,
-        memoryGen,
-        // Cross-device corroboration evidence (smart mode): other
-        // sources' stored transcripts for the same day...
-        readOtherSourceDayBodies: async (date, excludeSource) => {
-          const bodies = new Map<string, string>();
-          const days = await storage.listWearableTranscriptDays();
-          for (const entry of days) {
-            if (entry.date !== date || entry.source === excludeSource) continue;
-            if (bodies.size >= 4) break;
-            const raw = await storage.readWearableDayTranscript(entry.source, entry.date);
-            if (raw === null) continue;
-            bodies.set(entry.source, parseDayTranscript(raw)?.body ?? raw);
-          }
-          return bodies;
-        },
-        // ...and existing memories for the support boost. Status
-        // resolves through the canonical inferMemoryStatus so rows
-        // archived via `archivedAt` (or an archive/ path) without an
-        // explicit status never count. Explicit allow-list: active
-        // rows AND pending_review rows — a borderline fact observed
-        // again on a later day is repetition signal and the support
-        // boost is how it earns promotion. Rejected/quarantined/
-        // superseded/archived/forgotten rows never count (CLAUDE.md
-        // rule 53). Bodies feed token matching with the
-        // "[Attributes: ...]" enrichment suffix stripped — attribute
-        // metadata must never grant corroboration.
-        listSupportMemories: async () => {
-          const memories = await storage.readAllMemories();
-          const support: Array<{ id: string; content: string }> = [];
-          for (const memory of memories) {
-            if (
-              isSupportPassportPrivateMemory({
-                frontmatter: memory.frontmatter as MemoryFrontmatter,
-              })
-            ) {
-              continue;
+      const summary = await syncWearableSource(
+        connector,
+        settings,
+        this.deps.config,
+        options,
+        {
+          memoryDir: storage.dir,
+          readDayContentHash: async (source, date) => {
+            const raw = await storage.readWearableDayTranscript(source, date);
+            if (raw === null) return null;
+            return parseDayTranscript(raw)?.meta.contentHash ?? null;
+          },
+          writeDayTranscript: (source, date, serialized) =>
+            storage.writeWearableDayTranscript(source, date, serialized),
+          afterWrites: this.deps.reindexSearch,
+          memoryGen,
+          // Cross-device corroboration evidence (smart mode): other
+          // sources' stored transcripts for the same day...
+          readOtherSourceDayBodies: async (date, excludeSource) => {
+            const bodies = new Map<string, string>();
+            const days = await storage.listWearableTranscriptDays();
+            for (const entry of days) {
+              if (entry.date !== date || entry.source === excludeSource) continue;
+              if (bodies.size >= 4) break;
+              const raw = await storage.readWearableDayTranscript(entry.source, entry.date);
+              if (raw === null) continue;
+              bodies.set(entry.source, parseDayTranscript(raw)?.body ?? raw);
             }
-            // WearableStorageIo narrows MemoryFrontmatter for
-            // testability; production hands us the real thing.
-            const status = inferMemoryStatus(memory.frontmatter as MemoryFrontmatter, memory.path);
-            if (status !== "active" && status !== "pending_review") {
-              continue;
+            return bodies;
+          },
+          // ...and existing memories for the support boost. Status
+          // resolves through the canonical inferMemoryStatus so rows
+          // archived via `archivedAt` (or an archive/ path) without an
+          // explicit status never count. Explicit allow-list: active
+          // rows AND pending_review rows — a borderline fact observed
+          // again on a later day is repetition signal and the support
+          // boost is how it earns promotion. Rejected/quarantined/
+          // superseded/archived/forgotten rows never count (CLAUDE.md
+          // rule 53). Bodies feed token matching with the
+          // "[Attributes: ...]" enrichment suffix stripped — attribute
+          // metadata must never grant corroboration.
+          listSupportMemories: async () => {
+            const memories = await storage.readAllMemories();
+            const support: Array<{ id: string; content: string }> = [];
+            for (const memory of memories) {
+              // WearableStorageIo narrows MemoryFrontmatter for
+              // testability; production hands us the real thing.
+              const status = inferMemoryStatus(
+                memory.frontmatter as MemoryFrontmatter,
+                memory.path,
+              );
+              if (status !== "active" && status !== "pending_review") {
+                continue;
+              }
+              support.push({
+                id: memory.frontmatter.id,
+                content: stripAttributesSuffix(memory.content),
+              });
             }
-            support.push({
-              id: memory.frontmatter.id,
-              content: stripAttributesSuffix(memory.content),
-            });
-          }
-          return support;
+            return support;
+          },
         },
-      });
+      );
       summaries.push(summary);
     }
     // Tail step (issue #1900): a wearable sync changed a day's audio, so fan out
@@ -376,7 +422,7 @@ export class WearablesService {
         log.warn(
           `wearables: post-sync meeting build hook failed (non-fatal): ${
             err instanceof Error ? err.message : String(err)
-          }`
+          }`,
         );
       }
     }
@@ -419,7 +465,10 @@ export class WearablesService {
    * Full transcript(s) for a day. Without `source`, returns every
    * source that recorded that day, annotated with overlap hints.
    */
-  async dayTranscript(date: string, sourceId?: string): Promise<WearableDayTranscriptView[]> {
+  async dayTranscript(
+    date: string,
+    sourceId?: string,
+  ): Promise<WearableDayTranscriptView[]> {
     if (!isValidTranscriptDate(date)) {
       throw new WearablesInputError(`invalid date '${date}' — expected YYYY-MM-DD`);
     }
@@ -451,13 +500,17 @@ export class WearablesService {
       });
     }
     for (const view of views) {
-      view.overlapsWith = views.map((other) => other.source).filter((other) => other !== view.source);
+      view.overlapsWith = views
+        .map((other) => other.source)
+        .filter((other) => other !== view.source);
     }
     return views;
   }
 
   /** List days that have stored transcripts. */
-  async listDays(sourceId?: string): Promise<Array<{ source: string; date: string }>> {
+  async listDays(
+    sourceId?: string,
+  ): Promise<Array<{ source: string; date: string }>> {
     if (sourceId !== undefined) assertValidSourceId(sourceId);
     const storage = await this.deps.getStorage();
     return storage.listWearableTranscriptDays(sourceId);
@@ -484,7 +537,7 @@ export class WearablesService {
     this.assertEnabled();
     if (!this.deps.config.fusion.enabled) {
       throw new WearablesInputError(
-        "wearables fusion is not enabled — set `wearables.fusion.enabled: true` in the plugin config"
+        "wearables fusion is not enabled — set `wearables.fusion.enabled: true` in the plugin config",
       );
     }
     if (!isValidTranscriptDate(date)) {
@@ -517,7 +570,9 @@ export class WearablesService {
         source: entry.source,
         timezone: sourceTimezones[i] ?? "",
       }))
-      .filter((entry) => reconstructed.some((input) => input.source === entry.source));
+      .filter((entry) =>
+        reconstructed.some((input) => input.source === entry.source),
+      );
     // Mixed-timezone guard: reconstructFusionInputs rebuilds every clock as
     // `${date}T${HH}:${MM}:00Z` and compares local HH:MM clocks across sources
     // as if they shared one timezone. That comparison is ONLY valid when every
@@ -536,11 +591,14 @@ export class WearablesService {
     if (contributing.length > 1) {
       const referenceTz = contributing[0]!.timezone;
       const allSameExplicitTz =
-        referenceTz.trim().length > 0 && contributing.every((entry) => entry.timezone === referenceTz);
+        referenceTz.trim().length > 0 &&
+        contributing.every((entry) => entry.timezone === referenceTz);
       if (!allSameExplicitTz) {
-        const detail = contributing.map((entry) => `${entry.source}=${entry.timezone || "?"}`).join(", ");
+        const detail = contributing
+          .map((entry) => `${entry.source}=${entry.timezone || "?"}`)
+          .join(", ");
         log.warn(
-          `wearables fusion: skipping ${date} — sources were rendered under differing timezones (${detail}); reconstructFusionInputs only compares local clocks correctly when every source shares one explicit IANA timezone id`
+          `wearables fusion: skipping ${date} — sources were rendered under differing timezones (${detail}); reconstructFusionInputs only compares local clocks correctly when every source shares one explicit IANA timezone id`,
         );
         // Clear any previously-fused artifact for this day: a day that
         // fused successfully before must not keep serving a stale view
@@ -594,9 +652,12 @@ export class WearablesService {
         result.conversations,
         result.sources,
         result.contentHash,
-        new Date().toISOString()
+        new Date().toISOString(),
       );
-      await storage.fusionArtifactStore().writeFusedDay(date, serializeFusionDay(meta, result.conversations));
+      await storage.fusionArtifactStore().writeFusedDay(
+        date,
+        serializeFusionDay(meta, result.conversations),
+      );
     }
     return {
       date: result.date,
@@ -616,7 +677,9 @@ export class WearablesService {
    * from a day that was never fused — never silently returns an empty
    * list that looks identical to "no artifact" (issue #1849).
    */
-  async fusedConversations(date: string): Promise<FusedWearableConversation[]> {
+  async fusedConversations(
+    date: string,
+  ): Promise<FusedWearableConversation[]> {
     if (!isValidTranscriptDate(date)) {
       throw new WearablesInputError(`invalid date '${date}' — expected YYYY-MM-DD`);
     }
@@ -627,7 +690,7 @@ export class WearablesService {
     if (parsed === null) return [];
     if (!parsed.parseOk) {
       throw new WearablesInputError(
-        `fused artifact for ${date} is corrupt — re-run \`wearables fuse ${date}\` to repair`
+        `fused artifact for ${date} is corrupt — re-run \`wearables fuse ${date}\` to repair`,
       );
     }
     return parsed.conversations;
@@ -652,7 +715,7 @@ export class WearablesService {
       from?: string;
       to?: string;
       limit?: number;
-    } = {}
+    } = {},
   ): Promise<WearableTranscriptSearchResult[]> {
     const trimmed = query.trim();
     if (trimmed.length === 0) {
@@ -667,7 +730,12 @@ export class WearablesService {
         throw new WearablesInputError(`invalid ${name} date '${value}' — expected YYYY-MM-DD`);
       }
     }
-    const limit = clampLimit(options.limit, TRANSCRIPT_SEARCH_DEFAULT_LIMIT, TRANSCRIPT_SEARCH_MAX_LIMIT, "limit");
+    const limit = clampLimit(
+      options.limit,
+      TRANSCRIPT_SEARCH_DEFAULT_LIMIT,
+      TRANSCRIPT_SEARCH_MAX_LIMIT,
+      "limit",
+    );
 
     const matchesScope = (source: string, date: string): boolean => {
       if (options.source !== undefined && source !== options.source) return false;
@@ -686,7 +754,8 @@ export class WearablesService {
       // escaped form. This keeps the indexed path at parity with the
       // scan fallback, which decodes the body before searching (#1849).
       const escaped = escapeSegmentText(trimmed);
-      const queries = escaped === trimmed ? [trimmed] : [trimmed, escaped];
+      const queries =
+        escaped === trimmed ? [trimmed] : [trimmed, escaped];
       const seen = new Set<string>();
       const results: WearableTranscriptSearchResult[] = [];
       const idxStorage = await this.deps.getStorage();
@@ -704,7 +773,8 @@ export class WearablesService {
           // Read the file once to learn whether it was written by the
           // escape-aware serializer so a LEGACY file's literal two-character
           // \n/\r is never decoded (#1849).
-          const idxRaw = await idxStorage.readWearableDayTranscript(located.source, located.date);
+          const idxRaw =
+            await idxStorage.readWearableDayTranscript(located.source, located.date);
           const idxMeta = parseDayTranscript(idxRaw ?? "")?.meta ?? null;
           results.push({
             source: located.source,
@@ -743,7 +813,10 @@ export class WearablesService {
       // internal escape serialization — but ONLY for bodies written by
       // the escape-aware serializer; legacy bodies are searched verbatim
       // (#1849).
-      const body = decodeTranscriptBody(scanParsed?.body ?? raw, bodyIsEscaped(scanParsed?.meta));
+      const body = decodeTranscriptBody(
+        scanParsed?.body ?? raw,
+        bodyIsEscaped(scanParsed?.meta),
+      );
       const lower = body.toLowerCase();
       const index = lower.indexOf(needle);
       if (index === -1) continue;
@@ -769,13 +842,18 @@ export class WearablesService {
       source?: string;
       date?: string;
       limit?: number;
-    } = {}
+    } = {},
   ): Promise<WearableMemorySearchResult[]> {
     if (options.date !== undefined && !isValidTranscriptDate(options.date)) {
       throw new WearablesInputError(`invalid date '${options.date}' — expected YYYY-MM-DD`);
     }
     if (options.source !== undefined) assertValidSourceId(options.source);
-    const limit = clampLimit(options.limit, MEMORY_LIST_DEFAULT_LIMIT, MEMORY_LIST_MAX_LIMIT, "limit");
+    const limit = clampLimit(
+      options.limit,
+      MEMORY_LIST_DEFAULT_LIMIT,
+      MEMORY_LIST_MAX_LIMIT,
+      "limit",
+    );
     const storage = await this.deps.getStorage();
     const memories = await storage.readAllMemories();
     const results: WearableMemorySearchResult[] = [];
@@ -829,7 +907,7 @@ export class WearablesService {
     sourceId: string,
     speakerKey: string,
     name: string,
-    opts: { isSelf?: boolean } = {}
+    opts: { isSelf?: boolean } = {},
   ): Promise<SpeakerRegistry> {
     if (typeof name !== "string" || name.trim().length === 0) {
       throw new WearablesInputError("speaker name must be a non-empty string");
@@ -859,7 +937,10 @@ export class WearablesService {
     return registry;
   }
 
-  async removeSpeaker(sourceId: string, speakerKey: string): Promise<SpeakerRegistry> {
+  async removeSpeaker(
+    sourceId: string,
+    speakerKey: string,
+  ): Promise<SpeakerRegistry> {
     const storage = await this.deps.getStorage();
     const registry = await loadSpeakerRegistry(storage.dir);
     const key = speakerRegistryKey(sourceId, speakerKey.trim());
@@ -896,11 +977,11 @@ export class WearablesService {
       (existing) =>
         existing.match === rule.match &&
         existing.replace === rule.replace &&
-        (existing.regex === true) === (rule.regex === true)
+        (existing.regex === true) === (rule.regex === true),
     );
     if (duplicate) {
       throw new WearablesInputError(
-        `an identical correction rule already exists (match: ${JSON.stringify(rule.match)})`
+        `an identical correction rule already exists (match: ${JSON.stringify(rule.match)})`,
       );
     }
     rules.push(rule);
@@ -915,7 +996,7 @@ export class WearablesService {
     const rules = await loadCorrectionsFile(storage.dir);
     if (index >= rules.length) {
       throw new WearablesInputError(
-        `correction index ${index} is out of range (have ${rules.length} state rule${rules.length === 1 ? "" : "s"})`
+        `correction index ${index} is out of range (have ${rules.length} state rule${rules.length === 1 ? "" : "s"})`,
       );
     }
     const [removed] = rules.splice(index, 1);
@@ -924,18 +1005,29 @@ export class WearablesService {
   }
 }
 
-function clampLimit(value: number | undefined, fallback: number, max: number, label: string): number {
+function clampLimit(
+  value: number | undefined,
+  fallback: number,
+  max: number,
+  label: string,
+): number {
   if (value === undefined) return fallback;
   if (!Number.isFinite(value) || !Number.isInteger(value) || value < 1 || value > max) {
-    throw new WearablesInputError(`invalid ${label} '${value}' — expected an integer between 1 and ${max}`);
+    throw new WearablesInputError(
+      `invalid ${label} '${value}' — expected an integer between 1 and ${max}`,
+    );
   }
   return value;
 }
 
 /** Map an indexed-search hit path back to (source, date), or null. */
-export function locateTranscriptPath(hitPath: string): { source: string; date: string } | null {
+export function locateTranscriptPath(
+  hitPath: string,
+): { source: string; date: string } | null {
   const normalized = hitPath.replace(/\\/g, "/");
-  const match = normalized.match(/(?:^|\/)wearables\/([a-z][a-z0-9-]{0,63})\/(\d{4}-\d{2}-\d{2})\.md$/);
+  const match = normalized.match(
+    /(?:^|\/)wearables\/([a-z][a-z0-9-]{0,63})\/(\d{4}-\d{2}-\d{2})\.md$/,
+  );
   if (!match) return null;
   if (!isValidTranscriptDate(match[2])) return null;
   return { source: match[1], date: match[2] };
