@@ -759,8 +759,14 @@ test("a stalled model draft shows uncertain state without claiming another draft
     };
   });
   let cardReads = 0;
+  const reconciliationStarted = Promise.withResolvers<void>();
+  const releaseReconciliation = Promise.withResolvers<void>();
   await page.route("**/engram/v1/support-passport/cards", async (route) => {
     cardReads += 1;
+    if (cardReads === 2) {
+      reconciliationStarted.resolve();
+      await releaseReconciliation.promise;
+    }
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -795,6 +801,9 @@ test("a stalled model draft shows uncertain state without claiming another draft
       page.evaluate(() => (window as typeof window & { __ownerModelAbortObserved?: boolean }).__ownerModelAbortObserved)
     )
     .toBe(true);
+  await reconciliationStarted.promise;
+  await expect(page.getByRole("button", { name: "Drafting cards…" })).toBeDisabled();
+  releaseReconciliation.resolve();
 
   await expect(
     page.getByText("Drafting timed out. Review the current guide before deciding whether to draft again.")
@@ -885,6 +894,8 @@ test("a stalled share creation shows uncertain state without revoking a grant", 
   await page.locator('input[name="shareCard"]').check();
   await page.getByRole("button", { name: "Create share link" }).click();
   await expect(page.getByRole("button", { name: "Creating link…" })).toBeDisabled();
+  await expect(page.locator('input[name="shareCard"]')).toBeDisabled();
+  await expect(page.locator('input[name="duration"][value="30m"]')).toBeDisabled();
   await page.clock.fastForward(60_000);
   await expect
     .poll(() =>
@@ -905,6 +916,9 @@ test("a stalled share creation shows uncertain state without revoking a grant", 
   await expect(page.getByText("Share link ready")).toBeHidden();
   await expect(page.getByLabel("Copy this link once")).toHaveValue("");
   await expect(page.getByRole("button", { name: "Create share link" })).toBeEnabled();
+  await expect(page.locator('input[name="shareCard"]')).toBeChecked();
+  await expect(page.locator('input[name="shareCard"]')).toBeEnabled();
+  await expect(page.locator('input[name="duration"][value="30m"]')).toBeEnabled();
   expect(await page.evaluate(() => (window as typeof window & { __ownerShareCalls?: number }).__ownerShareCalls)).toBe(
     1
   );
