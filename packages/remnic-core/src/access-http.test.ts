@@ -591,6 +591,30 @@ test("HTTP admin console can prefill the primary bearer token when explicitly en
   }
 });
 
+test("HTTP admin console safely serializes a prefill token into its inline bootstrap", async () => {
+  const token = 'safe</script><script>window.injected=true</script>';
+  const service = {} as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: token,
+    adminConsolePrefillToken: true,
+  });
+
+  const status = await server.start();
+  try {
+    const shell = await fetch(`http://127.0.0.1:${status.port}/engram/ui/`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(shell.status, 200);
+    const shellText = await shell.text();
+    assert.doesNotMatch(shellText, /<script>window\.injected=true<\/script>/);
+    assert.match(shellText, /safe\\u003c\/script>\\u003cscript>window\.injected=true\\u003c\/script>/);
+  } finally {
+    await server.stop();
+  }
+});
+
 test("HTTP admin dashboard endpoints require bearer authentication and apply config patches", async () => {
   const service = {} as EngramAccessService;
   const patches: unknown[] = [];
