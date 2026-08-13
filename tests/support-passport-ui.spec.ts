@@ -2043,16 +2043,24 @@ test("a replay helper keeps an invalidation that arrives while its guide loads",
   await helper.addInitScript(() => {
     const NativeBroadcastChannel = window.BroadcastChannel;
     window.BroadcastChannel = class DelayedReplayChannel extends NativeBroadcastChannel {
-      addEventListener(type, listener, options) {
+      addEventListener(
+        type: string,
+        listener: EventListenerOrEventListenerObject,
+        options?: boolean | AddEventListenerOptions
+      ) {
         if (type !== "message") return super.addEventListener(type, listener, options);
-        const delayed = (event) => {
+        const delayed = (event: MessageEvent) => {
+          const dispatch = () => {
+            if (typeof listener === "function") listener(event);
+            else listener.handleEvent(event);
+          };
           if (event.data?.type === "grant-state") {
             Object.assign(window, { __replayGrantStateDelayed: true });
-            window.setTimeout(() => listener(event), 150);
+            window.setTimeout(dispatch, 150);
           }
-          else listener(event);
+          else dispatch();
         };
-        return super.addEventListener(type, delayed, options);
+        return super.addEventListener(type, delayed as EventListener, options);
       }
     };
   });
