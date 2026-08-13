@@ -1117,16 +1117,10 @@ export class Orchestrator {
   }
 
   filterPrivateSearchResults = (
-    results: QmdSearchResult[],
-    namespaces: readonly string[] = [],
-    preserveUnresolved = false,
+    results: QmdSearchResult[], namespaces: readonly string[] = [], preserveUnresolved = false,
     visibilityCache?: Map<string, boolean>,
   ) => this.qmdResultResolver.filterPrivateSearchResults(
-    results,
-    this.storage,
-    namespaces,
-    preserveUnresolved,
-    visibilityCache,
+    results, this.storage, namespaces, preserveUnresolved, visibilityCache,
   );
 
   private configuredNamespaceList(): string[] {

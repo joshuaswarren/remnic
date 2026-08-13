@@ -980,8 +980,7 @@ function defaultWindow(now: Date): ParsedBriefingWindow {
 async function safeReadMemories(storage: StorageManager): Promise<MemoryFile[]> {
   try {
     return excludeSupportPassportPrivateMemories(await storage.readAllMemories());
-  } catch (err) {
-    log.warn(`briefing: readAllMemories failed: ${err}`);
+  } catch (err) { log.warn(`briefing: readAllMemories failed: ${err}`);
     return [];
   }
 }
