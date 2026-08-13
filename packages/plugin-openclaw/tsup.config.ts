@@ -2,7 +2,12 @@ import { defineConfig } from "tsup";
 
 export default defineConfig({
   entry: ["src/index.ts", "src/managed-upgrade.ts", "src/support-passport-model-route.ts"],
-  dts: { entry: ["src/managed-upgrade.ts", "src/support-passport-model-route.ts"] },
+  dts: {
+    entry: ["src/managed-upgrade.ts", "src/support-passport-model-route.ts"],
+    compilerOptions: {
+      customConditions: ["remnic-source"],
+    },
+  },
   format: ["esm"],
   target: "es2022",
   platform: "node",
