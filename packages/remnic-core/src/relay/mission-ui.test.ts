@@ -62,7 +62,9 @@ test("Relay Mission Control serves both aliases from one exact static allow-list
         });
         assert.equal(authorizedShell.status, 200);
         assert.equal(authorizedShell.headers.get("cache-control"), "private, no-store");
-        assert.match(await authorizedShell.text(), /__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__="relay-token"/);
+        const authorizedShellText = await authorizedShell.text();
+        assert.match(authorizedShellText, /Object\.defineProperty\(window,key/);
+        assert.match(authorizedShellText, /\}\)\("relay-token",document\.currentScript\)/);
 
         const expectedAssets = new Map([
           ["relay.css", /^text\/css/],

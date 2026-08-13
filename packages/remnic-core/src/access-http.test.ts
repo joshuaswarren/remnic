@@ -577,10 +577,11 @@ test("HTTP admin console can prefill the primary bearer token when explicitly en
     assert.equal(shell.headers.get("cache-control"), "private, no-store");
     assert.equal(shell.headers.get("vary"), "authorization");
     const shellText = await shell.text();
-    assert.match(
-      shellText,
-      /window\.__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__="test-token"/,
-    );
+    assert.match(shellText, /Object\.defineProperty\(window,key/);
+    assert.match(shellText, /window\.addEventListener\("pagehide",clear,\{once:true\}\)/);
+    assert.match(shellText, /script\.textContent="";script\.remove\(\)/);
+    assert.match(shellText, /\}\)\("test-token",document\.currentScript\)/);
+    assert.doesNotMatch(shellText, /window\.__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__="test-token"/);
 
     const app = await fetch(`http://127.0.0.1:${status.port}/engram/ui/app.js`);
     assert.equal(app.status, 200);
