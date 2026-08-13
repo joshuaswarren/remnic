@@ -38,8 +38,8 @@ What Helps Me adds one complete owner-to-helper flow to Remnic:
 4. The owner edits and approves each card separately.
 5. The owner shares exact card versions for a limited time.
 6. The helper reads the chosen cards and asks a grounded question.
-7. The owner selects **Stop sharing**, which locks the next helper request and
-   open helper views within one polling interval.
+7. The owner selects **Stop sharing**, which locks the next helper request.
+   Open helper views lock after their next successful status check.
 
 Cards use Remnic's normal memory store and lifecycle. The grant store keeps only
 a secret hash. The helper never gets a namespace, source memory, path, search
