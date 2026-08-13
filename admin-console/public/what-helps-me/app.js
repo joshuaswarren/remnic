@@ -144,11 +144,11 @@
         cache: "no-store",
         signal: controller?.signal ?? options.signal,
       });
-      let payload = {};
+      let payload;
       try {
         payload = await response.json();
       } catch {
-        if (!response.ok) throw new Error(`The server returned HTTP ${response.status}.`);
+        throw new Error(`The server returned invalid JSON with HTTP ${response.status}.`);
       }
       if (!response.ok) {
         const error = new Error(
@@ -619,16 +619,22 @@
           setError("cardError", errorMessage(error, "The draft did not save."));
           return;
         }
-        const reconciled = await reconcileOwnerState(() =>
-          state.cards.find((card) => !priorCardIds.has(card.cardId) && sameCardDraft(card, input))
-        );
+        const reconciled = await reconcileOwnerState(() => {
+          if (cardId) return null;
+          return state.cards.find((card) => !priorCardIds.has(card.cardId) && sameCardDraft(card, input));
+        });
         if (!reconciled.matched) {
-          setError(
-            "cardError",
-            reconciled.refreshed
+          let message;
+          if (cardId) {
+            message = reconciled.refreshed
+              ? "The edit timed out. Review the current guide before trying again."
+              : "The server did not confirm the edit. Refresh the guide before trying again.";
+          } else {
+            message = reconciled.refreshed
               ? "The request stopped before the draft saved. Review the current guide before trying again."
-              : "The server did not confirm whether the draft saved. Refresh the guide before saving it again."
-          );
+              : "The server did not confirm whether the draft saved. Refresh the guide before saving it again.";
+          }
+          setError("cardError", message);
           return;
         }
         ownerStateFresh = true;
