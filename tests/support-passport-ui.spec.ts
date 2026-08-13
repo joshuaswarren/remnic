@@ -433,12 +433,8 @@ test("an owner page clears private state before browser-cache restoration", asyn
   await page.goto(`${origin}/remnic/ui/what-helps-me/`);
   await expect(page.getByLabel("Bearer token")).toHaveValue("prefilled-owner-token");
   expect(
-    await page.evaluate(
-      () =>
-        (window as typeof window & { __REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__?: string })
-          .__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__
-    )
-  ).toBeUndefined();
+    await page.evaluate(() => Object.hasOwn(window, "__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__"))
+  ).toBe(false);
   expect(
     await page
       .locator("script")
