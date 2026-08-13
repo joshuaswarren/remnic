@@ -7,10 +7,20 @@ import {
   SUPPORT_PASSPORT_ATTRIBUTE_KEYS,
   SUPPORT_PASSPORT_CARD_TAG,
   type StoredSupportPassportCard,
-  activeSupportPassportReplacementPredecessorIds,
   computeSupportPassportOwnerKey,
   projectSupportPassportCard,
 } from "./card-projection.js";
+import {
+  MAX_OWNER_VISIBLE_CARDS,
+  ownerListCards,
+  ownerVisibleCards,
+  ownsMemory,
+  projectOwnedCard,
+  projectRequiredCard,
+  requireRevision,
+  requireStatus,
+  revisionFor,
+} from "./card-state.js";
 import {
   type SupportPassportCard,
   type SupportPassportCardCategory,
@@ -23,7 +33,6 @@ import {
   SupportPassportNamespaceSchema,
   type SupportPassportReplaceCardInput,
   SupportPassportReplaceCardInputSchema,
-  computeSupportPassportCardRevision,
 } from "./contracts.js";
 import { SupportPassportError } from "./errors.js";
 import { type SupportPassportDraftCard, SupportPassportDraftOutputSchema } from "./model-contracts.js";
@@ -39,9 +48,6 @@ export interface SupportPassportCardServiceDependencies {
   resolveOwner(principal: string): Promise<SupportPassportOwnerScope>;
   now?: () => Date;
 }
-
-const OWNER_VISIBLE_STATUSES = new Set(["pending_review", "active"]);
-const MAX_OWNER_VISIBLE_CARDS = 100;
 
 function invalidInput(): SupportPassportError {
   return new SupportPassportError("invalid_input", "The support card request is invalid.", 400);
@@ -75,7 +81,7 @@ export class SupportPassportCardService {
     const { principal, namespace, storage } = await this.resolveOwnerScope(parsed.data.principal);
     return await this.withOwnerLock(storage, async () => {
       const stored = await this.readProjectedCards(storage, namespace, principal);
-      const cards = this.ownerListCards(stored)
+      const cards = ownerListCards(stored)
         .sort((a, b) => a.order - b.order || a.card.cardId.localeCompare(b.card.cardId))
         .map((item) => item.card);
       const output = SupportPassportCardListSchema.safeParse(cards);
@@ -154,7 +160,7 @@ export class SupportPassportCardService {
         await input.validateSources?.();
         input.signal?.throwIfAborted();
         const storedCards = await this.readStoredCards(storage, lock, principal, namespace);
-        if (this.ownerVisibleCards(storedCards).length + output.data.cards.length > MAX_OWNER_VISIBLE_CARDS) {
+        if (ownerVisibleCards(storedCards).length + output.data.cards.length > MAX_OWNER_VISIBLE_CARDS) {
           throw new SupportPassportError(
             "invalid_input",
             "A support passport can contain at most 100 visible cards.",
@@ -259,12 +265,12 @@ export class SupportPassportCardService {
           {},
           onCommitted
         );
-        return this.projectRequiredCard(recovered, namespace, principal).card;
+        return projectRequiredCard(recovered, namespace, principal).card;
       }
-      this.requireRevision(loadedPrior, parsed.data.expectedRevision);
+      requireRevision(loadedPrior, parsed.data.expectedRevision);
       await this.readStoredCards(storage, lock, principal, namespace);
       const refreshedPrior = await this.requireCard(storage, parsed.data.cardId, namespace, principal);
-      this.requireRevision(refreshedPrior, parsed.data.expectedRevision);
+      requireRevision(refreshedPrior, parsed.data.expectedRevision);
       const recoveredMemory = await this.recoverReplacementTransition(
         storage,
         refreshedPrior.memory,
@@ -274,7 +280,7 @@ export class SupportPassportCardService {
         {},
         onCommitted
       );
-      const prior = this.projectRequiredCard(recoveredMemory, namespace, principal);
+      const prior = projectRequiredCard(recoveredMemory, namespace, principal);
       if (prior.card.status !== "active" && prior.card.status !== "pending_review") {
         throw new SupportPassportError(
           "invalid_card_status",
@@ -332,7 +338,7 @@ export class SupportPassportCardService {
         );
       }
       const currentPrior = await storage.getMemoryById(prior.card.cardId);
-      const currentPriorCard = currentPrior ? this.projectOwnedCard(currentPrior, namespace, principal) : null;
+      const currentPriorCard = currentPrior ? projectOwnedCard(currentPrior, namespace, principal) : null;
       if (currentPriorCard?.card.status === "rejected") {
         return await this.finishPreparedDraftReplacement(
           storage,
@@ -368,8 +374,8 @@ export class SupportPassportCardService {
     return await this.withOwnerLock(storage, async (lock) => {
       options.signal?.throwIfAborted();
       const loadedCard = await this.requireCard(storage, parsed.data.cardId, namespace, principal);
-      this.requireRevision(loadedCard, parsed.data.expectedRevision);
-      this.requireStatus(loadedCard, "pending_review");
+      requireRevision(loadedCard, parsed.data.expectedRevision);
+      requireStatus(loadedCard, "pending_review");
       const recoveredMemory = await this.recoverReplacementTransition(
         storage,
         loadedCard.memory,
@@ -379,7 +385,7 @@ export class SupportPassportCardService {
         {},
         onCommitted
       );
-      const card = this.projectRequiredCard(recoveredMemory, namespace, principal);
+      const card = projectRequiredCard(recoveredMemory, namespace, principal);
       if (card.card.status === "active") return card.card;
       if (card.card.status === "rejected") {
         throw new SupportPassportError(
@@ -388,7 +394,7 @@ export class SupportPassportCardService {
           409
         );
       }
-      this.requireStatus(card, "pending_review");
+      requireStatus(card, "pending_review");
       await this.validatePriorForReplacement(storage, card, namespace, principal);
       const updatedAt = this.now().toISOString();
       await this.requireOwnerLock(lock);
@@ -401,7 +407,7 @@ export class SupportPassportCardService {
         );
       } catch (error) {
         const current = await storage.getMemoryById(card.card.cardId);
-        const currentCard = current ? this.projectOwnedCard(current, namespace, principal) : null;
+        const currentCard = current ? projectOwnedCard(current, namespace, principal) : null;
         if (currentCard?.card.status === "active") {
           onCommitted();
           return await this.finishCommittedApproval(storage, currentCard, lock, principal, namespace, onCommitted);
@@ -410,7 +416,7 @@ export class SupportPassportCardService {
       }
       if (!approved) {
         const current = await storage.getMemoryById(card.card.cardId);
-        const currentCard = current ? this.projectOwnedCard(current, namespace, principal) : null;
+        const currentCard = current ? projectOwnedCard(current, namespace, principal) : null;
         if (currentCard?.card.status === "active") {
           onCommitted();
           return await this.finishCommittedApproval(storage, currentCard, lock, principal, namespace, onCommitted);
@@ -421,7 +427,7 @@ export class SupportPassportCardService {
         ...card.card,
         status: "active",
         updatedAt,
-        revision: this.revisionFor(card.card, "active", updatedAt),
+        revision: revisionFor(card.card, "active", updatedAt),
       };
       onCommitted();
       try {
@@ -474,7 +480,7 @@ export class SupportPassportCardService {
     const now = this.now();
     const reviewBy = input.reviewBy ?? now.toISOString();
     const storedCards = await this.readStoredCards(storage, lock, principal, namespace);
-    const visibleCards = this.ownerListCards(storedCards);
+    const visibleCards = ownerListCards(storedCards);
     const replacesVisibleCard = visibleCards.some(
       (item) =>
         (input.replacesDraftId === item.card.cardId && item.card.status === "pending_review") ||
@@ -550,7 +556,7 @@ export class SupportPassportCardService {
     }
     input.onPersisted?.(written.id);
     input.onCommitted?.();
-    return this.projectRequiredCard(written.memory, namespace, principal).card;
+    return projectRequiredCard(written.memory, namespace, principal).card;
   }
 
   private async changeStatus(
@@ -567,13 +573,13 @@ export class SupportPassportCardService {
     return await this.withOwnerLock(storage, async (lock) => {
       options.signal?.throwIfAborted();
       let card = await this.requireCard(storage, parsed.data.cardId, namespace, principal);
-      this.requireRevision(card, parsed.data.expectedRevision);
-      this.requireStatus(card, expectedStatus);
+      requireRevision(card, parsed.data.expectedRevision);
+      requireStatus(card, expectedStatus);
       if (
         expectedStatus === "pending_review" ||
         (expectedStatus === "active" && (card.replacesDraftId || card.memory.frontmatter.supersedes))
       ) {
-        card = this.projectRequiredCard(
+        card = projectRequiredCard(
           await this.recoverReplacementTransition(
             storage,
             card.memory,
@@ -590,7 +596,7 @@ export class SupportPassportCardService {
         );
       }
       if (card.card.status === nextStatus) return card.card;
-      this.requireStatus(card, expectedStatus);
+      requireStatus(card, expectedStatus);
       const updatedAt = this.now().toISOString();
       await this.requireOwnerLock(lock);
       const changed = await storage.writeMemoryFrontmatterIfUnchanged(
@@ -613,20 +619,8 @@ export class SupportPassportCardService {
         ...card.card,
         status: nextStatus,
         updatedAt,
-        revision: this.revisionFor(card.card, nextStatus, updatedAt),
+        revision: revisionFor(card.card, nextStatus, updatedAt),
       };
-    });
-  }
-
-  private revisionFor(card: SupportPassportCard, status: SupportPassportCard["status"], updatedAt: string): string {
-    return computeSupportPassportCardRevision({
-      cardId: card.cardId,
-      title: card.title,
-      statement: card.statement,
-      category: card.category,
-      status,
-      updatedAt,
-      reviewBy: card.reviewBy,
     });
   }
 
@@ -686,7 +680,7 @@ export class SupportPassportCardService {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const memory = await storage.getMemoryById(cardId);
       if (!memory) return true;
-      const stored = this.projectOwnedCard(memory, namespace, principal);
+      const stored = projectOwnedCard(memory, namespace, principal);
       if (!stored) return false;
       if (stored.card.status === "rejected") return true;
       if (stored.card.status !== "pending_review") return false;
@@ -708,31 +702,9 @@ export class SupportPassportCardService {
     principal: string
   ): Promise<StoredSupportPassportCard> {
     const stored = await storage.getMemoryById(cardId);
-    const card = stored ? this.projectOwnedCard(stored, namespace, principal) : null;
+    const card = stored ? projectOwnedCard(stored, namespace, principal) : null;
     if (!card) throw new SupportPassportError("card_not_found", "The support card was not found.", 404);
     return card;
-  }
-
-  private projectRequiredCard(memory: MemoryFile, namespace: string, principal: string): StoredSupportPassportCard {
-    const card = projectSupportPassportCard(memory);
-    if (!card) throw new SupportPassportError("card_data_invalid", "The support card data is invalid.", 500);
-    if (card.namespace !== namespace || card.owner !== computeSupportPassportOwnerKey(principal)) {
-      throw new SupportPassportError("card_not_found", "The support card was not found.", 404);
-    }
-    return card;
-  }
-
-  private projectOwnedCard(memory: MemoryFile, namespace: string, principal: string): StoredSupportPassportCard | null {
-    const card = projectSupportPassportCard(memory);
-    return card?.namespace === namespace && card.owner === computeSupportPassportOwnerKey(principal) ? card : null;
-  }
-
-  private ownsMemory(memory: MemoryFile, namespace: string, principal: string): boolean {
-    const attributes = memory.frontmatter.structuredAttributes;
-    return (
-      attributes?.[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.namespace] === namespace &&
-      attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.owner] === computeSupportPassportOwnerKey(principal)
-    );
   }
 
   private async readProjectedCards(
@@ -754,18 +726,6 @@ export class SupportPassportCardService {
     return projected;
   }
 
-  private requireRevision(card: StoredSupportPassportCard, expectedRevision: string): void {
-    if (card.card.revision !== expectedRevision) {
-      throw new SupportPassportError("revision_conflict", "The support card changed after it was loaded.", 409);
-    }
-  }
-
-  private requireStatus(card: StoredSupportPassportCard, status: SupportPassportCard["status"]): void {
-    if (card.card.status !== status) {
-      throw new SupportPassportError("invalid_card_status", `The support card must have status ${status}.`, 409);
-    }
-  }
-
   private async readStoredCards(
     storage: StorageManager,
     lock: HeldFileLockController,
@@ -775,7 +735,7 @@ export class SupportPassportCardService {
     const initialVersion = storage.getCorpusScanVersion();
     const initial = await storage.readAllMemories();
     for (const memory of initial) {
-      const card = this.projectOwnedCard(memory, namespace, principal);
+      const card = projectOwnedCard(memory, namespace, principal);
       if (card) await this.recoverReplacementTransition(storage, memory, lock, principal, namespace);
     }
     const memories: MemoryFile[] =
@@ -794,50 +754,6 @@ export class SupportPassportCardService {
     return projected;
   }
 
-  private ownerVisibleCards(storedCards: StoredSupportPassportCard[]): StoredSupportPassportCard[] {
-    const visibleCards = storedCards.filter(
-      (item) => OWNER_VISIBLE_STATUSES.has(item.card.status) && !item.draftReplacementPrepared
-    );
-    if (visibleCards.length <= MAX_OWNER_VISIBLE_CARDS) return visibleCards;
-    const cardsWithPendingReplacements = new Set(
-      visibleCards
-        .filter((item) => item.card.status === "pending_review")
-        .map((item) => item.memory.frontmatter.supersedes)
-        .filter((cardId): cardId is string => typeof cardId === "string")
-    );
-    return visibleCards.filter(
-      (item) => item.card.status !== "active" || !cardsWithPendingReplacements.has(item.card.cardId)
-    );
-  }
-
-  private ownerListCards(storedCards: StoredSupportPassportCard[]): StoredSupportPassportCard[] {
-    const visibleCards = this.ownerVisibleCards(storedCards);
-    const byId = new Map(storedCards.map((item) => [item.card.cardId, item]));
-    const activeReplacementPredecessors = new Set(
-      visibleCards
-        .filter((item) => item.card.status === "active")
-        .map((item) => item.memory.frontmatter.supersedes)
-        .filter((cardId): cardId is string => typeof cardId === "string")
-    );
-    const replacedDraftIds = new Set(
-      visibleCards
-        .filter(
-          (item) =>
-            item.card.status === "pending_review" &&
-            item.replacesDraftId !== undefined &&
-            byId.get(item.replacesDraftId)?.card.status === "pending_review"
-        )
-        .map((item) => item.replacesDraftId as string)
-    );
-    return visibleCards.filter((item) => {
-      if (activeReplacementPredecessors.has(item.card.cardId)) return false;
-      if (replacedDraftIds.has(item.card.cardId)) return false;
-      if (!item.replacesDraftId) return true;
-      const replacedStatus = byId.get(item.replacesDraftId)?.card.status;
-      return replacedStatus === "pending_review" || replacedStatus === "rejected";
-    });
-  }
-
   private async preparePriorForReplacement(
     storage: StorageManager,
     replacement: StoredSupportPassportCard,
@@ -849,7 +765,7 @@ export class SupportPassportCardService {
     const priorId = replacement.memory.frontmatter.supersedes;
     if (!priorId) return null;
     const priorMemory = await storage.getMemoryById(priorId);
-    const priorIsOwned = priorMemory ? this.ownsMemory(priorMemory, namespace, principal) : false;
+    const priorIsOwned = priorMemory ? ownsMemory(priorMemory, namespace, principal) : false;
     const alreadyRetired =
       priorIsOwned &&
       priorMemory?.frontmatter.status === "superseded" &&
@@ -893,7 +809,7 @@ export class SupportPassportCardService {
     const priorId = replacement.memory.frontmatter.supersedes;
     if (!priorId) return;
     const priorMemory = await storage.getMemoryById(priorId);
-    const priorIsOwned = priorMemory ? this.ownsMemory(priorMemory, namespace, principal) : false;
+    const priorIsOwned = priorMemory ? ownsMemory(priorMemory, namespace, principal) : false;
     const alreadyRetired =
       priorIsOwned &&
       priorMemory?.frontmatter.status === "superseded" &&
@@ -914,7 +830,7 @@ export class SupportPassportCardService {
     options: { rollbackConflictedApproval?: boolean } = {},
     onCommitted?: () => void
   ): Promise<MemoryFile> {
-    const replacement = this.projectOwnedCard(memory, namespace, principal);
+    const replacement = projectOwnedCard(memory, namespace, principal);
     if (replacement?.card.status !== "pending_review" && replacement?.card.status !== "active") return memory;
     if (!replacement.replacesDraftId && !memory.frontmatter.supersedes) return memory;
     if (
@@ -925,7 +841,7 @@ export class SupportPassportCardService {
     }
     await this.recoverReplacedDraft(storage, replacement, lock, principal, namespace, onCommitted);
     const currentMemory = (await storage.getMemoryById(replacement.card.cardId)) ?? memory;
-    const currentCard = this.projectOwnedCard(currentMemory, namespace, principal);
+    const currentCard = projectOwnedCard(currentMemory, namespace, principal);
     if (currentCard?.card.status !== "pending_review" && currentCard?.card.status !== "active") {
       return currentMemory;
     }
@@ -935,7 +851,7 @@ export class SupportPassportCardService {
       const prior = await storage.getMemoryById(priorId);
       if (
         prior &&
-        this.ownsMemory(prior, namespace, principal) &&
+        ownsMemory(prior, namespace, principal) &&
         prior.frontmatter.status === "superseded" &&
         prior.frontmatter.supersededBy === replacement.card.cardId
       ) {
@@ -1065,7 +981,7 @@ export class SupportPassportCardService {
     const prior = await storage.getMemoryById(priorId);
     if (
       !prior ||
-      !this.ownsMemory(prior, namespace, principal) ||
+      !ownsMemory(prior, namespace, principal) ||
       prior.frontmatter.status !== "superseded" ||
       prior.frontmatter.supersededBy !== replacementId
     ) {
@@ -1093,7 +1009,7 @@ export class SupportPassportCardService {
   ): Promise<void> {
     if (!replacement.replacesDraftId) return;
     const replacedDraft = await storage.getMemoryById(replacement.replacesDraftId);
-    const projectedDraft = replacedDraft ? this.projectOwnedCard(replacedDraft, namespace, principal) : null;
+    const projectedDraft = replacedDraft ? projectOwnedCard(replacedDraft, namespace, principal) : null;
     if (
       replacedDraft &&
       projectedDraft?.card.status === "pending_review" &&
@@ -1121,7 +1037,7 @@ export class SupportPassportCardService {
     const currentDraft = await storage.getMemoryById(replacement.replacesDraftId);
     if (
       currentDraft &&
-      this.ownsMemory(currentDraft, namespace, principal) &&
+      ownsMemory(currentDraft, namespace, principal) &&
       currentDraft.frontmatter.status === "rejected"
     ) {
       await this.finishPreparedDraftReplacement(storage, replacement.card.cardId, lock, principal, namespace);
@@ -1129,7 +1045,7 @@ export class SupportPassportCardService {
     }
     if (
       currentDraft &&
-      this.ownsMemory(currentDraft, namespace, principal) &&
+      ownsMemory(currentDraft, namespace, principal) &&
       currentDraft.frontmatter.status === "pending_review"
     ) {
       throw new SupportPassportError("storage_conflict", "The replaced draft changed during recovery.", 409);
@@ -1157,7 +1073,7 @@ export class SupportPassportCardService {
     );
     if (finished) {
       onCommitted?.();
-      return this.projectRequiredCard(
+      return projectRequiredCard(
         { ...replacement.memory, frontmatter: { ...replacement.memory.frontmatter, structuredAttributes } },
         namespace,
         principal
@@ -1178,7 +1094,7 @@ export class SupportPassportCardService {
   ): Promise<void> {
     const currentReplacement = await this.requireCard(storage, replacementId, namespace, principal);
     if (currentReplacement.card.status === "rejected") return;
-    this.requireStatus(currentReplacement, "pending_review");
+    requireStatus(currentReplacement, "pending_review");
     await this.requireOwnerLock(lock);
     const rejected = await storage.writeMemoryFrontmatterIfUnchanged(
       currentReplacement.memory,
@@ -1212,12 +1128,12 @@ export class SupportPassportCardService {
     onCommitted?: () => void
   ): Promise<void> {
     const replacement = await storage.getMemoryById(replacementId);
-    if (replacement && !this.ownsMemory(replacement, namespace, principal)) {
+    if (replacement && !ownsMemory(replacement, namespace, principal)) {
       throw new SupportPassportError("storage_conflict", "The replacement support card changed ownership.", 409);
     }
     if (replacement?.frontmatter.status === "active") return;
     const prior = await storage.getMemoryById(priorId);
-    if (prior && !this.ownsMemory(prior, namespace, principal)) {
+    if (prior && !ownsMemory(prior, namespace, principal)) {
       throw new SupportPassportError("storage_conflict", "The prior support card changed ownership.", 409);
     }
     if (prior?.frontmatter.status === "active" && prior.frontmatter.supersededBy === undefined) return;
