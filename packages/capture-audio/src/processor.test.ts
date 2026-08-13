@@ -1458,3 +1458,48 @@ test("a conflicting retranscription appends nothing", async () => {
     spool.close();
   }
 });
+
+test("a chunk retained for replay keeps its conversation resumable", async () => {
+  // Both retain paths — a silent replay over a durable prefix, and a manifest
+  // conflict — must hold the conversation open. Once `finalize()` flips it to
+  // `final`, a matching replay cannot `resume` it and the missing tail lands
+  // in a new conversation, out of reach of cross-channel dedup (issue #2145).
+  for (const mode of ["silent", "conflict"] as const) {
+    const spool = new Spool(":memory:");
+    try {
+      const ev = chunk();
+      const cid = chunkStableId(ev);
+      const segs = [
+        { text: "A", startUtc: t(1), endUtc: t(2) },
+        { text: "B", startUtc: t(40), endUtc: t(41) },
+      ];
+      // A first run persisted a prefix under a capturing conversation and
+      // recorded its manifest, then died.
+      spool.markApplied(transcriptManifestKey(cid), transcriptManifestHash(cid, segs));
+      spool.appendAssembledSegments({
+        idempotencyKey: segmentStableKey(cid, segs[0]),
+        chunkId: cid,
+        conversationId: "conv_prefix",
+        startedAtUtc: t(1),
+        state: "capturing",
+        segments: [{ channel: "mic", text: "A", startUtc: t(1), endUtc: t(2), isWearer: true }],
+      });
+
+      const proc = createChunkProcessor(
+        deps(spool, {
+          onError: () => undefined,
+          transcribe: async () => (mode === "silent" ? [] : [{ text: "X", startUtc: t(1), endUtc: t(2) }]),
+        }),
+      );
+      proc.enqueue(ev);
+      await proc.finalize();
+      assert.deepEqual(
+        [...spool.capturingConversationIds()],
+        ["conv_prefix"],
+        `the ${mode} replay left the durable prefix resumable`,
+      );
+    } finally {
+      spool.close();
+    }
+  }
+});

@@ -557,8 +557,14 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       // to match, so a silent replay must not be the first to record one.
       const fullyProcessed =
         entry.built.length > 0 ? manifestMatches : !deps.spool.hasAppliedChunkPrefix(`${entry.chunkId}:`);
-      if (entry.built.length > 0 && !manifestMatches) {
+      // Anything kept for a later replay must ALSO hold its conversation open:
+      // once `finalize()` flips a conversation to `final`, a replay that
+      // reproduces the manifest can no longer `resume` it and the missing tail
+      // lands in a new conversation, out of reach of cross-channel dedup.
+      if (!fullyProcessed) {
         retainedForReplay = true;
+      }
+      if (entry.built.length > 0 && !manifestMatches) {
         log.warn(
           `[capture-audio] chunk ${entry.chunkId} retranscribed to a different transcript than an earlier run; keeping its raw audio for replay`,
         );
@@ -645,6 +651,9 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
         if (manifest === "conflict") {
           buffer.splice(i, 1);
           bufferedIds.delete(candidate.chunkId);
+          // The chunk keeps its audio for a matching replay, so its durable
+          // prefix must stay resumable — do not let the sweep close it.
+          retainedForReplay = true;
           report(
             new Error(
               `transcript for chunk ${candidate.chunkId} does not match the recorded manifest; raw audio retained`,
