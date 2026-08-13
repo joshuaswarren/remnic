@@ -79,7 +79,6 @@ export interface AccessHttpReadinessState {
    */
   degraded?: boolean;
 }
-
 export interface EngramAccessHttpServerOptions {
   service: EngramAccessService;
   host?: string;
