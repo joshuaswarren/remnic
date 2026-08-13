@@ -1631,7 +1631,7 @@ test("a stalled helper question aborts and restores its action", async ({ page }
   await button.click();
   await expect(page.getByRole("button", { name: "Checking shared cards…" })).toBeDisabled();
   await expect(page.getByLabel("Your question")).toBeDisabled();
-  await page.clock.fastForward(60_000);
+  await page.clock.fastForward(15 * 60_000);
 
   await expect
     .poll(() =>
