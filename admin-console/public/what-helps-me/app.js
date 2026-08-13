@@ -51,6 +51,8 @@
     helperRevalidationTimer: null,
     helperRevalidationDelayMs: HELPER_REVALIDATION_MS,
     helperLifecyclePaused: false,
+    shareCreationPending: false,
+    shareCreationCardIds: null,
     toastTimer: null,
   };
 
@@ -391,6 +393,7 @@
       input.name = "shareCard";
       input.value = card.cardId;
       input.dataset.revision = card.revision;
+      input.checked = state.shareCreationCardIds?.has(card.cardId) ?? false;
       input.addEventListener("change", updateShareCardChoices);
       const copy = element("span");
       copy.append(element("strong", "", card.title), element("small", "", card.statement));
@@ -402,8 +405,21 @@
 
   function updateShareCardChoices() {
     const choices = [...document.querySelectorAll('input[name="shareCard"]')];
+    if (state.shareCreationPending) {
+      for (const input of choices) input.disabled = true;
+      return;
+    }
     const selectedCount = choices.filter((input) => input.checked).length;
     for (const input of choices) input.disabled = !input.checked && selectedCount >= MAX_SHARED_CARDS;
+  }
+
+  function setShareCreationPending(pending, selectedInputs = []) {
+    state.shareCreationPending = pending;
+    state.shareCreationCardIds = pending ? new Set(selectedInputs.map((input) => input.value)) : null;
+    for (const input of document.querySelectorAll('input[name="duration"], #customTimeInput')) {
+      input.disabled = pending;
+    }
+    updateShareCardChoices();
   }
 
   function delay(milliseconds) {
@@ -641,47 +657,54 @@
       byId("consentInput").focus();
       return;
     }
+    const button = byId("generateButton");
+    const priorLabel = button.textContent;
+    button.disabled = true;
+    button.textContent = "Drafting cards…";
     try {
-      await withBusy(byId("generateButton"), "Drafting cards…", () =>
-        api.generateDrafts({
+      try {
+        await api.generateDrafts({
           sourceMemoryIds: state.selectedNotes.map((note) => note.memoryId),
           sourceMemoryRevisions: state.selectedNotes.map((note) => ({
             memoryId: note.memoryId,
             revision: note.revision,
           })),
           consent: true,
-        })
-      );
-    } catch (error) {
-      if (error?.code !== "request_timeout") {
-        setError("generateError", errorMessage(error, "The configured model did not return valid drafts."));
+        });
+      } catch (error) {
+        if (error?.code !== "request_timeout") {
+          setError("generateError", errorMessage(error, "The configured model did not return valid drafts."));
+          return;
+        }
+        byId("consentInput").checked = false;
+        let refreshed = false;
+        try {
+          await loadOwnerState();
+          refreshed = true;
+        } catch {}
+        setError(
+          "generateError",
+          refreshed
+            ? "Drafting timed out. Review the current guide before deciding whether to draft again."
+            : "Drafting timed out. Refresh the guide before deciding whether to draft again."
+        );
         return;
       }
       byId("consentInput").checked = false;
-      let refreshed = false;
+      const message = "Drafts ready. Review each card before approval.";
+      toast(message);
+      announce(message);
       try {
         await loadOwnerState();
-        refreshed = true;
-      } catch {}
-      setError(
-        "generateError",
-        refreshed
-          ? "Drafting timed out. Review the current guide before deciding whether to draft again."
-          : "Drafting timed out. Refresh the guide before deciding whether to draft again."
-      );
-      return;
-    }
-    byId("consentInput").checked = false;
-    const message = "Drafts ready. Review each card before approval.";
-    toast(message);
-    announce(message);
-    try {
-      await loadOwnerState();
-      byId("reviewCards").scrollIntoView({ behavior: SCROLL_BEHAVIOR, block: "start" });
-    } catch {
-      const warning = `${message} The card list did not refresh. Refresh the guide before another change.`;
-      setError("generateError", warning);
-      announce(warning);
+        byId("reviewCards").scrollIntoView({ behavior: SCROLL_BEHAVIOR, block: "start" });
+      } catch {
+        const warning = `${message} The card list did not refresh. Refresh the guide before another change.`;
+        setError("generateError", warning);
+        announce(warning);
+      }
+    } finally {
+      button.disabled = false;
+      button.textContent = priorLabel;
     }
   }
 
@@ -719,6 +742,8 @@
     }
     const button = event.currentTarget.querySelector('button[type="submit"]');
     const priorLabel = button.textContent;
+    let clearSelection = false;
+    setShareCreationPending(true, selectedInputs);
     button.disabled = true;
     button.textContent = "Creating link…";
     try {
@@ -744,6 +769,7 @@
         return;
       }
       const url = model.buildShareUrl(window.location.href, created.grantId, created.secret, replayMode);
+      clearSelection = true;
       byId("shareLinkInput").value = url;
       byId("openLinkButton").href = url;
       byId("newLinkPanel").hidden = false;
@@ -757,6 +783,11 @@
         setError("shareError", "The share link was created, but the share list did not refresh. Use the link above.");
       }
     } finally {
+      setShareCreationPending(false);
+      if (clearSelection) {
+        for (const input of document.querySelectorAll('input[name="shareCard"]')) input.checked = false;
+        updateShareCardChoices();
+      }
       button.disabled = false;
       button.textContent = priorLabel;
     }
