@@ -44,7 +44,8 @@ export abstract class SupportPassportAccessHttpBase {
     req: IncomingMessage,
     res: ServerResponse,
     pathname: string,
-    relativePath?: string
+    relativePath?: string,
+    allowPrefill?: boolean,
   ): Promise<void>;
   protected abstract respondStatic(res: ServerResponse, filePath: string, contentType: string): Promise<void>;
 
@@ -124,7 +125,8 @@ export abstract class SupportPassportAccessHttpBase {
       return true;
     }
     if (pathname === "/remnic/ui/what-helps-me/" || pathname === "/engram/ui/what-helps-me/") {
-      await this.respondAdminConsoleShell(req, res, pathname, "what-helps-me/index.html");
+      const helperRequest = new URL(req.url ?? pathname, "http://placeholder").searchParams.has("grant");
+      await this.respondAdminConsoleShell(req, res, pathname, "what-helps-me/index.html", !helperRequest);
       return true;
     }
     const fileName = pathname.split("/").at(-1) ?? "";

@@ -74,6 +74,12 @@ test("What Helps Me serves both aliases from one exact feature-gated allow-list"
         assert.match(authorizedShellText, /Object\.defineProperty\(window,key/);
         assert.match(authorizedShellText, /\}\)\("owner-token",document\.currentScript\)/);
 
+        const helperShell = await fetch(`${origin}/${prefix}/ui/what-helps-me/?grant=grant-one`, {
+          headers: { authorization: "Bearer owner-token" },
+        });
+        assert.equal(helperShell.status, 200);
+        assert.doesNotMatch(await helperShell.text(), /__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__|owner-token/);
+
         const expectedAssets = new Map([
           ["what-helps-me.css", /^text\/css/],
           ["model.js", /^application\/javascript/],
@@ -158,6 +164,12 @@ test("What Helps Me assets stay hidden while support passport is disabled", asyn
 test("What Helps Me disables the browser cache for credentialed API requests", async () => {
   const source = await readFile(path.join(adminConsolePublicDir, "what-helps-me", "app.js"), "utf8");
   assert.match(source, /fetch\(path, \{[\s\S]*?cache: "no-store"/);
+});
+
+test("What Helps Me clears any prefill getter before helper initialization", async () => {
+  const source = await readFile(path.join(adminConsolePublicDir, "what-helps-me", "app.js"), "utf8");
+  assert.match(source, /if \(grantId \|\| hasSecretFragment\) \{\s+clearPrefillToken\(\);/);
+  assert.match(source, /delete window\.__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__/);
 });
 
 test("What Helps Me wordmark does not depend on the optional admin console", async () => {
