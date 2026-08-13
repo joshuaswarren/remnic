@@ -43,7 +43,8 @@ export function computeSupportPassportOwnerKey(principal: string): string {
   return createHash("sha256").update(principal).digest("hex");
 }
 
-function parseSourceMemoryIds(value: string): string[] | null {
+function parseSourceMemoryIds(value: string | undefined): string[] | null {
+  if (value === undefined) return null;
   if (value === "") return [];
   const rawIds = value.split(",");
   if (rawIds.length > 5) return null;
@@ -57,7 +58,18 @@ function parseSourceMemoryIds(value: string): string[] | null {
   return normalized;
 }
 
-export function projectSupportPassportCard(memory: MemoryFile): StoredSupportPassportCard | null {
+interface SupportPassportCardMetadata {
+  fields: Omit<SupportPassportCard, "revision" | "statement">;
+  order: number;
+  sourceMemoryIds: string[];
+  namespace: string;
+  owner: string;
+  replacesDraftId?: string;
+  replacedRevision?: string;
+  draftReplacementPrepared: boolean;
+}
+
+function parseSupportPassportCardMetadata(memory: Pick<MemoryFile, "frontmatter">): SupportPassportCardMetadata | null {
   const frontmatter = memory.frontmatter;
   const attributes = frontmatter.structuredAttributes;
   if (frontmatter.category !== "preference") return null;
@@ -66,9 +78,9 @@ export function projectSupportPassportCard(memory: MemoryFile): StoredSupportPas
 
   const category = SupportPassportCardCategorySchema.safeParse(attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.category]);
   const status = SupportPassportCardStatusSchema.safeParse(frontmatter.status);
-  const rawOrder = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.order] ?? "";
+  const rawOrder = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.order];
   const order = Number(rawOrder);
-  const sourceMemoryIds = parseSourceMemoryIds(attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.sourceMemoryIds] ?? "");
+  const sourceMemoryIds = parseSourceMemoryIds(attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.sourceMemoryIds]);
   const namespace = SupportPassportNamespaceSchema.safeParse(attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.namespace]);
   const owner = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.owner];
   let replacesDraftId: string | undefined;
@@ -88,6 +100,7 @@ export function projectSupportPassportCard(memory: MemoryFile): StoredSupportPas
     !category.success ||
     !status.success ||
     status.data === "superseded" ||
+    typeof rawOrder !== "string" ||
     !/^(?:0|[1-9]\d*)$/.test(rawOrder) ||
     !Number.isSafeInteger(order) ||
     !namespace.success ||
@@ -96,15 +109,39 @@ export function projectSupportPassportCard(memory: MemoryFile): StoredSupportPas
     !sourceMemoryIds
   )
     return null;
-
-  const fields = {
+  const fields = SupportPassportCardSchema.omit({ revision: true, statement: true }).safeParse({
     cardId: frontmatter.id,
-    title: attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.title] ?? "",
-    statement: stripAttributesSuffix(memory.content),
+    title: attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.title],
     category: category.data,
     status: status.data,
     updatedAt: frontmatter.updated,
-    reviewBy: attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.reviewBy] ?? "",
+    reviewBy: attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.reviewBy],
+  });
+  if (!fields.success) return null;
+  return {
+    fields: fields.data,
+    order,
+    sourceMemoryIds,
+    namespace: namespace.data,
+    owner,
+    replacesDraftId,
+    replacedRevision,
+    draftReplacementPrepared: attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.draftReplacementPrepared] === "true",
+  };
+}
+
+export function hasLiveSupportPassportCardMetadata(memory: Pick<MemoryFile, "frontmatter">): boolean {
+  const metadata = parseSupportPassportCardMetadata(memory);
+  return metadata?.fields.status === "active" || metadata?.fields.status === "pending_review";
+}
+
+export function projectSupportPassportCard(memory: MemoryFile): StoredSupportPassportCard | null {
+  const metadata = parseSupportPassportCardMetadata(memory);
+  if (!metadata) return null;
+
+  const fields = {
+    ...metadata.fields,
+    statement: stripAttributesSuffix(memory.content),
   };
   const normalized = SupportPassportCardSchema.omit({ revision: true }).safeParse(fields);
   if (!normalized.success) return null;
@@ -116,12 +153,12 @@ export function projectSupportPassportCard(memory: MemoryFile): StoredSupportPas
   return {
     card: parsed.data,
     memory,
-    order,
-    sourceMemoryIds,
-    namespace: namespace.data,
-    owner,
-    replacesDraftId,
-    replacedRevision,
-    draftReplacementPrepared: attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.draftReplacementPrepared] === "true",
+    order: metadata.order,
+    sourceMemoryIds: metadata.sourceMemoryIds,
+    namespace: metadata.namespace,
+    owner: metadata.owner,
+    replacesDraftId: metadata.replacesDraftId,
+    replacedRevision: metadata.replacedRevision,
+    draftReplacementPrepared: metadata.draftReplacementPrepared,
   };
 }

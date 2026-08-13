@@ -8,6 +8,7 @@ import { StorageManager } from "../storage.js";
 import { projectSupportPassportCard } from "./card-projection.js";
 import { SupportPassportCardService } from "./card-service.js";
 import { SupportPassportError } from "./errors.js";
+import { supportPassportOwnerLockPath } from "./owner-lock.js";
 
 const OWNER_REVIEW_BY = "2026-09-01T12:00:00.000Z";
 
@@ -191,6 +192,10 @@ test("manual support cards stay private until their owner approves them", async 
 test("card reads and mutations stay inside the resolved namespace on shared storage", async () => {
   const subject = await makeSharedStorageSubject();
   try {
+    assert.notEqual(
+      supportPassportOwnerLockPath(subject.storage, { namespace: "alice", principal: "owner:alice" }),
+      supportPassportOwnerLockPath(subject.storage, { namespace: "bob", principal: "owner:bob" })
+    );
     const aliceDraft = await subject.service.createManualDraft({
       principal: "owner:alice",
       title: "Alice card",
@@ -2152,7 +2157,13 @@ test("draft creation aborts when the owner lock is lost before its write", async
       const memories = await readAllMemories();
       if (!removedLock) {
         removedLock = true;
-        await rm(path.join(subject.aliceStorage.dir, "state", "support-passport-cards.lock"), { force: true });
+        await rm(
+          supportPassportOwnerLockPath(subject.aliceStorage, {
+            namespace: "alice",
+            principal: "owner:alice",
+          }),
+          { force: true }
+        );
       }
       return memories;
     };

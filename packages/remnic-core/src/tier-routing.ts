@@ -1,6 +1,5 @@
 import { type LifecycleSignals, clamp01, computeLifecycleValueInputs, daysSince } from "./lifecycle.js";
-import { SUPPORT_PASSPORT_ATTRIBUTE_KEYS, SUPPORT_PASSPORT_CARD_TAG } from "./support-passport/card-projection.js";
-import { SupportPassportCardCategorySchema, SupportPassportNamespaceSchema } from "./support-passport/contracts.js";
+import { hasLiveSupportPassportCardMetadata } from "./support-passport/card-projection.js";
 import type { MemoryFile } from "./types.js";
 
 export type MemoryTier = "hot" | "cold";
@@ -21,27 +20,7 @@ export interface TierTransitionDecision {
 }
 
 function requiresHotTier(memory: Pick<MemoryFile, "frontmatter">): boolean {
-  const { category, status, structuredAttributes, tags } = memory.frontmatter;
-  if (
-    category !== "preference" ||
-    (status !== "active" && status !== "pending_review") ||
-    tags?.includes(SUPPORT_PASSPORT_CARD_TAG) !== true ||
-    !structuredAttributes
-  ) {
-    return false;
-  }
-  const namespace = structuredAttributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.namespace];
-  const owner = structuredAttributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.owner];
-  const title = structuredAttributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.title];
-  const cardCategory = structuredAttributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.category];
-  return (
-    SupportPassportNamespaceSchema.safeParse(namespace).success &&
-    typeof owner === "string" &&
-    /^[a-f0-9]{64}$/.test(owner) &&
-    typeof title === "string" &&
-    title.length > 0 &&
-    SupportPassportCardCategorySchema.safeParse(cardCategory).success
-  );
+  return hasLiveSupportPassportCardMetadata(memory);
 }
 
 export function computeTierValueScore(
