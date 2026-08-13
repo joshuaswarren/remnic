@@ -4,6 +4,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
@@ -164,11 +165,13 @@ function resolveInputConfig(options) {
   }
 }
 
-async function requestJson(url, init, expectedStatus, label, timeoutMs = 45_000) {
+async function requestJson(url, init, expectedStatus, label, timeoutMs = 45_000, signal) {
   let response;
   try {
-    response = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
-  } catch {
+    const timeoutSignal = AbortSignal.timeout(timeoutMs);
+    response = await fetch(url, { ...init, signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal });
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason;
     throw new DemoFailure(`${label} ended before an HTTP response.`);
   }
   const rawBody = await response.text();
@@ -190,17 +193,20 @@ async function requestJson(url, init, expectedStatus, label, timeoutMs = 45_000)
   };
 }
 
-async function waitForReady(baseUrl, authToken) {
+async function waitForReady(baseUrl, authToken, signal) {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
+    signal.throwIfAborted();
     try {
       const response = await fetch(`${baseUrl}/engram/v1/health`, {
         headers: { authorization: `Bearer ${authToken}` },
-        signal: AbortSignal.timeout(1_000),
+        signal: AbortSignal.any([signal, AbortSignal.timeout(1_000)]),
       });
       if (response.status === 200) return;
-    } catch {}
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    } catch {
+      signal.throwIfAborted();
+    }
+    await delay(100, undefined, { signal });
   }
   throw new DemoFailure("The fresh Remnic server did not become ready.");
 }
@@ -294,7 +300,7 @@ function assertNoPrivateReceiptData(receipt, values) {
   }
 }
 
-async function runReserved(options, reservation) {
+async function runReserved(options, reservation, signal) {
   const { receiptPath } = reservation;
   const sourceMemories = await readJson(
     path.join(repoRoot, "fixtures/support-passport/source-memories.json"),
@@ -316,6 +322,7 @@ async function runReserved(options, reservation) {
   let runError;
 
   try {
+    signal.throwIfAborted();
     const demoRuntime = prepareDemoRuntime(sourceConfig.remnic, memoryDir, resolveEnvVars);
     restoreDemoEnvironment = demoRuntime.restoreEnvironment;
     process.env.REMNIC_MEMORY_DIR = memoryDir;
@@ -340,7 +347,7 @@ async function runReserved(options, reservation) {
       resolveSupportPassportModelRoutePlan(server.config),
       server.config.localLlmTimeoutMs
     );
-    await waitForReady(baseUrl, authToken);
+    await waitForReady(baseUrl, authToken, signal);
 
     console.log("[1/9] Started a fresh loopback Remnic server.");
     const sourceMemoryIds = [];
@@ -361,7 +368,9 @@ async function runReserved(options, reservation) {
           }),
         },
         201,
-        "Fixture import"
+        "Fixture import",
+        45_000,
+        signal
       );
       const memoryId = parseBody(MemoryStoreResponseSchema, imported, "Fixture import").memoryId;
       sourceMemoryIds.push(memoryId);
@@ -369,7 +378,9 @@ async function runReserved(options, reservation) {
         `${baseUrl}/engram/v1/support-passport/memories/${encodeURIComponent(memoryId)}`,
         { method: "GET", headers },
         200,
-        "Memory preview"
+        "Memory preview",
+        45_000,
+        signal
       );
       const preview = parseBody(MemoryPreviewResponseSchema, previewRequest, "Memory preview").memory;
       if (preview.id !== memoryId || preview.content !== memory.content) {
@@ -388,7 +399,8 @@ async function runReserved(options, reservation) {
       },
       200,
       "Model draft",
-      modelTimeoutMs
+      modelTimeoutMs,
+      signal
     );
     const drafted = parseBody(DraftResponseSchema, draftedRequest, "Model draft");
     if (drafted.cards.some((card) => card.status !== "pending_review")) {
@@ -407,7 +419,9 @@ async function runReserved(options, reservation) {
         body: JSON.stringify({ ...expectedCard, reviewBy, expectedRevision: firstDraft.revision }),
       },
       200,
-      "Owner edit"
+      "Owner edit",
+      45_000,
+      signal
     );
     const edited = parseBody(CardResponseSchema, editedRequest, "Owner edit").card;
     if (edited.status !== "pending_review" || edited.revision === firstDraft.revision) {
@@ -422,7 +436,9 @@ async function runReserved(options, reservation) {
         body: JSON.stringify({ expectedRevision: edited.revision, reasonCode: "owner-approved" }),
       },
       200,
-      "Owner approval"
+      "Owner approval",
+      45_000,
+      signal
     );
     const approved = parseBody(CardResponseSchema, approvedRequest, "Owner approval").card;
     if (approved.status !== "active" || approved.revision === edited.revision) {
@@ -445,7 +461,9 @@ async function runReserved(options, reservation) {
         }),
       },
       200,
-      "Share link creation"
+      "Share link creation",
+      45_000,
+      signal
     );
     const grant = parseBody(GrantResponseSchema, grantRequest, "Share link creation");
     console.log("[5/9] Created a share link that covers the configured model budget.");
@@ -455,7 +473,9 @@ async function runReserved(options, reservation) {
       publicUrl,
       { method: "GET", headers: helperHeaders(grant.secret) },
       200,
-      "Helper read"
+      "Helper read",
+      45_000,
+      signal
     );
     assertPrivateHelperResponse(helperReadRequest.response, "Helper read");
     const guide = parseBody(SupportPassportPublicGuideSchema, helperReadRequest, "Helper read");
@@ -479,7 +499,8 @@ async function runReserved(options, reservation) {
       },
       200,
       "Helper question",
-      modelTimeoutMs
+      modelTimeoutMs,
+      signal
     );
     assertPrivateHelperResponse(helperAskRequest.response, "Helper question");
     const answer = parseBody(SupportPassportAnswerOutputSchema, helperAskRequest, "Helper question");
@@ -500,7 +521,9 @@ async function runReserved(options, reservation) {
         body: JSON.stringify({ expectedVersion: grant.version }),
       },
       200,
-      "Stop sharing"
+      "Stop sharing",
+      45_000,
+      signal
     );
     const revoked = parseBody(RevokeResponseSchema, revokeRequest, "Stop sharing");
     console.log("[8/9] Stopped sharing as the owner.");
@@ -509,7 +532,9 @@ async function runReserved(options, reservation) {
       publicUrl,
       { method: "GET", headers: helperHeaders(grant.secret) },
       410,
-      "Denied helper read"
+      "Denied helper read",
+      45_000,
+      signal
     );
     assertPrivateHelperResponse(deniedReadRequest.response, "Denied helper read");
     if (
@@ -531,6 +556,7 @@ async function runReserved(options, reservation) {
     }
     console.log("[9/9] Confirmed the stopped link returns 410 with no card content.");
 
+    signal.throwIfAborted();
     const audits = await waitForResult(() => readSuccessfulModelAudits(memoryDir));
     const responses = {
       draft: draftedRequest.receiptEntry,
@@ -599,7 +625,7 @@ async function runReserved(options, reservation) {
 
 async function run(options) {
   const outputDir = path.resolve(expandTildePath(options.output));
-  await runWithReservedOutput(outputDir, (reservation) => runReserved(options, reservation));
+  await runWithReservedOutput(outputDir, (reservation, signal) => runReserved(options, reservation, signal));
 }
 
 async function main() {

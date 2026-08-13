@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -123,6 +124,11 @@ test("the demo isolates ambient direct-model credentials from selected routes", 
   assert.ok(DEMO_ENVIRONMENT_KEYS.includes("OPENAI_BASE_URL"));
   assert.ok(DEMO_ENVIRONMENT_KEYS.includes("REMNIC_WRITE_RATE_LIMIT_MAX_REQUESTS"));
   assert.ok(DEMO_ENVIRONMENT_KEYS.includes("ENGRAM_WRITE_RATE_LIMIT_WINDOW_MS"));
+  assert.ok(DEMO_ENVIRONMENT_KEYS.includes("REMNIC_ADMIN_CONSOLE_ENABLED"));
+  assert.ok(DEMO_ENVIRONMENT_KEYS.includes("ENGRAM_ADMIN_CONSOLE_ENABLED"));
+  assert.ok(DEMO_ENVIRONMENT_KEYS.includes("REMNIC_READY_OVERRIDE"));
+  assert.ok(DEMO_ENVIRONMENT_KEYS.includes("REMNIC_OAUTH_ENABLED"));
+  assert.equal(new Set(DEMO_ENVIRONMENT_KEYS).size, DEMO_ENVIRONMENT_KEYS.length);
 });
 
 test("the demo resolves selected direct-model placeholders before environment isolation", () => {
@@ -219,6 +225,30 @@ test("runWithReservedOutput removes nested directories created for a failed run"
   );
 
   await assert.rejects(access(path.join(root, "new")), { code: "ENOENT" });
+});
+
+test("runWithReservedOutput aborts work and releases its receipt after a signal", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-live-demo-signal-"));
+  t.after(async () => rm(root, { recursive: true, force: true }));
+  const outputDir = path.join(root, "output");
+  const signals = new EventEmitter();
+  const started = Promise.withResolvers();
+
+  const running = runWithReservedOutput(
+    outputDir,
+    async (_reservation, signal) => {
+      started.resolve();
+      await new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+    },
+    signals
+  );
+  await started.promise;
+  signals.emit("SIGTERM");
+
+  await assert.rejects(running, /stopped by SIGTERM/);
+  await assert.rejects(access(path.join(outputDir, "receipt.json")), { code: "ENOENT" });
+  assert.equal(signals.listenerCount("SIGINT"), 0);
+  assert.equal(signals.listenerCount("SIGTERM"), 0);
 });
 
 test("an invalid output destination prevents every model invocation", async (t) => {

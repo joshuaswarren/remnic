@@ -7,12 +7,36 @@ const MODEL_HTTP_MARGIN_MS = 15_000;
 export const DEMO_ENVIRONMENT_KEYS = [
   "OPENAI_API_KEY",
   "OPENAI_BASE_URL",
+  "REMNIC_CONFIG_PATH",
+  "ENGRAM_CONFIG_PATH",
   "REMNIC_MEMORY_DIR",
   "ENGRAM_MEMORY_DIR",
+  "REMNIC_PORT",
+  "ENGRAM_PORT",
+  "REMNIC_HOST",
+  "ENGRAM_HOST",
+  "REMNIC_AUTH_TOKEN",
+  "ENGRAM_AUTH_TOKEN",
+  "REMNIC_ADMIN_CONSOLE_ENABLED",
+  "ENGRAM_ADMIN_CONSOLE_ENABLED",
+  "REMNIC_ADMIN_CONSOLE_PUBLIC_DIR",
+  "ENGRAM_ADMIN_CONSOLE_PUBLIC_DIR",
+  "REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN",
+  "ENGRAM_ADMIN_CONSOLE_PREFILL_TOKEN",
+  "REMNIC_READY_OVERRIDE",
+  "REMNIC_READY_DEGRADED_AFTER_ATTEMPTS",
+  "ENGRAM_READY_DEGRADED_AFTER_ATTEMPTS",
   "REMNIC_WRITE_RATE_LIMIT_MAX_REQUESTS",
   "ENGRAM_WRITE_RATE_LIMIT_MAX_REQUESTS",
   "REMNIC_WRITE_RATE_LIMIT_WINDOW_MS",
   "ENGRAM_WRITE_RATE_LIMIT_WINDOW_MS",
+  "REMNIC_OAUTH_ENABLED",
+  "REMNIC_OAUTH_ISSUER_URL",
+  "REMNIC_OAUTH_CLIENT_ID",
+  "REMNIC_OAUTH_CLIENT_SECRET",
+  "REMNIC_OAUTH_TOKEN_AUTH_METHOD",
+  "REMNIC_OAUTH_REDIRECT_URIS",
+  "REMNIC_OAUTH_APPROVAL_TTL_SECONDS",
 ];
 const DEMO_MODEL_CONFIG_KEYS = [
   "openaiApiKey",
@@ -182,16 +206,34 @@ async function reserveOutput(outputDir) {
   };
 }
 
-export async function runWithReservedOutput(outputDir, task) {
+export async function runWithReservedOutput(outputDir, task, signalSource = process) {
   const reservation = await reserveOutput(outputDir);
+  const controller = new AbortController();
+  let interruptedBy;
+  const onSignal = (signal) => {
+    if (interruptedBy) return;
+    interruptedBy = signal;
+    controller.abort(Object.assign(new Error(`Live demo stopped by ${signal}.`), { signal }));
+  };
+  const onInterrupt = () => onSignal("SIGINT");
+  const onTerminate = () => onSignal("SIGTERM");
+  signalSource.once("SIGINT", onInterrupt);
+  signalSource.once("SIGTERM", onTerminate);
   let taskFailed = false;
   let taskError;
   let result;
   try {
-    result = await task(reservation);
+    result = await task(reservation, controller.signal);
   } catch (error) {
     taskFailed = true;
     taskError = error;
+  } finally {
+    signalSource.off("SIGINT", onInterrupt);
+    signalSource.off("SIGTERM", onTerminate);
+  }
+  if (interruptedBy && !taskFailed) {
+    taskFailed = true;
+    taskError = controller.signal.reason;
   }
   let cleanupError;
   try {
