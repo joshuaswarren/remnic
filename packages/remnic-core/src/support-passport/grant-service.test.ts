@@ -1839,6 +1839,38 @@ test("a changed card makes the whole grant stale without a partial guide", async
   }
 });
 
+test("a peer storage withdrawal invalidates a cached helper guide snapshot", async () => {
+  const subject = await makeSubject();
+  try {
+    const card = await createActiveCard(subject);
+    const created = await subject.grantService.createGrant({
+      principal: "owner:alice",
+      cards: [{ cardId: card.cardId, revision: card.revision }],
+      expiresAt: expiryAfter(subject, 3_600_000),
+    });
+    await subject.grantService.readGrant({ grantId: created.grant.grantId, secret: created.secret });
+
+    const peerStorage = new StorageManager(subject.aliceStorage.dir);
+    await peerStorage.ensureDirectories();
+    const peerCards = new SupportPassportCardService({
+      resolveOwner: async (principal) => ({ principal, namespace: "alice", storage: peerStorage }),
+      now: subject.now,
+    });
+    await peerCards.withdrawCard({
+      principal: "owner:alice",
+      cardId: card.cardId,
+      expectedRevision: card.revision,
+    });
+
+    await assert.rejects(
+      subject.grantService.readGrant({ grantId: created.grant.grantId, secret: created.secret }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "grant_stale"
+    );
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("unrelated memory writes do not invalidate an unchanged shared guide", async () => {
   const subject = await makeSubject();
   try {

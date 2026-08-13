@@ -89,6 +89,14 @@ function grantNotFound(): SupportPassportError {
   return new SupportPassportError("grant_not_found", "The share link was not found.", 404);
 }
 
+function notifyCommitted(callback: (() => void) | undefined): void {
+  try {
+    callback?.();
+  } catch (error) {
+    log.warn(`support passport commit notification failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 function normalizeGrantId(grantId: unknown): string {
   if (typeof grantId !== "string" || !UUID_INPUT.test(grantId)) throw grantNotFound();
   return grantId.toLowerCase();
@@ -221,7 +229,7 @@ export class SupportPassportGrantStore {
           throw error;
         }
       }
-      mutationHooks.onCommitted?.();
+      notifyCommitted(mutationHooks.onCommitted);
       return { state, secret };
     });
     const ownerHash = this.ownerHash(committed.state.namespace, committed.state.principalHash);
@@ -379,7 +387,7 @@ export class SupportPassportGrantStore {
         if (!persisted || !sameGrantState(persisted, revoked)) throw error;
         await this.syncDirectory(this.grantsDir);
       }
-      mutationHooks.onCommitted?.();
+      notifyCommitted(mutationHooks.onCommitted);
       return revoked;
     });
   }
