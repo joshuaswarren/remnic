@@ -314,12 +314,8 @@ export async function recoverSupportPassportGeneratedBatches(
   }
   for (const [batchId, cards] of cardsByBatch) {
     const marker = await readBatchMarker(context.storage, batchId);
-    const committed =
-      marker?.complete === true &&
-      sameOwner(marker, context) &&
-      cards.length === marker.size &&
-      cards.every((card) => card.generatedBatchSize === marker.size);
-    if (committed) continue;
+    if (marker?.complete === true && sameOwner(marker, context)) continue;
+    if (!marker && cards.length > 0 && cards.every((card) => card.card.status === "rejected")) continue;
     if (
       !(await rollbackSupportPassportGeneratedBatch(
         context,
