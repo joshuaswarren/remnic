@@ -56,7 +56,7 @@ const OPENCLAW_MANIFEST_PATHS = [
   "packages/plugin-openclaw/openclaw.plugin.json",
   "packages/shim-openclaw-engram/openclaw.plugin.json",
 ];
-// June 26, 2026 rolling 60-day policy floor: April 27, 2026. Keep the package
+// August 12, 2026 rolling 60-day policy floor: June 13, 2026. Keep the package
 // floor at >=2026.4.1 because it is more permissive than the required window.
 const OPENCLAW_SUPPORT_FLOOR_RANGE = ">=2026.4.1";
 const OPENCLAW_MIN_HOST_VERSION_FLOOR = ">=2026.4.1";
