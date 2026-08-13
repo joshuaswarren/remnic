@@ -175,10 +175,17 @@ Two manifests executed under this registration:
    into the timing-only analysis, whose guard rejects it. The frozen resume
    contract binds a run to the exact harness that started it, so the fixed
    harness cannot finish that run directory and the buggy one cannot compute
-   its statistics. The run is preserved with an operational deviation record;
-   its rows were never analyzed and no arm-level outcome was observed. The
-   fix landed with a finalization test that runs the whole pipeline, and the frozen v12
-   analysis was shown byte-identical before relaunch.
+   its statistics. The run is preserved with an operational deviation record.
+   Its episode log had been written by the crashed finalization attempts, so
+   raw arm-level outcomes existed on disk; they were never statistically
+   analyzed before the re-execution decision, and only aggregate final-state
+   counts without arm attribution were observed during supervision.
+   Descriptive rates computed afterward for transparency: 100/270 turn-start
+   repeated failures against 0/270 pre-action, a LARGER effect than the kept
+   manifest's 96/270 against 0/270, so selection between manifests cannot
+   explain the result. The fix landed with a finalization test that runs the
+   whole pipeline, and the frozen v12 analysis was shown byte-identical
+   before relaunch.
 2. The second manifest (`h6-51d25af1ed731c35a94c28fe`) completed all 540 rows
    and finalized. Zero invalid rows, zero task cuts, zero imputations, zero
    unretried host faults, empty deviation log.

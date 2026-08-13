@@ -1,0 +1,187 @@
+\begin{thebibliography}{27}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Chen et~al.(2021)Chen, Tworek, Jun, Yuan, Pinto, Kaplan,
+  et~al.]{chen2021humaneval}
+Mark Chen, Jerry Tworek, Heewoo Jun, Qiming Yuan, Henrique Ponde de~Oliveira
+  Pinto, Jared Kaplan, et~al.
+\newblock Evaluating large language models trained on code, 2021.
+
+\bibitem[Chhikara et~al.(2025)Chhikara, Khant, Aryan, Singh, and
+  Yadav]{chhikara2025mem0}
+Prateek Chhikara, Dev Khant, Saket Aryan, Taranjeet Singh, and Deshraj Yadav.
+\newblock Mem0: Building production-ready {AI} agents with scalable long-term
+  memory, 2025.
+
+\bibitem[Jimenez et~al.(2023)Jimenez, Yang, Wettig, Yao, Pei, Press, and
+  Narasimhan]{jimenez2023swebench}
+Carlos~E. Jimenez, John Yang, Alexander Wettig, Shunyu Yao, Kexin Pei, Ofir
+  Press, and Karthik Narasimhan.
+\newblock {SWE}-bench: Can language models resolve real-world {GitHub} issues?,
+  2023.
+
+\bibitem[Liu et~al.(2024)Liu, Lin, Hewitt, Paranjape, Bevilacqua, Petroni, and
+  Liang]{liu2024lost}
+Nelson~F. Liu, Kevin Lin, John Hewitt, Ashwin Paranjape, Michele Bevilacqua,
+  Fabio Petroni, and Percy Liang.
+\newblock Lost in the middle: How language models use long contexts.
+\newblock \emph{Transactions of the Association for Computational Linguistics},
+  12:\penalty0 157--173, 2024.
+\newblock \doi{10.1162/tacl_a_00638}.
+
+\bibitem[Madaan et~al.(2023)Madaan, Tandon, Gupta, Hallinan, Gao, Wiegreffe,
+  Alon, Dziri, Prabhumoye, Yang, Gupta, Majumder, Hermann, Welleck,
+  Yazdanbakhsh, and Clark]{madaan2023selfrefine}
+Aman Madaan, Niket Tandon, Prakhar Gupta, Skyler Hallinan, Luyu Gao, Sarah
+  Wiegreffe, Uri Alon, Nouha Dziri, Shrimai Prabhumoye, Yiming Yang, Shashank
+  Gupta, Bodhisattwa~Prasad Majumder, Katherine Hermann, Sean Welleck, Amir
+  Yazdanbakhsh, and Peter Clark.
+\newblock Self-refine: Iterative refinement with self-feedback, 2023.
+
+\bibitem[Maharana et~al.(2024)Maharana, Lee, Tulyakov, Bansal, Barbieri, and
+  Fang]{maharana2024locomo}
+Adyasha Maharana, Dong-Ho Lee, Sergey Tulyakov, Mohit Bansal, Francesco
+  Barbieri, and Yuwei Fang.
+\newblock Evaluating very long-term conversational memory of {LLM} agents,
+  2024.
+
+\bibitem[Miller(2024)]{miller2024errorbars}
+Evan Miller.
+\newblock Adding error bars to evals: A statistical approach to language model
+  evaluations, 2024.
+
+\bibitem[Omri et~al.(2026)Omri, Gan, Broveak, Geens, He, Pentland, Verhelst,
+  Weissman, and Tambe]{omri2026agentmemory}
+Yasmine Omri, Ziyu Gan, Zachary Broveak, Robin Geens, Zexue He, Alex Pentland,
+  Marian Verhelst, Tsachy Weissman, and Thierry Tambe.
+\newblock Agent memory: Characterization and system implications of stateful
+  long-horizon workloads, 2026.
+
+\bibitem[Packer et~al.(2023)Packer, Wooders, Lin, Fang, Patil, Stoica, and
+  Gonzalez]{packer2023memgpt}
+Charles Packer, Sarah Wooders, Kevin Lin, Vivian Fang, Shishir~G. Patil, Ion
+  Stoica, and Joseph~E. Gonzalez.
+\newblock {MemGPT}: Towards {LLMs} as operating systems, 2023.
+
+\bibitem[Park et~al.(2023)Park, O'Brien, Cai, Morris, Liang, and
+  Bernstein]{park2023generativeagents}
+Joon~Sung Park, Joseph~C. O'Brien, Carrie~J. Cai, Meredith~Ringel Morris, Percy
+  Liang, and Michael~S. Bernstein.
+\newblock Generative agents: Interactive simulacra of human behavior, 2023.
+
+\bibitem[Pineau et~al.(2021)Pineau, Vincent-Lamarre, Sinha, Larivi{\`e}re,
+  Beygelzimer, d'Alch{\'e} Buc, Fox, and Larochelle]{pineau2021reproducibility}
+Joelle Pineau, Philippe Vincent-Lamarre, Koustuv Sinha, Vincent Larivi{\`e}re,
+  Alina Beygelzimer, Florence d'Alch{\'e} Buc, Emily Fox, and Hugo Larochelle.
+\newblock Improving reproducibility in machine learning research (a report from
+  the {NeurIPS} 2019 reproducibility program).
+\newblock \emph{Journal of Machine Learning Research}, 22\penalty0
+  (164):\penalty0 1--20, 2021.
+
+\bibitem[{Qwen Team}(2024)]{qwen2024qwen25}
+{Qwen Team}.
+\newblock Qwen2.5 technical report, 2024.
+\newblock Closest published technical report for the open-weight Qwen model
+  family used here.
+
+\bibitem[Ruan et~al.(2023)Ruan, Dong, Wang, Pitis, Zhou, Ba, Dubois, Maddison,
+  and Hashimoto]{ruan2023toolemu}
+Yangjun Ruan, Honghua Dong, Andrew Wang, Silviu Pitis, Yongchao Zhou, Jimmy Ba,
+  Yann Dubois, Chris~J. Maddison, and Tatsunori Hashimoto.
+\newblock Identifying the risks of {LM} agents with an {LM}-emulated sandbox,
+  2023.
+
+\bibitem[Schick et~al.(2023)Schick, Dwivedi-Yu, Dess{\`i}, Raileanu, Lomeli,
+  Zettlemoyer, Cancedda, and Scialom]{schick2023toolformer}
+Timo Schick, Jane Dwivedi-Yu, Roberto Dess{\`i}, Roberta Raileanu, Maria
+  Lomeli, Luke Zettlemoyer, Nicola Cancedda, and Thomas Scialom.
+\newblock Toolformer: Language models can teach themselves to use tools, 2023.
+
+\bibitem[Sclar et~al.(2023)Sclar, Choi, Tsvetkov, and
+  Suhr]{sclar2023formatspread}
+Melanie Sclar, Yejin Choi, Yulia Tsvetkov, and Alane Suhr.
+\newblock Quantifying language models' sensitivity to spurious features in
+  prompt design or: How {I} learned to start worrying about prompt formatting,
+  2023.
+
+\bibitem[Shi et~al.(2023)Shi, Chen, Misra, Scales, Dohan, Chi, Sch{\"a}rli, and
+  Zhou]{shi2023distracted}
+Freda Shi, Xinyun Chen, Kanishka Misra, Nathan Scales, David Dohan, Ed~Chi,
+  Nathanael Sch{\"a}rli, and Denny Zhou.
+\newblock Large language models can be easily distracted by irrelevant context,
+  2023.
+
+\bibitem[Shinn et~al.(2023)Shinn, Cassano, Berman, Gopinath, Narasimhan, and
+  Yao]{shinn2023reflexion}
+Noah Shinn, Federico Cassano, Edward Berman, Ashwin Gopinath, Karthik
+  Narasimhan, and Shunyu Yao.
+\newblock Reflexion: Language agents with verbal reinforcement learning, 2023.
+
+\bibitem[Sumers et~al.(2023)Sumers, Yao, Narasimhan, and
+  Griffiths]{sumers2023coala}
+Theodore~R. Sumers, Shunyu Yao, Karthik Narasimhan, and Thomas~L. Griffiths.
+\newblock Cognitive architectures for language agents, 2023.
+
+\bibitem[van Miltenburg et~al.(2021)van Miltenburg, van~der Lee, and
+  Krahmer]{vanmiltenburg2021preregistering}
+Emiel van Miltenburg, Chris van~der Lee, and Emiel Krahmer.
+\newblock Preregistering {NLP} research.
+\newblock In \emph{Proceedings of the 2021 Conference of the North American
+  Chapter of the Association for Computational Linguistics: Human Language
+  Technologies}, pages 613--623. Association for Computational Linguistics,
+  2021.
+\newblock \doi{10.18653/v1/2021.naacl-main.51}.
+
+\bibitem[Wang et~al.(2023)Wang, Xie, Jiang, Mandlekar, Xiao, Zhu, Fan, and
+  Anandkumar]{wang2023voyager}
+Guanzhi Wang, Yuqi Xie, Yunfan Jiang, Ajay Mandlekar, Chaowei Xiao, Yuke Zhu,
+  Linxi Fan, and Anima Anandkumar.
+\newblock Voyager: An open-ended embodied agent with large language models,
+  2023.
+
+\bibitem[Wang et~al.(2024{\natexlab{a}})Wang, Li, Song, Xu, Tang, Zhuge,
+  et~al.]{wang2024openhands}
+Xingyao Wang, Boxuan Li, Yufan Song, Frank~F. Xu, Xiangru Tang, Mingchen Zhuge,
+  et~al.
+\newblock {OpenHands}: An open platform for {AI} software developers as
+  generalist agents, 2024{\natexlab{a}}.
+
+\bibitem[Wang et~al.(2024{\natexlab{b}})Wang, Mao, Fried, and
+  Neubig]{wang2024awm}
+Zora~Zhiruo Wang, Jiayuan Mao, Daniel Fried, and Graham Neubig.
+\newblock Agent workflow memory, 2024{\natexlab{b}}.
+
+\bibitem[Xiang et~al.(2024)Xiang, Zheng, Li, Hong, Li, Xie, Zhang, Xiong, Xie,
+  Yang, Song, and Li]{xiang2024guardagent}
+Zhen Xiang, Linzhi Zheng, Yanjie Li, Junyuan Hong, Qinbin Li, Han Xie, Jiawei
+  Zhang, Zidi Xiong, Chulin Xie, Carl Yang, Dawn Song, and Bo~Li.
+\newblock {GuardAgent}: Safeguard {LLM} agents by a guard agent via
+  knowledge-enabled reasoning, 2024.
+
+\bibitem[Xu et~al.(2025)Xu, Liang, Mei, Gao, Tan, and Zhang]{xu2025amem}
+Wujiang Xu, Zujie Liang, Kai Mei, Hang Gao, Juntao Tan, and Yongfeng Zhang.
+\newblock {A-MEM}: Agentic memory for {LLM} agents, 2025.
+
+\bibitem[Yang et~al.(2024)Yang, Jimenez, Wettig, Lieret, Yao, Narasimhan, and
+  Press]{yang2024sweagent}
+John Yang, Carlos~E. Jimenez, Alexander Wettig, Kilian Lieret, Shunyu Yao,
+  Karthik Narasimhan, and Ofir Press.
+\newblock {SWE}-agent: Agent-computer interfaces enable automated software
+  engineering, 2024.
+
+\bibitem[Yao et~al.(2023)Yao, Zhao, Yu, Du, Shafran, Narasimhan, and
+  Cao]{yao2023react}
+Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak Shafran, Karthik Narasimhan,
+  and Yuan Cao.
+\newblock {ReAct}: Synergizing reasoning and acting in language models, 2023.
+
+\bibitem[Zhao et~al.(2023)Zhao, Huang, Xu, Lin, Liu, and Huang]{zhao2023expel}
+Andrew Zhao, Daniel Huang, Quentin Xu, Matthieu Lin, Yong-Jin Liu, and Gao
+  Huang.
+\newblock {ExpeL}: {LLM} agents are experiential learners, 2023.
+
+\end{thebibliography}

@@ -1,0 +1,631 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage[numbers]{natbib}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+\usepackage{microtype}
+
+\newcommand{\pp}{\ensuremath{\,\mathrm{pp}}}
+\title{When to Remember: A Preregistered Study of Failure-Memory\\Delivery Timing in an LLM Coding Agent}
+\author{Joshua Warren\\Warren Applied Labs\\\texttt{joshua@warrenappliedlabs.com}}
+\date{August 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Long-term memory systems for LLM agents deliver recalled context at the start
+of a turn, before the agent begins working. We ask whether that delivery point,
+rather than memory content, limits the value of failure memories. In a
+preregistered, hash-bound experiment on 30 synthetic TypeScript repair tasks
+with deliberate trap fixes, one open-weight 35B coding model repeated its own
+previously observed failure in 44.2\% of unassisted episodes. Injecting a
+matched memory of that failure at turn start failed its registered support
+test: repeated failures fell only 4.8 percentage points, and the task-pass
+estimate favored an equivalent \emph{success} memory. Delivering the identical
+fact at the moment the agent proposed the matched action eliminated
+repetition: a confirmatory run on 18 preregistered tasks measured a
+35.6-percentage-point reduction (95\% CI [16.7, 55.9], relative risk reduction
+100\%, $p = 0.0019$), with zero invalid rows and zero protocol deviations.
+The effect replicated across three measurements. Removing repeated failures
+did not measurably improve task completion (+1.5\pp{} [0.0, 4.4]), so the
+claim is failure-mode removal, not general improvement. Our first registration
+returned NOT\_ESTIMABLE under its own zero-cut rule; we report both
+registrations in full. The task corpus, harness, registrations, and analysis
+artifacts are public.
+\end{abstract}
+
+\section{Introduction}
+\label{sec:intro}
+
+An agent with long-term memory will, sooner or later, face a situation it has
+already gotten wrong once. What its memory system does in that moment decides
+whether the stored experience has value. Long-term memory systems answer
+the question the same way: retrieve whatever seems relevant and place it in
+the prompt before the agent starts its turn
+\citep{packer2023memgpt, chhikara2025mem0, xu2025amem, zhao2023expel}.
+Retrieval quality, storage structure, and summarization policy vary widely
+across these systems; the delivery point does not. Systems that do intervene
+at tool-proposal time exist, but they deliver externally supplied safety
+policies rather than the agent's own episodic memory
+\citep{xiang2024guardagent, ruan2023toolemu}, and no prior work we know of
+compares the two delivery points while holding the payload fixed.
+
+This paper isolates the delivery point. We hold the memory itself fixed---the
+same failure fact, the same wording, the same rendered token count---and vary
+only \emph{when} it reaches the agent: at turn start, in the conventional
+preamble position, or at the moment the agent proposes the specific action
+that failed before. The distinction matters because coding agents fail in a
+particular way: they take an attractive wrong path (silence the flaky-looking
+test, edit the shadowed config file) that a general warning delivered minutes
+of context earlier struggles to interrupt.
+
+We built 30 synthetic TypeScript repair tasks around six classes of such
+traps, gave a frozen open-weight model a first episode in which it fell into
+the trap, then measured whether a memory of that failure prevented repetition
+in a second, scored episode. The experiment was preregistered before data
+collection: task splits, arms, seeds, outcome definitions, statistical
+procedures, support thresholds, and decision rules were fixed in a
+hash-bound registration that the harness verifies before any row executes.
+
+Four results, in decreasing order of evidential strength:
+
+\begin{enumerate}
+\item \textbf{Action-site delivery eliminated repetition (confirmatory).} A
+  matched failure fact delivered when the agent proposed the matched action
+  reduced repeated failures by $35.6\pp$ (95\% CI $[16.7, 55.9]$, relative
+  risk reduction 100\%, $p = 0.0019$) against turn-start delivery of the
+  identical fact, on all 18 preregistered tasks with zero excluded data. The
+  estimate and test operate on paired task-level means; descriptively, the
+  pre-action arm repeated a known failure zero times in 270 valid episodes.
+\item \textbf{Turn-start failure memory failed its registered test
+  (confirmatory rejection).} Against a matched success memory it reduced
+  repeated failures by only $4.8\pp$ $[0.7, 10.0]$ while its task-pass
+  estimate was $6.3\pp$ \emph{worse} $[-15.6, +0.7]$; the registered
+  compound test rejected it.
+\item \textbf{Prevention did not become completion (bounded null).} The
+  confirmatory run's task-pass benefit was $+1.5\pp$ $[0.0, 4.4]$
+  ($p = 0.51$). The mechanism removes a known failure mode; it does not make
+  the agent better overall.
+\item \textbf{Preregistration bound us (methodological).} Our first
+  registration ended NOT\_ESTIMABLE when a single cap-terminated episode
+  produced an unclassifiable check and the registered rule allowed zero task
+  cuts. The confirmatory result comes from a second registration whose
+  scoring rule was fixed before any new data existed. We report both.
+\end{enumerate}
+
+The task corpus with its trap taxonomy, the execution harness, both
+registration documents, the machine-readable decision rules, and the
+per-episode logs and statistics artifacts of every registered run are public;
+the analysis replays from the released episode logs byte-for-byte
+(Section~\ref{sec:repro}). Per-attempt trace archives remain operator-local
+with published hashes.
+
+\section{Related work}
+\label{sec:related}
+
+\paragraph{Memory systems for LLM agents.}
+Architectures such as MemGPT \citep{packer2023memgpt}, Mem0
+\citep{chhikara2025mem0}, and A-MEM \citep{xu2025amem} manage what an agent
+stores and retrieves across sessions; generative-agent simulacra
+\citep{park2023generativeagents} and cognitive-architecture framings
+\citep{sumers2023coala} organize retrieval around recency, importance, and
+task structure. Benchmarks such as LoCoMo \citep{maharana2024locomo} measure
+whether retrieved memories are \emph{correct}, and recent systems
+characterization work taxonomizes these designs by construction and
+retrieval cost \citep{omri2026agentmemory}. Situating our design on the
+natural axes---memory source (the agent's own episode), trigger (fingerprint
+match on a proposed action), delivery point (turn start vs.\ action site),
+payload control (byte-matched fact), and outcome (repetition of a known
+failure)---the delivery-point axis is the one this literature holds
+constant: retrieved context lands in the prompt before generation. That axis
+is our sole manipulation.
+
+\paragraph{Learning from failure and experience.}
+Reflexion stores verbal self-critiques of failed attempts for subsequent
+trials \citep{shinn2023reflexion}; ExpeL distills cross-task insights from
+experience pools \citep{zhao2023expel}; Voyager grows a skill library from
+successes \citep{wang2023voyager}; Agent Workflow Memory induces reusable
+workflows \citep{wang2024awm}; Self-Refine iterates on feedback within a task
+\citep{madaan2023selfrefine}. These systems vary what is learned and stored.
+Our contribution is orthogonal and narrower: given a single, already-correct
+failure memory, we show its value depends on when it lands.
+
+\paragraph{Position and salience effects in context.}
+Language models use long contexts unevenly, privileging beginnings and ends
+\citep{liu2024lost}, are measurably distracted by irrelevant context
+\citep{shi2023distracted}, and are sensitive to seemingly neutral prompt
+formatting \citep{sclar2023formatspread}. These results motivate our
+hypothesis that a warning's distance from the decision it must influence is
+load-bearing, but none of them tests intervention timing in an agentic loop
+with a frozen, matched payload. We do not claim to isolate the mechanism;
+Section~\ref{sec:discussion} treats candidate explanations as post hoc.
+
+\paragraph{Coding agents and benchmarks.}
+Agentic software engineering is standardly evaluated by end-to-end issue
+resolution \citep{jimenez2023swebench, yang2024sweagent, wang2024openhands}
+over ReAct-style tool loops \citep{yao2023react, schick2023toolformer}, with
+code generation measured since HumanEval \citep{chen2021humaneval}. Repeating
+one's own recorded failure is a distinct, narrower behavior that end-to-end
+pass rates do not surface; our tasks are built to measure exactly it.
+
+\paragraph{Preregistration and statistical rigor.}
+Preregistration is established in medicine and psychology and has been argued
+for in NLP \citep{vanmiltenburg2021preregistering} alongside broader
+reproducibility programs \citep{pineau2021reproducibility} and calls for
+uncertainty-aware evaluation \citep{miller2024errorbars}. Agent evaluations
+in particular accumulate researcher degrees of freedom (caps, retries,
+scoring judgments); our design commits every such choice to a hash-verified
+document before execution, and our first registration's fate
+(Section~\ref{sec:registrations}) shows the commitment binding.
+
+\paragraph{Runtime guardrails at tool time.}
+Sandboxed risk probing \citep{ruan2023toolemu} and guard agents that check
+proposed actions against policies \citep{xiang2024guardagent} intervene at
+the same point in the loop as our pre-action arm. That work targets safety
+policies supplied from outside; we deliver the agent's own episodic failure
+memory, advisory-only, and measure repetition of a specific known mistake.
+
+\section{Experimental design}
+\label{sec:method}
+
+\subsection{Task corpus}
+\label{sec:tasks}
+
+We generated 30 self-contained TypeScript repair tasks, each a small
+repository with a failing behavior, an executable functional contract, and a
+deterministic offline checker that classifies any resulting repository state
+as \texttt{PASS}, a specific failure class, or indeterminate. Each task
+embeds one \emph{trap}: a wrong fix that is more attractive than the correct
+one. Six trap classes, five tasks each:
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{ll}
+\toprule
+Trap class & The attractive wrong fix \\
+\midrule
+config-shadowing & edit the config file that is silently shadowed by another \\
+flaky-looking-test & mark the failing check flaky instead of fixing the state bug \\
+hidden-invariant & patch the symptom while violating an undocumented invariant \\
+misleading-error-message & follow the error text to the wrong layer \\
+stale-cache-illusion & ``fix'' code whose behavior is a stale cache artifact \\
+wrong-layer-fix & patch the call site instead of the owning module \\
+\bottomrule
+\end{tabular}
+\caption{Trap taxonomy. Within a class, no two tasks exceed 0.40 normalized
+Jaccard similarity on state-defining sources or check scripts.}
+\label{tab:traps}
+\end{table}
+
+Each task ships three run-time variants (surface renamings that preserve the
+trap), a trapped revision, a correct-fix revision, and a no-trap control
+revision. Splits were frozen before any registered run: 12 pilot tasks and 18
+main tasks. There is no dev split; harness development used separately
+generated tasks.
+
+A registered trap audit gates every model profile: on all 30 tasks with no
+memory assistance, the model must fall into the trap in at least 30\% of
+episodes and fail to produce a correct fix in at least 50\%. The profile used
+here audited at 40.0\% trapped both times it was audited (63.3\% and 70.0\%
+non-fixed).
+
+\subsection{Two-episode protocol and outcomes}
+\label{sec:protocol}
+
+Episode 1 lets the agent fail: it attempts the task, falls into the trap, and
+the harness freezes that history---the failure fact text, a fingerprint of
+the trapping action, and repository hashes. Episode 2 is the scored episode:
+the agent faces the same task (per variant and seed) with an injected memory
+that depends on the arm.
+
+A scored episode counts as a \textbf{repeated failure} only when both hold:
+(i) an episode-2 action matches the frozen trap fingerprint, and (ii) the
+offline checker proves the same failure class as episode 1. Text similarity
+alone never counts. \textbf{Task pass} requires the checker to return
+\texttt{PASS} within all execution caps. Steps are counted from the action
+trace.
+
+\subsection{Arms and matched-injection contracts}
+\label{sec:arms}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lll}
+\toprule
+Arm & Turn-start injection & Pre-action gate \\
+\midrule
+\textsc{no\_memory} & none & off \\
+\textsc{turn\_start\_failure} & the frozen failure fact & off \\
+\textsc{turn\_start\_success} & matched twin-repo success fact & off \\
+\textsc{pre\_action\_failure} & none & advisory warning on matched action \\
+\textsc{both} & the frozen failure fact & advisory warning on matched action \\
+\bottomrule
+\end{tabular}
+\caption{Arms. \textsc{both} is registered as secondary and enters no primary
+test.}
+\label{tab:arms}
+\end{table}
+
+The \textbf{timing pair} (\textsc{turn\_start\_failure} vs.\
+\textsc{pre\_action\_failure}) delivers the same single fact with identical
+fact ID, citation hash, and rendered token count; only the frame differs as
+needed to place it at the two delivery points. The gate watches proposed
+actions; when a proposal matches the frozen fingerprint, it injects the fact
+as an advisory and lets the model choose again. On any gate error the action
+runs without a note, and the registered rules invalidate such an episode
+(this never occurred). Delivery at the action site is therefore a
+\emph{package}: the matched proposal is intercepted rather than executed,
+the fact arrives as a direct response to it, and the model re-decides---one
+additional model interaction on each match. That package is inseparable from
+the delivery point (a warning about an action cannot arrive ``at'' the
+action after it has executed), and the registered hypothesis compares
+delivery packages, not a pure clock shift. The design does not include a
+neutral-interruption control (an interception carrying no memory), so it
+does not isolate the marginal contribution of the fact's content within the
+package (Section~\ref{sec:threats}).
+
+The \textbf{content pair} (\textsc{turn\_start\_failure} vs.\
+\textsc{turn\_start\_success}) matches its two facts on path-shape and
+action-shape hashes, token-set Jaccard in $[0.80, 1.00]$, and a rendered
+token gap of at most 8 tokens and 5\%.
+
+Every arm of a cell starts from the same task commit, memory image, tools,
+caps, seed, and model profile, with per-arm isolated worktrees, memory
+directories, and sessions; start-state hashes are recorded per row and
+audited for equality within cells.
+
+\subsection{Model and execution}
+\label{sec:model}
+
+All episodes run one frozen open-weight model profile: the Qwen-family
+\texttt{qwen3.5:35b} release (Q4\_K\_M quantization, 32{,}768 token
+context, temperature 0, no thinking mode, 4{,}096 max output tokens). The
+model is identified as an artifact by its served-model digest
+(\texttt{3460ffee\ldots}) and profile hash, re-verified before every run;
+no technical report for this release had been published at the time of
+writing, so we cite the closest published family report
+\citep{qwen2024qwen25} for architectural context only. Caps per episode: 12 turns, 8 tool calls,
+20{,}480 cumulative tokens, 600\,s duration, 180\,s per request. Host and API
+faults retry up to five times after the first try; exhaustion pauses the run
+rather than voiding a row; a returned task result, valid or invalid, is never
+re-executed.
+
+\subsection{Statistical analysis}
+\label{sec:stats}
+
+The task is the analysis unit: row outcomes are averaged over variants and
+seeds within each task and arm, and every test operates on the 18 paired
+task means. Intervals are 10{,}000-draw grouped percentile bootstraps (95\%
+for primaries, 90\% for the no-trap diagnostic); $p$-values come from
+10{,}000-draw paired sign-flip randomization tests; the analysis seed (81)
+is registered. The content hypothesis uses a compound
+$p = \max(p_{\text{repeated-failure}}, p_{\text{task-pass}})$. Holm
+correction spans the registered family: two members in the first
+registration, one in the second. The timing support rule requires an
+absolute repeated-failure benefit of at least $5\pp$, a point relative risk
+reduction of at least 30\%, an interval lower bound strictly above zero, and
+adjusted $p < 0.05$. A pilot on the disjoint 12-task split simulated 0.8364
+power for the timing test at 18 tasks (0.80 required). The pilot simulation
+used the first registration's two-member Holm family; the second
+registration's single-member family can only make the same test easier, so
+the transferred power estimate is conservative.
+
+\subsection{Two registrations}
+\label{sec:registrations}
+
+\textbf{Registration 1} (decision rule v12) ran the full five-arm design plus
+no-trap controls: $18 \times 3 \times 5 \times 7 = 1{,}890$ rows on seeds
+1--5. It allowed zero primary task cuts: any invalid row in a compared cell
+cuts the whole task and voids the affected hypothesis. All 1,890 rows
+completed; 1,888 were valid. One of the two invalid rows---a pre-action
+episode that hit the cumulative token cap mid-edit, leaving a repository
+state the checker could not classify---sat in the timing comparison. The rule
+fired as written: H6-timing was NOT\_ESTIMABLE despite a $+38.0\pp$
+$[18.0, 59.6]$ exploratory estimate on the 17 complete tasks. The content
+hypothesis, unaffected, was decided (rejected). The registered retry rule
+forbids re-running any returned result, so a confirmatory timing answer
+required new data.
+
+\textbf{Registration 2} (decision rule v13) was fixed before any new row
+executed. It decides H6-timing alone on the same 18 tasks with the two timing
+arms and \emph{new} seeds 6--10 (540 rows). Three changes, all registered in
+advance: a cap-driven unclassifiable check is scored worst-case against the
+pre-action arm (repeated failure in \textsc{pre\_action\_failure}, no
+repeated failure and a pass in \textsc{turn\_start\_failure}) instead of
+cutting the task; the hypothesis family has one member; and the pilot's power
+evidence transfers by pinned artifact hashes, with the harness required to
+reproduce the pilot's statistics byte-for-byte before any row runs. The
+zero-cut rule stands for every other invalid reason. The worst-case scoring
+rule can only shrink the measured effect, and in the event it was never
+exercised: the confirmatory run had zero invalid rows.
+
+Registration 2 executed twice, and we report both executions. The first
+manifest completed all 540 episodes and then crashed in the harness's
+post-run statistics step (an option-plumbing defect caught by the analysis
+guard). Because runs are hash-bound to the harness that started them, that
+run directory was abandoned with a deviation record, and the registration
+was re-executed on the repaired, test-covered harness with the same
+registered seed set. The abandoned manifest's episode log had already been
+written by the crashed finalization attempts, so raw arm-level outcomes
+existed on disk; they were never statistically analyzed before the
+re-execution decision, but during supervision we observed aggregate
+final-state counts without arm attribution, and a skeptic need not take
+non-observation on faith. We therefore publish both episode logs and report
+both descriptively: the abandoned manifest shows 100/270 turn-start repeated
+failures against 0/270 pre-action ($+37.0\pp$ episode-level); the kept,
+confirmatory manifest shows 96/270 against 0/270 ($+35.6\pp$). The kept
+manifest's effect is the \emph{smaller} of the two, so selection between
+manifests cannot manufacture the result, and the conclusion is identical
+under either log. The registered analysis ran exactly once, on the final
+manifest.
+
+\section{Results}
+\label{sec:results}
+
+\subsection{Primary outcomes}
+\label{sec:primary}
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{llrrrrl}
+\toprule
+Comparison & Status & Tasks & RF benefit & Task-pass benefit & $p$ (adj.) & Decision \\
+\midrule
+Timing (R2) & confirmatory & 18/18 & $+35.6\pp$ $[16.7, 55.9]$ & $+1.5\pp$ $[0.0, 4.4]$ & 0.0019 & \textbf{supported} \\
+Content (R1) & confirmatory & 18/18 & $+4.8\pp$ $[0.7, 10.0]$ & $-6.3\pp$ $[-15.6, +0.7]$ & 0.9393 & rejected \\
+Timing (R1) & exploratory & 17/18 & $+38.0\pp$ $[18.0, 59.6]$ & --- & --- & not estimable \\
+\bottomrule
+\end{tabular}
+\caption{Primary results. RF benefit is the reduction in task-level repeated
+failure rate for the candidate arm (pre-action delivery in timing rows;
+turn-start failure vs.\ turn-start success in the content row), with 95\%
+bootstrap intervals. The content $p$ is the registered compound value; the
+R1 timing row is exploratory by the registered zero-cut rule; because its
+decision is not estimable, no $p$-value is shown for it (the unadjusted
+descriptive sign-flip statistic on the 17 complete tasks was 0.0018).}
+\label{tab:primary}
+\end{table}
+
+Table~\ref{tab:primary} contains the study. All intervals and $p$-values
+operate on the 18 paired task-level means; episode counts are descriptive.
+In the confirmatory run the pre-action arm repeated a known failure
+\textbf{zero} times in 270 valid episodes, against a 35.6\% task-level
+repetition rate for turn-start delivery of the identical fact---a relative
+risk reduction of 100\% (95\% CI $[100, 100]$, degenerate because the
+candidate numerator is zero in every bootstrap draw). Every registered support
+condition held with margin. The estimate is consistent across three
+measurements: the pilot ($+37.8\pp$, descriptive), the first registration's
+exploratory estimate ($+38.0\pp$ on 17 complete tasks), and the confirmatory
+run ($+35.6\pp$ on all 18).
+
+The content comparison is a genuine negative with structure. Turn-start
+failure wording did reduce repetition relative to matched success wording
+($+4.8\pp$, interval above zero), but the registered rule demanded joint
+support on completion as well, and there the failure fact \emph{cost}
+$6.3\pp$ against the success fact. Under the compound test the hypothesis
+was rejected. Placement, not content, is what our data supports changing.
+
+\subsection{Descriptive arm outcomes}
+\label{sec:descriptive}
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrrrr}
+\toprule
+Arm & Valid rows & Repeated failures & RF rate & Pass rate \\
+\midrule
+\multicolumn{5}{l}{\emph{Registration 1 (seeds 1--5)}} \\
+\textsc{no\_memory} & 269 & 119 & 44.24\% & 2.60\% \\
+\textsc{turn\_start\_success} & 270 & 110 & 40.74\% & 7.04\% \\
+\textsc{turn\_start\_failure} & 270 & 97 & 35.93\% & 0.74\% \\
+\textsc{pre\_action\_failure} & 269 & 0 & 0.00\% & 2.97\% \\
+\textsc{both} & 270 & 0 & 0.00\% & 1.48\% \\
+\midrule
+\multicolumn{5}{l}{\emph{Registration 2 (seeds 6--10)}} \\
+\textsc{turn\_start\_failure} & 270 & 96 & 35.56\% & 1.85\% \\
+\textsc{pre\_action\_failure} & 270 & 0 & 0.00\% & 3.33\% \\
+\bottomrule
+\end{tabular}
+\caption{Raw episode-level outcomes before task-level aggregation,
+descriptive only. Pass rates are low in every arm because the registered
+caps bind hard (Section~\ref{sec:threats}).}
+\label{tab:arms-outcomes}
+\end{table}
+
+Table~\ref{tab:arms-outcomes} shows the unaggregated picture. Three
+observations. First, the unassisted repetition rate (44.2\%) confirms the
+traps do what they were built to do. Second, pre-action delivery drove
+repetition to zero in both registrations, on disjoint seeds. Third, the
+highest raw pass rate belongs to turn-start \emph{success} memory (7.04\%),
+and \textsc{both}---gate plus turn-start failure fact---passed less
+(1.48\%) than the gate alone (2.97\%): whatever failure wording does to an
+agent's preamble, it is not obviously free even when the gate handles
+prevention.
+
+\subsection{Prevention is not completion}
+\label{sec:completion}
+
+The confirmatory task-pass benefit of pre-action delivery is $+1.5\pp$ with
+an interval touching zero ($[0.0, 4.4]$, $p = 0.51$). Steps were essentially
+unchanged (5.80 vs.\ 5.70 mean steps per episode). Blocking the remembered
+wrong path does not, in this corpus and under these caps, convert into
+solving the task: agents typically moved from the trap to a different
+unsuccessful approach rather than to the correct fix.
+
+\subsection{No-trap diagnostic}
+\label{sec:notrap}
+
+Registration 1 also measured whether the gate changes behavior when no
+matching trap exists (540 no-trap control rows). The steps difference was
+$-0.026$ with a 90\% interval $[-0.063, +0.0037]$, well inside the
+registered $\pm 2$ margin: no detectable hesitation. The pass-rate half of
+the diagnostic is recorded as \emph{unresolved}: its 90\% interval
+$[-0.74, +2.22]\pp$ misses the registered $\pm 2\pp$ margin by $0.22\pp$,
+and a registered amendment documents that this margin is finer than the
+design can resolve at any feasible task count. The point estimate favors the
+gate arm ($+0.74\pp$); nothing in the data suggests harm.
+
+\subsection{Cost}
+\label{sec:cost}
+
+The two registered runs consumed 56.1M tokens of episode traffic (43.4M and
+12.7M). All statistics are computed deterministically from row artifacts
+with zero model calls, and replay byte-identically from the immutable
+episode logs.
+
+\section{Threats to validity}
+\label{sec:threats}
+
+\paragraph{Construct.}
+Repeated failure is defined conservatively (fingerprint match \emph{and}
+checker-proven same failure class), so our rates understate softer forms of
+repetition. The traps are synthetic; they compress into one file tree what
+real repositories spread across services. The two-episode protocol hands the
+gate a correct, matched memory; production recall is noisier, and our effect
+is conditional on the match being right.
+
+\paragraph{Internal.}
+The timing pair pins fact identity, citation hash, and rendered token count;
+arms are isolated per worktree, memory, and session, with audited start-state
+equality. The gate is advisory and fail-open, so the treatment cannot operate
+by blocking. The abandoned first manifest of registration 2 is handled by evidence
+rather than assertion: both episode logs are published, the registered
+analysis ran only on the final manifest, and the abandoned manifest's
+descriptive effect is larger than the kept one's
+(Section~\ref{sec:registrations})---so the only selection story available
+runs against the reported result. The delivery-package structure of the
+pre-action arm (interception plus re-decision, Section~\ref{sec:arms}) is a
+construct limitation: a neutral-interruption control was not run, so the
+package's effect is established but the marginal effect of the memory
+content within it is not.
+
+\paragraph{Statistical.}
+Tasks are the unit, respecting within-task clustering across variants and
+seeds; tests are exact permutation analogues; the confirmatory family has one
+member and its $p$-value survives any correction. The zero-numerator relative
+risk reduction makes the RRR interval degenerate at 100\%; the absolute
+benefit interval $[16.7, 55.9]\pp$ is the informative bound.
+
+\paragraph{External.}
+One model, one quantization, one language, one task style, frozen caps. The
+binding token cap suppresses pass rates in every arm and limits what
+completion effects could be observed. Nothing here licenses claims about
+other models, real repositories, or memory systems whose retrieval quality
+differs from our matched setting. The corpus is public as of August 2026 and
+carries a contamination canary; results on models trained after that date
+require a contamination check before comparison.
+
+\section{Discussion}
+\label{sec:discussion}
+
+\paragraph{Why placement might dominate.}
+Three post hoc candidates, none isolated by our design. Distance: long-context
+studies show mid-context material is used unevenly \citep{liu2024lost}, and a
+turn-start warning is maximally distant from the decision it must influence.
+Competition: by proposal time the context is dominated by freshly read code
+and tool output, and irrelevant-context effects \citep{shi2023distracted}
+suggest the warning loses that competition. Salience: the gate delivers the
+fact as a direct response to the specific proposed action, when the
+alternative is concrete rather than hypothetical. Separating these requires
+designs that vary injection distance continuously; our corpus supports such
+follow-ups.
+
+\paragraph{Design implication for memory systems.}
+Failure memories should be routed to a just-in-time advisory delivered
+against the proposed action---the position where guard agents already sit
+\citep{xiang2024guardagent}---rather than into the retrieval preamble.
+Semantic and preference context can stay at turn start; nothing here argues
+against preamble recall in general. The implication is a routing rule, not a
+new architecture: store failure memories with an action fingerprint, match at
+tool-proposal time, inject advisory-only, fail open. Our harness's gate is a
+reference implementation. The rule is established only in the tested regime:
+a correct, byte-matched memory of this task's own failure, matched by an
+exact fingerprint, on synthetic tasks. Production systems face false and
+missed matches, noisy retrieval, advisory fatigue under repeated triggers,
+and per-proposal matching cost; none of these is measured here, and each
+could erase the benefit.
+
+\paragraph{What preregistration bought.}
+The first registration's NOT\_ESTIMABLE outcome is the strongest evidence we
+can offer that the protocol binds: a $+38\pp$ effect with $p = 0.0036$ was
+set aside because one row violated a rule we wrote ourselves, and the fix was
+registered before new data existed rather than argued after the fact. The
+cost was one additional run. For agent evaluations---where caps, retries, and
+scoring judgments hide many researcher degrees of freedom---we found the
+discipline cheap relative to what it protects, echoing arguments made for
+NLP broadly \citep{vanmiltenburg2021preregistering, pineau2021reproducibility}.
+
+\section{Reproducibility and data availability}
+\label{sec:repro}
+
+The task corpus (30 tasks, trap taxonomy, JSON schemas, frozen inventory hash
+\texttt{687615b5\ldots}), the execution harness, both preregistration
+documents, the machine-readable decision rules (v12, v13), and the study
+report are public in the project repository at tag
+\texttt{h6-study-2026-08}.\footnote{\url{https://github.com/joshuaswarren/remnic/tree/h6-study-2026-08}
+--- harness under \texttt{packages/bench/}, registrations and report under
+\texttt{docs/research/failure-gate/}, corpus under
+\texttt{packages/bench/fixtures/h6-failure-gate/}.} The per-episode logs,
+run manifests, decision-rule copies, deviation logs, and statistics, power,
+and audit artifacts of all four runs (both registrations, the bound pilot,
+and the abandoned manifest) are published as release assets on the same
+tag.\footnote{\url{https://github.com/joshuaswarren/remnic/releases/tag/h6-study-2026-08}}
+The registered analysis replays from the released episode logs byte-for-byte
+with zero model calls via a single command. Per-attempt trace archives (full
+agent transcripts) remain operator-local; their SHA-256 hashes are bound in
+the released manifests. One disclosure: the confirmatory run's replay executes under
+a harness newer than the one that ran the episodes (post-run report-layer
+fixes); the replay verifies the decision artifacts byte-for-byte and records
+both harness hashes side by side.
+
+\section*{Acknowledgments}
+The experiment harness, execution supervision, and analysis tooling were
+built with substantial assistance from LLM coding agents operating under the
+author's direction, and every number in this paper was verified by
+deterministic replay against the released artifacts rather than taken from
+agent output. The study design, registrations, and claims are the author's.
+No external funding.
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\appendix
+
+\section{Amendment log}
+\label{app:amendments}
+
+Registration 1 carried three amendments, each registered before the data it
+governed: (2) the cumulative token cap rose from 16{,}384 to 20{,}480 after
+the pilot showed the original cap consumed by re-sent context before any
+task could complete, with the replacement value selected by four 30-task
+trap audits rather than by outcome data; (3) the content hypothesis was
+removed from the launch power gate after two pilots measured its power at
+0.000 (it remained registered, estimated, and decided); (4) the no-trap
+pass-rate margin was removed from the launch gate after power analysis
+showed no feasible task count could resolve it (the estimate remains
+reported, Section~\ref{sec:notrap}). Registration 2's changes are listed in
+Section~\ref{sec:registrations}. Full texts ship in the repository.
+
+\section{Integrity receipts}
+\label{app:receipts}
+
+Every registered run writes a frozen manifest (expected row keys and order),
+per-try checkpoints, an append-only deviation log, and hash-bound statistics,
+power, and audit artifacts; the paper report regenerates only from these.
+Registration 1: 1,890 rows, deviation log empty, statistics
+\texttt{16fd5af1\ldots}. Registration 2 confirmatory run
+(\texttt{h6-51d25af1ed731c35a94c28fe}): 540 rows, deviation log empty,
+statistics \texttt{0cedc1b8\ldots}, power \texttt{2f1630c7\ldots}, audit
+\texttt{38e14e5a\ldots}. Pilot transfer: manifest \texttt{5bce2c0c\ldots},
+power \texttt{cfaec22f\ldots}. Full 64-character hashes are in the
+repository's study report.
+
+\end{document}
