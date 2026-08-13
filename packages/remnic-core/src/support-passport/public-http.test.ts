@@ -39,7 +39,7 @@ async function startPublicServer(
   const handler = buildSupportPassportPublicRequestHandler(service, handlerOptions);
   const server = createServer((req, res) => {
     onRequest();
-    void handler(req, res, { authorized: false }).catch((error) => {
+    void handler(req, res, { authorized: false, tokenAuthorized: false }).catch((error) => {
       onError(error);
       if (!res.destroyed && !res.writableEnded) res.end();
     });
