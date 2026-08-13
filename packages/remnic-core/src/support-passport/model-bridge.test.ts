@@ -13,8 +13,7 @@ function startBridgeServer(bridge: SupportPassportModelBridge) {
     void bridge.requestHandler(req, res, {
       authorized: req.headers.authorization === "Bearer owner-token",
       tokenAuthorized:
-        req.headers.authorization === "Bearer owner-token" ||
-        req.headers.authorization === "Bearer scoped-token",
+        req.headers.authorization === "Bearer owner-token" || req.headers.authorization === "Bearer scoped-token",
       ...(req.headers.authorization === "Bearer scoped-token"
         ? { capabilities: { version: 1 as const, ops: ["recall"] } }
         : {}),
@@ -51,26 +50,29 @@ test("the model bridge moves a provider-neutral job through authenticated memory
       operation: "support-passport-draft",
       jsonSchema: { name: "drafts", schema: { type: "object" } },
     });
+    const claimedAt = Date.now();
     const jobResponse = await fetch(`${server.origin}${SUPPORT_PASSPORT_MODEL_JOB_PATH}`, {
       method: "POST",
       headers: { authorization: "Bearer owner-token", "content-type": "application/json" },
       body: JSON.stringify({ timeoutMs: 0 }),
     });
     assert.equal(jobResponse.status, 200);
-    const job = (await jobResponse.json()) as { id: string; messages: unknown };
+    const job = (await jobResponse.json()) as { id: string; messages: unknown; deadlineAt: number };
     assert.deepEqual(job.messages, messages);
+    assert.ok(job.deadlineAt > claimedAt);
+    assert.ok(job.deadlineAt <= claimedAt + 5_000);
 
     const completion = await fetch(`${server.origin}${SUPPORT_PASSPORT_MODEL_RESULT_PATH}`, {
       method: "POST",
       headers: { authorization: "Bearer owner-token", "content-type": "application/json" },
       body: JSON.stringify({
         id: job.id,
-        result: { content: "{\"cards\":[]}", modelUsed: "gateway/test" },
+        result: { content: '{"cards":[]}', modelUsed: "gateway/test" },
       }),
     });
     assert.equal(completion.status, 204);
     assert.deepEqual(await resultPromise, {
-      content: "{\"cards\":[]}",
+      content: '{"cards":[]}',
       modelUsed: "gateway/test",
     });
   } finally {

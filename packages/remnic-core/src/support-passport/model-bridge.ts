@@ -9,10 +9,8 @@ import type {
 } from "./model-adapter.js";
 import type { SupportPassportExternalRequestHandler } from "./public-http.js";
 
-export const SUPPORT_PASSPORT_MODEL_JOB_PATH =
-  "/engram/v1/support-passport/internal/model/jobs/next";
-export const SUPPORT_PASSPORT_MODEL_RESULT_PATH =
-  "/engram/v1/support-passport/internal/model/jobs/result";
+export const SUPPORT_PASSPORT_MODEL_JOB_PATH = "/engram/v1/support-passport/internal/model/jobs/next";
+export const SUPPORT_PASSPORT_MODEL_RESULT_PATH = "/engram/v1/support-passport/internal/model/jobs/result";
 
 const ModelMessageSchema = z
   .object({
@@ -28,6 +26,7 @@ const ModelJobSchema = z
     temperature: z.number().finite().min(0).max(2),
     maxTokens: z.number().int().min(1).max(32_000),
     timeoutMs: z.number().int().min(1).max(120_000),
+    deadlineAt: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     operation: z.enum(["support-passport-draft", "support-passport-answer"]),
     jsonSchema: z
       .object({
@@ -135,8 +134,7 @@ export class SupportPassportModelBridge {
       kind: "gateway",
       invoke: (messages, invokeOptions) => this.invoke(messages, invokeOptions),
     };
-    this.requestHandler = (req, res, ctx) =>
-      this.handleRequest(req, res, ctx.authorized, ctx.tokenAuthorized);
+    this.requestHandler = (req, res, ctx) => this.handleRequest(req, res, ctx.authorized, ctx.tokenAuthorized);
   }
 
   close(): void {
@@ -151,7 +149,7 @@ export class SupportPassportModelBridge {
 
   private invoke(
     messages: SupportPassportModelMessage[],
-    options: Parameters<SupportPassportModelRoute["invoke"]>[1],
+    options: Parameters<SupportPassportModelRoute["invoke"]>[1]
   ): Promise<SupportPassportModelRouteResult | null> {
     if (this.closed || this.pending.size >= this.maxPendingJobs || options.signal?.aborted) {
       return Promise.resolve(null);
@@ -162,13 +160,14 @@ export class SupportPassportModelBridge {
       temperature: options.temperature,
       maxTokens: options.maxTokens,
       timeoutMs: options.timeoutMs,
+      deadlineAt: Date.now() + options.timeoutMs,
       operation: options.operation,
       jsonSchema: options.jsonSchema,
     });
     if (!parsed.success) return Promise.resolve(null);
     return new Promise((resolve) => {
       let settled = false;
-      let timeout: ReturnType<typeof setTimeout>;
+      const timeout = setTimeout(() => settle(null), Math.max(0, parsed.data.deadlineAt - Date.now()));
       const settle = (result: SupportPassportModelRouteResult | null): void => {
         if (settled) return;
         settled = true;
@@ -180,7 +179,6 @@ export class SupportPassportModelBridge {
         options.signal?.removeEventListener("abort", abort);
         resolve(result);
       };
-      timeout = setTimeout(() => settle(null), parsed.data.timeoutMs);
       const abort = (): void => settle(null);
       const requeue = (): void => {
         if (!this.pending.has(parsed.data.id) || !this.claimed.delete(parsed.data.id)) return;
@@ -198,8 +196,7 @@ export class SupportPassportModelBridge {
       if (waiter) {
         this.claimed.add(parsed.data.id);
         waiter(parsed.data);
-      }
-      else this.available.push(parsed.data.id);
+      } else this.available.push(parsed.data.id);
     });
   }
 
@@ -217,13 +214,7 @@ export class SupportPassportModelBridge {
 
   private nextJob(timeoutMs: number, signal: AbortSignal): Promise<SupportPassportModelJob | null> {
     const available = this.takeAvailable();
-    if (
-      available ||
-      this.closed ||
-      signal.aborted ||
-      timeoutMs === 0 ||
-      this.waiters.length >= this.maxPendingJobs
-    ) {
+    if (available || this.closed || signal.aborted || timeoutMs === 0 || this.waiters.length >= this.maxPendingJobs) {
       return Promise.resolve(available);
     }
     return new Promise((resolve) => {
@@ -254,7 +245,7 @@ export class SupportPassportModelBridge {
     req: IncomingMessage,
     res: ServerResponse,
     authorized: boolean,
-    tokenAuthorized: boolean,
+    tokenAuthorized: boolean
   ): Promise<boolean> {
     const pathname = requestPath(req);
     const owned =
@@ -273,9 +264,10 @@ export class SupportPassportModelBridge {
     if (pathname === SUPPORT_PASSPORT_MODEL_JOB_PATH) {
       let timeoutMs = 20_000;
       try {
-        const parsed = z.object({ timeoutMs: z.number().int().min(0).max(25_000) }).strict().parse(
-          await readJson(req, 1_024),
-        );
+        const parsed = z
+          .object({ timeoutMs: z.number().int().min(0).max(25_000) })
+          .strict()
+          .parse(await readJson(req, 1_024));
         timeoutMs = parsed.timeoutMs;
       } catch {
         respondJson(res, 400, { error: "invalid_request", code: "invalid_request" });
