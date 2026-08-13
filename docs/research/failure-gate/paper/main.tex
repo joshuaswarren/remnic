@@ -30,7 +30,7 @@ fact at the moment the agent proposed the matched action eliminated
 repetition: a confirmatory run on 18 preregistered tasks measured a
 35.6-percentage-point reduction (95\% CI [16.7, 55.9], relative risk reduction
 100\%, $p = 0.0019$), with zero invalid rows and zero protocol deviations.
-The effect replicated across three measurements. Removing repeated failures
+The effect was consistent across three measurements. Removing repeated failures
 did not measurably improve task completion (+1.5\pp{} [0.0, 4.4]), so the
 claim is failure-mode removal, not general improvement. Our first registration
 returned NOT\_ESTIMABLE under its own zero-cut rule; we report both
@@ -145,11 +145,11 @@ with a frozen, matched payload. We do not claim to isolate the mechanism;
 Section~\ref{sec:discussion} treats candidate explanations as post hoc.
 
 \paragraph{Coding agents and benchmarks.}
-Agentic software engineering is standardly evaluated by end-to-end issue
+Agentic software engineering is standardly evaluated by whole-task issue
 resolution \citep{jimenez2023swebench, yang2024sweagent, wang2024openhands}
 over ReAct-style tool loops \citep{yao2023react, schick2023toolformer}, with
 code generation measured since HumanEval \citep{chen2021humaneval}. Repeating
-one's own recorded failure is a distinct, narrower behavior that end-to-end
+one's own recorded failure is a distinct, narrower behavior that aggregate
 pass rates do not surface; our tasks are built to measure exactly it.
 
 \paragraph{Preregistration and statistical rigor.}
@@ -388,8 +388,7 @@ failure rate for the candidate arm (pre-action delivery in timing rows;
 turn-start failure vs.\ turn-start success in the content row), with 95\%
 bootstrap intervals. The content $p$ is the registered compound value; the
 R1 timing row is exploratory by the registered zero-cut rule; because its
-decision is not estimable, no $p$-value is shown for it (the unadjusted
-descriptive sign-flip statistic on the 17 complete tasks was 0.0018).}
+decision is not estimable, no $p$-value is shown for it.}
 \label{tab:primary}
 \end{table}
 
@@ -402,8 +401,9 @@ risk reduction of 100\% (95\% CI $[100, 100]$, degenerate because the
 candidate numerator is zero in every bootstrap draw). Every registered support
 condition held with margin. The estimate is consistent across three
 measurements: the pilot ($+37.8\pp$, descriptive), the first registration's
-exploratory estimate ($+38.0\pp$ on 17 complete tasks), and the confirmatory
-run ($+35.6\pp$ on all 18).
+exploratory estimate ($+38.0\pp$ on 17 complete tasks, unadjusted
+descriptive sign-flip statistic 0.0018), and the confirmatory run
+($+35.6\pp$ on all 18).
 
 The content comparison is a genuine negative with structure. Turn-start
 failure wording did reduce repetition relative to matched success wording
@@ -574,10 +574,12 @@ report are public in the project repository at tag
 --- harness under \texttt{packages/bench/}, registrations and report under
 \texttt{docs/research/failure-gate/}, corpus under
 \texttt{packages/bench/fixtures/h6-failure-gate/}.} The per-episode logs,
-run manifests, decision-rule copies, deviation logs, and statistics, power,
-and audit artifacts of all four runs (both registrations, the bound pilot,
-and the abandoned manifest) are published as release assets on the same
-tag.\footnote{\url{https://github.com/joshuaswarren/remnic/releases/tag/h6-study-2026-08}}
+run manifests, decision-rule copies, expected designs, and deviation logs of
+all four runs (both registrations, the bound pilot, and the abandoned
+manifest), plus the statistics, power, and audit artifacts of every run that
+finalized, are published as release assets on the same tag; the abandoned
+manifest never finalized, so its bundle carries no statistics artifact by
+construction.\footnote{\url{https://github.com/joshuaswarren/remnic/releases/tag/h6-study-2026-08}}
 The registered analysis replays from the released episode logs byte-for-byte
 with zero model calls via a single command. Per-attempt trace archives (full
 agent transcripts) remain operator-local; their SHA-256 hashes are bound in
@@ -591,8 +593,9 @@ The experiment harness, execution supervision, and analysis tooling were
 built with substantial assistance from LLM coding agents operating under the
 author's direction, and every number in this paper was verified by
 deterministic replay against the released artifacts rather than taken from
-agent output. The study design, registrations, and claims are the author's.
-No external funding.
+agent output. The study design, registrations, and claims are the author's, and the
+author takes full responsibility for all content per arXiv's authorship
+policy. No external funding.
 
 \bibliographystyle{plainnat}
 \bibliography{references}

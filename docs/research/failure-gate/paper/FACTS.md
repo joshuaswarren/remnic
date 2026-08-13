@@ -2,8 +2,10 @@
 
 Single source for the arXiv paper and blog post. Do not cite a number that is
 not on this sheet. Artifact roots: `h6-main-v1` (first registration),
-`h6-timing-v2` (confirmatory rerun), `h6-pilot-v10` (bound pilot); all
-operator-local, hash-bound.
+`h6-timing-v2` (confirmatory rerun), `h6-pilot-v10` (bound pilot),
+`h6-timing-v1` (abandoned manifest); hash-bound, with episode logs and
+finalized-run analysis artifacts published as release assets on tag
+`h6-study-2026-08` (trace archives operator-local).
 
 ## Study design (frozen)
 
@@ -98,8 +100,10 @@ operator-local, hash-bound.
 - An earlier manifest under the same registration completed all 540 rows,
   then failed in the harness finalization step (an option-plumbing defect
   rejected by the analysis guard); abandoned with an operational deviation
-  record, never analyzed, no arm-level outcome observed. The confirmatory
-  manifest ran on the fixed, test-covered harness.
+  record. Its episode log existed on disk (written by the crashed
+  finalization attempts) but was never statistically analyzed before the
+  re-execution decision; see the abandoned-manifest section below. The
+  confirmatory manifest ran on the fixed, test-covered harness.
 
 ## Verification receipts
 

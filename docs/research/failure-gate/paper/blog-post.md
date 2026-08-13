@@ -2,7 +2,7 @@
 
 I spent the last few weeks running a preregistered experiment on a question
 that has bugged me since I started building Remnic, my open source memory
-system for AI agents: when an agent has a memory of failing at something,
+system for AI agents. When an agent has a memory of failing at something,
 why does it so often fail the same way again?
 
 The answer surprised me. It's not that the memory is wrong. It's not that the
@@ -11,9 +11,9 @@ model ignores memory. It's that we deliver the memory at the wrong moment.
 ## The setup
 
 Every agent memory system I know of, mine included, works the same way at
-recall time. The agent starts a turn, the system retrieves whatever looks
-relevant, and the recalled context lands in the prompt before the agent
-begins working. Retrieval strategies differ. Storage formats differ. The
+recall time. The agent starts a turn. The system retrieves whatever looks
+relevant. The recalled context lands in the prompt before the agent begins
+working. Retrieval strategies differ. Storage formats differ. The
 delivery point never does.
 
 So I built an experiment to isolate it. Thirty synthetic TypeScript repair
@@ -23,9 +23,9 @@ state bug underneath it. Edit the config file that another file silently
 shadows. Patch the call site instead of the module that owns the bug. Six
 trap classes, five tasks each.
 
-The protocol has two episodes. In episode one, the agent falls into the trap,
-and the harness freezes that failure as a memory: the fact text, plus a
-fingerprint of the trapping action. Episode two is the test: same task, and
+The protocol has two episodes. In episode one, the agent falls into the
+trap. The harness freezes that failure as a memory: the fact text, plus a
+fingerprint of the trapping action. Episode two is the test. Same task, and
 the agent gets its own failure memory back. The only question is when.
 
 One arm gets the memory at turn start, the way memory systems deliver it
@@ -53,9 +53,9 @@ similar repo instead of what failed here, beat the failure memory on task
 completion. The registered test rejected turn-start failure memory outright.
 
 With the identical fact delivered at the action site: zero repeats in 270
-raw episodes. The preregistered test works on task-level averages, and
-there it measured a 35.6 percentage point reduction against turn-start
-delivery, p = 0.0019, on all 18 preregistered tasks with no excluded data.
+raw episodes. The preregistered test works on task-level averages. There it
+measured a 35.6 percentage point reduction against turn-start delivery,
+p = 0.0019, on all 18 preregistered tasks with no excluded data.
 I measured the effect three separate times across the pilot and both
 registered runs, and it landed between 35 and 38 points every time.
 
@@ -79,19 +79,22 @@ episodes, and two came back unclassifiable after hitting execution caps.
 One of the two sat in the timing comparison, and my own preregistered rule
 said any unclassifiable row there voids the hypothesis. It voided. A
 38-point effect, set aside because I wrote a rule that allowed zero
-exceptions and then met exactly one where it mattered. I fixed the rule,
-registered the fix before generating new data, and reran the whole thing on
-fresh seeds.
-That rerun is the confirmatory result. Expensive lesson, but it's exactly
+exceptions and then met exactly one where it mattered. I fixed the rule and
+registered the fix before any new episode ran. The rerun itself took two
+attempts: the first completed all 540 episodes and then died in a harness
+bug during the final statistics step, so I repaired the harness, published
+that run's raw log untouched, and executed the registration again. Both
+logs are public, both show the same effect, and the one I kept as the
+confirmatory result is the smaller of the two. Expensive lesson, but it's exactly
 what preregistration is for. The result you can trust is the one that
 survived the rules written before the data existed.
 
 ## What this means for how we build
 
-If you're building agent memory, I think the takeaway is a routing rule, not
-a new architecture. Store failure memories with a fingerprint of the action
-that failed. At tool-proposal time, check the match. Inject the memory as an
-advisory, right there, and fail open if anything goes wrong. Keep your
+If you're building agent memory, I think the takeaway is a routing rule,
+not a new architecture. Store failure memories with a fingerprint of the
+action that failed. At tool-proposal time, check the match. Inject the
+memory as an advisory, right there. Fail open if anything goes wrong. Keep your
 semantic recall and preference context at turn start where it belongs. The
 warning belongs at the moment of temptation.
 
@@ -100,9 +103,9 @@ remnic core, and the issue laying out the production design is public.
 
 Everything is open if you want to poke at it. The paper has the full design,
 statistics, and limitations. The 30 trap tasks live in the Remnic repo with
-the harness and both registration documents, and the per-episode logs and
-statistics artifacts for every run are attached to the study release, so
-you can replay the analysis yourself with zero model calls.
+the harness and both registration documents, and the raw per-episode logs for every run, and the analysis artifacts for
+every run that finalized, are attached to the study release, so you can
+replay the analysis yourself with zero model calls.
 
 Paper: [arXiv link on publication]. Tasks, harness, and registrations:
 https://github.com/joshuaswarren/remnic/tree/h6-study-2026-08. Run

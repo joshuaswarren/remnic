@@ -253,9 +253,11 @@ side by side.
 | Rerun deviation log | `deviations.jsonl`, 0 bytes |
 | Abandoned rerun manifest | `~/.remnic/bench/results/h6-timing-v1/`, operational deviation recorded, never analyzed |
 
-The raw pilot and main bundles are operator-local and are not part of the public
-repository. These hashes support local audit and tamper checks. Public
-reproduction requires a sanitized bundle or an independent rerun.
+The per-episode logs, run manifests, decision-rule copies, deviation logs,
+and (for runs that finalized) statistics, power, and audit artifacts of all
+four runs are published as release assets on tag `h6-study-2026-08`.
+Per-attempt trace archives remain operator-local; their hashes are bound in
+the released manifests.
 
 An operator-local zero-call replay used:
 
