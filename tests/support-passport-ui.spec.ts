@@ -2130,7 +2130,7 @@ test("replay helpers never cite an unrelated selected card", async ({ page, cont
   await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
   await page.getByRole("button", { name: "Write a card" }).click();
   await page.getByLabel("Card title").fill("Email preference");
-  await page.getByLabel("What helps me").fill("Sometimes I prefer email.");
+  await page.getByLabel("What helps me").fill("I need time to read emails.");
   await page.getByRole("button", { name: "Save draft" }).click();
   const emailCard = page.locator(".support-card").filter({ hasText: "Email preference" });
   await emailCard.getByRole("button", { name: "Approve" }).click();

@@ -606,7 +606,11 @@
       },
       async askGrant(grantId, secret, question) {
         const guide = await this.readGrant(grantId, secret);
-        const transitionCard = guide.cards.find((card) => card.category === "transitions");
+        const transitionCard = guide.cards.find(
+          (card) =>
+            card.category === "transitions" &&
+            /\b(?:plans?|schedules?|routines?|changes?|transitions?)\b/i.test(`${card.title} ${card.statement}`)
+        );
         if (transitionCard && /\b(?:plans?|schedules?|routines?|transitions?)\b/i.test(question)) {
           return {
             answer: transitionCard.statement,
@@ -617,11 +621,16 @@
         const quietCard = guide.cards.find(
           (card) =>
             (card.category === "communication" || card.category === "regulation") &&
-            /\b(?:quiet|speaks?|speaking|responds?|responded|responding|pauses?|paused|space|time|settles?|settled)\b/i.test(
+            /\b(?:stop(?:s|ped|ping)? speaking|quiet (?:place|space|room)|overwhelm(?:ed|ing)?|shut(?:s|ting)? down|settle(?:s|d|ing)?)\b/i.test(
               `${card.title} ${card.statement}`
             )
         );
-        if (!quietCard || !/\b(?:overwhelm(?:ed|ing)?|speaking|quiet)\b/i.test(question)) {
+        if (
+          !quietCard ||
+          !/\b(?:overwhelm(?:ed|ing)?|stop(?:s|ped|ping)? speaking|quiet|shut(?:s|ting)? down|settle(?:s|d|ing)?)\b/i.test(
+            question
+          )
+        ) {
           return {
             answer: "That is not covered in this person's support guide.",
             citedCardIds: [],
