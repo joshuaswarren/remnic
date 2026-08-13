@@ -61,6 +61,17 @@ export function modelRequestTimeoutMs(routePlan, localLlmTimeoutMs) {
   return Math.max(DEFAULT_HTTP_TIMEOUT_MS, routeBudgetMs + MODEL_HTTP_MARGIN_MS);
 }
 
+export function isolateEnvironmentVariables(names) {
+  const previous = new Map(names.map((name) => [name, process.env[name]]));
+  for (const name of names) Reflect.deleteProperty(process.env, name);
+  return () => {
+    for (const [name, value] of previous) {
+      if (value === undefined) Reflect.deleteProperty(process.env, name);
+      else process.env[name] = value;
+    }
+  };
+}
+
 function listCreatedDirectories(outputDir, firstCreatedDirectory) {
   if (!firstCreatedDirectory) return [];
   const directories = [];

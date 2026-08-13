@@ -296,13 +296,16 @@
     return /^[A-Za-z0-9_-]{32,256}$/.test(secret) ? secret : "";
   }
 
-  function buildShareUrl(currentUrl, grantId, secret, replay) {
+  function buildShareUrl(currentUrl, grantId, secret, replay, replayChannelId = "") {
     const url = new URL(currentUrl);
     url.pathname = "/remnic/ui/what-helps-me/";
     url.search = "";
     url.hash = "";
     url.searchParams.set("grant", grantId);
-    if (replay) url.searchParams.set("mode", "replay");
+    if (replay) {
+      url.searchParams.set("mode", "replay");
+      url.searchParams.set("replayChannel", replayChannelId);
+    }
     url.hash = `secret=${encodeURIComponent(secret)}`;
     return url.toString();
   }
@@ -502,9 +505,9 @@
         grants = [{ ...sharedGrant, cards: sharedGrant.cards.map((card) => ({ ...card })) }];
         secrets.set(grantId, secret);
       },
-      exportSharedGuide(grantId, secret) {
+      exportSharedGuide(grantId) {
         const grant = grants.find((candidate) => candidate.grantId === grantId);
-        if (!grant || secrets.get(grantId) !== secret) return { errorCode: "grant_not_found" };
+        if (!grant) return { errorCode: "grant_not_found" };
         if (grant.status !== "active") return { errorCode: "grant_gone" };
         const selected = grant.cards.map((reference) =>
           cards.find((card) => card.cardId === reference.cardId && card.revision === reference.revision)

@@ -18,6 +18,7 @@ import { loadConfigFile, startServer } from "@remnic/server";
 import { z } from "zod";
 import {
   isolateDemoRemnicConfig,
+  isolateEnvironmentVariables,
   modelRequestTimeoutMs,
   readCleanCommitSha,
   runCleanupSteps,
@@ -69,6 +70,7 @@ const RevokeResponseSchema = z
     version: z.number().int().positive(),
   })
   .strict();
+const GRANT_MODEL_MARGIN_MS = 5 * 60_000;
 const MemoryStoreResponseSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -292,11 +294,6 @@ function assertNoPrivateReceiptData(receipt, values) {
   }
 }
 
-function restoreEnvironment(name, previous) {
-  if (previous === undefined) Reflect.deleteProperty(process.env, name);
-  else process.env[name] = previous;
-}
-
 async function runReserved(options, reservation) {
   const { receiptPath } = reservation;
   const sourceMemories = await readJson(
@@ -313,15 +310,20 @@ async function runReserved(options, reservation) {
   const memoryDir = path.join(tempRoot, "memory");
   const configPath = path.join(tempRoot, "config.json");
   const authToken = randomBytes(32).toString("base64url");
-  const previousMemoryDir = process.env.REMNIC_MEMORY_DIR;
-  const previousLegacyMemoryDir = process.env.ENGRAM_MEMORY_DIR;
+  const restoreDemoEnvironment = isolateEnvironmentVariables([
+    "REMNIC_MEMORY_DIR",
+    "ENGRAM_MEMORY_DIR",
+      "REMNIC_WRITE_RATE_LIMIT_MAX_REQUESTS",
+      "ENGRAM_WRITE_RATE_LIMIT_MAX_REQUESTS",
+      "REMNIC_WRITE_RATE_LIMIT_WINDOW_MS",
+      "ENGRAM_WRITE_RATE_LIMIT_WINDOW_MS",
+  ]);
   let server;
   let runFailed = false;
   let runError;
 
   try {
     process.env.REMNIC_MEMORY_DIR = memoryDir;
-    Reflect.deleteProperty(process.env, "ENGRAM_MEMORY_DIR");
     const port = await findAvailablePort();
     const derivedConfig = {
       remnic: isolateDemoRemnicConfig(sourceConfig.remnic, memoryDir),
@@ -433,7 +435,9 @@ async function runReserved(options, reservation) {
     }
     console.log("[4/9] Edited and approved one card as the owner.");
 
-    const requestedExpiry = new Date(Date.now() + 2 * 60 * 60 * 1_000).toISOString();
+    const requestedExpiry = new Date(
+      Date.now() + Math.max(2 * 60 * 60 * 1_000, modelTimeoutMs + GRANT_MODEL_MARGIN_MS)
+    ).toISOString();
     const grantRequest = await requestJson(
       `${baseUrl}/engram/v1/support-passport/grants`,
       {
@@ -449,7 +453,7 @@ async function runReserved(options, reservation) {
       "Share link creation"
     );
     const grant = parseBody(GrantResponseSchema, grantRequest, "Share link creation");
-    console.log("[5/9] Created a two-hour share link.");
+    console.log("[5/9] Created a share link that covers the configured model budget.");
 
     const publicUrl = `${baseUrl}/engram/v1/support-passport/public/grants/${encodeURIComponent(grant.grantId)}`;
     const helperReadRequest = await requestJson(
@@ -590,8 +594,7 @@ async function runReserved(options, reservation) {
     async () => {
       if (server) await server.stop();
     },
-    async () => restoreEnvironment("REMNIC_MEMORY_DIR", previousMemoryDir),
-    async () => restoreEnvironment("ENGRAM_MEMORY_DIR", previousLegacyMemoryDir),
+    async () => restoreDemoEnvironment(),
     async () => rm(tempRoot, { recursive: true, force: true }),
   ]);
   if (runFailed) throw runError;
@@ -613,7 +616,8 @@ async function main() {
   await run(options);
 }
 
-main().catch(() => {
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error));
   console.error("Live demo failed. Review the last completed step and the selected Remnic configuration.");
   process.exitCode = 1;
 });
