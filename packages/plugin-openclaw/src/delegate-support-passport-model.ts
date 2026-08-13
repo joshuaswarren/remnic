@@ -210,14 +210,17 @@ export function createDelegateSupportPassportModelService(
           log.warn("delegate support passport model bridge received an invalid job");
           continue;
         }
+        const deadline = Date.now() + job.timeoutMs;
         if (!(await acknowledge(job, signal))) {
           log.warn("delegate support passport model bridge could not acknowledge a claimed job");
           await abortableRetryDelay(signal);
           continue;
         }
-        const deadline = Date.now() + job.timeoutMs;
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) continue;
+        const claimedJob = { ...job, timeoutMs: remainingMs };
         try {
-          await complete(job, await invoke(job, signal), signal, deadline);
+          await complete(claimedJob, await invoke(claimedJob, signal), signal, deadline);
         } catch (error) {
           log.warn(`delegate support passport model completion failed: ${String(error)}`);
         }
