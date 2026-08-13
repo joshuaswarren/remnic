@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
@@ -36,6 +37,7 @@ test("@remnic/server build emits and advertises TypeScript declarations", async 
     "src/oauth.ts",
     "src/server-env.ts",
     "src/startup-readiness.ts",
+    "src/support-passport-runtime.ts",
   ]);
   assert.match(pkg.scripts?.build ?? "", /\s--dts(\s|$)/);
 
@@ -45,8 +47,58 @@ test("@remnic/server build emits and advertises TypeScript declarations", async 
   });
   assert.equal(pack.status, 0, pack.stderr || pack.stdout);
   const packResult = JSON.parse(pack.stdout) as Array<{ files?: Array<{ path?: string }> }>;
-  assert.equal(packResult[0]?.files?.some((file) => file.path === "src/index.ts"), true);
-  assert.equal(packResult[0]?.files?.some((file) => file.path?.endsWith(".test.ts") === true), false);
+  assert.equal(
+    packResult[0]?.files?.some((file) => file.path === "src/index.ts"),
+    true
+  );
+  assert.equal(
+    packResult[0]?.files?.some((file) => file.path === "src/support-passport-runtime.ts"),
+    true
+  );
+  assert.equal(
+    packResult[0]?.files?.some((file) => file.path?.endsWith(".test.ts") === true),
+    false
+  );
+
+  const packedRoot = await mkdtemp(path.join(os.tmpdir(), "remnic-server-packed-source-"));
+  try {
+    const packed = spawnSync("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", packedRoot], {
+      cwd: SERVER_DIR,
+      encoding: "utf-8",
+    });
+    assert.equal(packed.status, 0, packed.stderr || packed.stdout);
+    const packedResult = JSON.parse(packed.stdout) as Array<{ filename?: string }>;
+    const filename = packedResult[0]?.filename;
+    assert.equal(typeof filename, "string");
+    const extractedRoot = path.join(packedRoot, "extracted");
+    await mkdir(extractedRoot);
+    const extracted = spawnSync("tar", ["-xzf", path.join(packedRoot, filename as string), "-C", extractedRoot], {
+      cwd: ROOT,
+      encoding: "utf-8",
+    });
+    assert.equal(extracted.status, 0, extracted.stderr || extracted.stdout);
+    const packedPackage = path.join(extractedRoot, "package");
+    const packedNodeModules = path.join(packedPackage, "node_modules");
+    await symlink(path.join(ROOT, "node_modules"), packedNodeModules, "dir");
+    const tsxLoader = pathToFileURL(path.join(ROOT, "node_modules", "tsx", "dist", "loader.mjs")).href;
+    const packedSourceEntry = pathToFileURL(path.join(packedPackage, "src", "index.ts")).href;
+    const importCheck = `
+      if (import.meta.resolve("@remnic/server") !== ${JSON.stringify(packedSourceEntry)}) process.exit(3);
+      const api = await import("@remnic/server");
+      if (typeof api.startServer !== "function") process.exit(2);
+    `;
+    const sourceImport = spawnSync(
+      process.execPath,
+      ["--import", tsxLoader, "--conditions=remnic-source", "--input-type=module", "--eval", importCheck],
+      {
+        cwd: packedPackage,
+        encoding: "utf-8",
+      }
+    );
+    assert.equal(sourceImport.status, 0, sourceImport.stderr || sourceImport.stdout);
+  } finally {
+    await rm(packedRoot, { recursive: true, force: true });
+  }
 
   const api = await import(pathToFileURL(path.join(SERVER_DIR, "dist", "index.js")).href);
   assert.equal(typeof api.startServer, "function");

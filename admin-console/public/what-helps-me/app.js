@@ -341,11 +341,11 @@
     byId("viewMarkerText").textContent = replayMode ? "Owner replay" : "Owner view";
   }
 
-  function requestReplaySharedGuide() {
+  async function requestReplaySharedGuide() {
     if (!replayChannel) return Promise.reject(new Error("The replay share state is unavailable."));
     const requestId = crypto.randomUUID();
+    const proof = await model.replaySecretProof(state.helperSecret, requestId, state.helperGrantId);
     return new Promise((resolve, reject) => {
-      let timeout;
       const finish = (callback, value) => {
         window.clearTimeout(timeout);
         replayChannel.removeEventListener("message", receive);
@@ -363,7 +363,7 @@
         }
       };
       replayChannel.addEventListener("message", receive);
-      timeout = window.setTimeout(
+      const timeout = window.setTimeout(
         () => finish(reject, new Error("The replay share state is unavailable.")),
         REPLAY_SYNC_TIMEOUT_MS
       );
@@ -372,6 +372,7 @@
           type: "grant-request",
           requestId,
           grantId: state.helperGrantId,
+          proof,
         });
       } catch (error) {
         finish(reject, error);
@@ -381,16 +382,17 @@
 
   function bindReplayOwnerBridge() {
     if (!replayChannel || !replayStore) return;
-    replayChannel.addEventListener("message", (event) => {
+    replayChannel.addEventListener("message", async (event) => {
       const request = event.data;
       if (
         request?.type !== "grant-request" ||
-        typeof request.requestId !== "string" ||
-        typeof request.grantId !== "string"
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(request.requestId) ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(request.grantId) ||
+        !/^[a-f0-9]{64}$/.test(request.proof)
       ) {
         return;
       }
-      const result = replayStore.exportSharedGuide(request.grantId);
+      const result = await replayStore.exportSharedGuide(request.grantId, request.requestId, request.proof);
       replayChannel.postMessage({
         type: "grant-state",
         requestId: request.requestId,

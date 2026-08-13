@@ -1978,6 +1978,27 @@ test("replay helpers receive only the card selected by the owner", async ({ page
   }
 });
 
+test("a replay helper with the wrong secret stays locked", async ({ page, context }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers replay secret validation.");
+  await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
+  await page.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
+  await page.getByRole("button", { name: "Draft my support cards" }).click();
+  await page.getByRole("button", { name: "Approve" }).first().click();
+  await page.locator('input[name="shareCard"]').first().check();
+  await page.getByRole("button", { name: "Create share link" }).click();
+  const badUrl = new URL(await page.locator("#shareLinkInput").inputValue());
+  badUrl.hash = `secret=${"x".repeat(43)}`;
+
+  const helper = await context.newPage();
+  try {
+    await helper.goto(badUrl.toString());
+    await expect(helper.getByRole("heading", { name: "This link does not open a support passport." })).toBeVisible();
+    await expect(helper.locator(".public-card")).toHaveCount(0);
+  } finally {
+    await helper.close();
+  }
+});
+
 test("a replay helper locks after the owner withdraws a shared card", async ({ page, context }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers replay card withdrawal.");
   await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
@@ -2028,7 +2049,10 @@ test("a replay helper locks after the owner approves an edited shared card", asy
   }
 });
 
-test("a replay helper keeps an invalidation that arrives while its guide loads", async ({ page, context }, testInfo) => {
+test("a replay helper keeps an invalidation that arrives while its guide loads", async ({
+  page,
+  context,
+}, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers replay load invalidation.");
   await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
   await page.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
@@ -2057,8 +2081,7 @@ test("a replay helper keeps an invalidation that arrives while its guide loads",
           if (event.data?.type === "grant-state") {
             Object.assign(window, { __replayGrantStateDelayed: true });
             window.setTimeout(dispatch, 150);
-          }
-          else dispatch();
+          } else dispatch();
         };
         return super.addEventListener(type, delayed as EventListener, options);
       }

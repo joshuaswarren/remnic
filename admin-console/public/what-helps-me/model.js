@@ -376,6 +376,31 @@
     return `${prefix}-${[...bytes].map((value) => value.toString(16).padStart(2, "0")).join("")}`;
   }
 
+  async function replaySecretProof(secret, requestId, grantId) {
+    const key = await globalScope.crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"]
+    );
+    const signature = await globalScope.crypto.subtle.sign(
+      "HMAC",
+      key,
+      new TextEncoder().encode(`${requestId}:${grantId}`)
+    );
+    return [...new Uint8Array(signature)].map((value) => value.toString(16).padStart(2, "0")).join("");
+  }
+
+  function equalReplayProof(left, right) {
+    if (!/^[a-f0-9]{64}$/.test(left) || !/^[a-f0-9]{64}$/.test(right)) return false;
+    let difference = 0;
+    for (let index = 0; index < left.length; index += 1) {
+      difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
+    }
+    return difference === 0;
+  }
+
   function createReplayStore(now = () => new Date()) {
     let cards = [];
     let grants = [];
@@ -505,9 +530,12 @@
         grants = [{ ...sharedGrant, cards: sharedGrant.cards.map((card) => ({ ...card })) }];
         secrets.set(grantId, secret);
       },
-      exportSharedGuide(grantId) {
+      async exportSharedGuide(grantId, requestId, proof) {
         const grant = grants.find((candidate) => candidate.grantId === grantId);
-        if (!grant) return { errorCode: "grant_not_found" };
+        const secret = secrets.get(grantId);
+        if (!grant || !secret) return { errorCode: "grant_not_found" };
+        const expectedProof = await replaySecretProof(secret, requestId, grantId);
+        if (!equalReplayProof(expectedProof, proof)) return { errorCode: "grant_not_found" };
         if (grant.status !== "active") return { errorCode: "grant_gone" };
         const selected = grant.cards.map((reference) =>
           cards.find((card) => card.cardId === reference.cardId && card.revision === reference.revision)
@@ -627,5 +655,6 @@
     parseMemoryPreview,
     parsePublicGuide,
     parseSecret,
+    replaySecretProof,
   });
 })(window);
