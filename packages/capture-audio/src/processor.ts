@@ -427,11 +427,18 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
         openConversationId = prior.id;
       }
     }
+    // Decide retention BEFORE anything can close a conversation: a chunk kept
+    // for a later replay must keep its durable prefix resumable, and the
+    // idle-close below (or a later gap-crossing chunk) would otherwise flip it
+    // to final while this batch is still being applied (issue #2145).
+    for (const entry of batch) {
+      if (!isFullyProcessed(entry)) retainedForReplay = true;
+    }
     const earliestStart = batch.reduce(
       (earliest, entry) => (entry.startMs < earliest.startMs ? entry : earliest),
       batch[0],
     );
-    const closed = deps.assembler.closeIfIdle(earliestStart.event.startedAtUtc);
+    const closed = retainedForReplay ? null : deps.assembler.closeIfIdle(earliestStart.event.startedAtUtc);
     if (closed !== null && closed === openConversationId) {
       // Dedupes, diarizes and flips a conversation in the spool — durable, so
       // the caller must not rewind past it. Flagged AFTER the call: a throw
@@ -550,21 +557,8 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       // same length with different content. Either way a segment no run has
       // accounted for may be missing, so the chunk stays open and keeps its
       // audio.
-      const manifestMatches =
-        deps.spool.appliedChunkValue(transcriptManifestKey(entry.chunkId)) ===
-        transcriptManifestHash(entry.chunkId, entry.built.map((item) => item.seg));
-      // A chunk partially applied by a binary predating the manifest has none
-      // to match, so a silent replay must not be the first to record one.
-      const fullyProcessed =
-        entry.built.length > 0 ? manifestMatches : !deps.spool.hasAppliedChunkPrefix(`${entry.chunkId}:`);
-      // Anything kept for a later replay must ALSO hold its conversation open:
-      // once `finalize()` flips a conversation to `final`, a replay that
-      // reproduces the manifest can no longer `resume` it and the missing tail
-      // lands in a new conversation, out of reach of cross-channel dedup.
-      if (!fullyProcessed) {
-        retainedForReplay = true;
-      }
-      if (entry.built.length > 0 && !manifestMatches) {
+      const fullyProcessed = isFullyProcessed(entry);
+      if (entry.built.length > 0 && !fullyProcessed) {
         log.warn(
           `[capture-audio] chunk ${entry.chunkId} retranscribed to a different transcript than an earlier run; keeping its raw audio for replay`,
         );
@@ -583,6 +577,26 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
         report(err, entry.event);
       }
     }
+  }
+
+  /**
+   * Whether every segment this chunk ever produced is now durably stored.
+   *
+   * Completeness needs one fact a replay cannot re-derive: the transcript the
+   * chunk produced the FIRST time. The manifest marker carries it, written
+   * before any append, so a mismatch here means an earlier run produced a
+   * DIFFERENT transcript — shorter, or the same length with different content.
+   * Either way a segment no run has accounted for may be missing, so the chunk
+   * stays open and keeps its audio. A chunk partially applied by a binary
+   * predating the manifest has none to match, so a silent replay must not be
+   * the first to record one (issue #2145).
+   */
+  function isFullyProcessed(entry: BufferedChunk): boolean {
+    if (entry.built.length === 0) return !deps.spool.hasAppliedChunkPrefix(`${entry.chunkId}:`);
+    return (
+      deps.spool.appliedChunkValue(transcriptManifestKey(entry.chunkId)) ===
+      transcriptManifestHash(entry.chunkId, entry.built.map((item) => item.seg))
+    );
   }
 
   /**
@@ -787,11 +801,12 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     for (const id of deps.spool.capturingConversationIds()) {
       try {
         dedupeConversation(id);
-        // Diarization is deferred while a flush failure means segments are
-        // still buffered: clustering only ever ADDS, so embedding a mic copy
-        // whose system duplicate has not arrived yet would leave that copy's
-        // contribution in the centroid after dedup deletes the segment.
-        if (flushFailure === undefined) diarizeConversation(id);
+        // Diarization is deferred whenever segments are still outstanding — a
+        // failed flush OR a chunk retained for replay: clustering only ever
+        // ADDS, so embedding a mic copy whose system duplicate has not arrived
+        // yet would leave that copy's contribution in the centroid after dedup
+        // deletes the segment.
+        if (!holdOpen) diarizeConversation(id);
         // Flipped per conversation, not in bulk: a conversation whose
         // diarization failed must STAY capturing so a later finalize retries
         // it, while the ones that succeeded still reach the final-only read

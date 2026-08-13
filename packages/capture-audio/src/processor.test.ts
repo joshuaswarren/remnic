@@ -1503,3 +1503,50 @@ test("a chunk retained for replay keeps its conversation resumable", async () =>
     }
   }
 });
+
+test("a gap-crossing chunk cannot close a conversation held for replay", async () => {
+  // The retain decision must be made BEFORE the idle close: otherwise a later
+  // healthy chunk past the gap flips the durable prefix to final mid-batch,
+  // before the completion loop ever consults the flag (issue #2145).
+  const spool = new Spool(":memory:");
+  try {
+    const stale = chunk();
+    const cid = chunkStableId(stale);
+    const segs = [
+      { text: "A", startUtc: t(1), endUtc: t(2) },
+      { text: "B", startUtc: t(40), endUtc: t(41) },
+    ];
+    spool.markApplied(transcriptManifestKey(cid), transcriptManifestHash(cid, segs));
+    spool.appendAssembledSegments({
+      idempotencyKey: segmentStableKey(cid, segs[0]),
+      chunkId: cid,
+      conversationId: "conv_prefix",
+      startedAtUtc: t(1),
+      state: "capturing",
+      segments: [{ channel: "mic", text: "A", startUtc: t(1), endUtc: t(2), isWearer: true }],
+    });
+
+    // The silent replay and a much later healthy chunk release in ONE batch.
+    const later = chunk({
+      path: "/tmp/raw/later.wav",
+      startedAtUtc: t(9000),
+      endedAtUtc: t(9001),
+    });
+    const proc = createChunkProcessor(
+      deps(spool, {
+        onError: () => undefined,
+        transcribe: async (input) =>
+          input.wavPath.endsWith("later.wav") ? [{ text: "later", startUtc: t(9000), endUtc: t(9001) }] : [],
+      }),
+    );
+    proc.enqueue(stale);
+    proc.enqueue(later);
+    await proc.finalize();
+    assert.ok(
+      [...spool.capturingConversationIds()].includes("conv_prefix"),
+      "the held prefix was not flipped to final",
+    );
+  } finally {
+    spool.close();
+  }
+});
