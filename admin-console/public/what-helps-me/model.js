@@ -9,7 +9,6 @@
     "other",
   ]);
   const CARD_STATUSES = Object.freeze(["pending_review", "active", "rejected", "superseded", "archived"]);
-  const SHARE_REQUEST_MARGIN_MS = 60_000;
   const CATEGORY_LABELS = Object.freeze({
     communication: "Communication",
     environment: "Environment",
@@ -330,15 +329,16 @@
 
   function expiryForChoice(choice, customValue, now = Date.now()) {
     const durations = { "30m": 30 * 60_000, "2h": 2 * 60 * 60_000, "1d": 24 * 60 * 60_000 };
-    const timestamp = Object.hasOwn(durations, choice) ? now + durations[choice] : Date.parse(customValue);
+    if (Object.hasOwn(durations, choice)) return { durationMs: durations[choice] };
+    const timestamp = Date.parse(customValue);
     if (
       !Number.isFinite(timestamp) ||
-      timestamp < now + 300_000 + SHARE_REQUEST_MARGIN_MS ||
+      timestamp < now + 300_000 ||
       timestamp > now + 7 * 24 * 60 * 60_000
     ) {
-      throw new Error("Choose a share time at least six minutes from now and no more than seven days away.");
+      throw new Error("Choose a share time at least five minutes from now and no more than seven days away.");
     }
-    return new Date(timestamp).toISOString();
+    return { expiresAt: new Date(timestamp).toISOString() };
   }
 
   function formatDate(value) {

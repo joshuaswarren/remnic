@@ -14,7 +14,7 @@ const assets = new Map<string, readonly [string, string]>([
 ]);
 
 interface WhatHelpsMeBrowserModel {
-  expiryForChoice(choice: string, customValue: string, nowMs: number): string;
+  expiryForChoice(choice: string, customValue: string, nowMs: number): { durationMs: number } | { expiresAt: string };
   buildShareUrl(currentUrl: string, grantId: string, secret: string, legacyPath: boolean): string;
 }
 
@@ -1552,7 +1552,7 @@ test("owner navigation avoids smooth scrolling when reduced motion is requested"
   ).toEqual(["auto"]);
 });
 
-test("share links use the canonical path and reserve time for grant creation", async ({ page }, testInfo) => {
+test("share links use the canonical path and keep preset duration independent from browser time", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers the browser policy helpers.");
   await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
 
@@ -1561,13 +1561,14 @@ test("share links use the canonical path and reserve time for grant creation", a
     const model = (window as typeof window & { WhatHelpsMeModel: WhatHelpsMeBrowserModel }).WhatHelpsMeModel;
     let boundaryError = "";
     try {
-      model.expiryForChoice("custom", new Date(now + 359_999).toISOString(), now);
+      model.expiryForChoice("custom", new Date(now + 299_999).toISOString(), now);
     } catch (error) {
       boundaryError = error instanceof Error ? error.message : "unknown error";
     }
     return {
       boundaryError,
-      expiresAt: model.expiryForChoice("custom", new Date(now + 360_000).toISOString(), now),
+      customExpiry: model.expiryForChoice("custom", new Date(now + 300_000).toISOString(), now),
+      presetExpiry: model.expiryForChoice("30m", "", now + 60 * 60_000),
       shareUrl: model.buildShareUrl(
         "https://example.test/engram/ui/what-helps-me/?old=value#old=value",
         "grant-one",
@@ -1578,8 +1579,9 @@ test("share links use the canonical path and reserve time for grant creation", a
   });
 
   expect(result).toEqual({
-    boundaryError: "Choose a share time at least six minutes from now and no more than seven days away.",
-    expiresAt: "2026-08-11T12:06:00.000Z",
+    boundaryError: "Choose a share time at least five minutes from now and no more than seven days away.",
+    customExpiry: { expiresAt: "2026-08-11T12:05:00.000Z" },
+    presetExpiry: { durationMs: 1_800_000 },
     shareUrl: "https://example.test/remnic/ui/what-helps-me/?grant=grant-one#secret=secret-one",
   });
 });

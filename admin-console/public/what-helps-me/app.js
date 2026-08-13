@@ -855,9 +855,9 @@
       return;
     }
     const choice = document.querySelector('input[name="duration"]:checked')?.value ?? "2h";
-    let expiresAt;
+    let expiry;
     try {
-      expiresAt = model.expiryForChoice(choice, byId("customTimeInput").value);
+      expiry = model.expiryForChoice(choice, byId("customTimeInput").value);
     } catch (error) {
       setError("shareError", errorMessage(error, "Choose a valid share time."));
       return;
@@ -871,7 +871,7 @@
     try {
       let created;
       try {
-        created = model.parseCreatedGrant(await api.createGrant({ cardIds, cardRevisions, expiresAt }));
+        created = model.parseCreatedGrant(await api.createGrant({ cardIds, cardRevisions, ...expiry }));
       } catch (error) {
         if (error?.code !== "request_timeout") {
           setError("shareError", errorMessage(error, "The share link was not created."));
