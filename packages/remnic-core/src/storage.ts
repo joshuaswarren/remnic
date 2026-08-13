@@ -137,10 +137,7 @@ import {
   type TombstoneStats,
 } from "./lifecycle/tombstones.js";
 import { supersessionKeysForFact } from "./temporal-supersession.js";
-import {
-  runSupersessionSideEffects,
-  type SupersessionAuditOptions,
-} from "./storage/supersession-side-effects.js";
+import { runSupersessionSideEffects, type SupersessionAuditOptions } from "./storage/supersession-side-effects.js";
 import type {
   AccessTrackingEntry,
   BufferState,
