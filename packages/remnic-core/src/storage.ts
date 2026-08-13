@@ -7063,7 +7063,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         exactReplay,
         currentBefore,
         updatedFm,
-        audit: options.audit,
+        actor: options.actor, audit: options.audit,
         citationTemplate: this.citationTemplate,
         correctionsDir: this.correctionsDir,
         readMemoryByPath: (filePath) => this.readMemoryByPath(filePath),

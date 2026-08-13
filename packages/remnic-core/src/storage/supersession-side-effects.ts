@@ -31,6 +31,7 @@ export interface SupersessionSideEffectOptions {
   exactReplay: boolean;
   currentBefore: MemoryFile;
   updatedFm: MemoryFrontmatter;
+  actor?: string;
   audit?: SupersessionAuditOptions;
   citationTemplate: string;
   correctionsDir: string;
@@ -45,7 +46,7 @@ export interface SupersessionSideEffectOptions {
   appendTombstone: (input: TombstoneInput) => Promise<string | null>;
   writeSealedMemory: (
     envelope: SealedMemoryEnvelope,
-    extras: { lineage: [string, string]; sourceMemoryId: string }
+    extras: { actor?: string; lineage: [string, string]; sourceMemoryId: string }
   ) => Promise<unknown>;
 }
 
@@ -121,6 +122,7 @@ export async function runSupersessionSideEffects(options: SupersessionSideEffect
         { source: options.audit?.source ?? "contradiction-detection" }
       );
       await options.writeSealedMemory(auditEnvelope, {
+        actor: options.actor,
         lineage: [oldMemoryId, newMemoryId],
         sourceMemoryId: oldMemoryId,
       });
