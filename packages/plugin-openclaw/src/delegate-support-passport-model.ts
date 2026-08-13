@@ -29,7 +29,13 @@ const MODEL_WORKER_COUNT = 4;
 const DEFAULT_REQUEST_TIMEOUT_MS = 25_000;
 const RESULT_REQUEST_TIMEOUT_MS = 5_000;
 const RESULT_RETRY_DELAY_MS = 1_000;
+const POLL_RETRY_MAX_DELAY_MS = 30_000;
 const SHUTDOWN_RESULT_REQUEST_TIMEOUT_MS = 250;
+
+export function supportPassportModelPollRetryDelayMs(consecutiveFailures: number): number {
+  const exponent = Math.max(0, Math.min(30, Math.floor(consecutiveFailures) - 1));
+  return Math.min(POLL_RETRY_MAX_DELAY_MS, RESULT_RETRY_DELAY_MS * 2 ** exponent);
+}
 
 async function post(
   target: DelegateDaemonTarget,
@@ -189,6 +195,11 @@ export function createDelegateSupportPassportModelService(
     return response.ok;
   };
   const runPoller = async (signal: AbortSignal): Promise<void> => {
+    let consecutiveFailures = 0;
+    const delayAfterFailure = async (): Promise<void> => {
+      consecutiveFailures += 1;
+      await abortableRetryDelay(signal, supportPassportModelPollRetryDelayMs(consecutiveFailures));
+    };
     while (!signal.aborted) {
       try {
         const response = await post(
@@ -199,21 +210,26 @@ export function createDelegateSupportPassportModelService(
           signal,
           requestTimeoutMs
         );
-        if (response.status === 204) continue;
+        if (response.status === 204) {
+          consecutiveFailures = 0;
+          continue;
+        }
         if (!response.ok) {
           await response.body?.cancel();
-          await abortableRetryDelay(signal);
+          await delayAfterFailure();
           continue;
         }
         const job = parseSupportPassportModelJob(await response.json());
         if (!job) {
           log.warn("delegate support passport model bridge received an invalid job");
+          await delayAfterFailure();
           continue;
         }
+        consecutiveFailures = 0;
         const deadline = Date.now() + job.timeoutMs;
         if (!(await acknowledge(job, signal))) {
           log.warn("delegate support passport model bridge could not acknowledge a claimed job");
-          await abortableRetryDelay(signal);
+          await delayAfterFailure();
           continue;
         }
         const remainingMs = deadline - Date.now();
@@ -227,7 +243,7 @@ export function createDelegateSupportPassportModelService(
       } catch (error) {
         if (signal.aborted) break;
         log.warn(`delegate support passport model bridge failed: ${String(error)}`);
-        await abortableRetryDelay(signal);
+        await delayAfterFailure();
       }
     }
   };

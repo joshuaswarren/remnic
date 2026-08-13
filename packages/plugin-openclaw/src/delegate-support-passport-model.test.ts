@@ -3,7 +3,17 @@ import http from "node:http";
 import test from "node:test";
 
 import type { SupportPassportModelJob, SupportPassportModelRoute } from "@remnic/core";
-import { createDelegateSupportPassportModelService } from "./delegate-support-passport-model.js";
+import {
+  createDelegateSupportPassportModelService,
+  supportPassportModelPollRetryDelayMs,
+} from "./delegate-support-passport-model.js";
+
+test("persistent delegate poll failures use capped exponential backoff", () => {
+  assert.deepEqual(
+    [1, 2, 3, 4, 5, 6, 30].map(supportPassportModelPollRetryDelayMs),
+    [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000]
+  );
+});
 
 test("the delegate worker runs daemon jobs through the injected gateway route", async () => {
   const completion = Promise.withResolvers<Record<string, unknown>>();
