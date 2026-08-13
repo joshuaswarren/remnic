@@ -572,6 +572,119 @@ test("drafting rejects a memory changed after the owner reviewed it", async () =
   }
 });
 
+test("drafting preserves literal attribute-style source text", async () => {
+  const subject = await makeSubject();
+  try {
+    const content = "Keep this literal line.\n[Attributes: user-authored note]";
+    const selected = await subject.aliceStorage.writeMemory("preference", content, { source: "test" });
+    const modelInputs: string[] = [];
+    const service = new SupportPassportDraftService({
+      cardService: subject.cardService,
+      modelAdapter: new SupportPassportModelAdapter({
+        routes: [
+          {
+            kind: "local",
+            invoke: async (messages) => {
+              modelInputs.push(messages[1]?.content ?? "");
+              return {
+                modelUsed: "local/test-model",
+                content: JSON.stringify({
+                  cards: [
+                    {
+                      title: "Literal note",
+                      statement: "Keep the complete note.",
+                      category: "other",
+                      sourceMemoryIds: [selected.id],
+                    },
+                  ],
+                }),
+              };
+            },
+          },
+        ],
+      }),
+      resolveOwner: subject.resolveOwner,
+      audit: { record: async () => undefined },
+      now: subject.now,
+    });
+
+    await service.draftCards({
+      principal: "owner:alice",
+      sourceMemoryIds: [selected.id],
+      sourceMemoryRevisions: sourceRevision(selected.id, content),
+      consent: true,
+    });
+
+    assert.equal(modelInputs[0]?.includes("[Attributes: user-authored note]"), true);
+    assert.notEqual(
+      computeSupportPassportSourceRevision(content),
+      computeSupportPassportSourceRevision("Keep this literal line.")
+    );
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("drafting strips persisted structured attributes from model input and source revisions", async () => {
+  const subject = await makeSubject();
+  try {
+    const content = "Give me time to answer.";
+    const selected = await subject.aliceStorage.writeMemory("preference", content, {
+      source: "test",
+      structuredAttributes: { need: "processing time" },
+    });
+    const stored = await subject.aliceStorage.getMemoryById(selected.id);
+    assert.ok(stored);
+    const modelInputs: string[] = [];
+    const service = new SupportPassportDraftService({
+      cardService: subject.cardService,
+      modelAdapter: new SupportPassportModelAdapter({
+        routes: [
+          {
+            kind: "local",
+            invoke: async (messages) => {
+              modelInputs.push(messages[1]?.content ?? "");
+              return {
+                modelUsed: "local/test-model",
+                content: JSON.stringify({
+                  cards: [
+                    {
+                      title: "Processing time",
+                      statement: content,
+                      category: "communication",
+                      sourceMemoryIds: [selected.id],
+                    },
+                  ],
+                }),
+              };
+            },
+          },
+        ],
+      }),
+      resolveOwner: subject.resolveOwner,
+      audit: { record: async () => undefined },
+      now: subject.now,
+    });
+
+    await service.draftCards({
+      principal: "owner:alice",
+      sourceMemoryIds: [selected.id],
+      sourceMemoryRevisions: [
+        {
+          memoryId: selected.id,
+          revision: computeSupportPassportSourceRevision(stored.content, stored.frontmatter.structuredAttributes),
+        },
+      ],
+      consent: true,
+    });
+
+    assert.equal(modelInputs[0]?.includes("[Attributes:"), false);
+    assert.equal(modelInputs[0]?.includes(content), true);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("drafting validates the complete source snapshot before model disclosure", async () => {
   const subject = await makeSubject();
   try {
@@ -765,13 +878,14 @@ test("drafting rolls back when a selected memory changes during persistence", as
   }
 });
 
-test("cancellation rolls back a generated batch before the next draft write", async () => {
+test("cancellation rolls back a generated batch and records an aborted audit", async () => {
   const subject = await makeSubject();
   try {
     const selected = await subject.aliceStorage.writeMemory("preference", "Give me time to answer.", {
       source: "test",
     });
     const controller = new AbortController();
+    const records: SupportPassportModelAuditRecord[] = [];
     const writeSealedMemory = subject.aliceStorage.writeSealedMemory.bind(subject.aliceStorage);
     let draftWrites = 0;
     subject.aliceStorage.writeSealedMemory = async (...args) => {
@@ -809,7 +923,11 @@ test("cancellation rolls back a generated batch before the next draft write", as
         ],
       }),
       resolveOwner: subject.resolveOwner,
-      audit: { record: async () => undefined },
+      audit: {
+        record: async (record) => {
+          records.push(SupportPassportModelAuditRecordSchema.parse(record));
+        },
+      },
       now: subject.now,
     });
 
@@ -825,6 +943,8 @@ test("cancellation rolls back a generated batch before the next draft write", as
     );
     assert.equal(draftWrites, 1);
     assert.deepEqual(await subject.cardService.listCards({ principal: "owner:alice" }), []);
+    await flushAudit();
+    assert.equal(records[0]?.errorClass, "aborted");
   } finally {
     await subject.cleanup();
   }

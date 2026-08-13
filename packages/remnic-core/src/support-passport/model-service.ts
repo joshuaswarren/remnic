@@ -63,10 +63,17 @@ const DraftServiceInputSchema = z
     }
   });
 
-export function computeSupportPassportSourceRevision(content: string): string {
+function supportPassportSourceContent(memory: Pick<MemoryFile, "content" | "frontmatter">): string {
+  return memory.frontmatter.structuredAttributes ? stripAttributesSuffix(memory.content) : memory.content;
+}
+
+export function computeSupportPassportSourceRevision(
+  content: string,
+  structuredAttributes?: Record<string, string>
+): string {
   return createHash("sha256")
     .update("support-passport-source:v1\0")
-    .update(stripAttributesSuffix(content))
+    .update(structuredAttributes ? stripAttributesSuffix(content) : content)
     .digest("hex");
 }
 
@@ -185,11 +192,14 @@ export class SupportPassportDraftService {
       if (!memory || !isEligibleSource(memory)) {
         throw new SupportPassportError("invalid_input", "A selected memory is not available.", 400);
       }
-      if (computeSupportPassportSourceRevision(memory.content) !== revisions.get(memoryId)) {
+      if (
+        computeSupportPassportSourceRevision(memory.content, memory.frontmatter.structuredAttributes) !==
+        revisions.get(memoryId)
+      ) {
         throw new SupportPassportError("revision_conflict", "A selected memory changed after it was reviewed.", 409);
       }
       selectedMemories.push(memory);
-      memories.push({ memoryId, content: stripAttributesSuffix(memory.content) });
+      memories.push({ memoryId, content: supportPassportSourceContent(memory) });
     }
     await this.revalidateSources(owner.storage, selectedMemories, input.signal, cancellationMessage);
     const startedAt = Date.now();
@@ -242,7 +252,12 @@ export class SupportPassportDraftService {
       scheduleAudit(this.audit, {
         ...auditBase,
         outcome: "error",
-        errorClass: operationErrorClass(error),
+        errorClass:
+          error instanceof SupportPassportError
+            ? error.code
+            : input.signal?.aborted
+              ? "aborted"
+              : operationErrorClass(error),
       });
       throw error;
     }
