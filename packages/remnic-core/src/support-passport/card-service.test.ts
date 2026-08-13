@@ -2671,10 +2671,10 @@ test("generated draft rollback rejects known cards when the corpus scan fails", 
           },
         ],
       }),
-      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict",
+      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
     );
-    const persisted = (await readAllMemories()).find(
-      (memory) => memory.frontmatter.tags?.includes("support-passport-card"),
+    const persisted = (await readAllMemories()).find((memory) =>
+      memory.frontmatter.tags?.includes("support-passport-card")
     );
     assert.equal(persisted?.frontmatter.status, "rejected");
   } finally {
@@ -2780,11 +2780,13 @@ test("completed generated batches survive individual card withdrawal", async () 
     });
     const active = [];
     for (const draft of drafts) {
-      active.push(await subject.service.approveCard({
-        principal: "owner:alice",
-        cardId: draft.cardId,
-        expectedRevision: draft.revision,
-      }));
+      active.push(
+        await subject.service.approveCard({
+          principal: "owner:alice",
+          cardId: draft.cardId,
+          expectedRevision: draft.revision,
+        })
+      );
     }
     await subject.service.withdrawCard({
       principal: "owner:alice",
