@@ -62,7 +62,7 @@ async function openDirectoryNoFollow(
   if (before.isSymbolicLink() || !before.isDirectory()) throw new Error(errorMessage);
   const handle = await open(
     directory,
-    openFlags(fsConstants.O_RDONLY, fsConstants.O_DIRECTORY, fsConstants.O_NOFOLLOW),
+    openFlags(fsConstants.O_RDONLY, fsConstants.O_DIRECTORY, fsConstants.O_NOFOLLOW)
   );
   try {
     const opened = await handle.stat();
@@ -113,7 +113,7 @@ async function openStableDirectoryFromRoot(
   trustedRoot: string,
   directory: string,
   errorMessage: string,
-  platform: NodeJS.Platform = process.platform,
+  platform: NodeJS.Platform = process.platform
 ): Promise<{
   before: Stats;
   opened: Stats;
@@ -149,7 +149,7 @@ async function openStableDirectoryFromRoot(
         current.handle,
         current.opened,
         errorMessage,
-        platform,
+        platform
       ),
     };
   } catch (error) {
@@ -164,7 +164,7 @@ export async function ensurePrivateDirectoryNoFollow(
   errorMessage: string,
   syncVerifiedParent: (handle: FileHandle) => Promise<void> = syncDirectoryHandle,
   hardenExistingChildren = true,
-  platform: NodeJS.Platform = process.platform,
+  platform: NodeJS.Platform = process.platform
 ): Promise<void> {
   const root = path.resolve(trustedRoot);
   const target = path.resolve(directory);
@@ -207,7 +207,7 @@ export async function ensurePrivateDirectoryTreeNoFollow(
   directory: string,
   errorMessage: string,
   syncVerifiedParent: (handle: FileHandle) => Promise<void> = syncDirectoryHandle,
-  platform: NodeJS.Platform = process.platform,
+  platform: NodeJS.Platform = process.platform
 ): Promise<void> {
   const target = path.resolve(directory);
   const filesystemRoot = path.parse(target).root;
@@ -233,7 +233,7 @@ export async function ensurePrivateDirectoryTreeNoFollow(
       }
     },
     false,
-    platform,
+    platform
   );
 }
 
@@ -242,7 +242,7 @@ export async function withPrivateDirectoryNoFollow<T>(
   directory: string,
   errorMessage: string,
   task: (pinnedDirectory: string) => Promise<T>,
-  platform: NodeJS.Platform = process.platform,
+  platform: NodeJS.Platform = process.platform
 ): Promise<T> {
   let directoryHandles: FileHandle[] = [];
   try {
@@ -261,7 +261,7 @@ export async function readPrivateFileNoFollow(
   filePath: string,
   errorMessage: string,
   trustedRoot = directory,
-  platform: NodeJS.Platform = process.platform,
+  platform: NodeJS.Platform = process.platform
 ): Promise<string> {
   if (path.dirname(filePath) !== path.resolve(directory)) throw new Error(errorMessage);
   const targetName = path.basename(filePath);
@@ -295,26 +295,22 @@ export async function appendPrivateFileNoFollow(
   filePath: string,
   content: string,
   errorMessage: string,
-  trustedRoot = directory
+  trustedRoot = directory,
+  platform: NodeJS.Platform = process.platform
 ): Promise<void> {
   if (path.dirname(filePath) !== path.resolve(directory)) throw new Error(errorMessage);
   const targetName = path.basename(filePath);
   let directoryHandles: FileHandle[] = [];
   let fileHandle: FileHandle | undefined;
   try {
-    const stableDirectory = await openStableDirectoryFromRoot(trustedRoot, directory, errorMessage);
+    const stableDirectory = await openStableDirectoryFromRoot(trustedRoot, directory, errorMessage, platform);
     directoryHandles = stableDirectory.handles;
-    const pinnedDirectory = await resolvePrivateDirectoryPath(
-      directory,
-      stableDirectory.handle,
-      stableDirectory.opened,
-      errorMessage
-    );
+    const pinnedDirectory = stableDirectory.pinnedDirectory;
     const targetPath = path.join(pinnedDirectory, targetName);
     try {
       fileHandle = await open(
         targetPath,
-        fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW,
+        openFlags(fsConstants.O_WRONLY, fsConstants.O_APPEND, fsConstants.O_CREAT, fsConstants.O_NOFOLLOW),
         0o600
       );
     } catch (error) {
@@ -322,13 +318,15 @@ export async function appendPrivateFileNoFollow(
       throw error;
     }
     const fileMetadata = await fileHandle.stat();
+    if (platform === "win32") await assertAbsoluteDirectoryChainNoFollow(directory, errorMessage);
     assertStableDirectory(stableDirectory.before, stableDirectory.opened, await lstat(directory), errorMessage);
     if (!fileMetadata.isFile() || fileMetadata.nlink !== 1) throw new Error(errorMessage);
     await fileHandle.chmod(0o600);
     await fileHandle.appendFile(content, "utf8");
     await fileHandle.sync();
+    if (platform === "win32") await assertAbsoluteDirectoryChainNoFollow(directory, errorMessage);
     assertStableDirectory(stableDirectory.before, stableDirectory.opened, await lstat(directory), errorMessage);
-    await syncDirectoryHandle(stableDirectory.handle);
+    if (stableDirectory.handle) await syncDirectoryHandle(stableDirectory.handle);
   } finally {
     await fileHandle?.close().catch(() => undefined);
     await closeDirectoryHandles(directoryHandles);
@@ -341,7 +339,7 @@ export async function writePrivateFileAtomicallyNoFollow(
   content: string,
   errorMessage: string,
   trustedRoot = directory,
-  platform: NodeJS.Platform = process.platform,
+  platform: NodeJS.Platform = process.platform
 ): Promise<void> {
   if (path.dirname(filePath) !== path.resolve(directory)) throw new Error(errorMessage);
   const targetName = path.basename(filePath);
@@ -390,7 +388,7 @@ export async function removePrivateFilesNoFollow(
   fileNames: string[],
   errorMessage: string,
   trustedRoot = directory,
-  platform: NodeJS.Platform = process.platform,
+  platform: NodeJS.Platform = process.platform
 ): Promise<void> {
   if (
     fileNames.some(
