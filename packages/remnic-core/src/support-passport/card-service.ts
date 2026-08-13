@@ -1,5 +1,6 @@
 import type { StorageManager } from "../index.js";
 import { log } from "../logger.js";
+import { stripAttributesSuffix } from "../structured-attributes.js";
 import type { MemoryFile } from "../types.js";
 import type { HeldFileLockController } from "../utils/serialize-mutations.js";
 import { composeMemoryEnvelope } from "../write-envelope.js";
@@ -372,6 +373,12 @@ export class SupportPassportCardService {
       let card = await this.requireCard(storage, parsed.data.cardId, namespace, principal);
       this.requireRevision(card, parsed.data.expectedRevision);
       this.requireStatus(card, expectedStatus);
+      if (expectedStatus === "pending_review" && nextStatus === "rejected") {
+        await this.rejectPendingReplacementForPredecessor(storage, card, lock, principal, namespace);
+        card = await this.requireCard(storage, card.card.cardId, namespace, principal);
+        this.requireRevision(card, parsed.data.expectedRevision);
+        this.requireStatus(card, expectedStatus);
+      }
       if (
         expectedStatus === "pending_review" ||
         (expectedStatus === "active" && (card.replacesDraftId || card.memory.frontmatter.supersedes))
@@ -387,7 +394,7 @@ export class SupportPassportCardService {
       if (card.card.status === nextStatus) return card.card;
       this.requireStatus(card, expectedStatus);
       if (expectedStatus === "active" && nextStatus === "archived") {
-        await this.rejectPendingReplacementForWithdrawal(storage, card, lock, principal, namespace);
+        await this.rejectPendingReplacementForPredecessor(storage, card, lock, principal, namespace);
         card = await this.requireCard(storage, card.card.cardId, namespace, principal);
         this.requireRevision(card, parsed.data.expectedRevision);
         this.requireStatus(card, expectedStatus);
@@ -623,16 +630,19 @@ export class SupportPassportCardService {
     return priorId;
   }
 
-  private async rejectPendingReplacementForWithdrawal(
+  private async rejectPendingReplacementForPredecessor(
     storage: StorageManager,
     predecessor: StoredSupportPassportCard,
     lock: HeldFileLockController,
     principal: string,
     namespace: string
   ): Promise<void> {
-    const replacements = (await this.readProjectedCards(storage, namespace, principal)).filter(
-      (item) => item.card.status === "pending_review" && item.memory.frontmatter.supersedes === predecessor.card.cardId
-    );
+    const replacements = (await this.readProjectedCards(storage, namespace, principal)).filter((item) => {
+      if (item.card.status !== "pending_review") return false;
+      return predecessor.card.status === "pending_review"
+        ? item.replacesDraftId === predecessor.card.cardId
+        : item.memory.frontmatter.supersedes === predecessor.card.cardId;
+    });
     if (replacements.length > 1) {
       throw new SupportPassportError(
         "storage_conflict",
@@ -646,7 +656,10 @@ export class SupportPassportCardService {
     const rejected = await storage.writeMemoryFrontmatterIfUnchanged(
       replacement.memory,
       { status: "rejected", updated: this.now().toISOString() },
-      { actor: principal, reasonCode: "predecessor-withdrawn" }
+      {
+        actor: principal,
+        reasonCode: predecessor.card.status === "pending_review" ? "source-draft-rejected" : "predecessor-withdrawn",
+      }
     );
     if (rejected) return;
     const current = await storage.getMemoryById(replacement.card.cardId);
@@ -820,7 +833,21 @@ export class SupportPassportCardService {
       replacementId,
       "support-passport-replacement",
       { supersessionCause: "direct" },
-      { actor: principal, requireActive: true, acceptExactReplay: true, expectedSnapshot: prior }
+      {
+        actor: principal,
+        requireActive: true,
+        acceptExactReplay: true,
+        expectedSnapshot: prior,
+        audit: {
+          content: stripAttributesSuffix(prior.content),
+          tags: ["supersession", "auto-resolved", "support-passport-audit"],
+          structuredAttributes: {
+            [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.namespace]: namespace,
+            [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.owner]: computeSupportPassportOwnerKey(principal),
+          },
+          source: "support-passport",
+        },
+      }
     );
     if (!completed) log.warn("support passport could not complete replacement retirement side effects");
     return completed;

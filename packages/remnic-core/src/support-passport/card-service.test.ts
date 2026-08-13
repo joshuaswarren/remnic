@@ -5,6 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { StorageManager } from "../storage.js";
+import { stripAttributesSuffix } from "../structured-attributes.js";
 import { projectSupportPassportCard } from "./card-projection.js";
 import { SupportPassportCardService } from "./card-service.js";
 import { SupportPassportError } from "./errors.js";
@@ -566,6 +567,113 @@ test("withdrawing a card rejects its pending replacement", async () => {
     assert.equal(withdrawn.status, "archived");
     assert.equal((await subject.aliceStorage.getMemoryById(replacement.cardId))?.frontmatter.status, "rejected");
     assert.deepEqual(await subject.service.listCards({ principal: "owner:alice" }), []);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("rejecting a source draft rejects its interrupted hidden replacement", async () => {
+  const subject = await makeSubject();
+  try {
+    const draft = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Quiet place",
+      statement: "Offer me a quiet place.",
+      category: "environment",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const originalWrite = subject.aliceStorage.writeMemoryFrontmatterIfUnchanged.bind(subject.aliceStorage);
+    let interrupted = false;
+    subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = async (memory, patch, lifecycle) => {
+      if (!interrupted && lifecycle?.reasonCode === "owner-replaced-draft") {
+        interrupted = true;
+        throw new Error("simulated process exit after replacement creation");
+      }
+      return await originalWrite(memory, patch, lifecycle);
+    };
+    await assert.rejects(
+      subject.service.replaceCard({
+        principal: "owner:alice",
+        cardId: draft.cardId,
+        expectedRevision: draft.revision,
+        title: "Quiet place and time",
+        statement: "Offer me a quiet place and time.",
+        category: "environment",
+        reviewBy: OWNER_REVIEW_BY,
+      }),
+      /simulated process exit/
+    );
+    subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = originalWrite;
+
+    const replacement = (await subject.aliceStorage.readAllMemories()).find(
+      (memory) => memory.frontmatter.id !== draft.cardId
+    );
+    assert.ok(replacement);
+    await subject.service.rejectCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+    });
+
+    assert.equal((await subject.aliceStorage.getMemoryById(draft.cardId))?.frontmatter.status, "rejected");
+    assert.equal(
+      (await subject.aliceStorage.getMemoryById(replacement.frontmatter.id))?.frontmatter.status,
+      "rejected"
+    );
+    assert.deepEqual(await subject.service.listCards({ principal: "owner:alice" }), []);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("replacement audits retain the card owner scope and omit internal attributes", async () => {
+  const subject = await makeSharedStorageSubject();
+  try {
+    const draft = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Lighting",
+      statement: "Dim bright lights when you can.",
+      category: "sensory",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const active = await subject.service.approveCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+    });
+    const replacement = await subject.service.replaceCard({
+      principal: "owner:alice",
+      cardId: active.cardId,
+      expectedRevision: active.revision,
+      title: "Softer lighting",
+      statement: "Use softer lighting when you can.",
+      category: "sensory",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    await subject.service.approveCard({
+      principal: "owner:alice",
+      cardId: replacement.cardId,
+      expectedRevision: replacement.revision,
+    });
+
+    const audit = (await subject.storage.readAllMemories()).find(
+      (memory) =>
+        memory.frontmatter.category === "correction" &&
+        memory.frontmatter.lineage?.includes(active.cardId) &&
+        memory.frontmatter.lineage.includes(replacement.cardId)
+    );
+    assert.ok(audit);
+    assert.equal(
+      stripAttributesSuffix(audit.content),
+      "Superseded: Dim bright lights when you can.\n\nReason: support-passport-replacement"
+    );
+    assert.equal(stripAttributesSuffix(audit.content).includes("support-passport-title"), false);
+    assert.equal(audit.frontmatter.source, "support-passport");
+    assert.equal(audit.frontmatter.structuredAttributes?.["support-passport-namespace"], "alice");
+    assert.equal(
+      audit.frontmatter.structuredAttributes?.["support-passport-owner"],
+      (await subject.storage.getMemoryById(active.cardId))?.frontmatter.structuredAttributes?.["support-passport-owner"]
+    );
   } finally {
     await subject.cleanup();
   }
