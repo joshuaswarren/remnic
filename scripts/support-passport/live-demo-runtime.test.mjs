@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 
 import {
   isolateDemoRemnicConfig,
+  isolateEnvironmentVariables,
   modelRequestTimeoutMs,
   readCleanCommitSha,
   runCleanupSteps,
@@ -59,6 +60,31 @@ test("model HTTP timeouts cover every configured route budget", () => {
   assert.equal(modelRequestTimeoutMs(["gateway"], 180_000), 45_000);
   assert.equal(modelRequestTimeoutMs(["local"], 600_000), 615_000);
   assert.equal(modelRequestTimeoutMs(["local", "direct", "gateway"], 600_000), 675_000);
+});
+
+test("the demo clears inherited server limits and restores them", () => {
+  const inheritedName = "REMNIC_WRITE_RATE_LIMIT_MAX_REQUESTS";
+  const absentName = "ENGRAM_WRITE_RATE_LIMIT_WINDOW_MS";
+  const priorInherited = process.env[inheritedName];
+  const priorAbsent = process.env[absentName];
+  process.env[inheritedName] = "1";
+  Reflect.deleteProperty(process.env, absentName);
+
+  try {
+    const restore = isolateEnvironmentVariables([inheritedName, absentName]);
+    assert.equal(process.env[inheritedName], undefined);
+    assert.equal(process.env[absentName], undefined);
+    process.env[inheritedName] = "60";
+    process.env[absentName] = "60000";
+    restore();
+    assert.equal(process.env[inheritedName], "1");
+    assert.equal(process.env[absentName], undefined);
+  } finally {
+    if (priorInherited === undefined) Reflect.deleteProperty(process.env, inheritedName);
+    else process.env[inheritedName] = priorInherited;
+    if (priorAbsent === undefined) Reflect.deleteProperty(process.env, absentName);
+    else process.env[absentName] = priorAbsent;
+  }
 });
 
 test("runWithReservedOutput reserves and retains a new receipt", async (t) => {

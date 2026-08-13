@@ -19,7 +19,10 @@
   "files": [
     "bin/*.js",
     "dist",
-    "src"
+    "src/index.ts",
+    "src/oauth.ts",
+    "src/server-env.ts",
+    "src/startup-readiness.ts"
   ],
   "publishConfig": {
     "access": "public",

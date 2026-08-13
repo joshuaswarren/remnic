@@ -29,7 +29,14 @@ test("@remnic/server build emits and advertises TypeScript declarations", async 
   assert.equal(pkg.exports?.["."]?.types, "./dist/index.d.ts");
   assert.equal(pkg.exports?.["."]?.import, "./dist/index.js");
   assert.equal(pkg.exports?.["."]?.["remnic-source"], "./src/index.ts");
-  assert.equal(pkg.files?.includes("src"), true);
+  assert.deepEqual(pkg.files, [
+    "bin/*.js",
+    "dist",
+    "src/index.ts",
+    "src/oauth.ts",
+    "src/server-env.ts",
+    "src/startup-readiness.ts",
+  ]);
   assert.match(pkg.scripts?.build ?? "", /\s--dts(\s|$)/);
 
   const pack = spawnSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
@@ -39,6 +46,7 @@ test("@remnic/server build emits and advertises TypeScript declarations", async 
   assert.equal(pack.status, 0, pack.stderr || pack.stdout);
   const packResult = JSON.parse(pack.stdout) as Array<{ files?: Array<{ path?: string }> }>;
   assert.equal(packResult[0]?.files?.some((file) => file.path === "src/index.ts"), true);
+  assert.equal(packResult[0]?.files?.some((file) => file.path.endsWith(".test.ts")), false);
 
   const api = await import(pathToFileURL(path.join(SERVER_DIR, "dist", "index.js")).href);
   assert.equal(typeof api.startServer, "function");

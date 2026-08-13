@@ -15,7 +15,13 @@ const assets = new Map<string, readonly [string, string]>([
 
 interface WhatHelpsMeBrowserModel {
   expiryForChoice(choice: string, customValue: string, nowMs: number): { durationMs: number } | { expiresAt: string };
-  buildShareUrl(currentUrl: string, grantId: string, secret: string, legacyPath: boolean): string;
+  buildShareUrl(
+    currentUrl: string,
+    grantId: string,
+    secret: string,
+    legacyPath: boolean,
+    replayChannelId?: string
+  ): string;
 }
 
 let server: Server;
@@ -2022,6 +2028,72 @@ test("a replay helper locks after the owner approves an edited shared card", asy
   }
 });
 
+test("a replay helper keeps an invalidation that arrives while its guide loads", async ({ page, context }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers replay load invalidation.");
+  await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
+  await page.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
+  await page.getByRole("button", { name: "Draft my support cards" }).click();
+  const planCard = page.locator(".support-card").filter({ hasText: "Plan changes" });
+  await planCard.getByRole("button", { name: "Approve" }).click();
+  await page.locator(".card-choice").filter({ hasText: "Plan changes" }).locator('input[name="shareCard"]').check();
+  await page.getByRole("button", { name: "Create share link" }).click();
+  const shareUrl = await page.locator("#shareLinkInput").inputValue();
+
+  const helper = await context.newPage();
+  await helper.addInitScript(() => {
+    const NativeBroadcastChannel = window.BroadcastChannel;
+    window.BroadcastChannel = class DelayedReplayChannel extends NativeBroadcastChannel {
+      addEventListener(type, listener, options) {
+        if (type !== "message") return super.addEventListener(type, listener, options);
+        const delayed = (event) => {
+          if (event.data?.type === "grant-state") {
+            Object.assign(window, { __replayGrantStateDelayed: true });
+            window.setTimeout(() => listener(event), 150);
+          }
+          else listener(event);
+        };
+        return super.addEventListener(type, delayed, options);
+      }
+    };
+  });
+  try {
+    await helper.goto(shareUrl, { waitUntil: "domcontentloaded" });
+    await helper.waitForFunction(
+      () => (window as typeof window & { __replayGrantStateDelayed?: boolean }).__replayGrantStateDelayed === true,
+      undefined,
+      { timeout: 5_000 }
+    );
+    await planCard.getByRole("button", { name: "Withdraw" }).click();
+    await expect(helper.getByRole("heading", { name: "This share link is no longer current." })).toBeVisible();
+    await expect(helper.locator(".public-card")).toHaveCount(0);
+  } finally {
+    await helper.close();
+  }
+});
+
+test("replay owner tabs do not answer another owner's helper", async ({ page, context }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers replay owner isolation.");
+  const otherOwner = await context.newPage();
+  await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
+  await otherOwner.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
+  await page.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
+  await page.getByRole("button", { name: "Draft my support cards" }).click();
+  await page.getByRole("button", { name: "Approve" }).first().click();
+  await page.locator('input[name="shareCard"]').first().check();
+  await page.getByRole("button", { name: "Create share link" }).click();
+  const shareUrl = await page.locator("#shareLinkInput").inputValue();
+
+  const helper = await context.newPage();
+  try {
+    await helper.goto(shareUrl);
+    await expect(helper.locator(".public-card")).toHaveCount(1);
+    await expect(helper.locator("#lockedView")).toBeHidden();
+  } finally {
+    await helper.close();
+    await otherOwner.close();
+  }
+});
+
 test("replay helpers never cite an unrelated selected card", async ({ page, context }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers replay answer grounding.");
   await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
@@ -2236,7 +2308,8 @@ test("share links use the canonical path and keep preset duration independent fr
         "https://example.test/engram/ui/what-helps-me/?old=value#old=value",
         "grant-one",
         "secret-one",
-        false
+        false,
+        "ignored-replay-channel"
       ),
     };
   });
