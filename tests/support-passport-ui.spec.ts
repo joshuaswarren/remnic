@@ -55,6 +55,16 @@ function helperUrl(suffix = "") {
   return `${origin}/remnic/ui/what-helps-me/?mode=replay&grant=replay-grant${suffix}#secret=${"s".repeat(43)}`;
 }
 
+async function createReplayShare(page: Page): Promise<void> {
+  await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
+  await page.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
+  await page.getByRole("button", { name: "Draft my support cards" }).click();
+  await page.getByRole("button", { name: "Approve" }).first().click();
+  await page.locator('input[name="shareCard"]').first().check();
+  await page.getByRole("button", { name: "Create share link" }).click();
+  await expect(page.getByText("Share link ready")).toBeVisible();
+}
+
 test("the owner reviews one card at a time and controls sharing", async ({ page }, testInfo) => {
   await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
 
@@ -91,6 +101,37 @@ test("the owner reviews one card at a time and controls sharing", async ({ page 
 
   await page.getByRole("button", { name: "Stop sharing" }).click();
   await expect(page.getByText("Sharing stopped", { exact: true })).toBeVisible();
+});
+
+test("the owner link disappears when sharing stops", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers owner link revocation.");
+  await createReplayShare(page);
+
+  await page.getByRole("button", { name: "Stop sharing" }).click();
+
+  await expect(page.getByText("Share link ready")).toBeHidden();
+  await expect(page.getByLabel("Copy this link once")).toHaveValue("");
+});
+
+test("the owner link disappears when a shared card is withdrawn", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers stale owner links.");
+  await createReplayShare(page);
+
+  await page.getByRole("button", { name: "Withdraw" }).first().click();
+
+  await expect(page.getByText("Share link ready")).toBeHidden();
+  await expect(page.getByLabel("Copy this link once")).toHaveValue("");
+});
+
+test("the owner link disappears at its expiry time", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers owner link expiry.");
+  await page.clock.install({ time: new Date("2026-08-13T12:00:00.000Z") });
+  await createReplayShare(page);
+
+  await page.clock.fastForward(2 * 60 * 60_000);
+
+  await expect(page.getByText("Share link ready")).toBeHidden();
+  await expect(page.getByLabel("Copy this link once")).toHaveValue("");
 });
 
 test("the owner note preview preserves API text and binds consent to its revision", async ({ page }, testInfo) => {
