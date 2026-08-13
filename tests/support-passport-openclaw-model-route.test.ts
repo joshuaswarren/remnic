@@ -3,7 +3,10 @@ import test from "node:test";
 
 import { Orchestrator } from "@remnic/core/orchestrator";
 import type { SupportPassportModelRoute } from "@remnic/core";
-import { EngramAccessService } from "../src/access-service.js";
+import {
+  EngramAccessService,
+  createConfiguredSupportPassportGatewayRoute,
+} from "../src/access-service.js";
 import { parseConfig } from "../src/config.js";
 
 test("the OpenClaw access service injects its gateway route without a direct OpenAI key", async () => {
@@ -29,7 +32,7 @@ test("the OpenClaw access service injects its gateway route without a direct Ope
   assert.equal(service.supportPassportGatewayRouteRef?.kind, "gateway");
 });
 
-test("the OpenClaw access service keeps a gateway fallback in plugin mode", async () => {
+test("plugin mode keeps the configured gateway fallback for delegate workers", () => {
   const config = parseConfig({
     modelSource: "plugin",
     openaiApiKey: false,
@@ -48,9 +51,7 @@ test("the OpenClaw access service keeps a gateway fallback in plugin mode", asyn
       },
     },
   });
-  const service = new EngramAccessService(new Orchestrator(config));
-
-  assert.equal(service.supportPassportGatewayRouteRef?.kind, "gateway");
+  assert.equal(createConfiguredSupportPassportGatewayRoute(config)?.kind, "gateway");
 });
 
 test("the OpenClaw access service preserves an explicitly injected gateway route", () => {

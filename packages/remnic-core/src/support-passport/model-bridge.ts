@@ -26,7 +26,6 @@ const ModelJobSchema = z
     temperature: z.number().finite().min(0).max(2),
     maxTokens: z.number().int().min(1).max(32_000),
     timeoutMs: z.number().int().min(1).max(120_000),
-    deadlineAt: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     operation: z.enum(["support-passport-draft", "support-passport-answer"]),
     jsonSchema: z
       .object({
@@ -67,6 +66,7 @@ const ModelResultSchema = z
 
 interface PendingJob {
   job: SupportPassportModelJob;
+  deadlineAt: number;
   resolve: (result: SupportPassportModelRouteResult | null) => void;
   requeue(): void;
 }
@@ -160,14 +160,14 @@ export class SupportPassportModelBridge {
       temperature: options.temperature,
       maxTokens: options.maxTokens,
       timeoutMs: options.timeoutMs,
-      deadlineAt: Date.now() + options.timeoutMs,
       operation: options.operation,
       jsonSchema: options.jsonSchema,
     });
     if (!parsed.success) return Promise.resolve(null);
     return new Promise((resolve) => {
       let settled = false;
-      const timeout = setTimeout(() => settle(null), Math.max(0, parsed.data.deadlineAt - Date.now()));
+      const deadlineAt = Date.now() + parsed.data.timeoutMs;
+      const timeout = setTimeout(() => settle(null), parsed.data.timeoutMs);
       const settle = (result: SupportPassportModelRouteResult | null): void => {
         if (settled) return;
         settled = true;
@@ -185,19 +185,35 @@ export class SupportPassportModelBridge {
         const waiter = this.waiters.shift();
         if (waiter) {
           this.claimed.add(parsed.data.id);
-          waiter(parsed.data);
+          waiter(this.claimedJob(parsed.data));
         } else {
           this.available.push(parsed.data.id);
         }
       };
-      this.pending.set(parsed.data.id, { job: parsed.data, resolve: settle, requeue });
+      this.pending.set(parsed.data.id, {
+        job: parsed.data,
+        deadlineAt,
+        resolve: settle,
+        requeue,
+      });
       options.signal?.addEventListener("abort", abort, { once: true });
       const waiter = this.waiters.shift();
       if (waiter) {
         this.claimed.add(parsed.data.id);
-        waiter(parsed.data);
+        waiter(this.claimedJob(parsed.data));
       } else this.available.push(parsed.data.id);
     });
+  }
+
+  private claimedJob(job: SupportPassportModelJob): SupportPassportModelJob | null {
+    const pending = this.pending.get(job.id);
+    if (!pending) return null;
+    const remainingMs = pending.deadlineAt - Date.now();
+    if (remainingMs <= 0) {
+      pending.resolve(null);
+      return null;
+    }
+    return { ...job, timeoutMs: remainingMs };
   }
 
   private takeAvailable(): SupportPassportModelJob | null {
@@ -207,7 +223,7 @@ export class SupportPassportModelBridge {
       const pending = this.pending.get(id);
       if (pending) {
         this.claimed.add(id);
-        return pending.job;
+        return this.claimedJob(pending.job);
       }
     }
   }
