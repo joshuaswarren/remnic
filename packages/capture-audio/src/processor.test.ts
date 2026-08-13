@@ -3,7 +3,12 @@ import test from "node:test";
 
 import { ConversationAssembler } from "./assembly.js";
 import type { ChunkEvent } from "./native.js";
-import { chunkStableId, createChunkProcessor, type ChunkProcessorDeps } from "./processor.js";
+import {
+  chunkStableId,
+  createChunkProcessor,
+  segmentStableKey,
+  type ChunkProcessorDeps,
+} from "./processor.js";
 import { Spool } from "./spool.js";
 import type { TranscribedSegment } from "./stt.js";
 import { SpeakerClusterer, type Embedding } from "./diarization.js";
@@ -581,9 +586,10 @@ test("partial-chunk replay appends the missing tail segment instead of duplicati
     // Simulate a kill-9 AFTER segment 0 appended but BEFORE segment 1 / the
     // :done marker. Keys are per-segment (`chunkId:i<index>`) so they mean the
     // same bytes on every replay, whatever batch the chunk lands in (#2145).
+    const seededKey = segmentStableKey(cid, { startUtc: t(1), endUtc: t(2), text: "first group" });
     spool.appendAssembledSegments({
-      idempotencyKey: `${cid}:i0`,
-      chunkId: `${cid}:i0`,
+      idempotencyKey: seededKey,
+      chunkId: seededKey,
       conversationId: "conv_grp0",
       startedAtUtc: t(1),
       state: "capturing",
@@ -614,9 +620,10 @@ test("a zero-segment replay of a partially-applied chunk does NOT mark it done (
   try {
     const ev = chunk({ path: "/tmp/raw/multi.wav" });
     const cid = chunkStableId(ev);
+    const seededKey = segmentStableKey(cid, { startUtc: t(1), endUtc: t(2), text: "first group" });
     spool.appendAssembledSegments({
-      idempotencyKey: `${cid}:i0`,
-      chunkId: `${cid}:i0`,
+      idempotencyKey: seededKey,
+      chunkId: seededKey,
       conversationId: "conv_grp0",
       startedAtUtc: t(1),
       state: "capturing",
@@ -1053,6 +1060,47 @@ test("a pre-commit failure also rewinds restart-recovery state", async () => {
       ["before restart", "after restart"],
       "and the within-gap segment joined it",
     );
+  } finally {
+    spool.close();
+  }
+});
+
+test("a retranscription that inserts a segment does not rebind an existing key", async () => {
+  // Keys are content-derived, not positional: replaying [A, B] as [X, A, B]
+  // must append X and skip A, not treat A as new because its index moved
+  // (issue #2145).
+  const spool = new Spool(":memory:");
+  try {
+    const ev = chunk({ path: "/tmp/raw/reseg.wav" });
+    const cid = chunkStableId(ev);
+    const keyA = segmentStableKey(cid, { startUtc: t(10), endUtc: t(11), text: "A" });
+    spool.appendAssembledSegments({
+      idempotencyKey: keyA,
+      chunkId: keyA,
+      conversationId: "conv_seeded",
+      startedAtUtc: t(10),
+      state: "capturing",
+      segments: [{ channel: "mic", text: "A", startUtc: t(10), endUtc: t(11), isWearer: true }],
+    });
+    const proc = createChunkProcessor(
+      deps(spool, {
+        assembler: new ConversationAssembler({ gapMinutes: 10 }),
+        transcribe: async () => [
+          { text: "X", startUtc: t(1), endUtc: t(2) },
+          { text: "A", startUtc: t(10), endUtc: t(11) },
+          { text: "B", startUtc: t(20), endUtc: t(21) },
+        ],
+      }),
+    );
+    proc.enqueue(ev);
+    await proc.finalize();
+
+    const stored = spool
+      .capturingConversationIds()
+      .concat(["conv_seeded"])
+      .flatMap((id) => spool.conversationSegmentsForDedup(id).map((seg) => seg.text));
+    assert.equal(spool.stats().segments, 3, "X and B were added; A was not duplicated");
+    assert.deepEqual([...new Set(stored)].sort(), ["A", "B", "X"]);
   } finally {
     spool.close();
   }

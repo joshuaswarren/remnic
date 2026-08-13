@@ -654,6 +654,21 @@ export class Spool {
     return rows.map((r) => r.id);
   }
 
+  /**
+   * Whether ANY idempotency key for this chunk was applied.
+   *
+   * Per-segment keys are content-derived, so they cannot be enumerated from a
+   * chunk id alone; a zero-segment replay still has to know whether the chunk
+   * was partially applied before (issue #2145).
+   */
+  hasAppliedChunkPrefix(prefix: string): boolean {
+    return (
+      this.#db
+        .prepare("SELECT 1 FROM applied_chunks WHERE idempotency_key LIKE ? ESCAPE '\\' LIMIT 1")
+        .get(`${prefix.replace(/[\\%_]/g, "\\$&")}%`) !== undefined
+    );
+  }
+
   /** Whether a chunk with this idempotency key was already durably applied. */
   isChunkApplied(idempotencyKey: string): boolean {
     return (

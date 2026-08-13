@@ -86,6 +86,23 @@ export interface ChunkProcessor {
  * depends on a freshly-generated conversation id, the same chunk yields the
  * same idempotency key across process restarts.
  */
+/**
+ * Stable per-segment idempotency key.
+ *
+ * Derived from the segment's CONTENT — its bounds and text — not its position.
+ * An index is not an identity: a retranscription that changes segment
+ * boundaries, or inserts a segment before a partially committed prefix, would
+ * bind an existing key to different audio (issue #2145). Content survives
+ * both, so a key always means the same bytes.
+ */
+export function segmentStableKey(chunkId: string, segment: { startUtc: string; endUtc: string; text: string }): string {
+  const digest = createHash("sha1")
+    .update(`${segment.startUtc}\u0000${segment.endUtc}\u0000${segment.text}`)
+    .digest("hex")
+    .slice(0, 16);
+  return `${chunkId}:h${digest}`;
+}
+
 export function chunkStableId(event: ChunkEvent): string {
   return `chk_${createHash("sha1").update(event.path).digest("hex")}`;
 }
@@ -391,17 +408,9 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     // embedding failure on an already-persisted segment would requeue the
     // batch forever and block the segments that ARE missing (issue #2145).
     const fresh = stream.filter(
-      ({ entry, index }) => !deps.spool.isChunkApplied(`${entry.chunkId}:i${index}`),
+      ({ entry, item }) => !deps.spool.isChunkApplied(segmentStableKey(entry.chunkId, item.seg)),
     );
-    // Per chunk: did THIS run contribute anything new? A replay whose
-    // transcript is entirely already-applied proves nothing about a tail the
-    // original transcription produced and never persisted — an STT or
-    // segmentation change can shorten the transcript — so such a chunk is not
-    // closed out and keeps its raw audio (issue #2145).
-    const freshPerChunk = new Map<string, number>();
-    for (const { entry } of fresh) {
-      freshPerChunk.set(entry.chunkId, (freshPerChunk.get(entry.chunkId) ?? 0) + 1);
-    }
+
 
     // Embed before a single `assembler.add`. Embedding is the only await that
     // can throw before persistence, and the assembler has no undo: a throw
@@ -446,7 +455,7 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     for (const run of runs) {
       const { chunkId, event } = run.entry;
       for (const item of run.items) {
-        const key = `${chunkId}:i${item.index}`;
+        const key = segmentStableKey(chunkId, item.seg);
         if (openConversationId !== null && openConversationId !== run.id) {
           finalizeConv(openConversationId);
           progress.persisted = true;
@@ -473,9 +482,12 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       // A zero-segment run over a chunk whose earlier groups were already
       // applied (a partial crash) must NOT be marked done, or the missing tail
       // groups would be stranded forever.
+      // Content-keyed segments make "every segment already applied" mean the
+      // chunk IS fully persisted, so a nonempty transcript is again a sound
+      // proxy for completeness. The `:started` marker covers the zero-segment
+      // replay of a chunk that WAS partially applied.
       const fullyProcessed =
-        (freshPerChunk.get(entry.chunkId) ?? 0) > 0 ||
-        !deps.spool.isChunkApplied(`${entry.chunkId}:i0`);
+        entry.built.length > 0 || !deps.spool.hasAppliedChunkPrefix(`${entry.chunkId}:`);
       processedThisRun.add(entry.chunkId);
       if (!fullyProcessed) continue;
       // The chunk is fully durably transcribed: record completion and reclaim
