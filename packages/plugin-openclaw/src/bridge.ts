@@ -560,7 +560,9 @@ function readServerBlock(
  * Explicit `delegate` still resolves exactly one endpoint: the operator named
  * a daemon, so guessing among candidates would be the wrong behavior.
  */
-function daemonEndpointCandidates(): DaemonEndpointCandidate[] {
+function daemonEndpointCandidates(
+  unitExists?: (candidate: string) => boolean,
+): DaemonEndpointCandidate[] {
   const envHost = readCompatEnv("REMNIC_HOST", "ENGRAM_HOST");
   const envPort = coerceDaemonPort(readCompatEnv("REMNIC_PORT", "ENGRAM_PORT"));
   const candidates: DaemonEndpointCandidate[] = [];
@@ -644,7 +646,7 @@ function daemonEndpointCandidates(): DaemonEndpointCandidate[] {
   // merges its environment over its config file. They rank ahead of cwd/home
   // because they name what the daemon was actually launched with - and every
   // candidate is probed, so a stale one costs one failed probe.
-  for (const unit of readServiceEndpoints()) {
+  for (const unit of readServiceEndpoints(unitExists)) {
     const server = unit.configPath === undefined ? {} : (readServerBlock(unit.configPath) ?? {});
     add(
       unit.host ?? server.host,
@@ -704,8 +706,15 @@ export function detectDaemonBridgeMode(options: {
   memoryDir: string;
   timeoutMs?: number;
   onSkip?: (reason: string) => void;
+  /**
+   * Injectable unit-file probe. The SYSTEM unit directories are absolute, so a
+   * caller that redirects `HOME` still discovers the real host's installed
+   * daemon; tests for the lower-precedence config candidates pass a probe that
+   * reports no installed unit.
+   */
+  unitExists?: (candidate: string) => boolean;
 }): BridgeConfig {
-  const endpoints = daemonEndpointCandidates();
+  const endpoints = daemonEndpointCandidates(options.unitExists);
   // The first candidate is what an explicit `delegate` would dial, so it is
   // also what an embedded result reports.
   const primary =

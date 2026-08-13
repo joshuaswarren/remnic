@@ -477,7 +477,13 @@ test("detectDaemonBridgeMode reads legacy config port when remnic config is malf
     delete process.env.ENGRAM_BRIDGE_MODE;
 
     const { detectDaemonBridgeMode } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
-    const config = detectDaemonBridgeMode({ memoryDir: DETECT_MEMORY_DIR });
+    // An installed daemon unit legitimately outranks the home-config candidates,
+    // and the SYSTEM unit directories are absolute — so without this probe the
+    // assertion below only holds on hosts that have no daemon installed.
+    const config = detectDaemonBridgeMode({
+      memoryDir: DETECT_MEMORY_DIR,
+      unitExists: () => false,
+    });
     assert.equal(config.daemonPort, 4815);
   } finally {
     if (previousHome === undefined) delete process.env.HOME;

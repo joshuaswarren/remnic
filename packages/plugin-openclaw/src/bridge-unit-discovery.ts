@@ -201,8 +201,17 @@ export function readUnitAuthToken(
   };
 }
 
-/** Every installed unit's endpoint hints, in discovery order. */
-export function readServiceEndpoints(): Array<{
+/**
+ * Every installed unit's endpoint hints, in discovery order.
+ *
+ * `exists` is injectable for the same reason `resolveSystemUnitSources` takes
+ * it: the SYSTEM unit directories are absolute, so a test that redirects `HOME`
+ * still sees the real host's installed daemon and cannot exercise the
+ * lower-precedence config candidates at all.
+ */
+export function readServiceEndpoints(
+  exists: (candidate: string) => boolean = fileExists,
+): Array<{
   configPath?: string;
   host?: string;
   port?: number;
@@ -224,12 +233,12 @@ export function readServiceEndpoints(): Array<{
     ...resolveSystemUnitSources(
       systemdUserUnitDirs(homeDir),
       SYSTEMD_UNIT_NAMES,
-      fileExists,
+      exists,
     ).map((source) => ({ ...source, userScoped: true })),
     // For a SYSTEM unit the base file and its overrides can live in different
     // load-path directories: a packaged unit under `/usr/lib` customized by
     // `systemctl edit`, which writes `/etc/systemd/system/<unit>.d/*.conf`.
-    ...resolveSystemUnitSources(SYSTEMD_SYSTEM_UNIT_DIRS, SYSTEMD_SYSTEM_UNIT_NAMES, fileExists).map(
+    ...resolveSystemUnitSources(SYSTEMD_SYSTEM_UNIT_DIRS, SYSTEMD_SYSTEM_UNIT_NAMES, exists).map(
       (source) => ({ ...source, userScoped: false }),
     ),
   ];
