@@ -19,6 +19,7 @@ import { StorageManager } from "../storage.js";
 import type { withHeldFileLock } from "../utils/serialize-mutations.js";
 import { SupportPassportCardService } from "./card-service.js";
 import { SupportPassportError } from "./errors.js";
+import { supportPassportOwnerLockPath } from "./owner-lock.js";
 import { SupportPassportGrantService } from "./grant-service.js";
 import { SupportPassportGrantStore, syncDirectoryForDurability } from "./grant-store.js";
 import {
@@ -549,7 +550,10 @@ test("grant creation rechecks the owner lock immediately before commit", async (
       const memory = await originalRead(memoryId);
       if (!replacedLock) {
         replacedLock = true;
-        const lockPath = path.join(subject.aliceStorage.dir, "state", "support-passport-cards.lock");
+        const lockPath = supportPassportOwnerLockPath(subject.aliceStorage, {
+          namespace: "alice",
+          principal: "owner:alice",
+        });
         await writeFile(lockPath, `${process.pid} 00000000-0000-4000-8000-000000000000 peer\n`);
       }
       return memory;
@@ -623,6 +627,85 @@ test("grant creation aborts before replacing an owner index after lock ownership
       (await store.listForOwner("alice", "owner:alice")).map((state) => state.grantId),
       [first.state.grantId]
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("grant creation rechecks its mutation lock after the commit callback", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-callback-lock-"));
+  try {
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({ memoryDir: root, now: () => now });
+    let refreshes = 0;
+    const inspected = store as unknown as {
+      withMutationLock<T>(task: (lock: { refresh(): Promise<boolean> }) => Promise<T>): Promise<T>;
+    };
+    inspected.withMutationLock = async (task) =>
+      await task({
+        refresh: async () => {
+          refreshes += 1;
+          return refreshes === 1;
+        },
+      });
+
+    await assert.rejects(
+      store.create(
+        {
+          namespace: "alice",
+          principal: "owner:alice",
+          cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+          expiresAt: new Date(now.getTime() + 300_000).toISOString(),
+        },
+        async () => undefined
+      ),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
+    );
+    assert.equal(refreshes, 2);
+    await assert.rejects(
+      lstat(path.join(root, "state", "support-passport", "grants")),
+      (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT"
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("grant revocation rechecks its mutation lock after the commit callback", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-revoke-callback-lock-"));
+  try {
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({ memoryDir: root, now: () => now });
+    const created = await store.create({
+      namespace: "alice",
+      principal: "owner:alice",
+      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+      expiresAt: new Date(now.getTime() + 300_000).toISOString(),
+    });
+    let refreshes = 0;
+    const inspected = store as unknown as {
+      withGrantLock<T>(
+        grantId: string,
+        task: (lock: { refresh(): Promise<boolean> }) => Promise<T>
+      ): Promise<T>;
+    };
+    inspected.withGrantLock = async (_grantId, task) =>
+      await task({
+        refresh: async () => {
+          refreshes += 1;
+          return refreshes === 1;
+        },
+      });
+
+    await assert.rejects(
+      store.revoke(
+        { grantId: created.state.grantId, namespace: "alice", principal: "owner:alice" },
+        async () => undefined
+      ),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
+    );
+    assert.equal(refreshes, 2);
+    assert.equal((await store.authenticate(created.state.grantId, created.secret)).revokedAt, undefined);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1177,7 +1260,10 @@ test("helper guide assembly fails when owner-lock ownership is lost", async () =
       const state = await authenticate(grantId, secret);
       authentications += 1;
       if (authentications === 2) {
-        const lockPath = path.join(subject.aliceStorage.dir, "state", "support-passport-cards.lock");
+        const lockPath = supportPassportOwnerLockPath(subject.aliceStorage, {
+          namespace: "alice",
+          principal: "owner:alice",
+        });
         await writeFile(lockPath, `${process.pid} 00000000-0000-4000-8000-000000000000 peer\n`);
       }
       return state;
@@ -1207,7 +1293,10 @@ test("helper guide assembly rechecks the owner lock after grant reauthentication
       const state = await authenticate(grantId, secret);
       authentications += 1;
       if (authentications === 3) {
-        const lockPath = path.join(subject.aliceStorage.dir, "state", "support-passport-cards.lock");
+        const lockPath = supportPassportOwnerLockPath(subject.aliceStorage, {
+          namespace: "alice",
+          principal: "owner:alice",
+        });
         await writeFile(lockPath, `${process.pid} 00000000-0000-4000-8000-000000000000 peer\n`);
       }
       return state;
@@ -1238,7 +1327,10 @@ test("helper guide assembly refreshes the owner lock after its final card read",
       const memory = await getMemoryById(memoryId);
       reads += 1;
       if (reads === 2) {
-        const lockPath = path.join(subject.aliceStorage.dir, "state", "support-passport-cards.lock");
+        const lockPath = supportPassportOwnerLockPath(subject.aliceStorage, {
+          namespace: "alice",
+          principal: "owner:alice",
+        });
         await writeFile(lockPath, `${process.pid} 00000000-0000-4000-8000-000000000000 peer\n`);
       }
       return memory;

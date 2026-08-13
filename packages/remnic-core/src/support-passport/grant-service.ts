@@ -139,7 +139,7 @@ export class SupportPassportGrantService {
     }, firstCard.updatedAt);
     return await withSupportPassportOwnerLock(
       storage,
-      { namespace: initialState.namespace, principal: `hash:${initialState.principalHash}` },
+      { namespace: initialState.namespace, ownerKey: initialState.principalHash },
       async (ownerLock) => {
       return await this.grantStore.withAuthenticatedGrant(
         input.grantId,

@@ -164,6 +164,7 @@ export class SupportPassportGrantStore {
       });
       await this.requireMutationLock(lock);
       await beforeCommit?.();
+      await this.requireMutationLock(lock);
       try {
         await this.writeState(state, true);
       } catch (error) {
@@ -286,6 +287,7 @@ export class SupportPassportGrantStore {
       });
       await this.requireMutationLock(lock);
       await beforeCommit?.();
+      await this.requireMutationLock(lock);
       await this.writeState(revoked);
       return revoked;
     });
