@@ -1830,7 +1830,11 @@ test("private directory tree creation syncs missing memory-root ancestors", asyn
       syncs += 1;
     });
 
-    assert.equal(syncs, 4);
+    const expectedSyncs = path
+      .relative(path.parse(target).root, target)
+      .split(path.sep)
+      .filter(Boolean).length;
+    assert.equal(syncs, expectedSyncs);
     assert.equal((await lstat(target)).isDirectory(), true);
     assert.equal((await lstat(target)).mode & 0o777, 0o700);
   } finally {
