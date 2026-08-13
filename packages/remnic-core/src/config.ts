@@ -471,7 +471,12 @@ export function resolveEnvVars(value: string): string {
 function normalizeOpenaiBaseUrl(value: string | undefined, source: "config" | "env"): string | undefined {
   if (!value) return undefined;
   const trimmed = value.trim();
-  if (trimmed.length === 0) return undefined;
+  if (trimmed.length === 0) {
+    if (source === "config") {
+      throw new Error("openaiBaseUrl must be an absolute HTTP or HTTPS URL");
+    }
+    return undefined;
+  }
 
   let parsed: URL;
   try {

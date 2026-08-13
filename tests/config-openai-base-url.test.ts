@@ -74,6 +74,18 @@ test("openaiBaseUrl rejects malformed configured URLs", () => {
   assert.equal(warnings.length, 0);
 });
 
+test("openaiBaseUrl rejects a blank configured URL", () => {
+  const { warnings } = withLoggerWarnings();
+  assert.throws(
+    () => parseConfig({
+      openaiApiKey: "sk-test",
+      openaiBaseUrl: "   ",
+    }),
+    /openaiBaseUrl must be an absolute HTTP or HTTPS URL/,
+  );
+  assert.equal(warnings.length, 0);
+});
+
 test("openaiBaseUrl warns when using insecure http", () => {
   const { warnings } = withLoggerWarnings();
   const cfg = parseConfig({
