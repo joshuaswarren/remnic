@@ -6,6 +6,8 @@ import path from "node:path";
 const UNSUPPORTED_DIRECTORY_SYNC_ERRORS = new Set(["EINVAL", "ENOSYS", "ENOTSUP", "EOPNOTSUPP"]);
 const NON_WRITABLE_ANCESTOR_SYNC_ERRORS = new Set(["EROFS", "EPERM", "EACCES"]);
 
+type PrivateFileOpener = (filePath: string, flags: number, mode: number) => Promise<FileHandle>;
+
 function assertStableDirectory(before: Stats, opened: Stats, after: Stats, errorMessage: string): void {
   if (
     before.isSymbolicLink() ||
@@ -33,6 +35,14 @@ function assertStableRegularFile(before: Stats, opened: Stats, after: Stats, err
     after.ino !== opened.ino ||
     opened.nlink !== 1
   ) {
+    throw new Error(errorMessage);
+  }
+}
+
+async function lstatPrivateTarget(filePath: string, errorMessage: string): Promise<Stats> {
+  try {
+    return await lstat(filePath);
+  } catch {
     throw new Error(errorMessage);
   }
 }
@@ -296,7 +306,8 @@ export async function appendPrivateFileNoFollow(
   content: string,
   errorMessage: string,
   trustedRoot = directory,
-  platform: NodeJS.Platform = process.platform
+  platform: NodeJS.Platform = process.platform,
+  openFile: PrivateFileOpener = open,
 ): Promise<void> {
   if (path.dirname(filePath) !== path.resolve(directory)) throw new Error(errorMessage);
   const targetName = path.basename(filePath);
@@ -308,7 +319,7 @@ export async function appendPrivateFileNoFollow(
     const pinnedDirectory = stableDirectory.pinnedDirectory;
     const targetPath = path.join(pinnedDirectory, targetName);
     try {
-      fileHandle = await open(
+      fileHandle = await openFile(
         targetPath,
         openFlags(fsConstants.O_WRONLY, fsConstants.O_APPEND, fsConstants.O_CREAT, fsConstants.O_NOFOLLOW),
         0o600
@@ -317,12 +328,24 @@ export async function appendPrivateFileNoFollow(
       if ((error as NodeJS.ErrnoException).code === "ELOOP") throw new Error(errorMessage);
       throw error;
     }
+    const targetMetadata = await lstatPrivateTarget(targetPath, errorMessage);
     const fileMetadata = await fileHandle.stat();
+    assertStableRegularFile(
+      targetMetadata,
+      fileMetadata,
+      await lstatPrivateTarget(targetPath, errorMessage),
+      errorMessage,
+    );
     assertStableDirectory(stableDirectory.before, stableDirectory.opened, await lstat(directory), errorMessage);
-    if (!fileMetadata.isFile() || fileMetadata.nlink !== 1) throw new Error(errorMessage);
     await fileHandle.chmod(0o600);
     await fileHandle.appendFile(content, "utf8");
     await fileHandle.sync();
+    assertStableRegularFile(
+      targetMetadata,
+      await fileHandle.stat(),
+      await lstatPrivateTarget(targetPath, errorMessage),
+      errorMessage,
+    );
     assertStableDirectory(stableDirectory.before, stableDirectory.opened, await lstat(directory), errorMessage);
     if (stableDirectory.handle) await syncDirectoryHandle(stableDirectory.handle);
   } finally {
