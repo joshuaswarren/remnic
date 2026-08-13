@@ -46,7 +46,7 @@ test("@remnic/server build emits and advertises TypeScript declarations", async 
   assert.equal(pack.status, 0, pack.stderr || pack.stdout);
   const packResult = JSON.parse(pack.stdout) as Array<{ files?: Array<{ path?: string }> }>;
   assert.equal(packResult[0]?.files?.some((file) => file.path === "src/index.ts"), true);
-  assert.equal(packResult[0]?.files?.some((file) => file.path.endsWith(".test.ts")), false);
+  assert.equal(packResult[0]?.files?.some((file) => file.path?.endsWith(".test.ts") === true), false);
 
   const api = await import(pathToFileURL(path.join(SERVER_DIR, "dist", "index.js")).href);
   assert.equal(typeof api.startServer, "function");
