@@ -532,6 +532,45 @@ test("an approved replacement retires the prior card and withdrawal removes the 
   }
 });
 
+test("withdrawing a card rejects its pending replacement", async () => {
+  const subject = await makeSubject();
+  try {
+    const draft = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Plan changes",
+      statement: "Tell me before plans change.",
+      category: "transitions",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const active = await subject.service.approveCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+    });
+    const replacement = await subject.service.replaceCard({
+      principal: "owner:alice",
+      cardId: active.cardId,
+      expectedRevision: active.revision,
+      title: "Plan changes",
+      statement: "Tell me early when plans change.",
+      category: "transitions",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+
+    const withdrawn = await subject.service.withdrawCard({
+      principal: "owner:alice",
+      cardId: active.cardId,
+      expectedRevision: active.revision,
+    });
+
+    assert.equal(withdrawn.status, "archived");
+    assert.equal((await subject.aliceStorage.getMemoryById(replacement.cardId))?.frontmatter.status, "rejected");
+    assert.deepEqual(await subject.service.listCards({ principal: "owner:alice" }), []);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("approval returns success when the committed card cannot be reloaded", async () => {
   const subject = await makeSubject();
   try {
