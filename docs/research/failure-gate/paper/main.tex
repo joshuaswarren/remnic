@@ -54,8 +54,8 @@ policies rather than the agent's own episodic memory
 \citep{xiang2024guardagent, ruan2023toolemu}, and no prior work we know of
 compares the two delivery points while holding the payload fixed.
 
-This paper isolates the delivery point. We hold the memory itself fixed---the
-same failure fact, the same wording, the same rendered token count---and vary
+This paper isolates the delivery point. We hold the memory itself fixed (the
+same failure fact, the same wording, the same rendered token count) and vary
 only \emph{when} it reaches the agent: at turn start, in the conventional
 preamble position, or at the moment the agent proposes the specific action
 that failed before. The distinction matters because coding agents fail in a
@@ -117,11 +117,11 @@ task structure. Benchmarks such as LoCoMo \citep{maharana2024locomo} measure
 whether retrieved memories are \emph{correct}, and recent systems
 characterization work taxonomizes these designs by construction and
 retrieval cost \citep{omri2026agentmemory}. Situating our design on the
-natural axes---memory source (the agent's own episode), trigger (fingerprint
-match on a proposed action), delivery point (turn start vs.\ action site),
-payload control (byte-matched fact), and outcome (repetition of a known
-failure)---the delivery-point axis is the one this literature holds
-constant: retrieved context lands in the prompt before generation. That axis
+natural axes of memory source (the agent's own episode), trigger
+(fingerprint match on a proposed action), delivery point (turn start vs.\
+action site), payload control (byte-matched fact), and outcome (repetition
+of a known failure), the delivery-point axis is the one this literature
+holds constant: retrieved context lands in the prompt before generation. That axis
 is our sole manipulation.
 
 \paragraph{Learning from failure and experience.}
@@ -218,7 +218,7 @@ non-fixed).
 \label{sec:protocol}
 
 Episode 1 lets the agent fail: it attempts the task, falls into the trap, and
-the harness freezes that history---the failure fact text, a fingerprint of
+the harness freezes that history: the failure fact text, a fingerprint of
 the trapping action, and repository hashes. Episode 2 is the scored episode:
 the agent faces the same task (per variant and seed) with an injected memory
 that depends on the arm.
@@ -261,7 +261,7 @@ as an advisory and lets the model choose again. On any gate error the action
 runs without a note, and the registered rules invalidate such an episode
 (this never occurred). Delivery at the action site is therefore a
 \emph{package}: the matched proposal is intercepted rather than executed,
-the fact arrives as a direct response to it, and the model re-decides---one
+the fact arrives as a direct response to it, and the model re-decides: one
 additional model interaction on each match. That package is inseparable from
 the delivery point (a warning about an action cannot arrive ``at'' the
 action after it has executed), and the registered hypothesis compares
@@ -323,9 +323,9 @@ the transferred power estimate is conservative.
 no-trap controls: $18 \times 3 \times 5 \times 7 = 1{,}890$ rows on seeds
 1--5. It allowed zero primary task cuts: any invalid row in a compared cell
 cuts the whole task and voids the affected hypothesis. All 1,890 rows
-completed; 1,888 were valid. One of the two invalid rows---a pre-action
+completed; 1,888 were valid. One of the two invalid rows (a pre-action
 episode that hit the cumulative token cap mid-edit, leaving a repository
-state the checker could not classify---sat in the timing comparison. The rule
+state the checker could not classify) sat in the timing comparison. The rule
 fired as written: H6-timing was NOT\_ESTIMABLE despite a $+38.0\pp$
 $[18.0, 59.6]$ exploratory estimate on the 17 complete tasks. The content
 hypothesis, unaffected, was decided (rejected). The registered retry rule
@@ -396,7 +396,7 @@ Table~\ref{tab:primary} contains the study. All intervals and $p$-values
 operate on the 18 paired task-level means; episode counts are descriptive.
 In the confirmatory run the pre-action arm repeated a known failure
 \textbf{zero} times in 270 valid episodes, against a 35.6\% task-level
-repetition rate for turn-start delivery of the identical fact---a relative
+repetition rate for turn-start delivery of the identical fact, a relative
 risk reduction of 100\% (95\% CI $[100, 100]$, degenerate because the
 candidate numerator is zero in every bootstrap draw). Every registered support
 condition held with margin. The estimate is consistent across three
@@ -445,7 +445,7 @@ observations. First, the unassisted repetition rate (44.2\%) confirms the
 traps do what they were built to do. Second, pre-action delivery drove
 repetition to zero in both registrations, on disjoint seeds. Third, the
 highest raw pass rate belongs to turn-start \emph{success} memory (7.04\%),
-and \textsc{both}---gate plus turn-start failure fact---passed less
+and \textsc{both} (gate plus turn-start failure fact) passed less
 (1.48\%) than the gate alone (2.97\%): whatever failure wording does to an
 agent's preamble, it is not obviously free even when the gate handles
 prevention.
@@ -500,7 +500,7 @@ by blocking. The abandoned first manifest of registration 2 is handled by eviden
 rather than assertion: both episode logs are published, the registered
 analysis ran only on the final manifest, and the abandoned manifest's
 descriptive effect is larger than the kept one's
-(Section~\ref{sec:registrations})---so the only selection story available
+(Section~\ref{sec:registrations}), so the only selection story available
 runs against the reported result. The delivery-package structure of the
 pre-action arm (interception plus re-decision, Section~\ref{sec:arms}) is a
 construct limitation: a neutral-interruption control was not run, so the
@@ -540,8 +540,8 @@ follow-ups.
 
 \paragraph{Design implication for memory systems.}
 Failure memories should be routed to a just-in-time advisory delivered
-against the proposed action---the position where guard agents already sit
-\citep{xiang2024guardagent}---rather than into the retrieval preamble.
+against the proposed action, the position where guard agents already sit
+\citep{xiang2024guardagent}, rather than into the retrieval preamble.
 Semantic and preference context can stay at turn start; nothing here argues
 against preamble recall in general. The implication is a routing rule, not a
 new architecture: store failure memories with an action fingerprint, match at
@@ -558,8 +558,8 @@ The first registration's NOT\_ESTIMABLE outcome is the strongest evidence we
 can offer that the protocol binds: a $+38\pp$ effect with $p = 0.0036$ was
 set aside because one row violated a rule we wrote ourselves, and the fix was
 registered before new data existed rather than argued after the fact. The
-cost was one additional run. For agent evaluations---where caps, retries, and
-scoring judgments hide many researcher degrees of freedom---we found the
+cost was one additional run. For agent evaluations, where caps, retries, and
+scoring judgments hide many researcher degrees of freedom, we found the
 discipline cheap relative to what it protects, echoing arguments made for
 NLP broadly \citep{vanmiltenburg2021preregistering, pineau2021reproducibility}.
 
@@ -570,8 +570,8 @@ The task corpus (30 tasks, trap taxonomy, JSON schemas, frozen inventory hash
 \texttt{687615b5\ldots}), the execution harness, both preregistration
 documents, the machine-readable decision rules (v12, v13), and the study
 report are public in the project repository at tag
-\texttt{h6-study-2026-08}.\footnote{\url{https://github.com/joshuaswarren/remnic/tree/h6-study-2026-08}
---- harness under \texttt{packages/bench/}, registrations and report under
+\texttt{h6-study-2026-08}.\footnote{\url{https://github.com/joshuaswarren/remnic/tree/h6-study-2026-08}:
+harness under \texttt{packages/bench/}, registrations and report under
 \texttt{docs/research/failure-gate/}, corpus under
 \texttt{packages/bench/fixtures/h6-failure-gate/}.} The per-episode logs,
 run manifests, decision-rule copies, expected designs, and deviation logs of
