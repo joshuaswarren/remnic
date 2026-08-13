@@ -306,7 +306,10 @@ export class SupportPassportGrantStore {
       }
       const principalHash = computeSupportPassportOwnerKey(normalizePrincipal(input.principal));
       if (state.namespace !== namespace || !hashesMatch(state.principalHash, principalHash)) throw grantNotFound();
-      if (state.revokedAt) return state;
+      if (state.revokedAt) {
+        await this.syncDirectory(this.grantsDir);
+        return state;
+      }
       if (
         normalizedInput.expectedStateVersion !== undefined &&
         normalizedInput.expectedStateVersion !== state.stateVersion
@@ -321,7 +324,13 @@ export class SupportPassportGrantStore {
       await this.requireMutationLock(lock);
       await beforeCommit?.();
       await this.requireMutationLock(lock);
-      await this.writeState(revoked);
+      try {
+        await this.writeState(revoked);
+      } catch (error) {
+        const persisted = await this.readState(revoked.grantId).catch(() => undefined);
+        if (!persisted || !sameGrantState(persisted, revoked)) throw error;
+        await this.syncDirectory(this.grantsDir);
+      }
       return revoked;
     });
   }
