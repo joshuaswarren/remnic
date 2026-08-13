@@ -126,6 +126,8 @@ export abstract class SupportPassportAccessHttpBase {
     }
     if (pathname === "/remnic/ui/what-helps-me/" || pathname === "/engram/ui/what-helps-me/") {
       const helperRequest = new URL(req.url ?? pathname, "http://placeholder").searchParams.has("grant");
+      res.setHeader("content-security-policy", "frame-ancestors 'none'");
+      res.setHeader("x-frame-options", "DENY");
       await this.respondAdminConsoleShell(req, res, pathname, "what-helps-me/index.html", !helperRequest);
       return true;
     }
