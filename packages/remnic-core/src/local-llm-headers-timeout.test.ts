@@ -516,6 +516,7 @@ test("availability probes stop after the caller aborts", async () => {
 test("sensitive local requests do not log provider error bodies", { concurrency: false }, async () => {
   const original = globalThis.fetch;
   const privateMarker = "private-local-support-note-must-not-log";
+  const privateStatusText = "private-provider-status-must-not-log";
   const lines: string[] = [];
   initLogger(
     {
@@ -530,6 +531,7 @@ test("sensitive local requests do not log provider error bodies", { concurrency:
   globalThis.fetch = (async () =>
     new Response(JSON.stringify({ error: { message: privateMarker } }), {
       status: 400,
+      statusText: privateStatusText,
       headers: { "content-type": "application/json" },
     })) as typeof fetch;
   const client = new LocalLlmClient(createConfig());
@@ -544,6 +546,7 @@ test("sensitive local requests do not log provider error bodies", { concurrency:
       null,
     );
     assert.equal(lines.join("\n").includes(privateMarker), false);
+    assert.equal(lines.join("\n").includes(privateStatusText), false);
   } finally {
     globalThis.fetch = original;
     resetLogger();
