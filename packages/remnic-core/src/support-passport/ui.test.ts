@@ -70,7 +70,9 @@ test("What Helps Me serves both aliases from one exact feature-gated allow-list"
         });
         assert.equal(authorizedShell.status, 200);
         assert.equal(authorizedShell.headers.get("cache-control"), "private, no-store");
-        assert.match(await authorizedShell.text(), /__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__="owner-token"/);
+        const authorizedShellText = await authorizedShell.text();
+        assert.match(authorizedShellText, /Object\.defineProperty\(window,key/);
+        assert.match(authorizedShellText, /\}\)\("owner-token",document\.currentScript\)/);
 
         const expectedAssets = new Map([
           ["what-helps-me.css", /^text\/css/],

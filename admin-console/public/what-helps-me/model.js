@@ -38,6 +38,12 @@
       title: "This support passport is locked.",
       detail: "The person controls this guide and has ended this share link.",
     },
+    session_ended: {
+      key: "session-ended",
+      eyebrow: "Session ended",
+      title: "This helper session ended.",
+      detail: "Open the original share link again to view this support passport.",
+    },
     stale: {
       key: "stale",
       eyebrow: "Guide changed",
@@ -306,6 +312,7 @@
     if (code === "grant_stale") return LOCK_STATES.stale;
     if (code === "grant_not_found" || code === "missing_link") return LOCK_STATES.bad_link;
     if (code === "grant_expired") return LOCK_STATES.expired;
+    if (code === "session_ended") return LOCK_STATES.session_ended;
     if (code === "grant_gone") {
       return lastGuide && Date.parse(lastGuide.expiresAt) <= now ? LOCK_STATES.expired : LOCK_STATES.stopped;
     }

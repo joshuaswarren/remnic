@@ -244,7 +244,7 @@ test("an owner page clears private state before browser-cache restoration", asyn
       contentType: "text/html; charset=utf-8",
       body: ownerShell.replace(
         "</head>",
-        '<script>window.__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__="prefilled-owner-token";</script></head>'
+        '<script>(function(token,script){const key="__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__";const clear=function(){token="";try{delete window[key]}catch{window[key]=""}};window.addEventListener("pagehide",clear,{once:true});window.addEventListener("beforeunload",clear,{once:true});try{Object.defineProperty(window,key,{configurable:true,get:function(){const value=token;clear();return value}})}finally{if(script){script.textContent="";script.remove()}}})("prefilled-owner-token",document.currentScript);</script></head>'
       ),
     });
   });
@@ -1819,13 +1819,14 @@ test("a restored helper view stays locked without its removed secret", async ({ 
   await expect(page.locator(".public-card")).toHaveCount(1);
   await page.getByLabel("Your question").fill("What should I do?");
   await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })));
-  await expect(page.getByRole("heading", { name: "This support passport is locked." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "This helper session ended." })).toBeVisible();
+  await expect(page.getByText("Open the original share link again to view this support passport.")).toBeVisible();
   await expect(page.locator(".public-card")).toHaveCount(0);
   await expect(page.getByLabel("Your question")).toHaveValue("");
   revoked = true;
   await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })));
 
-  await expect(page.getByRole("heading", { name: "This support passport is locked." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "This helper session ended." })).toBeVisible();
   expect(reads).toBe(1);
   await expect(page.locator(".public-card")).toHaveCount(0);
 });

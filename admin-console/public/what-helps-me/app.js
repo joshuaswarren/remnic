@@ -33,6 +33,7 @@
     "grant_not_found",
     "grant_stale",
     "missing_link",
+    "session_ended",
   ]);
 
   const state = {
@@ -1274,7 +1275,7 @@
     state.helperServerOffsetMs = null;
     state.helperRevalidationDelayMs = HELPER_REVALIDATION_MS;
     const error = new Error("The helper session ended when this page was hidden.");
-    error.code = "grant_gone";
+    error.code = "session_ended";
     showLocked(error);
     byId("questionForm").reset();
     byId("questionInput").disabled = false;
@@ -1294,10 +1295,8 @@
     }
 
     bindOwnerEvents();
-    const prefill =
-      typeof window.__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__ === "string"
-        ? window.__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__.trim()
-        : "";
+    const prefillValue = window.__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__;
+    const prefill = typeof prefillValue === "string" ? prefillValue.trim() : "";
     clearPrefillToken();
     if (replayMode) {
       state.token = "synthetic-replay";
