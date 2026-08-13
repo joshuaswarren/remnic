@@ -2,6 +2,8 @@ export type SupportPassportErrorCode =
   | "card_data_invalid"
   | "card_not_found"
   | "consent_required"
+  | "feature_disabled"
+  | "forbidden"
   | "grant_expired"
   | "grant_gone"
   | "grant_not_found"
@@ -10,6 +12,7 @@ export type SupportPassportErrorCode =
   | "invalid_input"
   | "model_output_invalid"
   | "provider_unavailable"
+  | "rate_limited"
   | "revision_conflict"
   | "state_conflict"
   | "storage_conflict";

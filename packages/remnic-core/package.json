@@ -2600,6 +2600,16 @@
       "remnic-source": "./src/summarizer.ts",
       "import": "./dist/summarizer.js"
     },
+    "./support-passport": {
+      "types": "./dist/support-passport/index.d.ts",
+      "remnic-source": "./src/support-passport/index.ts",
+      "import": "./dist/support-passport/index.js"
+    },
+    "./support-passport.js": {
+      "types": "./dist/support-passport/index.d.ts",
+      "remnic-source": "./src/support-passport/index.ts",
+      "import": "./dist/support-passport/index.js"
+    },
     "./summary-snapshot": {
       "types": "./dist/summary-snapshot.d.ts",
       "remnic-source": "./src/summary-snapshot.ts",

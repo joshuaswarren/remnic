@@ -41,13 +41,13 @@ import { resolvePrincipal } from "./namespaces/principal.js";
 import { readEnvVar } from "./runtime/env.js";
 import type { RecallDisclosure, RecallPlanMode } from "./types.js";
 import { expandTildePath } from "./utils/path.js";
-
 import { applyToolOutputSchemas } from "./access-mcp-output-schemas.js";
 import { MCP_READ_ONLY_TOOL_SUFFIXES } from "./mcp-read-only-tools.js";
 import { MEETINGS_MCP_TOOLS } from "./meetings/mcp-tools.js";
 import { WEARABLES_MCP_TOOLS } from "./wearables/mcp-tools.js";
 import { EXTERNAL_WIKI_MCP_TOOLS } from "./external-wiki-mcp-tools.js";
 import { abortError, isAbortError } from "./abort-error.js";
+import { SUPPORT_PASSPORT_MCP_MIGRATED_OPERATIONS, SUPPORT_PASSPORT_MCP_TOOLS } from "./support-passport/mcp-tools.js";
 type JsonRpcId = string | number | null;
 
 type JsonRpcRequest = {
@@ -264,6 +264,7 @@ const MCP_MIGRATED_OPERATIONS: Readonly<Record<string, OperationName>> = {
   "engram.console_state": "console_state",
   "engram.dreams_status": "dreams_status",
   "engram.dreams_run": "dreams_run",
+  ...SUPPORT_PASSPORT_MCP_MIGRATED_OPERATIONS,
   "engram.memory_chat": "chat_message",
 };
 
@@ -687,6 +688,7 @@ export class EngramMcpServer {
         },
       },
       ...WEARABLES_MCP_TOOLS, ...MEETINGS_MCP_TOOLS,
+      ...(service.supportPassportEnabled ? SUPPORT_PASSPORT_MCP_TOOLS : []),
       {
         name: "engram.action_confidence",
         description:

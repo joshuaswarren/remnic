@@ -151,6 +151,19 @@ export const OPERATION_NAMES = [
   "console_state",
   "dreams_status",
   "dreams_run",
+  "support_passport_memory_preview",
+  "support_passport_cards_list",
+  "support_passport_draft_create",
+  "support_passport_drafts_generate",
+  "support_passport_card_replace",
+  "support_passport_card_approve",
+  "support_passport_card_reject",
+  "support_passport_card_withdraw",
+  "support_passport_grant_create",
+  "support_passport_grants_list",
+  "support_passport_grant_revoke",
+  "support_passport_grant_read",
+  "support_passport_grant_ask",
   // HTTP-only routes (no direct MCP tool equivalent).
   "adapters_status",
   "offline_sync_snapshot",
@@ -198,6 +211,20 @@ const IMPLICIT_HTTP_NAMESPACE_OPERATIONS = new Set<OperationName>([
   "trust_zones_status",
   "graph_events",
   "citations_observed",
+]);
+
+const PRINCIPAL_NAMESPACE_OPERATIONS = new Set<OperationName>([
+  "support_passport_memory_preview",
+  "support_passport_cards_list",
+  "support_passport_draft_create",
+  "support_passport_drafts_generate",
+  "support_passport_card_replace",
+  "support_passport_card_approve",
+  "support_passport_card_reject",
+  "support_passport_card_withdraw",
+  "support_passport_grant_create",
+  "support_passport_grants_list",
+  "support_passport_grant_revoke",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -458,6 +485,11 @@ export function operationRequiresAuthorizedNamespace(name: OperationName): boole
   const schema = registry.get(name)?.spec.schema;
   const objectSchema = schema instanceof z.ZodEffects ? schema.innerType() : schema;
   return objectSchema instanceof z.ZodObject && Object.hasOwn(objectSchema.shape, "namespace");
+}
+
+/** Whether an operation resolves its namespace from the authenticated principal. */
+export function operationUsesPrincipalNamespace(name: OperationName): boolean {
+  return PRINCIPAL_NAMESPACE_OPERATIONS.has(name);
 }
 
 /** All registered operation names. */

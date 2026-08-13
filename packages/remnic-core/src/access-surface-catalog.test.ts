@@ -36,6 +36,8 @@ import {
   type HttpRouteEntry,
   type McpToolEntry,
 } from "./access-surface-catalog.js";
+import { SUPPORT_PASSPORT_OWNER_HTTP_ROUTES } from "./support-passport/access-http.js";
+import { SUPPORT_PASSPORT_PUBLIC_HTTP_ROUTES } from "./support-passport/public-http.js";
 
 // #1668: all remaining MCP tools migrated through the strict-schema boundary
 // (recall, capsule, continuity, work, shared-context, peer, dreams, etc.).
@@ -62,7 +64,7 @@ function shortToolName(advertised: string): string {
 
 /** Spin up a server with emitLegacyTools=true and read the deduped short names. */
 async function liveMcpToolShortNames(): Promise<ReadonlySet<string>> {
-  const stub = { briefingEnabled: true } as unknown as EngramAccessService;
+  const stub = { briefingEnabled: true, supportPassportEnabled: true } as unknown as EngramAccessService;
   const server = new EngramMcpServer(stub, { emitLegacyTools: true, codingDecisionVisible: true, architectureCardVisible: true, codegraphVisible: true, sessionDeltaVisible: true, chatVisible: true });
   const response = await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "tools/list" });
   const result = (response as { result?: { tools?: Array<{ name: string }> } }).result;
@@ -142,20 +144,33 @@ function formatViolations(violations: readonly CoverageViolation[]): string {
  * catalog row is not a false migration — the surface code must also wire
  * the dispatch.
  */
-function extractMcpDispatchMap(): Map<string, string> {
-  const source = readFileSync(
-    new URL("./access-mcp.ts", import.meta.url),
-    "utf-8",
-  );
+function extractMcpOperationMap(
+  sourceUrl: URL,
+  constantName: string,
+): Map<string, string> {
+  const source = readFileSync(sourceUrl, "utf-8");
   const blockMatch = source.match(
-    /MCP_MIGRATED_OPERATIONS[^{]*\{([\s\S]*?)\}/,
+    new RegExp(`(?:export\\s+)?const\\s+${constantName}[^=]*=\\s*\\{([\\s\\S]*?)\\}\\s*(?:as const)?;`),
   );
-  const body = blockMatch?.[1] ?? "";
+  assert.ok(blockMatch, `could not find ${constantName} in ${sourceUrl.pathname}`);
   const map = new Map<string, string>();
-  for (const m of body.matchAll(/"engram\.(\w+)"\s*:\s*"(\w+)"/g)) {
+  for (const m of blockMatch[1]!.matchAll(/"engram\.(\w+)"\s*:\s*"(\w+)"/g)) {
     map.set(m[1]!, m[2]!);
   }
   return map;
+}
+
+function extractMcpDispatchMap(): Map<string, string> {
+  return new Map([
+    ...extractMcpOperationMap(
+      new URL("./access-mcp.ts", import.meta.url),
+      "MCP_MIGRATED_OPERATIONS",
+    ),
+    ...extractMcpOperationMap(
+      new URL("./support-passport/mcp-tools.ts", import.meta.url),
+      "SUPPORT_PASSPORT_MCP_MIGRATED_OPERATIONS",
+    ),
+  ]);
 }
 
 /**
@@ -299,6 +314,21 @@ function extractHttpRouteDispatchMap(): Map<string, Set<string>> {
       )?.[0];
       if (routeBlock?.includes(`deps.enforceTokenOp("${operation}")`)) {
         routeOps.set(`POST ${pathname}`, new Set([operation]));
+      }
+    }
+  }
+  for (const [sourcePath, routes] of [
+    ["./support-passport/access-http.ts", SUPPORT_PASSPORT_OWNER_HTTP_ROUTES],
+    ["./support-passport/public-http.ts", SUPPORT_PASSPORT_PUBLIC_HTTP_ROUTES],
+  ] as const) {
+    const routeSource = readFileSync(new URL(sourcePath, import.meta.url), "utf-8");
+    for (const route of routes) {
+      const dynamicCardMutation =
+        route.operation.startsWith("support_passport_card_") &&
+        routeSource.includes("operation = `support_passport_card_${cardMatch[2]}`");
+      const publicDispatch = new RegExp(`runPublicOperation\\(\\s*service,\\s*"${route.operation}"`).test(routeSource);
+      if (routeSource.includes(`operation = "${route.operation}"`) || dynamicCardMutation || publicDispatch) {
+        routeOps.set(`${route.method} ${route.pathname}`, new Set([route.operation]));
       }
     }
   }
