@@ -17,26 +17,27 @@
 \maketitle
 
 \begin{abstract}
-Long-term memory systems for LLM agents, including MemGPT, Mem0, and A-MEM,
-deliver recalled context at the start of a turn, before the agent begins
-working. We ask whether that delivery point, rather than memory content,
-limits the value of failure memories. In a
-preregistered, hash-bound experiment on 30 synthetic TypeScript repair tasks
-with deliberate trap fixes, one open-weight 35B coding model repeated its own
-previously observed failure in 44.2\% of unassisted episodes. Injecting a
-matched memory of that failure at turn start failed its registered support
-test: repeated failures fell only 4.8 percentage points, and the task-pass
-estimate favored an equivalent \emph{success} memory. Delivering the identical
-fact at the moment the agent proposed the matched action eliminated
-repetition: a confirmatory run on 18 preregistered tasks measured a
-35.6-percentage-point reduction (95\% CI [16.7, 55.9], relative risk reduction
-100\%, $p = 0.0019$), with zero invalid rows and zero protocol deviations.
-The effect was consistent across three measurements. Removing repeated failures
-did not measurably improve task completion (+1.5\pp{} [0.0, 4.4]), so the
-claim is failure-mode removal, not general improvement. Our first registration
+Research on memory for LLM agents has concentrated on \emph{what} to
+remember: what to store, how to consolidate it, and what to retrieve.
+This paper offers preregistered evidence that for failure memories,
+\emph{when and where} the memory is delivered can matter more than what it
+says. On synthetic TypeScript repair tasks built around trap fixes, an
+open-weight coding model frequently repeated its own previously observed
+failure. A matched memory of that failure injected at turn start, the
+delivery point used by current memory systems, failed its registered
+support test and showed a worse task-pass estimate than an equivalent
+success memory. The identical fact evaluated against the agent's proposed
+action, as a just-in-time advisory, eliminated repetition of the known
+failure: a 35.6-percentage-point reduction ($p = 0.0019$), confirmatory on
+all 18 preregistered tasks with zero invalid rows and zero protocol
+deviations. Prevention did not become completion (+1.5\pp{}, interval
+touching zero): the mechanism removes a known failure mode rather than
+improving the agent overall. The design implication is architectural.
+Failure memories should be routed to the action site as advisory
+guardrails, not inserted into the prompt preamble. Our first registration
 returned NOT\_ESTIMABLE under its own zero-cut rule; we report both
-registrations in full. The task corpus, harness, registrations, and analysis
-artifacts are public.
+registrations in full. The task corpus, harness, registrations, episode
+logs, and analysis artifacts are public and replay byte-for-byte.
 \end{abstract}
 
 \section{Introduction}
@@ -44,7 +45,11 @@ artifacts are public.
 
 An agent with long-term memory will, sooner or later, face a situation it has
 already gotten wrong once. What its memory system does in that moment decides
-whether the stored experience has value. Long-term memory systems answer
+whether the stored experience has value. The field has largely treated this
+as a question of content: what to extract, how to consolidate, what to
+retrieve. This paper argues, with confirmatory evidence, that for failure
+memories the binding question is a different one: when and where the
+retrieved memory lands in the agent's loop. Long-term memory systems answer
 the question the same way: retrieve whatever seems relevant and place it in
 the prompt before the agent starts its turn
 \citep{packer2023memgpt, chhikara2025mem0, xu2025amem, zhao2023expel}.
@@ -97,6 +102,21 @@ Four results, in decreasing order of evidential strength:
   cuts. The confirmatory result comes from a second registration whose
   scoring rule was fixed before any new data existed. We report both.
 \end{enumerate}
+
+\begin{center}
+\fbox{\parbox{0.92\textwidth}{\textbf{What this changes.}
+(1) Failure memories belong at the action site: evaluate them against the
+agent's proposed action and deliver them as a just-in-time advisory, the
+way guard agents already intervene, instead of inserting them into the
+prompt preamble. (2) Turn-start recall is not established as useful for
+failure memories; in our data it was outperformed on completion by success
+framing. (3) Repetition of a known failure is a measurable, separable
+outcome; aggregate pass rates alone do not surface it. (4) This does not
+change capability claims: preventing a remembered failure did not make the
+agent complete more tasks. The advisory lookup is deterministic fingerprint
+matching under a registered 50\,ms budget with no model call, and the
+no-trap control showed no behavioral drag when nothing matched.}}
+\end{center}
 
 The task corpus with its trap taxonomy, the execution harness, both
 registration documents, the machine-readable decision rules, and the

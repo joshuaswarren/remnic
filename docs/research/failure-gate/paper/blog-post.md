@@ -10,15 +10,17 @@ model ignores memory. It's that we deliver the memory at the wrong moment.
 
 ## The setup
 
-Every agent memory system I know of, mine included, works the same way at
-recall time. The agent starts a turn. The system retrieves whatever looks
-relevant. The recalled context lands in the prompt before the agent begins
-working. Retrieval strategies differ. Storage formats differ. The
-delivery point never does.
+Most agent memory systems, including mine, retrieve context at the start
+of a turn. The agent begins. The system retrieves whatever looks relevant.
+The recalled context lands in the prompt before any work happens.
+Retrieval strategies differ. Storage formats differ. The delivery point
+rarely does.
 
-So I built an experiment to isolate it. Thirty synthetic TypeScript repair
+So I built an experiment around it. Thirty synthetic TypeScript repair
 tasks, each with a deliberate trap: a wrong fix that looks more attractive
-than the right one. Mark the failing test as flaky instead of fixing the
+than the right one. Synthetic is a real limitation, and I'll come back to
+it, but it buys the thing an experiment needs most: a frozen, checkable
+definition of "the agent repeated its own known failure." Mark the failing test as flaky instead of fixing the
 state bug underneath it. Edit the config file that another file silently
 shadows. Patch the call site instead of the module that owns the bug. Six
 trap classes, five tasks each.
@@ -30,7 +32,12 @@ the agent gets its own failure memory back. The only question is when.
 
 One arm gets the memory at turn start, the way memory systems deliver it
 today. The other arm gets the identical fact, same wording, same token
-count, at the moment the agent proposes the action that failed last time. A
+count, at the moment the agent proposes the action that failed last time.
+To be precise about what's being compared: this study compares two
+complete delivery mechanisms. The action-site arm includes the advisory,
+the interruption, and a reconsideration before anything executes. The
+follow-up experiment separates the effect of timing from the effect of
+the interruption itself. A
 small advisory gate watches proposed tool calls, matches them against the
 fingerprint, and speaks up right then: the matched proposal doesn't run,
 the warning lands as a direct response to it, and the model decides again
@@ -47,15 +54,17 @@ why that mattered in a minute.
 Without any memory, the model repeated its own known failure in 44% of
 episodes. The traps work.
 
-With the failure memory at turn start? 36%. Eight points. And here's the part
-that stung: a matched success memory, telling the agent what worked in a
-similar repo instead of what failed here, beat the failure memory on task
-completion. The registered test rejected turn-start failure memory outright.
+With the failure memory at turn start? 36%. Eight points. And here's the
+part that stung: a matched success memory, telling the agent what worked
+in a similar repo instead of what failed here, beat the failure memory on
+task completion. The registered claim was that failure wording beats
+success wording when both land at turn start. The data rejected it.
 
 With the identical fact delivered at the action site: zero repeats in 270
-raw episodes. The preregistered test works on task-level averages. There it
-measured a 35.6 percentage point reduction against turn-start delivery,
-p = 0.0019, on all 18 preregistered tasks with no excluded data.
+raw episodes, and a 35.6 percentage point reduction on the preregistered
+task-level test, p = 0.0019, on all 18 tasks with no excluded data. The
+task-level number carries the formal claim; the raw zero is the
+descriptive picture behind it.
 I measured the effect three separate times across the pilot and both
 registered runs, and it landed between 35 and 38 points every time.
 
@@ -113,8 +122,9 @@ Harness and registrations:
 https://github.com/joshuaswarren/remnic/tree/h6-study-2026-08. Run
 artifacts: https://github.com/joshuaswarren/remnic/releases/tag/h6-study-2026-08.
 
-Has anyone else measured where in the loop their agent's recalled context
-actually lands? I'd love to compare notes, especially if you've got data on
-real repositories rather than synthetic traps.
+If you have measured where recalled context lands in an agent loop,
+especially on real repositories rather than synthetic traps, I want to
+compare results. The paper, dataset, harness, and raw run artifacts are
+all linked above, and the analysis replays from the public logs.
 
 -Josh
