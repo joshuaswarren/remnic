@@ -78,6 +78,18 @@ export interface AssemblerOptions {
   makeId?: () => string;
 }
 
+/**
+ * Copy a segment for a rollback snapshot. `slice()` alone would keep the same
+ * mutable segment objects — and the same `embedding` array — so a later
+ * mutation would rewrite the snapshot it is supposed to restore from.
+ */
+function cloneSegment(segment: AssemblySegment): AssemblySegment {
+  return {
+    ...segment,
+    ...(segment.embedding ? { embedding: segment.embedding.slice() } : {}),
+  };
+}
+
 /** Parse an ISO-8601 timestamp to epoch ms, rejecting garbage loudly. */
 function epochMs(value: string, field: string): number {
   const ms = Date.parse(value);
@@ -171,14 +183,14 @@ export class ConversationAssembler {
    * NOT rewind: the durable ids would then diverge from the in-memory ones.
    */
   checkpoint(): AssembledConversation[] {
-    return this.#conversations.map((conv) => ({ ...conv, segments: conv.segments.slice() }));
+    return this.#conversations.map((conv) => ({ ...conv, segments: conv.segments.map(cloneSegment) }));
   }
 
   /** Rewind to a {@link checkpoint}. */
   rewind(snapshot: readonly AssembledConversation[]): void {
     this.#conversations.length = 0;
     for (const conv of snapshot) {
-      this.#conversations.push({ ...conv, segments: conv.segments.slice() });
+      this.#conversations.push({ ...conv, segments: conv.segments.map(cloneSegment) });
     }
   }
 

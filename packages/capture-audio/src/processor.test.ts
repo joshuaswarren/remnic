@@ -1034,15 +1034,18 @@ test("a pre-commit failure also rewinds restart-recovery state", async () => {
       { text: "after restart", startUtc: t(3), endUtc: t(4) },
     ] };
 
-    const failing = createChunkProcessor(withinGap);
-    failing.enqueue(chunk({ startedAtUtc: t(3), endedAtUtc: t(5) }));
-    await failing.drain();
+    // ONE processor for both attempts: a fresh instance would resume from its
+    // own untouched flags, which would let the test pass even if the rollback
+    // never restored them.
+    const proc = createChunkProcessor(withinGap);
+    proc.enqueue(chunk({ startedAtUtc: t(3), endedAtUtc: t(5) }));
+    await proc.drain();
     assert.equal(spool.stats().segments, 1, "nothing new persisted");
 
+    // The failed chunk was requeued, so finalize retries THAT chunk on THIS
+    // processor — the flags the rollback restored are the ones in play.
     failAppends = false;
-    const retry = createChunkProcessor(withinGap);
-    retry.enqueue(chunk({ startedAtUtc: t(3), endedAtUtc: t(5) }));
-    await retry.finalize();
+    await proc.finalize();
 
     assert.equal(minted, 0, "the retry resumed the durable conversation instead of minting a new id");
     assert.deepEqual(

@@ -359,9 +359,10 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     const closed = deps.assembler.closeIfIdle(earliestStart.event.startedAtUtc);
     if (closed !== null && closed === openConversationId) {
       // Dedupes, diarizes and flips a conversation in the spool — durable, so
-      // the caller must not rewind past it.
-      progress.persisted = true;
+      // the caller must not rewind past it. Flagged AFTER the call: a throw
+      // inside it leaves nothing durable, and the batch should still rewind.
       finalizeConv(closed);
+      progress.persisted = true;
       openConversationId = null;
     }
 
@@ -438,8 +439,8 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       for (const item of run.items) {
         const key = `${chunkId}:i${item.index}`;
         if (openConversationId !== null && openConversationId !== run.id) {
-          progress.persisted = true;
           finalizeConv(openConversationId);
+          progress.persisted = true;
         }
         deps.spool.appendAssembledSegments({
           idempotencyKey: key,
