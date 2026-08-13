@@ -4,6 +4,7 @@ import { type FileHandle, lstat, mkdir, open, rename, rm, stat } from "node:fs/p
 import path from "node:path";
 
 const UNSUPPORTED_DIRECTORY_SYNC_ERRORS = new Set(["EINVAL", "ENOSYS", "ENOTSUP", "EOPNOTSUPP"]);
+const NON_WRITABLE_ANCESTOR_SYNC_ERRORS = new Set(["EROFS", "EPERM", "EACCES"]);
 
 function assertStableDirectory(before: Stats, opened: Stats, after: Stats, errorMessage: string): void {
   if (
@@ -209,11 +210,28 @@ export async function ensurePrivateDirectoryTreeNoFollow(
   platform: NodeJS.Platform = process.platform,
 ): Promise<void> {
   const target = path.resolve(directory);
+  const filesystemRoot = path.parse(target).root;
+  const rootMetadata = await stat(filesystemRoot);
   await ensurePrivateDirectoryNoFollow(
-    path.parse(target).root,
+    filesystemRoot,
     target,
     errorMessage,
-    syncVerifiedParent,
+    async (handle) => {
+      try {
+        await syncVerifiedParent(handle);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        const metadata = await handle.stat();
+        if (
+          metadata.ino === rootMetadata.ino &&
+          metadata.dev === rootMetadata.dev &&
+          NON_WRITABLE_ANCESTOR_SYNC_ERRORS.has(code ?? "")
+        ) {
+          return;
+        }
+        throw error;
+      }
+    },
     false,
     platform,
   );

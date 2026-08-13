@@ -46,7 +46,10 @@ export class SupportPassportGrantService {
     this.now = dependencies.now ?? (() => new Date());
   }
 
-  async createGrant(input: SupportPassportCreateGrantInput): Promise<SupportPassportCreatedGrant> {
+  async createGrant(
+    input: SupportPassportCreateGrantInput,
+    options: { signal?: AbortSignal; onCommitted?: () => void } = {}
+  ): Promise<SupportPassportCreatedGrant> {
     const requestedAt = this.now();
     const parsed = SupportPassportCreateGrantInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
@@ -55,6 +58,7 @@ export class SupportPassportGrantService {
       owner.storage,
       { namespace: owner.namespace, principal: owner.principal },
       async (ownerLock) => {
+      options.signal?.throwIfAborted();
       for (const cardRef of parsed.data.cards) {
         const memory = await owner.storage.getMemoryById(cardRef.cardId);
         const stored = memory ? projectSupportPassportCard(memory) : null;
@@ -81,8 +85,21 @@ export class SupportPassportGrantService {
           expiresAt: parsed.data.expiresAt,
           requestedAt,
         },
-        async () => await requireSupportPassportOwnerLock(ownerLock)
+        {
+          beforeCommit: async () => await requireSupportPassportOwnerLock(ownerLock),
+          ...(options.onCommitted ? { onCommitted: options.onCommitted } : {}),
+        }
       );
+      try {
+        await requireSupportPassportOwnerLock(ownerLock);
+      } catch (error) {
+        await this.revokeCommittedGrant(created, owner);
+        throw error;
+      }
+      if (options.signal?.aborted) {
+        await this.revokeCommittedGrant(created, owner);
+        options.signal.throwIfAborted();
+      }
       return SupportPassportCreatedGrantSchema.parse({
         grant: this.ownerGrant(created.state),
         secret: created.secret,
@@ -100,7 +117,10 @@ export class SupportPassportGrantService {
     );
   }
 
-  async revokeGrant(input: SupportPassportRevokeGrantInput): Promise<SupportPassportOwnerGrant> {
+  async revokeGrant(
+    input: SupportPassportRevokeGrantInput,
+    options: { signal?: AbortSignal; onCommitted?: () => void } = {}
+  ): Promise<SupportPassportOwnerGrant> {
     const parsed = SupportPassportRevokeGrantInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
     const owner = await this.resolveOwnerScope(parsed.data.principal);
@@ -108,6 +128,7 @@ export class SupportPassportGrantService {
       owner.storage,
       { namespace: owner.namespace, principal: owner.principal },
       async (ownerLock) => {
+      options.signal?.throwIfAborted();
       const state = await this.grantStore.revoke(
         {
           grantId: parsed.data.grantId,
@@ -115,7 +136,13 @@ export class SupportPassportGrantService {
           principal: owner.principal,
           expectedStateVersion: parsed.data.expectedStateVersion,
         },
-        async () => await requireSupportPassportOwnerLock(ownerLock)
+        {
+          beforeCommit: async () => {
+            options.signal?.throwIfAborted();
+            await requireSupportPassportOwnerLock(ownerLock);
+          },
+          ...(options.onCommitted ? { onCommitted: options.onCommitted } : {}),
+        }
       );
       await requireSupportPassportOwnerLock(ownerLock);
       return this.ownerGrant(state);
@@ -191,6 +218,26 @@ export class SupportPassportGrantService {
         return publicCard.data;
       })
     );
+  }
+
+  private async revokeCommittedGrant(
+    created: { state: SupportPassportGrantState; secret: string },
+    owner: SupportPassportGrantOwnerScope
+  ): Promise<void> {
+    try {
+      await this.grantStore.revoke({
+        grantId: created.state.grantId,
+        namespace: owner.namespace,
+        principal: owner.principal,
+        expectedStateVersion: created.state.stateVersion,
+      });
+    } catch {
+      throw new SupportPassportError(
+        "storage_conflict",
+        "A share link could not be stopped after owner access changed. Review the active share list.",
+        500
+      );
+    }
   }
 
   private publicCard(card: {

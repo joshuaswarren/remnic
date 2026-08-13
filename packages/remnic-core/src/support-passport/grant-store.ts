@@ -57,6 +57,16 @@ export interface CreateStoredGrantInput {
   requestedAt?: Date;
 }
 
+export interface SupportPassportGrantMutationHooks {
+  beforeCommit?: () => Promise<void>;
+  onCommitted?: () => void;
+}
+
+type SupportPassportGrantCreateHooks =
+  | SupportPassportGrantMutationHooks
+  | (() => Promise<void>);
+type SupportPassportGrantRevokeHooks = SupportPassportGrantMutationHooks | (() => Promise<void>);
+
 function sha256(domain: string, value: string): string {
   return createHash("sha256").update(domain).update("\0").update(value).digest("hex");
 }
@@ -142,8 +152,9 @@ export class SupportPassportGrantStore {
 
   async create(
     input: CreateStoredGrantInput,
-    beforeCommit?: () => Promise<void>
+    hooks: SupportPassportGrantCreateHooks = {}
   ): Promise<{ state: SupportPassportGrantState; secret: string }> {
+    const mutationHooks = typeof hooks === "function" ? { beforeCommit: hooks } : hooks;
     const namespace = normalizeNamespace(input.namespace);
     const parsed = SupportPassportCreateGrantInputSchema.safeParse({
       principal: input.principal,
@@ -196,7 +207,7 @@ export class SupportPassportGrantStore {
         expiresAt: parsed.data.expiresAt,
       });
       await this.requireMutationLock(lock);
-      await beforeCommit?.();
+      await mutationHooks.beforeCommit?.();
       await this.requireMutationLock(lock);
       try {
         await this.writeState(state, true);
@@ -210,6 +221,7 @@ export class SupportPassportGrantStore {
           throw error;
         }
       }
+      mutationHooks.onCommitted?.();
       return { state, secret };
     });
     const ownerHash = this.ownerHash(committed.state.namespace, committed.state.principalHash);
@@ -327,8 +339,9 @@ export class SupportPassportGrantStore {
       principal: string;
       expectedStateVersion?: number;
     },
-    beforeCommit?: () => Promise<void>
+    hooks: SupportPassportGrantRevokeHooks = {}
   ): Promise<SupportPassportGrantState> {
+    const mutationHooks = typeof hooks === "function" ? { beforeCommit: hooks } : hooks;
     const normalizedInput = { ...input, grantId: normalizeGrantId(input.grantId) };
     const namespace = normalizeNamespace(input.namespace);
     return await this.withGrantLock(normalizedInput.grantId, async (lock) => {
@@ -357,7 +370,7 @@ export class SupportPassportGrantStore {
         revokedAt: this.now().toISOString(),
       });
       await this.requireMutationLock(lock);
-      await beforeCommit?.();
+      await mutationHooks.beforeCommit?.();
       await this.requireMutationLock(lock);
       try {
         await this.writeState(revoked);
@@ -366,6 +379,7 @@ export class SupportPassportGrantStore {
         if (!persisted || !sameGrantState(persisted, revoked)) throw error;
         await this.syncDirectory(this.grantsDir);
       }
+      mutationHooks.onCommitted?.();
       return revoked;
     });
   }
