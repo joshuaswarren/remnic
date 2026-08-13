@@ -1694,3 +1694,65 @@ test("a hold does not keep an unrelated conversation open", async () => {
     spool.close();
   }
 });
+
+test("a restart holds only the conversation each incomplete chunk belongs to", async () => {
+  // Attaching every capturing conversation to every incomplete chunk would keep
+  // unrelated audio off the final-only path, and would stop a conversation from
+  // finalizing after ITS chunk replayed while another chunk waits (issue #2145).
+  const spool = new Spool(":memory:");
+  try {
+    const first = chunk({ path: "/tmp/raw/first.wav" });
+    const second = chunk({
+      path: "/tmp/raw/second.wav",
+      startedAtUtc: "2026-07-24T06:00:00.000Z",
+      endedAtUtc: "2026-07-24T06:00:30.000Z",
+    });
+    const pairs = [
+      { ev: first, conv: "conv_one", seg: { text: "A", startUtc: t(1), endUtc: t(2) } },
+      {
+        ev: second,
+        conv: "conv_two",
+        seg: { text: "C", startUtc: "2026-07-24T06:00:00.000Z", endUtc: "2026-07-24T06:00:05.000Z" },
+      },
+    ];
+    for (const { ev, conv, seg } of pairs) {
+      const cid = chunkStableId(ev);
+      spool.markApplied(
+        transcriptManifestKey(cid),
+        transcriptManifestHash(cid, [seg, { text: "tail", startUtc: t(50), endUtc: t(51) }]),
+      );
+      spool.appendAssembledSegments({
+        idempotencyKey: segmentStableKey(cid, seg),
+        chunkId: segmentStableKey(cid, seg),
+        conversationId: conv,
+        startedAtUtc: seg.startUtc,
+        state: "capturing",
+        segments: [{ channel: "mic", text: seg.text, startUtc: seg.startUtc, endUtc: seg.endUtc, isWearer: true }],
+      });
+    }
+    assert.deepEqual(
+      spool.conversationIdsForChunk(chunkStableId(first)),
+      ["conv_one"],
+      "each chunk maps to its own conversation",
+    );
+
+    // A fresh process replays the FIRST chunk correctly; the second still waits.
+    const proc = createChunkProcessor(
+      deps(spool, {
+        onError: () => undefined,
+        assembler: new ConversationAssembler({ gapMinutes: 0 }),
+        transcribe: async () => [
+          { text: "A", startUtc: t(1), endUtc: t(2) },
+          { text: "tail", startUtc: t(50), endUtc: t(51) },
+        ],
+      }),
+    );
+    proc.enqueue(first);
+    await proc.finalize();
+    const capturing = [...spool.capturingConversationIds()];
+    assert.ok(!capturing.includes("conv_one"), "the replayed chunk's conversation finalized");
+    assert.ok(capturing.includes("conv_two"), "the still-incomplete chunk's conversation stayed held");
+  } finally {
+    spool.close();
+  }
+});

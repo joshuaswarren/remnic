@@ -478,12 +478,17 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       // the holds from the durable markers: a manifest without a `:done` is a
       // chunk whose WAV is retained, and the conversations capturing right now
       // are the prefixes its replay could still resume (issue #2145).
-      const incomplete = deps.spool.incompleteChunkIds();
-      if (incomplete.length > 0) {
-        const resumableAtStartup = resumableConversations();
-        for (const chunkId of incomplete) {
-          trackRetention(chunkId, true, resumableAtStartup);
-        }
+      const capturingAtStartup = new Set(deps.spool.capturingConversationIds());
+      for (const chunkId of deps.spool.incompleteChunkIds()) {
+        // Scope each hold to the conversations that chunk actually contributed
+        // to: attaching every capturing conversation to every incomplete chunk
+        // would keep unrelated audio off the final-only read path, and would
+        // stop a completed conversation from finalizing while any OTHER chunk
+        // is still awaiting replay.
+        const held = deps.spool
+          .conversationIdsForChunk(chunkId)
+          .filter((id) => capturingAtStartup.has(id));
+        if (held.length > 0) retainedChunks.set(chunkId, new Set(held));
       }
     }
     // Decide retention BEFORE anything can close a conversation: a chunk kept

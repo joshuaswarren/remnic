@@ -685,6 +685,28 @@ export class Spool {
   }
 
   /**
+   * Conversations a chunk actually contributed stored segments to.
+   *
+   * Used to scope a rebuilt replay hold to the prefix that chunk belongs to,
+   * rather than to every conversation that happens to be capturing (#2145).
+   * Matches the bare chunk id and every per-segment or per-group derivative
+   * (`<chunkId>:h<hash>`, and the pre-manifest `<chunkId>:<n>`).
+   */
+  conversationIdsForChunk(chunkId: string): string[] {
+    const escaped = chunkId.replace(/[\\%_]/g, "\\$&");
+    const rows = this.#db
+      .prepare(
+        `SELECT DISTINCT conversation_id AS conversationId
+           FROM segments
+          WHERE conversation_id IS NOT NULL
+            AND (chunk_id = ? OR chunk_id LIKE ? ESCAPE '\\')
+          ORDER BY conversation_id`,
+      )
+      .all(chunkId, `${escaped}:%`) as { conversationId: string }[];
+    return rows.map((row) => row.conversationId);
+  }
+
+  /**
    * Chunks whose transcript manifest is recorded but which never completed.
    *
    * A restart loses the in-memory record of which chunks are still awaiting a
