@@ -25,7 +25,7 @@
   const OWNER_RECONCILIATION_DELAY_MS = 250;
   const MAX_VISIBLE_GRANTS = 100;
   const MAX_SHARED_CARDS = 8;
-  const PAGE_HIDDEN_ABORT = new Error("The helper page was hidden.");
+  const PAGE_HIDDEN_ABORT = new Error("The page was hidden.");
   const SCROLL_BEHAVIOR = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
   const TERMINAL_HELPER_ERROR_CODES = new Set([
     "grant_expired",
@@ -56,6 +56,8 @@
     cardSavePending: false,
     shareCreationPending: false,
     shareCreationCardIds: null,
+    ownerLifecyclePaused: false,
+    ownerRequestControllers: new Set(),
     toastTimer: null,
   };
 
@@ -107,6 +109,7 @@
   }
 
   async function fetchJson(path, options = {}) {
+    if (options.owner && state.ownerLifecyclePaused) throw PAGE_HIDDEN_ABORT;
     const method = options.method ?? "GET";
     const timeoutMs =
       options.timeoutMs ??
@@ -127,6 +130,7 @@
         controller.abort(new Error("The request took too long."));
       }, timeoutMs);
     }
+    if (options.owner && controller) state.ownerRequestControllers.add(controller);
     const headers = new Headers(options.headers ?? {});
     headers.set("accept", "application/json");
     if (options.owner) headers.set("authorization", `Bearer ${state.token}`);
@@ -158,6 +162,7 @@
         error.status = response.status;
         throw error;
       }
+      if (options.owner && state.ownerLifecyclePaused) throw PAGE_HIDDEN_ABORT;
       if (!options.captureServerTime) return payload;
       const serverNowMs = Date.parse(response.headers.get("date") ?? "");
       return {
@@ -171,6 +176,7 @@
       throw timeoutError;
     } finally {
       if (timeout) window.clearTimeout(timeout);
+      if (options.owner && controller) state.ownerRequestControllers.delete(controller);
       removeCallerAbort();
     }
   }
@@ -443,8 +449,10 @@
   }
 
   async function reconcileOwnerState(match) {
+    if (state.ownerLifecyclePaused) return { matched: false, refreshed: false };
     let refreshed = false;
     for (let attempt = 0; attempt < OWNER_RECONCILIATION_ATTEMPTS; attempt += 1) {
+      if (state.ownerLifecyclePaused) return { matched: false, refreshed };
       try {
         await loadOwnerState();
         refreshed = true;
@@ -855,6 +863,7 @@
   async function connectOwner(event) {
     event.preventDefault();
     setError("connectError");
+    state.ownerLifecyclePaused = false;
     state.token = byId("tokenInput").value.trim();
     if (!state.token) return;
     const button = event.currentTarget.querySelector("button");
@@ -1097,6 +1106,54 @@
         byId("customTimeField").hidden = input.value !== "custom" || !input.checked;
       });
     }
+    window.addEventListener("pagehide", () => {
+      clearOwnerSession();
+    });
+    window.addEventListener("pageshow", (event) => {
+      if (!event.persisted) return;
+      if (replayMode) {
+        window.location.reload();
+        return;
+      }
+      clearOwnerSession();
+    });
+  }
+
+  function clearOwnerSession() {
+    state.ownerLifecyclePaused = true;
+    for (const controller of state.ownerRequestControllers) controller.abort(PAGE_HIDDEN_ABORT);
+    state.ownerRequestControllers.clear();
+    state.token = "";
+    state.cards = [];
+    state.grants = [];
+    state.selectedNotes = [];
+    state.pendingCardMutationIds.clear();
+    state.pendingGrantRevocationIds.clear();
+    state.cardSavePending = false;
+    state.shareCreationPending = false;
+    state.shareCreationCardIds = null;
+    window.clearTimeout(state.toastTimer);
+    byId("connectForm").reset();
+    byId("memoryForm").reset();
+    byId("cardForm").reset();
+    byId("shareForm").reset();
+    if (byId("cardDialog").open) byId("cardDialog").close();
+    byId("newLinkPanel").hidden = true;
+    byId("shareLinkInput").value = "";
+    byId("openLinkButton").removeAttribute("href");
+    byId("toast").textContent = "";
+    byId("toast").classList.remove("visible");
+    byId("announcer").textContent = "";
+    for (const id of ["connectError", "memoryError", "generateError", "cardError", "shareError"]) setError(id);
+    setCardSavePending(false);
+    setShareCreationPending(false);
+    renderSelectedNotes();
+    renderCards();
+    renderShareCards();
+    renderGrants();
+    byId("ownerView").hidden = true;
+    byId("connectPanel").hidden = false;
+    byId("viewMarkerText").textContent = "Owner view";
   }
 
   function bindHelperEvents() {
@@ -1148,6 +1205,7 @@
       typeof window.__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__ === "string"
         ? window.__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__.trim()
         : "";
+    window.__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__ = "";
     if (replayMode) {
       state.token = "synthetic-replay";
       state.selectedNotes = replayStore.notes.map((note) => ({ ...note }));
