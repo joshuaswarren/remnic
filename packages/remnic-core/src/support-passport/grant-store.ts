@@ -112,6 +112,7 @@ export class SupportPassportGrantStore {
   private grantsDir: string;
   private ownerIndexesDir: string;
   private memoryRootReady?: Promise<void>;
+  private safeDirectoriesReady?: Promise<void>;
   private readonly now: () => Date;
   private readonly makeSecret: () => Buffer;
   private readonly makeGrantId: () => string;
@@ -162,6 +163,9 @@ export class SupportPassportGrantStore {
       const grantId = rawGrantId.toLowerCase();
       const secret = secretBytes.toString("base64url");
       const createdAt = this.now();
+      if (!Number.isFinite(createdAt.getTime()) || Date.parse(parsed.data.expiresAt) <= createdAt.getTime()) {
+        throw new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
+      }
       const state = SupportPassportGrantStateSchema.parse({
         schemaVersion: 1,
         stateVersion: 1,
@@ -497,12 +501,23 @@ export class SupportPassportGrantStore {
   }
 
   private async ensureSafeDirectories(): Promise<void> {
-    await this.ensureMemoryRoot();
-    await ensurePrivateDirectoryNoFollow(
-      this.memoryDir,
-      this.ownerIndexesDir,
-      "support passport grant directories must remain inside the memory directory"
-    );
+    if (!this.safeDirectoriesReady) {
+      this.safeDirectoriesReady = (async () => {
+        await this.ensureMemoryRoot();
+        await ensurePrivateDirectoryNoFollow(
+          this.memoryDir,
+          this.ownerIndexesDir,
+          "support passport grant directories must remain inside the memory directory"
+        );
+      })();
+    }
+    const currentAttempt = this.safeDirectoriesReady;
+    try {
+      await currentAttempt;
+    } catch (error) {
+      if (this.safeDirectoriesReady === currentAttempt) this.safeDirectoriesReady = undefined;
+      throw error;
+    }
   }
 
   private async ensureMemoryRoot(): Promise<void> {

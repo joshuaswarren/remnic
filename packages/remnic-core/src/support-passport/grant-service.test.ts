@@ -656,6 +656,34 @@ test("grant creation measures its minimum lifetime from request receipt", async 
   }
 });
 
+test("grant creation maps a clock jump past expiry to invalid input", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-clock-jump-"));
+  try {
+    const requestedAt = new Date("2026-08-11T12:00:00.000Z");
+    let nowCalls = 0;
+    const store = new SupportPassportGrantStore({
+      memoryDir: root,
+      now: () => {
+        nowCalls += 1;
+        return new Date(requestedAt.getTime() + (nowCalls > 1 ? 600_000 : 0));
+      },
+    });
+
+    await assert.rejects(
+      store.create({
+        namespace: "alice",
+        principal: "owner:alice",
+        cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+        expiresAt: new Date(requestedAt.getTime() + 300_000).toISOString(),
+      }),
+      (error: unknown) =>
+        error instanceof SupportPassportError && error.code === "invalid_input" && error.status === 400
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("directory sync ignores only explicit unsupported errors", async () => {
   const failingOpen = (code: string) => async () => ({
     sync: async () => {
@@ -1665,7 +1693,7 @@ test("private directory creation syncs every verified parent entry", async () =>
     await ensurePrivateDirectoryNoFollow(root, target, "private directory creation failed", syncVerifiedParent);
     assert.equal(syncs, 3);
     await ensurePrivateDirectoryNoFollow(root, target, "private directory creation failed", syncVerifiedParent);
-    assert.equal(syncs, 3);
+    assert.equal(syncs, 6);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1681,9 +1709,7 @@ test("private directory creation retries a failed parent sync", async () => {
       }),
       (error: unknown) => (error as NodeJS.ErrnoException).code === "EIO"
     );
-    await assert.rejects(lstat(path.join(root, "state")), (error: unknown) => {
-      return (error as NodeJS.ErrnoException).code === "ENOENT";
-    });
+    assert.equal((await lstat(path.join(root, "state"))).isDirectory(), true);
 
     let retrySyncs = 0;
     await ensurePrivateDirectoryNoFollow(root, target, "private directory creation failed", async () => {
@@ -1720,6 +1746,29 @@ test("private directory creation retries parent sync when rollback cannot remove
   }
 });
 
+test("a failed parent sync never unlinks a directory opened by a concurrent setup", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-private-directory-race-"));
+  const releaseFirstSync = Promise.withResolvers<void>();
+  try {
+    const target = path.join(root, "state");
+    const firstSyncStarted = Promise.withResolvers<void>();
+    const first = ensurePrivateDirectoryNoFollow(root, target, "private directory creation failed", async () => {
+      firstSyncStarted.resolve();
+      await releaseFirstSync.promise;
+      throw Object.assign(new Error("simulated directory sync failure"), { code: "EIO" });
+    });
+    await firstSyncStarted.promise;
+    await ensurePrivateDirectoryNoFollow(root, target, "private directory creation failed", async () => undefined);
+    releaseFirstSync.resolve();
+
+    await assert.rejects(first, (error: unknown) => (error as NodeJS.ErrnoException).code === "EIO");
+    assert.equal((await lstat(target)).isDirectory(), true);
+  } finally {
+    releaseFirstSync.resolve();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("private directory tree creation syncs missing memory-root ancestors", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-private-root-sync-"));
   try {
@@ -1730,7 +1779,7 @@ test("private directory tree creation syncs missing memory-root ancestors", asyn
       syncs += 1;
     });
 
-    assert.equal(syncs, 2);
+    assert.equal(syncs, 4);
     assert.equal((await lstat(target)).isDirectory(), true);
     assert.equal((await lstat(target)).mode & 0o777, 0o700);
   } finally {
