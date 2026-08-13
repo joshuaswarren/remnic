@@ -843,7 +843,10 @@ test("grant creation reconciles peer state when the owner-index lock is lost aft
       secretHash: "b".repeat(64),
     };
     const inspected = store as unknown as {
-      withMutationLock<T>(task: (lock: { refresh(): Promise<boolean> }) => Promise<T>): Promise<T>;
+      withOwnerIndexLock<T>(
+        ownerHash: string,
+        task: (lock: { refresh(): Promise<boolean> }) => Promise<T>,
+      ): Promise<T>;
       writeOwnerIndex(ownerHash: string, grantIds: string[]): Promise<void>;
       writeState(state: typeof peerState, requireAbsent: boolean): Promise<void>;
     };
@@ -856,15 +859,15 @@ test("grant creation reconciles peer state when the owner-index lock is lost aft
       await inspected.writeState(peerState, true);
       await writeOwnerIndex(ownerHash, [first.state.grantId, peerGrantId]);
     };
-    let lockRun = 0;
+    let ownerLockRun = 0;
     let firstRunRefreshes = 0;
-    inspected.withMutationLock = async (task) => {
-      lockRun += 1;
+    inspected.withOwnerIndexLock = async (_ownerHash, task) => {
+      ownerLockRun += 1;
       return await task({
         refresh: async () => {
-          if (lockRun !== 1) return true;
+          if (ownerLockRun !== 1) return true;
           firstRunRefreshes += 1;
-          return firstRunRefreshes !== 4;
+          return firstRunRefreshes !== 2;
         },
       });
     };
@@ -874,8 +877,8 @@ test("grant creation reconciles peer state when the owner-index lock is lost aft
       (state) => state.grantId,
     ));
 
-    assert.equal(lockRun, 2);
-    assert.equal(firstRunRefreshes, 4);
+    assert.equal(ownerLockRun, 2);
+    assert.equal(firstRunRefreshes, 2);
     assert.deepEqual(listedIds, new Set([first.state.grantId, created.state.grantId, peerGrantId]));
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -907,31 +910,90 @@ test("grant recovery reads only the affected owner's index", async () => {
     await writeFile(path.join(grantsDir, `${unindexedGrantId}.json`), "not valid JSON", {
       mode: 0o600,
     });
-    let lockRun = 0;
+    let ownerLockRun = 0;
     let firstRunRefreshes = 0;
     const inspected = store as unknown as {
-      withMutationLock<T>(task: (lock: { refresh(): Promise<boolean> }) => Promise<T>): Promise<T>;
+      withOwnerIndexLock<T>(
+        ownerHash: string,
+        task: (lock: { refresh(): Promise<boolean> }) => Promise<T>,
+      ): Promise<T>;
     };
-    inspected.withMutationLock = async (task) => {
-      lockRun += 1;
+    inspected.withOwnerIndexLock = async (_ownerHash, task) => {
+      ownerLockRun += 1;
       return await task({
         refresh: async () => {
-          if (lockRun !== 1) return true;
+          if (ownerLockRun !== 1) return true;
           firstRunRefreshes += 1;
-          return firstRunRefreshes !== 4;
+          return firstRunRefreshes !== 2;
         },
       });
     };
 
     const created = await store.create(input);
 
-    assert.equal(lockRun, 2);
+    assert.equal(ownerLockRun, 2);
     assert.deepEqual(
       new Set((await store.listForOwner(input.namespace, input.principal)).map((state) => state.grantId)),
       new Set([first.state.grantId, created.state.grantId]),
     );
     assert.equal(await readFile(path.join(grantsDir, `${unindexedGrantId}.json`), "utf8"), "not valid JSON");
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("one owner's index transaction does not block another owner", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-owner-concurrency-"));
+  const releaseAlice = Promise.withResolvers<void>();
+  try {
+    const grantIds = [
+      "00000000-0000-4000-8000-000000000001",
+      "00000000-0000-4000-8000-000000000002",
+    ];
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({
+      memoryDir: root,
+      makeGrantId: () => grantIds.shift() ?? "00000000-0000-4000-8000-000000000003",
+      now: () => now,
+    });
+    const inspected = store as unknown as {
+      withOwnerIndexLock<T>(
+        ownerHash: string,
+        task: (lock: { refresh(): Promise<boolean> }) => Promise<T>,
+      ): Promise<T>;
+    };
+    const withOwnerIndexLock = inspected.withOwnerIndexLock.bind(store);
+    const aliceEntered = Promise.withResolvers<void>();
+    let blockedOwnerHash: string | undefined;
+    inspected.withOwnerIndexLock = async (ownerHash, task) => {
+      if (!blockedOwnerHash) {
+        blockedOwnerHash = ownerHash;
+        return await withOwnerIndexLock(ownerHash, async (lock) => {
+          aliceEntered.resolve();
+          await releaseAlice.promise;
+          return await task(lock);
+        });
+      }
+      return await withOwnerIndexLock(ownerHash, task);
+    };
+    const input = {
+      namespace: "shared",
+      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+      expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
+    };
+    const alice = store.create({ ...input, principal: "owner:alice" });
+    await aliceEntered.promise;
+    const bob = await Promise.race([
+      store.create({ ...input, principal: "owner:bob" }),
+      new Promise<never>((_resolve, reject) =>
+        setTimeout(() => reject(new Error("another owner was blocked by Alice's index lock")), 1_000),
+      ),
+    ]);
+    assert.equal(bob.state.namespace, "shared");
+    releaseAlice.resolve();
+    await alice;
+  } finally {
+    releaseAlice.resolve();
     await rm(root, { recursive: true, force: true });
   }
 });

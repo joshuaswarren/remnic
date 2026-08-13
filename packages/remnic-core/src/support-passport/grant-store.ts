@@ -8,13 +8,13 @@ import { type HeldFileLockController, serializeMutations, withHeldFileLock } fro
 import { computeSupportPassportOwnerKey } from "./card-projection.js";
 import { SupportPassportNamespaceSchema } from "./contracts.js";
 import { SupportPassportError } from "./errors.js";
-import { computeSupportPassportOwnerLockKey } from "./owner-lock.js";
 import {
   SupportPassportCreateGrantInputSchema,
   type SupportPassportGrantCardRef,
   type SupportPassportGrantState,
   SupportPassportGrantStateSchema,
 } from "./grant-contracts.js";
+import { computeSupportPassportOwnerLockKey } from "./owner-lock.js";
 import {
   ensurePrivateDirectoryNoFollow,
   ensurePrivateDirectoryTreeNoFollow,
@@ -163,89 +163,92 @@ export class SupportPassportGrantStore {
     ) {
       throw new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
     }
-    let recoverableCommit: { state: SupportPassportGrantState; secret: string } | undefined;
-    try {
-      return await this.withMutationLock(async (lock) => {
-        const secretBytes = this.makeSecret();
-        if (!Buffer.isBuffer(secretBytes) || secretBytes.length !== 32) {
-          throw new Error("SupportPassportGrantStore.makeSecret must return 32 bytes");
-        }
-        const rawGrantId = this.makeGrantId();
-        if (!UUID_INPUT.test(rawGrantId)) throw new Error("SupportPassportGrantStore.makeGrantId must return a UUID");
-        const grantId = rawGrantId.toLowerCase();
-        const secret = secretBytes.toString("base64url");
-        const createdAt = this.now();
-        const createdAtMs = createdAt.getTime();
-        const expiresAtMs = Date.parse(parsed.data.expiresAt);
-        if (
-          !Number.isFinite(createdAtMs) ||
-          requestedAt.getTime() > createdAtMs ||
-          expiresAtMs <= createdAtMs ||
-          expiresAtMs - createdAtMs > 604_800_000
-        ) {
-          throw new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
-        }
-        const state = SupportPassportGrantStateSchema.parse({
-          schemaVersion: 1,
-          stateVersion: 1,
-          grantId,
-          namespace,
-          principalHash: computeSupportPassportOwnerKey(parsed.data.principal),
-          ownerLockKey: computeSupportPassportOwnerLockKey(namespace, parsed.data.principal),
-          secretHash: sha256("support-passport-secret:v1", secret),
-          cards: parsed.data.cards,
-          createdAt: createdAt.toISOString(),
-          expiresAt: parsed.data.expiresAt,
-        });
-        recoverableCommit = { state, secret };
-        await this.requireMutationLock(lock);
-        await beforeCommit?.();
-        await this.requireMutationLock(lock);
+    const committed = await this.withMutationLock(async (lock) => {
+      const secretBytes = this.makeSecret();
+      if (!Buffer.isBuffer(secretBytes) || secretBytes.length !== 32) {
+        throw new Error("SupportPassportGrantStore.makeSecret must return 32 bytes");
+      }
+      const rawGrantId = this.makeGrantId();
+      if (!UUID_INPUT.test(rawGrantId)) throw new Error("SupportPassportGrantStore.makeGrantId must return a UUID");
+      const grantId = rawGrantId.toLowerCase();
+      const secret = secretBytes.toString("base64url");
+      const createdAt = this.now();
+      const createdAtMs = createdAt.getTime();
+      const expiresAtMs = Date.parse(parsed.data.expiresAt);
+      if (
+        !Number.isFinite(createdAtMs) ||
+        requestedAt.getTime() > createdAtMs ||
+        expiresAtMs <= createdAtMs ||
+        expiresAtMs - createdAtMs > 604_800_000
+      ) {
+        throw new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
+      }
+      const state = SupportPassportGrantStateSchema.parse({
+        schemaVersion: 1,
+        stateVersion: 1,
+        grantId,
+        namespace,
+        principalHash: computeSupportPassportOwnerKey(parsed.data.principal),
+        ownerLockKey: computeSupportPassportOwnerLockKey(namespace, parsed.data.principal),
+        secretHash: sha256("support-passport-secret:v1", secret),
+        cards: parsed.data.cards,
+        createdAt: createdAt.toISOString(),
+        expiresAt: parsed.data.expiresAt,
+      });
+      await this.requireMutationLock(lock);
+      await beforeCommit?.();
+      await this.requireMutationLock(lock);
+      try {
+        await this.writeState(state, true);
+      } catch (error) {
+        const persisted = await this.readState(state.grantId).catch(() => undefined);
+        if (!persisted || !sameGrantState(persisted, state)) throw error;
         try {
-          await this.writeState(state, true);
-        } catch (error) {
-          const persisted = await this.readState(state.grantId).catch(() => undefined);
-          if (!persisted || !sameGrantState(persisted, state)) throw error;
-          try {
-            await this.syncDirectory(this.grantsDir);
-          } catch {
-            await this.removeGrantStates([state.grantId]).catch(() => undefined);
-            throw error;
-          }
-        }
-        try {
-          await this.addToOwnerIndex(state, lock);
-        } catch (error) {
-          if (error instanceof OwnerIndexLockLostError) throw error;
-          const ownerHash = this.ownerHash(state.namespace, state.principalHash);
-          const indexed = await this.readOwnerIndexByHash(ownerHash).catch(() => undefined);
-          if (indexed?.includes(state.grantId)) {
-            try {
-              await this.syncDirectory(this.ownerIndexesDir);
-            } catch {
-              await this.removeGrantStates([state.grantId]).catch(() => undefined);
-              throw error;
-            }
-            await this.requireOwnerIndexLock(lock);
-            return { state, secret };
-          }
+          await this.syncDirectory(this.grantsDir);
+        } catch {
           await this.removeGrantStates([state.grantId]).catch(() => undefined);
           throw error;
         }
-        return { state, secret };
+      }
+      return { state, secret };
+    });
+    const ownerHash = this.ownerHash(committed.state.namespace, committed.state.principalHash);
+    try {
+      return await this.withOwnerIndexLock(ownerHash, async (lock) => {
+        try {
+          await this.addToOwnerIndex(committed.state, lock);
+        } catch (error) {
+          if (error instanceof OwnerIndexLockLostError) throw error;
+          const indexed = await this.readOwnerIndexByHash(ownerHash).catch(() => undefined);
+          if (indexed?.includes(committed.state.grantId)) {
+            try {
+              await this.syncDirectory(this.ownerIndexesDir);
+            } catch {
+              await this.removeGrantStates([committed.state.grantId]).catch(() => undefined);
+              throw error;
+            }
+            await this.requireOwnerIndexLock(lock);
+            return committed;
+          }
+          await this.removeGrantStates([committed.state.grantId]).catch(() => undefined);
+          throw error;
+        }
+        return committed;
       });
     } catch (error) {
-      if (!(error instanceof OwnerIndexLockLostError) || !recoverableCommit) throw error;
-      const committed = recoverableCommit;
-      try {
-        return await this.reconcileCreateAfterOwnerIndexLockLoss(committed);
-      } catch (recoveryError) {
-        await this.withGrantLock(committed.state.grantId, async (lock) => {
-          await this.requireMutationLock(lock);
-          await this.removeGrantStates([committed.state.grantId]);
-        }).catch(() => undefined);
-        throw recoveryError;
+      if (error instanceof OwnerIndexLockLostError) {
+        try {
+          return await this.reconcileCreateAfterOwnerIndexLockLoss(committed);
+        } catch (recoveryError) {
+          await this.withGrantLock(committed.state.grantId, async (lock) => {
+            await this.requireMutationLock(lock);
+            await this.removeGrantStates([committed.state.grantId]);
+          }).catch(() => undefined);
+          throw recoveryError;
+        }
       }
+      await this.removeGrantStates([committed.state.grantId]).catch(() => undefined);
+      throw error;
     }
   }
 
@@ -455,12 +458,12 @@ export class SupportPassportGrantStore {
   private async reconcileCreateAfterOwnerIndexLockLoss(
     committed: { state: SupportPassportGrantState; secret: string },
   ): Promise<{ state: SupportPassportGrantState; secret: string }> {
-    return await this.withMutationLock(async (lock) => {
+    const ownerHash = this.ownerHash(committed.state.namespace, committed.state.principalHash);
+    return await this.withOwnerIndexLock(ownerHash, async (lock) => {
       const persisted = await this.readState(committed.state.grantId).catch(() => undefined);
       if (!persisted || !sameGrantState(persisted, committed.state)) {
         throw new SupportPassportError("storage_conflict", "The share link store changed during the request.", 409);
       }
-      const ownerHash = this.ownerHash(committed.state.namespace, committed.state.principalHash);
       const indexedGrantIds = await this.readOwnerIndexByHash(ownerHash);
       const ownerStates: SupportPassportGrantState[] = [];
       for (const grantId of indexedGrantIds) {
@@ -684,6 +687,24 @@ export class SupportPassportGrantStore {
           `support-passport-grant:${this.grantsDir}:${normalizedGrantId}`,
           path.join(pinnedDirectory, `.${normalizedGrantId}.lock`),
           task
+        ),
+    );
+  }
+
+  private async withOwnerIndexLock<T>(
+    ownerHash: string,
+    task: (lock: HeldFileLockController) => Promise<T>,
+  ): Promise<T> {
+    await this.ensureSafeDirectories();
+    return await withPrivateDirectoryNoFollow(
+      path.parse(this.memoryDir).root,
+      this.ownerIndexesDir,
+      "support passport owner lock directory must remain inside the memory directory",
+      async (pinnedDirectory) =>
+        await this.withExclusiveLock(
+          `support-passport-owner:${this.ownerIndexesDir}:${ownerHash}`,
+          path.join(pinnedDirectory, `.${ownerHash}.lock`),
+          task,
         ),
     );
   }
