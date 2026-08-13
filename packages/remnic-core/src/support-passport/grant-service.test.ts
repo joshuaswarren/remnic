@@ -887,11 +887,12 @@ test("grant creation reconciles peer state when the owner-index lock is lost aft
     const writeOwnerIndex = inspected.writeOwnerIndex.bind(store);
     let injectPeer = true;
     inspected.writeOwnerIndex = async (ownerHash, indexedGrantIds) => {
+      if (injectPeer) {
+        injectPeer = false;
+        await inspected.writeState(peerState, true);
+        await writeOwnerIndex(ownerHash, [first.state.grantId, peerGrantId]);
+      }
       await writeOwnerIndex(ownerHash, indexedGrantIds);
-      if (!injectPeer) return;
-      injectPeer = false;
-      await inspected.writeState(peerState, true);
-      await writeOwnerIndex(ownerHash, [first.state.grantId, peerGrantId]);
     };
     let ownerLockRun = 0;
     let firstRunRefreshes = 0;
@@ -981,7 +982,7 @@ test("grant recovery prunes a stale owner-index entry after lock loss", async ()
   }
 });
 
-test("grant recovery reads only the affected owner's index", async () => {
+test("grant recovery ignores malformed unindexed grant files", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-scoped-recovery-"));
   try {
     const grantIds = [

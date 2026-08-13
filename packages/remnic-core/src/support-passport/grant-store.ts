@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { type FileHandle, lstat, open } from "node:fs/promises";
+import { type FileHandle, lstat, open, readdir } from "node:fs/promises";
 import path from "node:path";
 
 import { log } from "../logger.js";
@@ -494,6 +494,13 @@ export class SupportPassportGrantStore {
           if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         }
       }
+      const indexedGrantIdSet = new Set(indexedGrantIds);
+      const unindexedOwnerStates = await this.readUnindexedOwnerStates(
+        committed.state.namespace,
+        committed.state.principalHash,
+        indexedGrantIdSet,
+      );
+      ownerStates.push(...unindexedOwnerStates);
       const committedIndex = ownerStates.findIndex(
         (state) => state.grantId === committed.state.grantId,
       );
@@ -542,6 +549,38 @@ export class SupportPassportGrantStore {
 
   private async readOwnerIndex(namespace: string, principalHash: string): Promise<string[]> {
     return await this.readOwnerIndexByHash(this.ownerHash(namespace, principalHash));
+  }
+
+  private async readUnindexedOwnerStates(
+    namespace: string,
+    principalHash: string,
+    indexedGrantIds: ReadonlySet<string>,
+  ): Promise<SupportPassportGrantState[]> {
+    await this.ensureSafeDirectories();
+    const grantIds = await withPrivateDirectoryNoFollow(
+      path.parse(this.memoryDir).root,
+      this.grantsDir,
+      "support passport grant files must be regular files in a stable directory",
+      async (pinnedDirectory) => {
+        const entries = await readdir(pinnedDirectory, { withFileTypes: true });
+        return entries
+          .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+          .map((entry) => entry.name.slice(0, -5))
+          .filter((grantId) => SAFE_GRANT_ID.test(grantId) && !indexedGrantIds.has(grantId));
+      },
+    );
+    const ownerStates: SupportPassportGrantState[] = [];
+    for (const grantId of grantIds) {
+      try {
+        const state = await this.readState(grantId);
+        if (state.namespace === namespace && hashesMatch(state.principalHash, principalHash)) {
+          ownerStates.push(state);
+        }
+      } catch {
+        continue;
+      }
+    }
+    return ownerStates;
   }
 
   private async readOwnerIndexByHash(ownerHash: string): Promise<string[]> {
