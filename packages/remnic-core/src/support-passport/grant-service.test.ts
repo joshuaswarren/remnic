@@ -1836,28 +1836,18 @@ test("the grant store rejects a symlink alias in the configured memory root", as
   }
 });
 
-test("the Windows private-file strategy writes, reads, and removes a private file", async () => {
+test("Windows private-file operations fail before mutation", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-private-win32-"));
   try {
     const directory = path.join(root, "state", "support-passport", "grants");
     const filePath = path.join(directory, "grant.json");
     const errorMessage = "private Windows file operation failed";
-    await ensurePrivateDirectoryNoFollow(root, directory, errorMessage, undefined, true, "win32");
-    await writePrivateFileAtomicallyNoFollow(
-      directory,
-      filePath,
-      '{"ok":true}\n',
-      errorMessage,
-      root,
-      "win32",
-    );
-
-    assert.equal(await readPrivateFileNoFollow(directory, filePath, errorMessage, root, "win32"), '{"ok":true}\n');
-    await removePrivateFilesNoFollow(directory, ["grant.json"], errorMessage, root, "win32");
     await assert.rejects(
-      readPrivateFileNoFollow(directory, filePath, errorMessage, root, "win32"),
-      (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT",
+      ensurePrivateDirectoryNoFollow(root, directory, errorMessage, undefined, true, "win32"),
+      new RegExp(errorMessage),
     );
+    assert.equal(await lstat(directory).then(() => true, () => false), false);
+    assert.equal(await lstat(filePath).then(() => true, () => false), false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
