@@ -502,12 +502,13 @@
         }
         const grantId = globalScope.crypto.randomUUID();
         const secret = replayId("replay-secret").padEnd(43, "x");
+        const expiresAt = input.expiresAt ?? new Date(now().getTime() + input.durationMs).toISOString();
         const grant = {
           grantId,
           stateVersion: 1,
           cards: input.cardRevisions.map((card) => ({ ...card })),
           createdAt: now().toISOString(),
-          expiresAt: input.expiresAt,
+          expiresAt,
           status: "active",
         };
         grants = [grant, ...grants];
