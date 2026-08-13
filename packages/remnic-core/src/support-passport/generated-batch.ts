@@ -1,17 +1,9 @@
 import path from "node:path";
-import { readdir } from "node:fs/promises";
 
 import { z } from "zod";
 
 import type { StorageManager } from "../index.js";
 import type { MemoryFile } from "../types.js";
-import {
-  ensurePrivateDirectoryTreeNoFollow,
-  readPrivateFileNoFollow,
-  removePrivateFilesNoFollow,
-  withPrivateDirectoryNoFollow,
-  writePrivateFileAtomicallyNoFollow,
-} from "./private-file.js";
 import {
   type StoredSupportPassportCard,
   computeSupportPassportOwnerKey,
@@ -19,8 +11,17 @@ import {
 } from "./card-projection.js";
 import { SupportPassportNamespaceSchema } from "./contracts.js";
 import { SupportPassportError } from "./errors.js";
+import {
+  ensurePrivateDirectoryTreeNoFollow,
+  readPrivateFileNoFollow,
+  removePrivateFilesNoFollow,
+  writePrivateFileAtomicallyNoFollow,
+} from "./private-file.js";
 
-const BatchIdSchema = z.string().uuid().transform((value) => value.toLowerCase());
+const BatchIdSchema = z
+  .string()
+  .uuid()
+  .transform((value) => value.toLowerCase());
 const GeneratedBatchMarkerSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -68,10 +69,7 @@ function markerFor(context: GeneratedBatchContext, batchId: string, size: number
 }
 
 function sameOwner(marker: GeneratedBatchMarker, context: GeneratedBatchContext): boolean {
-  return (
-    marker.namespace === context.namespace &&
-    marker.owner === computeSupportPassportOwnerKey(context.principal)
-  );
+  return marker.namespace === context.namespace && marker.owner === computeSupportPassportOwnerKey(context.principal);
 }
 
 async function ensureBatchDirectory(storage: StorageManager): Promise<void> {
@@ -81,12 +79,7 @@ async function ensureBatchDirectory(storage: StorageManager): Promise<void> {
 async function readBatchMarker(storage: StorageManager, batchId: string): Promise<GeneratedBatchMarker | null> {
   const directory = batchDirectory(storage);
   try {
-    const content = await readPrivateFileNoFollow(
-      directory,
-      batchPath(storage, batchId),
-      BATCH_ERROR,
-      storage.dir
-    );
+    const content = await readPrivateFileNoFollow(directory, batchPath(storage, batchId), BATCH_ERROR, storage.dir);
     let value: unknown;
     try {
       value = JSON.parse(content);
@@ -104,32 +97,6 @@ async function readBatchMarker(storage: StorageManager, batchId: string): Promis
   }
 }
 
-async function listBatchMarkers(storage: StorageManager): Promise<GeneratedBatchMarker[]> {
-  const directory = batchDirectory(storage);
-  let fileNames: string[];
-  try {
-    fileNames = await withPrivateDirectoryNoFollow(
-      storage.dir,
-      directory,
-      BATCH_ERROR,
-      async (pinnedDirectory) => await readdir(pinnedDirectory)
-    );
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw error;
-  }
-  const markers: GeneratedBatchMarker[] = [];
-  for (const fileName of fileNames) {
-    const match = /^([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.json$/.exec(
-      fileName
-    );
-    if (!match?.[1]) continue;
-    const marker = await readBatchMarker(storage, match[1]);
-    if (marker) markers.push(marker);
-  }
-  return markers;
-}
-
 async function writeBatchMarker(storage: StorageManager, marker: GeneratedBatchMarker): Promise<void> {
   const directory = batchDirectory(storage);
   await writePrivateFileAtomicallyNoFollow(
@@ -142,19 +109,10 @@ async function writeBatchMarker(storage: StorageManager, marker: GeneratedBatchM
 }
 
 async function removeBatchMarker(storage: StorageManager, batchId: string): Promise<void> {
-  await removePrivateFilesNoFollow(
-    batchDirectory(storage),
-    [batchFileName(batchId)],
-    BATCH_ERROR,
-    storage.dir
-  );
+  await removePrivateFilesNoFollow(batchDirectory(storage), [batchFileName(batchId)], BATCH_ERROR, storage.dir);
 }
 
-function projectOwnedCard(
-  memory: MemoryFile,
-  namespace: string,
-  principal: string
-): StoredSupportPassportCard | null {
+function projectOwnedCard(memory: MemoryFile, namespace: string, principal: string): StoredSupportPassportCard | null {
   const card = projectSupportPassportCard(memory);
   return card?.namespace === namespace && card.owner === computeSupportPassportOwnerKey(principal) ? card : null;
 }
@@ -266,7 +224,7 @@ export async function rollbackSupportPassportGeneratedBatch(
 export async function isCommittedGeneratedCard(
   storage: StorageManager,
   card: StoredSupportPassportCard,
-  markerCache?: Map<string, GeneratedBatchMarker | null>,
+  markerCache?: Map<string, GeneratedBatchMarker | null>
 ): Promise<boolean> {
   if (!card.generatedBatchId) return true;
   let marker = markerCache?.get(card.generatedBatchId);
@@ -313,11 +271,6 @@ export async function recoverSupportPassportGeneratedBatches(
     const cards = cardsByBatch.get(card.generatedBatchId) ?? [];
     cards.push(card);
     cardsByBatch.set(card.generatedBatchId, cards);
-  }
-  for (const marker of await listBatchMarkers(context.storage)) {
-    if (sameOwner(marker, context) && !cardsByBatch.has(marker.batchId)) {
-      cardsByBatch.set(marker.batchId, []);
-    }
   }
   for (const [batchId, cards] of cardsByBatch) {
     const marker = await readBatchMarker(context.storage, batchId);
