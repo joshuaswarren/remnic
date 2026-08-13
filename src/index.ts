@@ -1458,9 +1458,8 @@ const pluginDefinition = {
     // Bridge mode (issue #2120): delegate skips the embedded orchestrator;
     // the plugin package owns resolution/preflight/fallback (cast widens the SDK union).
     const delegateApi = api as unknown as DelegateHookApi;
-    const delegateSupportPassportGatewayRoute = cfg.supportPassport.enabled
-      ? createConfiguredSupportPassportGatewayRoute(cfg)
-      : null;
+    const delegateSupportPassportGatewayRoute =
+      createConfiguredSupportPassportGatewayRoute(cfg);
     const delegateHandled = maybeRegisterDelegateRuntime(delegateApi, {
       serviceId,
       configBridgeMode: cfg.bridgeMode,

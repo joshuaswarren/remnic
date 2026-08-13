@@ -32,7 +32,7 @@ test("the OpenClaw access service injects its gateway route without a direct Ope
   assert.equal(service.supportPassportGatewayRouteRef?.kind, "gateway");
 });
 
-test("plugin mode keeps the configured gateway fallback for delegate workers", () => {
+test("delegate workers keep the gateway route when the plugin-local passport flag is off", () => {
   const config = parseConfig({
     modelSource: "plugin",
     openaiApiKey: false,
@@ -51,6 +51,7 @@ test("plugin mode keeps the configured gateway fallback for delegate workers", (
       },
     },
   });
+  assert.equal(config.supportPassport.enabled, false);
   assert.equal(createConfiguredSupportPassportGatewayRoute(config)?.kind, "gateway");
 });
 
