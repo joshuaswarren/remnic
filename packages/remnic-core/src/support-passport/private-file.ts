@@ -318,13 +318,11 @@ export async function appendPrivateFileNoFollow(
       throw error;
     }
     const fileMetadata = await fileHandle.stat();
-    if (platform === "win32") await assertAbsoluteDirectoryChainNoFollow(directory, errorMessage);
     assertStableDirectory(stableDirectory.before, stableDirectory.opened, await lstat(directory), errorMessage);
     if (!fileMetadata.isFile() || fileMetadata.nlink !== 1) throw new Error(errorMessage);
     await fileHandle.chmod(0o600);
     await fileHandle.appendFile(content, "utf8");
     await fileHandle.sync();
-    if (platform === "win32") await assertAbsoluteDirectoryChainNoFollow(directory, errorMessage);
     assertStableDirectory(stableDirectory.before, stableDirectory.opened, await lstat(directory), errorMessage);
     if (stableDirectory.handle) await syncDirectoryHandle(stableDirectory.handle);
   } finally {
