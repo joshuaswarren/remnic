@@ -477,11 +477,17 @@ function normalizeOpenaiBaseUrl(value: string | undefined, source: "config" | "e
   try {
     parsed = new URL(trimmed);
   } catch {
+    if (source === "config") {
+      throw new Error("openaiBaseUrl must be an absolute HTTP or HTTPS URL");
+    }
     log.warn(`ignoring invalid openaiBaseUrl from ${source}: not a valid URL`);
     return undefined;
   }
 
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    if (source === "config") {
+      throw new Error("openaiBaseUrl must use HTTP or HTTPS");
+    }
     log.warn(
       `ignoring openaiBaseUrl from ${source}: unsupported URL scheme (${parsed.protocol.replace(":", "")})`,
     );

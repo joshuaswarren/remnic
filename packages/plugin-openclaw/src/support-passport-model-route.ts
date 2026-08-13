@@ -18,6 +18,7 @@ export function createOpenClawSupportPassportModelRoute(
         store: false,
         responsesJsonSchema: options.jsonSchema,
         redactProviderErrors: true,
+        includeDefaultModelFallback: false,
         acceptResponse: options.acceptResponse,
         ...gatewayTaskChainOptions(config),
       };

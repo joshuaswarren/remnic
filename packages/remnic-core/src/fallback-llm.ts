@@ -33,6 +33,8 @@ export interface FallbackLlmOptions {
   model?: string;
   /** Explicit model chain override to use instead of the configured agent/default chain. */
   modelChain?: AgentPersonaModelConfig;
+  /** Append the gateway default chain after an explicit model chain. */
+  includeDefaultModelFallback?: boolean;
   /** Override which agent persona's model chain to use (by ID from agents.list[]). */
   agentId?: string;
   /** Reject a transport-successful response and continue through the configured model chain. */
@@ -185,7 +187,12 @@ export class FallbackLlmClient {
     messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
     options: FallbackLlmOptions = {},
   ): Promise<FallbackLlmResponse | null> {
-    const models = this.getModelChain(options.agentId, options.model, options.modelChain);
+    const models = this.getModelChain(
+      options.agentId,
+      options.model,
+      options.modelChain,
+      options.includeDefaultModelFallback,
+    );
     if (models.length === 0) {
       log.warn("fallback LLM: no models configured in gateway");
       return null;
@@ -320,7 +327,12 @@ export class FallbackLlmClient {
       // Disambiguate via the resolved model chain so the retry layer can pick
       // the right failure class.
       const hasModels =
-        this.getModelChain(options.agentId, options.model, options.modelChain).length > 0;
+        this.getModelChain(
+          options.agentId,
+          options.model,
+          options.modelChain,
+          options.includeDefaultModelFallback,
+        ).length > 0;
       return { result: null, failureReason: hasModels ? "http_error" : "no_models" };
     }
 
@@ -354,6 +366,7 @@ export class FallbackLlmClient {
     agentId?: string,
     modelOverride?: string,
     modelChainOverride?: AgentPersonaModelConfig,
+    includeDefaultModelFallback = true,
   ): ModelRef[] {
     const chain: ModelRef[] = [];
     const providers = this.gatewayConfig?.models?.providers ?? {};
@@ -421,7 +434,7 @@ export class FallbackLlmClient {
     // the SAME activation condition chain resolution uses above — so a
     // primary-less override (e.g. {}) that falls through to a persona/default
     // chain does NOT get the default appended (gotcha #39). Issue #1365 / PR #1370.
-    if (modelChainOverride?.primary && modelStrings.length > 0) {
+    if (includeDefaultModelFallback && modelChainOverride?.primary && modelStrings.length > 0) {
       // Append the FULL gateway default chain (primary + fallbacks), not just
       // the primary — if the default primary is also unreachable, a listed
       // default fallback may still succeed (cursor review #1425).

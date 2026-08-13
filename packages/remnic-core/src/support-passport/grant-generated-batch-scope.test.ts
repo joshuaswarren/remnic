@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -84,6 +84,59 @@ test("grant reads do not open another owner's generated batch marker", async () 
     await assert.rejects(
       freshService.readGrant({ grantId: bobGrant.grant.grantId, secret: bobGrant.secret }),
       (error: unknown) => error instanceof SupportPassportError && error.code === "card_data_invalid",
+    );
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a removed generated batch marker invalidates a cached grant snapshot", async () => {
+  StorageManager.clearAllStaticCaches();
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-batch-cache-"));
+  try {
+    const storage = new StorageManager(path.join(root, "owner"));
+    await storage.ensureDirectories();
+    const now = () => new Date("2026-08-13T12:00:00.000Z");
+    const resolveOwner = async (principal: string) => ({ principal, namespace: "owner", storage });
+    const cardService = new SupportPassportCardService({ resolveOwner, now });
+    const grantStore = new SupportPassportGrantStore({ memoryDir: path.join(root, "grants"), now });
+    const grantService = new SupportPassportGrantService({
+      grantStore,
+      resolveOwner,
+      resolveNamespace: async () => storage,
+      now,
+    });
+    const [draft] = await cardService.createGeneratedDrafts({
+      principal: "owner:alice",
+      cards: [{
+        title: "Time to answer",
+        statement: "Give me time to answer.",
+        category: "communication",
+        sourceMemoryIds: ["source-1"],
+      }],
+    });
+    assert.ok(draft);
+    const card = await cardService.approveCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+    });
+    const grant = await grantService.createGrant({
+      principal: "owner:alice",
+      cards: [{ cardId: card.cardId, revision: card.revision }],
+      expiresAt: "2026-08-13T13:00:00.000Z",
+    });
+    await grantService.readGrant({ grantId: grant.grant.grantId, secret: grant.secret });
+
+    const memory = await storage.getMemoryById(card.cardId);
+    const batchId = memory?.frontmatter.structuredAttributes?.[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.generatedBatchId];
+    assert.ok(batchId);
+    await unlink(path.join(storage.dir, "state", "support-passport", "generated-batches", `${batchId}.json`));
+
+    await assert.rejects(
+      grantService.readGrant({ grantId: grant.grant.grantId, secret: grant.secret }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "grant_stale",
     );
   } finally {
     StorageManager.clearAllStaticCaches();
