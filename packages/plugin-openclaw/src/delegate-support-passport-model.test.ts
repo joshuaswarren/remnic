@@ -20,6 +20,7 @@ test("the delegate worker runs daemon jobs through the injected gateway route", 
     jsonSchema: { name: "drafts", schema: { type: "object" } },
   };
   let served = false;
+  let completionAttempts = 0;
   const server = http.createServer((req, res) => {
     let raw = "";
     req.on("data", (chunk) => {
@@ -36,6 +37,12 @@ test("the delegate worker runs daemon jobs through the injected gateway route", 
           res.statusCode = 204;
           res.end();
         }
+        return;
+      }
+      completionAttempts += 1;
+      if (completionAttempts === 1) {
+        res.statusCode = 503;
+        res.end();
         return;
       }
       completion.resolve(JSON.parse(raw) as Record<string, unknown>);
@@ -55,12 +62,14 @@ test("the delegate worker runs daemon jobs through the injected gateway route", 
     invoke: async (_messages, options) => {
       const result = {
         content: JSON.stringify({
-          cards: [{
-            title: "Plan changes",
-            statement: "Tell me before plans change.",
-            category: "transitions",
-            sourceMemoryIds: ["memory-1"],
-          }],
+          cards: [
+            {
+              title: "Plan changes",
+              statement: "Tell me before plans change.",
+              category: "transitions",
+              sourceMemoryIds: ["memory-1"],
+            },
+          ],
         }),
         modelUsed: "gateway/local",
       };
@@ -81,15 +90,18 @@ test("the delegate worker runs daemon jobs through the injected gateway route", 
     await service.start();
     const posted = await completion.promise;
     assert.equal(accepted, true);
+    assert.equal(completionAttempts, 2);
     assert.equal(posted.id, job.id);
     assert.deepEqual(posted.result, {
       content: JSON.stringify({
-        cards: [{
-          title: "Plan changes",
-          statement: "Tell me before plans change.",
-          category: "transitions",
-          sourceMemoryIds: ["memory-1"],
-        }],
+        cards: [
+          {
+            title: "Plan changes",
+            statement: "Tell me before plans change.",
+            category: "transitions",
+            sourceMemoryIds: ["memory-1"],
+          },
+        ],
       }),
       modelUsed: "gateway/local",
     });
@@ -100,18 +112,17 @@ test("the delegate worker runs daemon jobs through the injected gateway route", 
 });
 
 test("delegate pollers run overlapping gateway jobs concurrently", async () => {
-  const jobs = [
-    "a871fab2-2f1c-478c-af4c-8c4a755d8072",
-    "b871fab2-2f1c-478c-af4c-8c4a755d8073",
-  ].map((id): SupportPassportModelJob => ({
-    id,
-    messages: [{ role: "user", content: id }],
-    temperature: 0,
-    maxTokens: 100,
-    timeoutMs: 5_000,
-    operation: "support-passport-answer",
-    jsonSchema: { name: "answer", schema: { type: "object" } },
-  }));
+  const jobs = ["a871fab2-2f1c-478c-af4c-8c4a755d8072", "b871fab2-2f1c-478c-af4c-8c4a755d8073"].map(
+    (id): SupportPassportModelJob => ({
+      id,
+      messages: [{ role: "user", content: id }],
+      temperature: 0,
+      maxTokens: 100,
+      timeoutMs: 5_000,
+      operation: "support-passport-answer",
+      jsonSchema: { name: "answer", schema: { type: "object" } },
+    })
+  );
   const completions: string[] = [];
   const bothStarted = Promise.withResolvers<void>();
   const releaseFirst = Promise.withResolvers<void>();
