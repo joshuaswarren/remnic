@@ -141,6 +141,40 @@ test("the owner note preview preserves API text and binds consent to its revisio
   });
 });
 
+test("a note preview preserves a newer memory ID while its request settles", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers note preview input state.");
+  const releasePreview = Promise.withResolvers<void>();
+  await page.route("**/engram/v1/support-passport/cards", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ cards: [] }) });
+  });
+  await page.route("**/engram/v1/support-passport/grants", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grants: [] }) });
+  });
+  await page.route("**/engram/v1/support-passport/memories/first-note", async (route) => {
+    await releasePreview.promise;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        found: true,
+        memory: { id: "first-note", content: "First selected note.", revision: "b".repeat(64) },
+      }),
+    });
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await page.getByLabel("Bearer token").fill("owner-token");
+  await page.getByRole("button", { name: "Open my guide" }).click();
+  await page.getByLabel("Memory ID").fill("first-note");
+  await page.getByRole("button", { name: "Add selected note" }).click();
+  await expect(page.getByRole("button", { name: "Adding note…" })).toBeDisabled();
+  await page.getByLabel("Memory ID").fill("next-note");
+  releasePreview.resolve();
+
+  await expect(page.getByText("First selected note.")).toBeVisible();
+  await expect(page.getByLabel("Memory ID")).toHaveValue("next-note");
+});
+
 test("an owner page clears private state before browser-cache restoration", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers owner browser-cache cleanup.");
   const now = new Date();
@@ -207,6 +241,9 @@ test("an owner page clears private state before browser-cache restoration", asyn
   await page.getByRole("button", { name: "Open my guide" }).click();
   await page.getByLabel("Memory ID").fill("private-note");
   await page.getByRole("button", { name: "Add selected note" }).click();
+  await page.locator('input[name="duration"][value="custom"]').check();
+  await page.locator("#customTimeInput").fill("2026-08-14T12:00");
+  await expect(page.locator("#customTimeField")).toBeVisible();
   await page.getByRole("button", { name: "Edit" }).click();
   await page.getByLabel("Card title").fill("Unsaved private edit");
   await expect(page.getByText("Private selected note.")).toBeVisible();
@@ -222,6 +259,8 @@ test("an owner page clears private state before browser-cache restoration", asyn
   await expect(page.locator(".grant-card")).toHaveCount(0);
   await expect(page.locator("#cardDialog")).toBeHidden();
   await expect(page.getByLabel("Card title")).toHaveValue("");
+  await expect(page.locator("#customTimeField")).toBeHidden();
+  await expect(page.locator("#customTimeInput")).toHaveValue("");
   await expect(page.getByLabel("Copy this link once")).toHaveValue("");
 });
 
