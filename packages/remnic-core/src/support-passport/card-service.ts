@@ -125,7 +125,7 @@ export class SupportPassportCardService {
     if (!output.success) throw invalidInput();
     const owner = this.validateOwnerScope(input.owner, input.authenticatedPrincipal);
     const { principal, namespace, storage } = owner;
-    return await this.withOwnerLock(storage, async (lock) => {
+    return await withSupportPassportOwnerLock(storage, { namespace, principal }, async (lock) => {
       const created: SupportPassportCard[] = [];
       const createdIds: string[] = [];
       try {

@@ -304,7 +304,7 @@ export class SupportPassportQuestionService {
       scheduleAudit(this.audit, {
         schemaVersion: 1,
         operation: "answer_question",
-        actorHash: hashSupportPassportAuditValues("helper-grant", [input.grantId]),
+        actorHash: hashSupportPassportAuditValues("helper-grant", [guide.grantId]),
         subjectIdsHash: hashSupportPassportAuditValues(
           "shared-card-ids",
           guide.cards.map((card) => card.cardId)
@@ -319,7 +319,7 @@ export class SupportPassportQuestionService {
     const auditBase = {
       schemaVersion: 1,
       operation: "answer_question" as const,
-      actorHash: hashSupportPassportAuditValues("helper-grant", [input.grantId]),
+      actorHash: hashSupportPassportAuditValues("helper-grant", [guide.grantId]),
       subjectIdsHash: hashSupportPassportAuditValues(
         "shared-card-ids",
         guide.cards.map((card) => card.cardId)
