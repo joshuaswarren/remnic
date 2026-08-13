@@ -7,6 +7,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 
 import {
+  DEMO_ENVIRONMENT_KEYS,
   isolateDemoRemnicConfig,
   isolateEnvironmentVariables,
   modelRequestTimeoutMs,
@@ -56,6 +57,35 @@ test("the demo preserves model routes but isolates filesystem and namespace sett
   assert.equal(Object.hasOwn(config, "sharedContextDir"), false);
 });
 
+test("the demo disables direct OpenAI when the selected route omits a direct credential", () => {
+  const gateway = isolateDemoRemnicConfig({ modelSource: "gateway" }, "/tmp/fresh-memory");
+  const local = isolateDemoRemnicConfig({ localLlmEnabled: true }, "/tmp/fresh-memory");
+
+  assert.equal(gateway.openaiApiKey, false);
+  assert.equal(local.openaiApiKey, false);
+});
+
+test("the demo resolves only credentials selected by the reusable config", () => {
+  const seen = [];
+  const config = isolateDemoRemnicConfig(
+    {
+      openaiApiKey: "${COMPATIBLE_API_KEY}",
+      openaiBaseUrl: "${COMPATIBLE_BASE_URL}",
+      localLlmApiKey: "${LOCAL_MODEL_KEY}",
+    },
+    "/tmp/fresh-memory",
+    (value) => {
+      seen.push(value);
+      return `resolved:${value}`;
+    }
+  );
+
+  assert.deepEqual(seen, ["${COMPATIBLE_API_KEY}", "${COMPATIBLE_BASE_URL}", "${LOCAL_MODEL_KEY}"]);
+  assert.equal(config.openaiApiKey, "resolved:${COMPATIBLE_API_KEY}");
+  assert.equal(config.openaiBaseUrl, "resolved:${COMPATIBLE_BASE_URL}");
+  assert.equal(config.localLlmApiKey, "resolved:${LOCAL_MODEL_KEY}");
+});
+
 test("model HTTP timeouts cover every configured route budget", () => {
   assert.equal(modelRequestTimeoutMs(["gateway"], 180_000), 45_000);
   assert.equal(modelRequestTimeoutMs(["local"], 600_000), 615_000);
@@ -85,6 +115,13 @@ test("the demo clears inherited server limits and restores them", () => {
     if (priorAbsent === undefined) Reflect.deleteProperty(process.env, absentName);
     else process.env[absentName] = priorAbsent;
   }
+});
+
+test("the demo isolates ambient direct-model credentials from selected routes", () => {
+  assert.ok(DEMO_ENVIRONMENT_KEYS.includes("OPENAI_API_KEY"));
+  assert.ok(DEMO_ENVIRONMENT_KEYS.includes("OPENAI_BASE_URL"));
+  assert.ok(DEMO_ENVIRONMENT_KEYS.includes("REMNIC_WRITE_RATE_LIMIT_MAX_REQUESTS"));
+  assert.ok(DEMO_ENVIRONMENT_KEYS.includes("ENGRAM_WRITE_RATE_LIMIT_WINDOW_MS"));
 });
 
 test("runWithReservedOutput reserves and retains a new receipt", async (t) => {
