@@ -1444,15 +1444,12 @@
         byId("customTimeField").hidden = input.value !== "custom" || !input.checked;
       });
     }
-    window.addEventListener("pagehide", () => {
+    window.addEventListener("pagehide", (event) => {
+      if (replayMode && event.persisted) return;
       clearOwnerSession();
     });
     window.addEventListener("pageshow", (event) => {
-      if (!event.persisted) return;
-      if (replayMode) {
-        window.location.reload();
-        return;
-      }
+      if (!event.persisted || replayMode) return;
       clearOwnerSession();
     });
   }
