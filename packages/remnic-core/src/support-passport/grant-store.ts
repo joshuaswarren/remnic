@@ -65,6 +65,10 @@ function sameGrantState(left: SupportPassportGrantState, right: SupportPassportG
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function newestGrantFirst(left: SupportPassportGrantState, right: SupportPassportGrantState): number {
+  return Date.parse(right.createdAt) - Date.parse(left.createdAt) || left.grantId.localeCompare(right.grantId);
+}
+
 function grantNotFound(): SupportPassportError {
   return new SupportPassportError("grant_not_found", "The share link was not found.", 404);
 }
@@ -278,7 +282,7 @@ export class SupportPassportGrantStore {
       const aActive = !a.revokedAt && Date.parse(a.expiresAt) > activeCutoff;
       const bActive = !b.revokedAt && Date.parse(b.expiresAt) > activeCutoff;
       if (aActive !== bActive) return aActive ? -1 : 1;
-      return b.createdAt.localeCompare(a.createdAt) || a.grantId.localeCompare(b.grantId);
+      return newestGrantFirst(a, b);
     });
   }
 
@@ -369,7 +373,7 @@ export class SupportPassportGrantStore {
       }
       const inactive = indexedStates
         .filter((item) => item.revokedAt || Date.parse(item.expiresAt) <= expiryCutoff)
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.grantId.localeCompare(b.grantId));
+        .sort(newestGrantFirst);
       retained = [
         ...active.map((item) => item.grantId),
         ...inactive.slice(0, MAX_OWNER_GRANT_HISTORY - active.length - 1).map((item) => item.grantId),
