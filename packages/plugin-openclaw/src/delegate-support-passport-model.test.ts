@@ -145,7 +145,7 @@ test("the delegate retries an ambiguous acknowledgement before the claim deadlin
   const job: SupportPassportModelJob = {
     id: "f871fab2-2f1c-478c-af4c-8c4a755d8077",
     claimId: "f871fab2-2f1c-478c-af4c-8c4a755d8078",
-    claimAckDeadlineAt: Date.now() + 4_000,
+    claimAckTimeoutMs: 4_000,
     messages: [{ role: "user", content: "What helps?" }],
     temperature: 0,
     maxTokens: 100,

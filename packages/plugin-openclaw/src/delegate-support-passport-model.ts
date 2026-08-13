@@ -183,7 +183,7 @@ export function createDelegateSupportPassportModelService(
     signal: AbortSignal,
   ): Promise<boolean> => {
     if (!job.claimId) return true;
-    const deadline = Math.min(Date.now() + job.timeoutMs, job.claimAckDeadlineAt ?? Date.now() + job.timeoutMs);
+    const deadline = Date.now() + Math.min(job.timeoutMs, job.claimAckTimeoutMs ?? job.timeoutMs);
     while (!signal.aborted && Date.now() < deadline) {
       const remainingMs = deadline - Date.now();
       try {
