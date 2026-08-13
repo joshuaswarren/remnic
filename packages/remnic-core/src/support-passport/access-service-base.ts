@@ -17,6 +17,7 @@ import type {
 } from "./grant-contracts.js";
 import { createSupportPassportModelAdapter, type SupportPassportModelRoute } from "./model-adapter.js";
 import type { SupportPassportAnswerOutput } from "./model-contracts.js";
+import { supportsSupportPassportPrivateFiles } from "./private-file.js";
 
 export abstract class SupportPassportAccessServiceBase {
   private _supportPassportSurface: SupportPassportAccessSurface | undefined;
@@ -30,10 +31,15 @@ export abstract class SupportPassportAccessServiceBase {
     return null;
   }
 
+  get supportPassportPlatformRef(): NodeJS.Platform {
+    return process.platform;
+  }
+
   private get supportPassportSurface(): SupportPassportAccessSurface {
     if (!this._supportPassportSurface) {
       this._supportPassportSurface = new SupportPassportAccessSurface({
         config: this.configRef,
+        platform: this.supportPassportPlatformRef,
         resolveOwner: async (principal) => {
           const owner = await this.getWritableStorageForNamespace(undefined, principal);
           enforceNamespaceAllowList(tokenCapabilityStore.getStore(), owner.namespace, this.configRef.defaultNamespace);
@@ -50,7 +56,10 @@ export abstract class SupportPassportAccessServiceBase {
   }
 
   get supportPassportEnabled(): boolean {
-    return this.configRef.supportPassport?.enabled === true;
+    return (
+      this.configRef.supportPassport?.enabled === true &&
+      supportsSupportPassportPrivateFiles(this.supportPassportPlatformRef)
+    );
   }
 
   async supportPassportListCards(principal: string): Promise<SupportPassportCard[]> {

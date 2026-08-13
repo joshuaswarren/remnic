@@ -200,6 +200,48 @@ test("slow helper bodies cannot bypass authentication capacity", async () => {
   assert.deepEqual(unexpectedErrors, []);
 });
 
+test("invalid helper credentials close an unread request body", async () => {
+  const service = {} as EngramAccessService;
+  const { server, root } = await startPublicServer(service);
+  const url = new URL(`${root}/engram/v1/support-passport/public/grants/grant-one/ask`);
+  const responseReceived = Promise.withResolvers<void>();
+  const clientClosed = Promise.withResolvers<void>();
+  const errors: unknown[] = [];
+  const client = request(
+    {
+      hostname: url.hostname,
+      port: url.port,
+      path: url.pathname,
+      method: "POST",
+      headers: {
+        authorization: "Bearer invalid",
+        "content-type": "application/json",
+        "content-length": "100",
+      },
+    },
+    (response) => {
+      assert.equal(response.statusCode, 404);
+      assert.equal(response.headers.connection, "close");
+      response.resume();
+      response.once("end", responseReceived.resolve);
+    }
+  );
+  client.on("error", (error) => errors.push(error));
+  client.once("close", clientClosed.resolve);
+  client.flushHeaders();
+  client.write('{"question":"partial');
+  try {
+    await Promise.race([
+      Promise.all([responseReceived.promise, clientClosed.promise]),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("unread helper request stayed open")), 2_000)),
+    ]);
+    assert.deepEqual(errors, []);
+  } finally {
+    client.destroy();
+    await stopServer(server);
+  }
+});
+
 test("malformed helper questions consume the network failure limit", async () => {
   let reads = 0;
   const service = {

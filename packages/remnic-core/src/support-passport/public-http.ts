@@ -294,6 +294,31 @@ function respondJson(res: ServerResponse, status: number, payload: unknown): voi
   res.end(body);
 }
 
+function respondJsonAndCloseUnreadRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  status: number,
+  payload: unknown
+): void {
+  res.shouldKeepAlive = false;
+  res.setHeader("connection", "close");
+  res.once("finish", () => req.destroy());
+  respondJson(res, status, payload);
+}
+
+function respondBeforeReadingBody(
+  req: IncomingMessage,
+  res: ServerResponse,
+  status: number,
+  payload: unknown
+): void {
+  if (requestDeclaresBody(req)) {
+    respondJsonAndCloseUnreadRequest(req, res, status, payload);
+    return;
+  }
+  respondJson(res, status, payload);
+}
+
 async function readQuestionBody(req: IncomingMessage, signal: AbortSignal): Promise<string> {
   const chunks: Buffer[] = [];
   let bytes = 0;
@@ -380,15 +405,24 @@ export function buildSupportPassportPublicRequestHandler(
     const grantId = decodeGrantId((ownedRead ? readMatch?.[1] : askMatch?.[1]) ?? "");
     const secret = parseSecret(req);
     if (parsed.search.length > 0) {
-      respondJson(res, 400, { error: "The share link request is invalid.", code: "invalid_input" });
+      respondBeforeReadingBody(req, res, 400, {
+        error: "The share link request is invalid.",
+        code: "invalid_input",
+      });
       return true;
     }
     if (ownedRead && requestDeclaresBody(req)) {
-      respondJson(res, 400, { error: "The share link request is invalid.", code: "invalid_input" });
+      respondJsonAndCloseUnreadRequest(req, res, 400, {
+        error: "The share link request is invalid.",
+        code: "invalid_input",
+      });
       return true;
     }
     if (!grantId || !secret) {
-      respondJson(res, 404, { error: "The share link was not found.", code: "grant_not_found" });
+      respondBeforeReadingBody(req, res, 404, {
+        error: "The share link was not found.",
+        code: "grant_not_found",
+      });
       return true;
     }
 

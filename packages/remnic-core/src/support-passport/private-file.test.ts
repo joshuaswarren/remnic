@@ -7,8 +7,17 @@ import test from "node:test";
 import {
   appendPrivateFileNoFollow,
   ensurePrivateDirectoryNoFollow,
+  supportsSupportPassportPrivateFiles,
   writePrivateFileAtomicallyNoFollow,
 } from "./private-file.js";
+
+test("private support passport files publish their platform gate", () => {
+  assert.equal(supportsSupportPassportPrivateFiles("linux"), true);
+  assert.equal(supportsSupportPassportPrivateFiles("darwin"), true);
+  assert.equal(supportsSupportPassportPrivateFiles("freebsd"), true);
+  assert.equal(supportsSupportPassportPrivateFiles("openbsd"), true);
+  assert.equal(supportsSupportPassportPrivateFiles("win32"), false);
+});
 
 test("private append cannot escape its pinned directory", async (context) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-private-append-"));
