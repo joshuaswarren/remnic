@@ -1,19 +1,10 @@
-import {
-  createHash,
-  randomBytes,
-  randomUUID,
-  timingSafeEqual,
-} from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { type FileHandle, lstat, open } from "node:fs/promises";
 import path from "node:path";
 
 import { log } from "../logger.js";
 import { expandTildePath } from "../utils/path.js";
-import {
-  type HeldFileLockController,
-  serializeMutations,
-  withHeldFileLock,
-} from "../utils/serialize-mutations.js";
+import { type HeldFileLockController, serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
 import { computeSupportPassportOwnerKey } from "./card-projection.js";
 import { SupportPassportNamespaceSchema } from "./contracts.js";
 import { SupportPassportError } from "./errors.js";
@@ -36,17 +27,10 @@ import {
 const GRANT_LOCK_STALE_MS = 30_000;
 const GRANT_LOCK_WAIT_MS = 5_000;
 const GRANT_LOCK_HEARTBEAT_MS = 10_000;
-const SAFE_GRANT_ID =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const UUID_INPUT =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SAFE_GRANT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const UUID_INPUT = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SAFE_OWNER_INDEX_HASH = /^[0-9a-f]{64}$/;
-const UNSUPPORTED_DIRECTORY_SYNC_ERRORS = new Set([
-  "EINVAL",
-  "ENOSYS",
-  "ENOTSUP",
-  "EOPNOTSUPP",
-]);
+const UNSUPPORTED_DIRECTORY_SYNC_ERRORS = new Set(["EINVAL", "ENOSYS", "ENOTSUP", "EOPNOTSUPP"]);
 const MAX_OWNER_GRANT_HISTORY = 100;
 
 export interface SupportPassportGrantStoreOptions {
@@ -65,52 +49,32 @@ export interface CreateStoredGrantInput {
 }
 
 function sha256(domain: string, value: string): string {
-  return createHash("sha256")
-    .update(domain)
-    .update("\0")
-    .update(value)
-    .digest("hex");
+  return createHash("sha256").update(domain).update("\0").update(value).digest("hex");
 }
 
 function hashesMatch(left: string, right: string): boolean {
   const leftBytes = Buffer.from(left, "hex");
   const rightBytes = Buffer.from(right, "hex");
-  return (
-    leftBytes.length === 32 &&
-    rightBytes.length === 32 &&
-    timingSafeEqual(leftBytes, rightBytes)
-  );
+  return leftBytes.length === 32 && rightBytes.length === 32 && timingSafeEqual(leftBytes, rightBytes);
 }
 
-function sameGrantState(
-  left: SupportPassportGrantState,
-  right: SupportPassportGrantState,
-): boolean {
+function sameGrantState(left: SupportPassportGrantState, right: SupportPassportGrantState): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function grantNotFound(): SupportPassportError {
-  return new SupportPassportError(
-    "grant_not_found",
-    "The share link was not found.",
-    404,
-  );
+  return new SupportPassportError("grant_not_found", "The share link was not found.", 404);
 }
 
 function normalizeGrantId(grantId: unknown): string {
-  if (typeof grantId !== "string" || !UUID_INPUT.test(grantId))
-    throw grantNotFound();
+  if (typeof grantId !== "string" || !UUID_INPUT.test(grantId)) throw grantNotFound();
   return grantId.toLowerCase();
 }
 
 function normalizeNamespace(namespace: unknown): string {
   const parsed = SupportPassportNamespaceSchema.safeParse(namespace);
   if (!parsed.success) {
-    throw new SupportPassportError(
-      "invalid_input",
-      "The share link request is invalid.",
-      400,
-    );
+    throw new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
   }
   return parsed.data;
 }
@@ -118,21 +82,15 @@ function normalizeNamespace(namespace: unknown): string {
 function normalizePrincipal(principal: unknown): string {
   const normalized = typeof principal === "string" ? principal.trim() : "";
   if (normalized.length < 1 || normalized.length > 512) {
-    throw new SupportPassportError(
-      "invalid_input",
-      "The share link request is invalid.",
-      400,
-    );
+    throw new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
   }
   return normalized;
 }
 
 export async function syncDirectoryForDurability(
   directory: string,
-  openDirectory: (
-    directory: string,
-  ) => Promise<Pick<FileHandle, "sync" | "close">> = async (target) =>
-    await open(target, "r"),
+  openDirectory: (directory: string) => Promise<Pick<FileHandle, "sync" | "close">> = async (target) =>
+    await open(target, "r")
 ): Promise<void> {
   let handle: Pick<FileHandle, "sync" | "close"> | undefined;
   try {
@@ -158,12 +116,7 @@ export class SupportPassportGrantStore {
 
   constructor(options: SupportPassportGrantStoreOptions) {
     this.memoryDir = path.resolve(expandTildePath(options.memoryDir));
-    this.grantsDir = path.join(
-      this.memoryDir,
-      "state",
-      "support-passport",
-      "grants",
-    );
+    this.grantsDir = path.join(this.memoryDir, "state", "support-passport", "grants");
     this.ownerIndexesDir = path.join(this.grantsDir, "owners");
     this.now = options.now ?? (() => new Date());
     this.makeSecret = options.makeSecret ?? (() => randomBytes(32));
@@ -173,7 +126,7 @@ export class SupportPassportGrantStore {
 
   async create(
     input: CreateStoredGrantInput,
-    beforeCommit?: () => Promise<void>,
+    beforeCommit?: () => Promise<void>
   ): Promise<{ state: SupportPassportGrantState; secret: string }> {
     const namespace = normalizeNamespace(input.namespace);
     const parsed = SupportPassportCreateGrantInputSchema.safeParse({
@@ -182,39 +135,21 @@ export class SupportPassportGrantStore {
       expiresAt: input.expiresAt,
     });
     if (!parsed.success) {
-      throw new SupportPassportError(
-        "invalid_input",
-        "The share link request is invalid.",
-        400,
-      );
+      throw new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
     }
     return await this.withMutationLock(async (lock) => {
       const secretBytes = this.makeSecret();
       if (!Buffer.isBuffer(secretBytes) || secretBytes.length !== 32) {
-        throw new Error(
-          "SupportPassportGrantStore.makeSecret must return 32 bytes",
-        );
+        throw new Error("SupportPassportGrantStore.makeSecret must return 32 bytes");
       }
       const rawGrantId = this.makeGrantId();
-      if (!UUID_INPUT.test(rawGrantId))
-        throw new Error(
-          "SupportPassportGrantStore.makeGrantId must return a UUID",
-        );
+      if (!UUID_INPUT.test(rawGrantId)) throw new Error("SupportPassportGrantStore.makeGrantId must return a UUID");
       const grantId = rawGrantId.toLowerCase();
       const secret = secretBytes.toString("base64url");
       const createdAt = this.now();
-      const durationMs =
-        Date.parse(parsed.data.expiresAt) - createdAt.getTime();
-      if (
-        !Number.isFinite(durationMs) ||
-        durationMs < 300_000 ||
-        durationMs > 604_800_000
-      ) {
-        throw new SupportPassportError(
-          "invalid_input",
-          "The share link request is invalid.",
-          400,
-        );
+      const durationMs = Date.parse(parsed.data.expiresAt) - createdAt.getTime();
+      if (!Number.isFinite(durationMs) || durationMs < 300_000 || durationMs > 604_800_000) {
+        throw new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
       }
       const state = SupportPassportGrantStateSchema.parse({
         schemaVersion: 1,
@@ -229,22 +164,17 @@ export class SupportPassportGrantStore {
       });
       await this.requireMutationLock(lock);
       await beforeCommit?.();
-      await this.requireMutationLock(lock);
       try {
         await this.writeState(state, true);
       } catch (error) {
-        const persisted = await this.readState(state.grantId).catch(
-          () => undefined,
-        );
+        const persisted = await this.readState(state.grantId).catch(() => undefined);
         if (!persisted || !sameGrantState(persisted, state)) throw error;
       }
       try {
         await this.addToOwnerIndex(state, lock);
       } catch (error) {
         const ownerHash = this.ownerHash(state.namespace, state.principalHash);
-        const indexed = await this.readOwnerIndexByHash(ownerHash).catch(
-          () => undefined,
-        );
+        const indexed = await this.readOwnerIndexByHash(ownerHash).catch(() => undefined);
         if (indexed?.includes(state.grantId)) return { state, secret };
         await this.removeGrantStates([state.grantId]).catch(() => undefined);
         throw error;
@@ -253,36 +183,23 @@ export class SupportPassportGrantStore {
     });
   }
 
-  async authenticate(
-    grantId: string,
-    secret: string,
-  ): Promise<SupportPassportGrantState> {
+  async authenticate(grantId: string, secret: string): Promise<SupportPassportGrantState> {
     const normalizedGrantId = normalizeGrantId(grantId);
-    if (typeof secret !== "string" || secret.length > 512)
-      throw grantNotFound();
+    if (typeof secret !== "string" || secret.length > 512) throw grantNotFound();
     let state: SupportPassportGrantState;
     try {
       state = await this.readState(normalizedGrantId);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT")
-        throw grantNotFound();
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw grantNotFound();
       throw error;
     }
     const candidate = sha256("support-passport-secret:v1", secret);
     if (!hashesMatch(candidate, state.secretHash)) throw grantNotFound();
     if (state.revokedAt) {
-      throw new SupportPassportError(
-        "grant_gone",
-        "The share link is no longer active.",
-        410,
-      );
+      throw new SupportPassportError("grant_gone", "The share link is no longer active.", 410);
     }
     if (Date.parse(state.expiresAt) <= this.now().getTime()) {
-      throw new SupportPassportError(
-        "grant_expired",
-        "The share link has expired.",
-        410,
-      );
+      throw new SupportPassportError("grant_expired", "The share link has expired.", 410);
     }
     return state;
   }
@@ -291,7 +208,7 @@ export class SupportPassportGrantStore {
     grantId: string,
     secret: string,
     task: (state: SupportPassportGrantState) => Promise<T>,
-    beforeReturn?: (state: SupportPassportGrantState) => Promise<void>,
+    beforeReturn?: (state: SupportPassportGrantState) => Promise<void>
   ): Promise<T> {
     return await this.withGrantLock(grantId, async (lock) => {
       const state = await this.authenticate(grantId, secret);
@@ -300,11 +217,7 @@ export class SupportPassportGrantStore {
       const finalState = await this.authenticate(grantId, secret);
       await this.requireMutationLock(lock);
       if (finalState.stateVersion !== state.stateVersion) {
-        throw new SupportPassportError(
-          "grant_stale",
-          "The shared support guide has changed.",
-          410,
-        );
+        throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
       }
       this.requireActiveState(finalState);
       await beforeReturn?.(finalState);
@@ -314,26 +227,15 @@ export class SupportPassportGrantStore {
     });
   }
 
-  async listForOwner(
-    namespace: string,
-    principal: string,
-  ): Promise<SupportPassportGrantState[]> {
+  async listForOwner(namespace: string, principal: string): Promise<SupportPassportGrantState[]> {
     const normalizedNamespace = normalizeNamespace(namespace);
-    const principalHash = computeSupportPassportOwnerKey(
-      normalizePrincipal(principal),
-    );
-    const grantIds = await this.readOwnerIndex(
-      normalizedNamespace,
-      principalHash,
-    );
+    const principalHash = computeSupportPassportOwnerKey(normalizePrincipal(principal));
+    const grantIds = await this.readOwnerIndex(normalizedNamespace, principalHash);
     const states: SupportPassportGrantState[] = [];
     for (const grantId of grantIds) {
       try {
         const state = await this.readState(grantId);
-        if (
-          state.namespace === normalizedNamespace &&
-          hashesMatch(state.principalHash, principalHash)
-        ) {
+        if (state.namespace === normalizedNamespace && hashesMatch(state.principalHash, principalHash)) {
           states.push(state);
         }
       } catch (error) {
@@ -345,10 +247,7 @@ export class SupportPassportGrantStore {
       const aActive = !a.revokedAt && Date.parse(a.expiresAt) > activeCutoff;
       const bActive = !b.revokedAt && Date.parse(b.expiresAt) > activeCutoff;
       if (aActive !== bActive) return aActive ? -1 : 1;
-      return (
-        b.createdAt.localeCompare(a.createdAt) ||
-        a.grantId.localeCompare(b.grantId)
-      );
+      return b.createdAt.localeCompare(a.createdAt) || a.grantId.localeCompare(b.grantId);
     });
   }
 
@@ -359,40 +258,26 @@ export class SupportPassportGrantStore {
       principal: string;
       expectedStateVersion?: number;
     },
-    beforeCommit?: () => Promise<void>,
+    beforeCommit?: () => Promise<void>
   ): Promise<SupportPassportGrantState> {
-    const normalizedInput = {
-      ...input,
-      grantId: normalizeGrantId(input.grantId),
-    };
+    const normalizedInput = { ...input, grantId: normalizeGrantId(input.grantId) };
     const namespace = normalizeNamespace(input.namespace);
     return await this.withGrantLock(normalizedInput.grantId, async (lock) => {
       let state: SupportPassportGrantState;
       try {
         state = await this.readState(normalizedInput.grantId);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT")
-          throw grantNotFound();
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") throw grantNotFound();
         throw error;
       }
-      const principalHash = computeSupportPassportOwnerKey(
-        normalizePrincipal(input.principal),
-      );
-      if (
-        state.namespace !== namespace ||
-        !hashesMatch(state.principalHash, principalHash)
-      )
-        throw grantNotFound();
+      const principalHash = computeSupportPassportOwnerKey(normalizePrincipal(input.principal));
+      if (state.namespace !== namespace || !hashesMatch(state.principalHash, principalHash)) throw grantNotFound();
       if (state.revokedAt) return state;
       if (
         normalizedInput.expectedStateVersion !== undefined &&
         normalizedInput.expectedStateVersion !== state.stateVersion
       ) {
-        throw new SupportPassportError(
-          "state_conflict",
-          "The share link changed after it was loaded.",
-          409,
-        );
+        throw new SupportPassportError("state_conflict", "The share link changed after it was loaded.", 409);
       }
       const revoked = SupportPassportGrantStateSchema.parse({
         ...state,
@@ -401,7 +286,6 @@ export class SupportPassportGrantStore {
       });
       await this.requireMutationLock(lock);
       await beforeCommit?.();
-      await this.requireMutationLock(lock);
       await this.writeState(revoked);
       return revoked;
     });
@@ -413,22 +297,15 @@ export class SupportPassportGrantStore {
   }
 
   private ownerIndexPath(ownerHash: string): string {
-    if (!SAFE_OWNER_INDEX_HASH.test(ownerHash))
-      throw new Error("support passport owner index hash is invalid");
+    if (!SAFE_OWNER_INDEX_HASH.test(ownerHash)) throw new Error("support passport owner index hash is invalid");
     return path.join(this.ownerIndexesDir, `${ownerHash}.json`);
   }
 
   private ownerHash(namespace: string, principalHash: string): string {
-    return sha256(
-      "support-passport-owner-index:v1",
-      `${namespace}\0${principalHash}`,
-    );
+    return sha256("support-passport-owner-index:v1", `${namespace}\0${principalHash}`);
   }
 
-  private async addToOwnerIndex(
-    state: SupportPassportGrantState,
-    lock: HeldFileLockController,
-  ): Promise<void> {
+  private async addToOwnerIndex(state: SupportPassportGrantState, lock: HeldFileLockController): Promise<void> {
     const ownerHash = this.ownerHash(state.namespace, state.principalHash);
     const current = await this.readOwnerIndexByHash(ownerHash);
     if (current.includes(state.grantId)) return;
@@ -442,9 +319,7 @@ export class SupportPassportGrantStore {
             indexedState.namespace !== state.namespace ||
             !hashesMatch(indexedState.principalHash, state.principalHash)
           ) {
-            throw new Error(
-              "support passport owner index references a foreign grant",
-            );
+            throw new Error("support passport owner index references a foreign grant");
           }
           indexedStates.push(indexedState);
         } catch (error) {
@@ -452,38 +327,25 @@ export class SupportPassportGrantStore {
         }
       }
       const expiryCutoff = this.now().getTime();
-      const active = indexedStates.filter(
-        (item) => !item.revokedAt && Date.parse(item.expiresAt) > expiryCutoff,
-      );
+      const active = indexedStates.filter((item) => !item.revokedAt && Date.parse(item.expiresAt) > expiryCutoff);
       if (active.length >= MAX_OWNER_GRANT_HISTORY) {
         throw new SupportPassportError(
           "invalid_input",
           "A support passport can contain at most 100 active share links.",
-          400,
+          400
         );
       }
       const inactive = indexedStates
-        .filter(
-          (item) =>
-            item.revokedAt || Date.parse(item.expiresAt) <= expiryCutoff,
-        )
-        .sort(
-          (a, b) =>
-            b.createdAt.localeCompare(a.createdAt) ||
-            a.grantId.localeCompare(b.grantId),
-        );
+        .filter((item) => item.revokedAt || Date.parse(item.expiresAt) <= expiryCutoff)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.grantId.localeCompare(b.grantId));
       retained = [
         ...active.map((item) => item.grantId),
-        ...inactive
-          .slice(0, MAX_OWNER_GRANT_HISTORY - active.length - 1)
-          .map((item) => item.grantId),
+        ...inactive.slice(0, MAX_OWNER_GRANT_HISTORY - active.length - 1).map((item) => item.grantId),
       ];
     }
     const grantIds = [...retained, state.grantId];
     const retainedIds = new Set(grantIds);
-    const evictedGrantIds = current.filter(
-      (grantId) => !retainedIds.has(grantId),
-    );
+    const evictedGrantIds = current.filter((grantId) => !retainedIds.has(grantId));
     await this.requireMutationLock(lock);
     await this.writeOwnerIndex(ownerHash, grantIds);
     try {
@@ -495,7 +357,7 @@ export class SupportPassportGrantStore {
       }
     } catch (error) {
       log.warn(
-        `support passport could not remove inactive grant state: ${error instanceof Error ? error.message : String(error)}`,
+        `support passport could not remove inactive grant state: ${error instanceof Error ? error.message : String(error)}`
       );
     }
   }
@@ -509,17 +371,12 @@ export class SupportPassportGrantStore {
       this.grantsDir,
       grantIds.map((grantId) => `${grantId}.json`),
       "support passport grant files must be regular files in a stable directory",
-      this.memoryDir,
+      this.memoryDir
     );
   }
 
-  private async readOwnerIndex(
-    namespace: string,
-    principalHash: string,
-  ): Promise<string[]> {
-    return await this.readOwnerIndexByHash(
-      this.ownerHash(namespace, principalHash),
-    );
+  private async readOwnerIndex(namespace: string, principalHash: string): Promise<string[]> {
+    return await this.readOwnerIndexByHash(this.ownerHash(namespace, principalHash));
   }
 
   private async readOwnerIndexByHash(ownerHash: string): Promise<string[]> {
@@ -531,7 +388,7 @@ export class SupportPassportGrantStore {
         this.ownerIndexesDir,
         filePath,
         "support passport owner indexes must be regular files in a stable directory",
-        this.memoryDir,
+        this.memoryDir
       );
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
@@ -543,34 +400,21 @@ export class SupportPassportGrantStore {
     }
     const record = parsed as Record<string, unknown>;
     const grantIds = record.grantIds;
-    if (
-      record.schemaVersion !== 1 ||
-      record.ownerHash !== ownerHash ||
-      !Array.isArray(grantIds)
-    ) {
+    if (record.schemaVersion !== 1 || record.ownerHash !== ownerHash || !Array.isArray(grantIds)) {
       throw new Error("support passport owner index is invalid");
     }
-    if (
-      grantIds.some(
-        (grantId) =>
-          typeof grantId !== "string" || !SAFE_GRANT_ID.test(grantId),
-      )
-    ) {
+    if (grantIds.some((grantId) => typeof grantId !== "string" || !SAFE_GRANT_ID.test(grantId))) {
       throw new Error("support passport owner index is invalid");
     }
     const uniqueGrantIds = new Set(grantIds as string[]);
-    if (uniqueGrantIds.size !== grantIds.length)
-      throw new Error("support passport owner index is invalid");
+    if (uniqueGrantIds.size !== grantIds.length) throw new Error("support passport owner index is invalid");
     if (uniqueGrantIds.size > MAX_OWNER_GRANT_HISTORY) {
       throw new Error("support passport owner index is invalid");
     }
     return [...uniqueGrantIds];
   }
 
-  private async writeOwnerIndex(
-    ownerHash: string,
-    grantIds: string[],
-  ): Promise<void> {
+  private async writeOwnerIndex(ownerHash: string, grantIds: string[]): Promise<void> {
     const filePath = this.ownerIndexPath(ownerHash);
     try {
       const metadata = await lstat(filePath);
@@ -585,7 +429,7 @@ export class SupportPassportGrantStore {
       filePath,
       `${JSON.stringify({ schemaVersion: 1, ownerHash, grantIds }, null, 2)}\n`,
       "support passport owner indexes must be regular files in a stable directory",
-      this.memoryDir,
+      this.memoryDir
     );
   }
 
@@ -596,29 +440,21 @@ export class SupportPassportGrantStore {
       this.grantsDir,
       filePath,
       "support passport grant files must be regular files in a stable directory",
-      this.memoryDir,
+      this.memoryDir
     );
     const state = SupportPassportGrantStateSchema.parse(JSON.parse(content));
-    if (state.grantId !== grantId)
-      throw new Error("support passport grant ID must match its file name");
+    if (state.grantId !== grantId) throw new Error("support passport grant ID must match its file name");
     return state;
   }
 
-  private async writeState(
-    state: SupportPassportGrantState,
-    requireAbsent = false,
-  ): Promise<void> {
+  private async writeState(state: SupportPassportGrantState, requireAbsent = false): Promise<void> {
     const filePath = this.filePath(state.grantId);
     try {
       const metadata = await lstat(filePath);
       if (metadata.isSymbolicLink() || !metadata.isFile())
         throw new Error("support passport grant files must be regular files");
       if (requireAbsent) {
-        throw new SupportPassportError(
-          "storage_conflict",
-          "A new share link could not be allocated.",
-          409,
-        );
+        throw new SupportPassportError("storage_conflict", "A new share link could not be allocated.", 409);
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -628,7 +464,7 @@ export class SupportPassportGrantStore {
       filePath,
       `${JSON.stringify(state, null, 2)}\n`,
       "support passport grant files must be regular files in a stable directory",
-      this.memoryDir,
+      this.memoryDir
     );
   }
 
@@ -637,7 +473,7 @@ export class SupportPassportGrantStore {
     await ensurePrivateDirectoryNoFollow(
       this.memoryDir,
       this.ownerIndexesDir,
-      "support passport grant directories must remain inside the memory directory",
+      "support passport grant directories must remain inside the memory directory"
     );
   }
 
@@ -645,19 +481,13 @@ export class SupportPassportGrantStore {
     if (!this.memoryRootReady) {
       const configuredMemoryDir = this.memoryDir;
       this.memoryRootReady = (async () => {
-        const canonicalMemoryDir =
-          await canonicalizePrivateDirectoryTarget(configuredMemoryDir);
+        const canonicalMemoryDir = await canonicalizePrivateDirectoryTarget(configuredMemoryDir);
         await ensurePrivateDirectoryTreeNoFollow(
           canonicalMemoryDir,
-          "support passport memory directory must be a stable directory",
+          "support passport memory directory must be a stable directory"
         );
         this.memoryDir = canonicalMemoryDir;
-        this.grantsDir = path.join(
-          canonicalMemoryDir,
-          "state",
-          "support-passport",
-          "grants",
-        );
+        this.grantsDir = path.join(canonicalMemoryDir, "state", "support-passport", "grants");
         this.ownerIndexesDir = path.join(this.grantsDir, "owners");
       })();
     }
@@ -665,15 +495,12 @@ export class SupportPassportGrantStore {
     try {
       await currentAttempt;
     } catch (error) {
-      if (this.memoryRootReady === currentAttempt)
-        this.memoryRootReady = undefined;
+      if (this.memoryRootReady === currentAttempt) this.memoryRootReady = undefined;
       throw error;
     }
   }
 
-  private async withMutationLock<T>(
-    task: (lock: HeldFileLockController) => Promise<T>,
-  ): Promise<T> {
+  private async withMutationLock<T>(task: (lock: HeldFileLockController) => Promise<T>): Promise<T> {
     await this.ensureSafeDirectories();
     return await withPrivateDirectoryNoFollow(
       this.memoryDir,
@@ -683,15 +510,12 @@ export class SupportPassportGrantStore {
         await this.withExclusiveLock(
           `support-passport-grants:${this.grantsDir}`,
           path.join(pinnedDirectory, ".grants.lock"),
-          task,
-        ),
+          task
+        )
     );
   }
 
-  private async withGrantLock<T>(
-    grantId: string,
-    task: (lock: HeldFileLockController) => Promise<T>,
-  ): Promise<T> {
+  private async withGrantLock<T>(grantId: string, task: (lock: HeldFileLockController) => Promise<T>): Promise<T> {
     const normalizedGrantId = normalizeGrantId(grantId);
     await this.ensureSafeDirectories();
     return await withPrivateDirectoryNoFollow(
@@ -702,15 +526,15 @@ export class SupportPassportGrantStore {
         await this.withExclusiveLock(
           `support-passport-grant:${this.grantsDir}:${normalizedGrantId}`,
           path.join(pinnedDirectory, `.${normalizedGrantId}.lock`),
-          task,
-        ),
+          task
+        )
     );
   }
 
   private async withExclusiveLock<T>(
     serializationKey: string,
     lockPath: string,
-    task: (lock: HeldFileLockController) => Promise<T>,
+    task: (lock: HeldFileLockController) => Promise<T>
   ): Promise<T> {
     return await serializeMutations(serializationKey, () =>
       this.runWithHeldFileLock(
@@ -722,43 +546,25 @@ export class SupportPassportGrantStore {
         },
         async (acquired, lock) => {
           if (!acquired) {
-            throw new SupportPassportError(
-              "storage_conflict",
-              "The share link store is busy. Try again.",
-              409,
-            );
+            throw new SupportPassportError("storage_conflict", "The share link store is busy. Try again.", 409);
           }
           return await task(lock);
-        },
-      ),
+        }
+      )
     );
   }
 
-  private async requireMutationLock(
-    lock: HeldFileLockController,
-  ): Promise<void> {
+  private async requireMutationLock(lock: HeldFileLockController): Promise<void> {
     if (await lock.refresh()) return;
-    throw new SupportPassportError(
-      "storage_conflict",
-      "The share link store changed during the request.",
-      409,
-    );
+    throw new SupportPassportError("storage_conflict", "The share link store changed during the request.", 409);
   }
 
   private requireActiveState(state: SupportPassportGrantState): void {
     if (state.revokedAt) {
-      throw new SupportPassportError(
-        "grant_gone",
-        "The share link is no longer active.",
-        410,
-      );
+      throw new SupportPassportError("grant_gone", "The share link is no longer active.", 410);
     }
     if (Date.parse(state.expiresAt) <= this.now().getTime()) {
-      throw new SupportPassportError(
-        "grant_expired",
-        "The share link has expired.",
-        410,
-      );
+      throw new SupportPassportError("grant_expired", "The share link has expired.", 410);
     }
   }
 }
