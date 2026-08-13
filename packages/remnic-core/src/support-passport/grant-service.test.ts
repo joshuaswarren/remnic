@@ -735,6 +735,29 @@ test("grant creation maps a clock jump past expiry to invalid input", async () =
   }
 });
 
+test("grant creation rejects a future request time that would extend the maximum lifetime", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-future-request-"));
+  try {
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const requestedAt = new Date("2027-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({ memoryDir: root, now: () => now });
+
+    await assert.rejects(
+      store.create({
+        namespace: "alice",
+        principal: "owner:alice",
+        cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+        expiresAt: new Date(requestedAt.getTime() + 300_000).toISOString(),
+        requestedAt,
+      }),
+      (error: unknown) =>
+        error instanceof SupportPassportError && error.code === "invalid_input" && error.status === 400,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("directory sync ignores only explicit unsupported errors", async () => {
   const failingOpen = (code: string) => async () => ({
     sync: async () => {
@@ -788,6 +811,72 @@ test("grant creation aborts before replacing an owner index after lock ownership
       (await store.listForOwner("alice", "owner:alice")).map((state) => state.grantId),
       [first.state.grantId]
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("grant creation reconciles peer state when the owner-index lock is lost after write", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-index-fence-"));
+  try {
+    const grantIds = [
+      "00000000-0000-4000-8000-000000000001",
+      "00000000-0000-4000-8000-000000000002",
+    ];
+    const peerGrantId = "00000000-0000-4000-8000-000000000003";
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({
+      memoryDir: root,
+      makeGrantId: () => grantIds.shift() ?? "00000000-0000-4000-8000-000000000004",
+      now: () => now,
+    });
+    const input = {
+      namespace: "alice",
+      principal: "owner:alice",
+      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+      expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
+    };
+    const first = await store.create(input);
+    const peerState = {
+      ...first.state,
+      grantId: peerGrantId,
+      secretHash: "b".repeat(64),
+    };
+    const inspected = store as unknown as {
+      withMutationLock<T>(task: (lock: { refresh(): Promise<boolean> }) => Promise<T>): Promise<T>;
+      writeOwnerIndex(ownerHash: string, grantIds: string[]): Promise<void>;
+      writeState(state: typeof peerState, requireAbsent: boolean): Promise<void>;
+    };
+    const writeOwnerIndex = inspected.writeOwnerIndex.bind(store);
+    let injectPeer = true;
+    inspected.writeOwnerIndex = async (ownerHash, indexedGrantIds) => {
+      await writeOwnerIndex(ownerHash, indexedGrantIds);
+      if (!injectPeer) return;
+      injectPeer = false;
+      await inspected.writeState(peerState, true);
+      await writeOwnerIndex(ownerHash, [first.state.grantId, peerGrantId]);
+    };
+    let lockRun = 0;
+    let firstRunRefreshes = 0;
+    inspected.withMutationLock = async (task) => {
+      lockRun += 1;
+      return await task({
+        refresh: async () => {
+          if (lockRun !== 1) return true;
+          firstRunRefreshes += 1;
+          return firstRunRefreshes !== 4;
+        },
+      });
+    };
+
+    const created = await store.create(input);
+    const listedIds = new Set((await store.listForOwner(input.namespace, input.principal)).map(
+      (state) => state.grantId,
+    ));
+
+    assert.equal(lockRun, 2);
+    assert.equal(firstRunRefreshes, 4);
+    assert.deepEqual(listedIds, new Set([first.state.grantId, created.state.grantId, peerGrantId]));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -2012,6 +2101,39 @@ test("grant writes reject an ancestor swapped after the initial safety check", a
       /regular files in a stable directory/
     );
     assert.deepEqual(await readdir(path.join(outside, "grants")), ["owners"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("grant reads reject a memory-root ancestor swapped after a completed operation", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-late-ancestor-swap-"));
+  try {
+    const configuredParent = path.join(root, "configured");
+    const memoryDir = path.join(configuredParent, "memory");
+    const parkedParent = path.join(root, "parked-configured");
+    const outsideParent = path.join(root, "outside");
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({ memoryDir, now: () => now });
+    await store.create({
+      namespace: "alice",
+      principal: "owner:alice",
+      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+      expiresAt: new Date(now.getTime() + 300_000).toISOString(),
+    });
+    await mkdir(path.join(outsideParent, "memory", "state", "support-passport", "grants", "owners"), {
+      recursive: true,
+    });
+    renameSync(configuredParent, parkedParent);
+    symlinkSync(outsideParent, configuredParent, "dir");
+
+    await assert.rejects(
+      store.listForOwner("alice", "owner:alice"),
+      /support passport owner indexes must be regular files in a stable directory/,
+    );
+    assert.deepEqual(await readdir(path.join(outsideParent, "memory", "state", "support-passport", "grants")), [
+      "owners",
+    ]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

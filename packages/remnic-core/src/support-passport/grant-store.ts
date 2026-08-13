@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { type FileHandle, lstat, open } from "node:fs/promises";
+import { type FileHandle, lstat, open, readdir } from "node:fs/promises";
 import path from "node:path";
 
 import { log } from "../logger.js";
@@ -32,6 +32,13 @@ const UUID_INPUT = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-
 const SAFE_OWNER_INDEX_HASH = /^[0-9a-f]{64}$/;
 const UNSUPPORTED_DIRECTORY_SYNC_ERRORS = new Set(["EINVAL", "ENOSYS", "ENOTSUP", "EOPNOTSUPP"]);
 const MAX_OWNER_GRANT_HISTORY = 100;
+
+class OwnerIndexLockLostError extends Error {
+  constructor(cause: unknown) {
+    super("support passport owner index lock was lost", { cause });
+    this.name = "OwnerIndexLockLostError";
+  }
+}
 
 export interface SupportPassportGrantStoreOptions {
   memoryDir: string;
@@ -156,65 +163,90 @@ export class SupportPassportGrantStore {
     ) {
       throw new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
     }
-    return await this.withMutationLock(async (lock) => {
-      const secretBytes = this.makeSecret();
-      if (!Buffer.isBuffer(secretBytes) || secretBytes.length !== 32) {
-        throw new Error("SupportPassportGrantStore.makeSecret must return 32 bytes");
-      }
-      const rawGrantId = this.makeGrantId();
-      if (!UUID_INPUT.test(rawGrantId)) throw new Error("SupportPassportGrantStore.makeGrantId must return a UUID");
-      const grantId = rawGrantId.toLowerCase();
-      const secret = secretBytes.toString("base64url");
-      const createdAt = this.now();
-      if (!Number.isFinite(createdAt.getTime()) || Date.parse(parsed.data.expiresAt) <= createdAt.getTime()) {
-        throw new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
-      }
-      const state = SupportPassportGrantStateSchema.parse({
-        schemaVersion: 1,
-        stateVersion: 1,
-        grantId,
-        namespace,
-        principalHash: computeSupportPassportOwnerKey(parsed.data.principal),
-        ownerLockKey: computeSupportPassportOwnerLockKey(namespace, parsed.data.principal),
-        secretHash: sha256("support-passport-secret:v1", secret),
-        cards: parsed.data.cards,
-        createdAt: createdAt.toISOString(),
-        expiresAt: parsed.data.expiresAt,
-      });
-      await this.requireMutationLock(lock);
-      await beforeCommit?.();
-      await this.requireMutationLock(lock);
-      try {
-        await this.writeState(state, true);
-      } catch (error) {
-        const persisted = await this.readState(state.grantId).catch(() => undefined);
-        if (!persisted || !sameGrantState(persisted, state)) throw error;
-        try {
-          await this.syncDirectory(this.grantsDir);
-        } catch {
-          await this.removeGrantStates([state.grantId]).catch(() => undefined);
-          throw error;
+    let recoverableCommit: { state: SupportPassportGrantState; secret: string } | undefined;
+    try {
+      return await this.withMutationLock(async (lock) => {
+        const secretBytes = this.makeSecret();
+        if (!Buffer.isBuffer(secretBytes) || secretBytes.length !== 32) {
+          throw new Error("SupportPassportGrantStore.makeSecret must return 32 bytes");
         }
-      }
-      try {
-        await this.addToOwnerIndex(state, lock);
-      } catch (error) {
-        const ownerHash = this.ownerHash(state.namespace, state.principalHash);
-        const indexed = await this.readOwnerIndexByHash(ownerHash).catch(() => undefined);
-        if (indexed?.includes(state.grantId)) {
+        const rawGrantId = this.makeGrantId();
+        if (!UUID_INPUT.test(rawGrantId)) throw new Error("SupportPassportGrantStore.makeGrantId must return a UUID");
+        const grantId = rawGrantId.toLowerCase();
+        const secret = secretBytes.toString("base64url");
+        const createdAt = this.now();
+        const createdAtMs = createdAt.getTime();
+        const expiresAtMs = Date.parse(parsed.data.expiresAt);
+        if (
+          !Number.isFinite(createdAtMs) ||
+          requestedAt.getTime() > createdAtMs ||
+          expiresAtMs <= createdAtMs ||
+          expiresAtMs - createdAtMs > 604_800_000
+        ) {
+          throw new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
+        }
+        const state = SupportPassportGrantStateSchema.parse({
+          schemaVersion: 1,
+          stateVersion: 1,
+          grantId,
+          namespace,
+          principalHash: computeSupportPassportOwnerKey(parsed.data.principal),
+          ownerLockKey: computeSupportPassportOwnerLockKey(namespace, parsed.data.principal),
+          secretHash: sha256("support-passport-secret:v1", secret),
+          cards: parsed.data.cards,
+          createdAt: createdAt.toISOString(),
+          expiresAt: parsed.data.expiresAt,
+        });
+        recoverableCommit = { state, secret };
+        await this.requireMutationLock(lock);
+        await beforeCommit?.();
+        await this.requireMutationLock(lock);
+        try {
+          await this.writeState(state, true);
+        } catch (error) {
+          const persisted = await this.readState(state.grantId).catch(() => undefined);
+          if (!persisted || !sameGrantState(persisted, state)) throw error;
           try {
-            await this.syncDirectory(this.ownerIndexesDir);
-            return { state, secret };
+            await this.syncDirectory(this.grantsDir);
           } catch {
             await this.removeGrantStates([state.grantId]).catch(() => undefined);
             throw error;
           }
         }
-        await this.removeGrantStates([state.grantId]).catch(() => undefined);
-        throw error;
+        try {
+          await this.addToOwnerIndex(state, lock);
+        } catch (error) {
+          if (error instanceof OwnerIndexLockLostError) throw error;
+          const ownerHash = this.ownerHash(state.namespace, state.principalHash);
+          const indexed = await this.readOwnerIndexByHash(ownerHash).catch(() => undefined);
+          if (indexed?.includes(state.grantId)) {
+            try {
+              await this.syncDirectory(this.ownerIndexesDir);
+            } catch {
+              await this.removeGrantStates([state.grantId]).catch(() => undefined);
+              throw error;
+            }
+            await this.requireOwnerIndexLock(lock);
+            return { state, secret };
+          }
+          await this.removeGrantStates([state.grantId]).catch(() => undefined);
+          throw error;
+        }
+        return { state, secret };
+      });
+    } catch (error) {
+      if (!(error instanceof OwnerIndexLockLostError) || !recoverableCommit) throw error;
+      const committed = recoverableCommit;
+      try {
+        return await this.reconcileCreateAfterOwnerIndexLockLoss(committed);
+      } catch (recoveryError) {
+        await this.withGrantLock(committed.state.grantId, async (lock) => {
+          await this.requireMutationLock(lock);
+          await this.removeGrantStates([committed.state.grantId]);
+        }).catch(() => undefined);
+        throw recoveryError;
       }
-      return { state, secret };
-    });
+    }
   }
 
   async authenticate(grantId: string, secret: string): Promise<SupportPassportGrantState> {
@@ -392,6 +424,7 @@ export class SupportPassportGrantStore {
     const evictedGrantIds = current.filter((grantId) => !retainedIds.has(grantId));
     await this.requireMutationLock(lock);
     await this.writeOwnerIndex(ownerHash, grantIds);
+    await this.requireOwnerIndexLock(lock);
     try {
       for (const grantId of evictedGrantIds) {
         await this.withGrantLock(grantId, async (grantLock) => {
@@ -415,8 +448,82 @@ export class SupportPassportGrantStore {
       this.grantsDir,
       grantIds.map((grantId) => `${grantId}.json`),
       "support passport grant files must be regular files in a stable directory",
-      this.memoryDir,
+      path.parse(this.memoryDir).root,
     );
+  }
+
+  private async reconcileCreateAfterOwnerIndexLockLoss(
+    committed: { state: SupportPassportGrantState; secret: string },
+  ): Promise<{ state: SupportPassportGrantState; secret: string }> {
+    return await this.withMutationLock(async (lock) => {
+      const persisted = await this.readState(committed.state.grantId).catch(() => undefined);
+      if (!persisted || !sameGrantState(persisted, committed.state)) {
+        throw new SupportPassportError("storage_conflict", "The share link store changed during the request.", 409);
+      }
+      let ownerStates = await this.readAllOwnerStates(
+        committed.state.namespace,
+        committed.state.principalHash,
+      );
+      const activeCutoff = this.now().getTime();
+      const active = ownerStates.filter(
+        (state) => !state.revokedAt && Date.parse(state.expiresAt) > activeCutoff,
+      );
+      if (active.length > MAX_OWNER_GRANT_HISTORY) {
+        await this.removeGrantStates([committed.state.grantId]);
+        ownerStates = ownerStates.filter((state) => state.grantId !== committed.state.grantId);
+      }
+      const retained = this.retainedOwnerStates(ownerStates, activeCutoff);
+      const ownerHash = this.ownerHash(committed.state.namespace, committed.state.principalHash);
+      await this.requireMutationLock(lock);
+      await this.writeOwnerIndex(ownerHash, retained.map((state) => state.grantId));
+      await this.requireOwnerIndexLock(lock);
+      if (active.length > MAX_OWNER_GRANT_HISTORY) {
+        throw new SupportPassportError("storage_conflict", "The share link store changed during the request.", 409);
+      }
+      return committed;
+    });
+  }
+
+  private retainedOwnerStates(
+    states: SupportPassportGrantState[],
+    activeCutoff: number,
+  ): SupportPassportGrantState[] {
+    const active = states.filter(
+      (state) => !state.revokedAt && Date.parse(state.expiresAt) > activeCutoff,
+    );
+    if (active.length > MAX_OWNER_GRANT_HISTORY) {
+      throw new Error("support passport owner has too many active grants");
+    }
+    const inactive = states
+      .filter((state) => state.revokedAt || Date.parse(state.expiresAt) <= activeCutoff)
+      .sort(newestGrantFirst);
+    return [
+      ...active,
+      ...inactive.slice(0, MAX_OWNER_GRANT_HISTORY - active.length),
+    ];
+  }
+
+  private async readAllOwnerStates(
+    namespace: string,
+    principalHash: string,
+  ): Promise<SupportPassportGrantState[]> {
+    const grantIds = await withPrivateDirectoryNoFollow(
+      path.parse(this.memoryDir).root,
+      this.grantsDir,
+      "support passport grant files must be regular files in a stable directory",
+      async (pinnedDirectory) => (await readdir(pinnedDirectory, { withFileTypes: true }))
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+        .map((entry) => entry.name.slice(0, -".json".length))
+        .filter((grantId) => SAFE_GRANT_ID.test(grantId)),
+    );
+    const states: SupportPassportGrantState[] = [];
+    for (const grantId of grantIds) {
+      const state = await this.readState(grantId);
+      if (state.namespace === namespace && hashesMatch(state.principalHash, principalHash)) {
+        states.push(state);
+      }
+    }
+    return states;
   }
 
   private async readOwnerIndex(namespace: string, principalHash: string): Promise<string[]> {
@@ -432,7 +539,7 @@ export class SupportPassportGrantStore {
         this.ownerIndexesDir,
         filePath,
         "support passport owner indexes must be regular files in a stable directory",
-        this.memoryDir,
+        path.parse(this.memoryDir).root,
       );
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
@@ -473,7 +580,7 @@ export class SupportPassportGrantStore {
       filePath,
       `${JSON.stringify({ schemaVersion: 1, ownerHash, grantIds }, null, 2)}\n`,
       "support passport owner indexes must be regular files in a stable directory",
-      this.memoryDir,
+      path.parse(this.memoryDir).root,
     );
   }
 
@@ -484,7 +591,7 @@ export class SupportPassportGrantStore {
       this.grantsDir,
       filePath,
       "support passport grant files must be regular files in a stable directory",
-      this.memoryDir,
+      path.parse(this.memoryDir).root,
     );
     const state = SupportPassportGrantStateSchema.parse(JSON.parse(content));
     if (state.grantId !== grantId) throw new Error("support passport grant ID must match its file name");
@@ -508,7 +615,7 @@ export class SupportPassportGrantStore {
       filePath,
       `${JSON.stringify(state, null, 2)}\n`,
       "support passport grant files must be regular files in a stable directory",
-      this.memoryDir,
+      path.parse(this.memoryDir).root,
     );
   }
 
@@ -535,8 +642,8 @@ export class SupportPassportGrantStore {
   }
 
   private async ensureMemoryRoot(): Promise<void> {
+    const configuredMemoryDir = this.memoryDir;
     if (!this.memoryRootReady) {
-      const configuredMemoryDir = this.memoryDir;
       this.memoryRootReady = (async () => {
         await ensurePrivateDirectoryTreeNoFollow(
           configuredMemoryDir,
@@ -560,7 +667,7 @@ export class SupportPassportGrantStore {
   private async withMutationLock<T>(task: (lock: HeldFileLockController) => Promise<T>): Promise<T> {
     await this.ensureSafeDirectories();
     return await withPrivateDirectoryNoFollow(
-      this.memoryDir,
+      path.parse(this.memoryDir).root,
       this.grantsDir,
       "support passport grant lock directory must remain inside the memory directory",
       async (pinnedDirectory) =>
@@ -576,7 +683,7 @@ export class SupportPassportGrantStore {
     const normalizedGrantId = normalizeGrantId(grantId);
     await this.ensureSafeDirectories();
     return await withPrivateDirectoryNoFollow(
-      this.memoryDir,
+      path.parse(this.memoryDir).root,
       this.grantsDir,
       "support passport grant lock directory must remain inside the memory directory",
       async (pinnedDirectory) =>
@@ -614,6 +721,14 @@ export class SupportPassportGrantStore {
   private async requireMutationLock(lock: HeldFileLockController): Promise<void> {
     if (await lock.refresh()) return;
     throw new SupportPassportError("storage_conflict", "The share link store changed during the request.", 409);
+  }
+
+  private async requireOwnerIndexLock(lock: HeldFileLockController): Promise<void> {
+    try {
+      await this.requireMutationLock(lock);
+    } catch (error) {
+      throw new OwnerIndexLockLostError(error);
+    }
   }
 
   private requireActiveState(state: SupportPassportGrantState): void {
