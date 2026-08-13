@@ -68,7 +68,6 @@ import { isValidResolutionVerb, executeResolution } from "./contradiction/resolu
 import { RelayMissionStoreError } from "./relay/mission.js";
 import { SupportPassportAccessHttpBase } from "./support-passport/access-http-base.js";
 import { serializeInlineScriptValue } from "./inline-script.js";
-
 export interface AccessHttpReadinessState {
   ready: boolean;
   warmupAttempts: number;
