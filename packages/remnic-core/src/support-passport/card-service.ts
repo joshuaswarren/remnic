@@ -1,9 +1,7 @@
-import path from "node:path";
-
 import type { StorageManager } from "../index.js";
 import { log } from "../logger.js";
 import type { MemoryFile } from "../types.js";
-import { type HeldFileLockController, serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
+import type { HeldFileLockController } from "../utils/serialize-mutations.js";
 import { composeMemoryEnvelope } from "../write-envelope.js";
 import {
   SUPPORT_PASSPORT_ATTRIBUTE_KEYS,
@@ -27,6 +25,7 @@ import {
   computeSupportPassportCardRevision,
 } from "./contracts.js";
 import { SupportPassportError } from "./errors.js";
+import { withSupportPassportOwnerLock } from "./owner-lock.js";
 
 export interface SupportPassportOwnerScope {
   principal: string;
@@ -41,8 +40,6 @@ export interface SupportPassportCardServiceDependencies {
 
 const OWNER_VISIBLE_STATUSES = new Set(["pending_review", "active"]);
 const MAX_OWNER_VISIBLE_CARDS = 100;
-const CARD_MUTATION_LOCK_STALE_MS = 60_000;
-const CARD_MUTATION_LOCK_MAX_WAIT_MS = 30_000;
 
 function invalidInput(): SupportPassportError {
   return new SupportPassportError("invalid_input", "The support card request is invalid.", 400);
@@ -65,7 +62,7 @@ export class SupportPassportCardService {
     const parsed = SupportPassportListCardsInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
     const { principal, namespace, storage } = await this.resolveOwnerScope(parsed.data.principal);
-    return await this.withOwnerLock(storage, async (lock) => {
+    return await withSupportPassportOwnerLock(storage, { namespace, principal }, async (lock) => {
       const stored = await this.readStoredCards(storage, lock, principal, namespace);
       const cards = this.ownerVisibleCards(stored)
         .sort((a, b) => a.order - b.order || a.card.cardId.localeCompare(b.card.cardId))
@@ -82,7 +79,7 @@ export class SupportPassportCardService {
     const parsed = SupportPassportManualDraftInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
     const { principal, namespace, storage } = await this.resolveOwnerScope(parsed.data.principal);
-    return await this.withOwnerLock(storage, (lock) =>
+    return await withSupportPassportOwnerLock(storage, { namespace, principal }, (lock) =>
       this.createDraft(
         storage,
         {
@@ -103,7 +100,7 @@ export class SupportPassportCardService {
     const parsed = SupportPassportReplaceCardInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
     const { principal, namespace, storage } = await this.resolveOwnerScope(parsed.data.principal);
-    return await this.withOwnerLock(storage, async (lock) => {
+    return await withSupportPassportOwnerLock(storage, { namespace, principal }, async (lock) => {
       const loadedPrior = await this.requireCard(storage, parsed.data.cardId, namespace, principal);
       const storedCards = await this.readProjectedCards(storage, namespace, principal);
       const interruptedReplacements = storedCards.filter(
@@ -217,7 +214,7 @@ export class SupportPassportCardService {
     const parsed = SupportPassportCardMutationInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
     const { principal, namespace, storage } = await this.resolveOwnerScope(parsed.data.principal);
-    return await this.withOwnerLock(storage, async (lock) => {
+    return await withSupportPassportOwnerLock(storage, { namespace, principal }, async (lock) => {
       const loadedCard = await this.requireCard(storage, parsed.data.cardId, namespace, principal);
       this.requireRevision(loadedCard, parsed.data.expectedRevision);
       this.requireStatus(loadedCard, "pending_review");
@@ -371,7 +368,7 @@ export class SupportPassportCardService {
     const parsed = SupportPassportCardMutationInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
     const { principal, namespace, storage } = await this.resolveOwnerScope(parsed.data.principal);
-    return await this.withOwnerLock(storage, async (lock) => {
+    return await withSupportPassportOwnerLock(storage, { namespace, principal }, async (lock) => {
       let card = await this.requireCard(storage, parsed.data.cardId, namespace, principal);
       this.requireRevision(card, parsed.data.expectedRevision);
       this.requireStatus(card, expectedStatus);
@@ -885,25 +882,6 @@ export class SupportPassportCardService {
     if (latest?.frontmatter.status !== "rejected") {
       throw new SupportPassportError("storage_conflict", "The orphaned replacement could not be rejected.", 409);
     }
-  }
-
-  private async withOwnerLock<T>(
-    storage: StorageManager,
-    task: (lock: HeldFileLockController) => Promise<T>
-  ): Promise<T> {
-    const lockPath = path.join(storage.dir, "state", "support-passport-cards.lock");
-    return await serializeMutations(lockPath, () =>
-      withHeldFileLock(
-        lockPath,
-        { staleMs: CARD_MUTATION_LOCK_STALE_MS, maxWaitMs: CARD_MUTATION_LOCK_MAX_WAIT_MS },
-        async (acquired, lock) => {
-          if (!acquired) {
-            throw new SupportPassportError("storage_conflict", "The support passport is busy. Try again.", 409);
-          }
-          return await task(lock);
-        }
-      )
-    );
   }
 
   private async restorePriorAfterApprovalFailure(

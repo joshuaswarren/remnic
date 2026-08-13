@@ -113,6 +113,9 @@ test("decideTierTransition keeps live support passport cards in the hot tier", (
         "support-passport-namespace": "default",
         "support-passport-owner": "a".repeat(64),
         "support-passport-title": "Quiet space",
+        "support-passport-order": "0",
+        "support-passport-review-by": "2026-09-01T12:00:00.000Z",
+        "support-passport-source-ids": "",
       },
       confidence: 0,
       confidenceTier: "speculative",
@@ -129,6 +132,44 @@ test("decideTierTransition keeps live support passport cards in the hot tier", (
     assert.equal(cold.nextTier, "hot");
     assert.equal(cold.changed, true);
     assert.equal(cold.reason, "support_passport_card_requires_hot_tier");
+  }
+});
+
+test("decideTierTransition does not pin incomplete support passport metadata", () => {
+  const now = new Date("2026-02-01T00:00:00.000Z");
+  const attributes = {
+    "support-passport-category": "environment",
+    "support-passport-namespace": "default",
+    "support-passport-owner": "a".repeat(64),
+    "support-passport-title": "Quiet space",
+    "support-passport-order": "0",
+    "support-passport-review-by": "2026-09-01T12:00:00.000Z",
+    "support-passport-source-ids": "",
+  };
+  for (const requiredAttribute of [
+    "support-passport-order",
+    "support-passport-review-by",
+    "support-passport-source-ids",
+  ] as const) {
+    const incomplete: Record<string, string> = { ...attributes };
+    delete incomplete[requiredAttribute];
+    const decision = decideTierTransition(
+      memory({
+        category: "preference",
+        status: "active",
+        tags: ["support-passport-card"],
+        structuredAttributes: incomplete,
+        confidence: 0,
+        confidenceTier: "speculative",
+        accessCount: 0,
+        lastAccessed: "2025-01-01T00:00:00.000Z",
+        importance: { score: 0, level: "trivial", reasons: [], keywords: [] },
+      }),
+      "hot",
+      policy,
+      now
+    );
+    assert.equal(decision.nextTier, "cold", requiredAttribute);
   }
 });
 
