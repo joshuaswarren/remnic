@@ -393,6 +393,15 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     const fresh = stream.filter(
       ({ entry, index }) => !deps.spool.isChunkApplied(`${entry.chunkId}:i${index}`),
     );
+    // Per chunk: did THIS run contribute anything new? A replay whose
+    // transcript is entirely already-applied proves nothing about a tail the
+    // original transcription produced and never persisted — an STT or
+    // segmentation change can shorten the transcript — so such a chunk is not
+    // closed out and keeps its raw audio (issue #2145).
+    const freshPerChunk = new Map<string, number>();
+    for (const { entry } of fresh) {
+      freshPerChunk.set(entry.chunkId, (freshPerChunk.get(entry.chunkId) ?? 0) + 1);
+    }
 
     // Embed before a single `assembler.add`. Embedding is the only await that
     // can throw before persistence, and the assembler has no undo: a throw
@@ -465,7 +474,8 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       // applied (a partial crash) must NOT be marked done, or the missing tail
       // groups would be stranded forever.
       const fullyProcessed =
-        entry.built.length > 0 || !deps.spool.isChunkApplied(`${entry.chunkId}:i0`);
+        (freshPerChunk.get(entry.chunkId) ?? 0) > 0 ||
+        !deps.spool.isChunkApplied(`${entry.chunkId}:i0`);
       processedThisRun.add(entry.chunkId);
       if (!fullyProcessed) continue;
       // The chunk is fully durably transcribed: record completion and reclaim

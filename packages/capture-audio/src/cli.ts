@@ -543,7 +543,7 @@ async function cmdStart(
           // their raw audio is still on disk. Swallowing that silently made a
           // recoverable state look like a clean exit (issue #2145).
           process.stderr.write(
-            `[capture-audio] shutdown flush failed; retained raw audio was NOT ingested: ${String(error)}\n`,
+            `[capture-audio] shutdown flush failed; retained raw audio was NOT ingested: ${describeError(error)}\n`,
           );
         })
         .then(() => {
