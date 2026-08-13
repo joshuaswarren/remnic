@@ -15,6 +15,7 @@ export class EngramAccessService extends CoreEngramAccessService {
     options: NonNullable<CoreAccessServiceConstructor[1]> = {}
   ) {
     super(orchestrator, options);
+    const injectedRoute = super.supportPassportGatewayRouteRef;
     const gatewayClient =
       orchestrator.fastGatewayLlm ??
       (orchestrator.config.gatewayConfig
@@ -23,9 +24,11 @@ export class EngramAccessService extends CoreEngramAccessService {
             fallbackLlmRuntimeContextFromConfig(orchestrator.config)
           )
         : null);
-    this.supportPassportGatewayRoute = gatewayClient
-      ? createOpenClawSupportPassportModelRoute(orchestrator.config, gatewayClient)
-      : null;
+    this.supportPassportGatewayRoute =
+      injectedRoute ??
+      (gatewayClient
+        ? createOpenClawSupportPassportModelRoute(orchestrator.config, gatewayClient)
+        : null);
   }
 
   override get supportPassportGatewayRouteRef(): SupportPassportModelRoute | null {
