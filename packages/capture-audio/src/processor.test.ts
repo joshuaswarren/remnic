@@ -1107,9 +1107,10 @@ test("a retranscription that inserts a segment does not rebind an existing key",
 });
 
 test("a shortened retranscription keeps the chunk open instead of losing its tail", async () => {
-  // Crash after segment A of an [A, B] transcript, then an STT change makes the
-  // replay produce only A. The recorded segment COUNT is what tells the two
-  // cases apart (issue #2145).
+  // A REAL partial apply: the first run persists A and then fails on B, so the
+  // chunk is never completed. A later STT change makes the replay produce only
+  // A. The recorded segment COUNT is what tells that apart from a chunk whose
+  // transcript legitimately has one segment (issue #2145).
   const spool = new Spool(":memory:");
   try {
     const ev = chunk({ path: "/tmp/raw/shrink.wav" });
@@ -1119,11 +1120,24 @@ test("a shortened retranscription keeps the chunk open instead of losing its tai
       { text: "A", startUtc: t(1), endUtc: t(2) },
       { text: "B", startUtc: t(40), endUtc: t(41) },
     ];
+    // Fail the SECOND append so segment A lands durably and B never does.
+    let appends = 0;
+    const guarded = new Proxy(spool, {
+      get(target, prop, receiver) {
+        if (prop === "appendAssembledSegments") {
+          return (input: Parameters<Spool["appendAssembledSegments"]>[0]) => {
+            appends += 1;
+            if (appends === 2) throw new Error("sqlite busy");
+            return target.appendAssembledSegments(input);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as Spool;
 
-    // Run 1 records the two-segment count, then we simulate losing B by
-    // deleting its row while leaving the count marker in place.
-    const first = createChunkProcessor(
-      deps(spool, {
+    const partial = createChunkProcessor(
+      deps(guarded, {
         assembler: new ConversationAssembler({ gapMinutes: 0 }),
         transcribe: async () => two,
         cleanupRawAudio: async (event) => {
@@ -1131,11 +1145,13 @@ test("a shortened retranscription keeps the chunk open instead of losing its tai
         },
       }),
     );
-    first.enqueue(ev);
-    await first.drain();
-    assert.equal(spool.isChunkApplied(`${cid}:n2`), true, "the transcript size was recorded");
+    partial.enqueue(ev);
+    await partial.drain();
+    assert.equal(spool.stats().segments, 1, "only A persisted");
+    assert.equal(spool.isChunkApplied(`${cid}:n2`), true, "the two-segment transcript was recorded");
+    assert.equal(spool.isChunkApplied(`${cid}:done`), false, "and the chunk is not complete");
 
-    // Run 2 sees a SHORTER transcript for the same chunk.
+    // The replay now produces only A.
     const shortened = createChunkProcessor(
       deps(spool, {
         assembler: new ConversationAssembler({ gapMinutes: 0 }),
@@ -1147,17 +1163,18 @@ test("a shortened retranscription keeps the chunk open instead of losing its tai
     );
     shortened.enqueue(chunk({ path: "/tmp/raw/shrink.wav" }));
     await shortened.finalize();
+
     assert.equal(
       spool.isChunkApplied(`${cid}:done`),
-      true,
-      "run 1 already completed the chunk, so the replay short-circuits on :done",
+      false,
+      "a shorter transcript never completes the chunk",
     );
+    assert.deepEqual(cleaned, [], "and its raw audio is retained for another replay");
 
-    // A chunk that was NEVER completed and retranscribes shorter must stay open.
-    const other = chunk({ path: "/tmp/raw/shrink2.wav" });
-    const otherId = chunkStableId(other);
-    spool.markApplied(`${otherId}:n2`, "-");
-    const partial = createChunkProcessor(
+    // A chunk whose transcript legitimately matches DOES complete.
+    const stable = chunk({ path: "/tmp/raw/stable.wav" });
+    const stableId = chunkStableId(stable);
+    const ok = createChunkProcessor(
       deps(spool, {
         assembler: new ConversationAssembler({ gapMinutes: 0 }),
         transcribe: async () => [two[0]],
@@ -1166,10 +1183,10 @@ test("a shortened retranscription keeps the chunk open instead of losing its tai
         },
       }),
     );
-    partial.enqueue(other);
-    await partial.finalize();
-    assert.equal(spool.isChunkApplied(`${otherId}:done`), false, "not completed on a shorter transcript");
-    assert.ok(!cleaned.includes("/tmp/raw/shrink2.wav"), "and its raw audio is retained");
+    ok.enqueue(stable);
+    await ok.finalize();
+    assert.equal(spool.isChunkApplied(`${stableId}:done`), true);
+    assert.deepEqual(cleaned, ["/tmp/raw/stable.wav"]);
   } finally {
     spool.close();
   }

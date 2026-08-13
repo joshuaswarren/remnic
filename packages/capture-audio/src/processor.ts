@@ -304,10 +304,17 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
           chunkStartedAtUtc: event.startedAtUtc,
         })
       : [];
+    const built = buildSegments(event, raw);
+    // Recorded BEFORE any append, and only once: this is the fact a later
+    // replay cannot re-derive, so it must survive a failure that happens
+    // partway through appending this chunk (issue #2145).
+    if (built.length > 0 && !deps.spool.hasAppliedChunkPrefix(`${chunkId}:n`)) {
+      deps.spool.markApplied(`${chunkId}:n${built.length}`, "-");
+    }
     buffer.push({
       event,
       chunkId,
-      built: buildSegments(event, raw),
+      built,
       startMs: firstStartMs(event, raw),
       endMs: lastEndMs(event, raw),
     });
@@ -488,16 +495,14 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       // and a tail can be lost, refuse and a fully-applied chunk
       // re-transcribes forever. So the count is persisted once and compared.
       const segmentCount = entry.built.length;
-      const hadCount = deps.spool.hasAppliedChunkPrefix(`${entry.chunkId}:n`);
-      const countMatches =
-        !hadCount || deps.spool.isChunkApplied(`${entry.chunkId}:n${segmentCount}`);
+      // The marker was written at transcribe time, so a mismatch here means an
+      // EARLIER run produced a different number of segments — a tail that no
+      // run has accounted for.
+      const countMatches = deps.spool.isChunkApplied(`${entry.chunkId}:n${segmentCount}`);
       const fullyProcessed =
         segmentCount > 0
           ? countMatches
           : !deps.spool.hasAppliedChunkPrefix(`${entry.chunkId}:`);
-      if (segmentCount > 0 && !hadCount) {
-        deps.spool.markApplied(`${entry.chunkId}:n${segmentCount}`, openConversationId ?? "-");
-      }
       if (segmentCount > 0 && !countMatches) {
         log.warn(
           `[capture-audio] chunk ${entry.chunkId} retranscribed to ${segmentCount} segments but an earlier run produced a different count; keeping its raw audio`,
