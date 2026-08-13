@@ -226,6 +226,43 @@ test("recallForActiveMemory excludes artifact-backed hits before applying the vi
   );
 });
 
+test("recallForActiveMemory excludes support passport records before applying the visible result cap", async () => {
+  const memories = new Map([
+    ["/tmp/memory/preferences/card.md", {
+      content: "Give me time to answer.",
+      frontmatter: { tags: ["support-passport-card"] },
+    } as never],
+    ["/tmp/memory/corrections/audit.md", {
+      content: "Superseded: Give me time to answer.",
+      frontmatter: { tags: ["support-passport-audit"] },
+    } as never],
+    ["/tmp/memory/facts/safe.md", {
+      content: "Safe memory.",
+      frontmatter: { tags: [] },
+    } as never],
+  ]);
+  const orchestrator = {
+    resolveSelfNamespace: () => "session-namespace",
+    getStorageForNamespace: async () => ({
+      readMemoryByPath: async (memoryPath: string) => memories.get(memoryPath) ?? null,
+    }),
+    searchAcrossNamespaces: async () => [
+      { id: "card", score: 0.99, path: "/tmp/memory/preferences/card.md", snippet: "private card" },
+      { id: "audit", score: 0.98, path: "/tmp/memory/corrections/audit.md", snippet: "private audit" },
+      { id: "safe", score: 0.8, path: "/tmp/memory/facts/safe.md", snippet: "safe memory" },
+    ],
+  };
+
+  const result = await recallForActiveMemory(orchestrator as never, {
+    query: "support",
+    limit: 2,
+    sessionKey: "session-b",
+  });
+
+  assert.deepEqual(result.results.map((entry) => entry.id), ["safe"]);
+  assert.equal(result.truncated, false);
+});
+
 test("getMemoryForActiveMemory returns not_found instead of throwing", async () => {
   const orchestrator = {
     resolveSelfNamespace: () => "readable-session",
@@ -236,6 +273,26 @@ test("getMemoryForActiveMemory returns not_found instead of throwing", async () 
 
   const result = await getMemoryForActiveMemory(orchestrator as never, "missing");
   assert.deepEqual(result, { error: "not_found" });
+});
+
+test("getMemoryForActiveMemory hides support passport records", async () => {
+  for (const tag of ["support-passport-card", "support-passport-audit"]) {
+    const orchestrator = {
+      resolveSelfNamespace: () => "readable-session",
+      getStorageForNamespace: async () => ({
+        getMemoryById: async () => ({
+          content: "owner-controlled content",
+          frontmatter: { tags: [tag] },
+        } as never),
+      }),
+    };
+
+    assert.deepEqual(
+      await getMemoryForActiveMemory(orchestrator as never, "private-record"),
+      { error: "not_found" },
+      tag,
+    );
+  }
 });
 
 test("getMemoryForActiveMemory reads via the session-derived namespace storage", async () => {

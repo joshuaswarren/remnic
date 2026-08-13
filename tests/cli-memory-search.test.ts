@@ -74,3 +74,13 @@ test("normal retrieval visibility treats only forgotten status as hidden", () =>
   );
   assert.equal(isNormalRetrievalVisibleMemory(makeMemory("active")), true);
 });
+
+test("normal retrieval visibility hides support passport cards and audits", () => {
+  for (const tag of ["support-passport-card", "support-passport-audit"]) {
+    assert.equal(
+      isNormalRetrievalVisibleMemory(makeMemory(tag, { status: "active", tags: [tag] })),
+      false,
+      tag,
+    );
+  }
+});

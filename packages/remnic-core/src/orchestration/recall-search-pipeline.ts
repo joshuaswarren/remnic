@@ -70,7 +70,7 @@ import {
 } from "../orchestrator.js";
 import { isActivityDigestPath } from "./orchestrator-helpers.js";
 import { isGenericRecallExcludedPath, isTopLevelArchivePath } from "./generic-recall-paths.js";
-import { SUPPORT_PASSPORT_CARD_TAG } from "../support-passport/card-projection.js";
+import { isSupportPassportPrivateMemory } from "../support-passport/card-projection.js";
 
 export interface RecallSearchPipelineDeps {
   applyMemoryWorthRerank(
@@ -1129,7 +1129,7 @@ export class RecallSearchPipelineCoordinator {
           continue;
         }
 
-        if (memory.frontmatter.tags?.includes(SUPPORT_PASSPORT_CARD_TAG)) {
+        if (isSupportPassportPrivateMemory(memory)) {
           supportPassportFilteredCount += 1;
           continue;
         }
@@ -1232,7 +1232,7 @@ export class RecallSearchPipelineCoordinator {
     }
     if (supportPassportFilteredCount > 0) {
       log.debug(
-        `support passport filter removed ${supportPassportFilteredCount} owner-controlled cards from generic recall`,
+        `support passport filter removed ${supportPassportFilteredCount} owner-controlled records from generic recall`,
       );
     }
     if (lifecycleFilteredCount > 0) {

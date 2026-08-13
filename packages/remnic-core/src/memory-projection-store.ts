@@ -26,6 +26,7 @@ export interface ProjectedMemoryBrowseOptions {
   query?: string;
   status?: string;
   category?: string;
+  excludeTags?: readonly string[];
   sort?: "updated_desc" | "updated_asc" | "created_desc" | "created_asc";
   limit: number;
   offset: number;
@@ -820,8 +821,8 @@ export function readProjectedMemoryBrowse(
 ): ProjectedMemoryBrowsePage | null {
   return withProjectionReadonly(memoryDir, (db) => {
     const normalizedQuery = options.query?.trim().toLowerCase() ?? "";
-
     const currentSelect = memoryCurrentSelectExpressions(db);
+    if ((options.excludeTags?.length ?? 0) > 0 && currentSelect.tagsJson.startsWith("'[]'")) throw new Error("tag exclusions require tags_json");
     const whereClauses: string[] = [];
     const params: unknown[] = [];
 
@@ -833,6 +834,7 @@ export function readProjectedMemoryBrowse(
       whereClauses.push("category = ?");
       params.push(options.category);
     }
+    for (const tag of options.excludeTags ?? []) whereClauses.push("instr(tags_json, ?) = 0"), params.push(JSON.stringify(tag));
     const sort = options.sort ?? "updated_desc";
     const orderBySql = (() => {
       switch (sort) {
@@ -847,8 +849,6 @@ export function readProjectedMemoryBrowse(
           return "updated_at DESC, created_at DESC, memory_id ASC";
       }
     })();
-    const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
-
     if (normalizedQuery) {
       // Full-content search still examines every eligible row so totals and
       // matches stay exact, but iteration keeps memory use proportional to the page.

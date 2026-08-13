@@ -238,6 +238,35 @@ test("rebuildMemoryProjection includes hot cold and archived memories", async ()
   }
 });
 
+test("projected browse excludes support passport records before pagination", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-memory-projection-private-"));
+  try {
+    for (const [id, tag] of [
+      ["card", "support-passport-card"],
+      ["audit", "support-passport-audit"],
+      ["public", "public"],
+    ] as const) {
+      await writeText(
+        memoryDir,
+        `facts/2026-03-08/${id}.md`,
+        memoryDoc({ id, content: `${id} content`, tags: [tag] }),
+      );
+    }
+    await rebuildMemoryProjection({ memoryDir, dryRun: false });
+
+    const browse = readProjectedMemoryBrowse(memoryDir, {
+      excludeTags: ["support-passport-card", "support-passport-audit"],
+      limit: 1,
+      offset: 0,
+    });
+
+    assert.equal(browse?.total, 1);
+    assert.deepEqual(browse?.memories.map((memory) => memory.id), ["public"]);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("rebuildMemoryProjection writes current-state and timeline rows and backs up existing projection", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-projection-live-"));
   try {

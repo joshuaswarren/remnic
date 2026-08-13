@@ -47,6 +47,7 @@ test("memory_search global collection applies namespace before maxResults limiti
         { path: "/memory/namespaces/b/lower.md", score: 0.61, snippet: "right namespace" },
       ];
     },
+    filterPrivateSearchResults: async (results: unknown[]) => results,
     lastRecall: {
       get: () => null,
       getMostRecent: () => null,

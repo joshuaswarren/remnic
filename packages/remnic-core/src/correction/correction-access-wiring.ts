@@ -48,6 +48,7 @@ import {
 import { type ExecutorDeps, type ExecutorMemory } from "./correction-executor.js";
 import { CorrectionService, type CorrectionServiceDeps } from "./correction-service.js";
 import { resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
+import { isSupportPassportPrivateMemory } from "../support-passport/card-projection.js";
 
 // ---------------------------------------------------------------------------
 // Public entry: build a fully-wired CorrectionService
@@ -223,7 +224,7 @@ async function resolveTargetMemories(
     for (const ns of namespaces) {
       const storage = await wiring.orchestrator.getStorage(ns);
       const m = await storage.getMemoryById(id);
-      if (m) {
+      if (m && isEligibleCorrectionCandidate(m)) {
         found = toCandidate(m, ns, 1);
         break;
       }
@@ -261,7 +262,11 @@ async function expandEntityNeighbors(
     const storage = await wiring.orchestrator.getStorage(ns);
     const all = await storage.readAllMemories();
     for (const m of all) {
-      if (seedIds.includes(m.frontmatter.id) && m.frontmatter.entityRef) {
+      if (
+        seedIds.includes(m.frontmatter.id) &&
+        m.frontmatter.entityRef &&
+        isEligibleCorrectionCandidate(m)
+      ) {
         seedRefs.add(m.frontmatter.entityRef);
       }
     }
@@ -859,6 +864,7 @@ function toCandidate(m: MemoryFile, namespace: string, score: number): PlannerCa
  * stays consistent with the rescope/retire apply-time guards.
  */
 function isEligibleCorrectionCandidate(m: MemoryFile): boolean {
+  if (isSupportPassportPrivateMemory(m)) return false;
   if (m.frontmatter.status && m.frontmatter.status !== "active") return false;
   if (typeof m.frontmatter.archivedAt === "string" && m.frontmatter.archivedAt.length > 0) return false;
   return true;

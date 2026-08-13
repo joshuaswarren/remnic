@@ -504,8 +504,7 @@ Best for:
 
         const namespaceFilter = namespace && namespace.length > 0 ? namespace : undefined;
         const resultLimit = normalizeMemorySearchResultLimit(maxResults);
-        const filtered =
-          collection === "global" && !namespaceFilter
+        const filtered = await orchestrator.filterPrivateSearchResults(collection === "global" && !namespaceFilter
             ? (await orchestrator.qmd.searchGlobal(query, resultLimit))
               .slice(0, resultLimit)
             : await orchestrator.searchAcrossNamespaces({
@@ -513,7 +512,7 @@ Best for:
               namespaces: namespaceFilter ? [namespaceFilter] : undefined,
               maxResults: resultLimit,
               mode: "search",
-            });
+            }), namespaceFilter ? [namespaceFilter] : []);
 
         if (filtered.length === 0) {
           return toolResult(`No memories found matching: "${query}"`);

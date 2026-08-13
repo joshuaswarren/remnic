@@ -34,6 +34,7 @@ import { resolveNamespaceCapabilities } from "../capabilities.js";
 import { SecureStoreLockedError } from "../secure-store/index.js";
 import type { PluginConfig, QmdSearchResult, MemoryFile } from "../types.js";
 import type { StorageManager } from "../index.js";
+import { isSupportPassportPrivateMemory } from "../support-passport/card-projection.js";
 
 /**
  * Split a relative QMD result path into its collection prefix and the
@@ -302,6 +303,25 @@ export class QmdResultResolver {
       if (memory) return memory;
     }
     return null;
+  }
+
+  async filterPrivateSearchResults(
+    results: QmdSearchResult[],
+    fallbackStorage: StorageManager,
+    namespaces: readonly string[] = [],
+  ): Promise<QmdSearchResult[]> {
+    const visible: QmdSearchResult[] = [];
+    for (const result of results) {
+      if (!result.path) continue;
+      const memory = await this.readQmdResultMemory(
+        result.path,
+        fallbackStorage,
+        namespaces,
+        result.namespace,
+      );
+      if (memory && !isSupportPassportPrivateMemory(memory)) visible.push(result);
+    }
+    return visible;
   }
 
   async resolveColdQmdResultForRecall(

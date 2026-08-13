@@ -4361,6 +4361,7 @@ test("HTTP memory search excludes artifacts and tops up to a full page", async (
     authorizeScope: () => {},
     namespacesEnabled: false,
     isExcluded: (memoryPath) => memoryPath.startsWith("artifacts/"),
+    filterPrivate: async (hits) => hits,
     flatCorpus: async (limit) => {
       seen.push(limit ?? -1);
       return corpus.slice(0, limit);
@@ -4385,6 +4386,7 @@ test("HTTP memory search stops topping up when the corpus is exhausted", async (
     authorizeScope: () => {},
     namespacesEnabled: false,
     isExcluded: (memoryPath) => memoryPath.startsWith("artifacts/"),
+    filterPrivate: async (hits) => hits,
     flatCorpus: async (limit) => {
       seen.push(limit ?? -1);
       return [{ path: "facts/only.md", score: 0.5, snippet: "only" }];
@@ -4407,6 +4409,7 @@ test("HTTP memory search omits maxResults when the caller named no budget", asyn
     authorizeScope: () => {},
     namespacesEnabled: false,
     isExcluded: (memoryPath) => memoryPath.startsWith("artifacts/"),
+    filterPrivate: async (hits) => hits,
     flatCorpus: async (limit) => {
       seen.push(limit);
       const corpus = [
@@ -4448,6 +4451,7 @@ test("HTTP memory search keeps topping up past four excluded pages", async () =>
     authorizeScope: () => {},
     namespacesEnabled: false,
     isExcluded: (memoryPath) => memoryPath.startsWith("artifacts/"),
+    filterPrivate: async (hits) => hits,
     flatCorpus: async (limit) => {
       seen.push(limit);
       return corpus.slice(0, limit);
@@ -4470,6 +4474,7 @@ test("HTTP memory search stops at the candidate ceiling", async () => {
     authorizeScope: () => {},
     namespacesEnabled: false,
     isExcluded: () => true,
+    filterPrivate: async (hits) => hits,
     flatCorpus: async (limit) => {
       seen.push(limit);
       return Array.from({ length: limit ?? 0 }, (_, index) => ({
@@ -4500,6 +4505,7 @@ test("HTTP memory search scales its ceiling above a large requested budget", asy
     authorizeScope: () => {},
     namespacesEnabled: false,
     isExcluded: (memoryPath) => memoryPath === "artifacts/a.md",
+    filterPrivate: async (hits) => hits,
     flatCorpus: async (limit) => {
       seen.push(limit);
       const size = limit ?? 0;
@@ -4531,6 +4537,7 @@ test("HTTP memory search keeps the backend page size when no limit is named", as
     authorizeScope: () => {},
     namespacesEnabled: false,
     isExcluded: () => false,
+    filterPrivate: async (hits) => hits,
     flatCorpus: async (limit) => {
       seen.push(limit);
       const size = limit ?? 6;
@@ -4558,6 +4565,7 @@ test("HTTP memory search still tops up a thinned default page", async () => {
     authorizeScope: () => {},
     namespacesEnabled: false,
     isExcluded: (memoryPath) => memoryPath.startsWith("artifacts/"),
+    filterPrivate: async (hits) => hits,
     flatCorpus: async (limit) => {
       seen.push(limit);
       const size = limit ?? 6;
@@ -4605,6 +4613,7 @@ test("search keeps archived memories but still excludes the dedicated surfaces",
     authorizeScope: () => {},
     namespacesEnabled: false,
     isExcluded: (memoryPath) => isSearchExcludedPath(memoryPath),
+    filterPrivate: async (hits) => hits,
     flatCorpus: async () => [
       { path: "archive/2026-01/fact-1.md", score: 0.9, snippet: "archived" },
       { path: "artifacts/report.md", score: 0.8, snippet: "artifact" },
@@ -4709,6 +4718,7 @@ test("search keeps paging while the backend page is full of excluded hits", asyn
       limits.push(limit);
       return corpus.slice(0, limit ?? corpus.length);
     },
+    filterPrivate: async (hits) => hits,
     isExcluded: (memoryPath) => memoryPath.startsWith("artifacts/"),
   });
   assert.equal(results.length, 50, "the memories behind the excluded block are returned");
@@ -4732,6 +4742,7 @@ test("a budget above the backend cap still gets the rows it asked for", async ()
     budget: 30_000,
     sendInitialLimit: true,
     search: async (limit) => corpus.slice(0, limit ?? corpus.length),
+    filterPrivate: async (hits) => hits,
     isExcluded: (memoryPath) => memoryPath.startsWith("artifacts/"),
   });
   assert.equal(results.length, 30_000, "the excluded hit was replaced, not subtracted");

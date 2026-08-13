@@ -110,6 +110,7 @@ import {
   memorySearchThroughScope,
 } from "./access-memory-search-fanout.js";
 import { isSearchExcludedPath } from "./orchestration/generic-recall-paths.js";
+import { isSupportPassportPrivateMemory, SUPPORT_PASSPORT_AUDIT_TAG, SUPPORT_PASSPORT_CARD_TAG } from "./support-passport/card-projection.js";
 import {
   buildQualityScore,
   buildProposedActions,
@@ -3000,9 +3001,7 @@ export class EngramAccessService {
     const resolvedNamespace = this.resolveReadableNamespace(namespace, principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     const memory = await storage.getMemoryById(resolvedId);
-    if (!memory) {
-      return { found: false, namespace: resolvedNamespace };
-    }
+    if (!memory || isSupportPassportPrivateMemory(memory)) return { found: false, namespace: resolvedNamespace };
     return {
       found: true,
       namespace: resolvedNamespace,
@@ -3371,6 +3370,7 @@ export class EngramAccessService {
       query,
       status: statusFilter,
       category: categoryFilter,
+      excludeTags: [SUPPORT_PASSPORT_CARD_TAG, SUPPORT_PASSPORT_AUDIT_TAG],
       sort,
       limit,
       offset,
@@ -3389,6 +3389,7 @@ export class EngramAccessService {
 
     let memories = [...await storage.readAllMemories(), ...await storage.readArchivedMemories()];
     memories = memories.filter((memory) => {
+      if (isSupportPassportPrivateMemory(memory)) return false;
       const status = inferMemoryStatus(memory.frontmatter, toMemoryPathRel(storage.dir, memory.path)).toLowerCase();
       if (statusFilter && status !== statusFilter) return false;
       if (categoryFilter && memory.frontmatter.category.toLowerCase() !== categoryFilter) return false;
@@ -3427,6 +3428,9 @@ export class EngramAccessService {
   ): Promise<EngramAccessTimelineResponse> {
     const resolvedNamespace = this.resolveReadableNamespace(namespace, principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
+    const tags = (await storage.getProjectedMemoryState(memoryId))?.tags;
+    if (tags?.includes(SUPPORT_PASSPORT_CARD_TAG) || tags?.includes(SUPPORT_PASSPORT_AUDIT_TAG))
+      return { found: false, namespace: resolvedNamespace, count: 0, timeline: [] };
     const timeline = await storage.getMemoryTimeline(memoryId, limit);
     return {
       found: timeline.length > 0,
@@ -4705,8 +4709,6 @@ export class EngramAccessService {
       expectedGuidelineVersion: request.expectedGuidelineVersion,
     });
   }
-  // ── Memory search & debug ─────────────────────────────────────────────
-
   async memorySearch(request: {
     query: string;
     namespace?: string;
@@ -4736,9 +4738,8 @@ export class EngramAccessService {
             { ...config, requestedCollection: request.collection?.trim() || undefined },
             "qmd",
           ),
-        authorizeFlatCorpus: (namespace, principal) => {
-          this.resolveReadableNamespace(namespace, principal);
-        },
+        filterPrivate: this.orchestrator.filterPrivateSearchResults,
+        authorizeFlatCorpus: (namespace, principal) => void this.resolveReadableNamespace(namespace, principal),
         authorizeNamespaces: async (namespace, principal, collection) =>
           this.resolveMemorySearchNamespacesForCollection(
             collection,

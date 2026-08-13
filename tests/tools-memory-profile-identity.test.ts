@@ -116,6 +116,7 @@ function buildHarness(overrides?: {
       namespaceSearchCalls.push(params);
       return overrides?.searchAcrossNamespaces?.(params) ?? [];
     },
+    filterPrivateSearchResults: async (results: unknown[]) => results,
   };
 
   registerTools(api as any, orchestrator as any);

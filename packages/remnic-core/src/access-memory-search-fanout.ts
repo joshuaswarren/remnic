@@ -299,6 +299,7 @@ export async function searchWithGenericExclusion<TResult extends { path: string 
    */
   sendInitialLimit: boolean;
   search(limit: number | undefined): Promise<TResult[]>;
+  filterPrivate(results: TResult[]): Promise<TResult[]>;
   isExcluded(memoryPath: string): boolean;
 }): Promise<TResult[]> {
   const { budget } = options;
@@ -313,7 +314,8 @@ export async function searchWithGenericExclusion<TResult extends { path: string 
   let firstPage = true;
   for (;;) {
     const raw = await options.search(limit);
-    results = raw.filter((hit) => !options.isExcluded(hit.path));
+    const privateVisible = await options.filterPrivate(raw);
+    results = privateVisible.filter((hit) => !options.isExcluded(hit.path));
     if (firstPage) {
       firstPage = false;
       if (!options.sendInitialLimit) target = Math.min(budget, raw.length);
@@ -358,6 +360,9 @@ export async function runScopedMemorySearch(options: {
   mode?: "search" | "hybrid" | "bm25" | "vector";
   namespacesEnabled: boolean;
   isExcluded(memoryPath: string): boolean;
+  filterPrivate(
+    results: Array<{ path: string; score: number; snippet?: string }>,
+  ): Promise<Array<{ path: string; score: number; snippet?: string }>>;
   flatCorpus(
     limit: number | undefined,
   ): Promise<Array<{ path: string; score: number; snippet?: string }>>;
@@ -370,6 +375,7 @@ export async function runScopedMemorySearch(options: {
     budget: options.budget,
     sendInitialLimit: options.sendInitialLimit,
     isExcluded: options.isExcluded,
+    filterPrivate: options.filterPrivate,
     search: (limit) =>
       options.namespacesEnabled ? options.namespaced(limit) : options.flatCorpus(limit),
   });
@@ -385,6 +391,10 @@ export interface ScopedMemorySearchDeps {
   namespacesEnabled: boolean;
   defaultBudget: number;
   isExcluded(memoryPath: string): boolean;
+  filterPrivate(
+    results: Array<{ path: string; score: number; snippet?: string }>,
+    namespaces: readonly string[],
+  ): Promise<Array<{ path: string; score: number; snippet?: string }>>;
   /** Flat-corpus authorization; throws when the namespace is unreadable. */
   authorizeFlatCorpus(namespace: string | undefined, principal: string | undefined): void;
   /** Namespace-aware authorization; throws, else returns the search fan-out. */
@@ -441,6 +451,7 @@ export async function memorySearchThroughScope(
     query, collection, mode,
     namespacesEnabled: deps.namespacesEnabled,
     isExcluded: deps.isExcluded,
+    filterPrivate: (results) => deps.filterPrivate(results, searchNamespaces),
     budget: maxResults ?? deps.defaultBudget,
     sendInitialLimit: maxResults !== undefined,
     authorizeScope: async () => {

@@ -1116,6 +1116,9 @@ export class Orchestrator {
     return this.storageRouter.storageFor(ns);
   }
 
+  filterPrivateSearchResults = (results: QmdSearchResult[], namespaces: readonly string[] = []) =>
+    this.qmdResultResolver.filterPrivateSearchResults(results, this.storage, namespaces);
+
   private configuredNamespaceList(): string[] {
     // #1521: delegates to the scope-module resolver. The inline derivation is
     // retired so the adHocNamespaceResolutions ratchet no longer counts this
@@ -3783,14 +3786,6 @@ export class Orchestrator {
       })
       .filter((id): id is string => id !== null);
   }
-
-  // ---------------------------------------------------------------------------
-  // Contradiction Detection (Phase 2B)
-  // ---------------------------------------------------------------------------
-
-  // ---------------------------------------------------------------------------
-  // Feedback (v2.2)
-  // ---------------------------------------------------------------------------
 
   async recordMemoryFeedback(
     memoryId: string,

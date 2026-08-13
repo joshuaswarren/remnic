@@ -3,6 +3,7 @@ import { canReadNamespace, defaultNamespaceForPrincipal, resolvePrincipal } from
 import type { MemoryFile, PluginConfig } from "./types.js";
 import { collapseWhitespace, truncateCodePointSafe } from "./whitespace.js";
 import { isHandleToken } from "./recall-handles.js";
+import { isSupportPassportPrivateMemory } from "./support-passport/card-projection.js";
 
 export interface ActiveMemoryMetadata {
   type?: "fact" | "preference";
@@ -42,6 +43,10 @@ interface ActiveMemoryScopedOrchestrator {
   config?: PluginConfig;
   resolvePrincipal?: (sessionKey?: string) => string | undefined;
   resolveSelfNamespace?: (sessionKey?: string) => string;
+  getStorageForNamespace?: (namespace?: string) => Promise<{
+    readMemoryByPath?: (path: string) => Promise<MemoryFile | null>;
+    getMemoryById?: (id: string) => Promise<MemoryFile | null>;
+  }>;
 }
 
 type ActiveMemorySearchCandidate = {
@@ -55,6 +60,20 @@ type ActiveMemorySearchCandidate = {
 
 function isArtifactPath(value: string | undefined): boolean {
   return typeof value === "string" && /(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(value);
+}
+
+async function isVisibleActiveMemoryCandidate(
+  storage: Awaited<ReturnType<NonNullable<ActiveMemoryScopedOrchestrator["getStorageForNamespace"]>>> | undefined,
+  candidate: ActiveMemorySearchCandidate,
+): Promise<boolean> {
+  if (isArtifactPath(candidate.path)) return false;
+  if (!storage) return true;
+  const memory = typeof candidate.path === "string"
+    ? await storage.readMemoryByPath?.(candidate.path)
+    : typeof candidate.id === "string"
+      ? await storage.getMemoryById?.(candidate.id)
+      : null;
+  return memory ? !isSupportPassportPrivateMemory(memory) : true;
 }
 
 function clampLimit(value: number | undefined): number {
@@ -127,6 +146,7 @@ export async function recallForActiveMemory(
     config?: PluginConfig;
     resolvePrincipal?: (sessionKey?: string) => string | undefined;
     resolveSelfNamespace?: (sessionKey?: string) => string;
+    getStorageForNamespace?: ActiveMemoryScopedOrchestrator["getStorageForNamespace"];
     searchAcrossNamespaces: (params: {
       query: string;
       maxResults?: number;
@@ -154,7 +174,11 @@ export async function recallForActiveMemory(
     namespaces: [namespace],
     mode: "search",
   });
-  const visible = raw.filter((candidate) => !isArtifactPath(candidate.path));
+  const storage = await orchestrator.getStorageForNamespace?.(namespace);
+  const visibility = await Promise.all(
+    raw.map((candidate) => isVisibleActiveMemoryCandidate(storage, candidate)),
+  );
+  const visible = raw.filter((_candidate, index) => visibility[index] === true);
 
   return {
     results: visible.slice(0, limit).map((candidate, index) => ({
@@ -231,7 +255,7 @@ export async function getMemoryForActiveMemory(
     }
   }
   const memory = await storage?.getMemoryById?.(resolvedId);
-  if (!memory) return { error: "not_found" };
+  if (!memory || isSupportPassportPrivateMemory(memory)) return { error: "not_found" };
   return {
     id: resolvedId,
     text: collapseWhitespace(memory.content),

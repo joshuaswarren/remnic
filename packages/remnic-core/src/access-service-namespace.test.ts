@@ -71,6 +71,9 @@ function makeService(): {
         maxResults?: number;
         mode?: string;
       }): Promise<unknown[]>;
+      filterPrivateSearchResults(
+        results: Array<{ path: string; score: number; snippet?: string }>,
+      ): Promise<Array<{ path: string; score: number; snippet?: string }>>;
     };
   }).orchestrator = {
     config: makeConfig(),
@@ -91,6 +94,9 @@ function makeService(): {
     },
     async searchAcrossNamespaces() {
       return [];
+    },
+    async filterPrivateSearchResults(results) {
+      return results;
     },
   };
 
@@ -1688,6 +1694,7 @@ function makeServiceWithConfig(config: PluginConfig): {
       mode?: string;
       execution?: unknown;
     }): Promise<unknown[]>;
+    filterPrivateSearchResults(results: unknown[]): Promise<unknown[]>;
   };
   const orchestrator: OrchLike = {
     config,
@@ -1701,6 +1708,7 @@ function makeServiceWithConfig(config: PluginConfig): {
       captured.execution = params.execution;
       return [];
     },
+    async filterPrivateSearchResults(results) { return results; },
   };
   (service as unknown as { orchestrator: OrchLike }).orchestrator = orchestrator;
   return { service, captured };

@@ -13,6 +13,17 @@ import {
 } from "./contracts.js";
 
 export const SUPPORT_PASSPORT_CARD_TAG = "support-passport-card";
+export const SUPPORT_PASSPORT_AUDIT_TAG = "support-passport-audit";
+
+export function isSupportPassportPrivateMemory(
+  memory: Pick<MemoryFile, "frontmatter">
+): boolean {
+  const tags = memory.frontmatter.tags;
+  return (
+    tags?.includes(SUPPORT_PASSPORT_CARD_TAG) === true ||
+    tags?.includes(SUPPORT_PASSPORT_AUDIT_TAG) === true
+  );
+}
 export const SUPPORT_PASSPORT_ATTRIBUTE_KEYS = Object.freeze({
   namespace: "support-passport-namespace",
   owner: "support-passport-owner",
