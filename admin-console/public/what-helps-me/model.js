@@ -401,6 +401,16 @@
     return difference === 0;
   }
 
+  function hasMatchingTransitionIntent(cardText, question) {
+    const intents = [
+      /\bplans?\b/i,
+      /\bschedul(?:e|es|ed|ing)\b/i,
+      /\broutines?\b/i,
+      /\b(?:changes|transitions?|transitioning)\b/i,
+    ];
+    return intents.some((intent) => intent.test(cardText) && intent.test(question));
+  }
+
   function createReplayStore(now = () => new Date()) {
     let cards = [];
     let grants = [];
@@ -609,9 +619,9 @@
         const transitionCard = guide.cards.find(
           (card) =>
             card.category === "transitions" &&
-            /\b(?:plans?|schedules?|routines?|changes?|transitions?)\b/i.test(`${card.title} ${card.statement}`)
+            hasMatchingTransitionIntent(`${card.title} ${card.statement}`, question)
         );
-        if (transitionCard && /\b(?:plans?|schedules?|routines?|transitions?)\b/i.test(question)) {
+        if (transitionCard) {
           return {
             answer: transitionCard.statement,
             citedCardIds: [transitionCard.cardId],
