@@ -13,10 +13,12 @@ import { computeSupportPassportOwnerLockKey, supportPassportOwnerLockPath } from
 import { SupportPassportGrantService } from "./grant-service.js";
 import { SupportPassportGrantStore, syncDirectoryForDurability } from "./grant-store.js";
 import {
-  canonicalizePrivateDirectoryTarget,
   ensurePrivateDirectoryNoFollow,
   ensurePrivateDirectoryTreeNoFollow,
+  readPrivateFileNoFollow,
+  removePrivateFilesNoFollow,
   requirePrivateFileDescriptorRoot,
+  writePrivateFileAtomicallyNoFollow,
 } from "./private-file.js";
 
 async function makeSubject() {
@@ -1806,17 +1808,55 @@ test("private directory tree creation rejects a symlink in the ancestor chain", 
   }
 });
 
-test("configured private directory targets resolve existing symlink aliases once", async () => {
+test("the grant store rejects a symlink alias in the configured memory root", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-private-root-alias-"));
   try {
     const actual = path.join(root, "actual");
     const alias = path.join(root, "alias");
     await mkdir(actual);
     await symlink(actual, alias);
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({
+      memoryDir: path.join(alias, "memory"),
+      now: () => now,
+    });
 
-    assert.equal(
-      await canonicalizePrivateDirectoryTarget(path.join(alias, "new-parent", "memory")),
-      path.join(actual, "new-parent", "memory")
+    await assert.rejects(
+      store.create({
+        namespace: "alice",
+        principal: "owner:alice",
+        cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+        expiresAt: new Date(now.getTime() + 300_000).toISOString(),
+      }),
+      /memory directory must be a stable directory/,
+    );
+    assert.deepEqual(await readdir(actual), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the Windows private-file strategy writes, reads, and removes a private file", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-private-win32-"));
+  try {
+    const directory = path.join(root, "state", "support-passport", "grants");
+    const filePath = path.join(directory, "grant.json");
+    const errorMessage = "private Windows file operation failed";
+    await ensurePrivateDirectoryNoFollow(root, directory, errorMessage, undefined, true, "win32");
+    await writePrivateFileAtomicallyNoFollow(
+      directory,
+      filePath,
+      '{"ok":true}\n',
+      errorMessage,
+      root,
+      "win32",
+    );
+
+    assert.equal(await readPrivateFileNoFollow(directory, filePath, errorMessage, root, "win32"), '{"ok":true}\n');
+    await removePrivateFilesNoFollow(directory, ["grant.json"], errorMessage, root, "win32");
+    await assert.rejects(
+      readPrivateFileNoFollow(directory, filePath, errorMessage, root, "win32"),
+      (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT",
     );
   } finally {
     await rm(root, { recursive: true, force: true });

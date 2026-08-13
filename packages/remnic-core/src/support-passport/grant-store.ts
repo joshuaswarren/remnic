@@ -16,7 +16,6 @@ import {
   SupportPassportGrantStateSchema,
 } from "./grant-contracts.js";
 import {
-  canonicalizePrivateDirectoryTarget,
   ensurePrivateDirectoryNoFollow,
   ensurePrivateDirectoryTreeNoFollow,
   readPrivateFileNoFollow,
@@ -407,7 +406,7 @@ export class SupportPassportGrantStore {
       this.grantsDir,
       grantIds.map((grantId) => `${grantId}.json`),
       "support passport grant files must be regular files in a stable directory",
-      this.memoryDir
+      this.memoryDir,
     );
   }
 
@@ -424,7 +423,7 @@ export class SupportPassportGrantStore {
         this.ownerIndexesDir,
         filePath,
         "support passport owner indexes must be regular files in a stable directory",
-        this.memoryDir
+        this.memoryDir,
       );
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
@@ -465,7 +464,7 @@ export class SupportPassportGrantStore {
       filePath,
       `${JSON.stringify({ schemaVersion: 1, ownerHash, grantIds }, null, 2)}\n`,
       "support passport owner indexes must be regular files in a stable directory",
-      this.memoryDir
+      this.memoryDir,
     );
   }
 
@@ -476,7 +475,7 @@ export class SupportPassportGrantStore {
       this.grantsDir,
       filePath,
       "support passport grant files must be regular files in a stable directory",
-      this.memoryDir
+      this.memoryDir,
     );
     const state = SupportPassportGrantStateSchema.parse(JSON.parse(content));
     if (state.grantId !== grantId) throw new Error("support passport grant ID must match its file name");
@@ -500,7 +499,7 @@ export class SupportPassportGrantStore {
       filePath,
       `${JSON.stringify(state, null, 2)}\n`,
       "support passport grant files must be regular files in a stable directory",
-      this.memoryDir
+      this.memoryDir,
     );
   }
 
@@ -511,7 +510,9 @@ export class SupportPassportGrantStore {
         await ensurePrivateDirectoryNoFollow(
           this.memoryDir,
           this.ownerIndexesDir,
-          "support passport grant directories must remain inside the memory directory"
+          "support passport grant directories must remain inside the memory directory",
+          undefined,
+          true,
         );
       })();
     }
@@ -528,13 +529,13 @@ export class SupportPassportGrantStore {
     if (!this.memoryRootReady) {
       const configuredMemoryDir = this.memoryDir;
       this.memoryRootReady = (async () => {
-        const canonicalMemoryDir = await canonicalizePrivateDirectoryTarget(configuredMemoryDir);
         await ensurePrivateDirectoryTreeNoFollow(
-          canonicalMemoryDir,
-          "support passport memory directory must be a stable directory"
+          configuredMemoryDir,
+          "support passport memory directory must be a stable directory",
+          undefined,
         );
-        this.memoryDir = canonicalMemoryDir;
-        this.grantsDir = path.join(canonicalMemoryDir, "state", "support-passport", "grants");
+        this.memoryDir = configuredMemoryDir;
+        this.grantsDir = path.join(configuredMemoryDir, "state", "support-passport", "grants");
         this.ownerIndexesDir = path.join(this.grantsDir, "owners");
       })();
     }
@@ -558,7 +559,7 @@ export class SupportPassportGrantStore {
           `support-passport-grants:${this.grantsDir}`,
           path.join(pinnedDirectory, ".grants.lock"),
           task
-        )
+        ),
     );
   }
 
@@ -574,7 +575,7 @@ export class SupportPassportGrantStore {
           `support-passport-grant:${this.grantsDir}:${normalizedGrantId}`,
           path.join(pinnedDirectory, `.${normalizedGrantId}.lock`),
           task
-        )
+        ),
     );
   }
 
