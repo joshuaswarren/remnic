@@ -1,14 +1,14 @@
 import {
-  acceptsSupportPassportModelResponse,
-  parseSupportPassportModelJob,
   SUPPORT_PASSPORT_MODEL_JOB_PATH,
   SUPPORT_PASSPORT_MODEL_RESULT_PATH,
   type SupportPassportModelRoute,
   type SupportPassportModelRouteResult,
+  acceptsSupportPassportModelResponse,
+  parseSupportPassportModelJob,
 } from "@remnic/core";
 import { log } from "@remnic/core/logger";
 
-import { daemonUrl, type DelegateDaemonTarget } from "./bridge.js";
+import { type DelegateDaemonTarget, daemonUrl } from "./bridge.js";
 import { reportDaemonAuthorizationFailure } from "./delegate-authorization.js";
 
 export interface DelegateSupportPassportModelService {
@@ -27,6 +27,7 @@ export interface DelegateSupportPassportModelOptions {
 const MODEL_WORKER_COUNT = 4;
 const DEFAULT_REQUEST_TIMEOUT_MS = 25_000;
 const RESULT_REQUEST_TIMEOUT_MS = 5_000;
+const RESULT_RETRY_DELAY_MS = 1_000;
 
 async function post(
   target: DelegateDaemonTarget,
@@ -34,7 +35,7 @@ async function post(
   pathname: string,
   body: unknown,
   signal: AbortSignal,
-  timeoutMs: number,
+  timeoutMs: number
 ): Promise<Response> {
   const auth = target.resolveAuthToken();
   const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
@@ -67,7 +68,7 @@ function abortableRetryDelay(signal: AbortSignal): Promise<void> {
 }
 
 export function createDelegateSupportPassportModelService(
-  options: DelegateSupportPassportModelOptions,
+  options: DelegateSupportPassportModelOptions
 ): DelegateSupportPassportModelService {
   let controller: AbortController | undefined;
   let worker: Promise<void> | undefined;
@@ -77,7 +78,7 @@ export function createDelegateSupportPassportModelService(
   }
   const invoke = async (
     job: NonNullable<ReturnType<typeof parseSupportPassportModelJob>>,
-    signal: AbortSignal,
+    signal: AbortSignal
   ): Promise<SupportPassportModelRouteResult | null> => {
     const timeoutSignal = AbortSignal.timeout(job.timeoutMs);
     const modelSignal = AbortSignal.any([signal, timeoutSignal]);
@@ -114,16 +115,39 @@ export function createDelegateSupportPassportModelService(
   const complete = async (
     job: NonNullable<ReturnType<typeof parseSupportPassportModelJob>>,
     result: SupportPassportModelRouteResult | null,
+    deadlineAt: number
   ): Promise<void> => {
-    const completion = await post(
-      options.target,
-      options.serviceId,
-      SUPPORT_PASSPORT_MODEL_RESULT_PATH,
-      { id: job.id, result },
-      AbortSignal.timeout(RESULT_REQUEST_TIMEOUT_MS),
-      RESULT_REQUEST_TIMEOUT_MS,
-    );
-    await completion.body?.cancel();
+    let lastFailure = "the job deadline elapsed";
+    while (Date.now() < deadlineAt) {
+      const remainingMs = deadlineAt - Date.now();
+      const deadlineSignal = AbortSignal.timeout(remainingMs);
+      let completion: Response;
+      try {
+        completion = await post(
+          options.target,
+          options.serviceId,
+          SUPPORT_PASSPORT_MODEL_RESULT_PATH,
+          { id: job.id, result },
+          deadlineSignal,
+          Math.min(RESULT_REQUEST_TIMEOUT_MS, remainingMs)
+        );
+      } catch (error) {
+        lastFailure = String(error);
+        const retryDelayMs = Math.min(RESULT_RETRY_DELAY_MS, deadlineAt - Date.now());
+        if (retryDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+        continue;
+      }
+      const status = completion.status;
+      await completion.body?.cancel();
+      if (completion.ok) return;
+      if (status !== 408 && status !== 425 && status !== 429 && status < 500) {
+        throw new Error(`delegate support passport model completion was rejected with HTTP ${status}`);
+      }
+      lastFailure = `HTTP ${status}`;
+      const retryDelayMs = Math.min(RESULT_RETRY_DELAY_MS, deadlineAt - Date.now());
+      if (retryDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+    }
+    throw new Error(`delegate support passport model completion missed its deadline after ${lastFailure}`);
   };
   const runPoller = async (signal: AbortSignal): Promise<void> => {
     while (!signal.aborted) {
@@ -134,7 +158,7 @@ export function createDelegateSupportPassportModelService(
           SUPPORT_PASSPORT_MODEL_JOB_PATH,
           { timeoutMs: 20_000 },
           signal,
-          requestTimeoutMs,
+          requestTimeoutMs
         );
         if (response.status === 204) continue;
         if (!response.ok) {
@@ -147,8 +171,9 @@ export function createDelegateSupportPassportModelService(
           log.warn("delegate support passport model bridge received an invalid job");
           continue;
         }
+        const deadlineAt = Date.now() + job.timeoutMs;
         try {
-          await complete(job, await invoke(job, signal));
+          await complete(job, await invoke(job, signal), deadlineAt);
         } catch (error) {
           log.warn(`delegate support passport model completion failed: ${String(error)}`);
         }

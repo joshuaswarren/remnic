@@ -1,10 +1,10 @@
 import {
   EngramAccessService,
-  SupportPassportModelBridge,
-  composeSupportPassportExternalRequestHandlers,
   type Orchestrator,
   type PluginConfig,
   type SupportPassportExternalRequestHandler,
+  SupportPassportModelBridge,
+  composeSupportPassportExternalRequestHandlers,
 } from "@remnic/core";
 
 export interface SupportPassportServerRuntime {
@@ -16,20 +16,14 @@ export interface SupportPassportServerRuntime {
 export function createSupportPassportServerRuntime(
   orchestrator: Orchestrator,
   config: PluginConfig,
-  fallbackHandler?: SupportPassportExternalRequestHandler,
+  fallbackHandler?: SupportPassportExternalRequestHandler
 ): SupportPassportServerRuntime {
-  const bridge =
-    config.supportPassport.enabled && config.modelSource === "gateway"
-      ? new SupportPassportModelBridge()
-      : null;
+  const bridge = config.supportPassport.enabled ? new SupportPassportModelBridge() : null;
   return {
     service: new EngramAccessService(orchestrator, {
       supportPassportGatewayRoute: bridge?.route,
     }),
-    externalRequestHandler: composeSupportPassportExternalRequestHandlers(
-      bridge?.requestHandler,
-      fallbackHandler,
-    ),
+    externalRequestHandler: composeSupportPassportExternalRequestHandlers(bridge?.requestHandler, fallbackHandler),
     close: () => bridge?.close(),
   };
 }
