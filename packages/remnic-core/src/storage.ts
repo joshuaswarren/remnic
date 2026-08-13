@@ -6645,6 +6645,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return memories.find((m) => m.frontmatter.id === id) ?? null;
   }
 
+  async getMemoryByIdIncludingArchived(id: string): Promise<MemoryFile | null> {
+    const active = await this.getMemoryById(id);
+    if (active) return active;
+    return (await this.readArchivedMemories()).find((memory) => memory.frontmatter.id === id) ?? null;
+  }
+
   /**
    * Resolve existing active memory IDs to their on-disk paths.
    *

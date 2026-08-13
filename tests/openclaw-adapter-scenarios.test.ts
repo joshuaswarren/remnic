@@ -180,6 +180,13 @@ test("scenario: memory_store writes through the registered tool and memory_searc
         },
       ];
     };
+    orchestrator.filterPrivateSearchResults = async (results: unknown[]) => results;
+    orchestrator.getStorageForNamespace = async () => ({
+      getMemoryById: async () => ({
+        content: "The user prefers compact dashboards for operational tools.",
+        frontmatter: { tags: ["scenario"] },
+      }),
+    });
 
     const search = registeredTool(capture, "memory_search");
     const searchResult = await search.execute(
@@ -229,6 +236,7 @@ test("scenario: native corpus supplement searches and reads Remnic memory", asyn
         },
       ];
     };
+    orchestrator.filterPrivateSearchResults = async (results: unknown[]) => results;
 
     const searchResults = await corpus!.search({
       query: "compact dashboards",
@@ -301,6 +309,20 @@ test("scenario: native corpus supplement searches and reads Remnic memory", asyn
     ];
     assert.equal(await corpus!.get({ lookup: "artifact-by-id" }), null);
 
+    orchestrator.storage.readAllMemories = async () => [
+      {
+        path: path.join(memoryDir, "preferences", "private-card.md"),
+        frontmatter: {
+          id: "private-card",
+          category: "preference",
+          tags: ["support-passport-card"],
+          updated: "2026-05-04T12:00:00.000Z",
+        },
+        content: "owner-controlled support text",
+      },
+    ];
+    assert.equal(await corpus!.get({ lookup: "private-card" }), null);
+
     orchestrator.searchAcrossNamespaces = async () => {
       throw new Error("search unavailable");
     };
@@ -315,6 +337,49 @@ test("scenario: native corpus supplement searches and reads Remnic memory", asyn
     await assert.rejects(
       corpus!.get({ lookup: "facts/dashboard.md" }),
       /Remnic corpus get failed: store locked/,
+    );
+  });
+});
+
+test("scenario: compatibility memory runtime excludes private support-passport records", async () => {
+  await withScenarioRegistration(async ({ capture, orchestrator, memoryDir }) => {
+    const runtime = capture.registrations("registerMemoryRuntime")[0]?.[0] as
+      | {
+          getMemorySearchManager(params: {
+            cfg: unknown;
+            agentId: string;
+          }): Promise<{
+            manager: {
+              search(query: string): Promise<Array<{ citation: string }>>;
+              readFile(params: { relPath: string }): Promise<{ text: string }>;
+            };
+          }>;
+        }
+      | undefined;
+    assert.equal(typeof runtime?.getMemorySearchManager, "function");
+
+    const preferencesDir = path.join(memoryDir, "preferences");
+    fs.mkdirSync(preferencesDir, { recursive: true });
+    fs.writeFileSync(path.join(preferencesDir, "private-card.md"), "private support text\n");
+    fs.writeFileSync(path.join(preferencesDir, "safe.md"), "safe preference\n");
+
+    orchestrator.searchAcrossNamespaces = async () => [
+      { id: "private-card", path: "preferences/private-card.md", snippet: "private support text", score: 0.9 },
+      { id: "safe", path: "preferences/safe.md", snippet: "safe preference", score: 0.8 },
+    ];
+    orchestrator.filterPrivateSearchResults = async (results: Array<{ path: string }>) =>
+      results.filter((result) => !result.path.includes("private-card.md"));
+
+    const { manager } = await runtime!.getMemorySearchManager({ cfg: {}, agentId: "generalist" });
+    const results = await manager.search("support");
+    assert.deepEqual(results.map((result) => result.citation), ["preferences/safe.md"]);
+    assert.match(
+      await manager.readFile({ relPath: "preferences/safe.md" }).then((result) => result.text),
+      /safe preference/,
+    );
+    await assert.rejects(
+      manager.readFile({ relPath: "preferences/private-card.md" }),
+      /memory read excluded \(private record\)/,
     );
   });
 });

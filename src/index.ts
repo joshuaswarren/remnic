@@ -107,6 +107,7 @@ import {
 import { planRecallMode } from "@remnic/core/intent";
 import {
   expandTildePath,
+  isSupportPassportPrivateMemory,
   renderMemoryContextPrompt as renderSharedMemoryContextPrompt,
   resolveAgentAccessAuthToken,
   resolvePrincipal,
@@ -3542,7 +3543,11 @@ const pluginDefinition = {
                 // surfaces (see recallForActiveMemory in @remnic/core),
                 // so exclude them here too — otherwise this runtime path
                 // would bypass the isolation every other reader honors.
-                return rawResults
+                const visibleResults = await orchestrator.filterPrivateSearchResults(
+                  rawResults,
+                  namespace ? [namespace] : [],
+                );
+                return visibleResults
                   .filter((result) => {
                     const candidate = result as unknown as {
                       path?: string;
@@ -3618,6 +3623,15 @@ const pluginDefinition = {
               async readFile(params: RuntimeReadParams) {
                 const requestedPath = readScope.normalizeWorkspacePath(params.relPath);
                 const absolutePath = await readScope.resolveReadablePath(params.relPath);
+                const visible = await orchestrator.filterPrivateSearchResults([{
+                  docid: absolutePath,
+                  path: absolutePath,
+                  snippet: "",
+                  score: 0,
+                }]);
+                if (visible.length === 0) {
+                  throw new Error(`memory read excluded (private record): ${params.relPath}`);
+                }
                 const text = await readTextFileLater(absolutePath);
                 const allLines = text.split(/\r?\n/);
                 const from = typeof params.from === "number" ? Math.max(1, Math.floor(params.from)) : 1;
@@ -4881,7 +4895,11 @@ const pluginDefinition = {
               namespaces: namespace ? [namespace] : undefined,
               mode: "search",
             });
-            return rawResults
+            const visibleResults = await orchestrator.filterPrivateSearchResults(
+              rawResults,
+              namespace ? [namespace] : [],
+            );
+            return visibleResults
               .filter((result) => {
                 const candidate = result as unknown as { path?: string; id?: string };
                 const p =
@@ -4970,7 +4988,11 @@ const pluginDefinition = {
             const resolved = await readMemoryByLookup(lookup, agentSessionKey);
             if (!resolved) return null;
             const { memory, displayPath } = resolved;
-            if (isMemoryArtifactPath(displayPath) || isMemoryArtifactPath(memory.path)) {
+            if (
+              isMemoryArtifactPath(displayPath) ||
+              isMemoryArtifactPath(memory.path) ||
+              isSupportPassportPrivateMemory(memory)
+            ) {
               return null;
             }
             const allLines = memory.content.split(/\r?\n/);

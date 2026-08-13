@@ -834,7 +834,12 @@ export function readProjectedMemoryBrowse(
       whereClauses.push("category = ?");
       params.push(options.category);
     }
-    for (const tag of options.excludeTags ?? []) whereClauses.push("instr(tags_json, ?) = 0"), params.push(JSON.stringify(tag));
+    for (const tag of options.excludeTags ?? []) {
+      whereClauses.push(
+        "NOT EXISTS (SELECT 1 FROM json_each(memory_current.tags_json) AS excluded_tag WHERE excluded_tag.value = ?)",
+      );
+      params.push(tag);
+    }
     const sort = options.sort ?? "updated_desc";
     const orderBySql = (() => {
       switch (sort) {

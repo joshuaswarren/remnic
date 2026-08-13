@@ -9,6 +9,7 @@ import { EngramAccessInputError, EngramAccessService } from "../src/access-servi
 import { runMemoryGovernance } from "../src/maintenance/memory-governance.ts";
 import { rebuildMemoryProjection } from "../src/maintenance/rebuild-memory-projection.ts";
 import { getMemoryProjectionPath } from "../src/memory-projection-store.js";
+import { openBetterSqlite3 } from "../src/runtime/better-sqlite.js";
 import { getObjectiveStateStoreStatus } from "../src/objective-state.js";
 import {
   keyring,
@@ -2341,6 +2342,45 @@ test("access service browses memories, lists entities, and applies review dispos
 
     const updated = await storage.getMemoryById("fact-1");
     assert.equal(updated?.frontmatter.status, "active");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("access service hides private memory timelines when the projection is stale", { skip: skipUnlessBetterSqlite3() }, async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-access-timeline-private-"));
+  try {
+    const relativePath = "preferences/2026-03-08/passport-card.md";
+    await writeText(
+      memoryDir,
+      relativePath,
+      memoryDoc("passport-card", "Owner-controlled support text.", ['tags: ["support-passport-card"]']),
+    );
+    await rebuildMemoryProjection({ memoryDir, dryRun: false });
+    const projection = openBetterSqlite3(getMemoryProjectionPath(memoryDir));
+    try {
+      projection.prepare("UPDATE memory_current SET tags_json = ? WHERE memory_id = ?")
+        .run('["public"]', "passport-card");
+    } finally {
+      projection.close();
+    }
+
+    const storage = new StorageManager(memoryDir);
+    const service = new EngramAccessService({
+      config: {
+        memoryDir,
+        namespacesEnabled: false,
+        defaultNamespace: "global",
+      },
+      getStorage: async () => storage,
+    } as any);
+
+    assert.deepEqual(await service.memoryTimeline("passport-card"), {
+      found: false,
+      namespace: "global",
+      count: 0,
+      timeline: [],
+    });
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

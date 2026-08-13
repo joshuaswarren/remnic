@@ -238,8 +238,6 @@ import { expandTildePath } from "./utils/path.js";
 import { RECALL_FALLBACK_DIRS } from "./utils/category-dir.js";
 import {
   isSupportPassportPrivateMemory,
-  SUPPORT_PASSPORT_AUDIT_TAG,
-  SUPPORT_PASSPORT_CARD_TAG,
 } from "./support-passport/card-projection.js";
 import { assertPathInsideRoot } from "./utils/path-containment.js";
 import { convertMemoriesToRecords } from "./training-export/converter.js";
@@ -1071,11 +1069,8 @@ export async function runMemoryTimelineCliCommand(
   options: MemoryTimelineCliCommandOptions,
 ) {
   const storage = new (await import("./storage.js")).StorageManager(options.memoryDir);
-  const current = await storage.getProjectedMemoryState(options.memoryId);
-  if (current && (
-    current.tags?.includes(SUPPORT_PASSPORT_CARD_TAG) === true ||
-    current.tags?.includes(SUPPORT_PASSPORT_AUDIT_TAG) === true
-  )) return [];
+  const memory = await storage.getMemoryByIdIncludingArchived(options.memoryId);
+  if (!memory || isSupportPassportPrivateMemory(memory)) return [];
   return storage.getMemoryTimeline(options.memoryId, options.limit);
 }
 

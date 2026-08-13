@@ -3428,8 +3428,8 @@ export class EngramAccessService {
   ): Promise<EngramAccessTimelineResponse> {
     const resolvedNamespace = this.resolveReadableNamespace(namespace, principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
-    const tags = (await storage.getProjectedMemoryState(memoryId))?.tags;
-    if (tags?.includes(SUPPORT_PASSPORT_CARD_TAG) || tags?.includes(SUPPORT_PASSPORT_AUDIT_TAG))
+    const memory = await storage.getMemoryByIdIncludingArchived(memoryId);
+    if (!memory || isSupportPassportPrivateMemory(memory))
       return { found: false, namespace: resolvedNamespace, count: 0, timeline: [] };
     const timeline = await storage.getMemoryTimeline(memoryId, limit);
     return {

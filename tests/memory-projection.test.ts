@@ -244,6 +244,7 @@ test("projected browse excludes support passport records before pagination", asy
     for (const [id, tag] of [
       ["card", "support-passport-card"],
       ["audit", "support-passport-audit"],
+      ["near-card", "support-passport-card-extra"],
       ["public", "public"],
     ] as const) {
       await writeText(
@@ -260,8 +261,8 @@ test("projected browse excludes support passport records before pagination", asy
       offset: 0,
     });
 
-    assert.equal(browse?.total, 1);
-    assert.deepEqual(browse?.memories.map((memory) => memory.id), ["public"]);
+    assert.equal(browse?.total, 2);
+    assert.deepEqual(browse?.memories.map((memory) => memory.id), ["near-card"]);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

@@ -1,6 +1,6 @@
 import { resolveNamespaceCapabilities } from "./capabilities.js";
 import { canReadNamespace, defaultNamespaceForPrincipal, resolvePrincipal } from "./namespaces/principal.js";
-import type { MemoryFile, PluginConfig } from "./types.js";
+import type { MemoryFile, PluginConfig, QmdSearchResult } from "./types.js";
 import { collapseWhitespace, truncateCodePointSafe } from "./whitespace.js";
 import { isHandleToken } from "./recall-handles.js";
 import { isSupportPassportPrivateMemory } from "./support-passport/card-projection.js";
@@ -43,10 +43,14 @@ interface ActiveMemoryScopedOrchestrator {
   config?: PluginConfig;
   resolvePrincipal?: (sessionKey?: string) => string | undefined;
   resolveSelfNamespace?: (sessionKey?: string) => string;
-  getStorageForNamespace?: (namespace?: string) => Promise<{
+  getStorageForNamespace?: (namespace: string) => Promise<{
     readMemoryByPath?: (path: string) => Promise<MemoryFile | null>;
     getMemoryById?: (id: string) => Promise<MemoryFile | null>;
   }>;
+  filterPrivateSearchResults?: (
+    results: QmdSearchResult[],
+    namespaces?: readonly string[],
+  ) => Promise<QmdSearchResult[]>;
 }
 
 type ActiveMemorySearchCandidate = {
@@ -62,18 +66,46 @@ function isArtifactPath(value: string | undefined): boolean {
   return typeof value === "string" && /(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(value);
 }
 
-async function isVisibleActiveMemoryCandidate(
+async function filterVisibleActiveMemoryCandidates(
+  orchestrator: ActiveMemoryScopedOrchestrator,
+  namespace: string,
   storage: Awaited<ReturnType<NonNullable<ActiveMemoryScopedOrchestrator["getStorageForNamespace"]>>> | undefined,
-  candidate: ActiveMemorySearchCandidate,
-): Promise<boolean> {
-  if (isArtifactPath(candidate.path)) return false;
-  if (!storage) return true;
-  const memory = typeof candidate.path === "string"
-    ? await storage.readMemoryByPath?.(candidate.path)
-    : typeof candidate.id === "string"
-      ? await storage.getMemoryById?.(candidate.id)
-      : null;
-  return memory ? !isSupportPassportPrivateMemory(memory) : true;
+  candidates: ActiveMemorySearchCandidate[],
+): Promise<ActiveMemorySearchCandidate[]> {
+  const visible = new Set<ActiveMemorySearchCandidate>();
+  const pathCandidates = candidates.filter(
+    (candidate) => typeof candidate.path === "string" && !isArtifactPath(candidate.path),
+  );
+  if (pathCandidates.length > 0 && typeof orchestrator.filterPrivateSearchResults === "function") {
+    const qmdCandidates = pathCandidates.map((candidate): QmdSearchResult => ({
+      docid: candidate.id ?? candidate.path!,
+      path: candidate.path!,
+      snippet: candidate.snippet ?? candidate.text ?? "",
+      score: typeof candidate.score === "number" ? candidate.score : 0,
+      namespace,
+    }));
+    const filtered = await orchestrator.filterPrivateSearchResults(qmdCandidates, [namespace]);
+    const visibleKeys = new Set(filtered.map((candidate) => `${candidate.docid}\0${candidate.path}`));
+    qmdCandidates.forEach((candidate, index) => {
+      if (visibleKeys.has(`${candidate.docid}\0${candidate.path}`)) visible.add(pathCandidates[index]!);
+    });
+  }
+
+  const idCandidates = candidates.filter(
+    (candidate) => candidate.path === undefined && typeof candidate.id === "string",
+  );
+  if (storage) {
+    const idVisibility = await Promise.all(
+      idCandidates.map(async (candidate) => {
+        const memory = await storage.getMemoryById?.(candidate.id!);
+        return memory !== null && memory !== undefined && !isSupportPassportPrivateMemory(memory);
+      }),
+    );
+    idCandidates.forEach((candidate, index) => {
+      if (idVisibility[index]) visible.add(candidate);
+    });
+  }
+  return candidates.filter((candidate) => visible.has(candidate));
 }
 
 function clampLimit(value: number | undefined): number {
@@ -147,6 +179,7 @@ export async function recallForActiveMemory(
     resolvePrincipal?: (sessionKey?: string) => string | undefined;
     resolveSelfNamespace?: (sessionKey?: string) => string;
     getStorageForNamespace?: ActiveMemoryScopedOrchestrator["getStorageForNamespace"];
+    filterPrivateSearchResults?: ActiveMemoryScopedOrchestrator["filterPrivateSearchResults"];
     searchAcrossNamespaces: (params: {
       query: string;
       maxResults?: number;
@@ -175,10 +208,12 @@ export async function recallForActiveMemory(
     mode: "search",
   });
   const storage = await orchestrator.getStorageForNamespace?.(namespace);
-  const visibility = await Promise.all(
-    raw.map((candidate) => isVisibleActiveMemoryCandidate(storage, candidate)),
+  const visible = await filterVisibleActiveMemoryCandidates(
+    orchestrator,
+    namespace,
+    storage,
+    raw,
   );
-  const visible = raw.filter((_candidate, index) => visibility[index] === true);
 
   return {
     results: visible.slice(0, limit).map((candidate, index) => ({
