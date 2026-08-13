@@ -27,7 +27,10 @@ import {
 import { objectiveStateStoreOverrideForNamespace } from "./objective-state.js";
 import { recordObjectiveStateSnapshotsFromAgentMessages } from "./objective-state-writers.js";
 import { probeQmdAvailability } from "./qmd-availability-probe.js";
-import { EngramAccessService } from "./access-service.js";
+import {
+  EngramAccessService,
+  createConfiguredSupportPassportGatewayRoute,
+} from "./access-service.js";
 import { EngramAccessHttpServer } from "./access-http.js";
 
 import {
@@ -75,7 +78,6 @@ import {
   maybeRegisterDelegateRuntime,
   type DelegateHookApi,
 } from "../packages/plugin-openclaw/src/delegate-runtime.js";
-import { createOpenClawSupportPassportModelRoute } from "@remnic/plugin-openclaw/support-passport-model-route";
 import {
   extractLastTurn,
   extractTextContent,
@@ -1456,13 +1458,9 @@ const pluginDefinition = {
     // Bridge mode (issue #2120): delegate skips the embedded orchestrator;
     // the plugin package owns resolution/preflight/fallback (cast widens the SDK union).
     const delegateApi = api as unknown as DelegateHookApi;
-    const delegateSupportPassportGatewayClient =
-      cfg.supportPassport.enabled && cfg.modelSource === "gateway" && cfg.gatewayConfig
-        ? new FallbackLlmClient(
-            cfg.gatewayConfig,
-            fallbackLlmRuntimeContextFromConfig(cfg),
-          )
-        : null;
+    const delegateSupportPassportGatewayRoute = cfg.supportPassport.enabled
+      ? createConfiguredSupportPassportGatewayRoute(cfg)
+      : null;
     const delegateHandled = maybeRegisterDelegateRuntime(delegateApi, {
       serviceId,
       configBridgeMode: cfg.bridgeMode,
@@ -1483,9 +1481,7 @@ const pluginDefinition = {
       shouldSkipRecall: (sk: string) => shouldSkipRecallForSession(sk, cfg),
       cwd: getOpenClawRuntimeWorkspaceDir(api),
       flushOnResetEnabled: cfg.flushOnResetEnabled,
-      supportPassportModelRoute: delegateSupportPassportGatewayClient
-        ? createOpenClawSupportPassportModelRoute(cfg, delegateSupportPassportGatewayClient)
-        : undefined,
+      supportPassportModelRoute: delegateSupportPassportGatewayRoute ?? undefined,
       // Memory-slot capability inputs. Mirrors the embedded derivation: the
       // registration-time runtime agent owns this memory, and QMD is the
       // backend only when it is both selected and enabled.

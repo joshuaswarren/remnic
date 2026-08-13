@@ -50,17 +50,17 @@ test("the model bridge moves a provider-neutral job through authenticated memory
       operation: "support-passport-draft",
       jsonSchema: { name: "drafts", schema: { type: "object" } },
     });
-    const claimedAt = Date.now();
     const jobResponse = await fetch(`${server.origin}${SUPPORT_PASSPORT_MODEL_JOB_PATH}`, {
       method: "POST",
       headers: { authorization: "Bearer owner-token", "content-type": "application/json" },
       body: JSON.stringify({ timeoutMs: 0 }),
     });
     assert.equal(jobResponse.status, 200);
-    const job = (await jobResponse.json()) as { id: string; messages: unknown; deadlineAt: number };
+    const job = (await jobResponse.json()) as { id: string; messages: unknown; timeoutMs: number };
     assert.deepEqual(job.messages, messages);
-    assert.ok(job.deadlineAt > claimedAt);
-    assert.ok(job.deadlineAt <= claimedAt + 5_000);
+    assert.ok(job.timeoutMs > 0);
+    assert.ok(job.timeoutMs <= 5_000);
+    assert.equal("deadlineAt" in job, false);
 
     const completion = await fetch(`${server.origin}${SUPPORT_PASSPORT_MODEL_RESULT_PATH}`, {
       method: "POST",

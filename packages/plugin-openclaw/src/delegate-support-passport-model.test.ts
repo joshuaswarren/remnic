@@ -16,7 +16,6 @@ test("the delegate worker runs daemon jobs through the injected gateway route", 
     temperature: 0.2,
     maxTokens: 500,
     timeoutMs: 5_000,
-    deadlineAt: Date.now() + 5_000,
     operation: "support-passport-draft",
     jsonSchema: { name: "drafts", schema: { type: "object" } },
   };
@@ -120,7 +119,6 @@ test("delegate pollers run overlapping gateway jobs concurrently", async () => {
       temperature: 0,
       maxTokens: 100,
       timeoutMs: 5_000,
-      deadlineAt: Date.now() + 5_000,
       operation: "support-passport-answer",
       jsonSchema: { name: "answer", schema: { type: "object" } },
     })
@@ -191,7 +189,7 @@ test("delegate pollers run overlapping gateway jobs concurrently", async () => {
   }
 });
 
-test("a queued job keeps its original deadline when the delegate claims it", async () => {
+test("a claimed job uses the daemon's remaining duration without a shared wall clock", async () => {
   const completion = Promise.withResolvers<Record<string, unknown>>();
   const invoked = Promise.withResolvers<number>();
   const job: SupportPassportModelJob = {
@@ -199,8 +197,7 @@ test("a queued job keeps its original deadline when the delegate claims it", asy
     messages: [{ role: "user", content: "What helps?" }],
     temperature: 0,
     maxTokens: 100,
-    timeoutMs: 5_000,
-    deadlineAt: Date.now() + 2_000,
+    timeoutMs: 1_900,
     operation: "support-passport-answer",
     jsonSchema: { name: "answer", schema: { type: "object" } },
   };
@@ -250,7 +247,7 @@ test("a queued job keeps its original deadline when the delegate claims it", asy
   try {
     await service.start();
     const remainingMs = await invoked.promise;
-    assert.ok(remainingMs > 0 && remainingMs < job.timeoutMs - 50);
+    assert.equal(remainingMs, job.timeoutMs);
     assert.deepEqual(await completion.promise, {
       id: job.id,
       result: { content: "{}", modelUsed: "gateway/local" },
@@ -305,7 +302,6 @@ test("delegate shutdown stops transient completion retries", async () => {
     temperature: 0,
     maxTokens: 100,
     timeoutMs: 5_000,
-    deadlineAt: Date.now() + 5_000,
     operation: "support-passport-answer",
     jsonSchema: { name: "answer", schema: { type: "object" } },
   };
@@ -367,7 +363,6 @@ test("delegate shutdown settles a claimed job before the worker stops", async ()
     temperature: 0,
     maxTokens: 100,
     timeoutMs: 5_000,
-    deadlineAt: Date.now() + 5_000,
     operation: "support-passport-answer",
     jsonSchema: { name: "answer", schema: { type: "object" } },
   };

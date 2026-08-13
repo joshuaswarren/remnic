@@ -81,9 +81,7 @@ export function createDelegateSupportPassportModelService(
     job: NonNullable<ReturnType<typeof parseSupportPassportModelJob>>,
     signal: AbortSignal
   ): Promise<SupportPassportModelRouteResult | null> => {
-    const remainingMs = job.deadlineAt - Date.now();
-    if (remainingMs <= 0) return null;
-    const timeoutSignal = AbortSignal.timeout(remainingMs);
+    const timeoutSignal = AbortSignal.timeout(job.timeoutMs);
     const modelSignal = AbortSignal.any([signal, timeoutSignal]);
     if (modelSignal.aborted) return null;
     let removeAbort = (): void => {};
@@ -97,7 +95,7 @@ export function createDelegateSupportPassportModelService(
         options.route.invoke(job.messages, {
           temperature: job.temperature,
           maxTokens: job.maxTokens,
-          timeoutMs: remainingMs,
+          timeoutMs: job.timeoutMs,
           signal: modelSignal,
           operation: job.operation,
           jsonSchema: job.jsonSchema,
@@ -118,10 +116,11 @@ export function createDelegateSupportPassportModelService(
   const complete = async (
     job: NonNullable<ReturnType<typeof parseSupportPassportModelJob>>,
     result: SupportPassportModelRouteResult | null,
-    signal: AbortSignal
+    signal: AbortSignal,
+    deadline: number,
   ): Promise<void> => {
     if (signal.aborted) {
-      const remainingMs = job.deadlineAt - Date.now();
+      const remainingMs = deadline - Date.now();
       if (remainingMs <= 0) return;
       const shutdownTimeoutMs = Math.min(SHUTDOWN_RESULT_REQUEST_TIMEOUT_MS, remainingMs);
       const completion = await post(
@@ -139,8 +138,8 @@ export function createDelegateSupportPassportModelService(
       return;
     }
     let lastFailure = "the job deadline elapsed";
-    while (!signal.aborted && Date.now() < job.deadlineAt) {
-      const remainingMs = job.deadlineAt - Date.now();
+    while (!signal.aborted && Date.now() < deadline) {
+      const remainingMs = deadline - Date.now();
       let completion: Response;
       try {
         completion = await post(
@@ -154,7 +153,7 @@ export function createDelegateSupportPassportModelService(
       } catch (error) {
         if (signal.aborted) return;
         lastFailure = String(error);
-        const retryDelayMs = Math.min(RESULT_RETRY_DELAY_MS, job.deadlineAt - Date.now());
+        const retryDelayMs = Math.min(RESULT_RETRY_DELAY_MS, deadline - Date.now());
         if (retryDelayMs > 0) await abortableRetryDelay(signal, retryDelayMs);
         continue;
       }
@@ -166,7 +165,7 @@ export function createDelegateSupportPassportModelService(
       }
       if (signal.aborted) return;
       lastFailure = `HTTP ${status}`;
-      const retryDelayMs = Math.min(RESULT_RETRY_DELAY_MS, job.deadlineAt - Date.now());
+      const retryDelayMs = Math.min(RESULT_RETRY_DELAY_MS, deadline - Date.now());
       if (retryDelayMs > 0) await abortableRetryDelay(signal, retryDelayMs);
     }
     if (signal.aborted) return;
@@ -194,9 +193,9 @@ export function createDelegateSupportPassportModelService(
           log.warn("delegate support passport model bridge received an invalid job");
           continue;
         }
-        if (job.deadlineAt <= Date.now()) continue;
+        const deadline = Date.now() + job.timeoutMs;
         try {
-          await complete(job, await invoke(job, signal), signal);
+          await complete(job, await invoke(job, signal), signal, deadline);
         } catch (error) {
           log.warn(`delegate support passport model completion failed: ${String(error)}`);
         }
