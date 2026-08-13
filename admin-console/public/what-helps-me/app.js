@@ -537,12 +537,8 @@
     const reviewValue = byId("cardReviewInput").value;
     const reviewDate = new Date(reviewValue);
     const existingCard = state.cards.find((card) => card.cardId === cardId);
-    const keepsExistingReminder =
-      existingCard && reviewValue === toLocalInputValue(new Date(existingCard.reviewBy));
-    if (
-      !Number.isFinite(reviewDate.getTime()) ||
-      (reviewDate.getTime() <= Date.now() && !keepsExistingReminder)
-    ) {
+    const keepsExistingReminder = existingCard && reviewValue === toLocalInputValue(new Date(existingCard.reviewBy));
+    if (!Number.isFinite(reviewDate.getTime()) || (reviewDate.getTime() <= Date.now() && !keepsExistingReminder)) {
       setError("cardError", "Choose a future review reminder.");
       return;
     }
@@ -554,40 +550,47 @@
       ...(cardId ? { expectedRevision } : {}),
     };
     const priorCardIds = new Set(state.cards.map((card) => card.cardId));
+    const button = byId("cardSaveButton");
+    const priorLabel = button.textContent;
+    button.disabled = true;
+    button.textContent = "Saving draft…";
     let ownerStateFresh = false;
     try {
-      await withBusy(byId("cardSaveButton"), "Saving draft…", () =>
-        cardId ? api.replaceCard(cardId, input) : api.createManualDraft(input)
-      );
-    } catch (error) {
-      if (error?.code !== "request_timeout") {
-        setError("cardError", errorMessage(error, "The draft did not save."));
-        return;
-      }
-      const reconciled = await reconcileOwnerState(() =>
-        state.cards.find((card) => !priorCardIds.has(card.cardId) && sameCardDraft(card, input))
-      );
-      if (!reconciled.matched) {
-        setError(
-          "cardError",
-          reconciled.refreshed
-            ? "The request stopped before the draft saved. Review the current guide before trying again."
-            : "The server did not confirm whether the draft saved. Refresh the guide before saving it again."
+      try {
+        await (cardId ? api.replaceCard(cardId, input) : api.createManualDraft(input));
+      } catch (error) {
+        if (error?.code !== "request_timeout") {
+          setError("cardError", errorMessage(error, "The draft did not save."));
+          return;
+        }
+        const reconciled = await reconcileOwnerState(() =>
+          state.cards.find((card) => !priorCardIds.has(card.cardId) && sameCardDraft(card, input))
         );
-        return;
+        if (!reconciled.matched) {
+          setError(
+            "cardError",
+            reconciled.refreshed
+              ? "The request stopped before the draft saved. Review the current guide before trying again."
+              : "The server did not confirm whether the draft saved. Refresh the guide before saving it again."
+          );
+          return;
+        }
+        ownerStateFresh = true;
       }
-      ownerStateFresh = true;
-    }
-    closeCardDialog();
-    const message = "Draft saved. Review and approve it before sharing.";
-    toast(message);
-    announce(message);
-    try {
-      if (!ownerStateFresh) await loadOwnerState();
-    } catch {
-      const warning = "The draft was saved, but the card list did not refresh. Refresh the guide before editing it.";
-      setError("generateError", warning);
-      announce(warning);
+      closeCardDialog();
+      const message = "Draft saved. Review and approve it before sharing.";
+      toast(message);
+      announce(message);
+      try {
+        if (!ownerStateFresh) await loadOwnerState();
+      } catch {
+        const warning = "The draft was saved, but the card list did not refresh. Refresh the guide before editing it.";
+        setError("generateError", warning);
+        announce(warning);
+      }
+    } finally {
+      button.disabled = false;
+      button.textContent = priorLabel;
     }
   }
 
@@ -605,9 +608,7 @@
     }
     const button = event.currentTarget.querySelector("button");
     try {
-      const preview = model.parseMemoryPreview(
-        await withBusy(button, "Adding note…", () => api.fetchMemory(memoryId))
-      );
+      const preview = model.parseMemoryPreview(await withBusy(button, "Adding note…", () => api.fetchMemory(memoryId)));
       if (!preview.found) {
         throw new Error("That memory was not found in your Remnic scope.");
       }
@@ -812,9 +813,7 @@
     clear(byId("citationList"));
     const lock = model.lockState(error, lastGuide);
     const retryable =
-      !lastGuide &&
-      Boolean(state.helperGrantId && state.helperSecret) &&
-      !TERMINAL_HELPER_ERROR_CODES.has(error?.code);
+      !lastGuide && Boolean(state.helperGrantId && state.helperSecret) && !TERMINAL_HELPER_ERROR_CODES.has(error?.code);
     byId("lockedEyebrow").textContent = lock.eyebrow;
     byId("lockedTitle").textContent = lock.title;
     byId("lockedDetail").textContent = lock.detail;
@@ -899,10 +898,7 @@
         return;
       }
       if (error?.code === "rate_limited") {
-        state.helperRevalidationDelayMs = Math.min(
-          state.helperRevalidationDelayMs * 2,
-          HELPER_REVALIDATION_MAX_MS
-        );
+        state.helperRevalidationDelayMs = Math.min(state.helperRevalidationDelayMs * 2, HELPER_REVALIDATION_MAX_MS);
       }
     } finally {
       window.clearTimeout(timeout);

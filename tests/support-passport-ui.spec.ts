@@ -390,7 +390,11 @@ test("a saved manual draft stays successful when its list refresh fails", async 
   });
   await page.route("**/engram/v1/support-passport/drafts", async (route) => {
     draftWrites += 1;
-    await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ cardId: "draft-one" }) });
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({ cardId: "draft-one" }),
+    });
   });
 
   await page.goto(`${origin}/remnic/ui/what-helps-me/`);
@@ -614,9 +618,7 @@ test("a stalled owner read aborts and restores the connect action", async ({ pag
 
   await expect
     .poll(() =>
-      page.evaluate(
-        () => (window as typeof window & { __ownerReadAbortObserved?: boolean }).__ownerReadAbortObserved
-      )
+      page.evaluate(() => (window as typeof window & { __ownerReadAbortObserved?: boolean }).__ownerReadAbortObserved)
     )
     .toBe(true);
   await expect(page.getByText("The owner request took too long. Try again.")).toBeVisible();
@@ -628,13 +630,17 @@ test("a stalled manual draft aborts without leaving a retryable duplicate", asyn
   await page.clock.install({ time: new Date("2026-08-11T12:00:00.000Z") });
   await page.addInitScript(() => {
     const realFetch = window.fetch.bind(window);
-    Object.assign(window, { __ownerDraftAbortObserved: false, __ownerDraftCalls: 0 });
+    Object.assign(window, {
+      __ownerDraftAbortObserved: false,
+      __ownerDraftCalls: 0,
+      __ownerDraftReconciliationStarted: false,
+      __releaseOwnerDraftReconciliation: undefined,
+    });
     window.fetch = async (input, init) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url.endsWith("/engram/v1/support-passport/drafts") && init?.method === "POST") {
         Object.assign(window, {
-          __ownerDraftCalls:
-            ((window as typeof window & { __ownerDraftCalls?: number }).__ownerDraftCalls ?? 0) + 1,
+          __ownerDraftCalls: ((window as typeof window & { __ownerDraftCalls?: number }).__ownerDraftCalls ?? 0) + 1,
         });
         return await new Promise((_resolve, reject) => {
           init.signal?.addEventListener(
@@ -645,6 +651,24 @@ test("a stalled manual draft aborts without leaving a retryable duplicate", asyn
             },
             { once: true }
           );
+        });
+      }
+      if (
+        url.endsWith("/engram/v1/support-passport/cards") &&
+        (window as typeof window & { __ownerDraftAbortObserved?: boolean }).__ownerDraftAbortObserved &&
+        !(window as typeof window & { __ownerDraftReconciliationStarted?: boolean }).__ownerDraftReconciliationStarted
+      ) {
+        Object.assign(window, { __ownerDraftReconciliationStarted: true });
+        return await new Promise<Response>((resolve) => {
+          Object.assign(window, {
+            __releaseOwnerDraftReconciliation: () =>
+              resolve(
+                new Response(JSON.stringify({ cards: [] }), {
+                  status: 200,
+                  headers: { "content-type": "application/json" },
+                })
+              ),
+          });
         });
       }
       return await realFetch(input, init);
@@ -668,18 +692,33 @@ test("a stalled manual draft aborts without leaving a retryable duplicate", asyn
   await page.clock.fastForward(60_000);
   await expect
     .poll(() =>
+      page.evaluate(() => (window as typeof window & { __ownerDraftAbortObserved?: boolean }).__ownerDraftAbortObserved)
+    )
+    .toBe(true);
+  await expect
+    .poll(() =>
       page.evaluate(
-        () => (window as typeof window & { __ownerDraftAbortObserved?: boolean }).__ownerDraftAbortObserved
+        () =>
+          (window as typeof window & { __ownerDraftReconciliationStarted?: boolean }).__ownerDraftReconciliationStarted
       )
     )
     .toBe(true);
+  await expect(page.getByRole("button", { name: "Saving draft…" })).toBeDisabled();
+  await page.evaluate(() => {
+    const release = (
+      window as typeof window & {
+        __releaseOwnerDraftReconciliation?: () => void;
+      }
+    ).__releaseOwnerDraftReconciliation;
+    release?.();
+  });
   await page.clock.fastForward(750);
 
   await expect(page.getByText("The request stopped before the draft saved.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Save draft" })).toBeEnabled();
-  expect(
-    await page.evaluate(() => (window as typeof window & { __ownerDraftCalls?: number }).__ownerDraftCalls)
-  ).toBe(1);
+  expect(await page.evaluate(() => (window as typeof window & { __ownerDraftCalls?: number }).__ownerDraftCalls)).toBe(
+    1
+  );
 });
 
 test("a stalled model draft shows uncertain state without claiming another draft", async ({ page }, testInfo) => {
@@ -703,8 +742,7 @@ test("a stalled model draft shows uncertain state without claiming another draft
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url.endsWith("/engram/v1/support-passport/drafts/generate") && init?.method === "POST") {
         Object.assign(window, {
-          __ownerModelCalls:
-            ((window as typeof window & { __ownerModelCalls?: number }).__ownerModelCalls ?? 0) + 1,
+          __ownerModelCalls: ((window as typeof window & { __ownerModelCalls?: number }).__ownerModelCalls ?? 0) + 1,
         });
         return await new Promise((_resolve, reject) => {
           init.signal?.addEventListener(
@@ -754,9 +792,7 @@ test("a stalled model draft shows uncertain state without claiming another draft
   await page.clock.fastForward(15 * 60_000);
   await expect
     .poll(() =>
-      page.evaluate(
-        () => (window as typeof window & { __ownerModelAbortObserved?: boolean }).__ownerModelAbortObserved
-      )
+      page.evaluate(() => (window as typeof window & { __ownerModelAbortObserved?: boolean }).__ownerModelAbortObserved)
     )
     .toBe(true);
 
@@ -765,10 +801,12 @@ test("a stalled model draft shows uncertain state without claiming another draft
   ).toBeVisible();
   await expect(page.getByRole("heading", { name: unrelatedDraft.title })).toBeVisible();
   await expect(page.locator("#toast")).not.toHaveText("Drafts ready. Review each card before approval.");
-  await expect(page.getByLabel("Send these selected notes to my configured model to draft my cards.")).not.toBeChecked();
-  expect(
-    await page.evaluate(() => (window as typeof window & { __ownerModelCalls?: number }).__ownerModelCalls)
-  ).toBe(1);
+  await expect(
+    page.getByLabel("Send these selected notes to my configured model to draft my cards.")
+  ).not.toBeChecked();
+  expect(await page.evaluate(() => (window as typeof window & { __ownerModelCalls?: number }).__ownerModelCalls)).toBe(
+    1
+  );
 });
 
 test("a stalled share creation shows uncertain state without revoking a grant", async ({ page }, testInfo) => {
@@ -801,8 +839,7 @@ test("a stalled share creation shows uncertain state without revoking a grant", 
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url.endsWith("/engram/v1/support-passport/grants") && init?.method === "POST") {
         Object.assign(window, {
-          __ownerShareCalls:
-            ((window as typeof window & { __ownerShareCalls?: number }).__ownerShareCalls ?? 0) + 1,
+          __ownerShareCalls: ((window as typeof window & { __ownerShareCalls?: number }).__ownerShareCalls ?? 0) + 1,
         });
         return await new Promise((_resolve, reject) => {
           init.signal?.addEventListener(
@@ -817,8 +854,7 @@ test("a stalled share creation shows uncertain state without revoking a grant", 
       }
       if (url.endsWith("/revoke") && init?.method === "POST") {
         Object.assign(window, {
-          __ownerRevokeCalls:
-            ((window as typeof window & { __ownerRevokeCalls?: number }).__ownerRevokeCalls ?? 0) + 1,
+          __ownerRevokeCalls: ((window as typeof window & { __ownerRevokeCalls?: number }).__ownerRevokeCalls ?? 0) + 1,
         });
       }
       return await realFetch(input, init);
@@ -852,9 +888,7 @@ test("a stalled share creation shows uncertain state without revoking a grant", 
   await page.clock.fastForward(60_000);
   await expect
     .poll(() =>
-      page.evaluate(
-        () => (window as typeof window & { __ownerShareAbortObserved?: boolean }).__ownerShareAbortObserved
-      )
+      page.evaluate(() => (window as typeof window & { __ownerShareAbortObserved?: boolean }).__ownerShareAbortObserved)
     )
     .toBe(true);
   await reconciliationStarted.promise;
@@ -871,9 +905,9 @@ test("a stalled share creation shows uncertain state without revoking a grant", 
   await expect(page.getByText("Share link ready")).toBeHidden();
   await expect(page.getByLabel("Copy this link once")).toHaveValue("");
   await expect(page.getByRole("button", { name: "Create share link" })).toBeEnabled();
-  expect(
-    await page.evaluate(() => (window as typeof window & { __ownerShareCalls?: number }).__ownerShareCalls)
-  ).toBe(1);
+  expect(await page.evaluate(() => (window as typeof window & { __ownerShareCalls?: number }).__ownerShareCalls)).toBe(
+    1
+  );
   expect(
     await page.evaluate(() => (window as typeof window & { __ownerRevokeCalls?: number }).__ownerRevokeCalls)
   ).toBe(0);
@@ -976,9 +1010,7 @@ test("a new helper question clears the prior answer before dispatch", async ({ p
     }
   );
 
-  await page.goto(
-    `${origin}/remnic/ui/what-helps-me/?grant=replay-grant-new-question#secret=${"s".repeat(43)}`
-  );
+  await page.goto(`${origin}/remnic/ui/what-helps-me/?grant=replay-grant-new-question#secret=${"s".repeat(43)}`);
   await page.getByLabel("Your question").fill("What helps right now?");
   await page.getByRole("button", { name: "Ask from this guide" }).click();
   await expect(page.getByText("Offer a quiet place.", { exact: true })).toBeVisible();
@@ -1056,7 +1088,7 @@ test("owner navigation avoids smooth scrolling when reduced motion is requested"
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.addInitScript(() => {
     Object.assign(window, { __scrollBehaviors: [] });
-    Element.prototype.scrollIntoView = function (options) {
+    Element.prototype.scrollIntoView = (options) => {
       const behavior = typeof options === "object" && options ? options.behavior : undefined;
       (window as typeof window & { __scrollBehaviors: Array<ScrollBehavior | undefined> }).__scrollBehaviors.push(
         behavior
@@ -1096,9 +1128,7 @@ test("share links use the canonical path and reserve time for grant creation", a
         "secret-one",
         false
       ),
-      notePreview: model.stripAttributesSuffix(
-        "Tell me before plans change.\n[Attributes: support-passport: source]"
-      ),
+      notePreview: model.stripAttributesSuffix("Tell me before plans change.\n[Attributes: support-passport: source]"),
     };
   });
 
@@ -1238,8 +1268,7 @@ test("a stalled initial helper read aborts and fails closed", async ({ page }, t
   await expect
     .poll(() =>
       page.evaluate(
-        () =>
-          (window as typeof window & { __initialHelperAbortObserved?: boolean }).__initialHelperAbortObserved
+        () => (window as typeof window & { __initialHelperAbortObserved?: boolean }).__initialHelperAbortObserved
       )
     )
     .toBe(true);
