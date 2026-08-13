@@ -535,6 +535,49 @@ test("owner HTTP forwards commit accounting to manual drafts and grant creation"
   }
 });
 
+test("owner HTTP derives a preset grant expiry from the server clock", async () => {
+  const originalNow = Date.now;
+  const serverNow = Date.parse("2026-08-11T12:00:00.000Z");
+  let grantInput: Record<string, unknown> | undefined;
+  const service = {
+    supportPassportEnabled: true,
+    supportPassportCreateGrant: async (_principal: string, input: Record<string, unknown>) => {
+      grantInput = input;
+      return {
+        grantId: "grant-one",
+        secret: "s".repeat(43),
+        expiresAt: input.expiresAt,
+        version: 1,
+      };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: TOKEN,
+    principal: "owner:alice",
+    adminConsoleEnabled: false,
+  });
+  Date.now = () => serverNow;
+  const { port } = await server.start();
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/engram/v1/support-passport/grants`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        cardIds: ["card-one"],
+        cardRevisions: [{ cardId: "card-one", revision: REVISION }],
+        durationMs: 1_800_000,
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(grantInput?.expiresAt, "2026-08-11T12:30:00.000Z");
+  } finally {
+    Date.now = originalNow;
+    await server.stop();
+  }
+});
+
 test("owner HTTP can revoke a share link after the write quota is full", async () => {
   const revocations: unknown[] = [];
   const service = {
