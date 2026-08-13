@@ -1125,6 +1125,10 @@ test("a stalled model draft shows uncertain state without claiming another draft
   await page.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
   await page.getByRole("button", { name: "Draft my support cards" }).click();
   await expect(page.getByRole("button", { name: "Drafting cards…" })).toBeDisabled();
+  await expect(page.getByLabel("Memory ID")).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Add selected note" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Remove selected note note-one" })).toBeDisabled();
+  await expect(page.getByLabel("Send these selected notes to my configured model to draft my cards.")).toBeDisabled();
   await page.clock.fastForward(15 * 60_000);
   await expect
     .poll(() =>
@@ -1143,6 +1147,9 @@ test("a stalled model draft shows uncertain state without claiming another draft
   await expect(
     page.getByLabel("Send these selected notes to my configured model to draft my cards.")
   ).not.toBeChecked();
+  await expect(page.getByLabel("Memory ID")).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Add selected note" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Remove selected note note-one" })).toBeEnabled();
   expect(await page.evaluate(() => (window as typeof window & { __ownerModelCalls?: number }).__ownerModelCalls)).toBe(
     1
   );

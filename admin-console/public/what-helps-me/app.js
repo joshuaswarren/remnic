@@ -54,6 +54,7 @@
     pendingCardMutationIds: new Set(),
     pendingGrantRevocationIds: new Set(),
     cardSavePending: false,
+    draftGenerationPending: false,
     shareCreationPending: false,
     shareCreationCardIds: null,
     ownerLifecyclePaused: false,
@@ -262,6 +263,7 @@
       copy.append(element("code", "", note.memoryId), element("p", "", note.content));
       const remove = element("button", "button button-quiet", "Remove");
       remove.type = "button";
+      remove.disabled = state.draftGenerationPending;
       remove.setAttribute("aria-label", `Remove selected note ${note.memoryId}`);
       remove.addEventListener("click", () => {
         state.selectedNotes = state.selectedNotes.filter((candidate) => candidate.memoryId !== note.memoryId);
@@ -673,6 +675,7 @@
 
   async function addMemory(event) {
     event.preventDefault();
+    if (state.draftGenerationPending) return;
     setError("memoryError");
     const memoryInput = byId("memoryIdInput");
     const submittedValue = memoryInput.value;
@@ -710,6 +713,7 @@
   }
 
   async function generateDrafts() {
+    if (state.draftGenerationPending) return;
     setError("generateError");
     if (state.selectedNotes.length === 0) {
       setError("generateError", "Select at least one note first.");
@@ -720,15 +724,16 @@
       byId("consentInput").focus();
       return;
     }
+    const submittedNotes = state.selectedNotes.map((note) => ({ ...note }));
     const button = byId("generateButton");
     const priorLabel = button.textContent;
-    button.disabled = true;
+    setDraftGenerationPending(true);
     button.textContent = "Drafting cards…";
     try {
       try {
         await api.generateDrafts({
-          sourceMemoryIds: state.selectedNotes.map((note) => note.memoryId),
-          sourceMemoryRevisions: state.selectedNotes.map((note) => ({
+          sourceMemoryIds: submittedNotes.map((note) => note.memoryId),
+          sourceMemoryRevisions: submittedNotes.map((note) => ({
             memoryId: note.memoryId,
             revision: note.revision,
           })),
@@ -766,9 +771,17 @@
         announce(warning);
       }
     } finally {
-      button.disabled = false;
       button.textContent = priorLabel;
+      setDraftGenerationPending(false);
     }
+  }
+
+  function setDraftGenerationPending(pending) {
+    state.draftGenerationPending = pending;
+    for (const control of byId("memoryForm").querySelectorAll("input, button")) control.disabled = pending;
+    byId("consentInput").disabled = pending;
+    byId("generateButton").disabled = pending;
+    renderSelectedNotes();
   }
 
   async function createShare(event) {
@@ -1152,6 +1165,7 @@
     state.pendingCardMutationIds.clear();
     state.pendingGrantRevocationIds.clear();
     state.cardSavePending = false;
+    state.draftGenerationPending = false;
     state.shareCreationPending = false;
     state.shareCreationCardIds = null;
     clearPrefillToken();
@@ -1170,6 +1184,7 @@
     byId("announcer").textContent = "";
     for (const id of ["connectError", "memoryError", "generateError", "cardError", "shareError"]) setError(id);
     setCardSavePending(false);
+    setDraftGenerationPending(false);
     setShareCreationPending(false);
     renderSelectedNotes();
     renderCards();
