@@ -53,6 +53,7 @@
     helperLifecyclePaused: false,
     pendingCardMutationIds: new Set(),
     pendingGrantRevocationIds: new Set(),
+    cardSavePending: false,
     shareCreationPending: false,
     shareCreationCardIds: null,
     toastTimer: null,
@@ -553,6 +554,7 @@
   }
 
   function openCardDialog(card = null) {
+    if (state.cardSavePending) return;
     byId("cardDialogTitle").textContent = card ? "Edit this support card" : "Write a support card";
     byId("cardSaveButton").textContent = "Save draft";
     byId("cardIdInput").value = card?.cardId ?? "";
@@ -569,11 +571,22 @@
   }
 
   function closeCardDialog() {
+    if (state.cardSavePending) return;
     byId("cardDialog").close();
+  }
+
+  function setCardSavePending(pending) {
+    state.cardSavePending = pending;
+    byId("cardForm").setAttribute("aria-busy", String(pending));
+    for (const control of byId("cardForm").querySelectorAll("input, textarea, select, button")) {
+      control.disabled = pending;
+    }
+    byId("newCardButton").disabled = pending;
   }
 
   async function saveCard(event) {
     event.preventDefault();
+    if (state.cardSavePending) return;
     setError("cardError");
     const cardId = byId("cardIdInput").value;
     const expectedRevision = byId("cardRevisionInput").value;
@@ -595,7 +608,7 @@
     const priorCardIds = new Set(state.cards.map((card) => card.cardId));
     const button = byId("cardSaveButton");
     const priorLabel = button.textContent;
-    button.disabled = true;
+    setCardSavePending(true);
     button.textContent = "Saving draft…";
     let ownerStateFresh = false;
     try {
@@ -620,7 +633,7 @@
         }
         ownerStateFresh = true;
       }
-      closeCardDialog();
+      byId("cardDialog").close();
       const message = "Draft saved. Review and approve it before sharing.";
       toast(message);
       announce(message);
@@ -632,8 +645,8 @@
         announce(warning);
       }
     } finally {
-      button.disabled = false;
       button.textContent = priorLabel;
+      setCardSavePending(false);
     }
   }
 
@@ -1060,6 +1073,9 @@
     byId("cardForm").addEventListener("submit", saveCard);
     byId("cardDialogClose").addEventListener("click", closeCardDialog);
     byId("cardCancelButton").addEventListener("click", closeCardDialog);
+    byId("cardDialog").addEventListener("cancel", (event) => {
+      if (state.cardSavePending) event.preventDefault();
+    });
     byId("shareForm").addEventListener("submit", createShare);
     byId("copyLinkButton").addEventListener("click", copyShareLink);
     byId("refreshButton").addEventListener("click", async (event) => {

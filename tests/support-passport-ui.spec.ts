@@ -412,6 +412,45 @@ test("a saved manual draft stays successful when its list refresh fails", async 
   expect(draftWrites).toBe(1);
 });
 
+test("a manual draft locks its editor until the save settles", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers the draft editor lock.");
+  const releaseDraft = Promise.withResolvers<void>();
+  await page.route("**/engram/v1/support-passport/cards", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ cards: [] }) });
+  });
+  await page.route("**/engram/v1/support-passport/grants", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grants: [] }) });
+  });
+  await page.route("**/engram/v1/support-passport/drafts", async (route) => {
+    await releaseDraft.promise;
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({ cardId: "draft-one" }),
+    });
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await page.getByLabel("Bearer token").fill("owner-token");
+  await page.getByRole("button", { name: "Open my guide" }).click();
+  await page.getByRole("button", { name: "Write a card" }).click();
+  await page.getByLabel("Card title").fill("Quiet place");
+  await page.getByLabel("What helps me").fill("Offer me a quiet place and time.");
+  await page.getByRole("button", { name: "Save draft" }).click();
+
+  await expect(page.getByRole("button", { name: "Saving draft…" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Close support card editor" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Keep reviewing" })).toBeDisabled();
+  await expect(page.getByLabel("Card title")).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Write a card" })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#cardDialog")).toBeVisible();
+
+  releaseDraft.resolve();
+  await expect(page.locator("#cardDialog")).toBeHidden();
+  await expect(page.getByRole("button", { name: "Write a card" })).toBeEnabled();
+});
+
 test("an overdue card can be edited without changing its review reminder", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers overdue card edits.");
   const overdueReview = "2026-01-15T10:30:00.000Z";
