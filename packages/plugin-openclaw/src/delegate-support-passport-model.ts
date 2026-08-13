@@ -126,7 +126,9 @@ export function createDelegateSupportPassportModelService(
     signal: AbortSignal,
     deadline: number,
   ): Promise<void> => {
-    if (signal.aborted) {
+    const completeDuringShutdown = async (
+      shutdownResult: SupportPassportModelRouteResult | null,
+    ): Promise<void> => {
       const remainingMs = deadline - Date.now();
       if (remainingMs <= 0) return;
       const shutdownTimeoutMs = Math.min(SHUTDOWN_RESULT_REQUEST_TIMEOUT_MS, remainingMs);
@@ -134,7 +136,7 @@ export function createDelegateSupportPassportModelService(
         options.target,
         options.serviceId,
         SUPPORT_PASSPORT_MODEL_RESULT_PATH,
-        { id: job.id, claimId: job.claimId, result },
+        { id: job.id, claimId: job.claimId, result: shutdownResult },
         AbortSignal.timeout(shutdownTimeoutMs),
         shutdownTimeoutMs
       );
@@ -142,6 +144,9 @@ export function createDelegateSupportPassportModelService(
       if (!completion.ok && completion.status !== 404) {
         throw new Error(`delegate support passport model completion was rejected with HTTP ${completion.status}`);
       }
+    };
+    if (signal.aborted) {
+      await completeDuringShutdown(null);
       return;
     }
     let lastFailure = "the job deadline elapsed";
@@ -158,7 +163,10 @@ export function createDelegateSupportPassportModelService(
           Math.min(RESULT_REQUEST_TIMEOUT_MS, remainingMs)
         );
       } catch (error) {
-        if (signal.aborted) return;
+        if (signal.aborted) {
+          await completeDuringShutdown(null);
+          return;
+        }
         lastFailure = String(error);
         const retryDelayMs = Math.min(RESULT_RETRY_DELAY_MS, deadline - Date.now());
         if (retryDelayMs > 0) await abortableRetryDelay(signal, retryDelayMs);
@@ -170,12 +178,18 @@ export function createDelegateSupportPassportModelService(
       if (status !== 408 && status !== 425 && status !== 429 && status < 500) {
         throw new Error(`delegate support passport model completion was rejected with HTTP ${status}`);
       }
-      if (signal.aborted) return;
+      if (signal.aborted) {
+        await completeDuringShutdown(null);
+        return;
+      }
       lastFailure = `HTTP ${status}`;
       const retryDelayMs = Math.min(RESULT_RETRY_DELAY_MS, deadline - Date.now());
       if (retryDelayMs > 0) await abortableRetryDelay(signal, retryDelayMs);
     }
-    if (signal.aborted) return;
+    if (signal.aborted) {
+      await completeDuringShutdown(null);
+      return;
+    }
     throw new Error(`delegate support passport model completion missed its deadline after ${lastFailure}`);
   };
   const acknowledge = async (
