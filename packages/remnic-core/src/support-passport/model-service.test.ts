@@ -1076,6 +1076,68 @@ test("helper questions recheck the grant after the model call", async () => {
   }
 });
 
+test("helper question audits hash the canonical grant ID", async () => {
+  const subject = await makeSubject();
+  try {
+    const draft = await subject.cardService.createManualDraft({
+      principal: "owner:alice",
+      title: "Quiet space",
+      statement: "Offer me a quiet place and time.",
+      category: "environment",
+      reviewBy: "2026-09-01T12:00:00.000Z",
+    });
+    const active = await subject.cardService.approveCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+    });
+    const created = await subject.grantService.createGrant({
+      principal: "owner:alice",
+      cards: [{ cardId: active.cardId, revision: active.revision }],
+      expiresAt: "2026-08-11T13:00:00.000Z",
+    });
+    const records: SupportPassportModelAuditRecord[] = [];
+    const service = new SupportPassportQuestionService({
+      grantService: subject.grantService,
+      modelAdapter: new SupportPassportModelAdapter({
+        routes: [
+          {
+            kind: "local",
+            invoke: async () => ({
+              modelUsed: "local/test-model",
+              content: JSON.stringify({
+                answer: "Offer a quiet place.",
+                citedCardIds: [active.cardId],
+                coverage: "grounded",
+              }),
+            }),
+          },
+        ],
+      }),
+      audit: {
+        record: async (record) => {
+          records.push(SupportPassportModelAuditRecordSchema.parse(record));
+        },
+      },
+      now: subject.now,
+    });
+
+    await service.askGrant({
+      grantId: created.grant.grantId.toUpperCase(),
+      secret: created.secret,
+      question: "What can help?",
+    });
+    await flushAudit();
+
+    assert.equal(
+      records[0]?.actorHash,
+      hashSupportPassportAuditValues("helper-grant", [created.grant.grantId])
+    );
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("helper questions honor cancellation during final grant validation", async () => {
   const subject = await makeSubject();
   const finalReadStarted = Promise.withResolvers<void>();
