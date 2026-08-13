@@ -2837,7 +2837,7 @@ test("generated draft rollback rejects known cards when the corpus scan fails", 
   }
 });
 
-test("listing rolls back an incomplete generated batch after restart", async () => {
+test("listing stays read-only before a later mutation recovers an incomplete batch", async () => {
   const subject = await makeSubject();
   try {
     const validateSources = async () => {
@@ -2857,12 +2857,14 @@ test("listing rolls back an incomplete generated batch after restart", async () 
       subject.service.createGeneratedDraftsForOwner({
         authenticatedPrincipal: "owner:alice",
         owner: { principal: "owner:alice", namespace: "alice", storage: subject.aliceStorage },
-        cards: [{
-          title: "First draft",
-          statement: "Give me time to answer.",
-          category: "communication",
-          sourceMemoryIds: ["source-1"],
-        }],
+        cards: [
+          {
+            title: "First draft",
+            statement: "Give me time to answer.",
+            category: "communication",
+            sourceMemoryIds: ["source-1"],
+          },
+        ],
         validateSources,
       }),
       (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
@@ -2893,11 +2895,22 @@ test("listing rolls back an incomplete generated batch after restart", async () 
       resolveOwner: async (principal) => ({ principal, namespace: "alice", storage: restartedStorage }),
     });
     assert.deepEqual(await restarted.listCards({ principal: "owner:alice" }), []);
-    assert.deepEqual(await restarted.listCards({ principal: "owner:alice" }), []);
     assert.equal(
-      (await restartedStorage.readAllMemories()).find(
-        (memory) => memory.frontmatter.id === card.frontmatter.id
-      )?.frontmatter.status,
+      (await restartedStorage.readAllMemories()).find((memory) => memory.frontmatter.id === card.frontmatter.id)
+        ?.frontmatter.status,
+      "pending_review"
+    );
+    await readFile(markerPath, "utf8");
+    await restarted.createManualDraft({
+      principal: "owner:alice",
+      title: "Recovery draft",
+      statement: "This mutation recovers an interrupted generated batch.",
+      category: "other",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    assert.equal(
+      (await restartedStorage.readAllMemories()).find((memory) => memory.frontmatter.id === card.frontmatter.id)
+        ?.frontmatter.status,
       "rejected"
     );
     await assert.rejects(readFile(markerPath, "utf8"), (error: unknown) => {
