@@ -7,7 +7,7 @@
   const replayMode = params.get("mode") === "replay";
   const grantId = params.get("grant") ?? "";
   const hasSecretFragment = new URLSearchParams(window.location.hash.slice(1)).has("secret");
-  const secret = model.parseSecret(window.location.hash);
+  let initialHelperSecret = model.parseSecret(window.location.hash);
   if (hasSecretFragment) {
     window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
   }
@@ -41,7 +41,7 @@
     grants: [],
     selectedNotes: [],
     guide: null,
-    helperSecret: secret,
+    helperSecret: initialHelperSecret,
     helperGrantId: grantId,
     helperServerOffsetMs: null,
     helperExpiryTimer: null,
@@ -60,6 +60,7 @@
     ownerRequestControllers: new Set(),
     toastTimer: null,
   };
+  initialHelperSecret = "";
 
   function element(tag, className, text) {
     const node = document.createElement(tag);
@@ -1032,7 +1033,8 @@
   async function askQuestion(event) {
     event.preventDefault();
     setError("questionError");
-    const question = byId("questionInput").value.trim();
+    const questionInput = byId("questionInput");
+    const question = questionInput.value.trim();
     if (!question || !state.guide) return;
     byId("answerPanel").hidden = true;
     byId("answerCopy").textContent = "";
@@ -1046,6 +1048,7 @@
       timedOut = true;
       controller.abort();
     }, HELPER_QUESTION_TIMEOUT_MS);
+    questionInput.disabled = true;
     try {
       const payload = await withBusy(button, "Checking shared cards…", () =>
         api.askGrant(state.helperGrantId, state.helperSecret, question, controller.signal)
@@ -1078,6 +1081,16 @@
     } finally {
       window.clearTimeout(timeout);
       if (state.helperQuestionController === controller) state.helperQuestionController = null;
+      questionInput.disabled = false;
+    }
+  }
+
+  function clearPrefillToken() {
+    window.__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__ = "";
+    for (const script of document.scripts) {
+      if (script.src || !script.textContent?.includes("__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__")) continue;
+      script.textContent = "";
+      script.remove();
     }
   }
 
@@ -1132,6 +1145,7 @@
     state.cardSavePending = false;
     state.shareCreationPending = false;
     state.shareCreationCardIds = null;
+    clearPrefillToken();
     window.clearTimeout(state.toastTimer);
     byId("connectForm").reset();
     byId("memoryForm").reset();
@@ -1172,24 +1186,30 @@
       }
     });
     window.addEventListener("pagehide", (event) => {
-      state.helperLifecyclePaused = true;
-      window.clearTimeout(state.helperExpiryTimer);
-      window.clearTimeout(state.helperRevalidationTimer);
-      state.helperLoadController?.abort(PAGE_HIDDEN_ABORT);
-      state.helperQuestionController?.abort(PAGE_HIDDEN_ABORT);
-      state.helperRevalidationController?.abort(PAGE_HIDDEN_ABORT);
+      clearHelperSession();
       if (!event.persisted) replayChannel?.close();
     });
     window.addEventListener("pageshow", (event) => {
       if (!event.persisted) return;
-      state.helperLifecyclePaused = false;
-      if (!state.guide) {
-        if (byId("helperView")) void loadHelper();
-        return;
-      }
-      scheduleHelperExpiry();
-      if (state.guide && !replayMode) void revalidateHelper();
+      clearHelperSession();
     });
+  }
+
+  function clearHelperSession() {
+    state.helperLifecyclePaused = true;
+    state.helperSecret = "";
+    state.helperServerOffsetMs = null;
+    state.helperRevalidationDelayMs = HELPER_REVALIDATION_MS;
+    const error = new Error("The helper session ended when this page was hidden.");
+    error.code = "grant_gone";
+    showLocked(error);
+    byId("questionForm").reset();
+    byId("questionInput").disabled = false;
+    byId("questionCount").textContent = "0";
+    byId("answerCopy").textContent = "";
+    byId("helperExpiry").textContent = "";
+    byId("helperCardCount").textContent = "";
+    setError("questionError");
   }
 
   async function init() {
@@ -1205,7 +1225,7 @@
       typeof window.__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__ === "string"
         ? window.__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__.trim()
         : "";
-    window.__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__ = "";
+    clearPrefillToken();
     if (replayMode) {
       state.token = "synthetic-replay";
       state.selectedNotes = replayStore.notes.map((note) => ({ ...note }));
