@@ -822,10 +822,11 @@ export function readProjectedMemoryBrowse(
   return withProjectionReadonly(memoryDir, (db) => {
     const normalizedQuery = options.query?.trim().toLowerCase() ?? "";
     const currentSelect = memoryCurrentSelectExpressions(db);
-    if ((options.excludeTags?.length ?? 0) > 0 && currentSelect.tagsJson.startsWith("'[]'")) throw new Error("tag exclusions require tags_json");
+    if ((options.excludeTags?.length ?? 0) > 0 && currentSelect.tagsJson.startsWith("'[]'")) {
+      throw new Error("tag exclusions require tags_json");
+    }
     const whereClauses: string[] = [];
     const params: unknown[] = [];
-
     if (options.status) {
       whereClauses.push("status = ?");
       params.push(options.status);
@@ -835,28 +836,22 @@ export function readProjectedMemoryBrowse(
       params.push(options.category);
     }
     for (const tag of options.excludeTags ?? []) {
-      whereClauses.push(
-        "NOT EXISTS (SELECT 1 FROM json_each(memory_current.tags_json) AS excluded_tag WHERE excluded_tag.value = ?)",
-      );
+      whereClauses.push("NOT EXISTS (SELECT 1 FROM json_each(memory_current.tags_json) WHERE value = ?)");
       params.push(tag);
     }
-    const sort = options.sort ?? "updated_desc";
     const orderBySql = (() => {
-      switch (sort) {
+      switch (options.sort ?? "updated_desc") {
         case "updated_asc":
           return "updated_at ASC, created_at ASC, memory_id ASC";
         case "created_desc":
           return "created_at DESC, updated_at DESC, memory_id ASC";
         case "created_asc":
           return "created_at ASC, updated_at ASC, memory_id ASC";
-        case "updated_desc":
         default:
           return "updated_at DESC, created_at DESC, memory_id ASC";
       }
     })();
     if (normalizedQuery) {
-      // Full-content search still examines every eligible row so totals and
-      // matches stay exact, but iteration keeps memory use proportional to the page.
       const queryWhereClauses = currentSelect.hasPathValid
         ? [...whereClauses, ...projectedBrowsePathSqlClauses(), "path_valid = 1"]
         : whereClauses;

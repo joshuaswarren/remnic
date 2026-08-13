@@ -6637,9 +6637,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return updated;
   }
 
-  /**
-   * Get a memory by its ID.
-   */
   async getMemoryById(id: string): Promise<MemoryFile | null> {
     const memories = await this.readAllMemories();
     return memories.find((m) => m.frontmatter.id === id) ?? null;
@@ -6647,16 +6644,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
   async getMemoryByIdIncludingArchived(id: string): Promise<MemoryFile | null> {
     const active = await this.getMemoryById(id);
-    if (active) return active;
-    return (await this.readArchivedMemories()).find((memory) => memory.frontmatter.id === id) ?? null;
+    return active ?? (await this.readArchivedMemories()).find((memory) => memory.frontmatter.id === id) ?? null;
   }
 
   /**
    * Resolve existing active memory IDs to their on-disk paths.
-   *
-   * Uses a lightweight directory scan (collectActiveMemoryPaths) that reads
-   * file names without parsing frontmatter — much cheaper than readAllMemories()
-   * for citation usage tracking and other existence checks.
+   * Uses a lightweight directory scan without parsing frontmatter.
    */
   async findExistingMemoryPaths(
     ids: string[],
