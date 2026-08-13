@@ -9,6 +9,7 @@
     "other",
   ]);
   const CARD_STATUSES = Object.freeze(["pending_review", "active", "rejected", "superseded", "archived"]);
+  const SHARE_REQUEST_MARGIN_MS = 60_000;
   const CATEGORY_LABELS = Object.freeze({
     communication: "Communication",
     environment: "Environment",
@@ -333,10 +334,10 @@
     const timestamp = Date.parse(customValue);
     if (
       !Number.isFinite(timestamp) ||
-      timestamp < now + 300_000 ||
+      timestamp < now + 300_000 + SHARE_REQUEST_MARGIN_MS ||
       timestamp > now + 7 * 24 * 60 * 60_000
     ) {
-      throw new Error("Choose a share time at least five minutes from now and no more than seven days away.");
+      throw new Error("Choose a share time at least six minutes from now and no more than seven days away.");
     }
     return { expiresAt: new Date(timestamp).toISOString() };
   }
