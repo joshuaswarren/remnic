@@ -655,6 +655,19 @@ export class Spool {
   }
 
   /**
+   * Record a bare idempotency marker (no segments).
+   *
+   * Used to persist facts a later replay cannot re-derive — such as how many
+   * segments a chunk's transcript produced, which is the only way to tell a
+   * legitimately shorter retranscription from a missing tail (issue #2145).
+   */
+  markApplied(idempotencyKey: string, conversationId: string): void {
+    this.#db
+      .prepare("INSERT OR IGNORE INTO applied_chunks(idempotency_key, conversation_id, applied_at_utc) VALUES (?,?,?)")
+      .run(idempotencyKey, conversationId, new Date().toISOString());
+  }
+
+  /**
    * Whether ANY idempotency key for this chunk was applied.
    *
    * Per-segment keys are content-derived, so they cannot be enumerated from a

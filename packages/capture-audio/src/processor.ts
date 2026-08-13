@@ -482,12 +482,27 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       // A zero-segment run over a chunk whose earlier groups were already
       // applied (a partial crash) must NOT be marked done, or the missing tail
       // groups would be stranded forever.
-      // Content-keyed segments make "every segment already applied" mean the
-      // chunk IS fully persisted, so a nonempty transcript is again a sound
-      // proxy for completeness. The `:started` marker covers the zero-segment
-      // replay of a chunk that WAS partially applied.
+      // Completeness needs one fact a replay cannot re-derive: how many
+      // segments the transcript produced the FIRST time. Without it, a shorter
+      // retranscription is indistinguishable from a missing tail — mark done
+      // and a tail can be lost, refuse and a fully-applied chunk
+      // re-transcribes forever. So the count is persisted once and compared.
+      const segmentCount = entry.built.length;
+      const hadCount = deps.spool.hasAppliedChunkPrefix(`${entry.chunkId}:n`);
+      const countMatches =
+        !hadCount || deps.spool.isChunkApplied(`${entry.chunkId}:n${segmentCount}`);
       const fullyProcessed =
-        entry.built.length > 0 || !deps.spool.hasAppliedChunkPrefix(`${entry.chunkId}:`);
+        segmentCount > 0
+          ? countMatches
+          : !deps.spool.hasAppliedChunkPrefix(`${entry.chunkId}:`);
+      if (segmentCount > 0 && !hadCount) {
+        deps.spool.markApplied(`${entry.chunkId}:n${segmentCount}`, openConversationId ?? "-");
+      }
+      if (segmentCount > 0 && !countMatches) {
+        log.warn(
+          `[capture-audio] chunk ${entry.chunkId} retranscribed to ${segmentCount} segments but an earlier run produced a different count; keeping its raw audio`,
+        );
+      }
       processedThisRun.add(entry.chunkId);
       if (!fullyProcessed) continue;
       // The chunk is fully durably transcribed: record completion and reclaim

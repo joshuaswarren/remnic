@@ -1105,3 +1105,72 @@ test("a retranscription that inserts a segment does not rebind an existing key",
     spool.close();
   }
 });
+
+test("a shortened retranscription keeps the chunk open instead of losing its tail", async () => {
+  // Crash after segment A of an [A, B] transcript, then an STT change makes the
+  // replay produce only A. The recorded segment COUNT is what tells the two
+  // cases apart (issue #2145).
+  const spool = new Spool(":memory:");
+  try {
+    const ev = chunk({ path: "/tmp/raw/shrink.wav" });
+    const cid = chunkStableId(ev);
+    const cleaned: string[] = [];
+    const two = [
+      { text: "A", startUtc: t(1), endUtc: t(2) },
+      { text: "B", startUtc: t(40), endUtc: t(41) },
+    ];
+
+    // Run 1 records the two-segment count, then we simulate losing B by
+    // deleting its row while leaving the count marker in place.
+    const first = createChunkProcessor(
+      deps(spool, {
+        assembler: new ConversationAssembler({ gapMinutes: 0 }),
+        transcribe: async () => two,
+        cleanupRawAudio: async (event) => {
+          cleaned.push(event.path);
+        },
+      }),
+    );
+    first.enqueue(ev);
+    await first.drain();
+    assert.equal(spool.isChunkApplied(`${cid}:n2`), true, "the transcript size was recorded");
+
+    // Run 2 sees a SHORTER transcript for the same chunk.
+    const shortened = createChunkProcessor(
+      deps(spool, {
+        assembler: new ConversationAssembler({ gapMinutes: 0 }),
+        transcribe: async () => [two[0]],
+        cleanupRawAudio: async (event) => {
+          cleaned.push(event.path);
+        },
+      }),
+    );
+    shortened.enqueue(chunk({ path: "/tmp/raw/shrink.wav" }));
+    await shortened.finalize();
+    assert.equal(
+      spool.isChunkApplied(`${cid}:done`),
+      true,
+      "run 1 already completed the chunk, so the replay short-circuits on :done",
+    );
+
+    // A chunk that was NEVER completed and retranscribes shorter must stay open.
+    const other = chunk({ path: "/tmp/raw/shrink2.wav" });
+    const otherId = chunkStableId(other);
+    spool.markApplied(`${otherId}:n2`, "-");
+    const partial = createChunkProcessor(
+      deps(spool, {
+        assembler: new ConversationAssembler({ gapMinutes: 0 }),
+        transcribe: async () => [two[0]],
+        cleanupRawAudio: async (event) => {
+          cleaned.push(event.path);
+        },
+      }),
+    );
+    partial.enqueue(other);
+    await partial.finalize();
+    assert.equal(spool.isChunkApplied(`${otherId}:done`), false, "not completed on a shorter transcript");
+    assert.ok(!cleaned.includes("/tmp/raw/shrink2.wav"), "and its raw audio is retained");
+  } finally {
+    spool.close();
+  }
+});
