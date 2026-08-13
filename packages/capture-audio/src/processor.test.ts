@@ -7,6 +7,7 @@ import {
   chunkStableId,
   createChunkProcessor,
   segmentStableKey,
+  transcriptManifestHash,
   transcriptManifestKey,
   type ChunkProcessorDeps,
 } from "./processor.js";
@@ -1380,6 +1381,79 @@ test("the assembler does not retain closed conversations", async () => {
     await proc.finalize();
     assert.equal(spool.stats().conversations, 2, "the gap split two conversations");
     assert.ok(assembler.conversations().length <= 1, "but at most the open one is retained");
+  } finally {
+    spool.close();
+  }
+});
+
+test("a silent chunk completes and reclaims its audio", async () => {
+  // A silent transcript records no manifest, so it must not be judged against
+  // one: doing so would hold every silent chunk open forever (issue #2145).
+  const spool = new Spool(":memory:");
+  try {
+    const cleaned: string[] = [];
+    const speech = chunk({ path: "/tmp/raw/speech.wav" });
+    const ev = chunk();
+    const proc = createChunkProcessor(
+      deps(spool, {
+        // Speech first, then silence, on ONE processor: the silent chunk must
+        // not hold the conversation the speech chunk opened.
+        transcribe: async (input) =>
+          input.wavPath.endsWith("speech.wav") ? [{ text: "hello", startUtc: t(1), endUtc: t(2) }] : [],
+        cleanupRawAudio: async (event) => {
+          cleaned.push(event.path);
+        },
+      }),
+    );
+    proc.enqueue(speech);
+    proc.enqueue(ev);
+    await proc.finalize();
+    assert.equal(spool.isChunkApplied(`${chunkStableId(ev)}:done`), true, "the silent chunk completed");
+    assert.ok(cleaned.includes(ev.path), "and its raw audio was reclaimed");
+    assert.deepEqual(
+      [...spool.capturingConversationIds()],
+      [],
+      "and it did not hold an earlier conversation open",
+    );
+  } finally {
+    spool.close();
+  }
+});
+
+test("a conflicting retranscription appends nothing", async () => {
+  // Appending it would interleave content the first transcript never had, and
+  // a later correct replay would then skip the segments it already stored.
+  const spool = new Spool(":memory:");
+  try {
+    const ev = chunk();
+    const cid = chunkStableId(ev);
+    // A first run recorded its manifest and then died before completing.
+    spool.markApplied(
+      transcriptManifestKey(cid),
+      transcriptManifestHash(cid, [
+        { text: "A", startUtc: t(1), endUtc: t(2) },
+        { text: "B", startUtc: t(40), endUtc: t(41) },
+      ]),
+    );
+
+    const errors: Error[] = [];
+    const divergent = createChunkProcessor(
+      deps(spool, {
+        onError: (error) => errors.push(error),
+        transcribe: async () => [
+          { text: "X", startUtc: t(1), endUtc: t(2) },
+          { text: "B", startUtc: t(40), endUtc: t(41) },
+        ],
+      }),
+    );
+    divergent.enqueue(ev);
+    await divergent.finalize();
+    assert.equal(spool.stats().segments, 0, "the divergent transcript persisted nothing");
+    assert.equal(spool.isChunkApplied(`${cid}:done`), false, "and the chunk stays open");
+    assert.ok(
+      errors.some((error) => /does not match the recorded manifest/.test(error.message)),
+      "and the conflict was reported",
+    );
   } finally {
     spool.close();
   }

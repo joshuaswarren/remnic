@@ -130,6 +130,15 @@ export function chunkStableId(event: ChunkEvent): string {
   return `chk_${createHash("sha1").update(event.path).digest("hex")}`;
 }
 
+/**
+ * Ceiling on chunks held in the reorder buffer.
+ *
+ * At the default 30-second chunks this is over four hours of audio per
+ * channel, so it is only reachable when persistence has been failing for a
+ * long time. Bounding it keeps memory and the per-release scan finite.
+ */
+const MAX_BUFFERED_CHUNKS = 512;
+
 /** One transcribed chunk waiting in the reorder buffer (issue #2145). */
 interface BufferedChunk {
   event: ChunkEvent;
@@ -347,6 +356,21 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     });
     bufferedIds.add(chunkId);
     watermarkSourceMs = Math.max(watermarkSourceMs, lastEndMs(event, raw));
+    if (buffer.length > MAX_BUFFERED_CHUNKS) {
+      // A sustained persistence outage would otherwise grow this buffer — and
+      // the work of every release scan — without bound. The OLDEST chunk is
+      // dropped from memory, not from disk: its WAV stays for replay.
+      const evicted = buffer.shift();
+      if (evicted !== undefined) {
+        bufferedIds.delete(evicted.chunkId);
+        report(
+          new Error(
+            `reorder buffer is full (${MAX_BUFFERED_CHUNKS}); chunk ${evicted.chunkId} was dropped with its raw audio retained`,
+          ),
+          evicted.event,
+        );
+      }
+    }
     await releaseReady(false);
   }
 
@@ -533,7 +557,7 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       // to match, so a silent replay must not be the first to record one.
       const fullyProcessed =
         entry.built.length > 0 ? manifestMatches : !deps.spool.hasAppliedChunkPrefix(`${entry.chunkId}:`);
-      if (!manifestMatches) {
+      if (entry.built.length > 0 && !manifestMatches) {
         retainedForReplay = true;
         log.warn(
           `[capture-audio] chunk ${entry.chunkId} retranscribed to a different transcript than an earlier run; keeping its raw audio for replay`,
@@ -559,7 +583,7 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
    * Persist a buffered chunk's transcript manifest, once. Returns whether the
    * chunk may now be released.
    */
-  function recordTranscriptManifest(entry: BufferedChunk): boolean {
+  function recordTranscriptManifest(entry: BufferedChunk): boolean | "conflict" {
     if (entry.built.length === 0) {
       // A silent transcript has nothing to append, so it needs no manifest —
       // and writing one would let an empty replay of a partially applied chunk
@@ -569,11 +593,16 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     }
     try {
       const key = transcriptManifestKey(entry.chunkId);
-      if (deps.spool.appliedChunkValue(key) === undefined) {
-        deps.spool.markApplied(
-          key,
-          transcriptManifestHash(entry.chunkId, entry.built.map((item) => item.seg)),
-        );
+      const ours = transcriptManifestHash(entry.chunkId, entry.built.map((item) => item.seg));
+      const recorded = deps.spool.appliedChunkValue(key);
+      if (recorded === undefined) {
+        deps.spool.markApplied(key, ours);
+      } else if (recorded !== ours) {
+        // A divergent retranscription of a partially applied chunk. Appending
+        // it would interleave content the first transcript never had, so this
+        // chunk contributes NOTHING: it is dropped from the run and its raw
+        // audio is retained for a replay that reproduces the manifest.
+        return "conflict";
       }
       entry.manifestRecorded = true;
       return true;
@@ -612,7 +641,19 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
         // retranscription record the FIRST manifest and complete a partially
         // applied chunk (issue #2145). The event is not lost — the next pass
         // retries the write.
-        if (!candidate.manifestRecorded && !recordTranscriptManifest(candidate)) {
+        const manifest = candidate.manifestRecorded ? true : recordTranscriptManifest(candidate);
+        if (manifest === "conflict") {
+          buffer.splice(i, 1);
+          bufferedIds.delete(candidate.chunkId);
+          report(
+            new Error(
+              `transcript for chunk ${candidate.chunkId} does not match the recorded manifest; raw audio retained`,
+            ),
+            candidate.event,
+          );
+          continue;
+        }
+        if (!manifest) {
           // Hold the WHOLE window, not just this entry: applyBatch interleaves
           // the ready set together, and releasing peers without it would apply
           // the held chunk's segments out of order later (issue #2145).
