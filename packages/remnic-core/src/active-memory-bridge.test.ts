@@ -274,6 +274,38 @@ test("recallForActiveMemory excludes support passport records before applying th
   assert.equal(result.truncated, false);
 });
 
+test("recallForActiveMemory pages past private passport records", async () => {
+  const corpus = [
+    ...Array.from({ length: 40 }, (_, index) => ({
+      id: `private-${index}`,
+      score: 1 - index / 100,
+      path: `/tmp/memory/preferences/private-${index}.md`,
+      snippet: "private support card",
+    })),
+    { id: "safe", score: 0.5, path: "/tmp/memory/facts/safe.md", snippet: "safe memory" },
+  ];
+  const limits: number[] = [];
+  const orchestrator = {
+    resolveSelfNamespace: () => "session-namespace",
+    filterPrivateSearchResults: async (results: Array<{ path: string }>) =>
+      results.filter((result) => result.path.endsWith("safe.md")),
+    searchAcrossNamespaces: async ({ maxResults }: { maxResults?: number }) => {
+      limits.push(maxResults ?? corpus.length);
+      return corpus.slice(0, maxResults);
+    },
+  };
+
+  const result = await recallForActiveMemory(orchestrator as never, {
+    query: "support",
+    limit: 1,
+    sessionKey: "session-b",
+  });
+
+  assert.deepEqual(result.results.map((entry) => entry.id), ["safe"]);
+  assert.ok(limits.length > 1);
+  assert.equal(result.truncated, false);
+});
+
 test("recallForActiveMemory resolves collection-prefixed paths through the private-result filter", async () => {
   const calls: Array<{ paths: string[]; namespaces: readonly string[] | undefined }> = [];
   const orchestrator = {

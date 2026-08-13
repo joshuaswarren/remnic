@@ -3628,7 +3628,7 @@ const pluginDefinition = {
                   path: absolutePath,
                   snippet: "",
                   score: 0,
-                }]);
+                }], [], true);
                 if (visible.length === 0) {
                   throw new Error(`memory read excluded (private record): ${params.relPath}`);
                 }

@@ -101,3 +101,29 @@ test("readQmdResultMemory resolves an absolute date path whose file lives under 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("private-result filtering can preserve unresolved custom-collection hits", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-resolver-custom-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const config = parseConfig({ memoryDir: dir });
+    const resolver = new QmdResultResolver({
+      getConfig: () => config,
+      storageFor: async () => storage,
+      storageDirNamespace: () => config.defaultNamespace,
+      qmdCollectionNamespaceFromPrefix: () => null,
+      namespaceFromPath: () => config.defaultNamespace,
+    });
+    const result = { docid: "external", path: "custom-collection/page.md", snippet: "page", score: 1 };
+
+    assert.deepEqual(await resolver.filterPrivateSearchResults([result], storage), [result]);
+    const configured = { ...result, path: `${config.qmdCollection}/page.md` };
+    assert.deepEqual(await resolver.filterPrivateSearchResults([configured], storage), []);
+    assert.deepEqual(await resolver.filterPrivateSearchResults([configured], storage, [], true), [configured]);
+    const externalAbsolute = { ...result, path: path.join(os.tmpdir(), "external-collection", "page.md") };
+    assert.deepEqual(await resolver.filterPrivateSearchResults([externalAbsolute], storage), [externalAbsolute]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

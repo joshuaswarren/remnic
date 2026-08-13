@@ -4729,6 +4729,26 @@ test("search keeps paging while the backend page is full of excluded hits", asyn
   );
 });
 
+test("search removes excluded paths before private-memory resolution", async () => {
+  const { searchWithGenericExclusion } = await import("./access-memory-search-fanout.js");
+  const resolved: string[] = [];
+  const results = await searchWithGenericExclusion({
+    budget: 1,
+    sendInitialLimit: true,
+    search: async () => [
+      { path: "artifacts/private.md" },
+      { path: "facts/visible.md" },
+    ],
+    filterPrivate: async (hits) => {
+      resolved.push(...hits.map((hit) => hit.path));
+      return hits;
+    },
+    isExcluded: (memoryPath) => memoryPath.startsWith("artifacts/"),
+  });
+  assert.deepEqual(resolved, ["facts/visible.md"]);
+  assert.deepEqual(results, [{ path: "facts/visible.md" }]);
+});
+
 test("a budget above the backend cap still gets the rows it asked for", async () => {
   // The cap protects the backend from an unbounded walk; it must never sit
   // BELOW an explicit request, or a large search returns a short page for a

@@ -314,8 +314,8 @@ export async function searchWithGenericExclusion<TResult extends { path: string 
   let firstPage = true;
   for (;;) {
     const raw = await options.search(limit);
-    const privateVisible = await options.filterPrivate(raw);
-    results = privateVisible.filter((hit) => !options.isExcluded(hit.path));
+    const eligible = raw.filter((hit) => !options.isExcluded(hit.path));
+    results = await options.filterPrivate(eligible);
     if (firstPage) {
       firstPage = false;
       if (!options.sendInitialLimit) target = Math.min(budget, raw.length);
@@ -390,10 +390,12 @@ export async function runScopedMemorySearch(options: {
 export interface ScopedMemorySearchDeps {
   namespacesEnabled: boolean;
   defaultBudget: number;
+  memoryCollections: readonly string[];
   isExcluded(memoryPath: string): boolean;
   filterPrivate(
     results: Array<{ path: string; score: number; snippet?: string }>,
     namespaces: readonly string[],
+    preserveUnresolved?: boolean,
   ): Promise<Array<{ path: string; score: number; snippet?: string }>>;
   /** Flat-corpus authorization; throws when the namespace is unreadable. */
   authorizeFlatCorpus(namespace: string | undefined, principal: string | undefined): void;
@@ -451,7 +453,14 @@ export async function memorySearchThroughScope(
     query, collection, mode,
     namespacesEnabled: deps.namespacesEnabled,
     isExcluded: deps.isExcluded,
-    filterPrivate: (results) => deps.filterPrivate(results, searchNamespaces),
+    filterPrivate: (results) => deps.filterPrivate(
+      results,
+      searchNamespaces,
+      !deps.namespacesEnabled &&
+        collection !== undefined &&
+        collection !== "global" &&
+        !deps.memoryCollections.includes(collection),
+    ),
     budget: maxResults ?? deps.defaultBudget,
     sendInitialLimit: maxResults !== undefined,
     authorizeScope: async () => {

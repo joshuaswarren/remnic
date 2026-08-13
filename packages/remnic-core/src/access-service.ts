@@ -4721,6 +4721,7 @@ export class EngramAccessService {
     return memorySearchThroughScope(
       {
         namespacesEnabled: resolveNamespaceCapabilities(config).namespaces,
+        memoryCollections: [config.qmdCollection, config.qmdColdCollection ?? "openclaw-engram-cold"],
         // `0` is preserved, never coerced: a zero limit is a runtime
         // compatibility guarantee (AGENTS.md guardrail 4), and it means the
         // same thing here as an explicit `maxResults: 0` from the caller - an

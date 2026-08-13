@@ -190,7 +190,6 @@ export async function recallForActiveMemory(
   params: ActiveMemoryRecallParams,
 ): Promise<ActiveMemorySearchOutput> {
   const limit = clampLimit(params.limit);
-  const requestedResults = Math.min(200, limit + 20);
   const snippetMaxChars =
     typeof params.snippetMaxChars === "number" && Number.isFinite(params.snippetMaxChars)
       ? Math.max(1, Math.min(4000, Math.floor(params.snippetMaxChars)))
@@ -201,19 +200,22 @@ export async function recallForActiveMemory(
     typeof params.filters?.namespace === "string" ? params.filters.namespace : undefined,
   );
 
-  const raw = await orchestrator.searchAcrossNamespaces({
-    query: params.query,
-    maxResults: requestedResults,
-    namespaces: [namespace],
-    mode: "search",
-  });
   const storage = await orchestrator.getStorageForNamespace?.(namespace);
-  const visible = await filterVisibleActiveMemoryCandidates(
-    orchestrator,
-    namespace,
-    storage,
-    raw,
-  );
+  const candidateCap = 25_000;
+  let requestedResults = Math.min(candidateCap, limit + 20);
+  let raw: ActiveMemorySearchCandidate[] = [];
+  let visible: ActiveMemorySearchCandidate[] = [];
+  for (;;) {
+    raw = await orchestrator.searchAcrossNamespaces({
+      query: params.query,
+      maxResults: requestedResults,
+      namespaces: [namespace],
+      mode: "search",
+    });
+    visible = await filterVisibleActiveMemoryCandidates(orchestrator, namespace, storage, raw);
+    if (visible.length > limit || raw.length < requestedResults || requestedResults >= candidateCap) break;
+    requestedResults = Math.min(candidateCap, requestedResults * 2);
+  }
 
   return {
     results: visible.slice(0, limit).map((candidate, index) => ({
@@ -222,7 +224,7 @@ export async function recallForActiveMemory(
       text: truncateSnippet(candidate.snippet ?? candidate.text ?? "", snippetMaxChars),
       metadata: pickMetadata(candidate.metadata),
     })),
-    truncated: visible.length > limit,
+    truncated: visible.length > limit || (raw.length === requestedResults && requestedResults >= candidateCap),
   };
 }
 

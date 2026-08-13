@@ -35,6 +35,7 @@ import { SecureStoreLockedError } from "../secure-store/index.js";
 import type { PluginConfig, QmdSearchResult, MemoryFile } from "../types.js";
 import type { StorageManager } from "../index.js";
 import { isSupportPassportPrivateMemory } from "../support-passport/card-projection.js";
+import { ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
 
 /**
  * Split a relative QMD result path into its collection prefix and the
@@ -309,6 +310,7 @@ export class QmdResultResolver {
     results: QmdSearchResult[],
     fallbackStorage: StorageManager,
     namespaces: readonly string[] = [],
+    preserveUnresolved = false,
   ): Promise<QmdSearchResult[]> {
     const visible: QmdSearchResult[] = [];
     for (const result of results) {
@@ -319,7 +321,23 @@ export class QmdResultResolver {
         namespaces,
         result.namespace,
       );
-      if (memory && !isSupportPassportPrivateMemory(memory)) visible.push(result);
+      const parts = qmdCollectionPathParts(result.path);
+      const config = this.getConfig();
+      const unresolvedExternalCollection =
+        !memory &&
+        ((parts !== null &&
+          !ALL_CATEGORY_DIRS.includes(parts.collection) &&
+          parts.collection !== config.qmdCollection &&
+          parts.collection !== (config.qmdColdCollection ?? "openclaw-engram-cold") &&
+          this.qmdCollectionNamespaceFromPrefix(parts.collection) === null) ||
+          (path.isAbsolute(result.path) &&
+            !isPathInsideStorageRoot(path.resolve(config.memoryDir), path.resolve(result.path))));
+      if (
+        (memory && !isSupportPassportPrivateMemory(memory)) ||
+        (!memory && (preserveUnresolved || unresolvedExternalCollection))
+      ) {
+        visible.push(result);
+      }
     }
     return visible;
   }

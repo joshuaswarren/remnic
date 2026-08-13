@@ -2386,6 +2386,25 @@ test("access service hides private memory timelines when the projection is stale
   }
 });
 
+test("access service keeps cold-memory timelines visible", { skip: skipUnlessBetterSqlite3() }, async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-access-timeline-cold-"));
+  try {
+    await writeText(memoryDir, "cold/facts/2026-03-08/cold-fact.md", memoryDoc("cold-fact", "Cold public memory."));
+    await rebuildMemoryProjection({ memoryDir, dryRun: false });
+    const storage = new StorageManager(memoryDir);
+    const service = new EngramAccessService({
+      config: { memoryDir, namespacesEnabled: false, defaultNamespace: "global" },
+      getStorage: async () => storage,
+    } as any);
+
+    const result = await service.memoryTimeline("cold-fact");
+    assert.equal(result.found, true);
+    assert.ok(result.count > 0);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("access service uses projection-backed browse filters, including archived memories", { skip: skipUnlessBetterSqlite3() }, async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-service-projection-browse-"));
   try {

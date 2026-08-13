@@ -377,6 +377,11 @@ test("scenario: compatibility memory runtime excludes private support-passport r
       await manager.readFile({ relPath: "preferences/safe.md" }).then((result) => result.text),
       /safe preference/,
     );
+    fs.writeFileSync(path.join(memoryDir, "profile.md"), "# Profile\n\nAllowed non-memory markdown.\n");
+    assert.match(
+      await manager.readFile({ relPath: "profile.md" }).then((result) => result.text),
+      /Allowed non-memory markdown/,
+    );
     await assert.rejects(
       manager.readFile({ relPath: "preferences/private-card.md" }),
       /memory read excluded \(private record\)/,
