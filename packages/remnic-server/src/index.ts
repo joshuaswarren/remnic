@@ -14,7 +14,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, initLogger, log, getAllValidTokens, getAllValidTokenEntriesCached, loadTokenStore, expandTildePath, SupportPassportModelBridge, composeSupportPassportExternalRequestHandlers, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch } from "@remnic/core";
+import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, initLogger, log, getAllValidTokens, getAllValidTokenEntriesCached, loadTokenStore, expandTildePath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch } from "@remnic/core";
 import { probeBetterSqlite3Driver } from "@remnic/core/runtime/better-sqlite";
 import { applyOAuthEnvOverrides, buildOAuthRequestHandler } from "./oauth.js";
 import { envOverrides, readCompatEnv } from "./server-env.js";
@@ -25,6 +25,7 @@ import {
   runStartupSearchWarmup,
   type StartupReadinessState,
 } from "./startup-readiness.js";
+import { createSupportPassportServerRuntime } from "./support-passport-runtime.js";
 export { envOverrides };
 export {
   completeStartupReadiness,
@@ -819,13 +820,6 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
 
   // Start the HTTP server immediately so health checks, MCP handshakes,
   // and liveness probes can connect while deferred init is still running.
-  const supportPassportModelBridge =
-    config.supportPassport.enabled && config.modelSource === "gateway"
-      ? new SupportPassportModelBridge()
-      : null;
-  const service = new EngramAccessService(orchestrator, {
-    supportPassportGatewayRoute: supportPassportModelBridge?.route,
-  });
   const readiness: StartupReadinessState = { ready: false, warmupAttempts: 0, lastError: null, degraded: false };
 
   const authToken = parsedServerConfig.authToken ?? readCompatEnv("REMNIC_AUTH_TOKEN", "ENGRAM_AUTH_TOKEN") ?? "";
@@ -839,6 +833,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
   // Parsed strictly — invalid values abort startup with a precise message.
   const oauthConfig = applyOAuthEnvOverrides((serverConfig as { oauth?: unknown }).oauth);
   const oauthRequestHandler = buildOAuthRequestHandler(oauthConfig);
+  const supportPassportRuntime = createSupportPassportServerRuntime(orchestrator, config, oauthRequestHandler), { service } = supportPassportRuntime;
   const httpServer = new EngramAccessHttpServer({
     service,
     host: parsedServerConfig.host,
@@ -867,10 +862,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
     citationsEnabled: config.citationsEnabled,
     citationsAutoDetect: config.citationsAutoDetect,
     emitLegacyTools: config.emitLegacyTools,
-    externalRequestHandler: composeSupportPassportExternalRequestHandlers(
-      supportPassportModelBridge?.requestHandler,
-      oauthRequestHandler,
-    ),
+    externalRequestHandler: supportPassportRuntime.externalRequestHandler,
     ...(oauthConfig.enabled
       ? {
           resourceMetadataUrl: new URL(
@@ -948,7 +940,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
     stopPromise = (async () => {
       startupSyncAbort.abort();
       readinessAbort.abort();
-      supportPassportModelBridge?.close();
+      supportPassportRuntime.close();
       orchestrator.abortDeferredInit();
       try {
         await originalStop();

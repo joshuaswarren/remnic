@@ -68,6 +68,7 @@ import { isValidResolutionVerb, executeResolution } from "./contradiction/resolu
 import { RelayMissionStoreError } from "./relay/mission.js";
 import { SupportPassportAccessHttpBase } from "./support-passport/access-http-base.js";
 import { serializeInlineScriptValue } from "./inline-script.js";
+import type { SupportPassportExternalRequestHandler } from "./support-passport/public-http.js";
 export interface AccessHttpReadinessState {
   ready: boolean;
   warmupAttempts: number;
@@ -151,14 +152,7 @@ export interface EngramAccessHttpServerOptions {
    * operator-only endpoints without owning token validation.
    * Errors thrown by the handler flow into the existing error handling.
    */
-  externalRequestHandler?: (
-    req: IncomingMessage,
-    res: ServerResponse,
-    ctx: {
-      authorized: boolean;
-      tokenAuthorized: boolean;
-    },
-  ) => Promise<boolean>;
+  externalRequestHandler?: SupportPassportExternalRequestHandler;
 }
 
 export interface EngramAccessHttpServerStatus {
@@ -411,14 +405,7 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
   private readonly adapterRegistry: AdapterRegistry | null;
   private readonly readiness: () => AccessHttpReadinessState;
   private readonly resourceMetadataUrl?: string;
-  private readonly externalRequestHandler?: (
-    req: IncomingMessage,
-    res: ServerResponse,
-    ctx: {
-      authorized: boolean;
-      tokenAuthorized: boolean;
-    },
-  ) => Promise<boolean>;
+  private readonly externalRequestHandler?: SupportPassportExternalRequestHandler;
   private readonly writeLimiter: WriteRateLimiter;
   private readonly mcpServer: EngramMcpServer;
   private server: Server | null = null;
