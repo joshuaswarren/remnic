@@ -386,6 +386,12 @@ export class SupportPassportCardService {
       }
       if (card.card.status === nextStatus) return card.card;
       this.requireStatus(card, expectedStatus);
+      if (expectedStatus === "active" && nextStatus === "archived") {
+        await this.rejectPendingReplacementForWithdrawal(storage, card, lock, principal, namespace);
+        card = await this.requireCard(storage, card.card.cardId, namespace, principal);
+        this.requireRevision(card, parsed.data.expectedRevision);
+        this.requireStatus(card, expectedStatus);
+      }
       const updatedAt = this.now().toISOString();
       await this.requireOwnerLock(lock);
       const changed = await storage.writeMemoryFrontmatterIfUnchanged(
@@ -615,6 +621,39 @@ export class SupportPassportCardService {
       throw new SupportPassportError("storage_conflict", "The prior support card changed before replacement.", 409);
     }
     return priorId;
+  }
+
+  private async rejectPendingReplacementForWithdrawal(
+    storage: StorageManager,
+    predecessor: StoredSupportPassportCard,
+    lock: HeldFileLockController,
+    principal: string,
+    namespace: string
+  ): Promise<void> {
+    const replacements = (await this.readProjectedCards(storage, namespace, principal)).filter(
+      (item) => item.card.status === "pending_review" && item.memory.frontmatter.supersedes === predecessor.card.cardId
+    );
+    if (replacements.length > 1) {
+      throw new SupportPassportError(
+        "storage_conflict",
+        "Multiple support card edits target the card being withdrawn.",
+        409
+      );
+    }
+    const [replacement] = replacements;
+    if (!replacement) return;
+    await this.requireOwnerLock(lock);
+    const rejected = await storage.writeMemoryFrontmatterIfUnchanged(
+      replacement.memory,
+      { status: "rejected", updated: this.now().toISOString() },
+      { actor: principal, reasonCode: "predecessor-withdrawn" }
+    );
+    if (rejected) return;
+    const current = await storage.getMemoryById(replacement.card.cardId);
+    const currentCard = current ? this.projectOwnedCard(current, namespace, principal) : null;
+    if (currentCard?.card.status !== "rejected") {
+      throw new SupportPassportError("storage_conflict", "The pending support card edit could not be cancelled.", 409);
+    }
   }
 
   private async validatePriorForReplacement(
