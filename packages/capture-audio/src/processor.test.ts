@@ -1116,10 +1116,11 @@ test("a shortened retranscription keeps the chunk open instead of losing its tai
     const ev = chunk({ path: "/tmp/raw/shrink.wav" });
     const cid = chunkStableId(ev);
     const cleaned: string[] = [];
-    const two = [
-      { text: "A", startUtc: t(1), endUtc: t(2) },
-      { text: "B", startUtc: t(40), endUtc: t(41) },
-    ];
+    // Named, not indexed: `noUncheckedIndexedAccess` makes `two[0]` optional,
+    // which breaks contextual typing of the deps object it is passed through.
+    const segmentA: TranscribedSegment = { text: "A", startUtc: t(1), endUtc: t(2) };
+    const segmentB: TranscribedSegment = { text: "B", startUtc: t(40), endUtc: t(41) };
+    const two = [segmentA, segmentB];
     // Fail the SECOND append so segment A lands durably and B never does.
     let appends = 0;
     const guarded = new Proxy(spool, {
@@ -1155,7 +1156,7 @@ test("a shortened retranscription keeps the chunk open instead of losing its tai
     const shortened = createChunkProcessor(
       deps(spool, {
         assembler: new ConversationAssembler({ gapMinutes: 0 }),
-        transcribe: async () => [two[0]],
+        transcribe: async () => [segmentA],
         cleanupRawAudio: async (event) => {
           cleaned.push(event.path);
         },
@@ -1169,7 +1170,9 @@ test("a shortened retranscription keeps the chunk open instead of losing its tai
       false,
       "a shorter transcript never completes the chunk",
     );
-    assert.deepEqual(cleaned, [], "and its raw audio is retained for another replay");
+    // `assert.deepEqual` is an assertion signature, so comparing against `[]`
+    // would narrow `cleaned` to `never[]` for the rest of the test.
+    assert.equal(cleaned.length, 0, "and its raw audio is retained for another replay");
 
     // A chunk whose transcript legitimately matches DOES complete.
     const stable = chunk({ path: "/tmp/raw/stable.wav" });
@@ -1177,7 +1180,7 @@ test("a shortened retranscription keeps the chunk open instead of losing its tai
     const ok = createChunkProcessor(
       deps(spool, {
         assembler: new ConversationAssembler({ gapMinutes: 0 }),
-        transcribe: async () => [two[0]],
+        transcribe: async () => [segmentA],
         cleanupRawAudio: async (event) => {
           cleaned.push(event.path);
         },
