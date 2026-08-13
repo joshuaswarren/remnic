@@ -88,8 +88,7 @@ export interface DelegateRuntimeOptions {
   namespaceBindings: SessionNamespaceBindingStore;
   /** Mirrors the embedded `hooks.allowPromptInjection` policy. */
   allowPromptInjection: boolean;
-  /** Passive slot mode: register nothing, exactly like embedded passive mode
-   * skips prompt-injection and extraction hooks. */
+  /** Passive slot mode skips memory hooks and capabilities. */
   passive: boolean;
   /** Mirrors embedded `heartbeat.gateExtractionDuringHeartbeat`: skip
    * observing heartbeat-triggered turns. */
@@ -250,12 +249,6 @@ export function registerDelegateRuntime(
 ): void {
   const { target, namespace, namespaceBindings } = options;
   const now = options.now ?? Date.now;
-  if (options.passive) {
-    log.info(
-      `[${options.serviceId}] bridge mode delegate: memory slot not owned — passive, no hooks registered`,
-    );
-    return;
-  }
   if (options.supportPassportModelRoute) {
     if (typeof api.registerService !== "function") {
       log.error(
@@ -270,6 +263,12 @@ export function registerDelegateRuntime(
         }),
       );
     }
+  }
+  if (options.passive) {
+    log.info(
+      `[${options.serviceId}] bridge mode delegate: memory slot not owned — passive, no memory hooks registered`,
+    );
+    return;
   }
 
   // Session-scoped cache of precomputed recall lines, mirroring the embedded

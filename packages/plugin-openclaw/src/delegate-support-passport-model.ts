@@ -1,4 +1,5 @@
 import {
+  SUPPORT_PASSPORT_MODEL_ACK_PATH,
   SUPPORT_PASSPORT_MODEL_JOB_PATH,
   SUPPORT_PASSPORT_MODEL_RESULT_PATH,
   type SupportPassportModelRoute,
@@ -127,7 +128,7 @@ export function createDelegateSupportPassportModelService(
         options.target,
         options.serviceId,
         SUPPORT_PASSPORT_MODEL_RESULT_PATH,
-        { id: job.id, result },
+        { id: job.id, claimId: job.claimId, result },
         AbortSignal.timeout(shutdownTimeoutMs),
         shutdownTimeoutMs
       );
@@ -146,7 +147,7 @@ export function createDelegateSupportPassportModelService(
           options.target,
           options.serviceId,
           SUPPORT_PASSPORT_MODEL_RESULT_PATH,
-          { id: job.id, result },
+          { id: job.id, claimId: job.claimId, result },
           signal,
           Math.min(RESULT_REQUEST_TIMEOUT_MS, remainingMs)
         );
@@ -171,6 +172,22 @@ export function createDelegateSupportPassportModelService(
     if (signal.aborted) return;
     throw new Error(`delegate support passport model completion missed its deadline after ${lastFailure}`);
   };
+  const acknowledge = async (
+    job: NonNullable<ReturnType<typeof parseSupportPassportModelJob>>,
+    signal: AbortSignal,
+  ): Promise<boolean> => {
+    if (!job.claimId) return true;
+    const response = await post(
+      options.target,
+      options.serviceId,
+      SUPPORT_PASSPORT_MODEL_ACK_PATH,
+      { id: job.id, claimId: job.claimId },
+      signal,
+      Math.min(RESULT_REQUEST_TIMEOUT_MS, job.timeoutMs),
+    );
+    await response.body?.cancel();
+    return response.ok;
+  };
   const runPoller = async (signal: AbortSignal): Promise<void> => {
     while (!signal.aborted) {
       try {
@@ -178,7 +195,7 @@ export function createDelegateSupportPassportModelService(
           options.target,
           options.serviceId,
           SUPPORT_PASSPORT_MODEL_JOB_PATH,
-          { timeoutMs: 20_000 },
+          { timeoutMs: 20_000, claimLease: true },
           signal,
           requestTimeoutMs
         );
@@ -191,6 +208,11 @@ export function createDelegateSupportPassportModelService(
         const job = parseSupportPassportModelJob(await response.json());
         if (!job) {
           log.warn("delegate support passport model bridge received an invalid job");
+          continue;
+        }
+        if (!(await acknowledge(job, signal))) {
+          log.warn("delegate support passport model bridge could not acknowledge a claimed job");
+          await abortableRetryDelay(signal);
           continue;
         }
         const deadline = Date.now() + job.timeoutMs;

@@ -1717,10 +1717,21 @@ test("delegate preserves legacy bindings while the legacy adapter is active", as
     await stub.close();
   }
 });
-test("delegate passive mode registers no hooks", async () => {
-  const api = recordingApi();
-  registerDelegateRuntime(api, optionsFor(1, { passive: true }));
+test("delegate passive mode skips memory hooks but keeps the passport model worker", async () => {
+  const api = recordingApi() as RecordingApi & {
+    services: Array<{ id: string }>;
+    registerService(service: { id: string }): void;
+  };
+  api.services = [];
+  api.registerService = (service) => api.services.push(service);
+  registerDelegateRuntime(api, optionsFor(1, {
+    passive: true,
+    supportPassportModelRoute: { kind: "gateway", invoke: async () => null },
+  }));
   assert.equal(api.handlers.size, 0, "passive slot mode must not register hooks");
+  assert.deepEqual(api.services.map((service) => service.id), [
+    "openclaw-remnic:support-passport-model",
+  ]);
 });
 
 test("delegate honors allowPromptInjection=false but keeps observe/flush", async () => {

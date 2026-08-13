@@ -3,6 +3,7 @@ import http from "node:http";
 import test from "node:test";
 
 import {
+  SUPPORT_PASSPORT_MODEL_ACK_PATH,
   SUPPORT_PASSPORT_MODEL_JOB_PATH,
   SUPPORT_PASSPORT_MODEL_RESULT_PATH,
   SupportPassportModelBridge,
@@ -145,5 +146,65 @@ test("an unclaimed model job expires without relying on the caller's wrapper", a
     assert.ok(Date.now() - started < 1_000);
   } finally {
     bridge.close();
+  }
+});
+
+test("an unacknowledged leased job becomes available to another worker", async () => {
+  const bridge = new SupportPassportModelBridge({ claimAckTimeoutMs: 20 });
+  const server = await startBridgeServer(bridge);
+  const controller = new AbortController();
+  try {
+    const resultPromise = bridge.route.invoke(messages, {
+      temperature: 0,
+      maxTokens: 500,
+      timeoutMs: 5_000,
+      signal: controller.signal,
+      operation: "support-passport-draft",
+      jsonSchema: { name: "drafts", schema: { type: "object" } },
+    });
+    const poll = () => fetch(`${server.origin}${SUPPORT_PASSPORT_MODEL_JOB_PATH}`, {
+      method: "POST",
+      headers: { authorization: "Bearer owner-token", "content-type": "application/json" },
+      body: JSON.stringify({ timeoutMs: 100, claimLease: true }),
+    });
+    const firstResponse = await poll();
+    assert.equal(firstResponse.status, 200);
+    const first = (await firstResponse.json()) as { id: string; claimId: string };
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const secondResponse = await poll();
+    assert.equal(secondResponse.status, 200);
+    const second = (await secondResponse.json()) as { id: string; claimId: string };
+    assert.equal(second.id, first.id);
+    assert.notEqual(second.claimId, first.claimId);
+
+    const staleAck = await fetch(`${server.origin}${SUPPORT_PASSPORT_MODEL_ACK_PATH}`, {
+      method: "POST",
+      headers: { authorization: "Bearer owner-token", "content-type": "application/json" },
+      body: JSON.stringify({ id: first.id, claimId: first.claimId }),
+    });
+    assert.equal(staleAck.status, 404);
+    const currentAck = await fetch(`${server.origin}${SUPPORT_PASSPORT_MODEL_ACK_PATH}`, {
+      method: "POST",
+      headers: { authorization: "Bearer owner-token", "content-type": "application/json" },
+      body: JSON.stringify({ id: second.id, claimId: second.claimId }),
+    });
+    assert.equal(currentAck.status, 204);
+
+    const completion = await fetch(`${server.origin}${SUPPORT_PASSPORT_MODEL_RESULT_PATH}`, {
+      method: "POST",
+      headers: { authorization: "Bearer owner-token", "content-type": "application/json" },
+      body: JSON.stringify({
+        id: second.id,
+        claimId: second.claimId,
+        result: { content: "{}", modelUsed: "gateway/local" },
+      }),
+    });
+    assert.equal(completion.status, 204);
+    assert.deepEqual(await resultPromise, { content: "{}", modelUsed: "gateway/local" });
+  } finally {
+    controller.abort();
+    bridge.close();
+    await server.close();
   }
 });

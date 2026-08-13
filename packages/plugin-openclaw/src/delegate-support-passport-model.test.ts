@@ -9,6 +9,7 @@ test("the delegate worker runs daemon jobs through the injected gateway route", 
   const completion = Promise.withResolvers<Record<string, unknown>>();
   const job: SupportPassportModelJob = {
     id: "a871fab2-2f1c-478c-af4c-8c4a755d8072",
+    claimId: "b871fab2-2f1c-478c-af4c-8c4a755d8073",
     messages: [
       { role: "system", content: "Return JSON." },
       { role: "user", content: JSON.stringify({ sourceNotes: [{ memoryId: "memory-1" }] }) },
@@ -20,6 +21,7 @@ test("the delegate worker runs daemon jobs through the injected gateway route", 
     jsonSchema: { name: "drafts", schema: { type: "object" } },
   };
   let served = false;
+  let acknowledged = false;
   let completionAttempts = 0;
   const server = http.createServer((req, res) => {
     let raw = "";
@@ -37,6 +39,13 @@ test("the delegate worker runs daemon jobs through the injected gateway route", 
           res.statusCode = 204;
           res.end();
         }
+        return;
+      }
+      if (req.url?.endsWith("/jobs/ack")) {
+        const claim = JSON.parse(raw) as { id: string; claimId: string };
+        acknowledged = claim.id === job.id && claim.claimId === job.claimId;
+        res.statusCode = 204;
+        res.end();
         return;
       }
       completionAttempts += 1;
@@ -60,6 +69,7 @@ test("the delegate worker runs daemon jobs through the injected gateway route", 
   const route: SupportPassportModelRoute = {
     kind: "gateway",
     invoke: async (_messages, options) => {
+      assert.equal(acknowledged, true);
       const result = {
         content: JSON.stringify({
           cards: [
@@ -92,6 +102,7 @@ test("the delegate worker runs daemon jobs through the injected gateway route", 
     assert.equal(accepted, true);
     assert.equal(completionAttempts, 2);
     assert.equal(posted.id, job.id);
+    assert.equal(posted.claimId, job.claimId);
     assert.deepEqual(posted.result, {
       content: JSON.stringify({
         cards: [
