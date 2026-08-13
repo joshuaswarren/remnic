@@ -7,6 +7,7 @@ import {
 } from "./card-projection.js";
 import { SupportPassportListCardsInputSchema, SupportPassportNamespaceSchema } from "./contracts.js";
 import { SupportPassportError } from "./errors.js";
+import { isCommittedGeneratedCard } from "./generated-batch.js";
 import {
   type SupportPassportCreateGrantInput,
   SupportPassportCreateGrantInputSchema,
@@ -70,13 +71,9 @@ export class SupportPassportGrantService {
       async (ownerLock) => {
         options.signal?.throwIfAborted();
         const ownerHash = computeSupportPassportOwnerKey(owner.principal);
-        const cardsById = new Map(
-          this.projectOwnedCards(
-            await owner.storage.readAllMemories(),
-            owner.namespace,
-            ownerHash
-          ).map((card) => [card.card.cardId, card])
-        );
+        const cardsById = (
+          await this.readStoredCardSnapshot(owner.storage, owner.namespace, ownerHash)
+        ).cardsById;
         for (const cardRef of parsed.data.cards) {
           const stored = cardsById.get(cardRef.cardId);
           if (
@@ -258,7 +255,7 @@ export class SupportPassportGrantService {
       const memories = await storage.readAllMemories();
       const after = this.cardSnapshotVersion(storage);
       if (before !== after) continue;
-      const cards = this.projectOwnedCards(memories, namespace, owner);
+      const cards = await this.projectOwnedCards(storage, memories, namespace, owner);
       const snapshot = {
         version: after,
         cardsById: new Map(cards.map((card) => [card.card.cardId, card])),
@@ -268,11 +265,12 @@ export class SupportPassportGrantService {
     throw new SupportPassportError("storage_conflict", "The support card list changed during review.", 409);
   }
 
-  private projectOwnedCards(
+  private async projectOwnedCards(
+    storage: StorageManager,
     memories: MemoryFile[],
     namespace: string,
     owner: string
-  ): StoredSupportPassportCard[] {
+  ): Promise<StoredSupportPassportCard[]> {
     const cards = memories
       .map((memory) => projectSupportPassportCard(memory))
       .filter(
@@ -280,13 +278,15 @@ export class SupportPassportGrantService {
           card !== null && card.namespace === namespace && card.owner === owner
       );
     const cardIds = new Set<string>();
+    const committed: StoredSupportPassportCard[] = [];
     for (const card of cards) {
       if (cardIds.has(card.card.cardId)) {
         throw new SupportPassportError("card_data_invalid", "Support card IDs must be unique.", 500);
       }
       cardIds.add(card.card.cardId);
+      if (await isCommittedGeneratedCard(storage, card)) committed.push(card);
     }
-    return cards;
+    return committed;
   }
 
   private cardSnapshotVersion(storage: StorageManager): string {

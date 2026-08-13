@@ -1135,7 +1135,7 @@ export class LocalLlmClient {
           if (!options.redactProviderErrors) log.debug(`local LLM error body: ${responseBody.slice(0, 500)}`);
         }
         log.warn(
-          `local LLM request failed: ${response.status} ${response.statusText}${options.redactProviderErrors ? "" : reason} ` +
+          `local LLM request failed: ${response.status}${options.redactProviderErrors ? "" : ` ${response.statusText}${reason}`} ` +
           `(op=${operation}, model=${this.config.localLlmModel}, url=${chatUrl}, promptChars=${promptChars}, maxTokens=${requestBody.max_tokens as number})`,
         );
         const nonRecoverableReason =

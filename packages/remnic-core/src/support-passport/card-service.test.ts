@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -2625,8 +2625,82 @@ test("generated draft rollback continues after one cleanup throws", async () => 
     );
     assert.equal(rollbackAttempts, 2);
     const remaining = await subject.service.listCards({ principal: "owner:alice" });
-    assert.equal(remaining.length, 1);
-    assert.equal(remaining[0]?.title, "First draft");
+    assert.deepEqual(remaining, []);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("listing rolls back an incomplete generated batch after restart", async () => {
+  const subject = await makeSubject();
+  try {
+    const writeSealedMemory = subject.aliceStorage.writeSealedMemory.bind(subject.aliceStorage);
+    let writes = 0;
+    subject.aliceStorage.writeSealedMemory = async (...args) => {
+      const written = await writeSealedMemory(...args);
+      writes += 1;
+      if (writes === 2) throw new Error("simulated process exit after the first generated card");
+      return written;
+    };
+    const writeFrontmatter = subject.aliceStorage.writeMemoryFrontmatterIfUnchanged.bind(subject.aliceStorage);
+    subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = async (memory, patch, lifecycle) => {
+      if (lifecycle?.reasonCode === "draft-batch-failed") {
+        throw new Error("simulated process exit before cleanup");
+      }
+      return await writeFrontmatter(memory, patch, lifecycle);
+    };
+
+    await assert.rejects(
+      subject.service.createGeneratedDrafts({
+        principal: "owner:alice",
+        cards: [
+          {
+            title: "First draft",
+            statement: "Give me time to answer.",
+            category: "communication",
+            sourceMemoryIds: ["source-1"],
+          },
+          {
+            title: "Second draft",
+            statement: "Tell me before plans change.",
+            category: "transitions",
+            sourceMemoryIds: ["source-2"],
+          },
+        ],
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
+    );
+    subject.aliceStorage.writeSealedMemory = writeSealedMemory;
+    subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = writeFrontmatter;
+
+    const persisted = await subject.aliceStorage.readAllMemories();
+    const card = persisted.find((memory) => memory.frontmatter.tags?.includes("support-passport-card"));
+    assert.ok(card);
+    assert.equal(card.frontmatter.status, "pending_review");
+    const batchId = card.frontmatter.structuredAttributes?.["support-passport-generated-batch-id"];
+    assert.match(batchId ?? "", /^[0-9a-f-]{36}$/);
+    const markerPath = path.join(
+      subject.aliceStorage.dir,
+      "state",
+      "support-passport",
+      "generated-batches",
+      `${batchId}.json`
+    );
+    const marker = JSON.parse(await readFile(markerPath, "utf8")) as { complete?: unknown; size?: unknown };
+    assert.equal(marker.complete, false);
+    assert.equal(marker.size, 2);
+
+    StorageManager.clearAllStaticCaches();
+    const restartedStorage = new StorageManager(subject.aliceStorage.dir);
+    await restartedStorage.ensureDirectories();
+    const restarted = new SupportPassportCardService({
+      resolveOwner: async (principal) => ({ principal, namespace: "alice", storage: restartedStorage }),
+    });
+    assert.deepEqual(await restarted.listCards({ principal: "owner:alice" }), []);
+    assert.equal((await restartedStorage.getMemoryById(card.frontmatter.id))?.frontmatter.status, "rejected");
+    await assert.rejects(readFile(markerPath, "utf8"), (error: unknown) => {
+      return (error as NodeJS.ErrnoException).code === "ENOENT";
+    });
   } finally {
     await subject.cleanup();
   }
