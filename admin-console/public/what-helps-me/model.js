@@ -368,6 +368,9 @@
   }
 
   function replayId(prefix) {
+    if (!globalScope.crypto?.getRandomValues) {
+      throw new Error("Synthetic replay needs a secure browser context.");
+    }
     const bytes = new Uint8Array(8);
     globalScope.crypto.getRandomValues(bytes);
     return `${prefix}-${[...bytes].map((value) => value.toString(16).padStart(2, "0")).join("")}`;
@@ -397,7 +400,7 @@
 
     function publicGuide(grant) {
       const selected = grant.cards.map((reference) => cards.find((card) => card.cardId === reference.cardId));
-      if (selected.some((card) => !card || card.status !== "active")) {
+      if (selected.length === 0 || selected.some((card) => !card || card.status !== "active")) {
         const error = new Error("The shared support guide has changed.");
         error.code = "grant_stale";
         throw error;
@@ -453,13 +456,19 @@
         return { card: { ...card } };
       },
       async mutateCard(cardId, input, action) {
+        const nextStatus = {
+          approve: "active",
+          reject: "rejected",
+          withdraw: "archived",
+        }[action];
+        if (!nextStatus) throw new Error("The support card action is invalid.");
         const card = cards.find(
           (candidate) => candidate.cardId === cardId && candidate.revision === input.expectedRevision
         );
         if (!card) throw new Error("The support card changed after it was loaded.");
         const expected = action === "withdraw" ? "active" : "pending_review";
         if (card.status !== expected) throw new Error(`The support card must have status ${expected}.`);
-        card.status = action === "approve" ? "active" : action === "reject" ? "rejected" : "archived";
+        card.status = nextStatus;
         card.updatedAt = now().toISOString();
         card.revision = replayRevision(`${card.cardId}:${card.status}:${card.updatedAt}:${card.statement}`);
         if (action === "approve" && replacements.has(card.cardId)) {
@@ -491,6 +500,9 @@
           selected.some((card) => !card || card.status !== "active" || revisions.get(card.cardId) !== card.revision)
         )
           throw new Error("Only approved support cards can be shared.");
+        if (!globalScope.crypto?.randomUUID) {
+          throw new Error("Synthetic replay needs a secure browser context.");
+        }
         const grantId = globalScope.crypto.randomUUID();
         const secret = replayId("replay-secret").padEnd(43, "x");
         const grant = {

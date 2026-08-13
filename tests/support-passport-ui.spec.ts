@@ -769,6 +769,103 @@ test("a stalled manual draft aborts without leaving a retryable duplicate", asyn
   );
 });
 
+test("a timed-out edit does not claim an identical draft for another card", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers edit reconciliation.");
+  const now = new Date("2026-08-11T12:00:00.000Z");
+  const reviewBy = new Date(now.getTime() + 24 * 60 * 60_000).toISOString();
+  const sourceCard = {
+    cardId: "source-card",
+    title: "Plan changes",
+    statement: "Tell me before plans change.",
+    category: "transitions",
+    status: "active",
+    updatedAt: now.toISOString(),
+    reviewBy,
+    revision: "a".repeat(64),
+  };
+  const otherCard = { ...sourceCard, cardId: "other-card", revision: "b".repeat(64) };
+  const unrelatedDraft = {
+    ...sourceCard,
+    cardId: "unrelated-draft",
+    title: "Early plan changes",
+    status: "pending_review",
+    revision: "c".repeat(64),
+  };
+  await page.clock.install({ time: now });
+  await page.addInitScript(() => {
+    const realFetch = window.fetch.bind(window);
+    Object.assign(window, { __ownerEditAbortObserved: false, __ownerEditCalls: 0 });
+    window.fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/engram/v1/support-passport/cards/source-card") && init?.method === "PUT") {
+        Object.assign(window, {
+          __ownerEditCalls: ((window as typeof window & { __ownerEditCalls?: number }).__ownerEditCalls ?? 0) + 1,
+        });
+        return await new Promise((_resolve, reject) => {
+          init.signal?.addEventListener(
+            "abort",
+            () => {
+              Object.assign(window, { __ownerEditAbortObserved: true });
+              reject(new DOMException("The request was aborted.", "AbortError"));
+            },
+            { once: true }
+          );
+        });
+      }
+      return await realFetch(input, init);
+    };
+  });
+  let cardReads = 0;
+  await page.route("**/engram/v1/support-passport/cards", async (route) => {
+    cardReads += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ cards: cardReads === 1 ? [sourceCard, otherCard] : [sourceCard, unrelatedDraft] }),
+    });
+  });
+  await page.route("**/engram/v1/support-passport/grants", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grants: [] }) });
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await page.getByLabel("Bearer token").fill("owner-token");
+  await page.getByRole("button", { name: "Open my guide" }).click();
+  await page.getByRole("button", { name: "Edit" }).first().click();
+  await page.getByLabel("Card title").fill(unrelatedDraft.title);
+  await page.getByRole("button", { name: "Save draft" }).click();
+  await page.clock.fastForward(60_000);
+  await expect
+    .poll(() =>
+      page.evaluate(() => (window as typeof window & { __ownerEditAbortObserved?: boolean }).__ownerEditAbortObserved)
+    )
+    .toBe(true);
+  await page.clock.fastForward(1_000);
+
+  await expect(page.getByText("The edit timed out. Review the current guide before trying again.")).toBeVisible();
+  await expect(page.locator("#cardDialog")).toBeVisible();
+  await expect(page.getByLabel("Card title")).toHaveValue(unrelatedDraft.title);
+  await expect(page.locator("#toast")).not.toHaveText("Draft saved. Review and approve it before sharing.");
+  expect(await page.evaluate(() => (window as typeof window & { __ownerEditCalls?: number }).__ownerEditCalls)).toBe(1);
+});
+
+test("a successful response with invalid JSON does not open the owner guide", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers response decoding.");
+  await page.route("**/engram/v1/support-passport/cards", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: "not-json" });
+  });
+  await page.route("**/engram/v1/support-passport/grants", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grants: [] }) });
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await page.getByLabel("Bearer token").fill("owner-token");
+  await page.getByRole("button", { name: "Open my guide" }).click();
+
+  await expect(page.getByText("The server returned invalid JSON with HTTP 200.")).toBeVisible();
+  await expect(page.locator("#ownerView")).toBeHidden();
+});
+
 test("a stalled model draft shows uncertain state without claiming another draft", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers model draft cancellation.");
   const now = new Date("2026-08-11T12:00:00.000Z");
