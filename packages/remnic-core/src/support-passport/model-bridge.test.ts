@@ -169,7 +169,8 @@ test("an unacknowledged leased job becomes available to another worker", async (
     });
     const firstResponse = await poll();
     assert.equal(firstResponse.status, 200);
-    const first = (await firstResponse.json()) as { id: string; claimId: string };
+    const first = (await firstResponse.json()) as { id: string; claimId: string; claimAckTimeoutMs: number };
+    assert.equal(first.claimAckTimeoutMs, 20);
 
     await new Promise((resolve) => setTimeout(resolve, 30));
     const secondResponse = await poll();
