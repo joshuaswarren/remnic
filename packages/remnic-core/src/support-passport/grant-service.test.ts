@@ -1,16 +1,6 @@
 import assert from "node:assert/strict";
 import { renameSync, symlinkSync } from "node:fs";
-import {
-  lstat,
-  mkdir,
-  mkdtemp,
-  open,
-  readFile,
-  readdir,
-  rm,
-  symlink,
-  writeFile,
-} from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -364,13 +354,16 @@ test("grant creation accepts a state write that committed before its durability 
     });
 
     assert.equal(created.state.grantId, grantId);
-    assert.deepEqual((await store.listForOwner("alice", "owner:alice")).map((state) => state.grantId), [grantId]);
+    assert.deepEqual(
+      (await store.listForOwner("alice", "owner:alice")).map((state) => state.grantId),
+      [grantId]
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("grant creation accepts an owner index write that committed before its durability error", async () => {
+test("grant creation re-syncs an owner index write that committed before its durability error", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-index-commit-"));
   try {
     const grantId = "00000000-0000-4000-8000-000000000001";
@@ -393,7 +386,10 @@ test("grant creation accepts an owner index write that committed before its dura
     });
 
     assert.equal(created.state.grantId, grantId);
-    assert.deepEqual((await store.listForOwner("alice", "owner:alice")).map((state) => state.grantId), [grantId]);
+    assert.deepEqual(
+      (await store.listForOwner("alice", "owner:alice")).map((state) => state.grantId),
+      [grantId]
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -684,10 +680,7 @@ test("grant revocation rechecks its mutation lock after the commit callback", as
     });
     let refreshes = 0;
     const inspected = store as unknown as {
-      withGrantLock<T>(
-        grantId: string,
-        task: (lock: { refresh(): Promise<boolean> }) => Promise<T>
-      ): Promise<T>;
+      withGrantLock<T>(grantId: string, task: (lock: { refresh(): Promise<boolean> }) => Promise<T>): Promise<T>;
     };
     inspected.withGrantLock = async (_grantId, task) =>
       await task({

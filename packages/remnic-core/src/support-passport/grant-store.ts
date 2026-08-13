@@ -176,7 +176,15 @@ export class SupportPassportGrantStore {
       } catch (error) {
         const ownerHash = this.ownerHash(state.namespace, state.principalHash);
         const indexed = await this.readOwnerIndexByHash(ownerHash).catch(() => undefined);
-        if (indexed?.includes(state.grantId)) return { state, secret };
+        if (indexed?.includes(state.grantId)) {
+          try {
+            await syncDirectoryForDurability(this.ownerIndexesDir);
+            return { state, secret };
+          } catch {
+            await this.removeGrantStates([state.grantId]).catch(() => undefined);
+            throw error;
+          }
+        }
         await this.removeGrantStates([state.grantId]).catch(() => undefined);
         throw error;
       }
