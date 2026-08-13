@@ -190,7 +190,7 @@ test("public questions are bounded, grounded through core, and rate limited", as
   }
 });
 
-test("an exhausted failure network stops authentication without consuming the shared question quota", async () => {
+test("forwarded addresses cannot evade the question failure limit", async () => {
   let answers = 0;
   let reads = 0;
   const service = {
@@ -225,19 +225,15 @@ test("an exhausted failure network stops authentication without consuming the sh
       assert.equal((await ask("w".repeat(43), "198.51.100.1")).status, 404);
     }
     assert.equal((await ask(SECRET, "198.51.100.1")).status, 429);
-    assert.equal(reads, 20);
-    for (let index = 0; index < 20; index += 1) {
-      assert.equal((await ask(SECRET, "198.51.100.2")).status, 200);
-    }
     assert.equal((await ask(SECRET, "198.51.100.2")).status, 429);
-    assert.equal(reads, 40);
-    assert.equal(answers, 20);
+    assert.equal(reads, 20);
+    assert.equal(answers, 0);
   } finally {
     await server.stop();
   }
 });
 
-test("loopback proxy clients keep separate quotas and exhausted grants do not charge network limits", async () => {
+test("forwarded addresses cannot split the shared question quota", async () => {
   let answers = 0;
   let reads = 0;
   const service = {
@@ -275,15 +271,15 @@ test("loopback proxy clients keep separate quotas and exhausted grants do not ch
       assert.equal((await ask(GRANT_ID, "198.51.100.1")).status, 429);
     }
     assert.equal(reads, 20);
-    assert.equal((await ask("grant-two", "198.51.100.1")).status, 200);
-    assert.equal(reads, 21);
-    assert.equal(answers, 21);
+    assert.equal((await ask("grant-two", "198.51.100.254")).status, 429);
+    assert.equal(reads, 20);
+    assert.equal(answers, 20);
   } finally {
     await server.stop();
   }
 });
 
-test("loopback proxy quotas use the nearest untrusted forwarded address", async () => {
+test("rotating forwarded chains cannot bypass the network question limit", async () => {
   const service = {
     supportPassportEnabled: true,
     supportPassportReadGrant: async () => guide,
@@ -316,7 +312,7 @@ test("loopback proxy quotas use the nearest untrusted forwarded address", async 
   }
 });
 
-test("an exhausted guide-read failure network stops authentication without consuming the grant quota", async () => {
+test("forwarded addresses cannot evade the guide-read failure limit", async () => {
   let reads = 0;
   const service = {
     supportPassportEnabled: true,
@@ -343,9 +339,8 @@ test("an exhausted guide-read failure network stops authentication without consu
     }
     assert.equal((await read(SECRET, "198.51.100.1")).status, 429);
     assert.equal(reads, 60);
-    const freshNetwork = await read(SECRET, "198.51.100.2");
-    assert.equal(freshNetwork.status, 200);
-    assert.equal(reads, 61);
+    assert.equal((await read(SECRET, "198.51.100.2")).status, 429);
+    assert.equal(reads, 60);
   } finally {
     await server.stop();
   }
