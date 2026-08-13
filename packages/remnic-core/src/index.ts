@@ -874,6 +874,7 @@ export {
   type OfflineSyncDeletionRevision,
   type OfflineSyncFileDeleteTarget,
   type OfflineSyncFileDigest,
+  type OfflineSyncExcludeFile,
   type OfflineSyncFileRecord,
   type OfflineSyncFileContentChunk,
   type OfflineSyncRecordDeletionRevision,

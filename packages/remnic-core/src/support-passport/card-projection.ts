@@ -24,6 +24,12 @@ export function isSupportPassportPrivateMemory(
     tags?.includes(SUPPORT_PASSPORT_AUDIT_TAG) === true
   );
 }
+
+export function excludeSupportPassportPrivateMemories<T extends Pick<MemoryFile, "frontmatter">>(
+  memories: readonly T[],
+): T[] {
+  return memories.filter((memory) => !isSupportPassportPrivateMemory(memory));
+}
 export const SUPPORT_PASSPORT_ATTRIBUTE_KEYS = Object.freeze({
   namespace: "support-passport-namespace",
   owner: "support-passport-owner",

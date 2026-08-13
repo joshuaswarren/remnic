@@ -104,6 +104,40 @@ test("offline storage IO decrypts encrypted files for reads and streaming digest
   }
 });
 
+test("offline storage IO excludes private support-passport memories from push views", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-storage-passport-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    const privateWrite = await storage.writeMemory("preference", "Offer a quiet place.", {
+      source: "support-passport",
+      tags: ["support-passport-card"],
+      confidence: 1,
+    });
+    const publicWrite = await storage.writeMemory("fact", "The office opens at nine.", {
+      source: "test",
+      confidence: 1,
+    });
+    const io = await createOfflineStorageIo(memoryDir, {
+      storage,
+      secureStoreKey: null,
+      secureStoreRequired: false,
+    });
+
+    assert.equal(await io.excludeFile({
+      root: memoryDir,
+      path: path.relative(memoryDir, privateWrite.memory.path),
+      filePath: privateWrite.memory.path,
+    }), true);
+    assert.equal(await io.excludeFile({
+      root: memoryDir,
+      path: path.relative(memoryDir, publicWrite.memory.path),
+      filePath: publicWrite.memory.path,
+    }), false);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("offline storage IO decrypts legacy namespaced AAD files in chunks", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-storage-legacy-aad-"));
   try {

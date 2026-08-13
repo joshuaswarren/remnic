@@ -37,6 +37,25 @@ import type { StorageManager } from "../index.js";
 import { isSupportPassportPrivateMemory } from "../support-passport/card-projection.js";
 import { ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
 
+const INTERNAL_QMD_ROOTS = new Set([
+  ...ALL_CATEGORY_DIRS,
+  "activity",
+  "archive",
+  "artifacts",
+  "cold",
+  "config",
+  "entities",
+  "identity",
+  "meetings",
+  "namespaces",
+  "state",
+  "summaries",
+  "transcripts",
+  "wearables",
+  "work",
+  "workspace",
+]);
+
 /**
  * Split a relative QMD result path into its collection prefix and the
  * remainder. Returns `null` for absolute paths, date-only prefixes, or
@@ -323,18 +342,28 @@ export class QmdResultResolver {
       );
       const parts = qmdCollectionPathParts(result.path);
       const config = this.getConfig();
+      const collectionIsKnownInternal =
+        parts !== null &&
+        INTERNAL_QMD_ROOTS.has(parts.collection);
+      const collectionIsConfigured =
+        parts !== null &&
+        (parts.collection === config.qmdCollection ||
+          parts.collection === (config.qmdColdCollection ?? "openclaw-engram-cold") ||
+          this.qmdCollectionNamespaceFromPrefix(parts.collection) !== null);
+      const absoluteInsideMemoryRoot =
+        path.isAbsolute(result.path) &&
+        isPathInsideStorageRoot(path.resolve(config.memoryDir), path.resolve(result.path));
+      const unresolvedInternalPath = !memory && (collectionIsKnownInternal || absoluteInsideMemoryRoot);
       const unresolvedExternalCollection =
         !memory &&
         ((parts !== null &&
-          !ALL_CATEGORY_DIRS.includes(parts.collection) &&
-          parts.collection !== config.qmdCollection &&
-          parts.collection !== (config.qmdColdCollection ?? "openclaw-engram-cold") &&
-          this.qmdCollectionNamespaceFromPrefix(parts.collection) === null) ||
+          !collectionIsKnownInternal &&
+          !collectionIsConfigured) ||
           (path.isAbsolute(result.path) &&
             !isPathInsideStorageRoot(path.resolve(config.memoryDir), path.resolve(result.path))));
       if (
         (memory && !isSupportPassportPrivateMemory(memory)) ||
-        (!memory && (preserveUnresolved || unresolvedExternalCollection))
+        (!memory && !unresolvedInternalPath && (preserveUnresolved || unresolvedExternalCollection))
       ) {
         visible.push(result);
       }

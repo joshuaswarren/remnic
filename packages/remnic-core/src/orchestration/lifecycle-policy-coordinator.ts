@@ -48,6 +48,7 @@ import type {
   MemoryActionEvent,
   MemorySummary,
 } from "../types.js";
+import { excludeSupportPassportPrivateMemories } from "../support-passport/card-projection.js";
 
 /** Dependencies injected by the orchestrator. All stable references or
  *  live accessors. */
@@ -202,7 +203,7 @@ export class LifecyclePolicyCoordinator {
     };
     const actionPriors = await this.buildLifecycleActionPriors(storage);
 
-    for (const memory of allMemories) {
+    for (const memory of excludeSupportPassportPrivateMemories(allMemories)) {
       if (
         memory.frontmatter.status === "superseded" ||
         memory.frontmatter.status === "forgotten"

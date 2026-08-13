@@ -20,6 +20,15 @@ function buildHarness(overrides?: {
     score: number;
     snippet?: string;
   }>>;
+  filterPrivateSearchResults?: (results: Array<{
+    path: string;
+    score: number;
+    snippet?: string;
+  }>) => Promise<Array<{
+    path: string;
+    score: number;
+    snippet?: string;
+  }>>;
   searchAcrossNamespaces?: (params: {
     query: string;
     namespaces?: string[];
@@ -116,7 +125,8 @@ function buildHarness(overrides?: {
       namespaceSearchCalls.push(params);
       return overrides?.searchAcrossNamespaces?.(params) ?? [];
     },
-    filterPrivateSearchResults: async (results: unknown[]) => results,
+    filterPrivateSearchResults:
+      overrides?.filterPrivateSearchResults ?? (async (results: unknown[]) => results),
   };
 
   registerTools(api as any, orchestrator as any);
@@ -195,4 +205,34 @@ test("memory_search avoids pre-filter global caps for namespace requests", async
 
   const text = toolText(result);
   assert.match(text, /shared\.md/);
+});
+
+test("memory_search refills after private records consume the first result window", async () => {
+  const calls: number[] = [];
+  const all = [
+    { path: "/tmp/private-1.md", score: 1, snippet: "private" },
+    { path: "/tmp/private-2.md", score: 0.9, snippet: "private" },
+    { path: "/tmp/public-1.md", score: 0.8, snippet: "public one" },
+    { path: "/tmp/public-2.md", score: 0.7, snippet: "public two" },
+  ];
+  const { tools } = buildHarness({
+    searchGlobal: async (_query, maxResults) => {
+      calls.push(maxResults ?? 0);
+      return all.slice(0, maxResults);
+    },
+    filterPrivateSearchResults: async (results) =>
+      results.filter((result) => !result.path.includes("private")),
+  });
+  const tool = tools.get("memory_search");
+  assert.ok(tool);
+
+  const result = await tool.execute("tc6", {
+    query: "support",
+    collection: "global",
+    maxResults: 2,
+  });
+
+  assert.deepEqual(calls, [2, 18]);
+  assert.match(toolText(result), /public-1\.md/);
+  assert.match(toolText(result), /public-2\.md/);
 });

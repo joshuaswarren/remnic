@@ -87,6 +87,8 @@ function normalizeMemorySearchResultLimit(value: unknown): number {
   return Math.min(Math.max(value, 1), 50);
 }
 
+const MAX_PRIVATE_SEARCH_CANDIDATES = 500;
+
 const WORK_TASK_STATUSES = new Set(["todo", "in_progress", "blocked", "done", "cancelled"]);
 const WORK_TASK_PRIORITIES = new Set(["low", "medium", "high"]);
 const WORK_PROJECT_STATUSES = new Set(["active", "on_hold", "completed", "archived"]);
@@ -445,15 +447,37 @@ Best for:
 
         const namespaceFilter = namespace && namespace.length > 0 ? namespace : undefined;
         const resultLimit = normalizeMemorySearchResultLimit(maxResults);
-        const filtered = await orchestrator.filterPrivateSearchResults(collection === "global" && !namespaceFilter
-            ? (await orchestrator.qmd.searchGlobal(query, resultLimit))
-              .slice(0, resultLimit)
+        const searchCandidates = async (limit: number) =>
+          collection === "global" && !namespaceFilter
+            ? await orchestrator.qmd.searchGlobal(query, limit)
             : await orchestrator.searchAcrossNamespaces({
-              query,
-              namespaces: namespaceFilter ? [namespaceFilter] : undefined,
-              maxResults: resultLimit,
-              mode: "search",
-            }), namespaceFilter ? [namespaceFilter] : []);
+                query,
+                namespaces: namespaceFilter ? [namespaceFilter] : undefined,
+                maxResults: limit,
+                mode: "search",
+              });
+        let candidateLimit = resultLimit;
+        let candidates = await searchCandidates(candidateLimit);
+        let filtered = await orchestrator.filterPrivateSearchResults(
+          candidates,
+          namespaceFilter ? [namespaceFilter] : [],
+        );
+        while (
+          filtered.length < resultLimit &&
+          candidates.length >= candidateLimit &&
+          candidateLimit < MAX_PRIVATE_SEARCH_CANDIDATES
+        ) {
+          candidateLimit = Math.min(
+            MAX_PRIVATE_SEARCH_CANDIDATES,
+            Math.max(candidateLimit + 16, candidateLimit * 2),
+          );
+          candidates = await searchCandidates(candidateLimit);
+          filtered = await orchestrator.filterPrivateSearchResults(
+            candidates,
+            namespaceFilter ? [namespaceFilter] : [],
+          );
+        }
+        filtered = filtered.slice(0, resultLimit);
 
         if (filtered.length === 0) {
           return toolResult(`No memories found matching: "${query}"`);

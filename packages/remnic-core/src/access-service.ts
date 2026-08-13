@@ -5485,6 +5485,10 @@ export class EngramAccessService {
       signal: options.signal,
       userExcludeRegexps: this.offlineSyncUserExcludes,
       deletions,
+      excludeFile: async ({ filePath }) => {
+        const memory = await storage.readMemoryByPath(filePath);
+        return memory ? isSupportPassportPrivateMemory(memory) : false;
+      },
     });
     return {
       namespace: resolvedNamespace,
@@ -5521,6 +5525,10 @@ export class EngramAccessService {
         readFileDigest: async ({ filePath }) => storage.digestOfflineSyncFile(filePath),
         signal: options.signal,
         userExcludeRegexps: this.offlineSyncUserExcludes,
+        excludeFile: async ({ filePath }) => {
+          const memory = await storage.readMemoryByPath(filePath);
+          return memory ? isSupportPassportPrivateMemory(memory) : false;
+        },
       }),
     };
   }
@@ -5553,6 +5561,10 @@ export class EngramAccessService {
         includeTranscripts: options.includeTranscripts !== false,
         readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
         userExcludeRegexps: this.offlineSyncUserExcludes,
+        excludeFile: async ({ filePath }) => {
+          const memory = await storage.readMemoryByPath(filePath);
+          return memory ? isSupportPassportPrivateMemory(memory) : false;
+        },
       });
       return {
         namespace: resolvedNamespace,
@@ -5585,6 +5597,10 @@ export class EngramAccessService {
         includeTranscripts: options.includeTranscripts !== false,
         readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
         userExcludeRegexps: this.offlineSyncUserExcludes,
+        excludeFile: async ({ filePath }) => {
+          const memory = await storage.readMemoryByPath(filePath);
+          return memory ? isSupportPassportPrivateMemory(memory) : false;
+        },
       });
       return {
         namespace: resolvedNamespace,

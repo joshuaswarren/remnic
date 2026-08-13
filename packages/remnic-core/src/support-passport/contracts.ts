@@ -41,11 +41,22 @@ const IsoTimestampSchema = z
 export const SupportPassportNamespaceSchema = z
   .string()
   .min(1)
-  .max(256)
-  .regex(/^[A-Za-z0-9._-]+$/, "namespaces cannot contain path or attribute delimiters")
   .refine((namespace) => namespace === namespace.trim(), {
     message: "namespaces must be canonical",
-  });
+  })
+  .refine(
+    (namespace) =>
+      !namespace.includes("/") &&
+      !namespace.includes("\\") &&
+      !namespace.includes("..") &&
+      !namespace.includes("]") &&
+      !namespace.includes("\0") &&
+      !namespace.includes("\n") &&
+      !namespace.includes("\r"),
+    {
+      message: "namespaces cannot contain path or attribute delimiters",
+    },
+  );
 export const SupportPassportMemoryIdSchema = z
   .string()
   .trim()

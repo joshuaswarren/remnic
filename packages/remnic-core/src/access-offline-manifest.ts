@@ -10,6 +10,7 @@ import {
   type ReconcileManifestFile,
   type ReconcileMemoryParser,
 } from "./reconcile/manifest.js";
+import { isSupportPassportPrivateMemory } from "./support-passport/card-projection.js";
 
 export interface OfflineSyncManifestRequest {
   includeTranscripts?: boolean;
@@ -36,6 +37,10 @@ export async function createOfflineSyncManifestStream(
     readFileDigest: async ({ filePath }) => storage.digestOfflineSyncFile(filePath),
     signal: options.signal,
     userExcludeRegexps,
+    excludeFile: async ({ filePath }) => {
+      const memory = await storage.readMemoryByPath(filePath);
+      return memory ? isSupportPassportPrivateMemory(memory) : false;
+    },
   });
   return {
     namespace,

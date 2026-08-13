@@ -304,6 +304,58 @@ test("offline file-transfer endpoints reject internal Remnic state paths", async
   }
 });
 
+test("offline read surfaces exclude support-passport private records", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-access-private-sync-"));
+  try {
+    const storage = new StorageManager(root);
+    await storage.ensureDirectories();
+    const privatePath = path.join(root, "preferences", "2026-08-13", "passport.md");
+    const publicPath = path.join(root, "facts", "2026-08-13", "public.md");
+    await mkdir(path.dirname(privatePath), { recursive: true });
+    await mkdir(path.dirname(publicPath), { recursive: true });
+    await writeFile(privatePath, [
+      "---",
+      "id: passport",
+      "category: preference",
+      "tags: [support-passport-card]",
+      "created: 2026-08-13T00:00:00.000Z",
+      "updated: 2026-08-13T00:00:00.000Z",
+      "---",
+      "Private support statement",
+    ].join("\n"));
+    await writeFile(publicPath, memoryFile({ id: "public", body: "Public fact", status: "active" }));
+    const { service } = createManifestService({ root, storage });
+
+    const snapshot = await service.offlineSyncSnapshot({ includeContent: true });
+    assert.equal(snapshot.files.some((file) => file.path === "facts/2026-08-13/public.md"), true);
+    assert.equal(snapshot.files.some((file) => file.path.includes("passport.md")), false);
+    const stream = await service.offlineSyncSnapshotStream({ includeContent: true });
+    const streamed = [];
+    for await (const file of stream.files) streamed.push(file.path);
+    assert.equal(streamed.includes("facts/2026-08-13/public.md"), true);
+    assert.equal(streamed.some((file) => file.includes("passport.md")), false);
+    const manifest = await service.offlineSyncManifestStream();
+    const manifested = [];
+    for await (const file of manifest.files) manifested.push(file.path);
+    assert.equal(manifested.includes("facts/2026-08-13/public.md"), true);
+    assert.equal(manifested.some((file) => file.includes("passport.md")), false);
+    await assert.rejects(
+      () => service.offlineSyncFiles({ paths: ["preferences/2026-08-13/passport.md"] }),
+      (error) => error instanceof EngramAccessInputError && /path is excluded/.test(error.message),
+    );
+    await assert.rejects(
+      () => service.offlineSyncFileContent({
+        path: "preferences/2026-08-13/passport.md",
+        offset: 0,
+        length: 10,
+      }),
+      (error) => error instanceof EngramAccessInputError && /path is excluded/.test(error.message),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("offline apply-file-content reports invalid metadata as input errors", async () => {
   const service = createOfflineService();
   await assert.rejects(

@@ -147,6 +147,10 @@ export interface OfflineSyncFileTarget {
   filePath: string;
 }
 
+export type OfflineSyncExcludeFile = (
+  target: OfflineSyncFileTarget,
+) => boolean | Promise<boolean>;
+
 export interface OfflineSyncFileDeleteTarget extends OfflineSyncFileTarget {
   mtimeMs?: number;
 }
@@ -200,6 +204,13 @@ interface OfflineSyncFileRecordOptions {
   readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
   readFileDigest?: (target: OfflineSyncFileTarget) => Promise<OfflineSyncFileDigest>;
   signal?: AbortSignal;
+}
+
+async function shouldExcludeOfflineSyncFile(
+  excludeFile: OfflineSyncExcludeFile | undefined,
+  target: OfflineSyncFileTarget,
+): Promise<boolean> {
+  return excludeFile ? await excludeFile(target) : false;
 }
 
 const SYNC_INTERNAL_DIR = ".offline-sync";
@@ -890,6 +901,7 @@ export async function* iterateOfflineSyncSnapshotFileRecords(options: {
   includeTranscripts?: boolean;
   readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
   readFileDigest?: (target: OfflineSyncFileTarget) => Promise<OfflineSyncFileDigest>;
+  excludeFile?: OfflineSyncExcludeFile;
   userExcludeRegexps?: readonly RegExp[];
   /**
    * When false, enumeration uses only the legacy structural excludes —
@@ -924,6 +936,11 @@ export async function* iterateOfflineSyncSnapshotFileRecords(options: {
         continue;
       }
       if (!entry.isFile()) continue;
+      if (await shouldExcludeOfflineSyncFile(options.excludeFile, {
+        root: root.abs,
+        path: relPosix,
+        filePath: abs,
+      })) continue;
       yield await readOfflineSyncFileRecord({
         root,
         relPath: relPosix,
@@ -948,6 +965,7 @@ export async function buildOfflineSyncSnapshot(options: {
   now?: Date;
   readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
   readFileDigest?: (target: OfflineSyncFileTarget) => Promise<OfflineSyncFileDigest>;
+  excludeFile?: OfflineSyncExcludeFile;
   userExcludeRegexps?: readonly RegExp[];
   /**
    * When false, enumeration uses only the legacy structural excludes —
@@ -995,6 +1013,7 @@ export async function buildOfflineSyncSnapshotFromBase(options: {
   now?: Date;
   readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
   readFileDigest?: (target: OfflineSyncFileTarget) => Promise<OfflineSyncFileDigest>;
+  excludeFile?: OfflineSyncExcludeFile;
   userExcludeRegexps?: readonly RegExp[];
   /**
    * When false, enumeration uses only the legacy structural excludes —
@@ -1039,6 +1058,11 @@ export async function buildOfflineSyncSnapshotFromBase(options: {
         continue;
       }
       if (!entry.isFile()) continue;
+      if (await shouldExcludeOfflineSyncFile(options.excludeFile, {
+        root: root.abs,
+        path: relPosix,
+        filePath: abs,
+      })) continue;
       const st = await stat(abs);
       const baseEntry = base.get(relPosix);
       if (
@@ -1094,6 +1118,7 @@ export async function buildOfflineSyncSnapshotForPaths(options: {
   now?: Date;
   readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
   readFileDigest?: (target: OfflineSyncFileTarget) => Promise<OfflineSyncFileDigest>;
+  excludeFile?: OfflineSyncExcludeFile;
   userExcludeRegexps?: readonly RegExp[];
   /**
    * When false, enumeration uses only the legacy structural excludes —
@@ -1130,6 +1155,13 @@ export async function buildOfflineSyncSnapshotForPaths(options: {
       throw error;
     });
     if (!st || st.isSymbolicLink() || !st.isFile()) continue;
+    if (await shouldExcludeOfflineSyncFile(options.excludeFile, {
+      root: root.abs,
+      path: relPath,
+      filePath,
+    })) {
+      throw new Error(`offline sync snapshot path is excluded: ${relPath}`);
+    }
     files.push(await readOfflineSyncFileRecord({
       root,
       relPath,
@@ -1169,6 +1201,7 @@ export async function readOfflineSyncFileContentChunk(options: {
   length?: number;
   includeTranscripts?: boolean;
   readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
+  excludeFile?: OfflineSyncExcludeFile;
   userExcludeRegexps?: readonly RegExp[];
   /**
    * When false, enumeration uses only the legacy structural excludes —
@@ -1208,6 +1241,13 @@ export async function readOfflineSyncFileContentChunk(options: {
   });
   if (!st || st.isSymbolicLink() || !st.isFile()) {
     throw new Error(`offline sync file content path not found: ${relPath}`);
+  }
+  if (await shouldExcludeOfflineSyncFile(options.excludeFile, {
+    root: root.abs,
+    path: relPath,
+    filePath,
+  })) {
+    throw new Error(`offline sync file content path is excluded: ${relPath}`);
   }
   const encrypted = await fileIsSecureStoreEncrypted(filePath);
   if (!encrypted) {

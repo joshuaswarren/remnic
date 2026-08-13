@@ -41,6 +41,7 @@ import {
 import type { PluginConfig, MemoryFile } from "../types.js";
 import { log } from "../logger.js";
 import { resolveQmdCapabilities } from "../capabilities.js";
+import { excludeSupportPassportPrivateMemories } from "../support-passport/card-projection.js";
 
 /** Dependencies injected by the orchestrator. All stable references or live
  *  accessors (the orchestrator reassigns `qmd` to NoopSearchBackend and
@@ -185,10 +186,12 @@ export class TierMigrationCoordinator {
       const coldStorage = this.deps.createColdStorage(
         path.join(storage.dir, "cold"),
       );
-      const [hotMemories, coldMemories] = await Promise.all([
+      const [allHotMemories, allColdMemories] = await Promise.all([
         storage.readAllMemories(),
         coldStorage.readAllMemories(),
       ]);
+      const hotMemories = excludeSupportPassportPrivateMemories(allHotMemories);
+      const coldMemories = excludeSupportPassportPrivateMemories(allColdMemories);
       const now = new Date();
       const scanLimit = Math.max(0, Math.floor(budget.scanLimit));
       const hotScanLimit = Math.min(

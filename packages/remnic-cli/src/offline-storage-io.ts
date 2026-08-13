@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash, createDecipheriv } from "node:crypto";
 import {
+  isSupportPassportPrivateMemory,
   OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES,
   StorageManager,
 } from "@remnic/core";
@@ -14,6 +15,7 @@ import type {
 } from "@remnic/core";
 import type {
   OfflineSyncFileDigest,
+  OfflineSyncExcludeFile,
   OfflineSyncFileTarget,
 } from "@remnic/core";
 import {
@@ -46,6 +48,7 @@ export type ConfiguredOfflineStorage = {
 };
 
 export interface OfflineStorageIo {
+  excludeFile: OfflineSyncExcludeFile;
   readFile: Parameters<typeof buildOfflineSyncChangeset>[0]["readFile"];
   readFileDigest: (target: OfflineSyncFileTarget) => Promise<OfflineSyncFileDigest>;
   readFileChunks: OfflineFileChunkReader;
@@ -116,6 +119,10 @@ export async function createOfflineStorageIo(
   const { storage, secureStoreKey } =
     configuredStorage ?? (await createConfiguredOfflineStorage(memoryDir));
   return {
+    excludeFile: async ({ filePath }) => {
+      const memory = await storage.readMemoryByPath(filePath);
+      return memory ? isSupportPassportPrivateMemory(memory) : false;
+    },
     readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
     readDeletionRevisions: () => storage.readDeletionRevisions(),
     readFileDigest: async ({ filePath }) => {

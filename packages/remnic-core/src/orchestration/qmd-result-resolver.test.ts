@@ -127,3 +127,25 @@ test("private-result filtering can preserve unresolved custom-collection hits", 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("private-result filtering rejects unresolved internal-root hits", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-resolver-internal-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const config = parseConfig({ memoryDir: dir });
+    const resolver = new QmdResultResolver({
+      getConfig: () => config,
+      storageFor: async () => storage,
+      storageDirNamespace: () => config.defaultNamespace,
+      qmdCollectionNamespaceFromPrefix: () => null,
+      namespaceFromPath: () => config.defaultNamespace,
+    });
+    for (const root of ["activity", "archive", "artifacts", "cold", "entities", "identity", "state", "summaries", "transcripts"]) {
+      const result = { docid: root, path: `${root}/missing.md`, snippet: "private", score: 1 };
+      assert.deepEqual(await resolver.filterPrivateSearchResults([result], storage, [], true), []);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

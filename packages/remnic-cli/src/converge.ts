@@ -249,50 +249,53 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
     for (const rootInfo of roots) {
       const ns = rootInfo.namespace;
       namespacesToPlan.add(ns);
-        const snapshot = await buildOfflineSyncSnapshotFromBase({
-          root: rootInfo.rootDir,
-          sourceId: "local",
-          includeContent: false,
-        });
-        const files: ReconcileFileState[] = snapshot.files
-          .filter((record) => !isInternalRemnicStatePath(record.path))
-          .map((record) => ({
-            path: record.path,
-            sha256: record.sha256,
-            mtimeMs: record.mtimeMs,
-            bytes: record.bytes,
-          }));
-        localMap.set(ns, files);
-        const evidence = await readLocalTombstoneEvidence(rootInfo.rootDir);
-        const io = await createOfflineStorageIo(rootInfo.rootDir);
-        let manifestReadFailed = false;
-        const manifest = await buildReconcileManifest({
-          files,
-          parseMemory: parseFrontmatter,
-          citationTemplate: config.inlineSourceAttributionFormat,
-          readFile: async (file) => {
-            const readFile = io.readFile;
-            if (!readFile) {
-              manifestReadFailed = true;
-              throw new Error("offline storage cannot read reconciliation manifest files");
-            }
-            try {
-              return await readFile({
-                root: rootInfo.rootDir,
-                path: file.path,
-                filePath: path.join(rootInfo.rootDir, file.path),
-              });
-            } catch (error) {
-              manifestReadFailed = true;
-              throw error;
-            }
-          },
-        });
-        if (manifestReadFailed) {
-          throw new Error(`failed to build local reconciliation manifest for namespace ${ns}`);
-        }
-        localManifests.set(ns, manifest);
-        localTombstones.set(ns, tombstonedFileDigests(evidence, manifest));
+      const io = await createOfflineStorageIo(rootInfo.rootDir);
+      const snapshot = await buildOfflineSyncSnapshotFromBase({
+        root: rootInfo.rootDir,
+        sourceId: "local",
+        includeContent: false,
+        readFile: io.readFile,
+        readFileDigest: io.readFileDigest,
+        excludeFile: io.excludeFile,
+      });
+      const files: ReconcileFileState[] = snapshot.files
+        .filter((record) => !isInternalRemnicStatePath(record.path))
+        .map((record) => ({
+          path: record.path,
+          sha256: record.sha256,
+          mtimeMs: record.mtimeMs,
+          bytes: record.bytes,
+        }));
+      localMap.set(ns, files);
+      const evidence = await readLocalTombstoneEvidence(rootInfo.rootDir);
+      let manifestReadFailed = false;
+      const manifest = await buildReconcileManifest({
+        files,
+        parseMemory: parseFrontmatter,
+        citationTemplate: config.inlineSourceAttributionFormat,
+        readFile: async (file) => {
+          const readFile = io.readFile;
+          if (!readFile) {
+            manifestReadFailed = true;
+            throw new Error("offline storage cannot read reconciliation manifest files");
+          }
+          try {
+            return await readFile({
+              root: rootInfo.rootDir,
+              path: file.path,
+              filePath: path.join(rootInfo.rootDir, file.path),
+            });
+          } catch (error) {
+            manifestReadFailed = true;
+            throw error;
+          }
+        },
+      });
+      if (manifestReadFailed) {
+        throw new Error(`failed to build local reconciliation manifest for namespace ${ns}`);
+      }
+      localManifests.set(ns, manifest);
+      localTombstones.set(ns, tombstonedFileDigests(evidence, manifest));
     }
   }
 

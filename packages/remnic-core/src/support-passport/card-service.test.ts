@@ -312,6 +312,34 @@ test("card operations reject a non-canonical resolved namespace before writing",
   }
 });
 
+test("card operations preserve configured default namespace identities", async () => {
+  StorageManager.clearAllStaticCaches();
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-passport-default-namespace-"));
+  const storage = new StorageManager(path.join(root, "shared"));
+  await storage.ensureDirectories();
+  const namespace = `team support:${"long ".repeat(60).trim()}`;
+  const service = new SupportPassportCardService({
+    resolveOwner: async (principal) => ({ principal, namespace, storage }),
+  });
+  try {
+    const card = await service.createManualDraft({
+      principal: "owner:alice",
+      title: "Quiet place",
+      statement: "Offer me a quiet place.",
+      category: "environment",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    assert.deepEqual(await service.listCards({ principal: "owner:alice" }), [card]);
+    assert.equal(
+      (await storage.getMemoryById(card.cardId))?.frontmatter.structuredAttributes?.["support-passport-namespace"],
+      namespace,
+    );
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("card operations reject a resolved principal that differs from the authenticated principal", async () => {
   StorageManager.clearAllStaticCaches();
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-passport-principal-"));
