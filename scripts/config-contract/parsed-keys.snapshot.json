@@ -936,6 +936,8 @@
     "summarizationTriggerCount",
     "summaryModel",
     "summaryRecallHours",
+    "supportPassport",
+    "supportPassport.enabled",
     "tagIndexMaxEntries",
     "tagMaxPerMemory",
     "tagMemoryEnabled",
