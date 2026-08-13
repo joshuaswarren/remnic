@@ -1,10 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { type Stats, constants as fsConstants } from "node:fs";
-import { type FileHandle, lstat, mkdir, open, realpath, rename, rm, rmdir, stat } from "node:fs/promises";
+import { type FileHandle, lstat, mkdir, open, realpath, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 
 const UNSUPPORTED_DIRECTORY_SYNC_ERRORS = new Set(["EINVAL", "ENOSYS", "ENOTSUP", "EOPNOTSUPP"]);
-const pendingDirectoryParentSyncs = new Set<string>();
 
 function assertStableDirectory(before: Stats, opened: Stats, after: Stats, errorMessage: string): void {
   if (
@@ -137,7 +136,6 @@ export async function ensurePrivateDirectoryNoFollow(
     for (const component of components) {
       const pinnedParent = await resolvePrivateDirectoryPath(currentPath, current.handle, current.opened, errorMessage);
       const childPath = path.join(pinnedParent, component);
-      const stableChildPath = path.join(currentPath, component);
       let created = false;
       try {
         await mkdir(childPath, { mode: 0o700 });
@@ -145,22 +143,7 @@ export async function ensurePrivateDirectoryNoFollow(
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       }
-      if (created) {
-        try {
-          await syncVerifiedParent(current.handle);
-          pendingDirectoryParentSyncs.delete(stableChildPath);
-        } catch (error) {
-          try {
-            await rmdir(childPath);
-          } catch {
-            pendingDirectoryParentSyncs.add(stableChildPath);
-          }
-          throw error;
-        }
-      } else if (pendingDirectoryParentSyncs.has(stableChildPath)) {
-        await syncVerifiedParent(current.handle);
-        pendingDirectoryParentSyncs.delete(stableChildPath);
-      }
+      await syncVerifiedParent(current.handle);
       const child = await openDirectoryNoFollow(childPath, errorMessage);
       handles.push(child.handle);
       if (created || (hardenExistingChildren && (child.opened.mode & 0o777) !== 0o700)) {
