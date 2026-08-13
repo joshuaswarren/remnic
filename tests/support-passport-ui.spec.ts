@@ -370,6 +370,60 @@ test("the owner cannot select more than eight cards for one share link", async (
   expect(createCalls).toBe(0);
 });
 
+test("two share submissions create one grant", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers duplicate share submission.");
+  const now = new Date();
+  const card = {
+    cardId: "card-approved",
+    title: "Quiet place",
+    statement: "Offer me a quiet place and time.",
+    category: "environment",
+    status: "active",
+    updatedAt: now.toISOString(),
+    reviewBy: new Date(now.getTime() + 24 * 60 * 60_000).toISOString(),
+    revision: "a".repeat(64),
+  };
+  const releaseGrant = Promise.withResolvers<void>();
+  let createCalls = 0;
+  await page.route("**/engram/v1/support-passport/cards", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ cards: [card] }) });
+  });
+  await page.route("**/engram/v1/support-passport/grants", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grants: [] }) });
+      return;
+    }
+    createCalls += 1;
+    await releaseGrant.promise;
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        grantId: "3b998a98-d48d-4f5c-887c-617af9228847",
+        secret: "s".repeat(43),
+        expiresAt: new Date(now.getTime() + 2 * 60 * 60_000).toISOString(),
+        version: 1,
+      }),
+    });
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await page.getByLabel("Bearer token").fill("owner-token");
+  await page.getByRole("button", { name: "Open my guide" }).click();
+  await page.locator('input[name="shareCard"]').check();
+  await page.locator("#shareForm").evaluate((form) => {
+    for (let index = 0; index < 2; index += 1) {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    }
+  });
+
+  await expect.poll(() => createCalls).toBe(1);
+  await expect(page.getByRole("button", { name: "Creating link…" })).toBeDisabled();
+  releaseGrant.resolve();
+  await expect(page.getByRole("button", { name: "Create share link" })).toBeEnabled();
+  expect(createCalls).toBe(1);
+});
+
 test("a created share link remains visible when its list refresh fails", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers owner refresh recovery.");
   const now = new Date();

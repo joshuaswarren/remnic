@@ -833,6 +833,7 @@
 
   async function createShare(event) {
     event.preventDefault();
+    if (state.shareCreationPending) return;
     setError("shareError");
     clearDisplayedShareLink();
     const selectedInputs = [...document.querySelectorAll('input[name="shareCard"]:checked')];
