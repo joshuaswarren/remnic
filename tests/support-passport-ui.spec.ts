@@ -546,6 +546,8 @@ test("an expired share confirms a timed-out stop request", async ({ page }, test
     status: "active",
   };
   let grantReads = 0;
+  const reconciliationStarted = Promise.withResolvers<void>();
+  const releaseReconciliation = Promise.withResolvers<void>();
   await page.clock.install({ time: now });
   await page.addInitScript(() => {
     const realFetch = window.fetch.bind(window);
@@ -568,6 +570,10 @@ test("an expired share confirms a timed-out stop request", async ({ page }, test
   });
   await page.route("**/engram/v1/support-passport/grants", async (route) => {
     grantReads += 1;
+    if (grantReads === 2) {
+      reconciliationStarted.resolve();
+      await releaseReconciliation.promise;
+    }
     const current = grantReads === 1 ? grant : { ...grant, status: "expired" };
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grants: [current] }) });
   });
@@ -576,6 +582,9 @@ test("an expired share confirms a timed-out stop request", async ({ page }, test
   await page.getByRole("button", { name: "Open my guide" }).click();
   await page.getByRole("button", { name: "Stop sharing" }).click();
   await page.clock.fastForward(60_000);
+  await reconciliationStarted.promise;
+  await expect(page.getByRole("button", { name: "Stopping sharing…" })).toBeDisabled();
+  releaseReconciliation.resolve();
 
   await expect(page.locator("#toast")).toHaveText("Sharing stopped. The helper link is now locked.");
   await expect(page.getByText("Share time ended", { exact: true })).toBeVisible();
