@@ -237,15 +237,16 @@ export async function rollbackSupportPassportGeneratedBatch(
   const marker = await readBatchMarker(context.storage, batchId).catch(() => null);
   if (marker && !sameOwner(marker, context)) return false;
   const cardIds = new Set(knownCardIds);
+  let scanComplete = true;
   try {
     for (const memory of await context.storage.readAllMemories()) {
       const card = projectOwnedCard(memory, context.namespace, context.principal);
       if (card?.generatedBatchId === batchId) cardIds.add(card.card.cardId);
     }
   } catch {
-    return false;
+    scanComplete = false;
   }
-  let complete = true;
+  let complete = scanComplete;
   for (const cardId of cardIds) {
     try {
       if (!(await rejectGeneratedDraft(context, cardId))) complete = false;
@@ -264,10 +265,15 @@ export async function rollbackSupportPassportGeneratedBatch(
 
 export async function isCommittedGeneratedCard(
   storage: StorageManager,
-  card: StoredSupportPassportCard
+  card: StoredSupportPassportCard,
+  markerCache?: Map<string, GeneratedBatchMarker | null>,
 ): Promise<boolean> {
   if (!card.generatedBatchId) return true;
-  const marker = await readBatchMarker(storage, card.generatedBatchId);
+  let marker = markerCache?.get(card.generatedBatchId);
+  if (!markerCache?.has(card.generatedBatchId)) {
+    marker = await readBatchMarker(storage, card.generatedBatchId);
+    markerCache?.set(card.generatedBatchId, marker);
+  }
   return Boolean(
     marker?.complete &&
       marker.size === card.generatedBatchSize &&
@@ -288,9 +294,10 @@ export async function projectCommittedSupportPassportCards(
       (card): card is StoredSupportPassportCard =>
         card?.namespace === namespace && card.owner === computeSupportPassportOwnerKey(principal)
     );
+  const markers = new Map<string, GeneratedBatchMarker | null>();
   const committed: StoredSupportPassportCard[] = [];
   for (const card of projected) {
-    if (await isCommittedGeneratedCard(storage, card)) committed.push(card);
+    if (await isCommittedGeneratedCard(storage, card, markers)) committed.push(card);
   }
   return committed;
 }
