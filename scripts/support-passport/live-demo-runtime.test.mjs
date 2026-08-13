@@ -11,6 +11,7 @@ import {
   isolateDemoRemnicConfig,
   isolateEnvironmentVariables,
   modelRequestTimeoutMs,
+  prepareDemoRuntime,
   readCleanCommitSha,
   runCleanupSteps,
   runWithReservedOutput,
@@ -122,6 +123,42 @@ test("the demo isolates ambient direct-model credentials from selected routes", 
   assert.ok(DEMO_ENVIRONMENT_KEYS.includes("OPENAI_BASE_URL"));
   assert.ok(DEMO_ENVIRONMENT_KEYS.includes("REMNIC_WRITE_RATE_LIMIT_MAX_REQUESTS"));
   assert.ok(DEMO_ENVIRONMENT_KEYS.includes("ENGRAM_WRITE_RATE_LIMIT_WINDOW_MS"));
+});
+
+test("the demo resolves selected direct-model placeholders before environment isolation", () => {
+  const names = ["OPENAI_API_KEY", "OPENAI_BASE_URL"];
+  const previous = new Map(names.map((name) => [name, process.env[name]]));
+  process.env.OPENAI_API_KEY = "selected-key";
+  process.env.OPENAI_BASE_URL = "https://compatible.example.invalid/v1";
+  let restoreEnvironment;
+
+  try {
+    const runtime = prepareDemoRuntime(
+      {
+        openaiApiKey: "${OPENAI_API_KEY}",
+        openaiBaseUrl: "${OPENAI_BASE_URL}",
+      },
+      "/tmp/fresh-memory",
+      (value) => value.replace(/\$\{([^}]+)\}/g, (_match, name) => process.env[name] ?? "")
+    );
+    restoreEnvironment = runtime.restoreEnvironment;
+
+    assert.equal(runtime.remnicConfig.openaiApiKey, "selected-key");
+    assert.equal(runtime.remnicConfig.openaiBaseUrl, "https://compatible.example.invalid/v1");
+    assert.equal(process.env.OPENAI_API_KEY, undefined);
+    assert.equal(process.env.OPENAI_BASE_URL, undefined);
+
+    restoreEnvironment();
+    restoreEnvironment = undefined;
+    assert.equal(process.env.OPENAI_API_KEY, "selected-key");
+    assert.equal(process.env.OPENAI_BASE_URL, "https://compatible.example.invalid/v1");
+  } finally {
+    restoreEnvironment?.();
+    for (const [name, value] of previous) {
+      if (value === undefined) Reflect.deleteProperty(process.env, name);
+      else process.env[name] = value;
+    }
+  }
 });
 
 test("runWithReservedOutput reserves and retains a new receipt", async (t) => {

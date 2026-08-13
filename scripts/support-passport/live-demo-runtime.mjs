@@ -88,6 +88,12 @@ export function isolateEnvironmentVariables(names) {
   };
 }
 
+export function prepareDemoRuntime(sourceConfig, memoryDir, resolveConfigValue = (value) => value) {
+  const remnicConfig = isolateDemoRemnicConfig(sourceConfig, memoryDir, resolveConfigValue);
+  const restoreEnvironment = isolateEnvironmentVariables(DEMO_ENVIRONMENT_KEYS);
+  return { remnicConfig, restoreEnvironment };
+}
+
 function listCreatedDirectories(outputDir, firstCreatedDirectory) {
   if (!firstCreatedDirectory) return [];
   const directories = [];

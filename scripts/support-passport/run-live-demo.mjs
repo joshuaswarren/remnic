@@ -18,10 +18,8 @@ import {
 import { loadConfigFile, startServer } from "@remnic/server";
 import { z } from "zod";
 import {
-  DEMO_ENVIRONMENT_KEYS,
-  isolateDemoRemnicConfig,
-  isolateEnvironmentVariables,
   modelRequestTimeoutMs,
+  prepareDemoRuntime,
   readCleanCommitSha,
   runCleanupSteps,
   runWithReservedOutput,
@@ -312,16 +310,18 @@ async function runReserved(options, reservation) {
   const memoryDir = path.join(tempRoot, "memory");
   const configPath = path.join(tempRoot, "config.json");
   const authToken = randomBytes(32).toString("base64url");
-  const restoreDemoEnvironment = isolateEnvironmentVariables(DEMO_ENVIRONMENT_KEYS);
+  let restoreDemoEnvironment = () => {};
   let server;
   let runFailed = false;
   let runError;
 
   try {
+    const demoRuntime = prepareDemoRuntime(sourceConfig.remnic, memoryDir, resolveEnvVars);
+    restoreDemoEnvironment = demoRuntime.restoreEnvironment;
     process.env.REMNIC_MEMORY_DIR = memoryDir;
     const port = await findAvailablePort();
     const derivedConfig = {
-      remnic: isolateDemoRemnicConfig(sourceConfig.remnic, memoryDir, resolveEnvVars),
+      remnic: demoRuntime.remnicConfig,
       server: {
         host: "127.0.0.1",
         port,
