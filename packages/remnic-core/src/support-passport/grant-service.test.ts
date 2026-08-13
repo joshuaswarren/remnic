@@ -886,25 +886,25 @@ test("grant creation reconciles peer state when the owner-index lock is lost aft
       writeOwnerMembership(state: typeof peerState): Promise<void>;
     };
     const writeOwnerIndex = inspected.writeOwnerIndex.bind(store);
-    let injectPeer = true;
+    let ownerIndexWrites = 0;
     inspected.writeOwnerIndex = async (ownerHash, indexedGrantIds) => {
-      if (injectPeer) {
-        injectPeer = false;
+      ownerIndexWrites += 1;
+      if (ownerIndexWrites === 2) {
         await inspected.writeState(peerState, true);
         await inspected.writeOwnerMembership(peerState);
-        await writeOwnerIndex(ownerHash, [first.state.grantId, peerGrantId]);
+        await writeOwnerIndex(ownerHash, [...indexedGrantIds, peerGrantId]);
       }
       await writeOwnerIndex(ownerHash, indexedGrantIds);
     };
     let ownerLockRun = 0;
-    let firstRunRefreshes = 0;
+    const refreshesByRun = new Map<number, number>();
     inspected.withOwnerIndexLock = async (_ownerHash, task) => {
       ownerLockRun += 1;
       return await task({
         refresh: async () => {
-          if (ownerLockRun !== 1) return true;
-          firstRunRefreshes += 1;
-          return firstRunRefreshes !== 2;
+          const refreshes = (refreshesByRun.get(ownerLockRun) ?? 0) + 1;
+          refreshesByRun.set(ownerLockRun, refreshes);
+          return ownerLockRun > 2 || refreshes !== 2;
         },
       });
     };
@@ -914,8 +914,9 @@ test("grant creation reconciles peer state when the owner-index lock is lost aft
       (state) => state.grantId,
     ));
 
-    assert.equal(ownerLockRun, 2);
-    assert.equal(firstRunRefreshes, 2);
+    assert.equal(ownerLockRun, 3);
+    assert.equal(refreshesByRun.get(1), 2);
+    assert.equal(refreshesByRun.get(2), 2);
     assert.deepEqual(listedIds, new Set([first.state.grantId, created.state.grantId, peerGrantId]));
   } finally {
     await rm(root, { recursive: true, force: true });

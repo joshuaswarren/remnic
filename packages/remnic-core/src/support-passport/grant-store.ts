@@ -540,58 +540,68 @@ export class SupportPassportGrantStore {
     committed: { state: SupportPassportGrantState; secret: string },
   ): Promise<{ state: SupportPassportGrantState; secret: string }> {
     const ownerHash = this.ownerHash(committed.state.namespace, committed.state.principalHash);
-    return await this.withOwnerIndexLock(ownerHash, async (lock) => {
-      const persisted = await this.readState(committed.state.grantId).catch(() => undefined);
-      if (!persisted || !sameGrantState(persisted, committed.state)) {
-        throw new SupportPassportError("storage_conflict", "The share link store changed during the request.", 409);
-      }
-      const indexedGrantIds = await this.readOwnerIndexByHash(ownerHash);
-      const ownerStates: SupportPassportGrantState[] = [];
-      for (const grantId of indexedGrantIds) {
-        try {
-          const state = await this.readState(grantId);
-          if (
-            state.namespace !== committed.state.namespace ||
-            !hashesMatch(state.principalHash, committed.state.principalHash)
-          ) {
-            throw new Error("support passport owner index references a foreign grant");
-          }
-          ownerStates.push(state);
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        }
-      }
-      const memberStates = await this.readOwnerMembershipStates(
-        committed.state.namespace,
-        committed.state.principalHash,
-      );
-      const indexedGrantIdSet = new Set(ownerStates.map((state) => state.grantId));
-      ownerStates.push(...memberStates.filter((state) => !indexedGrantIdSet.has(state.grantId)));
-      const committedIndex = ownerStates.findIndex(
-        (state) => state.grantId === committed.state.grantId,
-      );
-      if (committedIndex === -1) ownerStates.push(committed.state);
-      else ownerStates[committedIndex] = committed.state;
-      const activeCutoff = this.now().getTime();
-      const active = ownerStates.filter(
-        (state) => !state.revokedAt && Date.parse(state.expiresAt) > activeCutoff,
-      );
-      if (active.length > MAX_OWNER_GRANT_HISTORY) {
-        await this.removeStoredGrant(committed.state);
-        const committedIndex = ownerStates.findIndex(
-          (state) => state.grantId === committed.state.grantId,
+    while (true) {
+      try {
+        return await this.withOwnerIndexLock(ownerHash, async (lock) =>
+          await this.reconcileCommittedGrant(committed, ownerHash, lock)
         );
-        if (committedIndex !== -1) ownerStates.splice(committedIndex, 1);
+      } catch (error) {
+        if (!(error instanceof OwnerIndexLockLostError)) throw error;
       }
-      const retained = this.retainedOwnerStates(ownerStates, activeCutoff);
-      await this.requireMutationLock(lock);
-      await this.writeOwnerIndex(ownerHash, retained.map((state) => state.grantId));
-      await this.requireOwnerIndexLock(lock);
-      if (active.length > MAX_OWNER_GRANT_HISTORY) {
-        throw new SupportPassportError("storage_conflict", "The share link store changed during the request.", 409);
+    }
+  }
+
+  private async reconcileCommittedGrant(
+    committed: { state: SupportPassportGrantState; secret: string },
+    ownerHash: string,
+    lock: HeldFileLockController,
+  ): Promise<{ state: SupportPassportGrantState; secret: string }> {
+    const persisted = await this.readState(committed.state.grantId).catch(() => undefined);
+    if (!persisted || !sameGrantState(persisted, committed.state)) {
+      throw new SupportPassportError("storage_conflict", "The share link store changed during the request.", 409);
+    }
+    const indexedGrantIds = await this.readOwnerIndexByHash(ownerHash);
+    const ownerStates: SupportPassportGrantState[] = [];
+    for (const grantId of indexedGrantIds) {
+      try {
+        const state = await this.readState(grantId);
+        if (
+          state.namespace !== committed.state.namespace ||
+          !hashesMatch(state.principalHash, committed.state.principalHash)
+        ) {
+          throw new Error("support passport owner index references a foreign grant");
+        }
+        ownerStates.push(state);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
-      return committed;
-    });
+    }
+    const memberStates = await this.readOwnerMembershipStates(
+      committed.state.namespace,
+      committed.state.principalHash,
+    );
+    const indexedGrantIdSet = new Set(ownerStates.map((state) => state.grantId));
+    ownerStates.push(...memberStates.filter((state) => !indexedGrantIdSet.has(state.grantId)));
+    const committedIndex = ownerStates.findIndex((state) => state.grantId === committed.state.grantId);
+    if (committedIndex === -1) ownerStates.push(committed.state);
+    else ownerStates[committedIndex] = committed.state;
+    const activeCutoff = this.now().getTime();
+    const active = ownerStates.filter(
+      (state) => !state.revokedAt && Date.parse(state.expiresAt) > activeCutoff,
+    );
+    if (active.length > MAX_OWNER_GRANT_HISTORY) {
+      await this.removeStoredGrant(committed.state);
+      const committedIndex = ownerStates.findIndex((state) => state.grantId === committed.state.grantId);
+      if (committedIndex !== -1) ownerStates.splice(committedIndex, 1);
+    }
+    const retained = this.retainedOwnerStates(ownerStates, activeCutoff);
+    await this.requireMutationLock(lock);
+    await this.writeOwnerIndex(ownerHash, retained.map((state) => state.grantId));
+    await this.requireOwnerIndexLock(lock);
+    if (active.length > MAX_OWNER_GRANT_HISTORY) {
+      throw new SupportPassportError("storage_conflict", "The share link store changed during the request.", 409);
+    }
+    return committed;
   }
 
   private retainedOwnerStates(
