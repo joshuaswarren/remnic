@@ -25,6 +25,7 @@ import { wrapWorkLayerContext } from "@remnic/core/work/boundary";
 import { VALID_MEMORY_CATEGORIES } from "./config.js";
 import { formatProfileTraceAscii } from "./profiling.js";
 import { runMemoryGovernance } from "@remnic/core/maintenance/memory-governance";
+import { isSupportPassportPrivateMemory } from "@remnic/core";
 
 interface ToolApi {
   registerTool(
@@ -1682,6 +1683,25 @@ Best for:
             ? await orchestrator.getStorage(ns)
             : orchestrator.storage;
         const referencedMemory = await readReferencedMemoryForPolicyEligibility(storage, memoryIdValue);
+        const mutatesReferencedMemory =
+          action === "update_note" || action === "discard" || action === "link_graph";
+        if (
+          mutatesReferencedMemory &&
+          referencedMemory &&
+          isSupportPassportPrivateMemory(referencedMemory)
+        ) {
+          await orchestrator.appendMemoryActionEvent({
+            ...baseEvent,
+            outcome: "failed",
+            status: "rejected",
+            dryRun: dryRun === true,
+            outputMemoryIds: [],
+            reason: "validation: support passport records require the owner surface",
+          });
+          return toolResult(
+            "Validation failed: support passport records can only be changed through the support passport owner surface.",
+          );
+        }
         const structuredEvent = {
           ...baseEvent,
           outcome: outcome ?? "applied",

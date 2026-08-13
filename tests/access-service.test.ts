@@ -2193,6 +2193,38 @@ test("access service review dispositions reject namespaces outside the trusted t
   );
 });
 
+test("access service review dispositions reject private support passport records", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-access-private-disposition-"));
+  try {
+    await writeText(
+      memoryDir,
+      "preferences/2026-03-08/passport-card.md",
+      memoryDoc("passport-card", "Owner-controlled support text.", [
+        'tags: ["support-passport-card"]',
+        "status: pending_review",
+      ]),
+    );
+    const storage = new StorageManager(memoryDir);
+    const service = new EngramAccessService({
+      config: { memoryDir, namespacesEnabled: false, defaultNamespace: "global" },
+      getStorage: async () => storage,
+    } as any);
+
+    await assert.rejects(
+      () => service.reviewDisposition({
+        memoryId: "passport-card",
+        status: "active",
+        reasonCode: "operator_confirmed",
+      }),
+      (error: unknown) =>
+        error instanceof EngramAccessInputError && error.message === "memory not found: passport-card",
+    );
+    assert.equal((await storage.getMemoryById("passport-card"))?.frontmatter.status, "pending_review");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("access service suggestionSubmit queues pending review memories", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-service-suggestion-"));
   try {

@@ -3922,7 +3922,7 @@ export class EngramAccessService {
     );
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     const memory = await storage.getMemoryById(memoryId);
-    if (!memory) {
+    if (!memory || isSupportPassportPrivateMemory(memory)) {
       throw new EngramAccessInputError(`memory not found: ${memoryId}`);
     }
 
