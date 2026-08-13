@@ -58,6 +58,10 @@ function hashesMatch(left: string, right: string): boolean {
   return leftBytes.length === 32 && rightBytes.length === 32 && timingSafeEqual(leftBytes, rightBytes);
 }
 
+function sameGrantState(left: SupportPassportGrantState, right: SupportPassportGrantState): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 function grantNotFound(): SupportPassportError {
   return new SupportPassportError("grant_not_found", "The share link was not found.", 404);
 }
@@ -160,10 +164,18 @@ export class SupportPassportGrantStore {
       });
       await this.requireMutationLock(lock);
       await beforeCommit?.();
-      await this.writeState(state, true);
+      try {
+        await this.writeState(state, true);
+      } catch (error) {
+        const persisted = await this.readState(state.grantId).catch(() => undefined);
+        if (!persisted || !sameGrantState(persisted, state)) throw error;
+      }
       try {
         await this.addToOwnerIndex(state, lock);
       } catch (error) {
+        const ownerHash = this.ownerHash(state.namespace, state.principalHash);
+        const indexed = await this.readOwnerIndexByHash(ownerHash).catch(() => undefined);
+        if (indexed?.includes(state.grantId)) return { state, secret };
         await this.removeGrantStates([state.grantId]).catch(() => undefined);
         throw error;
       }
