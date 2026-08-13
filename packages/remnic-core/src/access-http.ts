@@ -230,6 +230,13 @@ function resolveDefaultAdminConsolePublicDir(): string {
   return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
 }
 
+function serializeInlineScriptValue(value: string): string {
+  return JSON.stringify(value)
+    .replaceAll("<", "\\u003c")
+    .replaceAll("\u2028", "\\u2028")
+    .replaceAll("\u2029", "\\u2029");
+}
+
 const defaultAdminConsolePublicDir = resolveDefaultAdminConsolePublicDir();
 const correlationIdStore = new AsyncLocalStorage<string>();
 const RELAY_ADMIN_CONSOLE_ASSETS = new Map<string, string>([
@@ -3554,7 +3561,8 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
       let body = await readFile(path.join(this.adminConsolePublicDir, relativePath), "utf-8");
       const canPrefillToken = this.adminConsolePrefillToken && this.isAuthorized(req, pathname);
       if (canPrefillToken) {
-        const script = `<script>window.__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__=${JSON.stringify(this.adminConsolePrefillToken)};</script>`;
+        const serializedToken = serializeInlineScriptValue(this.adminConsolePrefillToken);
+        const script = `<script>(function(token,script){const key="__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__";const clear=function(){token="";try{delete window[key]}catch{window[key]=""}};window.addEventListener("pagehide",clear,{once:true});window.addEventListener("beforeunload",clear,{once:true});try{Object.defineProperty(window,key,{configurable:true,get:function(){const value=token;clear();return value}})}finally{if(script){script.textContent="";script.remove()}}})(${serializedToken},document.currentScript);</script>`;
         body = body.includes("</head>")
           ? body.replace("</head>", `${script}</head>`)
           : `${script}${body}`;
