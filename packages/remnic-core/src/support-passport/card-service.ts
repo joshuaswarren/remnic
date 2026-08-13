@@ -33,6 +33,7 @@ import { SupportPassportError } from "./errors.js";
 import {
   type GeneratedBatchMarker,
   commitSupportPassportGeneratedBatch,
+  isSupportPassportGeneratedBatchCommitted,
   isCommittedGeneratedCard,
   persistSupportPassportGeneratedBatchMarker,
   projectCommittedSupportPassportCards,
@@ -143,6 +144,7 @@ export class SupportPassportCardService {
       const createdIds: string[] = [];
       const createdRecords: StoredSupportPassportCard[] = [];
       let marker: GeneratedBatchMarker | null = null;
+      let commitStarted = false;
       try {
         input.signal?.throwIfAborted();
         await input.validateSources?.();
@@ -187,10 +189,17 @@ export class SupportPassportCardService {
         }
         await input.validateSources?.();
         input.signal?.throwIfAborted();
+        commitStarted = true;
         await commitSupportPassportGeneratedBatch(batchContext, marker, createdRecords);
         return created;
       } catch (error) {
         if (!marker) throw error;
+        if (
+          commitStarted &&
+          (await isSupportPassportGeneratedBatchCommitted(batchContext, marker))
+        ) {
+          throw error;
+        }
         if (
           !(await rollbackSupportPassportGeneratedBatch(batchContext, batchId, createdIds))
         ) {

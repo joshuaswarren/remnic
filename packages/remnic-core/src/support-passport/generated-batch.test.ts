@@ -9,7 +9,11 @@ import type { StoredSupportPassportCard } from "./card-projection.js";
 import { computeSupportPassportOwnerKey } from "./card-projection.js";
 import { SupportPassportCardService } from "./card-service.js";
 import { SupportPassportError } from "./errors.js";
-import { commitSupportPassportGeneratedBatch, persistSupportPassportGeneratedBatchMarker } from "./generated-batch.js";
+import {
+  commitSupportPassportGeneratedBatch,
+  persistSupportPassportGeneratedBatchMarker,
+  rollbackSupportPassportGeneratedBatch,
+} from "./generated-batch.js";
 
 test("a visible generated batch marker does not hide its durability error", async () => {
   StorageManager.clearAllStaticCaches();
@@ -46,6 +50,8 @@ test("a visible generated batch marker does not hide its durability error", asyn
       }),
       durabilityError
     );
+    assert.equal((JSON.parse(await readFile(markerPath, "utf8")) as { complete: boolean }).complete, true);
+    assert.equal(await rollbackSupportPassportGeneratedBatch(context, batchId, [card.card.cardId]), false);
     assert.equal((JSON.parse(await readFile(markerPath, "utf8")) as { complete: boolean }).complete, true);
   } finally {
     StorageManager.clearAllStaticCaches();

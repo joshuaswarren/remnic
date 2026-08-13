@@ -99,6 +99,18 @@ async function readBatchMarker(storage: StorageManager, batchId: string): Promis
   }
 }
 
+export async function isSupportPassportGeneratedBatchCommitted(
+  context: GeneratedBatchContext,
+  marker: GeneratedBatchMarker,
+): Promise<boolean> {
+  const current = await readBatchMarker(context.storage, marker.batchId);
+  return Boolean(
+    current?.complete &&
+      sameOwner(current, context) &&
+      current.size === marker.size,
+  );
+}
+
 async function writeBatchMarker(storage: StorageManager, marker: GeneratedBatchMarker): Promise<void> {
   const directory = batchDirectory(storage);
   await writePrivateFileAtomicallyNoFollow(
@@ -185,8 +197,9 @@ export async function rollbackSupportPassportGeneratedBatch(
   batchId: string,
   knownCardIds: readonly string[]
 ): Promise<boolean> {
-  const marker = await readBatchMarker(context.storage, batchId).catch(() => null);
+  const marker = await readBatchMarker(context.storage, batchId);
   if (marker && !sameOwner(marker, context)) return false;
+  if (marker?.complete) return false;
   const cardIds = new Set(knownCardIds);
   let scanComplete = true;
   try {
