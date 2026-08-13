@@ -63,6 +63,8 @@ test("What Helps Me serves both aliases from one exact feature-gated allow-list"
         const shell = await fetch(`${origin}/${prefix}/ui/what-helps-me/`);
         assert.equal(shell.status, 200);
         assert.match(shell.headers.get("content-type") ?? "", /^text\/html/);
+        assert.equal(shell.headers.get("content-security-policy"), "frame-ancestors 'none'");
+        assert.equal(shell.headers.get("x-frame-options"), "DENY");
         assert.doesNotMatch(await shell.text(), /__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__/);
 
         const authorizedShell = await fetch(`${origin}/${prefix}/ui/what-helps-me/`, {
