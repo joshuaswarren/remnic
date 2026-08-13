@@ -61,4 +61,7 @@ export const MCP_READ_ONLY_TOOL_SUFFIXES: Readonly<Record<string, true>> = {
   codegraph_get_snippet: true,
   codegraph_get_architecture: true,
   codegraph_search_code: true,
+  support_passport_memory_preview: true,
+  support_passport_cards_list: true,
+  support_passport_grants_list: true,
 };

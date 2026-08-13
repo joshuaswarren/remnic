@@ -85,7 +85,7 @@ export interface SupportPassportQuestionServiceDependencies {
   now?: () => Date;
 }
 
-function isEligibleSource(memory: MemoryFile): boolean {
+export function isSupportPassportSourceEligible(memory: MemoryFile): boolean {
   const status = memory.frontmatter.status ?? "active";
   return (
     status === "active" &&
@@ -157,6 +157,7 @@ export class SupportPassportDraftService {
     sourceMemoryRevisions: Array<{ memoryId: string; revision: string }>;
     consent: boolean;
     signal?: AbortSignal;
+    onCommitted?: () => void;
   }): Promise<SupportPassportCard[]> {
     if (input.consent !== true) {
       throw new SupportPassportError("consent_required", "Drafting requires explicit consent.", 400);
@@ -182,7 +183,7 @@ export class SupportPassportDraftService {
       throwIfAborted(input.signal, cancellationMessage);
       const memory = await raceAbort(owner.storage.getMemoryById(memoryId), input.signal, cancellationMessage);
       throwIfAborted(input.signal, cancellationMessage);
-      if (!memory || !isEligibleSource(memory)) {
+      if (!memory || !isSupportPassportSourceEligible(memory)) {
         throw new SupportPassportError("invalid_input", "A selected memory is not available.", 400);
       }
       if (computeSupportPassportSourceRevision(memory.content) !== revisions.get(memoryId)) {
@@ -233,6 +234,7 @@ export class SupportPassportDraftService {
         owner,
         cards: modelResult.cards,
         signal: input.signal,
+        ...(input.onCommitted ? { onCommitted: input.onCommitted } : {}),
         validateSources: async () =>
           await this.revalidateSources(owner.storage, selectedMemories, input.signal, cancellationMessage),
       });
@@ -257,7 +259,7 @@ export class SupportPassportDraftService {
     throwIfAborted(signal, cancellationMessage);
     const memories = await raceAbort(storage.readMemorySnapshotsIfUnchanged(expected), signal, cancellationMessage);
     throwIfAborted(signal, cancellationMessage);
-    if (!memories || memories.some((memory) => !isEligibleSource(memory))) {
+    if (!memories || memories.some((memory) => !isSupportPassportSourceEligible(memory))) {
       throw new SupportPassportError("invalid_input", "A selected memory is not available.", 400);
     }
   }
