@@ -162,8 +162,16 @@ test("an owner page clears private state before browser-cache restoration", asyn
     expiresAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
     status: "active",
   };
-  await page.addInitScript(() => {
-    Object.assign(window, { __REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__: "prefilled-owner-token" });
+  const ownerShell = await readFile(path.join(publicDir, "index.html"), "utf8");
+  await page.route(`${origin}/remnic/ui/what-helps-me/`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/html; charset=utf-8",
+      body: ownerShell.replace(
+        "</head>",
+        '<script>window.__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__="prefilled-owner-token";</script></head>'
+      ),
+    });
   });
   await page.route("**/engram/v1/support-passport/cards", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ cards: [card] }) });
@@ -191,6 +199,11 @@ test("an owner page clears private state before browser-cache restoration", asyn
           .__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__
     )
   ).toBe("");
+  expect(
+    await page
+      .locator("script")
+      .evaluateAll((scripts) => scripts.some((script) => script.textContent?.includes("prefilled-owner-token")))
+  ).toBe(false);
   await page.getByRole("button", { name: "Open my guide" }).click();
   await page.getByLabel("Memory ID").fill("private-note");
   await page.getByRole("button", { name: "Add selected note" }).click();
@@ -1555,6 +1568,7 @@ test("a stalled helper question aborts and restores its action", async ({ page }
   const button = page.getByRole("button", { name: "Ask from this guide" });
   await button.click();
   await expect(page.getByRole("button", { name: "Checking shared cards…" })).toBeDisabled();
+  await expect(page.getByLabel("Your question")).toBeDisabled();
   await page.clock.fastForward(60_000);
 
   await expect
@@ -1566,6 +1580,7 @@ test("a stalled helper question aborts and restores its action", async ({ page }
     .toBe(true);
   await expect(page.getByText("The question took too long. Try again.")).toBeVisible();
   await expect(button).toBeEnabled();
+  await expect(page.getByLabel("Your question")).toBeEnabled();
 });
 
 test("a live helper view locks after the owner revokes its grant", async ({ page }, testInfo) => {
@@ -1614,8 +1629,8 @@ test("a live helper view locks after the owner revokes its grant", async ({ page
   await expect(page.locator(".public-card")).toHaveCount(0);
 });
 
-test("a restored helper view immediately revalidates its grant", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers browser-cache restoration.");
+test("a restored helper view stays locked without its removed secret", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers helper browser-cache cleanup.");
   const now = new Date();
   let revoked = false;
   let reads = 0;
@@ -1653,12 +1668,16 @@ test("a restored helper view immediately revalidates its grant", async ({ page }
 
   await page.goto(helperUrl("-restored").replace("mode=replay&", ""));
   await expect(page.locator(".public-card")).toHaveCount(1);
+  await page.getByLabel("Your question").fill("What should I do?");
   await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })));
+  await expect(page.getByRole("heading", { name: "This support passport is locked." })).toBeVisible();
+  await expect(page.locator(".public-card")).toHaveCount(0);
+  await expect(page.getByLabel("Your question")).toHaveValue("");
   revoked = true;
   await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })));
 
   await expect(page.getByRole("heading", { name: "This support passport is locked." })).toBeVisible();
-  expect(reads).toBeGreaterThanOrEqual(2);
+  expect(reads).toBe(1);
   await expect(page.locator(".public-card")).toHaveCount(0);
 });
 
