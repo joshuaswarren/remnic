@@ -10,6 +10,7 @@ import type {
 import type { SupportPassportExternalRequestHandler } from "./public-http.js";
 
 export const SUPPORT_PASSPORT_MODEL_JOB_PATH = "/engram/v1/support-passport/internal/model/jobs/next";
+export const SUPPORT_PASSPORT_MODEL_ACK_PATH = "/engram/v1/support-passport/internal/model/jobs/ack";
 export const SUPPORT_PASSPORT_MODEL_RESULT_PATH = "/engram/v1/support-passport/internal/model/jobs/result";
 
 const ModelMessageSchema = z
@@ -22,6 +23,7 @@ const ModelMessageSchema = z
 const ModelJobSchema = z
   .object({
     id: z.string().uuid(),
+    claimId: z.string().uuid().optional(),
     messages: z.array(ModelMessageSchema).min(1).max(8),
     temperature: z.number().finite().min(0).max(2),
     maxTokens: z.number().int().min(1).max(32_000),
@@ -46,6 +48,7 @@ export function parseSupportPassportModelJob(value: unknown): SupportPassportMod
 const ModelResultSchema = z
   .object({
     id: z.string().uuid(),
+    claimId: z.string().uuid().optional(),
     result: z
       .object({
         content: z.string().max(250_000),
@@ -64,15 +67,30 @@ const ModelResultSchema = z
   })
   .strict();
 
+const ModelClaimSchema = z
+  .object({
+    id: z.string().uuid(),
+    claimId: z.string().uuid(),
+  })
+  .strict();
+
 interface PendingJob {
   job: SupportPassportModelJob;
   deadlineAt: number;
+  claimId?: string;
+  claimTimer?: ReturnType<typeof setTimeout>;
   resolve: (result: SupportPassportModelRouteResult | null) => void;
   requeue(): void;
 }
 
+interface PendingWaiter {
+  claimLease: boolean;
+  resolve(job: SupportPassportModelJob | null): void;
+}
+
 export interface SupportPassportModelBridgeOptions {
   maxPendingJobs?: number;
+  claimAckTimeoutMs?: number;
 }
 
 function respondJson(res: ServerResponse, status: number, payload: unknown): void {
@@ -119,16 +137,21 @@ export class SupportPassportModelBridge {
   readonly requestHandler: SupportPassportExternalRequestHandler;
 
   private readonly maxPendingJobs: number;
+  private readonly claimAckTimeoutMs: number;
   private readonly pending = new Map<string, PendingJob>();
   private readonly available: string[] = [];
-  private readonly waiters: Array<(job: SupportPassportModelJob | null) => void> = [];
+  private readonly waiters: PendingWaiter[] = [];
   private readonly claimed = new Set<string>();
   private closed = false;
 
   constructor(options: SupportPassportModelBridgeOptions = {}) {
     this.maxPendingJobs = options.maxPendingJobs ?? 32;
+    this.claimAckTimeoutMs = options.claimAckTimeoutMs ?? 5_000;
     if (!Number.isInteger(this.maxPendingJobs) || this.maxPendingJobs < 1) {
       throw new Error("maxPendingJobs must be a positive integer");
+    }
+    if (!Number.isInteger(this.claimAckTimeoutMs) || this.claimAckTimeoutMs < 1) {
+      throw new Error("claimAckTimeoutMs must be a positive integer");
     }
     this.route = {
       kind: "gateway",
@@ -144,7 +167,7 @@ export class SupportPassportModelBridge {
     this.pending.clear();
     this.available.length = 0;
     this.claimed.clear();
-    for (const waiter of this.waiters.splice(0)) waiter(null);
+    for (const waiter of this.waiters.splice(0)) waiter.resolve(null);
   }
 
   private invoke(
@@ -172,6 +195,8 @@ export class SupportPassportModelBridge {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
+        const pending = this.pending.get(parsed.data.id);
+        if (pending?.claimTimer) clearTimeout(pending.claimTimer);
         this.pending.delete(parsed.data.id);
         this.claimed.delete(parsed.data.id);
         const availableIndex = this.available.indexOf(parsed.data.id);
@@ -181,11 +206,14 @@ export class SupportPassportModelBridge {
       };
       const abort = (): void => settle(null);
       const requeue = (): void => {
-        if (!this.pending.has(parsed.data.id) || !this.claimed.delete(parsed.data.id)) return;
+        const pending = this.pending.get(parsed.data.id);
+        if (!pending || !this.claimed.delete(parsed.data.id)) return;
+        if (pending.claimTimer) clearTimeout(pending.claimTimer);
+        pending.claimTimer = undefined;
+        pending.claimId = undefined;
         const waiter = this.waiters.shift();
         if (waiter) {
-          this.claimed.add(parsed.data.id);
-          waiter(this.claimedJob(parsed.data));
+          waiter.resolve(this.claimPending(pending, waiter.claimLease));
         } else {
           this.available.push(parsed.data.id);
         }
@@ -199,8 +227,8 @@ export class SupportPassportModelBridge {
       options.signal?.addEventListener("abort", abort, { once: true });
       const waiter = this.waiters.shift();
       if (waiter) {
-        this.claimed.add(parsed.data.id);
-        waiter(this.claimedJob(parsed.data));
+        const pending = this.pending.get(parsed.data.id);
+        waiter.resolve(pending ? this.claimPending(pending, waiter.claimLease) : null);
       } else this.available.push(parsed.data.id);
     });
   }
@@ -216,25 +244,40 @@ export class SupportPassportModelBridge {
     return { ...job, timeoutMs: remainingMs };
   }
 
-  private takeAvailable(): SupportPassportModelJob | null {
+  private claimPending(pending: PendingJob, claimLease: boolean): SupportPassportModelJob | null {
+    const job = this.claimedJob(pending.job);
+    if (!job) return null;
+    this.claimed.add(job.id);
+    if (!claimLease) return job;
+    pending.claimId = randomUUID();
+    pending.claimTimer = setTimeout(() => pending.requeue(), this.claimAckTimeoutMs);
+    pending.claimTimer.unref?.();
+    return { ...job, claimId: pending.claimId };
+  }
+
+  private takeAvailable(claimLease: boolean): SupportPassportModelJob | null {
     for (;;) {
       const id = this.available.shift();
       if (!id) return null;
       const pending = this.pending.get(id);
       if (pending) {
-        this.claimed.add(id);
-        return this.claimedJob(pending.job);
+        return this.claimPending(pending, claimLease);
       }
     }
   }
 
-  private nextJob(timeoutMs: number, signal: AbortSignal): Promise<SupportPassportModelJob | null> {
-    const available = this.takeAvailable();
+  private nextJob(
+    timeoutMs: number,
+    signal: AbortSignal,
+    claimLease: boolean,
+  ): Promise<SupportPassportModelJob | null> {
+    const available = this.takeAvailable(claimLease);
     if (available || this.closed || signal.aborted || timeoutMs === 0 || this.waiters.length >= this.maxPendingJobs) {
       return Promise.resolve(available);
     }
     return new Promise((resolve) => {
       let active = true;
+      let waiter: PendingWaiter;
       const done = (job: SupportPassportModelJob | null): void => {
         if (!active) return;
         active = false;
@@ -243,17 +286,18 @@ export class SupportPassportModelBridge {
         resolve(job);
       };
       const abort = (): void => {
-        const index = this.waiters.indexOf(done);
+        const index = this.waiters.indexOf(waiter);
         if (index >= 0) this.waiters.splice(index, 1);
         done(null);
       };
       const timeout = setTimeout(() => {
-        const index = this.waiters.indexOf(done);
+        const index = this.waiters.indexOf(waiter);
         if (index >= 0) this.waiters.splice(index, 1);
         done(null);
       }, timeoutMs);
       signal.addEventListener("abort", abort, { once: true });
-      this.waiters.push(done);
+      waiter = { claimLease, resolve: done };
+      this.waiters.push(waiter);
     });
   }
 
@@ -266,7 +310,9 @@ export class SupportPassportModelBridge {
     const pathname = requestPath(req);
     const owned =
       req.method === "POST" &&
-      (pathname === SUPPORT_PASSPORT_MODEL_JOB_PATH || pathname === SUPPORT_PASSPORT_MODEL_RESULT_PATH);
+      (pathname === SUPPORT_PASSPORT_MODEL_JOB_PATH ||
+        pathname === SUPPORT_PASSPORT_MODEL_ACK_PATH ||
+        pathname === SUPPORT_PASSPORT_MODEL_RESULT_PATH);
     if (!owned) return false;
     if (!tokenAuthorized) {
       res.setHeader("www-authenticate", "Bearer");
@@ -279,12 +325,17 @@ export class SupportPassportModelBridge {
     }
     if (pathname === SUPPORT_PASSPORT_MODEL_JOB_PATH) {
       let timeoutMs = 20_000;
+      let claimLease = false;
       try {
         const parsed = z
-          .object({ timeoutMs: z.number().int().min(0).max(25_000) })
+          .object({
+            timeoutMs: z.number().int().min(0).max(25_000),
+            claimLease: z.boolean().optional(),
+          })
           .strict()
           .parse(await readJson(req, 1_024));
         timeoutMs = parsed.timeoutMs;
+        claimLease = parsed.claimLease === true;
       } catch {
         respondJson(res, 400, { error: "invalid_request", code: "invalid_request" });
         return true;
@@ -293,7 +344,7 @@ export class SupportPassportModelBridge {
       const abort = (): void => controller.abort();
       req.once("aborted", abort);
       res.once("close", abort);
-      const job = await this.nextJob(timeoutMs, controller.signal);
+      const job = await this.nextJob(timeoutMs, controller.signal, claimLease);
       req.off("aborted", abort);
       res.off("close", abort);
       if (res.destroyed) {
@@ -304,10 +355,30 @@ export class SupportPassportModelBridge {
       else respondNoContent(res);
       return true;
     }
+    if (pathname === SUPPORT_PASSPORT_MODEL_ACK_PATH) {
+      try {
+        const parsed = ModelClaimSchema.parse(await readJson(req, 1_024));
+        const pending = this.pending.get(parsed.id);
+        if (!pending || !this.claimed.has(parsed.id) || pending.claimId !== parsed.claimId) {
+          respondJson(res, 404, { error: "job_not_found", code: "job_not_found" });
+          return true;
+        }
+        if (pending.claimTimer) clearTimeout(pending.claimTimer);
+        pending.claimTimer = undefined;
+        respondNoContent(res);
+      } catch {
+        respondJson(res, 400, { error: "invalid_request", code: "invalid_request" });
+      }
+      return true;
+    }
     try {
       const parsed = ModelResultSchema.parse(await readJson(req, 300_000));
       const pending = this.pending.get(parsed.id);
-      if (!pending || !this.claimed.has(parsed.id)) {
+      if (
+        !pending ||
+        !this.claimed.has(parsed.id) ||
+        (pending.claimId !== undefined && pending.claimId !== parsed.claimId)
+      ) {
         respondJson(res, 404, { error: "job_not_found", code: "job_not_found" });
         return true;
       }
