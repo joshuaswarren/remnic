@@ -2154,6 +2154,37 @@ test("replay helpers never cite an unrelated selected card", async ({ page, cont
   }
 });
 
+test("replay helpers require the same transition intent", async ({ page, context }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers transition intent grounding.");
+  await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
+  await page.getByRole("button", { name: "Write a card" }).click();
+  await page.getByLabel("Card title").fill("Morning routine");
+  await page.getByLabel("What helps me").fill("Keep my morning routine consistent.");
+  await page.getByLabel("Category").selectOption("transitions");
+  await page.getByRole("button", { name: "Save draft" }).click();
+  const routineCard = page.locator(".support-card").filter({ hasText: "Morning routine" });
+  await routineCard.getByRole("button", { name: "Approve" }).click();
+  await page.locator(".card-choice").filter({ hasText: "Morning routine" }).locator('input[name="shareCard"]').check();
+  await page.getByRole("button", { name: "Create share link" }).click();
+  const shareUrl = await page.locator("#shareLinkInput").inputValue();
+
+  const helper = await context.newPage();
+  try {
+    await helper.goto(shareUrl);
+    await helper.getByLabel("Your question").fill("What is tomorrow's schedule?");
+    await helper.getByRole("button", { name: "Ask from this guide" }).click();
+    await expect(helper.locator("#answerCopy")).toHaveText("That is not covered in this person's support guide.");
+    await expect(helper.locator(".citation")).toHaveText("No support card covers this question.");
+
+    await helper.getByLabel("Your question").fill("What helps with the morning routine?");
+    await helper.getByRole("button", { name: "Ask from this guide" }).click();
+    await expect(helper.locator("#answerCopy")).toHaveText("Keep my morning routine consistent.");
+    await expect(helper.locator(".citation")).toContainText("Morning routine");
+  } finally {
+    await helper.close();
+  }
+});
+
 test("a replay helper fails closed without owner share state", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers replay synchronization failure.");
 
