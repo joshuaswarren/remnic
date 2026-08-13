@@ -6,6 +6,12 @@
   const params = new URLSearchParams(window.location.search);
   const replayMode = params.get("mode") === "replay";
   const grantId = params.get("grant") ?? "";
+  const requestedReplayChannelId = params.get("replayChannel") ?? "";
+  const replayChannelId = replayMode
+    ? grantId
+      ? requestedReplayChannelId
+      : crypto.randomUUID()
+    : "";
   const hasSecretFragment = new URLSearchParams(window.location.hash.slice(1)).has("secret");
   let initialHelperSecret = model.parseSecret(window.location.hash);
   if (hasSecretFragment) {
@@ -13,7 +19,9 @@
   }
   const replayStore = replayMode ? model.createReplayStore() : null;
   const replayChannel =
-    replayMode && "BroadcastChannel" in window ? new BroadcastChannel("remnic-what-helps-me-replay") : null;
+    replayMode && /^[0-9a-f-]{36}$/i.test(replayChannelId) && "BroadcastChannel" in window
+      ? new BroadcastChannel(`remnic-what-helps-me-replay-${replayChannelId}`)
+      : null;
   const HELPER_REVALIDATION_MS = 30_000;
   const HELPER_REVALIDATION_MAX_MS = 5 * 60_000;
   const HELPER_READ_TIMEOUT_MS = 10_000;
@@ -55,6 +63,7 @@
     pendingCardMutationIds: new Set(),
     pendingGrantRevocationIds: new Set(),
     cardSavePending: false,
+    replayInvalidatedCardIds: new Set(),
     shareCreationPending: false,
     shareCreationCardIds: null,
     ownerLifecyclePaused: false,
@@ -282,7 +291,6 @@
           type: "grant-request",
           requestId,
           grantId: state.helperGrantId,
-          secret: state.helperSecret,
         });
       } catch (error) {
         finish(reject, error);
@@ -297,12 +305,11 @@
       if (
         request?.type !== "grant-request" ||
         typeof request.requestId !== "string" ||
-        typeof request.grantId !== "string" ||
-        typeof request.secret !== "string"
+        typeof request.grantId !== "string"
       ) {
         return;
       }
-      const result = replayStore.exportSharedGuide(request.grantId, request.secret);
+      const result = replayStore.exportSharedGuide(request.grantId);
       replayChannel.postMessage({
         type: "grant-state",
         requestId: request.requestId,
@@ -894,7 +901,13 @@
         );
         return;
       }
-      const url = model.buildShareUrl(window.location.href, created.grantId, created.secret, replayMode);
+      const url = model.buildShareUrl(
+        window.location.href,
+        created.grantId,
+        created.secret,
+        replayMode,
+        replayChannelId
+      );
       clearSelection = true;
       byId("shareLinkInput").value = url;
       byId("openLinkButton").href = url;
@@ -1088,6 +1101,11 @@
     try {
       if (replayMode) {
         const sharedState = await requestReplaySharedGuide();
+        if (sharedState.cards.some((card) => state.replayInvalidatedCardIds.has(card.cardId))) {
+          const error = new Error("The shared support guide has changed.");
+          error.code = "grant_stale";
+          throw error;
+        }
         replayStore.seedSharedGuide(state.helperGrantId, state.helperSecret, sharedState);
       }
       state.guide = await readHelperGuide(controller.signal);
@@ -1259,10 +1277,13 @@
         showLocked(error);
         return;
       }
+      if (event.data?.type === "cards-stale" && Array.isArray(event.data.cardIds)) {
+        for (const cardId of event.data.cardIds) state.replayInvalidatedCardIds.add(cardId);
+      }
       if (
         event.data?.type === "cards-stale" &&
         Array.isArray(event.data.cardIds) &&
-        state.guide?.cards.some((card) => event.data.cardIds.includes(card.cardId))
+        state.guide?.cards.some((card) => state.replayInvalidatedCardIds.has(card.cardId))
       ) {
         const error = new Error("The shared support guide has changed.");
         error.code = "grant_stale";
