@@ -50,7 +50,7 @@ export abstract class SupportPassportAccessServiceBase {
   }
 
   get supportPassportEnabled(): boolean {
-    return this.configRef.supportPassport.enabled;
+    return this.configRef.supportPassport?.enabled === true;
   }
 
   async supportPassportListCards(principal: string): Promise<SupportPassportCard[]> {

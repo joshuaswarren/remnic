@@ -11,6 +11,23 @@ import { StorageManager } from "../storage.js";
 import { SupportPassportAccessServiceBase } from "./access-service-base.js";
 import type { SupportPassportModelRoute } from "./model-adapter.js";
 
+test("support passport stays disabled when a partial host config omits its settings", () => {
+  class TestService extends SupportPassportAccessServiceBase {
+    readonly configRef = {} as ReturnType<typeof parseConfig>;
+    readonly localLlmRef = null;
+
+    async getWritableStorageForNamespace(): Promise<never> {
+      throw new Error("not used");
+    }
+
+    async getStorageForResolvedNamespace(): Promise<never> {
+      throw new Error("not used");
+    }
+  }
+
+  assert.equal(new TestService().supportPassportEnabled, false);
+});
+
 test("support passport owner operations enforce the presenting token namespace", async () => {
   StorageManager.clearAllStaticCaches();
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-scope-"));
