@@ -281,7 +281,12 @@ export class SupportPassportDraftService {
     const requestedPrincipal = SupportPassportListCardsInputSchema.safeParse({ principal });
     const ownerPrincipal = SupportPassportListCardsInputSchema.safeParse({ principal: owner.principal });
     const namespace = SupportPassportNamespaceSchema.safeParse(owner.namespace);
-    if (!requestedPrincipal.success || !ownerPrincipal.success || !namespace.success) {
+    if (
+      !requestedPrincipal.success ||
+      !ownerPrincipal.success ||
+      !namespace.success ||
+      ownerPrincipal.data.principal !== requestedPrincipal.data.principal
+    ) {
       throw new SupportPassportError("card_data_invalid", "The support passport owner scope is invalid.", 500);
     }
     return { ...owner, principal: ownerPrincipal.data.principal, namespace: namespace.data };
