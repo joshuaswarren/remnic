@@ -884,6 +884,7 @@ test("a new share attempt clears the prior link before a later failure", async (
     expiresAt: new Date(now.getTime() + 2 * 60 * 60_000).toISOString(),
     status: "active",
   };
+  let firstGrantCreated = false;
   const secondResponse = Promise.withResolvers<void>();
   await page.route("**/engram/v1/support-passport/cards", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ cards: [card] }) });
@@ -893,12 +894,13 @@ test("a new share attempt clears the prior link before a later failure", async (
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ grants: createCalls > 0 ? [activeGrant] : [] }),
+        body: JSON.stringify({ grants: firstGrantCreated ? [activeGrant] : [] }),
       });
       return;
     }
     createCalls += 1;
     if (createCalls === 1) {
+      firstGrantCreated = true;
       await route.fulfill({
         status: 201,
         contentType: "application/json",
