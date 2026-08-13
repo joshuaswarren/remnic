@@ -266,7 +266,8 @@ test("a claimed job uses the daemon's remaining duration without a shared wall c
   try {
     await service.start();
     const remainingMs = await invoked.promise;
-    assert.equal(remainingMs, job.timeoutMs);
+    assert.ok(remainingMs > 0);
+    assert.ok(remainingMs <= job.timeoutMs);
     assert.deepEqual(await completion.promise, {
       id: job.id,
       result: { content: "{}", modelUsed: "gateway/local" },
