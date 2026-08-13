@@ -42,7 +42,16 @@ export const SupportPassportNamespaceSchema = z
   .string()
   .min(1)
   .max(256)
-  .regex(/^[A-Za-z0-9._-]+$/, "namespaces cannot contain path or attribute delimiters")
+  .refine(
+    (namespace) =>
+      !namespace.includes("/") &&
+      !namespace.includes("\\") &&
+      !namespace.includes("]") &&
+      !namespace.includes(":") &&
+      !namespace.includes("\n") &&
+      !namespace.includes("\r"),
+    { message: "namespaces cannot contain path or attribute delimiters" }
+  )
   .refine((namespace) => namespace === namespace.trim(), {
     message: "namespaces must be canonical",
   });
@@ -104,6 +113,13 @@ export const SupportPassportCardMutationInputSchema = z
     principal: z.string().trim().min(1).max(512),
     cardId: SupportPassportMemoryIdSchema,
     expectedRevision: z.string().regex(/^[a-f0-9]{64}$/),
+    reasonCode: z
+      .string()
+      .trim()
+      .min(1)
+      .max(64)
+      .regex(/^[a-z0-9-]+$/)
+      .optional(),
   })
   .strict();
 
