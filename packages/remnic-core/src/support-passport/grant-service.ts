@@ -47,6 +47,7 @@ export class SupportPassportGrantService {
   }
 
   async createGrant(input: SupportPassportCreateGrantInput): Promise<SupportPassportCreatedGrant> {
+    const requestedAt = this.now();
     const parsed = SupportPassportCreateGrantInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
     const owner = await this.resolveOwnerScope(parsed.data.principal);
@@ -78,6 +79,7 @@ export class SupportPassportGrantService {
           principal: owner.principal,
           cards: parsed.data.cards,
           expiresAt: parsed.data.expiresAt,
+          requestedAt,
         },
         async () => await requireSupportPassportOwnerLock(ownerLock)
       );
@@ -139,7 +141,7 @@ export class SupportPassportGrantService {
     }, firstCard.updatedAt);
     return await withSupportPassportOwnerLock(
       storage,
-      { namespace: initialState.namespace, ownerKey: initialState.principalHash },
+      { namespace: initialState.namespace, ownerKey: initialState.ownerLockKey },
       async (ownerLock) => {
       return await this.grantStore.withAuthenticatedGrant(
         input.grantId,
