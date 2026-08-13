@@ -12,11 +12,13 @@ import {
   SupportPassportModelAuditRecordSchema,
   SupportPassportPublicGuideSchema,
   expandTildePath,
+  resolveEnvVars,
   resolveSupportPassportModelRoutePlan,
 } from "@remnic/core";
 import { loadConfigFile, startServer } from "@remnic/server";
 import { z } from "zod";
 import {
+  DEMO_ENVIRONMENT_KEYS,
   isolateDemoRemnicConfig,
   isolateEnvironmentVariables,
   modelRequestTimeoutMs,
@@ -310,14 +312,7 @@ async function runReserved(options, reservation) {
   const memoryDir = path.join(tempRoot, "memory");
   const configPath = path.join(tempRoot, "config.json");
   const authToken = randomBytes(32).toString("base64url");
-  const restoreDemoEnvironment = isolateEnvironmentVariables([
-    "REMNIC_MEMORY_DIR",
-    "ENGRAM_MEMORY_DIR",
-      "REMNIC_WRITE_RATE_LIMIT_MAX_REQUESTS",
-      "ENGRAM_WRITE_RATE_LIMIT_MAX_REQUESTS",
-      "REMNIC_WRITE_RATE_LIMIT_WINDOW_MS",
-      "ENGRAM_WRITE_RATE_LIMIT_WINDOW_MS",
-  ]);
+  const restoreDemoEnvironment = isolateEnvironmentVariables(DEMO_ENVIRONMENT_KEYS);
   let server;
   let runFailed = false;
   let runError;
@@ -326,7 +321,7 @@ async function runReserved(options, reservation) {
     process.env.REMNIC_MEMORY_DIR = memoryDir;
     const port = await findAvailablePort();
     const derivedConfig = {
-      remnic: isolateDemoRemnicConfig(sourceConfig.remnic, memoryDir),
+      remnic: isolateDemoRemnicConfig(sourceConfig.remnic, memoryDir, resolveEnvVars),
       server: {
         host: "127.0.0.1",
         port,
@@ -616,8 +611,7 @@ async function main() {
   await run(options);
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
+main().catch(() => {
   console.error("Live demo failed. Review the last completed step and the selected Remnic configuration.");
   process.exitCode = 1;
 });

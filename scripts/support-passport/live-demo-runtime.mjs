@@ -4,6 +4,16 @@ import path from "node:path";
 const DEFAULT_HTTP_TIMEOUT_MS = 45_000;
 const DEFAULT_MODEL_ROUTE_TIMEOUT_MS = 30_000;
 const MODEL_HTTP_MARGIN_MS = 15_000;
+export const DEMO_ENVIRONMENT_KEYS = [
+  "OPENAI_API_KEY",
+  "OPENAI_BASE_URL",
+  "REMNIC_MEMORY_DIR",
+  "ENGRAM_MEMORY_DIR",
+  "REMNIC_WRITE_RATE_LIMIT_MAX_REQUESTS",
+  "ENGRAM_WRITE_RATE_LIMIT_MAX_REQUESTS",
+  "REMNIC_WRITE_RATE_LIMIT_WINDOW_MS",
+  "ENGRAM_WRITE_RATE_LIMIT_WINDOW_MS",
+];
 const DEMO_MODEL_CONFIG_KEYS = [
   "openaiApiKey",
   "openaiBaseUrl",
@@ -33,11 +43,17 @@ const DEMO_MODEL_CONFIG_KEYS = [
   "localLlmDisableThinking",
 ];
 
-export function isolateDemoRemnicConfig(sourceConfig, memoryDir) {
+export function isolateDemoRemnicConfig(sourceConfig, memoryDir, resolveConfigValue = (value) => value) {
   const modelConfig = {};
   for (const key of DEMO_MODEL_CONFIG_KEYS) {
-    if (Object.hasOwn(sourceConfig, key)) modelConfig[key] = sourceConfig[key];
+    if (!Object.hasOwn(sourceConfig, key)) continue;
+    const value = sourceConfig[key];
+    modelConfig[key] =
+      ["openaiApiKey", "openaiBaseUrl", "localLlmApiKey"].includes(key) && typeof value === "string"
+        ? resolveConfigValue(value)
+        : value;
   }
+  if (!Object.hasOwn(modelConfig, "openaiApiKey")) modelConfig.openaiApiKey = false;
   return {
     ...modelConfig,
     memoryDir,
