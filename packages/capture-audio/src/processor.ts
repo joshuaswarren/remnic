@@ -191,7 +191,36 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
   let openConversationId: string | null = null;
   // Set when a chunk is deliberately left unapplied for a later replay: its
   // conversation must stay `capturing` so that replay can resume it.
-  let retainedForReplay = false;
+  /**
+   * Conversations each retained chunk may still need to `resume`, keyed by
+   * chunk id.
+   *
+   * Retention is per CHUNK and per CONVERSATION, never a run-wide latch: a
+   * sticky flag would stop the daemon from finalizing any conversation again
+   * after one retention event, and clearing it per batch would release the hold
+   * as soon as the NEXT batch had nothing retained. An entry lives exactly as
+   * long as its chunk is incomplete (issue #2145).
+   */
+  const retainedChunks = new Map<string, Set<string>>();
+
+  /** Whether a conversation is a prefix some retained chunk could resume. */
+  function isHeldForReplay(conversationId: string): boolean {
+    for (const held of retainedChunks.values()) {
+      if (held.has(conversationId)) return true;
+    }
+    return false;
+  }
+
+  /** Record, or clear, the conversations a chunk's replay could still need. */
+  function trackRetention(chunkId: string, retained: boolean): void {
+    if (!retained) {
+      retainedChunks.delete(chunkId);
+      return;
+    }
+    const held = new Set(deps.spool.capturingConversationIds());
+    if (openConversationId !== null) held.add(openConversationId);
+    retainedChunks.set(chunkId, held);
+  }
   const processedThisRun = new Set<string>();
   // Bounded reorder buffer (issue #2145). With `captureChannel: "both"` the
   // native helper emits one chunk stream per channel, and a system chunk for
@@ -279,6 +308,11 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     }
   };
   const finalizeConv = (id: string): void => {
+    // A held prefix must stay `capturing` so a later replay can resume it. This
+    // is the single durable choke point: the assembler closes conversations
+    // from several paths (idle close, gap split inside `add`, shutdown), and
+    // guarding each of them would leave the next one to be found.
+    if (isHeldForReplay(id)) return;
     dedupeConversation(id);
     diarizeConversation(id);
     deps.spool.finalizeConversation(id);
@@ -428,17 +462,15 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       }
     }
     // Decide retention BEFORE anything can close a conversation: a chunk kept
-    // for a later replay must keep its durable prefix resumable, and the
-    // idle-close below (or a later gap-crossing chunk) would otherwise flip it
-    // to final while this batch is still being applied (issue #2145).
-    for (const entry of batch) {
-      if (!isFullyProcessed(entry)) retainedForReplay = true;
-    }
+    // for a later replay must keep its durable prefix resumable, and both the
+    // idle-close below and the gap split inside `assembler.add` would otherwise
+    // flip it to final while this batch is still being applied (issue #2145).
+    for (const entry of batch) trackRetention(entry.chunkId, !isFullyProcessed(entry));
     const earliestStart = batch.reduce(
       (earliest, entry) => (entry.startMs < earliest.startMs ? entry : earliest),
       batch[0],
     );
-    const closed = retainedForReplay ? null : deps.assembler.closeIfIdle(earliestStart.event.startedAtUtc);
+    const closed = deps.assembler.closeIfIdle(earliestStart.event.startedAtUtc);
     if (closed !== null && closed === openConversationId) {
       // Dedupes, diarizes and flips a conversation in the spool — durable, so
       // the caller must not rewind past it. Flagged AFTER the call: a throw
@@ -558,6 +590,7 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       // accounted for may be missing, so the chunk stays open and keeps its
       // audio.
       const fullyProcessed = isFullyProcessed(entry);
+      trackRetention(entry.chunkId, !fullyProcessed);
       if (entry.built.length > 0 && !fullyProcessed) {
         log.warn(
           `[capture-audio] chunk ${entry.chunkId} retranscribed to a different transcript than an earlier run; keeping its raw audio for replay`,
@@ -667,7 +700,7 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
           bufferedIds.delete(candidate.chunkId);
           // The chunk keeps its audio for a matching replay, so its durable
           // prefix must stay resumable — do not let the sweep close it.
-          retainedForReplay = true;
+          trackRetention(candidate.chunkId, true);
           report(
             new Error(
               `transcript for chunk ${candidate.chunkId} does not match the recorded manifest; raw audio retained`,
@@ -789,7 +822,7 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     // replay would open a NEW conversation instead of joining the original.
     // The sweep below still dedupes and diarizes, so anything a later
     // shutdown flips is clean.
-    const holdOpen = flushFailure !== undefined || retainedForReplay;
+    const holdOpen = flushFailure !== undefined;
     if (!holdOpen) deps.assembler.finalize();
     // Dedup then cluster EVERY still-capturing conversation before the bulk
     // flip to final — including one left by a crashed prior run that this
@@ -806,12 +839,12 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
         // ADDS, so embedding a mic copy whose system duplicate has not arrived
         // yet would leave that copy's contribution in the centroid after dedup
         // deletes the segment.
-        if (!holdOpen) diarizeConversation(id);
+        if (!holdOpen && !isHeldForReplay(id)) diarizeConversation(id);
         // Flipped per conversation, not in bulk: a conversation whose
         // diarization failed must STAY capturing so a later finalize retries
         // it, while the ones that succeeded still reach the final-only read
         // path instead of being stranded behind it.
-        if (!holdOpen && deps.spool.finalizeConversation(id)) closed++;
+        if (!holdOpen && !isHeldForReplay(id) && deps.spool.finalizeConversation(id)) closed++;
       } catch (error) {
         sweepFailure ??= error;
       }
@@ -819,8 +852,13 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     // The bulk flip only catches conversations created after the id snapshot
     // above. Skipping it when the sweep failed is what keeps the FAILED
     // conversation `capturing` for the next finalize to retry.
+    // The bulk flip is unconditional in the spool, so it must not run while a
+    // conversation is held for replay — it would flip exactly the prefix the
+    // sweep above deliberately skipped.
     const total =
-      sweepFailure === undefined && !holdOpen ? closed + deps.spool.finalizeOpenConversations() : closed;
+      sweepFailure === undefined && !holdOpen && retainedChunks.size === 0
+        ? closed + deps.spool.finalizeOpenConversations()
+        : closed;
     if (flushFailure !== undefined) throw flushFailure;
     if (sweepFailure !== undefined) throw sweepFailure;
     return total;

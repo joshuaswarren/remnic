@@ -1527,16 +1527,21 @@ test("a gap-crossing chunk cannot close a conversation held for replay", async (
     });
 
     // The silent replay and a much later healthy chunk release in ONE batch.
+    // A real instant hours later: `t()` only formats seconds, so a large value
+    // would build an invalid ISO string and the chunk would fail before it
+    // could join the batch, making this test vacuous.
     const later = chunk({
       path: "/tmp/raw/later.wav",
-      startedAtUtc: t(9000),
-      endedAtUtc: t(9001),
+      startedAtUtc: "2026-07-24T03:00:00.000Z",
+      endedAtUtc: "2026-07-24T03:00:30.000Z",
     });
     const proc = createChunkProcessor(
       deps(spool, {
         onError: () => undefined,
         transcribe: async (input) =>
-          input.wavPath.endsWith("later.wav") ? [{ text: "later", startUtc: t(9000), endUtc: t(9001) }] : [],
+          input.wavPath.endsWith("later.wav")
+            ? [{ text: "later", startUtc: "2026-07-24T03:00:00.000Z", endUtc: "2026-07-24T03:00:10.000Z" }]
+            : [],
       }),
     );
     proc.enqueue(stale);
@@ -1546,6 +1551,47 @@ test("a gap-crossing chunk cannot close a conversation held for replay", async (
       [...spool.capturingConversationIds()].includes("conv_prefix"),
       "the held prefix was not flipped to final",
     );
+  } finally {
+    spool.close();
+  }
+});
+
+test("a hold is released once the retained chunk is complete", async () => {
+  // Retention must not be a latch: after the matching replay completes the
+  // chunk, the conversation finalizes normally (issue #2145).
+  const spool = new Spool(":memory:");
+  try {
+    const ev = chunk();
+    const cid = chunkStableId(ev);
+    const segs = [
+      { text: "A", startUtc: t(1), endUtc: t(2) },
+      { text: "B", startUtc: t(40), endUtc: t(41) },
+    ];
+    spool.markApplied(transcriptManifestKey(cid), transcriptManifestHash(cid, segs));
+    spool.appendAssembledSegments({
+      idempotencyKey: segmentStableKey(cid, segs[0]),
+      chunkId: cid,
+      conversationId: "conv_prefix",
+      startedAtUtc: t(1),
+      state: "capturing",
+      segments: [{ channel: "mic", text: "A", startUtc: t(1), endUtc: t(2), isWearer: true }],
+    });
+
+    const silent = createChunkProcessor(
+      deps(spool, { onError: () => undefined, transcribe: async () => [] }),
+    );
+    silent.enqueue(ev);
+    await silent.finalize();
+    assert.ok([...spool.capturingConversationIds()].includes("conv_prefix"), "held after the silent replay");
+
+    // The matching replay reproduces the manifest, so the chunk completes.
+    const matching = createChunkProcessor(
+      deps(spool, { assembler: new ConversationAssembler({ gapMinutes: 0 }), transcribe: async () => segs }),
+    );
+    matching.enqueue(ev);
+    await matching.finalize();
+    assert.equal(spool.isChunkApplied(`${cid}:done`), true, "the chunk completed");
+    assert.deepEqual([...spool.capturingConversationIds()], [], "and nothing stayed held");
   } finally {
     spool.close();
   }
