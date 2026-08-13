@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import type { OfflineSyncExcludeFile } from "../offline-sync-file-io.js";
 import { stripAttributesSuffix } from "../structured-attributes.js";
 import type { MemoryFile } from "../types.js";
 import {
@@ -30,6 +31,16 @@ export function excludeSupportPassportPrivateMemories<T extends Pick<MemoryFile,
 ): T[] {
   return memories.filter((memory) => !isSupportPassportPrivateMemory(memory));
 }
+
+export function createSupportPassportPrivateFileExclusion(
+  storage: { readMemoryByPath(filePath: string): Promise<MemoryFile | null> },
+): OfflineSyncExcludeFile {
+  return async ({ filePath }) => {
+    const memory = await storage.readMemoryByPath(filePath);
+    return memory ? isSupportPassportPrivateMemory(memory) : false;
+  };
+}
+
 export const SUPPORT_PASSPORT_ATTRIBUTE_KEYS = Object.freeze({
   namespace: "support-passport-namespace",
   owner: "support-passport-owner",

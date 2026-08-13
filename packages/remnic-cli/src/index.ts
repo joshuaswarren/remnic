@@ -192,6 +192,8 @@ import {
   createConfiguredOfflineStorage,
   createOfflineStorageForPath,
   createOfflineStorageIo,
+  filterOfflineSyncBaseFiles,
+  resolveOfflineDirectHydrationPath,
 } from "./offline-storage-io.js";
 import type {
   BinaryLifecycleConfig,
@@ -7826,16 +7828,6 @@ function offlineDirectPushFiles(options: {
     .sort((left, right) => right.bytes - left.bytes || left.path.localeCompare(right.path));
 }
 
-function resolveOfflineDirectHydrationPath(memoryDir: string, relPath: string): string {
-  const base = path.resolve(memoryDir);
-  const target = path.resolve(base, relPath);
-  const relative = path.relative(base, target);
-  if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-    throw new Error(`offline sync direct hydration path escapes memory dir: ${relPath}`);
-  }
-  return target;
-}
-
 export const OFFLINE_SYNC_FILE_CONTENT_UPLOAD_CHUNK_BYTES =
   OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES;
 
@@ -8688,13 +8680,7 @@ export async function runOfflineSyncOnce(options: {
     options.secureStoreEncryptOnWrite,
   );
   const storageIo = await createOfflineStorageIo(options.memoryDir, offlineStorage);
-  const syncBaseFiles: OfflineSyncFileState[] = [];
-  for (const file of baseFiles) {
-    const filePath = resolveOfflineDirectHydrationPath(options.memoryDir, file.path);
-    if (!await storageIo.excludeFile({ root: options.memoryDir, path: file.path, filePath })) {
-      syncBaseFiles.push(file);
-    }
-  }
+  const syncBaseFiles = await filterOfflineSyncBaseFiles(options.memoryDir, baseFiles, storageIo.excludeFile);
   const localSourceId = localOfflineSourceId(options.memoryDir);
   await drainOfflineSyncImpressions(options.memoryDir, options);
   await drainPendingLifecycleForOfflineSync(

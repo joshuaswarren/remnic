@@ -16,6 +16,7 @@ import type {
 import type {
   OfflineSyncFileDigest,
   OfflineSyncExcludeFile,
+  OfflineSyncFileState,
   OfflineSyncFileTarget,
 } from "@remnic/core";
 import {
@@ -58,6 +59,29 @@ export interface OfflineStorageIo {
   deleteFile: Parameters<typeof applyOfflineSyncSnapshot>[0]["deleteFile"];
   recordDeletionRevision: Parameters<typeof applyOfflineSyncSnapshot>[0]["recordDeletionRevision"];
   readDeletionRevisions: () => Promise<ReadonlyMap<string, number>>;
+}
+
+export function resolveOfflineDirectHydrationPath(memoryDir: string, relPath: string): string {
+  const base = path.resolve(memoryDir);
+  const target = path.resolve(base, relPath);
+  const relative = path.relative(base, target);
+  if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`offline sync direct hydration path escapes memory dir: ${relPath}`);
+  }
+  return target;
+}
+
+export async function filterOfflineSyncBaseFiles(
+  memoryDir: string,
+  files: readonly OfflineSyncFileState[],
+  excludeFile: OfflineSyncExcludeFile
+): Promise<OfflineSyncFileState[]> {
+  const included: OfflineSyncFileState[] = [];
+  for (const file of files) {
+    const filePath = resolveOfflineDirectHydrationPath(memoryDir, file.path);
+    if (!(await excludeFile({ root: memoryDir, path: file.path, filePath }))) included.push(file);
+  }
+  return included;
 }
 
 export async function createConfiguredOfflineStorage(

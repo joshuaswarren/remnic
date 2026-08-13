@@ -110,7 +110,7 @@ import {
   memorySearchThroughScope,
 } from "./access-memory-search-fanout.js";
 import { isSearchExcludedPath } from "./orchestration/generic-recall-paths.js";
-import { isSupportPassportPrivateMemory, SUPPORT_PASSPORT_AUDIT_TAG, SUPPORT_PASSPORT_CARD_TAG } from "./support-passport/card-projection.js";
+import { createSupportPassportPrivateFileExclusion, isSupportPassportPrivateMemory, SUPPORT_PASSPORT_AUDIT_TAG, SUPPORT_PASSPORT_CARD_TAG } from "./support-passport/card-projection.js";
 import {
   buildQualityScore,
   buildProposedActions,
@@ -3429,8 +3429,7 @@ export class EngramAccessService {
     const resolvedNamespace = this.resolveReadableNamespace(namespace, principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     const memory = await storage.getMemoryByIdIncludingArchived(memoryId);
-    if (!memory || isSupportPassportPrivateMemory(memory))
-      return { found: false, namespace: resolvedNamespace, count: 0, timeline: [] };
+    if (!memory || isSupportPassportPrivateMemory(memory)) return { found: false, namespace: resolvedNamespace, count: 0, timeline: [] };
     const timeline = await storage.getMemoryTimeline(memoryId, limit);
     return {
       found: timeline.length > 0,
@@ -4550,8 +4549,6 @@ export class EngramAccessService {
     );
   }
 
-  // ── Shared Context / Compounding ────────────────────────────────────────
-
   async sharedContextWriteOutput(request: {
     agentId: string;
     title: string;
@@ -4682,8 +4679,6 @@ export class EngramAccessService {
     });
   }
 
-  // ── Compression Guidelines ────────────────────────────────────────────
-
   async compressionGuidelinesOptimize(request: {
     dryRun?: boolean;
     eventLimit?: number;
@@ -4709,6 +4704,7 @@ export class EngramAccessService {
       expectedGuidelineVersion: request.expectedGuidelineVersion,
     });
   }
+
   async memorySearch(request: {
     query: string;
     namespace?: string;
@@ -5485,10 +5481,7 @@ export class EngramAccessService {
       signal: options.signal,
       userExcludeRegexps: this.offlineSyncUserExcludes,
       deletions,
-      excludeFile: async ({ filePath }) => {
-        const memory = await storage.readMemoryByPath(filePath);
-        return memory ? isSupportPassportPrivateMemory(memory) : false;
-      },
+      excludeFile: createSupportPassportPrivateFileExclusion(storage),
     });
     return {
       namespace: resolvedNamespace,
@@ -5525,10 +5518,7 @@ export class EngramAccessService {
         readFileDigest: async ({ filePath }) => storage.digestOfflineSyncFile(filePath),
         signal: options.signal,
         userExcludeRegexps: this.offlineSyncUserExcludes,
-        excludeFile: async ({ filePath }) => {
-          const memory = await storage.readMemoryByPath(filePath);
-          return memory ? isSupportPassportPrivateMemory(memory) : false;
-        },
+        excludeFile: createSupportPassportPrivateFileExclusion(storage),
       }),
     };
   }
@@ -5561,10 +5551,7 @@ export class EngramAccessService {
         includeTranscripts: options.includeTranscripts !== false,
         readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
         userExcludeRegexps: this.offlineSyncUserExcludes,
-        excludeFile: async ({ filePath }) => {
-          const memory = await storage.readMemoryByPath(filePath);
-          return memory ? isSupportPassportPrivateMemory(memory) : false;
-        },
+        excludeFile: createSupportPassportPrivateFileExclusion(storage),
       });
       return {
         namespace: resolvedNamespace,
@@ -5597,10 +5584,7 @@ export class EngramAccessService {
         includeTranscripts: options.includeTranscripts !== false,
         readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
         userExcludeRegexps: this.offlineSyncUserExcludes,
-        excludeFile: async ({ filePath }) => {
-          const memory = await storage.readMemoryByPath(filePath);
-          return memory ? isSupportPassportPrivateMemory(memory) : false;
-        },
+        excludeFile: createSupportPassportPrivateFileExclusion(storage),
       });
       return {
         namespace: resolvedNamespace,

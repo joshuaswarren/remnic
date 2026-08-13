@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream } from "node:fs";
 import {
   lstat,
   mkdir,
@@ -17,7 +16,6 @@ import path from "node:path";
 import {
   DEFAULT_TRANSFER_EXCLUDE_DIRS,
 } from "./transfer/exclusions.js";
-import { isEncryptedFile, MAGIC_HEADER_SIZE } from "./secure-store/secure-fs.js";
 import {
   prepareSafeArchiveRoot,
   resolveSafeArchiveTarget,
@@ -27,6 +25,16 @@ import {
 } from "./transfer/fs-utils.js";
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 import { DEFAULT_OFFLINE_SYNC_EXCLUDE_GLOBS } from "./offline-sync-exclude-globs.js";
+import {
+  isEncryptedOfflineSyncFile,
+  readPlainOfflineSyncFileChunk,
+  sha256OfflineSyncFile,
+  shouldExcludeOfflineSyncFile,
+  type OfflineSyncExcludeFile,
+  type OfflineSyncFileTarget,
+} from "./offline-sync-file-io.js";
+
+export type { OfflineSyncExcludeFile, OfflineSyncFileTarget } from "./offline-sync-file-io.js";
 
 export const OFFLINE_SYNC_SNAPSHOT_FORMAT = "remnic.offline-sync.snapshot.v1";
 export const OFFLINE_SYNC_CHANGESET_FORMAT = "remnic.offline-sync.changeset.v1";
@@ -141,16 +149,6 @@ export interface OfflineSyncChangesetSummary {
   total: number;
 }
 
-export interface OfflineSyncFileTarget {
-  root: string;
-  path: string;
-  filePath: string;
-}
-
-export type OfflineSyncExcludeFile = (
-  target: OfflineSyncFileTarget,
-) => boolean | Promise<boolean>;
-
 export interface OfflineSyncFileDeleteTarget extends OfflineSyncFileTarget {
   mtimeMs?: number;
 }
@@ -204,13 +202,6 @@ interface OfflineSyncFileRecordOptions {
   readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
   readFileDigest?: (target: OfflineSyncFileTarget) => Promise<OfflineSyncFileDigest>;
   signal?: AbortSignal;
-}
-
-async function shouldExcludeOfflineSyncFile(
-  excludeFile: OfflineSyncExcludeFile | undefined,
-  target: OfflineSyncFileTarget,
-): Promise<boolean> {
-  return excludeFile ? await excludeFile(target) : false;
 }
 
 const SYNC_INTERNAL_DIR = ".offline-sync";
@@ -837,7 +828,7 @@ async function readOfflineSyncFileRecord(
     digest = sha256Buffer(content);
     content = null;
   } else {
-    digest = await sha256File(options.filePath, options.signal);
+    digest = await sha256OfflineSyncFile(options.filePath, options.signal);
   }
   throwIfOfflineSyncAborted(options.signal);
   const st = await stat(options.filePath);
@@ -848,51 +839,6 @@ async function readOfflineSyncFileRecord(
     mtimeMs: st.mtimeMs,
     ...(content ? { contentBase64: content.toString("base64") } : {}),
   };
-}
-
-async function sha256File(filePath: string, signal?: AbortSignal): Promise<OfflineSyncFileDigest> {
-  const hash = createHash("sha256");
-  let bytes = 0;
-  for await (const chunk of createReadStream(filePath)) {
-    throwIfOfflineSyncAborted(signal);
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    hash.update(buffer);
-    bytes += buffer.length;
-  }
-  throwIfOfflineSyncAborted(signal);
-  return {
-    sha256: hash.digest("hex"),
-    bytes,
-  };
-}
-
-async function fileIsSecureStoreEncrypted(filePath: string): Promise<boolean> {
-  const handle = await open(filePath, "r");
-  try {
-    const header = Buffer.alloc(MAGIC_HEADER_SIZE);
-    const { bytesRead } = await handle.read(header, 0, header.length, 0);
-    return bytesRead >= MAGIC_HEADER_SIZE && isEncryptedFile(header);
-  } finally {
-    await handle.close();
-  }
-}
-
-async function readPlainFileContentChunk(options: {
-  filePath: string;
-  offset: number;
-  length: number;
-  bytes: number;
-}): Promise<Buffer> {
-  const chunkBytes = Math.min(options.length, options.bytes - options.offset);
-  const chunk = Buffer.alloc(chunkBytes);
-  if (chunkBytes === 0) return chunk;
-  const handle = await open(options.filePath, "r");
-  try {
-    const { bytesRead } = await handle.read(chunk, 0, chunk.length, options.offset);
-    return bytesRead === chunk.length ? chunk : chunk.subarray(0, bytesRead);
-  } finally {
-    await handle.close();
-  }
 }
 
 export async function* iterateOfflineSyncSnapshotFileRecords(options: {
@@ -1249,12 +1195,12 @@ export async function readOfflineSyncFileContentChunk(options: {
   })) {
     throw new Error(`offline sync file content path is excluded: ${relPath}`);
   }
-  const encrypted = await fileIsSecureStoreEncrypted(filePath);
+  const encrypted = await isEncryptedOfflineSyncFile(filePath);
   if (!encrypted) {
     if (offset > st.size) {
       throw new Error(`offset must be <= file size for ${relPath}`);
     }
-    const chunk = await readPlainFileContentChunk({
+    const chunk = await readPlainOfflineSyncFileChunk({
       filePath,
       offset,
       length: requestedLength,
@@ -2057,7 +2003,7 @@ async function readLocalFileState(options: {
     const content = await options.readFile({ root: options.rootAbs, path: options.relPath, filePath });
     digest = sha256Buffer(content);
   } else {
-    digest = await sha256File(filePath, options.signal);
+    digest = await sha256OfflineSyncFile(filePath, options.signal);
   }
   throwIfOfflineSyncAborted(options.signal);
   return {
