@@ -56,6 +56,8 @@ const INTERNAL_QMD_ROOTS = new Set([
   "workspace",
 ]);
 
+const PRIVATE_RESULT_RESOLUTION_CONCURRENCY = 16;
+
 /**
  * Split a relative QMD result path into its collection prefix and the
  * remainder. Returns `null` for absolute paths, date-only prefixes, or
@@ -330,45 +332,68 @@ export class QmdResultResolver {
     fallbackStorage: StorageManager,
     namespaces: readonly string[] = [],
     preserveUnresolved = false,
+    visibilityCache = new Map<string, boolean>(),
   ): Promise<QmdSearchResult[]> {
-    const visible: QmdSearchResult[] = [];
-    for (const result of results) {
-      if (!result.path) continue;
-      const memory = await this.readQmdResultMemory(
-        result.path,
-        fallbackStorage,
-        namespaces,
-        result.namespace,
-      );
-      const parts = qmdCollectionPathParts(result.path);
-      const config = this.getConfig();
-      const collectionIsKnownInternal =
-        parts !== null &&
-        INTERNAL_QMD_ROOTS.has(parts.collection);
-      const collectionIsConfigured =
-        parts !== null &&
-        (parts.collection === config.qmdCollection ||
-          parts.collection === (config.qmdColdCollection ?? "openclaw-engram-cold") ||
-          this.qmdCollectionNamespaceFromPrefix(parts.collection) !== null);
-      const absoluteInsideMemoryRoot =
-        path.isAbsolute(result.path) &&
-        isPathInsideStorageRoot(path.resolve(config.memoryDir), path.resolve(result.path));
-      const unresolvedInternalPath = !memory && (collectionIsKnownInternal || absoluteInsideMemoryRoot);
-      const unresolvedExternalCollection =
-        !memory &&
-        ((parts !== null &&
-          !collectionIsKnownInternal &&
-          !collectionIsConfigured) ||
-          (path.isAbsolute(result.path) &&
-            !isPathInsideStorageRoot(path.resolve(config.memoryDir), path.resolve(result.path))));
-      if (
-        (memory && !isSupportPassportPrivateMemory(memory)) ||
-        (!memory && !unresolvedInternalPath && (preserveUnresolved || unresolvedExternalCollection))
-      ) {
-        visible.push(result);
-      }
+    const namespaceKey = namespaces.join("\0");
+    const entries = results
+      .filter((result) => Boolean(result.path))
+      .map((result) => ({
+        result,
+        cacheKey: `${namespaceKey}\0${preserveUnresolved ? "1" : "0"}\0${result.namespace ?? ""}\0${result.path}`,
+      }));
+    const pending = new Map<string, QmdSearchResult>();
+    for (const { result, cacheKey } of entries) {
+      if (!visibilityCache.has(cacheKey)) pending.set(cacheKey, result);
     }
-    return visible;
+    const unresolved = [...pending];
+    for (let offset = 0; offset < unresolved.length; offset += PRIVATE_RESULT_RESOLUTION_CONCURRENCY) {
+      await Promise.all(
+        unresolved.slice(offset, offset + PRIVATE_RESULT_RESOLUTION_CONCURRENCY).map(async ([cacheKey, result]) => {
+          visibilityCache.set(
+            cacheKey,
+            await this.isVisibleSearchResult(result, fallbackStorage, namespaces, preserveUnresolved),
+          );
+        }),
+      );
+    }
+    return entries
+      .filter(({ cacheKey }) => visibilityCache.get(cacheKey) === true)
+      .map(({ result }) => result);
+  }
+
+  private async isVisibleSearchResult(
+    result: QmdSearchResult,
+    fallbackStorage: StorageManager,
+    namespaces: readonly string[],
+    preserveUnresolved: boolean,
+  ): Promise<boolean> {
+    const memory = await this.readQmdResultMemory(
+      result.path,
+      fallbackStorage,
+      namespaces,
+      result.namespace,
+    );
+    const parts = qmdCollectionPathParts(result.path);
+    const config = this.getConfig();
+    const collectionIsKnownInternal = parts !== null && INTERNAL_QMD_ROOTS.has(parts.collection);
+    const collectionIsConfigured =
+      parts !== null &&
+      (parts.collection === config.qmdCollection ||
+        parts.collection === (config.qmdColdCollection ?? "openclaw-engram-cold") ||
+        this.qmdCollectionNamespaceFromPrefix(parts.collection) !== null);
+    const absoluteInsideMemoryRoot =
+      path.isAbsolute(result.path) &&
+      isPathInsideStorageRoot(path.resolve(config.memoryDir), path.resolve(result.path));
+    const unresolvedInternalPath = !memory && (collectionIsKnownInternal || absoluteInsideMemoryRoot);
+    const unresolvedExternalCollection =
+      !memory &&
+      ((parts !== null && !collectionIsKnownInternal && !collectionIsConfigured) ||
+        (path.isAbsolute(result.path) &&
+          !isPathInsideStorageRoot(path.resolve(config.memoryDir), path.resolve(result.path))));
+    return (
+      (memory !== null && !isSupportPassportPrivateMemory(memory)) ||
+      (!memory && !unresolvedInternalPath && (preserveUnresolved || unresolvedExternalCollection))
+    );
   }
 
   async resolveColdQmdResultForRecall(

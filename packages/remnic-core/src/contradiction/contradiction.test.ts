@@ -970,6 +970,48 @@ test("runContradictionScan loads memories from namespace-scoped storage", async 
   }
 });
 
+test("runContradictionScan excludes support passport private records", async () => {
+  const { dir, cleanup } = await makeTempDir();
+  try {
+    const visibleA = makeMemory("visible-a", "preference");
+    visibleA.frontmatter.entityRef = "entity:shared";
+    const visibleB = makeMemory("visible-b", "preference");
+    visibleB.frontmatter.entityRef = "entity:shared";
+    const passport = makeMemory("passport-card", "preference");
+    passport.frontmatter.entityRef = "entity:shared";
+    passport.frontmatter.tags = ["support-passport-card"];
+    passport.content = "Private support passport statement.";
+
+    const storage = makeScanStorage([visibleA, passport, visibleB]);
+    const config = parseConfig({
+      memoryDir: dir,
+      contradictionScan: {
+        enabled: true,
+        maxPairsPerRun: 10,
+        topicOverlapFloor: 0,
+        similarityFloor: 0,
+      },
+    });
+
+    const result = await runContradictionScan({
+      storage,
+      config,
+      memoryDir: dir,
+      localLlm: null,
+      fallbackLlm: null,
+    });
+
+    assert.equal(result.scanned, 2);
+    assert.equal(result.candidates, 1);
+    assert.deepEqual(listPairs(dir, { filter: "all" }).pairs[0]?.memoryIds, [
+      "visible-a",
+      "visible-b",
+    ]);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("runContradictionScan caps candidates during generation and preserves strategy priority", async () => {
   const { dir, cleanup } = await makeTempDir();
   try {

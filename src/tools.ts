@@ -457,10 +457,13 @@ Best for:
                 mode: "search",
               });
         let candidateLimit = resultLimit;
+        const privateVisibilityCache = new Map<string, boolean>();
         let candidates = await searchCandidates(candidateLimit);
         let filtered = await orchestrator.filterPrivateSearchResults(
           candidates,
           namespaceFilter ? [namespaceFilter] : [],
+          false,
+          privateVisibilityCache,
         );
         while (
           filtered.length < resultLimit &&
@@ -475,6 +478,8 @@ Best for:
           filtered = await orchestrator.filterPrivateSearchResults(
             candidates,
             namespaceFilter ? [namespaceFilter] : [],
+            false,
+            privateVisibilityCache,
           );
         }
         filtered = filtered.slice(0, resultLimit);

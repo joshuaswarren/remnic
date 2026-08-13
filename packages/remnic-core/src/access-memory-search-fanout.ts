@@ -396,6 +396,7 @@ export interface ScopedMemorySearchDeps {
     results: Array<{ path: string; score: number; snippet?: string }>,
     namespaces: readonly string[],
     preserveUnresolved?: boolean,
+    visibilityCache?: Map<string, boolean>,
   ): Promise<Array<{ path: string; score: number; snippet?: string }>>;
   /** Flat-corpus authorization; throws when the namespace is unreadable. */
   authorizeFlatCorpus(namespace: string | undefined, principal: string | undefined): void;
@@ -449,6 +450,7 @@ export async function memorySearchThroughScope(
     throw new EngramAccessInputError("collection must be a non-empty string");
   }
   let searchNamespaces: string[] = [];
+  const privateVisibilityCache = new Map<string, boolean>();
   const results = await runScopedMemorySearch({
     query, collection, mode,
     namespacesEnabled: deps.namespacesEnabled,
@@ -460,6 +462,7 @@ export async function memorySearchThroughScope(
         collection !== undefined &&
         collection !== "global" &&
         !deps.memoryCollections.includes(collection),
+      privateVisibilityCache,
     ),
     budget: maxResults ?? deps.defaultBudget,
     sendInitialLimit: maxResults !== undefined,

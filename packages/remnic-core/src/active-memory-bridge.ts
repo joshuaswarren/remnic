@@ -50,6 +50,8 @@ interface ActiveMemoryScopedOrchestrator {
   filterPrivateSearchResults?: (
     results: QmdSearchResult[],
     namespaces?: readonly string[],
+    preserveUnresolved?: boolean,
+    visibilityCache?: Map<string, boolean>,
   ) => Promise<QmdSearchResult[]>;
 }
 
@@ -71,6 +73,7 @@ async function filterVisibleActiveMemoryCandidates(
   namespace: string,
   storage: Awaited<ReturnType<NonNullable<ActiveMemoryScopedOrchestrator["getStorageForNamespace"]>>> | undefined,
   candidates: ActiveMemorySearchCandidate[],
+  visibilityCache?: Map<string, boolean>,
 ): Promise<ActiveMemorySearchCandidate[]> {
   const visible = new Set<ActiveMemorySearchCandidate>();
   const pathCandidates = candidates.filter(
@@ -84,7 +87,12 @@ async function filterVisibleActiveMemoryCandidates(
       score: typeof candidate.score === "number" ? candidate.score : 0,
       namespace,
     }));
-    const filtered = await orchestrator.filterPrivateSearchResults(qmdCandidates, [namespace]);
+    const filtered = await orchestrator.filterPrivateSearchResults(
+      qmdCandidates,
+      [namespace],
+      false,
+      visibilityCache,
+    );
     const visibleKeys = new Set(filtered.map((candidate) => `${candidate.docid}\0${candidate.path}`));
     qmdCandidates.forEach((candidate, index) => {
       if (visibleKeys.has(`${candidate.docid}\0${candidate.path}`)) visible.add(pathCandidates[index]!);
@@ -205,6 +213,7 @@ export async function recallForActiveMemory(
   let requestedResults = Math.min(candidateCap, limit + 20);
   let raw: ActiveMemorySearchCandidate[] = [];
   let visible: ActiveMemorySearchCandidate[] = [];
+  const privateVisibilityCache = new Map<string, boolean>();
   for (;;) {
     raw = await orchestrator.searchAcrossNamespaces({
       query: params.query,
@@ -212,7 +221,13 @@ export async function recallForActiveMemory(
       namespaces: [namespace],
       mode: "search",
     });
-    visible = await filterVisibleActiveMemoryCandidates(orchestrator, namespace, storage, raw);
+    visible = await filterVisibleActiveMemoryCandidates(
+      orchestrator,
+      namespace,
+      storage,
+      raw,
+      privateVisibilityCache,
+    );
     if (visible.length > limit || raw.length < requestedResults || requestedResults >= candidateCap) break;
     requestedResults = Math.min(candidateCap, requestedResults * 2);
   }

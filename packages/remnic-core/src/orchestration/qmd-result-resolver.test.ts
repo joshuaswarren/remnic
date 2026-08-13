@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import test from "node:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import test from "node:test";
 
 import { parseConfig } from "../config.js";
 import { StorageManager } from "../index.js";
@@ -145,6 +145,76 @@ test("private-result filtering rejects unresolved internal-root hits", async () 
       const result = { docid: root, path: `${root}/missing.md`, snippet: "private", score: 1 };
       assert.deepEqual(await resolver.filterPrivateSearchResults([result], storage, [], true), []);
     }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("private-result filtering resolves bounded batches and reuses prefix results", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-resolver-batch-"));
+  try {
+    let activeReads = 0;
+    let maximumReads = 0;
+    const readCounts = new Map<string, number>();
+    const storage = {
+      dir,
+      async readMemoryByPath(filePath: string) {
+        const id = path.basename(filePath, ".md");
+        readCounts.set(id, (readCounts.get(id) ?? 0) + 1);
+        activeReads += 1;
+        maximumReads = Math.max(maximumReads, activeReads);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        activeReads -= 1;
+        return {
+          path: filePath,
+          content: `content for ${id}`,
+          frontmatter: {
+            id,
+            category: "fact",
+            created: "2026-08-13T00:00:00.000Z",
+            updated: "2026-08-13T00:00:00.000Z",
+            status: "active",
+            tags: id === "memory-0" ? ["support-passport-card"] : [],
+          },
+        };
+      },
+    } as unknown as StorageManager;
+    const config = parseConfig({ memoryDir: dir });
+    const resolver = new QmdResultResolver({
+      getConfig: () => config,
+      storageFor: async () => storage,
+      storageDirNamespace: () => config.defaultNamespace,
+      qmdCollectionNamespaceFromPrefix: () => null,
+      namespaceFromPath: () => config.defaultNamespace,
+    });
+    const results = Array.from({ length: 20 }, (_, index) => ({
+      docid: `memory-${index}`,
+      path: `facts/memory-${index}.md`,
+      snippet: "candidate",
+      score: 1,
+    }));
+    const visibilityCache = new Map<string, boolean>();
+
+    const first = await resolver.filterPrivateSearchResults(
+      results.slice(0, 16),
+      storage,
+      [],
+      false,
+      visibilityCache,
+    );
+    const second = await resolver.filterPrivateSearchResults(
+      results,
+      storage,
+      [],
+      false,
+      visibilityCache,
+    );
+
+    assert.equal(first.length, 15);
+    assert.equal(second.length, 19);
+    assert.equal(maximumReads, 16);
+    assert.equal([...readCounts.values()].reduce((total, count) => total + count, 0), 20);
+    assert.equal(readCounts.get("memory-0"), 1);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

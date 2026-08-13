@@ -1120,7 +1120,14 @@ export class Orchestrator {
     results: QmdSearchResult[],
     namespaces: readonly string[] = [],
     preserveUnresolved = false,
-  ) => this.qmdResultResolver.filterPrivateSearchResults(results, this.storage, namespaces, preserveUnresolved);
+    visibilityCache?: Map<string, boolean>,
+  ) => this.qmdResultResolver.filterPrivateSearchResults(
+    results,
+    this.storage,
+    namespaces,
+    preserveUnresolved,
+    visibilityCache,
+  );
 
   private configuredNamespaceList(): string[] {
     // #1521: delegates to the scope-module resolver. The inline derivation is
