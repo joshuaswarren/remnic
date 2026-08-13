@@ -40,6 +40,13 @@ class OwnerIndexLockLostError extends Error {
   }
 }
 
+class MalformedGrantStateError extends Error {
+  constructor(message = "support passport grant state is invalid", cause?: unknown) {
+    super(message, { cause });
+    this.name = "MalformedGrantStateError";
+  }
+}
+
 export interface SupportPassportGrantStoreOptions {
   memoryDir: string;
   now?: () => Date;
@@ -229,6 +236,12 @@ export class SupportPassportGrantStore {
           throw error;
         }
       }
+      try {
+        await this.writeOwnerMembership(state);
+      } catch (error) {
+        await this.removeStoredGrant(state).catch(() => undefined);
+        throw error;
+      }
       notifyCommitted(mutationHooks.onCommitted);
       return { state, secret };
     });
@@ -244,13 +257,13 @@ export class SupportPassportGrantStore {
             try {
               await this.syncDirectory(this.ownerIndexesDir);
             } catch {
-              await this.removeGrantStates([committed.state.grantId]).catch(() => undefined);
+              await this.removeStoredGrant(committed.state).catch(() => undefined);
               throw error;
             }
             await this.requireOwnerIndexLock(lock);
             return committed;
           }
-          await this.removeGrantStates([committed.state.grantId]).catch(() => undefined);
+          await this.removeStoredGrant(committed.state).catch(() => undefined);
           throw error;
         }
         return committed;
@@ -262,12 +275,12 @@ export class SupportPassportGrantStore {
         } catch (recoveryError) {
           await this.withGrantLock(committed.state.grantId, async (lock) => {
             await this.requireMutationLock(lock);
-            await this.removeGrantStates([committed.state.grantId]);
+            await this.removeStoredGrant(committed.state);
           }).catch(() => undefined);
           throw recoveryError;
         }
       }
-      await this.removeGrantStates([committed.state.grantId]).catch(() => undefined);
+      await this.removeStoredGrant(committed.state).catch(() => undefined);
       throw error;
     }
   }
@@ -411,8 +424,8 @@ export class SupportPassportGrantStore {
     const current = await this.readOwnerIndexByHash(ownerHash);
     if (current.includes(state.grantId)) return;
     let retained = current;
+    let indexedStates: SupportPassportGrantState[] = [];
     if (current.length >= MAX_OWNER_GRANT_HISTORY) {
-      const indexedStates: SupportPassportGrantState[] = [];
       for (const grantId of current) {
         try {
           const indexedState = await this.readState(grantId);
@@ -446,6 +459,7 @@ export class SupportPassportGrantStore {
     }
     const grantIds = [...retained, state.grantId];
     const retainedIds = new Set(grantIds);
+    const indexedStateById = new Map(indexedStates.map((indexedState) => [indexedState.grantId, indexedState]));
     const evictedGrantIds = current.filter((grantId) => !retainedIds.has(grantId));
     await this.requireMutationLock(lock);
     await this.writeOwnerIndex(ownerHash, grantIds);
@@ -454,7 +468,9 @@ export class SupportPassportGrantStore {
       for (const grantId of evictedGrantIds) {
         await this.withGrantLock(grantId, async (grantLock) => {
           await this.requireMutationLock(grantLock);
-          await this.removeGrantStates([grantId]);
+          const evictedState = indexedStateById.get(grantId);
+          if (evictedState) await this.removeStoredGrant(evictedState);
+          else await this.removeGrantStates([grantId]);
         });
       }
     } catch (error) {
@@ -475,6 +491,49 @@ export class SupportPassportGrantStore {
       "support passport grant files must be regular files in a stable directory",
       path.parse(this.memoryDir).root,
     );
+  }
+
+  private ownerMembershipDirectory(ownerHash: string): string {
+    if (!SAFE_OWNER_INDEX_HASH.test(ownerHash)) throw new Error("support passport owner index hash is invalid");
+    return path.join(this.ownerIndexesDir, ownerHash);
+  }
+
+  private async ensureOwnerMembershipDirectory(ownerHash: string): Promise<string> {
+    const directory = this.ownerMembershipDirectory(ownerHash);
+    await ensurePrivateDirectoryNoFollow(
+      this.memoryDir,
+      directory,
+      "support passport owner membership must remain inside the memory directory",
+    );
+    return directory;
+  }
+
+  private async writeOwnerMembership(state: SupportPassportGrantState): Promise<void> {
+    const ownerHash = this.ownerHash(state.namespace, state.principalHash);
+    const directory = await this.ensureOwnerMembershipDirectory(ownerHash);
+    await writePrivateFileAtomicallyNoFollow(
+      directory,
+      path.join(directory, `${state.grantId}.json`),
+      `${JSON.stringify({ schemaVersion: 1, grantId: state.grantId })}\n`,
+      "support passport owner membership must be regular files in a stable directory",
+      path.parse(this.memoryDir).root,
+    );
+  }
+
+  private async removeOwnerMembership(state: SupportPassportGrantState): Promise<void> {
+    const ownerHash = this.ownerHash(state.namespace, state.principalHash);
+    const directory = await this.ensureOwnerMembershipDirectory(ownerHash);
+    await removePrivateFilesNoFollow(
+      directory,
+      [`${state.grantId}.json`],
+      "support passport owner membership must be regular files in a stable directory",
+      path.parse(this.memoryDir).root,
+    );
+  }
+
+  private async removeStoredGrant(state: SupportPassportGrantState): Promise<void> {
+    await this.removeGrantStates([state.grantId]);
+    await this.removeOwnerMembership(state);
   }
 
   private async reconcileCreateAfterOwnerIndexLockLoss(
@@ -502,13 +561,12 @@ export class SupportPassportGrantStore {
           if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         }
       }
-      const indexedGrantIdSet = new Set(indexedGrantIds);
-      const unindexedOwnerStates = await this.readUnindexedOwnerStates(
+      const memberStates = await this.readOwnerMembershipStates(
         committed.state.namespace,
         committed.state.principalHash,
-        indexedGrantIdSet,
       );
-      ownerStates.push(...unindexedOwnerStates);
+      const indexedGrantIdSet = new Set(ownerStates.map((state) => state.grantId));
+      ownerStates.push(...memberStates.filter((state) => !indexedGrantIdSet.has(state.grantId)));
       const committedIndex = ownerStates.findIndex(
         (state) => state.grantId === committed.state.grantId,
       );
@@ -519,7 +577,7 @@ export class SupportPassportGrantStore {
         (state) => !state.revokedAt && Date.parse(state.expiresAt) > activeCutoff,
       );
       if (active.length > MAX_OWNER_GRANT_HISTORY) {
-        await this.removeGrantStates([committed.state.grantId]);
+        await this.removeStoredGrant(committed.state);
         const committedIndex = ownerStates.findIndex(
           (state) => state.grantId === committed.state.grantId,
         );
@@ -559,22 +617,23 @@ export class SupportPassportGrantStore {
     return await this.readOwnerIndexByHash(this.ownerHash(namespace, principalHash));
   }
 
-  private async readUnindexedOwnerStates(
+  private async readOwnerMembershipStates(
     namespace: string,
     principalHash: string,
-    indexedGrantIds: ReadonlySet<string>,
   ): Promise<SupportPassportGrantState[]> {
     await this.ensureSafeDirectories();
+    const ownerHash = this.ownerHash(namespace, principalHash);
+    const directory = await this.ensureOwnerMembershipDirectory(ownerHash);
     const grantIds = await withPrivateDirectoryNoFollow(
       path.parse(this.memoryDir).root,
-      this.grantsDir,
-      "support passport grant files must be regular files in a stable directory",
+      directory,
+      "support passport owner membership must be regular files in a stable directory",
       async (pinnedDirectory) => {
         const entries = await readdir(pinnedDirectory, { withFileTypes: true });
         return entries
           .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
           .map((entry) => entry.name.slice(0, -5))
-          .filter((grantId) => SAFE_GRANT_ID.test(grantId) && !indexedGrantIds.has(grantId));
+          .filter((grantId) => SAFE_GRANT_ID.test(grantId));
       },
     );
     const ownerStates: SupportPassportGrantState[] = [];
@@ -584,8 +643,9 @@ export class SupportPassportGrantStore {
         if (state.namespace === namespace && hashesMatch(state.principalHash, principalHash)) {
           ownerStates.push(state);
         }
-      } catch {
-        continue;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof MalformedGrantStateError) continue;
+        throw error;
       }
     }
     return ownerStates;
@@ -654,9 +714,19 @@ export class SupportPassportGrantStore {
       "support passport grant files must be regular files in a stable directory",
       path.parse(this.memoryDir).root,
     );
-    const state = SupportPassportGrantStateSchema.parse(JSON.parse(content));
-    if (state.grantId !== grantId) throw new Error("support passport grant ID must match its file name");
-    return state;
+    try {
+      const state = SupportPassportGrantStateSchema.parse(JSON.parse(content));
+      if (state.grantId !== grantId) {
+        throw new MalformedGrantStateError("support passport grant ID must match its file name");
+      }
+      return state;
+    } catch (error) {
+      if (error instanceof MalformedGrantStateError) throw error;
+      if (error instanceof SyntaxError || (error as Error).name === "ZodError") {
+        throw new MalformedGrantStateError(undefined, error);
+      }
+      throw error;
+    }
   }
 
   private async writeState(state: SupportPassportGrantState, requireAbsent = false): Promise<void> {

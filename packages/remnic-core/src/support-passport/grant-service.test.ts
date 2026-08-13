@@ -883,6 +883,7 @@ test("grant creation reconciles peer state when the owner-index lock is lost aft
       ): Promise<T>;
       writeOwnerIndex(ownerHash: string, grantIds: string[]): Promise<void>;
       writeState(state: typeof peerState, requireAbsent: boolean): Promise<void>;
+      writeOwnerMembership(state: typeof peerState): Promise<void>;
     };
     const writeOwnerIndex = inspected.writeOwnerIndex.bind(store);
     let injectPeer = true;
@@ -890,6 +891,7 @@ test("grant creation reconciles peer state when the owner-index lock is lost aft
       if (injectPeer) {
         injectPeer = false;
         await inspected.writeState(peerState, true);
+        await inspected.writeOwnerMembership(peerState);
         await writeOwnerIndex(ownerHash, [first.state.grantId, peerGrantId]);
       }
       await writeOwnerIndex(ownerHash, indexedGrantIds);
@@ -915,6 +917,86 @@ test("grant creation reconciles peer state when the owner-index lock is lost aft
     assert.equal(ownerLockRun, 2);
     assert.equal(firstRunRefreshes, 2);
     assert.deepEqual(listedIds, new Set([first.state.grantId, created.state.grantId, peerGrantId]));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("grant recovery propagates transient reads from an owner membership", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-recovery-read-"));
+  try {
+    const grantIds = [
+      "00000000-0000-4000-8000-000000000001",
+      "00000000-0000-4000-8000-000000000002",
+    ];
+    const peerGrantId = "00000000-0000-4000-8000-000000000003";
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({
+      memoryDir: root,
+      makeGrantId: () => grantIds.shift() ?? "00000000-0000-4000-8000-000000000004",
+      now: () => now,
+    });
+    const input = {
+      namespace: "alice",
+      principal: "owner:alice",
+      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+      expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
+    };
+    const first = await store.create(input);
+    const peerState = {
+      ...first.state,
+      grantId: peerGrantId,
+      secretHash: "b".repeat(64),
+    };
+    const inspected = store as unknown as {
+      withOwnerIndexLock<T>(
+        ownerHash: string,
+        task: (lock: { refresh(): Promise<boolean> }) => Promise<T>,
+      ): Promise<T>;
+      writeOwnerIndex(ownerHash: string, indexedGrantIds: string[]): Promise<void>;
+      writeState(state: typeof peerState, requireAbsent: boolean): Promise<void>;
+      writeOwnerMembership(state: typeof peerState): Promise<void>;
+      readState(grantId: string): Promise<typeof peerState>;
+    };
+    const writeOwnerIndex = inspected.writeOwnerIndex.bind(store);
+    let injectPeer = true;
+    inspected.writeOwnerIndex = async (ownerHash, indexedGrantIds) => {
+      if (injectPeer) {
+        injectPeer = false;
+        await inspected.writeState(peerState, true);
+        await inspected.writeOwnerMembership(peerState);
+      }
+      await writeOwnerIndex(ownerHash, indexedGrantIds);
+    };
+    let ownerLockRun = 0;
+    let firstRunRefreshes = 0;
+    inspected.withOwnerIndexLock = async (_ownerHash, task) => {
+      ownerLockRun += 1;
+      return await task({
+        refresh: async () => {
+          if (ownerLockRun !== 1) return true;
+          firstRunRefreshes += 1;
+          return firstRunRefreshes !== 2;
+        },
+      });
+    };
+    const readState = inspected.readState.bind(store);
+    inspected.readState = async (grantId) => {
+      if (ownerLockRun > 1 && grantId === peerGrantId) {
+        throw Object.assign(new Error("simulated transient owner read"), { code: "EIO" });
+      }
+      return await readState(grantId);
+    };
+
+    await assert.rejects(
+      store.create(input),
+      (error: unknown) => (error as NodeJS.ErrnoException).code === "EIO",
+    );
+    assert.equal(ownerLockRun, 2);
+    assert.equal(
+      JSON.parse(await readFile(path.join(root, "state", "support-passport", "grants", `${peerGrantId}.json`), "utf8")).grantId,
+      peerGrantId,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1014,7 +1096,14 @@ test("grant recovery ignores malformed unindexed grant files", async () => {
         ownerHash: string,
         task: (lock: { refresh(): Promise<boolean> }) => Promise<T>,
       ): Promise<T>;
+      ownerHash(namespace: string, principalHash: string): string;
     };
+    const ownerHash = inspected.ownerHash(first.state.namespace, first.state.principalHash);
+    await writeFile(
+      path.join(grantsDir, "owners", ownerHash, `${unindexedGrantId}.json`),
+      `${JSON.stringify({ schemaVersion: 1, grantId: unindexedGrantId })}\n`,
+      { mode: 0o600 },
+    );
     inspected.withOwnerIndexLock = async (_ownerHash, task) => {
       ownerLockRun += 1;
       return await task({
@@ -1034,6 +1123,63 @@ test("grant recovery ignores malformed unindexed grant files", async () => {
       new Set([first.state.grantId, created.state.grantId]),
     );
     assert.equal(await readFile(path.join(grantsDir, `${unindexedGrantId}.json`), "utf8"), "not valid JSON");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("grant recovery reads only the affected owner's membership after lock loss", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-owner-scoped-recovery-"));
+  try {
+    const grantIds = Array.from({ length: 8 }, (_, index) =>
+      `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+    );
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({
+      memoryDir: root,
+      makeGrantId: () => grantIds.shift() ?? "00000000-0000-4000-8000-000000000099",
+      now: () => now,
+    });
+    const input = {
+      namespace: "shared",
+      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+      expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
+    };
+    await store.create({ ...input, principal: "owner:alice" });
+    const bobGrantIds = new Set<string>();
+    for (let index = 0; index < 5; index += 1) {
+      bobGrantIds.add((await store.create({ ...input, principal: "owner:bob" })).state.grantId);
+    }
+    const inspected = store as unknown as {
+      withOwnerIndexLock<T>(
+        ownerHash: string,
+        task: (lock: { refresh(): Promise<boolean> }) => Promise<T>,
+      ): Promise<T>;
+      readState(grantId: string): Promise<{ grantId: string }>;
+    };
+    let ownerLockRun = 0;
+    let firstRunRefreshes = 0;
+    inspected.withOwnerIndexLock = async (_ownerHash, task) => {
+      ownerLockRun += 1;
+      return await task({
+        refresh: async () => {
+          if (ownerLockRun !== 1) return true;
+          firstRunRefreshes += 1;
+          return firstRunRefreshes !== 2;
+        },
+      });
+    };
+    const readState = inspected.readState.bind(store);
+    const recoveryReads: string[] = [];
+    inspected.readState = async (grantId) => {
+      if (ownerLockRun === 2) recoveryReads.push(grantId);
+      return await readState(grantId);
+    };
+
+    await store.create({ ...input, principal: "owner:alice" });
+
+    assert.equal(ownerLockRun, 2);
+    assert.equal(recoveryReads.some((grantId) => bobGrantIds.has(grantId)), false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
