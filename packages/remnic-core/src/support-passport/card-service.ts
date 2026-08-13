@@ -319,7 +319,11 @@ export class SupportPassportCardService {
     if (visibleCards.length - (replacesVisibleCard ? 1 : 0) >= MAX_OWNER_VISIBLE_CARDS) {
       throw new SupportPassportError("invalid_input", "A support passport can contain at most 100 visible cards.", 400);
     }
-    const order = input.order ?? storedCards.reduce((maximum, card) => Math.max(maximum, card.order), -1) + 1;
+    const maximumOrder = storedCards.reduce((maximum, card) => Math.max(maximum, card.order), -1);
+    const order = input.order ?? maximumOrder + 1;
+    if (!Number.isSafeInteger(order)) {
+      throw new SupportPassportError("storage_conflict", "The support card order range is exhausted.", 409);
+    }
     const envelope = composeMemoryEnvelope(
       {
         content: input.statement,
@@ -637,7 +641,11 @@ export class SupportPassportCardService {
     principal: string,
     namespace: string
   ): Promise<void> {
-    const replacements = (await this.readProjectedCards(storage, namespace, principal)).filter((item) => {
+    const storedCards =
+      predecessor.card.status === "active"
+        ? await this.readStoredCards(storage, lock, principal, namespace)
+        : await this.readProjectedCards(storage, namespace, principal);
+    const replacements = storedCards.filter((item) => {
       if (item.card.status !== "pending_review") return false;
       return predecessor.card.status === "pending_review"
         ? item.replacesDraftId === predecessor.card.cardId

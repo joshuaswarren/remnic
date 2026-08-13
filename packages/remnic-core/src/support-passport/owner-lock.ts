@@ -3,6 +3,7 @@ import path from "node:path";
 
 import type { StorageManager } from "../index.js";
 import { type HeldFileLockController, serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
+import { computeSupportPassportOwnerKey } from "./card-projection.js";
 import { SupportPassportError } from "./errors.js";
 
 const CARD_MUTATION_LOCK_STALE_MS = 60_000;
@@ -17,7 +18,8 @@ export function supportPassportOwnerLockPath(
   storage: StorageManager,
   scope: SupportPassportOwnerLockScope
 ): string {
-  const scopeKey = createHash("sha256").update(JSON.stringify([scope.namespace, scope.principal])).digest("hex");
+  const ownerKey = computeSupportPassportOwnerKey(scope.principal);
+  const scopeKey = createHash("sha256").update(JSON.stringify([scope.namespace, ownerKey])).digest("hex");
   return path.join(storage.dir, "state", `support-passport-cards-${scopeKey}.lock`);
 }
 
