@@ -135,6 +135,12 @@ interface BufferedChunk {
   startMs: number;
   /** Latest segment end, never earlier than the chunk's own end. */
   endMs: number;
+  /**
+   * Whether this chunk's transcript manifest is durably recorded. A chunk is
+   * never released without it: the manifest is what stops a later, changed
+   * retranscription from completing a partially applied chunk (issue #2145).
+   */
+  manifestRecorded: boolean;
 }
 
 /**
@@ -333,19 +339,9 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       built,
       startMs: firstStartMs(event, raw),
       endMs: lastEndMs(event, raw),
+      manifestRecorded: false,
     });
     bufferedIds.add(chunkId);
-    // Recorded AFTER buffering (so a throw here cannot drop the helper's
-    // one-shot event) but BEFORE any append, and only once: this is the fact a
-    // later replay cannot re-derive, so it must survive a failure partway
-    // through appending this chunk (issue #2145).
-    if (built.length > 0 && !deps.spool.hasAppliedChunkPrefix(`${chunkId}:m`)) {
-      try {
-        deps.spool.markApplied(transcriptManifestKey(chunkId, built.map((item) => item.seg)), "-");
-      } catch (err) {
-        report(err, event);
-      }
-    }
     watermarkSourceMs = Math.max(watermarkSourceMs, lastEndMs(event, raw));
     await releaseReady(false);
   }
@@ -556,6 +552,30 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
   }
 
   /**
+   * Persist a buffered chunk's transcript manifest, once. Returns whether the
+   * chunk may now be released.
+   */
+  function recordTranscriptManifest(entry: BufferedChunk): boolean {
+    if (entry.built.length === 0) {
+      entry.manifestRecorded = true;
+      return true;
+    }
+    try {
+      if (!deps.spool.hasAppliedChunkPrefix(`${entry.chunkId}:m`)) {
+        deps.spool.markApplied(
+          transcriptManifestKey(entry.chunkId, entry.built.map((item) => item.seg)),
+          "-",
+        );
+      }
+      entry.manifestRecorded = true;
+      return true;
+    } catch (err) {
+      report(err, entry.event);
+      return false;
+    }
+  }
+
+  /**
    * Release every buffered chunk the watermark has passed, as one batch.
    *
    * A chunk becomes releasable when the newest observed chunk end is
@@ -577,6 +597,13 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       for (let i = buffer.length - 1; i >= 0; i--) {
         const candidate = buffer[i];
         if (candidate.endMs > threshold) continue;
+        // Record the transcript manifest BEFORE the chunk can be appended, and
+        // only once. A chunk whose manifest cannot be written stays buffered
+        // with its raw audio: releasing it would let a later, changed
+        // retranscription record the FIRST manifest and complete a partially
+        // applied chunk (issue #2145). The event is not lost — the next pass
+        // retries the write.
+        if (!candidate.manifestRecorded && !recordTranscriptManifest(candidate)) continue;
         buffer.splice(i, 1);
         bufferedIds.delete(candidate.chunkId);
         batch.push(candidate);

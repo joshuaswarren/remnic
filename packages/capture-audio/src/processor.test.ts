@@ -1251,3 +1251,50 @@ test("a replay with the same segment count but different content stays open", as
     spool.close();
   }
 });
+
+test("a chunk is never released without its transcript manifest", async () => {
+  // Swallowing a failed manifest write and releasing anyway would let a later,
+  // changed retranscription record the FIRST manifest and complete a partially
+  // applied chunk (issue #2145).
+  const spool = new Spool(":memory:");
+  try {
+    let failMarker = true;
+    const cleaned: string[] = [];
+    const guarded = new Proxy(spool, {
+      get(target, prop, receiver) {
+        if (prop === "markApplied" && failMarker) {
+          return () => {
+            throw new Error("sqlite busy");
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as Spool;
+    const errors: Error[] = [];
+    const proc = createChunkProcessor(
+      deps(guarded, {
+        reorderWindowMs: 0,
+        onError: (error) => errors.push(error),
+        cleanupRawAudio: async (event) => {
+          cleaned.push(event.path);
+        },
+      }),
+    );
+    proc.enqueue(chunk());
+    await proc.drain();
+    assert.equal(spool.stats().segments, 0, "nothing was appended without a manifest");
+    assert.equal(cleaned.length, 0, "and the raw audio is retained");
+    assert.ok(
+      errors.some((error) => /sqlite busy/.test(error.message)),
+      "the failure was reported",
+    );
+
+    // The next pass retries the write and releases the chunk.
+    failMarker = false;
+    await proc.finalize();
+    assert.equal(spool.stats().segments, 2, "the chunk released once its manifest was durable");
+  } finally {
+    spool.close();
+  }
+});
