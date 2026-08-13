@@ -132,7 +132,10 @@ export function createLiveCapture(options: LiveCaptureOptions): LiveCapture {
     // Cross-channel arrival skew: hold each transcribed chunk until the
     // watermark passes it, so a delayed system chunk still assembles into the
     // conversation it belongs to (issue #2145).
-    reorderWindowMs: config.reorderWindowSeconds * 1000,
+    // Only "both" has two independent chunk streams to interleave. A single
+    // channel is already ordered, so buffering would add latency and widen the
+    // crash window for nothing (issue #2145).
+    reorderWindowMs: config.captureChannel === "both" ? config.reorderWindowSeconds * 1000 : 0,
     ...(options.detectSpeech ? { detectSpeech: options.detectSpeech } : {}),
     ...(options.embed ? { embed: options.embed } : {}),
     ...(diarizer ? { diarizer } : {}),

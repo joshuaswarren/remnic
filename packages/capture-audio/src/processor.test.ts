@@ -1149,7 +1149,7 @@ test("a shortened retranscription keeps the chunk open instead of losing its tai
     partial.enqueue(ev);
     await partial.drain();
     assert.equal(spool.stats().segments, 1, "only A persisted");
-    assert.equal(spool.isChunkApplied(`${cid}:n2`), true, "the two-segment transcript was recorded");
+    assert.ok(spool.hasAppliedChunkPrefix(`${cid}:m`), "the transcript manifest was recorded");
     assert.equal(spool.isChunkApplied(`${cid}:done`), false, "and the chunk is not complete");
 
     // The replay now produces only A.
@@ -1190,6 +1190,63 @@ test("a shortened retranscription keeps the chunk open instead of losing its tai
     await ok.finalize();
     assert.equal(spool.isChunkApplied(`${stableId}:done`), true);
     assert.deepEqual(cleaned, ["/tmp/raw/stable.wav"]);
+  } finally {
+    spool.close();
+  }
+});
+
+test("a replay with the same segment count but different content stays open", async () => {
+  // A count is too weak a manifest: [A, B] recording n2 and committing only A,
+  // then replaying as [X, B], would match on count and be marked complete with
+  // mixed content (issue #2145).
+  const spool = new Spool(":memory:");
+  try {
+    const ev = chunk({ path: "/tmp/raw/swap.wav" });
+    const cid = chunkStableId(ev);
+    const a: TranscribedSegment = { text: "A", startUtc: t(1), endUtc: t(2) };
+    const b: TranscribedSegment = { text: "B", startUtc: t(40), endUtc: t(41) };
+    const x: TranscribedSegment = { text: "X", startUtc: t(1), endUtc: t(2) };
+    const cleaned: string[] = [];
+
+    let appends = 0;
+    const guarded = new Proxy(spool, {
+      get(target, prop, receiver) {
+        if (prop === "appendAssembledSegments") {
+          return (input: Parameters<Spool["appendAssembledSegments"]>[0]) => {
+            appends += 1;
+            if (appends === 2) throw new Error("sqlite busy");
+            return target.appendAssembledSegments(input);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as Spool;
+
+    const partial = createChunkProcessor(
+      deps(guarded, {
+        assembler: new ConversationAssembler({ gapMinutes: 0 }),
+        transcribe: async () => [a, b],
+      }),
+    );
+    partial.enqueue(ev);
+    await partial.drain();
+    assert.equal(spool.stats().segments, 1, "only A persisted");
+
+    // Same COUNT, different content.
+    const swapped = createChunkProcessor(
+      deps(spool, {
+        assembler: new ConversationAssembler({ gapMinutes: 0 }),
+        transcribe: async () => [x, b],
+        cleanupRawAudio: async (event) => {
+          cleaned.push(event.path);
+        },
+      }),
+    );
+    swapped.enqueue(chunk({ path: "/tmp/raw/swap.wav" }));
+    await swapped.finalize();
+    assert.equal(spool.isChunkApplied(`${cid}:done`), false, "a changed transcript never completes the chunk");
+    assert.equal(cleaned.length, 0, "and its raw audio is retained");
   } finally {
     spool.close();
   }

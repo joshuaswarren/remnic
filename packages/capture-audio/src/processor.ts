@@ -103,6 +103,25 @@ export function segmentStableKey(chunkId: string, segment: { startUtc: string; e
   return `${chunkId}:h${digest}`;
 }
 
+/**
+ * Marker key describing a chunk's WHOLE transcript.
+ *
+ * A segment count is too weak a manifest: a replay that returns the same
+ * number of DIFFERENT segments would match it and let a partially applied
+ * chunk be marked complete with mixed content. Hashing every segment key
+ * catches both a shortened and a changed transcript (issue #2145).
+ */
+export function transcriptManifestKey(
+  chunkId: string,
+  segments: readonly { startUtc: string; endUtc: string; text: string }[],
+): string {
+  const digest = createHash("sha1")
+    .update(segments.map((segment) => segmentStableKey(chunkId, segment)).join("\n"))
+    .digest("hex")
+    .slice(0, 16);
+  return `${chunkId}:m${digest}`;
+}
+
 export function chunkStableId(event: ChunkEvent): string {
   return `chk_${createHash("sha1").update(event.path).digest("hex")}`;
 }
@@ -151,6 +170,9 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
   let tail: Promise<void> = Promise.resolve();
   let recovered = false;
   let openConversationId: string | null = null;
+  // Set when a chunk is deliberately left unapplied for a later replay: its
+  // conversation must stay `capturing` so that replay can resume it.
+  let retainedForReplay = false;
   const processedThisRun = new Set<string>();
   // Bounded reorder buffer (issue #2145). With `captureChannel: "both"` the
   // native helper emits one chunk stream per channel, and a system chunk for
@@ -305,12 +327,6 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
         })
       : [];
     const built = buildSegments(event, raw);
-    // Recorded BEFORE any append, and only once: this is the fact a later
-    // replay cannot re-derive, so it must survive a failure that happens
-    // partway through appending this chunk (issue #2145).
-    if (built.length > 0 && !deps.spool.hasAppliedChunkPrefix(`${chunkId}:n`)) {
-      deps.spool.markApplied(`${chunkId}:n${built.length}`, "-");
-    }
     buffer.push({
       event,
       chunkId,
@@ -319,6 +335,17 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       endMs: lastEndMs(event, raw),
     });
     bufferedIds.add(chunkId);
+    // Recorded AFTER buffering (so a throw here cannot drop the helper's
+    // one-shot event) but BEFORE any append, and only once: this is the fact a
+    // later replay cannot re-derive, so it must survive a failure partway
+    // through appending this chunk (issue #2145).
+    if (built.length > 0 && !deps.spool.hasAppliedChunkPrefix(`${chunkId}:m`)) {
+      try {
+        deps.spool.markApplied(transcriptManifestKey(chunkId, built.map((item) => item.seg)), "-");
+      } catch (err) {
+        report(err, event);
+      }
+    }
     watermarkSourceMs = Math.max(watermarkSourceMs, lastEndMs(event, raw));
     await releaseReady(false);
   }
@@ -494,18 +521,22 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       // retranscription is indistinguishable from a missing tail — mark done
       // and a tail can be lost, refuse and a fully-applied chunk
       // re-transcribes forever. So the count is persisted once and compared.
-      const segmentCount = entry.built.length;
-      // The marker was written at transcribe time, so a mismatch here means an
-      // EARLIER run produced a different number of segments — a tail that no
-      // run has accounted for.
-      const countMatches = deps.spool.isChunkApplied(`${entry.chunkId}:n${segmentCount}`);
+      // The manifest marker was written at transcribe time, so a mismatch here
+      // means an EARLIER run produced a DIFFERENT transcript — shorter, or the
+      // same length with different content. Either way a segment no run has
+      // accounted for may be missing, so the chunk stays open and keeps its
+      // audio.
+      const manifestMatches = deps.spool.isChunkApplied(
+        transcriptManifestKey(entry.chunkId, entry.built.map((item) => item.seg)),
+      );
       const fullyProcessed =
-        segmentCount > 0
-          ? countMatches
+        entry.built.length > 0
+          ? manifestMatches
           : !deps.spool.hasAppliedChunkPrefix(`${entry.chunkId}:`);
-      if (segmentCount > 0 && !countMatches) {
+      if (entry.built.length > 0 && !manifestMatches) {
+        retainedForReplay = true;
         log.warn(
-          `[capture-audio] chunk ${entry.chunkId} retranscribed to ${segmentCount} segments but an earlier run produced a different count; keeping its raw audio`,
+          `[capture-audio] chunk ${entry.chunkId} retranscribed to a different transcript than an earlier run; keeping its raw audio for replay`,
         );
       }
       processedThisRun.add(entry.chunkId);
@@ -631,7 +662,8 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     // replay would open a NEW conversation instead of joining the original.
     // The sweep below still dedupes and diarizes, so anything a later
     // shutdown flips is clean.
-    if (flushFailure === undefined) deps.assembler.finalize();
+    const holdOpen = flushFailure !== undefined || retainedForReplay;
+    if (!holdOpen) deps.assembler.finalize();
     // Dedup then cluster EVERY still-capturing conversation before the bulk
     // flip to final — including one left by a crashed prior run that this
     // process never touched (so it has no in-memory openConversationId) — so
@@ -651,7 +683,7 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
         // diarization failed must STAY capturing so a later finalize retries
         // it, while the ones that succeeded still reach the final-only read
         // path instead of being stranded behind it.
-        if (flushFailure === undefined && deps.spool.finalizeConversation(id)) closed++;
+        if (!holdOpen && deps.spool.finalizeConversation(id)) closed++;
       } catch (error) {
         sweepFailure ??= error;
       }
@@ -660,9 +692,7 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     // above. Skipping it when the sweep failed is what keeps the FAILED
     // conversation `capturing` for the next finalize to retry.
     const total =
-      sweepFailure === undefined && flushFailure === undefined
-        ? closed + deps.spool.finalizeOpenConversations()
-        : closed;
+      sweepFailure === undefined && !holdOpen ? closed + deps.spool.finalizeOpenConversations() : closed;
     if (flushFailure !== undefined) throw flushFailure;
     if (sweepFailure !== undefined) throw sweepFailure;
     return total;
