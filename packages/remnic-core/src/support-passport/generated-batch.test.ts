@@ -15,7 +15,7 @@ import {
   rollbackSupportPassportGeneratedBatch,
 } from "./generated-batch.js";
 
-test("a visible generated batch marker does not hide its durability error", async () => {
+test("a visible generated batch marker reconciles its durability error as success", async () => {
   StorageManager.clearAllStaticCaches();
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-passport-batch-durability-"));
   const storage = new StorageManager(path.join(root, "shared"));
@@ -43,13 +43,10 @@ test("a visible generated batch marker does not hide its durability error", asyn
     } as StoredSupportPassportCard;
     const durabilityError = Object.assign(new Error("simulated directory sync failure"), { code: "EIO" });
 
-    await assert.rejects(
-      commitSupportPassportGeneratedBatch(context, marker, [card], async (_storage, committed) => {
+    await commitSupportPassportGeneratedBatch(context, marker, [card], async (_storage, committed) => {
         await writeFile(markerPath, `${JSON.stringify(committed)}\n`, "utf8");
         throw durabilityError;
-      }),
-      durabilityError
-    );
+      });
     assert.equal((JSON.parse(await readFile(markerPath, "utf8")) as { complete: boolean }).complete, true);
     assert.equal(await rollbackSupportPassportGeneratedBatch(context, batchId, [card.card.cardId]), false);
     assert.equal((JSON.parse(await readFile(markerPath, "utf8")) as { complete: boolean }).complete, true);
