@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { link, lstat, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -1240,10 +1240,7 @@ test("helper question audits hash the canonical grant ID", async () => {
     });
     await flushAudit();
 
-    assert.equal(
-      records[0]?.actorHash,
-      hashSupportPassportAuditValues("helper-grant", [created.grant.grantId])
-    );
+    assert.equal(records[0]?.actorHash, hashSupportPassportAuditValues("helper-grant", [created.grant.grantId]));
   } finally {
     await subject.cleanup();
   }
@@ -1588,6 +1585,21 @@ test("the model audit store expands a leading tilde in its memory directory", ()
   assert.equal(memoryDir.includes(`${path.sep}~${path.sep}`), false);
   assert.equal(path.basename(memoryDir), "support-passport-audit-path-test");
   assert.equal(path.isAbsolute(memoryDir), true);
+});
+
+test("the model audit store rejects a symlink alias in its configured memory root", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-model-audit-root-link-"));
+  try {
+    const actual = path.join(root, "actual");
+    const alias = path.join(root, "alias");
+    await mkdir(actual);
+    await symlink(actual, alias);
+    const store = new SupportPassportModelAuditStore({ memoryDir: path.join(alias, "memory") });
+
+    await assert.rejects(store.record(makeAuditRecord()), /memory directory must be a stable directory/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("the model audit store rejects symlinked and hard-linked audit files", async () => {
