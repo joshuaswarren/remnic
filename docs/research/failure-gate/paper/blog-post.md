@@ -107,7 +107,9 @@ the harness and both registration documents, and the raw per-episode logs for ev
 every run that finalized, are attached to the study release, so you can
 replay the analysis yourself with zero model calls.
 
-Paper: [arXiv link on publication]. Tasks, harness, and registrations:
+Paper: [arXiv link on publication]. Dataset:
+https://huggingface.co/datasets/joshuaswarren/h6-failure-gate-tasks.
+Harness and registrations:
 https://github.com/joshuaswarren/remnic/tree/h6-study-2026-08. Run
 artifacts: https://github.com/joshuaswarren/remnic/releases/tag/h6-study-2026-08.
 

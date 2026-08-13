@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.24 (TeX Live 2022/Debian) (preloaded format=pdflatex 2026.8.13)  13 AUG 2026 09:53
+This is pdfTeX, Version 3.141592653-2.6-1.40.24 (TeX Live 2022/Debian) (preloaded format=pdflatex 2026.8.13)  13 AUG 2026 10:25
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -480,18 +480,18 @@ ort un-der \OT1/cmtt/m/n/9 docs/research/failure-gate/\OT1/cmr/m/n/9 (+20) , co
 r-pus un-der
  []
 
-(./main.bbl [9] [10]) [11] (./main.aux)
+(./main.bbl [9] [10]) [11] [12] (./main.aux)
 Package rerunfilecheck Info: File `main.out' has not changed.
 (rerunfilecheck)             Checksum: 7F7193E0058DECB9D51A4921203B34AD;2973.
  ) 
 Here is how much of TeX's memory you used:
- 12280 strings out of 478051
- 193804 string characters out of 5840943
+ 12282 strings out of 478051
+ 193822 string characters out of 5840943
  1864330 words of memory out of 5000000
  32001 multiletter control sequences out of 15000+600000
  527359 words of font info for 158 fonts, out of 8000000 for 9000
  14 hyphenation exceptions out of 8191
- 75i,10n,76p,1001b,603s stack positions out of 10000i,1000n,20000p,200000b,200000s
+ 75i,10n,76p,1001b,601s stack positions out of 10000i,1000n,20000p,200000b,200000s
 </usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx10.pfb></us
 r/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx12.pfb></usr/shar
 e/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmcsc10.pfb></usr/share/tex
@@ -506,10 +506,10 @@ amsfonts/cm/cmr8.pfb></usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts
 ></usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmtt10.pfb></usr
 /share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmtt12.pfb></usr/share
 /texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmtt9.pfb>
-Output written on main.pdf (11 pages, 243633 bytes).
+Output written on main.pdf (12 pages, 244747 bytes).
 PDF statistics:
- 336 PDF objects out of 1000 (max. 8388607)
- 289 compressed objects within 3 object streams
- 84 named destinations out of 1000 (max. 500000)
+ 344 PDF objects out of 1000 (max. 8388607)
+ 296 compressed objects within 3 object streams
+ 86 named destinations out of 1000 (max. 500000)
  38561 words of extra memory for PDF output out of 42996 (max. 10000000)
 

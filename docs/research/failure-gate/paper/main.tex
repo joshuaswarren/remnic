@@ -582,9 +582,11 @@ finalized, are published as release assets on the same tag; the abandoned
 manifest never finalized, so its bundle carries no statistics artifact by
 construction.\footnote{\url{https://github.com/joshuaswarren/remnic/releases/tag/h6-study-2026-08}}
 The registered analysis replays from the released episode logs byte-for-byte
-with zero model calls via a single command. Per-attempt trace archives (full
-agent transcripts) remain operator-local; their SHA-256 hashes are bound in
-the released manifests. One disclosure: the confirmatory run's replay executes under
+with zero model calls via a single command. The task corpus is additionally
+mirrored as a dataset release with a training-contamination canary
+GUID.\footnote{\url{https://huggingface.co/datasets/joshuaswarren/h6-failure-gate-tasks}}
+Per-attempt trace archives (full agent transcripts) remain operator-local;
+their SHA-256 hashes are bound in the released manifests. One disclosure: the confirmatory run's replay executes under
 a harness newer than the one that ran the episodes (post-run report-layer
 fixes); the replay verifies the decision artifacts byte-for-byte and records
 both harness hashes side by side.
