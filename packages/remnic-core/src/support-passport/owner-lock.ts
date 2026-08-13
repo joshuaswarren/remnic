@@ -3,7 +3,6 @@ import path from "node:path";
 
 import type { StorageManager } from "../index.js";
 import { type HeldFileLockController, serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
-import { computeSupportPassportOwnerKey } from "./card-projection.js";
 import { SupportPassportError } from "./errors.js";
 
 const CARD_MUTATION_LOCK_STALE_MS = 60_000;
@@ -13,16 +12,19 @@ export type SupportPassportOwnerLockScope =
   | { namespace: string; principal: string; ownerKey?: never }
   | { namespace: string; ownerKey: string; principal?: never };
 
+export function computeSupportPassportOwnerLockKey(namespace: string, principal: string): string {
+  return createHash("sha256").update(JSON.stringify([namespace, principal])).digest("hex");
+}
+
 export function supportPassportOwnerLockPath(
   storage: StorageManager,
   scope: SupportPassportOwnerLockScope
 ): string {
-  const ownerKey = scope.ownerKey ?? computeSupportPassportOwnerKey(scope.principal);
-  if (!/^[a-f0-9]{64}$/.test(ownerKey)) {
+  const ownerLockKey = scope.ownerKey ?? computeSupportPassportOwnerLockKey(scope.namespace, scope.principal);
+  if (!/^[a-f0-9]{64}$/.test(ownerLockKey)) {
     throw new SupportPassportError("card_data_invalid", "The support passport owner scope is invalid.", 500);
   }
-  const scopeKey = createHash("sha256").update(JSON.stringify([scope.namespace, ownerKey])).digest("hex");
-  return path.join(storage.dir, "state", `support-passport-cards-${scopeKey}.lock`);
+  return path.join(storage.dir, "state", `support-passport-cards-${ownerLockKey}.lock`);
 }
 
 export async function withSupportPassportOwnerLock<T>(
