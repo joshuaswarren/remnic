@@ -22,6 +22,7 @@ import {
   computeSupportPassportSourceRevision,
   isSupportPassportSourceEligible,
 } from "./model-service.js";
+import { supportsSupportPassportPrivateFiles } from "./private-file.js";
 
 export interface SupportPassportAccessSurfaceDependencies {
   config: PluginConfig;
@@ -30,6 +31,7 @@ export interface SupportPassportAccessSurfaceDependencies {
   modelAdapter?: SupportPassportModelAdapter;
   audit?: SupportPassportModelAuditSink;
   now?: () => Date;
+  platform?: NodeJS.Platform;
 }
 
 export interface SupportPassportCreateGrantResult {
@@ -57,11 +59,13 @@ export class SupportPassportAccessSurface {
   private readonly questionService: SupportPassportQuestionService;
   private readonly resolveOwner: SupportPassportAccessSurfaceDependencies["resolveOwner"];
   private readonly now: () => Date;
+  private readonly platformSupported: boolean;
 
   constructor(dependencies: SupportPassportAccessSurfaceDependencies) {
     this.config = dependencies.config;
     this.resolveOwner = dependencies.resolveOwner;
     this.now = dependencies.now ?? (() => new Date());
+    this.platformSupported = supportsSupportPassportPrivateFiles(dependencies.platform);
     this.cardService = new SupportPassportCardService({
       resolveOwner: dependencies.resolveOwner,
       now: this.now,
@@ -263,7 +267,7 @@ export class SupportPassportAccessSurface {
   }
 
   private requireEnabled(publicRequest = false): void {
-    if (this.config.supportPassport.enabled) return;
+    if (this.config.supportPassport.enabled && this.platformSupported) return;
     if (publicRequest) throw new SupportPassportError("grant_not_found", "The share link was not found.", 404);
     throw new SupportPassportError("feature_disabled", "Support passport is disabled.", 404);
   }

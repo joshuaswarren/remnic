@@ -28,6 +28,30 @@ test("support passport stays disabled when a partial host config omits its setti
   assert.equal(new TestService().supportPassportEnabled, false);
 });
 
+test("support passport stays unavailable when private file pinning is unsupported", async () => {
+  class TestService extends SupportPassportAccessServiceBase {
+    readonly configRef = parseConfig({ supportPassport: { enabled: true } });
+    readonly localLlmRef = null;
+
+    override get supportPassportPlatformRef(): NodeJS.Platform {
+      return "win32";
+    }
+
+    async getWritableStorageForNamespace(): Promise<never> {
+      throw new Error("owner resolution must not run");
+    }
+
+    async getStorageForResolvedNamespace(): Promise<never> {
+      throw new Error("namespace resolution must not run");
+    }
+  }
+
+  const service = new TestService();
+  assert.equal(service.supportPassportEnabled, false);
+  await assert.rejects(service.supportPassportListCards("owner:alice"), /Support passport is disabled/);
+  await assert.rejects(service.supportPassportReadGrant("grant", "secret"), /share link was not found/);
+});
+
 test("support passport owner operations enforce the presenting token namespace", async () => {
   StorageManager.clearAllStaticCaches();
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-scope-"));
