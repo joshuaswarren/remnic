@@ -129,7 +129,9 @@ test("the owner note preview preserves API text and binds consent to its revisio
   await page.getByLabel("Memory ID").fill("note-with-attributes");
   await page.getByRole("button", { name: "Add selected note" }).click();
 
-  await expect(page.getByText("Tell me before plans change. [Attributes: this is part of my note]", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Tell me before plans change. [Attributes: this is part of my note]", { exact: true })
+  ).toBeVisible();
   await page.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
   await page.getByRole("button", { name: "Draft my support cards" }).click();
   expect(generationInput).toEqual({
@@ -137,6 +139,77 @@ test("the owner note preview preserves API text and binds consent to its revisio
     sourceMemoryRevisions: [{ memoryId: "note-with-attributes", revision: "b".repeat(64) }],
     consent: true,
   });
+});
+
+test("an owner page clears private state before browser-cache restoration", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers owner browser-cache cleanup.");
+  const now = new Date();
+  const card = {
+    cardId: "private-card",
+    title: "Private support",
+    statement: "Private support text.",
+    category: "other",
+    status: "active",
+    updatedAt: now.toISOString(),
+    reviewBy: new Date(now.getTime() + 24 * 60 * 60_000).toISOString(),
+    revision: "a".repeat(64),
+  };
+  const grant = {
+    grantId: "private-grant",
+    stateVersion: 1,
+    cards: [{ cardId: card.cardId, revision: card.revision }],
+    createdAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
+    status: "active",
+  };
+  await page.addInitScript(() => {
+    Object.assign(window, { __REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__: "prefilled-owner-token" });
+  });
+  await page.route("**/engram/v1/support-passport/cards", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ cards: [card] }) });
+  });
+  await page.route("**/engram/v1/support-passport/grants", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grants: [grant] }) });
+  });
+  await page.route("**/engram/v1/support-passport/memories/private-note", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        found: true,
+        memory: { id: "private-note", content: "Private selected note.", revision: "b".repeat(64) },
+      }),
+    });
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await expect(page.getByLabel("Bearer token")).toHaveValue("prefilled-owner-token");
+  expect(
+    await page.evaluate(
+      () =>
+        (window as typeof window & { __REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__?: string })
+          .__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__
+    )
+  ).toBe("");
+  await page.getByRole("button", { name: "Open my guide" }).click();
+  await page.getByLabel("Memory ID").fill("private-note");
+  await page.getByRole("button", { name: "Add selected note" }).click();
+  await page.getByRole("button", { name: "Edit" }).click();
+  await page.getByLabel("Card title").fill("Unsaved private edit");
+  await expect(page.getByText("Private selected note.")).toBeVisible();
+  await expect(page.locator("#cardList").getByText("Private support text.")).toBeVisible();
+
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })));
+
+  await expect(page.locator("#connectPanel")).toBeVisible();
+  await expect(page.locator("#ownerView")).toBeHidden();
+  await expect(page.getByLabel("Bearer token")).toHaveValue("");
+  await expect(page.locator(".note-item")).toHaveCount(0);
+  await expect(page.locator(".support-card")).toHaveCount(0);
+  await expect(page.locator(".grant-card")).toHaveCount(0);
+  await expect(page.locator("#cardDialog")).toBeHidden();
+  await expect(page.getByLabel("Card title")).toHaveValue("");
+  await expect(page.getByLabel("Copy this link once")).toHaveValue("");
 });
 
 test("a missing selected memory shows the specific not-found message", async ({ page }, testInfo) => {
