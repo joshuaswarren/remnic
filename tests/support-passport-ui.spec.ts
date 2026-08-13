@@ -1772,7 +1772,7 @@ test("the helper sees only shared cards and grounded citations", async ({ page, 
     await expect(helper.locator("#tokenInput")).toHaveCount(0);
     await expect(helper.getByText("Selected notes", { exact: true })).toHaveCount(0);
 
-    await helper.getByLabel("Your question").fill("What should I do when this person is overwhelmed?");
+    await helper.getByLabel("Your question").fill("What should I do if this person stops speaking?");
     await helper.getByRole("button", { name: "Ask from this guide" }).click();
     await expect(helper.locator("#answerCopy")).toHaveText("If I stop speaking, offer a quiet place and time.");
     await expect(helper.locator(".citation")).toContainText("Support card");
@@ -2145,6 +2145,37 @@ test("replay helpers never cite an unrelated selected card", async ({ page, cont
     await expect(helper.locator("#answerCopy")).toHaveText("That is not covered in this person's support guide.");
     await expect(helper.locator(".citation")).toHaveText("No support card covers this question.");
     await expect(helper.locator(".citation")).not.toContainText("Email preference");
+  } finally {
+    await helper.close();
+  }
+});
+
+test("replay helpers require the same quiet-support intent", async ({ page, context }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers quiet-support intent grounding.");
+  await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
+  await page.getByRole("button", { name: "Write a card" }).click();
+  await page.getByLabel("Card title").fill("Walking when overwhelmed");
+  await page.getByLabel("What helps me").fill("Walking helps me when I am overwhelmed.");
+  await page.getByLabel("Category").selectOption("regulation");
+  await page.getByRole("button", { name: "Save draft" }).click();
+  const walkingCard = page.locator(".support-card").filter({ hasText: "Walking when overwhelmed" });
+  await walkingCard.getByRole("button", { name: "Approve" }).click();
+  await page.locator(".card-choice").filter({ hasText: "Walking when overwhelmed" }).locator('input[name="shareCard"]').check();
+  await page.getByRole("button", { name: "Create share link" }).click();
+  const shareUrl = await page.locator("#shareLinkInput").inputValue();
+
+  const helper = await context.newPage();
+  try {
+    await helper.goto(shareUrl);
+    await helper.getByLabel("Your question").fill("Should I offer a quiet room?");
+    await helper.getByRole("button", { name: "Ask from this guide" }).click();
+    await expect(helper.locator("#answerCopy")).toHaveText("That is not covered in this person's support guide.");
+    await expect(helper.locator(".citation")).toHaveText("No support card covers this question.");
+
+    await helper.getByLabel("Your question").fill("What helps when this person is overwhelmed?");
+    await helper.getByRole("button", { name: "Ask from this guide" }).click();
+    await expect(helper.locator("#answerCopy")).toHaveText("Walking helps me when I am overwhelmed.");
+    await expect(helper.locator(".citation")).toContainText("Walking when overwhelmed");
   } finally {
     await helper.close();
   }
