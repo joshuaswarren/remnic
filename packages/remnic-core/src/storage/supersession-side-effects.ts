@@ -31,6 +31,7 @@ export interface SupersessionSideEffectOptions {
   exactReplay: boolean;
   currentBefore: MemoryFile;
   updatedFm: MemoryFrontmatter;
+  audit?: SupersessionAuditOptions;
   citationTemplate: string;
   correctionsDir: string;
   readMemoryByPath: (filePath: string) => Promise<MemoryFile | null>;
@@ -46,6 +47,13 @@ export interface SupersessionSideEffectOptions {
     envelope: SealedMemoryEnvelope,
     extras: { lineage: [string, string]; sourceMemoryId: string }
   ) => Promise<unknown>;
+}
+
+export interface SupersessionAuditOptions {
+  content: string;
+  tags?: string[];
+  structuredAttributes?: Record<string, string>;
+  source?: string;
 }
 
 export async function runSupersessionSideEffects(options: SupersessionSideEffectOptions): Promise<boolean> {
@@ -90,7 +98,7 @@ export async function runSupersessionSideEffects(options: SupersessionSideEffect
       }
     }
 
-    const auditBody = `Superseded: ${currentBefore.content}\n\nReason: ${reason}`;
+    const auditBody = `Superseded: ${options.audit?.content ?? currentBefore.content}\n\nReason: ${reason}`;
     const auditExists = await hasSupersessionAudit(
       {
         correctionsDir: options.correctionsDir,
@@ -98,7 +106,8 @@ export async function runSupersessionSideEffects(options: SupersessionSideEffect
       },
       oldMemoryId,
       newMemoryId,
-      auditBody
+      auditBody,
+      options.audit?.structuredAttributes
     );
     if (!auditExists) {
       const auditEnvelope = composeMemoryEnvelope(
@@ -106,9 +115,10 @@ export async function runSupersessionSideEffects(options: SupersessionSideEffect
           content: auditBody,
           category: "correction",
           confidence: 1,
-          tags: ["supersession", "auto-resolved"],
+          tags: options.audit?.tags ?? ["supersession", "auto-resolved"],
+          structuredAttributes: options.audit?.structuredAttributes,
         },
-        { source: "contradiction-detection" }
+        { source: options.audit?.source ?? "contradiction-detection" }
       );
       await options.writeSealedMemory(auditEnvelope, {
         lineage: [oldMemoryId, newMemoryId],

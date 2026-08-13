@@ -137,7 +137,10 @@ import {
   type TombstoneStats,
 } from "./lifecycle/tombstones.js";
 import { supersessionKeysForFact } from "./temporal-supersession.js";
-import { runSupersessionSideEffects } from "./storage/supersession-side-effects.js";
+import {
+  runSupersessionSideEffects,
+  type SupersessionAuditOptions,
+} from "./storage/supersession-side-effects.js";
 import type {
   AccessTrackingEntry,
   BufferState,
@@ -6920,6 +6923,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       actor?: string; requireActive?: boolean;
       acceptExactReplay?: boolean;
       expectedSnapshot?: Pick<MemoryFile, "content" | "frontmatter"> & Partial<Pick<MemoryFile, "path">>;
+      audit?: SupersessionAuditOptions;
     } = {},
   ): Promise<boolean> {
     const matchesSupersession = (memory: MemoryFile): boolean =>
@@ -7062,6 +7066,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         exactReplay,
         currentBefore,
         updatedFm,
+        audit: options.audit,
         citationTemplate: this.citationTemplate,
         correctionsDir: this.correctionsDir,
         readMemoryByPath: (filePath) => this.readMemoryByPath(filePath),
