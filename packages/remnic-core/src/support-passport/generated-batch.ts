@@ -43,6 +43,8 @@ export interface GeneratedBatchContext {
   requireOwnerLock: () => Promise<void>;
 }
 
+type GeneratedBatchMarkerWriter = (storage: StorageManager, marker: GeneratedBatchMarker) => Promise<void>;
+
 const BATCH_ERROR = "The generated draft batch state is not safe.";
 
 function batchDirectory(storage: StorageManager): string {
@@ -120,24 +122,21 @@ function projectOwnedCard(memory: MemoryFile, namespace: string, principal: stri
 export async function persistSupportPassportGeneratedBatchMarker(
   context: GeneratedBatchContext,
   batchId: string,
-  size: number
+  size: number,
+  writeMarker: GeneratedBatchMarkerWriter = writeBatchMarker
 ): Promise<GeneratedBatchMarker> {
   const marker = markerFor(context, batchId, size, false);
   await context.requireOwnerLock();
   await ensureBatchDirectory(context.storage);
-  try {
-    await writeBatchMarker(context.storage, marker);
-  } catch (error) {
-    const current = await readBatchMarker(context.storage, batchId).catch(() => null);
-    if (!current || current.complete || current.size !== size || !sameOwner(current, context)) throw error;
-  }
+  await writeMarker(context.storage, marker);
   return marker;
 }
 
 export async function commitSupportPassportGeneratedBatch(
   context: GeneratedBatchContext,
   marker: GeneratedBatchMarker,
-  cards: readonly StoredSupportPassportCard[]
+  cards: readonly StoredSupportPassportCard[],
+  writeMarker: GeneratedBatchMarkerWriter = writeBatchMarker
 ): Promise<void> {
   const cardIds = cards.map((card) => card.card.cardId);
   if (!sameOwner(marker, context) || cards.length !== marker.size || new Set(cardIds).size !== cards.length) {
@@ -156,13 +155,7 @@ export async function commitSupportPassportGeneratedBatch(
   }
   await context.requireOwnerLock();
   const committed = { ...marker, complete: true };
-  try {
-    await writeBatchMarker(context.storage, committed);
-  } catch (error) {
-    const current = await readBatchMarker(context.storage, marker.batchId).catch(() => null);
-    if (current?.complete && sameOwner(current, context) && current.size === marker.size) return;
-    throw error;
-  }
+  await writeMarker(context.storage, committed);
 }
 
 async function rejectGeneratedDraft(context: GeneratedBatchContext, cardId: string): Promise<boolean> {
