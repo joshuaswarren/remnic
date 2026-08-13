@@ -454,6 +454,55 @@ test("grant creation re-syncs an owner index write that committed before its dur
   }
 });
 
+test("grant revocation retries directory durability before reporting an existing revoked state", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-revoke-sync-"));
+  try {
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    let syncAttempts = 0;
+    const store = new SupportPassportGrantStore({
+      memoryDir: root,
+      now: () => now,
+      syncDirectory: async (directory) => {
+        syncAttempts += 1;
+        if (syncAttempts === 1) {
+          throw Object.assign(new Error("simulated directory sync failure"), { code: "EIO" });
+        }
+        await syncDirectoryForDurability(directory);
+      },
+    });
+    const created = await store.create({
+      namespace: "alice",
+      principal: "owner:alice",
+      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+      expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
+    });
+    const inspected = store as unknown as {
+      writeState(state: { revokedAt?: string }, requireAbsent?: boolean): Promise<void>;
+    };
+    const writeState = inspected.writeState.bind(store);
+    inspected.writeState = async (state, requireAbsent) => {
+      await writeState(state, requireAbsent);
+      if (state.revokedAt) {
+        throw Object.assign(new Error("simulated post-commit state error"), { code: "EIO" });
+      }
+    };
+    const request = {
+      grantId: created.state.grantId,
+      namespace: "alice",
+      principal: "owner:alice",
+    };
+
+    await assert.rejects(store.revoke(request), (error: unknown) => (error as NodeJS.ErrnoException).code === "EIO");
+    const repeated = await store.revoke(request);
+
+    assert.ok(repeated.revokedAt);
+    assert.equal(repeated.stateVersion, 2);
+    assert.equal(syncAttempts, 2);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("owner grant rollover rejects a foreign grant without deleting it", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-foreign-index-"));
   try {
