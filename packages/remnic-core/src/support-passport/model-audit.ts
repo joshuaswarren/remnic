@@ -6,7 +6,6 @@ import { expandTildePath } from "../utils/path.js";
 import { serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
 import {
   appendPrivateFileNoFollow,
-  canonicalizePrivateDirectoryTarget,
   ensurePrivateDirectoryNoFollow,
   ensurePrivateDirectoryTreeNoFollow,
   withPrivateDirectoryNoFollow,
@@ -132,13 +131,12 @@ export class SupportPassportModelAuditStore implements SupportPassportModelAudit
     if (!this.memoryRootReady) {
       const configuredMemoryDir = this.memoryDir;
       this.memoryRootReady = (async () => {
-        const canonicalMemoryDir = await canonicalizePrivateDirectoryTarget(configuredMemoryDir);
         await ensurePrivateDirectoryTreeNoFollow(
-          canonicalMemoryDir,
+          configuredMemoryDir,
           "support passport memory directory must be a stable directory"
         );
-        this.memoryDir = canonicalMemoryDir;
-        this.auditDir = path.join(canonicalMemoryDir, "state", "support-passport", "audit");
+        this.memoryDir = configuredMemoryDir;
+        this.auditDir = path.join(configuredMemoryDir, "state", "support-passport", "audit");
       })();
     }
     const currentAttempt = this.memoryRootReady;
