@@ -17,15 +17,14 @@ test("private append cannot escape its pinned directory", async (context) => {
   await assert.rejects(readFile(outsidePath, "utf8"), { code: "ENOENT" });
 });
 
-test("private append works through the Windows-safe path strategy", async (context) => {
+test("private append fails before mutation when descriptor pinning is unavailable", async (context) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-private-append-win32-"));
   context.after(async () => await rm(root, { recursive: true, force: true }));
   const privateDirectory = path.join(root, "private");
   const auditPath = path.join(privateDirectory, "audit.jsonl");
-  await ensurePrivateDirectoryNoFollow(root, privateDirectory, "private path escaped", undefined, true, "win32");
-
-  await appendPrivateFileNoFollow(privateDirectory, auditPath, "first\n", "private path escaped", root, "win32");
-  await appendPrivateFileNoFollow(privateDirectory, auditPath, "second\n", "private path escaped", root, "win32");
-
-  assert.equal(await readFile(auditPath, "utf8"), "first\nsecond\n");
+  await assert.rejects(
+    ensurePrivateDirectoryNoFollow(root, privateDirectory, "private path escaped", undefined, true, "win32"),
+    /private path escaped/
+  );
+  await assert.rejects(readFile(auditPath, "utf8"), { code: "ENOENT" });
 });
