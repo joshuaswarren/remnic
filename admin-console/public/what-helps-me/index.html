@@ -5,6 +5,55 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <meta name="description" content="What Helps Me is an owner-controlled support passport built with Remnic.">
+  <script>
+    (() => {
+      const fragmentKey = "__REMNIC_WHAT_HELPS_ME_FRAGMENT__";
+      const ownerTokenKey = ["__REMNIC", "ADMIN_CONSOLE", "PREFILL_TOKEN__"].join("_");
+      let fragment = window.location.hash;
+      if (!new URLSearchParams(fragment.slice(1)).has("secret")) return;
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+      const clearFragment = () => {
+        fragment = "";
+        try {
+          delete window[fragmentKey];
+        } catch {
+          window[fragmentKey] = "";
+        }
+      };
+      Object.defineProperty(window, fragmentKey, {
+        configurable: true,
+        get() {
+          const value = fragment;
+          clearFragment();
+          return value;
+        },
+      });
+      const clearOwnerPrefill = () => {
+        try {
+          delete window[ownerTokenKey];
+        } catch {
+          window[ownerTokenKey] = "";
+        }
+        for (const script of document.scripts) {
+          if (script.src || !script.textContent?.includes(ownerTokenKey)) continue;
+          script.textContent = "";
+          script.remove();
+        }
+      };
+      const observer = new MutationObserver(clearOwnerPrefill);
+      observer.observe(document.documentElement, { childList: true, subtree: true });
+      document.addEventListener(
+        "DOMContentLoaded",
+        () => {
+          clearOwnerPrefill();
+          observer.disconnect();
+        },
+        { once: true }
+      );
+      window.addEventListener("pagehide", clearFragment, { once: true });
+      window.addEventListener("beforeunload", clearFragment, { once: true });
+    })();
+  </script>
   <link rel="icon" href="data:,">
   <title>What Helps Me · Remnic</title>
   <link rel="stylesheet" href="./what-helps-me.css">
@@ -80,7 +129,7 @@
             <form class="memory-picker" id="memoryForm">
               <label for="memoryIdInput">Memory ID</label>
               <div class="input-action">
-                <input id="memoryIdInput" name="memoryId" required maxlength="128" pattern="[A-Za-z0-9._:-]+" placeholder="memory-id">
+                <input id="memoryIdInput" name="memoryId" required maxlength="512" placeholder="memory-id">
                 <button class="button button-secondary" type="submit">Add selected note</button>
               </div>
               <p class="form-error" id="memoryError" role="alert"></p>

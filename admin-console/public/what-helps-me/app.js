@@ -1,5 +1,6 @@
 (function startWhatHelpsMe() {
-  const initialHash = window.location.hash;
+  const bootstrapHash = window.__REMNIC_WHAT_HELPS_ME_FRAGMENT__;
+  const initialHash = typeof bootstrapHash === "string" ? bootstrapHash : window.location.hash;
   const hasSecretFragment = new URLSearchParams(initialHash.slice(1)).has("secret");
   if (hasSecretFragment) {
     window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
