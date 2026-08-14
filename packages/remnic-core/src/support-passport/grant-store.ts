@@ -339,8 +339,11 @@ export class SupportPassportGrantStore {
   async listForOwner(namespace: string, principal: string): Promise<SupportPassportGrantState[]> {
     const normalizedNamespace = normalizeNamespace(namespace);
     const principalHash = computeSupportPassportOwnerKey(normalizePrincipal(principal));
-    const states = await this.readOwnerMembershipStates(normalizedNamespace, principalHash);
     const activeCutoff = this.now().getTime();
+    const states = this.retainedOwnerStates(
+      await this.readOwnerMembershipStates(normalizedNamespace, principalHash),
+      activeCutoff
+    );
     return states.sort((a, b) => {
       const aActive = !a.revokedAt && Date.parse(a.expiresAt) > activeCutoff;
       const bActive = !b.revokedAt && Date.parse(b.expiresAt) > activeCutoff;

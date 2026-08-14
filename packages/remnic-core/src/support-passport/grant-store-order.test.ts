@@ -7,7 +7,7 @@ import { test } from "node:test";
 import type { SupportPassportGrantState } from "./grant-contracts.js";
 import { SupportPassportGrantStore } from "./grant-store.js";
 
-test("grant rollover compares offset timestamps by instant", async () => {
+test("grant rollover stays bounded after cleanup failure and compares offset timestamps by instant", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-order-"));
   let nowMs = Date.parse("2026-08-11T06:00:00Z");
   let nextGrantId = 1;
@@ -39,9 +39,13 @@ test("grant rollover compares offset timestamps by instant", async () => {
     });
     const inspected = store as unknown as {
       writeState(state: SupportPassportGrantState): Promise<void>;
+      removeStoredGrant(state: SupportPassportGrantState): Promise<void>;
     };
     await inspected.writeState({ ...older, createdAt: "2026-08-11T12:00:00+05:00" });
     await inspected.writeState({ ...newer, createdAt: "2026-08-11T10:00:00Z" });
+    inspected.removeStoredGrant = async () => {
+      throw new Error("simulated cleanup failure");
+    };
 
     const replacement = await store.create(input);
     const ids = new Set((await store.listForOwner(input.namespace, input.principal)).map((grant) => grant.grantId));

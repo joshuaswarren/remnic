@@ -41,16 +41,23 @@ function supportCardMemory(): MemoryFile {
 
 test("card snapshots match the storage cache freshness window", async () => {
   let nowMs = Date.parse("2026-08-11T12:00:00.000Z");
-  let memories = [supportCardMemory()];
-  let reads = 0;
+  let diskMemories = [supportCardMemory()];
+  let cachedMemories: MemoryFile[] | undefined;
+  let cacheLoadedAt = 0;
+  let calls = 0;
+  let diskReads = 0;
   const storage = {
     getCorpusScanVersion: () => 1,
     hotCacheKeyId: () => "stable",
     hotCacheTtlMs: () => 60_000,
     isHotCacheEnabled: () => true,
     readAllMemories: async () => {
-      reads += 1;
-      return memories;
+      calls += 1;
+      if (cachedMemories && nowMs - cacheLoadedAt <= 60_000) return cachedMemories;
+      diskReads += 1;
+      cachedMemories = diskMemories;
+      cacheLoadedAt = nowMs;
+      return cachedMemories;
     },
   } as unknown as StorageManager;
   const service = new SupportPassportGrantService({
@@ -69,14 +76,16 @@ test("card snapshots match the storage cache freshness window", async () => {
   const ownerKey = computeSupportPassportOwnerKey("owner:alice");
 
   assert.equal((await inspected.readStoredCardSnapshot(storage, "alice", ownerKey)).cardsById.size, 1);
-  memories = [];
+  diskMemories = [];
   nowMs += 1_001;
   assert.equal((await inspected.readStoredCardSnapshot(storage, "alice", ownerKey)).cardsById.size, 1);
-  assert.equal(reads, 1);
+  assert.equal(calls, 2);
+  assert.equal(diskReads, 1);
   nowMs += 59_000;
 
   assert.equal((await inspected.readStoredCardSnapshot(storage, "alice", ownerKey)).cardsById.size, 0);
-  assert.equal(reads, 2);
+  assert.equal(calls, 3);
+  assert.equal(diskReads, 2);
 });
 
 test("guide assembly rechecks snapshot age after owner-lock delay", async () => {

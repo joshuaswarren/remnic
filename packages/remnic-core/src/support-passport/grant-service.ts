@@ -35,7 +35,6 @@ type SupportPassportGrantOwnerScope = Awaited<ReturnType<SupportPassportGrantSer
 
 interface SupportPassportCardSnapshot {
   version: string;
-  validatedAtMs: number;
   cardsById: ReadonlyMap<string, StoredSupportPassportCard>;
 }
 
@@ -48,7 +47,6 @@ export class SupportPassportGrantService {
   private readonly resolveOwner: SupportPassportGrantServiceDependencies["resolveOwner"];
   private readonly resolveNamespace: SupportPassportGrantServiceDependencies["resolveNamespace"];
   private readonly now: () => Date;
-  private readonly cardSnapshots = new WeakMap<StorageManager, SupportPassportCardSnapshot>();
 
   constructor(dependencies: SupportPassportGrantServiceDependencies) {
     this.grantStore = dependencies.grantStore;
@@ -97,7 +95,10 @@ export class SupportPassportGrantService {
             requestedAt,
           },
           {
-            beforeCommit: async () => await requireSupportPassportOwnerLock(ownerLock),
+            beforeCommit: async () => {
+              options.signal?.throwIfAborted();
+              await requireSupportPassportOwnerLock(ownerLock);
+            },
           }
         );
         try {
@@ -191,11 +192,7 @@ export class SupportPassportGrantService {
               throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
             }
             await requireSupportPassportOwnerLock(ownerLock);
-            const currentSnapshot =
-              initialSnapshot.version === this.cardSnapshotVersion(storage) &&
-              this.cardSnapshotIsFresh(storage, initialSnapshot)
-                ? initialSnapshot
-                : await this.readStoredCardSnapshot(storage);
+            const currentSnapshot = await this.readStoredCardSnapshot(storage);
             const currentCards = this.readGrantCards(currentSnapshot, finalState);
             await requireSupportPassportOwnerLock(ownerLock);
             if (JSON.stringify(currentCards) !== JSON.stringify(cards)) {
@@ -238,8 +235,6 @@ export class SupportPassportGrantService {
   private async readStoredCardSnapshot(storage: StorageManager): Promise<SupportPassportCardSnapshot> {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const before = this.cardSnapshotVersion(storage);
-      const cached = this.cardSnapshots.get(storage);
-      if (cached?.version === before && this.cardSnapshotIsFresh(storage, cached)) return cached;
       const cards = (await storage.readAllMemories())
         .map((memory) => projectSupportPassportCard(memory))
         .filter((card): card is StoredSupportPassportCard => card !== null);
@@ -247,10 +242,8 @@ export class SupportPassportGrantService {
       if (before !== after) continue;
       const snapshot = {
         version: after,
-        validatedAtMs: this.now().getTime(),
         cardsById: new Map(cards.map((card) => [card.card.cardId, card])),
       };
-      this.cardSnapshots.set(storage, snapshot);
       return snapshot;
     }
     throw new SupportPassportError("storage_conflict", "The support card list changed during review.", 409);
@@ -264,18 +257,6 @@ export class SupportPassportGrantService {
 
   private cardSnapshotVersion(storage: StorageManager): string {
     return `${storage.getCorpusScanVersion()}:${storage.hotCacheKeyId()}`;
-  }
-
-  private cardSnapshotIsFresh(storage: StorageManager, snapshot: SupportPassportCardSnapshot): boolean {
-    if (!storage.isHotCacheEnabled()) return false;
-    const nowMs = this.now().getTime();
-    const ttlMs = storage.hotCacheTtlMs();
-    return (
-      Number.isFinite(nowMs) &&
-      Number.isFinite(ttlMs) &&
-      nowMs >= snapshot.validatedAtMs &&
-      (ttlMs <= 0 || nowMs - snapshot.validatedAtMs <= ttlMs)
-    );
   }
 
   private async revokeCommittedGrant(
