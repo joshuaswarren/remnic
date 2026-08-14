@@ -1,19 +1,13 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { access, mkdtemp, rm } from "node:fs/promises";
+import test from "node:test";
 import { parseConfig } from "../src/config.js";
 import { Orchestrator } from "../src/orchestrator.js";
 import { StorageManager } from "../src/storage.js";
 
-
-function buildConfig(
-  memoryDir: string,
-  workspaceDir: string,
-  enabled: boolean,
-  autoBackfill = true,
-) {
+function buildConfig(memoryDir: string, workspaceDir: string, enabled: boolean, autoBackfill = true) {
   return parseConfig({
     openaiApiKey: "sk-test",
     memoryDir,
@@ -50,6 +44,60 @@ test("tier migration cycle demotes hot memory when enabled", async () => {
     const cold = await new StorageManager(path.join(storage.dir, "cold")).readAllMemories();
     assert.equal(hot.length, 0);
     assert.equal(cold.length, 1);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("tier migration pins live passport cards but routes completed private records normally", async () => {
+  StorageManager.clearAllStaticCaches();
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "openclaw-engram-tier-orch-passport-"));
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "openclaw-engram-tier-orch-passport-workspace-"));
+  try {
+    const orchestrator = new Orchestrator(buildConfig(memoryDir, workspaceDir, true)) as any;
+    orchestrator.qmd = {
+      updateCollection: async () => {},
+      embedCollection: async () => {},
+    };
+    const storage = orchestrator.storage;
+    const cardAttributes = {
+      "support-passport-category": "environment",
+      "support-passport-namespace": "alice",
+      "support-passport-owner": "a".repeat(64),
+      "support-passport-title": "Quiet space",
+      "support-passport-order": "0",
+      "support-passport-review-by": "2026-09-01T12:00:00.000Z",
+      "support-passport-source-ids": "",
+    };
+    const active = await storage.writeMemory("preference", "Offer a quiet place.", {
+      source: "support-passport",
+      status: "active",
+      tags: ["support-passport-card"],
+      structuredAttributes: cardAttributes,
+    });
+    const rejected = await storage.writeMemory("preference", "Use a bright room.", {
+      source: "support-passport",
+      status: "rejected",
+      tags: ["support-passport-card"],
+      structuredAttributes: { ...cardAttributes, "support-passport-order": "1" },
+    });
+    const audit = await storage.writeMemory("fact", "Card review completed.", {
+      source: "support-passport",
+      tags: ["support-passport-audit"],
+    });
+
+    await orchestrator.runTierMigrationCycle(storage, "extraction");
+
+    const hotIds = new Set((await storage.readAllMemories()).map((memory) => memory.frontmatter.id));
+    const coldIds = new Set(
+      (await new StorageManager(path.join(storage.dir, "cold")).readAllMemories()).map(
+        (memory) => memory.frontmatter.id
+      )
+    );
+    assert.equal(hotIds.has(active.id), true);
+    assert.equal(coldIds.has(rejected.id), true);
+    assert.equal(coldIds.has(audit.id), true);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
     await rm(workspaceDir, { recursive: true, force: true });
@@ -212,7 +260,10 @@ test("tier migration extraction scan prioritizes oldest hot memories for demotio
 
     const cold = await new StorageManager(path.join(storage.dir, "cold")).readAllMemories();
     const movedIds = new Set(cold.map((m) => m.frontmatter.id));
-    assert.equal(oldIds.some((id) => movedIds.has(id)), true);
+    assert.equal(
+      oldIds.some((id) => movedIds.has(id)),
+      true
+    );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
     await rm(workspaceDir, { recursive: true, force: true });

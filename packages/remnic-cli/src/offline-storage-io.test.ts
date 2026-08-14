@@ -5,21 +5,12 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import {
-  StorageManager,
-  globToRegExp,
-} from "@remnic/core";
+import { StorageManager, globToRegExp } from "@remnic/core";
 import {
   DEFAULT_OFFLINE_SYNC_EXCLUDE_GLOBS,
   OFFLINE_DECRYPT_STAGING_DIR_PREFIX,
 } from "@remnic/core/offline-sync-exclude-globs";
-import {
-  buildHeader,
-  buildMetadata,
-  keyring,
-  secureStoreDir,
-  writeHeader,
-} from "@remnic/core/secure-store";
+import { buildHeader, buildMetadata, keyring, secureStoreDir, writeHeader } from "@remnic/core/secure-store";
 import { encryptFileBody, filePathAad } from "@remnic/core/secure-store";
 
 import {
@@ -27,6 +18,7 @@ import {
   createConfiguredOfflineStorage,
   createOfflineStorageForPath,
   createOfflineStorageIo,
+  filterOfflineSyncBaseFiles,
 } from "./offline-storage-io.js";
 
 test("offline storage creates namespace-scoped secure storage for lifecycle drains", async () => {
@@ -38,13 +30,7 @@ test("offline storage creates namespace-scoped secure storage for lifecycle drai
       secureStoreKey: key,
       secureStoreRequired: true,
     };
-    const ledgerPath = path.join(
-      memoryDir,
-      "namespaces",
-      "project-a",
-      "state",
-      "memory-lifecycle-ledger.jsonl",
-    );
+    const ledgerPath = path.join(memoryDir, "namespaces", "project-a", "state", "memory-lifecycle-ledger.jsonl");
     const namespaceStorage = await createOfflineStorageForPath(memoryDir, ledgerPath, configured, true);
     const pendingPath = path.join(
       memoryDir,
@@ -52,20 +38,21 @@ test("offline storage creates namespace-scoped secure storage for lifecycle drai
       "project-a",
       "state",
       "memory-lifecycle-ledger.jsonl.pending.d",
-      "spill.jsonl",
+      "spill.jsonl"
     );
     await mkdir(path.dirname(pendingPath), { recursive: true });
     await namespaceStorage.writeMemoryLifecycleLedgerContent('{"memoryId":"mem-1"}\n', pendingPath);
     await namespaceStorage.drainPendingMemoryLifecycleEventsForSyncAt(ledgerPath);
 
-    assert.ok((await namespaceStorage.readMemoryLifecycleLedgerRawBufferForCompaction()).includes(
-      Buffer.from('{"memoryId":"mem-1"}'),
-    ));
+    assert.ok(
+      (await namespaceStorage.readMemoryLifecycleLedgerRawBufferForCompaction()).includes(
+        Buffer.from('{"memoryId":"mem-1"}')
+      )
+    );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
-
 
 test("offline storage IO decrypts encrypted files for reads and streaming digests", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-storage-io-"));
@@ -117,25 +104,78 @@ test("offline storage IO excludes private support-passport memories from push vi
       source: "test",
       confidence: 1,
     });
+    let memoryReads = 0;
+    const readMemoryByPath = storage.readMemoryByPath.bind(storage);
+    storage.readMemoryByPath = async (filePath) => {
+      memoryReads += 1;
+      return await readMemoryByPath(filePath);
+    };
     const io = await createOfflineStorageIo(memoryDir, {
       storage,
       secureStoreKey: null,
       secureStoreRequired: false,
     });
 
-    assert.equal(await io.excludeFile({
-      root: memoryDir,
-      path: path.relative(memoryDir, privateWrite.memory.path),
-      filePath: privateWrite.memory.path,
-    }), true);
-    assert.equal(await io.excludeFile({
-      root: memoryDir,
-      path: path.relative(memoryDir, publicWrite.memory.path),
-      filePath: publicWrite.memory.path,
-    }), false);
+    assert.equal(
+      await io.excludeFile({
+        root: memoryDir,
+        path: path.relative(memoryDir, privateWrite.memory.path),
+        filePath: privateWrite.memory.path,
+      }),
+      true
+    );
+    assert.equal(
+      await io.excludeFile({
+        root: memoryDir,
+        path: path.relative(memoryDir, privateWrite.memory.path),
+        filePath: privateWrite.memory.path,
+      }),
+      true
+    );
+    assert.equal(
+      await io.excludeFile({
+        root: memoryDir,
+        path: path.relative(memoryDir, publicWrite.memory.path),
+        filePath: publicWrite.memory.path,
+      }),
+      false
+    );
+    assert.equal(
+      await io.excludeFile({
+        root: memoryDir,
+        path: path.relative(memoryDir, publicWrite.memory.path),
+        filePath: publicWrite.memory.path,
+      }),
+      false
+    );
+    assert.equal(memoryReads, 2);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
+});
+
+test("offline base privacy checks use bounded parallel batches", async () => {
+  const files = Array.from({ length: 20 }, (_, index) => ({
+    path: `facts/memory-${index}.md`,
+    sha256: String(index).padStart(64, "0"),
+    bytes: index,
+    mtimeMs: index,
+  }));
+  let active = 0;
+  let maximumActive = 0;
+  const included = await filterOfflineSyncBaseFiles("/memory", files, async ({ path: filePath }) => {
+    active += 1;
+    maximumActive = Math.max(maximumActive, active);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    active -= 1;
+    return filePath.endsWith("memory-3.md");
+  });
+
+  assert.equal(maximumActive, 16);
+  assert.deepEqual(
+    included.map((file) => file.path),
+    files.filter((_, index) => index !== 3).map((file) => file.path)
+  );
 });
 
 test("offline storage IO decrypts legacy namespaced AAD files in chunks", async () => {
@@ -183,7 +223,7 @@ test("configured offline storage preserves disabled secure-store encryption poli
         metadata,
         derivedKey: storeKey,
         createdAt: "2026-01-01T00:00:00.000Z",
-      }),
+      })
     );
     keyring.unlock(secureStoreDir(memoryDir), storeKey);
     const configured = await createConfiguredOfflineStorage(memoryDir, false);
@@ -227,13 +267,10 @@ test("offline storage IO stages encrypted decryption inside the memory root, not
     }
 
     assert.deepEqual(Buffer.concat(chunks), content, "decrypt still yields the exact plaintext");
-    assert.ok(
-      sawStagingUnderMemoryRoot,
-      "decryption must stage inside the secure-store-protected memory root",
-    );
+    assert.ok(sawStagingUnderMemoryRoot, "decryption must stage inside the secure-store-protected memory root");
     assert.ok(
       !(await readdir(memoryDir)).some((e) => e.startsWith(stagingPrefix)),
-      "the plaintext staging dir must be cleaned up after the read",
+      "the plaintext staging dir must be cleaned up after the read"
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -245,11 +282,11 @@ test("the default exclude globs keep crash-orphaned decrypt staging out of any s
   const excluded = (relPosix: string): boolean => regexps.some((re) => re.test(relPosix));
   assert.ok(
     excluded(`${OFFLINE_DECRYPT_STAGING_DIR_PREFIX}AbCd/content`),
-    "a root-level staging dir's content must be excluded",
+    "a root-level staging dir's content must be excluded"
   );
   assert.ok(
     excluded(`namespaces/team/${OFFLINE_DECRYPT_STAGING_DIR_PREFIX}xyz/content`),
-    "a nested staging dir's content must be excluded",
+    "a nested staging dir's content must be excluded"
   );
   assert.ok(!excluded("facts/note.md"), "ordinary files stay in the snapshot");
 });

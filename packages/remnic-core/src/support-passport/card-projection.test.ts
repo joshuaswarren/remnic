@@ -45,9 +45,7 @@ function makeMemory(
       supersededBy: overrides.supersededBy,
       tags: ["support-passport-card"],
       structuredAttributes: {
-        ...(overrides.namespace === ""
-          ? {}
-          : encodeSupportPassportNamespaceAttributes(overrides.namespace ?? "alice")),
+        ...(overrides.namespace === "" ? {} : encodeSupportPassportNamespaceAttributes(overrides.namespace ?? "alice")),
         ...(overrides.owner === null
           ? {}
           : { "support-passport-owner": overrides.owner ?? computeSupportPassportOwnerKey("owner:alice") }),
@@ -113,6 +111,13 @@ test("card projection decodes configured namespace identities without attribute 
   const namespace = "team../support\\care]primary\nline";
   const memory = makeMemory({ namespace });
   const projected = projectSupportPassportCard(memory);
+  assert.ok(projected);
+  assert.equal(projected.namespace, namespace);
+});
+
+test("card projection decodes configured namespaces across more than eight attribute chunks", () => {
+  const namespace = "care-team-".repeat(700);
+  const projected = projectSupportPassportCard(makeMemory({ namespace }));
   assert.ok(projected);
   assert.equal(projected.namespace, namespace);
 });

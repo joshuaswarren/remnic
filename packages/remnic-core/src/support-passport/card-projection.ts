@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { lstat } from "node:fs/promises";
 
 import type { OfflineSyncExcludeFile } from "../offline-sync-file-io.js";
 import { stripAttributesSuffix } from "../structured-attributes.js";
@@ -16,28 +17,38 @@ import {
 export const SUPPORT_PASSPORT_CARD_TAG = "support-passport-card";
 export const SUPPORT_PASSPORT_AUDIT_TAG = "support-passport-audit";
 
-export function isSupportPassportPrivateMemory(
-  memory: { frontmatter: Pick<MemoryFile["frontmatter"], "tags"> }
-): boolean {
+export function isSupportPassportPrivateMemory(memory: {
+  frontmatter: Pick<MemoryFile["frontmatter"], "tags">;
+}): boolean {
   const tags = memory.frontmatter.tags;
-  return (
-    tags?.includes(SUPPORT_PASSPORT_CARD_TAG) === true ||
-    tags?.includes(SUPPORT_PASSPORT_AUDIT_TAG) === true
-  );
+  return tags?.includes(SUPPORT_PASSPORT_CARD_TAG) === true || tags?.includes(SUPPORT_PASSPORT_AUDIT_TAG) === true;
 }
 
 export function excludeSupportPassportPrivateMemories<T extends Pick<MemoryFile, "frontmatter">>(
-  memories: readonly T[],
+  memories: readonly T[]
 ): T[] {
   return memories.filter((memory) => !isSupportPassportPrivateMemory(memory));
 }
 
-export function createSupportPassportPrivateFileExclusion(
-  storage: { readMemoryByPath(filePath: string): Promise<MemoryFile | null> },
-): OfflineSyncExcludeFile {
+export function createSupportPassportPrivateFileExclusion(storage: {
+  readMemoryByPath(filePath: string): Promise<MemoryFile | null>;
+}): OfflineSyncExcludeFile {
+  const classifications = new Map<string, { identity: string; excluded: Promise<boolean> }>();
   return async ({ filePath }) => {
-    const memory = await storage.readMemoryByPath(filePath);
-    return memory ? isSupportPassportPrivateMemory(memory) : false;
+    const file = await lstat(filePath);
+    const identity = `${file.dev}:${file.ino}:${file.size}:${file.mtimeMs}:${file.ctimeMs}`;
+    const cached = classifications.get(filePath);
+    if (cached?.identity === identity) return await cached.excluded;
+    const excluded = storage
+      .readMemoryByPath(filePath)
+      .then((memory) => (memory ? isSupportPassportPrivateMemory(memory) : false));
+    classifications.set(filePath, { identity, excluded });
+    try {
+      return await excluded;
+    } catch (error) {
+      if (classifications.get(filePath)?.excluded === excluded) classifications.delete(filePath);
+      throw error;
+    }
   };
 }
 
@@ -67,7 +78,7 @@ const LegacySupportPassportNamespaceSchema = SupportPassportNamespaceSchema.refi
     !namespace.includes("]") &&
     !namespace.includes("\0") &&
     !namespace.includes("\n") &&
-    !namespace.includes("\r"),
+    !namespace.includes("\r")
 );
 
 export function encodeSupportPassportNamespaceAttributes(namespace: string): Record<string, string> {
@@ -81,16 +92,11 @@ export function encodeSupportPassportNamespaceAttributes(namespace: string): Rec
       SUPPORT_PASSPORT_ATTRIBUTE_KEYS.namespaceEncoding,
       `${SUPPORT_PASSPORT_NAMESPACE_ENCODING}:${chunks.length}:${digest}`,
     ],
-    ...chunks.slice(1).map((chunk, index) => [
-      `${SUPPORT_PASSPORT_NAMESPACE_CHUNK_PREFIX}${index + 1}`,
-      chunk,
-    ]),
+    ...chunks.slice(1).map((chunk, index) => [`${SUPPORT_PASSPORT_NAMESPACE_CHUNK_PREFIX}${index + 1}`, chunk]),
   ]);
 }
 
-export function decodeSupportPassportNamespaceAttributes(
-  attributes: Readonly<Record<string, string>>,
-): string | null {
+export function decodeSupportPassportNamespaceAttributes(attributes: Readonly<Record<string, string>>): string | null {
   const firstChunk = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.namespace];
   const encoding = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.namespaceEncoding];
   if (encoding === undefined) {
@@ -100,16 +106,21 @@ export function decodeSupportPassportNamespaceAttributes(
   const match = /^base64url-v1:([1-9]\d*):([a-f0-9]{64})$/.exec(encoding);
   if (!match || typeof firstChunk !== "string") return null;
   const chunkCount = Number(match[1]);
-  if (!Number.isSafeInteger(chunkCount) || chunkCount > 8) return null;
+  if (!Number.isSafeInteger(chunkCount)) return null;
+  const chunkIndexes = Object.keys(attributes).flatMap((key) => {
+    const chunkMatch = /^support-passport-namespace-(\d+)$/.exec(key);
+    return chunkMatch ? [Number(chunkMatch[1])] : [];
+  });
+  if (
+    chunkIndexes.length !== chunkCount - 1 ||
+    chunkIndexes.some((index) => !Number.isSafeInteger(index) || index < 1 || index >= chunkCount)
+  )
+    return null;
   const chunks = [firstChunk];
   for (let index = 1; index < chunkCount; index += 1) {
     const chunk = attributes[`${SUPPORT_PASSPORT_NAMESPACE_CHUNK_PREFIX}${index}`];
     if (typeof chunk !== "string" || chunk.length === 0) return null;
     chunks.push(chunk);
-  }
-  for (const key of Object.keys(attributes)) {
-    const chunkMatch = /^support-passport-namespace-(\d+)$/.exec(key);
-    if (chunkMatch && Number(chunkMatch[1]) >= chunkCount) return null;
   }
   const encoded = chunks.join("");
   if (createHash("sha256").update(encoded).digest("hex") !== match[2]) return null;
@@ -222,9 +233,7 @@ function parseSupportPassportCardMetadata(memory: Pick<MemoryFile, "frontmatter"
   };
 }
 
-export function hasLiveSupportPassportCard(
-  memory: Pick<MemoryFile, "frontmatter" | "content">
-): boolean {
+export function hasLiveSupportPassportCard(memory: Pick<MemoryFile, "frontmatter" | "content">): boolean {
   const metadata = parseSupportPassportCardMetadata(memory);
   if (metadata?.fields.status !== "active" && metadata?.fields.status !== "pending_review") return false;
   return SupportPassportCardSchema.omit({ revision: true }).safeParse({

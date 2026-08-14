@@ -1,24 +1,24 @@
-import { mkdtemp, readdir, lstat, rm } from "node:fs/promises";
+import { createDecipheriv, createHash } from "node:crypto";
 import fs from "node:fs";
+import { lstat, mkdtemp, readdir, rm } from "node:fs/promises";
 import path from "node:path";
-import { createHash, createDecipheriv } from "node:crypto";
 import {
-  isSupportPassportPrivateMemory,
   OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES,
   StorageManager,
+  createSupportPassportPrivateFileExclusion,
 } from "@remnic/core";
-import { OFFLINE_DECRYPT_STAGING_DIR_PREFIX } from "@remnic/core/offline-sync-exclude-globs";
 import type {
   applyOfflineSyncFileContentChunk,
   applyOfflineSyncSnapshot,
   buildOfflineSyncChangeset,
 } from "@remnic/core";
 import type {
-  OfflineSyncFileDigest,
   OfflineSyncExcludeFile,
+  OfflineSyncFileDigest,
   OfflineSyncFileState,
   OfflineSyncFileTarget,
 } from "@remnic/core";
+import { OFFLINE_DECRYPT_STAGING_DIR_PREFIX } from "@remnic/core/offline-sync-exclude-globs";
 import {
   AUTH_TAG_LENGTH,
   ENVELOPE_HEADER_SIZE,
@@ -38,9 +38,7 @@ import {
   secureStoreDir,
 } from "@remnic/core/secure-store";
 
-export type OfflineFileChunkReader = (
-  target: OfflineSyncFileTarget & { chunkSize: number },
-) => AsyncIterable<Buffer>;
+export type OfflineFileChunkReader = (target: OfflineSyncFileTarget & { chunkSize: number }) => AsyncIterable<Buffer>;
 
 export type ConfiguredOfflineStorage = {
   storage: StorageManager;
@@ -61,6 +59,8 @@ export interface OfflineStorageIo {
   readDeletionRevisions: () => Promise<ReadonlyMap<string, number>>;
 }
 
+const OFFLINE_SYNC_EXCLUSION_CONCURRENCY = 16;
+
 export function resolveOfflineDirectHydrationPath(memoryDir: string, relPath: string): string {
   const base = path.resolve(memoryDir);
   const target = path.resolve(base, relPath);
@@ -76,17 +76,21 @@ export async function filterOfflineSyncBaseFiles(
   files: readonly OfflineSyncFileState[],
   excludeFile: OfflineSyncExcludeFile
 ): Promise<OfflineSyncFileState[]> {
-  const included: OfflineSyncFileState[] = [];
-  for (const file of files) {
-    const filePath = resolveOfflineDirectHydrationPath(memoryDir, file.path);
-    if (!(await excludeFile({ root: memoryDir, path: file.path, filePath }))) included.push(file);
+  const excluded = new Array<boolean>(files.length);
+  for (let offset = 0; offset < files.length; offset += OFFLINE_SYNC_EXCLUSION_CONCURRENCY) {
+    await Promise.all(
+      files.slice(offset, offset + OFFLINE_SYNC_EXCLUSION_CONCURRENCY).map(async (file, index) => {
+        const filePath = resolveOfflineDirectHydrationPath(memoryDir, file.path);
+        excluded[offset + index] = await excludeFile({ root: memoryDir, path: file.path, filePath });
+      })
+    );
   }
-  return included;
+  return files.filter((_file, index) => excluded[index] === false);
 }
 
 export async function createConfiguredOfflineStorage(
   memoryDir: string,
-  secureStoreEncryptOnWrite = true,
+  secureStoreEncryptOnWrite = true
 ): Promise<ConfiguredOfflineStorage> {
   const storage = new StorageManager(memoryDir);
   const header = await readHeader(memoryDir);
@@ -107,7 +111,7 @@ export async function createOfflineStorageForPath(
   memoryDir: string,
   filePath: string,
   configured: ConfiguredOfflineStorage,
-  secureStoreEncryptOnWrite: boolean,
+  secureStoreEncryptOnWrite: boolean
 ): Promise<StorageManager> {
   const memoryRoot = path.resolve(memoryDir);
   const stateDir = path.dirname(filePath);
@@ -128,10 +132,9 @@ export async function createOfflineStorageForPath(
   return storage;
 }
 
-
 export async function createOfflineStorageIo(
   memoryDir: string,
-  configuredStorage?: ConfiguredOfflineStorage,
+  configuredStorage?: ConfiguredOfflineStorage
 ): Promise<OfflineStorageIo> {
   // Sweep crash-orphaned decrypt staging dirs before any snapshot enumeration
   // (#2033 P1). The normal decrypt path removes its own staging dir in a
@@ -140,13 +143,9 @@ export async function createOfflineStorageIo(
   // unbounded accumulation. Age-gated so a concurrent in-flight decrypt on the
   // same memory root is never removed mid-use.
   await cleanupOrphanedOfflineDecryptStaging(memoryDir);
-  const { storage, secureStoreKey } =
-    configuredStorage ?? (await createConfiguredOfflineStorage(memoryDir));
+  const { storage, secureStoreKey } = configuredStorage ?? (await createConfiguredOfflineStorage(memoryDir));
   return {
-    excludeFile: async ({ filePath }) => {
-      const memory = await storage.readMemoryByPath(filePath);
-      return memory ? isSupportPassportPrivateMemory(memory) : false;
-    },
+    excludeFile: createSupportPassportPrivateFileExclusion(storage),
     readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
     readDeletionRevisions: () => storage.readDeletionRevisions(),
     readFileDigest: async ({ filePath }) => {
@@ -167,12 +166,13 @@ export async function createOfflineStorageIo(
         bytes,
       };
     },
-    readFileChunks: ({ filePath, chunkSize }) => readOfflineSyncFileChunks({
-      filePath,
-      memoryDir,
-      secureStoreKey,
-      chunkSize,
-    }),
+    readFileChunks: ({ filePath, chunkSize }) =>
+      readOfflineSyncFileChunks({
+        filePath,
+        memoryDir,
+        secureStoreKey,
+        chunkSize,
+      }),
     writeFile: async ({ filePath, content }) => storage.writeOfflineSyncFile(filePath, content),
     writeStagingFile: async ({ filePath, content }) => storage.writeOfflineSyncStagingFile(filePath, content),
     writeFileChunks: async ({ filePath, chunks }) => storage.writeOfflineSyncFileChunks(filePath, chunks),
@@ -232,7 +232,7 @@ async function* readOfflineSyncFileChunks(options: {
   }
   if (!options.secureStoreKey) {
     throw new SecureStoreLockedError(
-      `secure-store is locked — cannot read encrypted file at ${options.filePath}. Run \`remnic secure-store unlock\` to decrypt.`,
+      `secure-store is locked — cannot read encrypted file at ${options.filePath}. Run \`remnic secure-store unlock\` to decrypt.`
     );
   }
   yield* readEncryptedOfflineFileChunks({
@@ -285,15 +285,9 @@ async function* readEncryptedOfflineFileChunks(options: {
   if (envelopeVersion !== ENVELOPE_VERSION) {
     throw new Error(`secure-store envelope has unsupported version ${envelopeVersion}: ${options.filePath}`);
   }
-  const salt = envelopeHeader.subarray(
-    ENVELOPE_LAYOUT.salt,
-    ENVELOPE_LAYOUT.salt + ENVELOPE_SALT_LENGTH,
-  );
+  const salt = envelopeHeader.subarray(ENVELOPE_LAYOUT.salt, ENVELOPE_LAYOUT.salt + ENVELOPE_SALT_LENGTH);
   const iv = envelopeHeader.subarray(ENVELOPE_LAYOUT.iv, ENVELOPE_LAYOUT.iv + IV_LENGTH);
-  const authTag = envelopeHeader.subarray(
-    ENVELOPE_LAYOUT.authTag,
-    ENVELOPE_LAYOUT.authTag + AUTH_TAG_LENGTH,
-  );
+  const authTag = envelopeHeader.subarray(ENVELOPE_LAYOUT.authTag, ENVELOPE_LAYOUT.authTag + AUTH_TAG_LENGTH);
   const aadCandidates = offlineFileAadCandidates(options.filePath, options.memoryDir);
   let lastError: unknown;
   for (const aad of aadCandidates) {
@@ -319,9 +313,7 @@ async function* readEncryptedOfflineFileChunks(options: {
           highWaterMark: options.chunkSize,
         });
         for await (const encryptedChunk of stream) {
-          const plain = decipher.update(
-            Buffer.isBuffer(encryptedChunk) ? encryptedChunk : Buffer.from(encryptedChunk),
-          );
+          const plain = decipher.update(Buffer.isBuffer(encryptedChunk) ? encryptedChunk : Buffer.from(encryptedChunk));
           if (plain.length > 0 && !output.write(plain)) {
             await new Promise<void>((resolve, reject) => {
               output.once("drain", resolve);
@@ -347,9 +339,7 @@ async function* readEncryptedOfflineFileChunks(options: {
       await rm(tempDir, { recursive: true, force: true });
     }
   }
-  throw lastError instanceof Error
-    ? lastError
-    : new Error(`secure-store could not decrypt file: ${options.filePath}`);
+  throw lastError instanceof Error ? lastError : new Error(`secure-store could not decrypt file: ${options.filePath}`);
 }
 
 function offlineFileAadCandidates(filePath: string, memoryDir: string): Buffer[] {
@@ -365,11 +355,11 @@ function offlineFileAadCandidates(filePath: string, memoryDir: string): Buffer[]
     const topLevelRoot = memoryParts.slice(0, -2).join(path.sep) || path.sep;
     const topRelative = path.relative(topLevelRoot, filePath);
     if (
-      topRelative
-      && !topRelative.startsWith("..")
-      && !path.isAbsolute(topRelative)
-      && topRelative.split(path.sep)[0] === "namespaces"
-      && topRelative.split(path.sep)[1] === memoryParts.at(-1)
+      topRelative &&
+      !topRelative.startsWith("..") &&
+      !path.isAbsolute(topRelative) &&
+      topRelative.split(path.sep)[0] === "namespaces" &&
+      topRelative.split(path.sep)[1] === memoryParts.at(-1)
     ) {
       candidates.push(filePathAad(filePath, topLevelRoot));
     }
