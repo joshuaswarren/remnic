@@ -641,7 +641,9 @@
         }
         const quietCard = guide.cards.find(
           (card) =>
-            (card.category === "communication" || card.category === "regulation") &&
+            (card.category === "communication" ||
+              card.category === "environment" ||
+              card.category === "regulation") &&
             hasMatchingQuietSupportIntent(`${card.title} ${card.statement}`, question)
         );
         if (!quietCard) {
