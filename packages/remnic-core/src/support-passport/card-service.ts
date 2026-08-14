@@ -153,7 +153,7 @@ export class SupportPassportCardService {
     const { principal, namespace, storage } = owner;
     const onCommitted = once(input.onCommitted);
     return await withSupportPassportOwnerLock(storage, { namespace, principal }, async (lock) => {
-      const batchContext = this.generatedBatchContext(storage, lock, principal, namespace);
+      const batchContext = this.generatedBatchContext(storage, lock, principal, namespace, onCommitted);
       const batchId = randomUUID();
       const created: SupportPassportCard[] = [];
       const createdIds: string[] = [];
@@ -162,7 +162,7 @@ export class SupportPassportCardService {
       try {
         input.signal?.throwIfAborted();
         input.signal?.throwIfAborted();
-        const storedCards = await this.readStoredCards(storage, lock, principal, namespace);
+        const storedCards = await this.readStoredCards(storage, lock, principal, namespace, onCommitted);
         if (ownerVisibleCards(storedCards).length + output.data.cards.length > MAX_OWNER_VISIBLE_CARDS) {
           throw new SupportPassportError(
             "invalid_input",
@@ -270,7 +270,7 @@ export class SupportPassportCardService {
         return projectRequiredCard(recovered, namespace, principal).card;
       }
       requireRevision(loadedPrior, parsed.data.expectedRevision);
-      await this.readStoredCards(storage, lock, principal, namespace);
+      await this.readStoredCards(storage, lock, principal, namespace, onCommitted);
       const refreshedPrior = await this.requireCard(storage, parsed.data.cardId, namespace, principal);
       requireRevision(refreshedPrior, parsed.data.expectedRevision);
       const recoveredMemory = await this.recoverReplacementTransition(
@@ -485,7 +485,7 @@ export class SupportPassportCardService {
   ): Promise<SupportPassportCard> {
     const now = this.now();
     const reviewBy = input.reviewBy ?? now.toISOString();
-    const storedCards = await this.readStoredCards(storage, lock, principal, namespace);
+    const storedCards = await this.readStoredCards(storage, lock, principal, namespace, input.onCommitted);
     const visibleCards = ownerListCards(storedCards);
     const replacesVisibleCard = visibleCards.some(
       (item) =>
@@ -721,17 +721,20 @@ export class SupportPassportCardService {
     storage: StorageManager,
     lock: HeldFileLockController,
     principal: string,
-    namespace: string
+    namespace: string,
+    onCommitted?: () => void
   ): Promise<StoredSupportPassportCard[]> {
     const initialVersion = storage.getCorpusScanVersion();
     const initial = await storage.readAllMemories();
     await recoverSupportPassportGeneratedBatches(
-      this.generatedBatchContext(storage, lock, principal, namespace),
+      this.generatedBatchContext(storage, lock, principal, namespace, onCommitted),
       initial
     );
     for (const memory of initial) {
       const card = projectOwnedCard(memory, namespace, principal);
-      if (card) await this.recoverReplacementTransition(storage, memory, lock, principal, namespace);
+      if (card) {
+        await this.recoverReplacementTransition(storage, memory, lock, principal, namespace, {}, onCommitted);
+      }
     }
     const memories: MemoryFile[] =
       storage.getCorpusScanVersion() === initialVersion ? initial : await storage.readAllMemories();
@@ -742,7 +745,8 @@ export class SupportPassportCardService {
     storage: StorageManager,
     lock: HeldFileLockController,
     principal: string,
-    namespace: string
+    namespace: string,
+    onCommitted?: () => void
   ) {
     return {
       storage,
@@ -750,6 +754,7 @@ export class SupportPassportCardService {
       namespace,
       now: this.now,
       requireOwnerLock: async () => await this.requireOwnerLock(lock),
+      ...(onCommitted ? { onCommitted } : {}),
     };
   }
 
@@ -763,7 +768,7 @@ export class SupportPassportCardService {
   ): Promise<void> {
     const storedCards =
       predecessor.card.status === "active"
-        ? await this.readStoredCards(storage, lock, principal, namespace)
+        ? await this.readStoredCards(storage, lock, principal, namespace, onCommitted)
         : await readCommittedSupportPassportCards(storage, namespace, principal);
     const replacements = storedCards.filter((item) => {
       if (item.card.status !== "pending_review") return false;

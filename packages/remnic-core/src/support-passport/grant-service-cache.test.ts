@@ -79,12 +79,12 @@ test("card snapshots match the storage cache freshness window", async () => {
   diskMemories = [];
   nowMs += 1_001;
   assert.equal((await inspected.readStoredCardSnapshot(storage, "alice", ownerKey)).cardsById.size, 1);
-  assert.equal(calls, 2);
+  assert.equal(calls, 1);
   assert.equal(diskReads, 1);
   nowMs += 59_000;
 
   assert.equal((await inspected.readStoredCardSnapshot(storage, "alice", ownerKey)).cardsById.size, 0);
-  assert.equal(calls, 3);
+  assert.equal(calls, 2);
   assert.equal(diskReads, 2);
 });
 

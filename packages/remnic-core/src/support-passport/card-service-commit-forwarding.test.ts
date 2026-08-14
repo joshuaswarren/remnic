@@ -104,3 +104,57 @@ test("rejected-draft recovery forwards the commit notification", async () => {
 
   assert.equal(commitNotifications, 1);
 });
+
+test("pre-write card recovery forwards the commit notification", async () => {
+  const replacementMemory = memory("draft-two", "pending_review", "draft-one");
+  const storage = {
+    getCorpusScanVersion: () => "1:0",
+    readAllMemories: async () => [replacementMemory],
+  } as unknown as StorageManager;
+  const service = new SupportPassportCardService({
+    resolveOwner: async () => ({ principal: PRINCIPAL, namespace: NAMESPACE, storage }),
+  });
+  let commitNotifications = 0;
+  const inspected = service as unknown as {
+    readStoredCards(
+      target: StorageManager,
+      lock: HeldFileLockController,
+      principal: string,
+      namespace: string,
+      onCommitted?: () => void
+    ): Promise<StoredSupportPassportCard[]>;
+    recoverReplacementTransition(
+      target: StorageManager,
+      candidate: MemoryFile,
+      lock: HeldFileLockController,
+      principal: string,
+      namespace: string,
+      options?: { rollbackConflictedApproval?: boolean },
+      onCommitted?: () => void
+    ): Promise<MemoryFile>;
+  };
+  inspected.recoverReplacementTransition = async (
+    _target,
+    candidate,
+    _lock,
+    _principal,
+    _namespace,
+    _options,
+    onCommitted
+  ) => {
+    onCommitted?.();
+    return candidate;
+  };
+
+  await inspected.readStoredCards(
+    storage,
+    {} as HeldFileLockController,
+    PRINCIPAL,
+    NAMESPACE,
+    () => {
+      commitNotifications += 1;
+    }
+  );
+
+  assert.equal(commitNotifications, 1);
+});
