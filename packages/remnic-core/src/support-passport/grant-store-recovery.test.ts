@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -75,7 +75,7 @@ test("a final stale owner-index write cannot hide a peer grant", async () => {
   }
 });
 
-test("a recovery marker restores owner capacity before another grant is indexed", async () => {
+test("owner membership enforces capacity when the derived index is stale", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-cap-recovery-"));
   try {
     const now = new Date("2026-08-11T12:00:00.000Z");
@@ -98,7 +98,6 @@ test("a recovery marker restores owner capacity before another grant is indexed"
       writeState(state: typeof first.state, requireAbsent: boolean): Promise<void>;
       writeOwnerMembership(state: typeof first.state): Promise<void>;
       writeOwnerIndex(ownerHash: string, indexedGrantIds: string[]): Promise<void>;
-      writeOwnerIndexRecoveryMarker(ownerHash: string, grantId: string): Promise<void>;
     };
     const states = [first.state];
     for (let index = 2; index <= 100; index += 1) {
@@ -113,7 +112,6 @@ test("a recovery marker restores owner capacity before another grant is indexed"
       ownerHash,
       states.slice(0, 99).map((state) => state.grantId)
     );
-    await inspected.writeOwnerIndexRecoveryMarker(ownerHash, states[99]?.grantId ?? grantId(100));
 
     await assert.rejects(
       store.create(input),
@@ -130,7 +128,7 @@ test("a recovery marker restores owner capacity before another grant is indexed"
   }
 });
 
-test("an owner list retries from membership when a recovery marker appears during its index read", async () => {
+test("an owner list ignores a stale derived index", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-list-recovery-"));
   try {
     const grantIds = ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"];
@@ -150,21 +148,10 @@ test("an owner list retries from membership when a recovery marker appears durin
     const second = await store.create(input);
     const inspected = store as unknown as {
       ownerHash(namespace: string, principalHash: string): string;
-      readOwnerIndexByHash(ownerHash: string): Promise<string[]>;
       writeOwnerIndex(ownerHash: string, indexedGrantIds: string[]): Promise<void>;
-      writeOwnerIndexRecoveryMarker(ownerHash: string, grantId: string): Promise<void>;
     };
-    const readOwnerIndex = inspected.readOwnerIndexByHash.bind(store);
     const ownerHash = inspected.ownerHash(first.state.namespace, first.state.principalHash);
-    let raced = false;
-    inspected.readOwnerIndexByHash = async (selectedOwnerHash) => {
-      if (!raced) {
-        raced = true;
-        await inspected.writeOwnerIndexRecoveryMarker(ownerHash, second.state.grantId);
-        await inspected.writeOwnerIndex(ownerHash, [first.state.grantId]);
-      }
-      return await readOwnerIndex(selectedOwnerHash);
-    };
+    await inspected.writeOwnerIndex(ownerHash, [first.state.grantId]);
 
     assert.deepEqual(
       new Set((await store.listForOwner(input.namespace, input.principal)).map((state) => state.grantId)),
@@ -175,8 +162,8 @@ test("an owner list retries from membership when a recovery marker appears durin
   }
 });
 
-test("an index write preserves a late recovery marker that its snapshot does not cover", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-late-marker-"));
+test("a later create rebuilds the derived index from owner membership", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-index-rebuild-"));
   try {
     const grantIds = ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"];
     const peerGrantId = "00000000-0000-4000-8000-000000000003";
@@ -199,29 +186,21 @@ test("an index write preserves a late recovery marker that its snapshot does not
       secretHash: "b".repeat(64),
     };
     const inspected = store as unknown as {
-      ownerIndexRecoveryGrantIds(ownerHash: string): Promise<string[]>;
+      ownerHash(namespace: string, principalHash: string): string;
       writeState(state: typeof peerState, requireAbsent: boolean): Promise<void>;
       writeOwnerMembership(state: typeof peerState): Promise<void>;
-      writeOwnerIndexRecoveryMarker(ownerHash: string, grantId: string): Promise<void>;
+      writeOwnerIndex(ownerHash: string, indexedGrantIds: string[]): Promise<void>;
     };
-    const readRecoveryGrantIds = inspected.ownerIndexRecoveryGrantIds.bind(store);
-    let recoveryScans = 0;
-    inspected.ownerIndexRecoveryGrantIds = async (ownerHash) => {
-      recoveryScans += 1;
-      if (recoveryScans === 2) {
-        await inspected.writeState(peerState, true);
-        await inspected.writeOwnerMembership(peerState);
-        await inspected.writeOwnerIndexRecoveryMarker(ownerHash, peerGrantId);
-      }
-      return await readRecoveryGrantIds(ownerHash);
-    };
+    await inspected.writeState(peerState, true);
+    await inspected.writeOwnerMembership(peerState);
+    const ownerHash = inspected.ownerHash(first.state.namespace, first.state.principalHash);
+    await inspected.writeOwnerIndex(ownerHash, [first.state.grantId]);
 
     const second = await store.create(input);
+    const indexPath = path.join(root, "state", "support-passport", "grants", "owners", `${ownerHash}.json`);
+    const derivedIndex = JSON.parse(await readFile(indexPath, "utf8")) as { grantIds: string[] };
 
-    assert.deepEqual(
-      new Set((await store.listForOwner(input.namespace, input.principal)).map((state) => state.grantId)),
-      new Set([first.state.grantId, second.state.grantId, peerGrantId])
-    );
+    assert.deepEqual(new Set(derivedIndex.grantIds), new Set([first.state.grantId, second.state.grantId, peerGrantId]));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

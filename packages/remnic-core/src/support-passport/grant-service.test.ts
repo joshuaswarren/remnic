@@ -9,9 +9,9 @@ import { StorageManager } from "../storage.js";
 import type { withHeldFileLock } from "../utils/serialize-mutations.js";
 import { SupportPassportCardService } from "./card-service.js";
 import { SupportPassportError } from "./errors.js";
-import { computeSupportPassportOwnerLockKey, supportPassportOwnerLockPath } from "./owner-lock.js";
 import { SupportPassportGrantService } from "./grant-service.js";
 import { SupportPassportGrantStore, syncDirectoryForDurability } from "./grant-store.js";
+import { computeSupportPassportOwnerLockKey, supportPassportOwnerLockPath } from "./owner-lock.js";
 import {
   ensurePrivateDirectoryNoFollow,
   ensurePrivateDirectoryTreeNoFollow,
@@ -376,7 +376,10 @@ test("grant creation accepts a state write that committed before its durability 
       (await store.listForOwner("alice", "owner:alice")).map((state) => state.grantId),
       [grantId]
     );
-    assert.deepEqual(directorySyncs.map((directory) => path.basename(directory)), ["grants"]);
+    assert.deepEqual(
+      directorySyncs.map((directory) => path.basename(directory)),
+      ["grants"]
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -454,7 +457,7 @@ test("grant creation re-syncs an owner index write that committed before its dur
   }
 });
 
-test("grant revocation retries directory durability before reporting an existing revoked state", async () => {
+test("idempotent revocation reports the persisted state without another sync", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-revoke-sync-"));
   try {
     const now = new Date("2026-08-11T12:00:00.000Z");
@@ -497,13 +500,13 @@ test("grant revocation retries directory durability before reporting an existing
 
     assert.ok(repeated.revokedAt);
     assert.equal(repeated.stateVersion, 2);
-    assert.equal(syncAttempts, 2);
+    assert.equal(syncAttempts, 1);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("owner grant rollover rejects a foreign grant without deleting it", async () => {
+test("owner grant rollover ignores a foreign derived-index entry", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-foreign-index-"));
   try {
     const now = new Date("2026-08-11T12:00:00.000Z");
@@ -541,10 +544,10 @@ test("owner grant rollover rejects a foreign grant without deleting it", async (
     ]);
     const bobGrantPath = path.join(root, "state", "support-passport", "grants", `${bob.state.grantId}.json`);
 
-    await assert.rejects(
-      store.create({ ...common, principal: "owner:alice" }),
-      /owner index references a foreign grant/
-    );
+    const replacement = await store.create({ ...common, principal: "owner:alice" });
+
+    assert.equal((await store.listForOwner(common.namespace, "owner:alice")).length, 100);
+    assert.equal(replacement.state.principalHash, firstAliceGrant.state.principalHash);
     assert.equal((await lstat(bobGrantPath)).isFile(), true);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -785,7 +788,7 @@ test("grant creation rejects a future request time that would extend the maximum
         requestedAt,
       }),
       (error: unknown) =>
-        error instanceof SupportPassportError && error.code === "invalid_input" && error.status === 400,
+        error instanceof SupportPassportError && error.code === "invalid_input" && error.status === 400
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -853,10 +856,7 @@ test("grant creation aborts before replacing an owner index after lock ownership
 test("grant creation reconciles peer state when the owner-index lock is lost after write", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-index-fence-"));
   try {
-    const grantIds = [
-      "00000000-0000-4000-8000-000000000001",
-      "00000000-0000-4000-8000-000000000002",
-    ];
+    const grantIds = ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"];
     const peerGrantId = "00000000-0000-4000-8000-000000000003";
     const now = new Date("2026-08-11T12:00:00.000Z");
     const store = new SupportPassportGrantStore({
@@ -877,10 +877,7 @@ test("grant creation reconciles peer state when the owner-index lock is lost aft
       secretHash: "b".repeat(64),
     };
     const inspected = store as unknown as {
-      withOwnerIndexLock<T>(
-        ownerHash: string,
-        task: (lock: { refresh(): Promise<boolean> }) => Promise<T>,
-      ): Promise<T>;
+      withOwnerIndexLock<T>(ownerHash: string, task: (lock: { refresh(): Promise<boolean> }) => Promise<T>): Promise<T>;
       writeOwnerIndex(ownerHash: string, grantIds: string[]): Promise<void>;
       writeState(state: typeof peerState, requireAbsent: boolean): Promise<void>;
       writeOwnerMembership(state: typeof peerState): Promise<void>;
@@ -910,9 +907,9 @@ test("grant creation reconciles peer state when the owner-index lock is lost aft
     };
 
     const created = await store.create(input);
-    const listedIds = new Set((await store.listForOwner(input.namespace, input.principal)).map(
-      (state) => state.grantId,
-    ));
+    const listedIds = new Set(
+      (await store.listForOwner(input.namespace, input.principal)).map((state) => state.grantId)
+    );
 
     assert.equal(ownerLockRun, 3);
     assert.equal(refreshesByRun.get(1), 2);
@@ -926,10 +923,7 @@ test("grant creation reconciles peer state when the owner-index lock is lost aft
 test("grant recovery propagates transient reads from an owner membership", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-recovery-read-"));
   try {
-    const grantIds = [
-      "00000000-0000-4000-8000-000000000001",
-      "00000000-0000-4000-8000-000000000002",
-    ];
+    const grantIds = ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"];
     const peerGrantId = "00000000-0000-4000-8000-000000000003";
     const now = new Date("2026-08-11T12:00:00.000Z");
     const store = new SupportPassportGrantStore({
@@ -950,10 +944,7 @@ test("grant recovery propagates transient reads from an owner membership", async
       secretHash: "b".repeat(64),
     };
     const inspected = store as unknown as {
-      withOwnerIndexLock<T>(
-        ownerHash: string,
-        task: (lock: { refresh(): Promise<boolean> }) => Promise<T>,
-      ): Promise<T>;
+      withOwnerIndexLock<T>(ownerHash: string, task: (lock: { refresh(): Promise<boolean> }) => Promise<T>): Promise<T>;
       writeOwnerIndex(ownerHash: string, indexedGrantIds: string[]): Promise<void>;
       writeState(state: typeof peerState, requireAbsent: boolean): Promise<void>;
       writeOwnerMembership(state: typeof peerState): Promise<void>;
@@ -989,14 +980,12 @@ test("grant recovery propagates transient reads from an owner membership", async
       return await readState(grantId);
     };
 
-    await assert.rejects(
-      store.create(input),
-      (error: unknown) => (error as NodeJS.ErrnoException).code === "EIO",
-    );
+    await assert.rejects(store.create(input), (error: unknown) => (error as NodeJS.ErrnoException).code === "EIO");
     assert.equal(ownerLockRun, 2);
     assert.equal(
-      JSON.parse(await readFile(path.join(root, "state", "support-passport", "grants", `${peerGrantId}.json`), "utf8")).grantId,
-      peerGrantId,
+      JSON.parse(await readFile(path.join(root, "state", "support-passport", "grants", `${peerGrantId}.json`), "utf8"))
+        .grantId,
+      peerGrantId
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -1013,10 +1002,7 @@ test("grant recovery stops after repeated owner-index lock loss", async () => {
       now: () => now,
     });
     const inspected = store as unknown as {
-      withOwnerIndexLock<T>(
-        ownerHash: string,
-        task: (lock: { refresh(): Promise<boolean> }) => Promise<T>,
-      ): Promise<T>;
+      withOwnerIndexLock<T>(ownerHash: string, task: (lock: { refresh(): Promise<boolean> }) => Promise<T>): Promise<T>;
     };
     let ownerLockRuns = 0;
     inspected.withOwnerIndexLock = async (_ownerHash, task) => {
@@ -1037,7 +1023,7 @@ test("grant recovery stops after repeated owner-index lock loss", async () => {
         cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
         expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
       }),
-      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict",
+      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
     );
     assert.equal(ownerLockRuns, 4);
   } finally {
@@ -1048,10 +1034,7 @@ test("grant recovery stops after repeated owner-index lock loss", async () => {
 test("grant recovery prunes a stale owner-index entry after lock loss", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-stale-index-recovery-"));
   try {
-    const grantIds = [
-      "00000000-0000-4000-8000-000000000001",
-      "00000000-0000-4000-8000-000000000002",
-    ];
+    const grantIds = ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"];
     const now = new Date("2026-08-11T12:00:00.000Z");
     const store = new SupportPassportGrantStore({
       memoryDir: root,
@@ -1066,10 +1049,7 @@ test("grant recovery prunes a stale owner-index entry after lock loss", async ()
     };
     const first = await store.create(input);
     const inspected = store as unknown as {
-      withOwnerIndexLock<T>(
-        ownerHash: string,
-        task: (lock: { refresh(): Promise<boolean> }) => Promise<T>,
-      ): Promise<T>;
+      withOwnerIndexLock<T>(ownerHash: string, task: (lock: { refresh(): Promise<boolean> }) => Promise<T>): Promise<T>;
       writeOwnerIndex(ownerHash: string, indexedGrantIds: string[]): Promise<void>;
     };
     const writeOwnerIndex = inspected.writeOwnerIndex.bind(store);
@@ -1099,7 +1079,7 @@ test("grant recovery prunes a stale owner-index entry after lock loss", async ()
     assert.equal(firstRunRefreshes, 2);
     assert.deepEqual(
       (await store.listForOwner(input.namespace, input.principal)).map((state) => state.grantId),
-      [created.state.grantId],
+      [created.state.grantId]
     );
     assert.equal((await store.authenticate(created.state.grantId, created.secret)).grantId, created.state.grantId);
   } finally {
@@ -1110,10 +1090,7 @@ test("grant recovery prunes a stale owner-index entry after lock loss", async ()
 test("grant recovery ignores malformed unindexed grant files", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-scoped-recovery-"));
   try {
-    const grantIds = [
-      "00000000-0000-4000-8000-000000000001",
-      "00000000-0000-4000-8000-000000000002",
-    ];
+    const grantIds = ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"];
     const unindexedGrantId = "00000000-0000-4000-8000-000000000003";
     const now = new Date("2026-08-11T12:00:00.000Z");
     const store = new SupportPassportGrantStore({
@@ -1135,17 +1112,14 @@ test("grant recovery ignores malformed unindexed grant files", async () => {
     let ownerLockRun = 0;
     let firstRunRefreshes = 0;
     const inspected = store as unknown as {
-      withOwnerIndexLock<T>(
-        ownerHash: string,
-        task: (lock: { refresh(): Promise<boolean> }) => Promise<T>,
-      ): Promise<T>;
+      withOwnerIndexLock<T>(ownerHash: string, task: (lock: { refresh(): Promise<boolean> }) => Promise<T>): Promise<T>;
       ownerHash(namespace: string, principalHash: string): string;
     };
     const ownerHash = inspected.ownerHash(first.state.namespace, first.state.principalHash);
     await writeFile(
       path.join(grantsDir, "owners", ownerHash, `${unindexedGrantId}.json`),
       `${JSON.stringify({ schemaVersion: 1, grantId: unindexedGrantId })}\n`,
-      { mode: 0o600 },
+      { mode: 0o600 }
     );
     inspected.withOwnerIndexLock = async (_ownerHash, task) => {
       ownerLockRun += 1;
@@ -1163,7 +1137,7 @@ test("grant recovery ignores malformed unindexed grant files", async () => {
     assert.equal(ownerLockRun, 2);
     assert.deepEqual(
       new Set((await store.listForOwner(input.namespace, input.principal)).map((state) => state.grantId)),
-      new Set([first.state.grantId, created.state.grantId]),
+      new Set([first.state.grantId, created.state.grantId])
     );
     assert.equal(await readFile(path.join(grantsDir, `${unindexedGrantId}.json`), "utf8"), "not valid JSON");
   } finally {
@@ -1174,8 +1148,9 @@ test("grant recovery ignores malformed unindexed grant files", async () => {
 test("grant recovery reads only the affected owner's membership after lock loss", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-owner-scoped-recovery-"));
   try {
-    const grantIds = Array.from({ length: 8 }, (_, index) =>
-      `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+    const grantIds = Array.from(
+      { length: 8 },
+      (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`
     );
     const now = new Date("2026-08-11T12:00:00.000Z");
     const store = new SupportPassportGrantStore({
@@ -1194,10 +1169,7 @@ test("grant recovery reads only the affected owner's membership after lock loss"
       bobGrantIds.add((await store.create({ ...input, principal: "owner:bob" })).state.grantId);
     }
     const inspected = store as unknown as {
-      withOwnerIndexLock<T>(
-        ownerHash: string,
-        task: (lock: { refresh(): Promise<boolean> }) => Promise<T>,
-      ): Promise<T>;
+      withOwnerIndexLock<T>(ownerHash: string, task: (lock: { refresh(): Promise<boolean> }) => Promise<T>): Promise<T>;
       readState(grantId: string): Promise<{ grantId: string }>;
     };
     let ownerLockRun = 0;
@@ -1222,7 +1194,10 @@ test("grant recovery reads only the affected owner's membership after lock loss"
     await store.create({ ...input, principal: "owner:alice" });
 
     assert.equal(ownerLockRun, 2);
-    assert.equal(recoveryReads.some((grantId) => bobGrantIds.has(grantId)), false);
+    assert.equal(
+      recoveryReads.some((grantId) => bobGrantIds.has(grantId)),
+      false
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1232,10 +1207,7 @@ test("one owner's index transaction does not block another owner", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-owner-concurrency-"));
   const releaseAlice = Promise.withResolvers<void>();
   try {
-    const grantIds = [
-      "00000000-0000-4000-8000-000000000001",
-      "00000000-0000-4000-8000-000000000002",
-    ];
+    const grantIds = ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"];
     const now = new Date("2026-08-11T12:00:00.000Z");
     const store = new SupportPassportGrantStore({
       memoryDir: root,
@@ -1243,10 +1215,7 @@ test("one owner's index transaction does not block another owner", async () => {
       now: () => now,
     });
     const inspected = store as unknown as {
-      withOwnerIndexLock<T>(
-        ownerHash: string,
-        task: (lock: { refresh(): Promise<boolean> }) => Promise<T>,
-      ): Promise<T>;
+      withOwnerIndexLock<T>(ownerHash: string, task: (lock: { refresh(): Promise<boolean> }) => Promise<T>): Promise<T>;
     };
     const withOwnerIndexLock = inspected.withOwnerIndexLock.bind(store);
     const aliceEntered = Promise.withResolvers<void>();
@@ -1272,7 +1241,7 @@ test("one owner's index transaction does not block another owner", async () => {
     const bob = await Promise.race([
       store.create({ ...input, principal: "owner:bob" }),
       new Promise<never>((_resolve, reject) =>
-        setTimeout(() => reject(new Error("another owner was blocked by Alice's index lock")), 1_000),
+        setTimeout(() => reject(new Error("another owner was blocked by Alice's index lock")), 1_000)
       ),
     ]);
     assert.equal(bob.state.namespace, "shared");
@@ -2364,10 +2333,7 @@ test("private directory tree creation syncs missing memory-root ancestors", asyn
       syncs += 1;
     });
 
-    const expectedSyncs = path
-      .relative(path.parse(target).root, target)
-      .split(path.sep)
-      .filter(Boolean).length;
+    const expectedSyncs = path.relative(path.parse(target).root, target).split(path.sep).filter(Boolean).length;
     assert.equal(syncs, expectedSyncs);
     assert.equal((await lstat(target)).isDirectory(), true);
     assert.equal((await lstat(target)).mode & 0o777, 0o700);
@@ -2431,7 +2397,7 @@ test("the grant store rejects a symlink alias in the configured memory root", as
         cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
         expiresAt: new Date(now.getTime() + 300_000).toISOString(),
       }),
-      /memory directory must be a stable directory/,
+      /memory directory must be a stable directory/
     );
     assert.deepEqual(await readdir(actual), []);
   } finally {
@@ -2447,10 +2413,22 @@ test("Windows private-file operations fail before mutation", async () => {
     const errorMessage = "private Windows file operation failed";
     await assert.rejects(
       ensurePrivateDirectoryNoFollow(root, directory, errorMessage, undefined, true, "win32"),
-      new RegExp(errorMessage),
+      new RegExp(errorMessage)
     );
-    assert.equal(await lstat(directory).then(() => true, () => false), false);
-    assert.equal(await lstat(filePath).then(() => true, () => false), false);
+    assert.equal(
+      await lstat(directory).then(
+        () => true,
+        () => false
+      ),
+      false
+    );
+    assert.equal(
+      await lstat(filePath).then(
+        () => true,
+        () => false
+      ),
+      false
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -2590,7 +2568,7 @@ test("grant reads reject a memory-root ancestor swapped after a completed operat
 
     await assert.rejects(
       store.listForOwner("alice", "owner:alice"),
-      /support passport owner indexes must be regular files in a stable directory/,
+      /support passport owner indexes must be regular files in a stable directory/
     );
     assert.deepEqual(await readdir(path.join(outsideParent, "memory", "state", "support-passport", "grants")), [
       "owners",
