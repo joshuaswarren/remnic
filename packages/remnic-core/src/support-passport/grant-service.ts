@@ -7,6 +7,7 @@ import {
 } from "./card-projection.js";
 import { SupportPassportListCardsInputSchema, SupportPassportNamespaceSchema } from "./contracts.js";
 import { SupportPassportError } from "./errors.js";
+import { type GeneratedBatchMarker, isCommittedGeneratedCard } from "./generated-batch.js";
 import {
   type SupportPassportCreateGrantInput,
   SupportPassportCreateGrantInputSchema,
@@ -69,20 +70,16 @@ export class SupportPassportGrantService {
       { namespace: owner.namespace, principal: owner.principal },
       async (ownerLock) => {
         options.signal?.throwIfAborted();
-        const ownerHash = computeSupportPassportOwnerKey(owner.principal);
-        const cardsById = new Map(
-          this.projectOwnedCards(
-            await owner.storage.readAllMemories(),
-            owner.namespace,
-            ownerHash
-          ).map((card) => [card.card.cardId, card])
-        );
+        const ownerKey = computeSupportPassportOwnerKey(owner.principal);
+        const cardsById = (
+          await this.readStoredCardSnapshot(owner.storage, owner.namespace, ownerKey)
+        ).cardsById;
         for (const cardRef of parsed.data.cards) {
           const stored = cardsById.get(cardRef.cardId);
           if (
             !stored ||
             stored.namespace !== owner.namespace ||
-            stored.owner !== ownerHash ||
+            stored.owner !== ownerKey ||
             stored.card.status !== "active"
           ) {
             throw new SupportPassportError("invalid_card_status", "Only approved support cards can be shared.", 409);
@@ -184,7 +181,7 @@ export class SupportPassportGrantService {
     const initialSnapshot = await this.readStoredCardSnapshot(
       storage,
       initialState.namespace,
-      initialState.principalHash
+      initialState.principalHash,
     );
     const cards = this.readGrantCards(initialSnapshot, initialState);
     const firstCard = cards[0];
@@ -207,7 +204,7 @@ export class SupportPassportGrantService {
             const currentSnapshot = await this.readStoredCardSnapshot(
               storage,
               finalState.namespace,
-              finalState.principalHash
+              finalState.principalHash,
             );
             const currentCards = this.readGrantCards(currentSnapshot, finalState);
             await requireSupportPassportOwnerLock(ownerLock);
@@ -251,14 +248,15 @@ export class SupportPassportGrantService {
   private async readStoredCardSnapshot(
     storage: StorageManager,
     namespace: string,
-    owner: string
+    ownerKey: string,
   ): Promise<SupportPassportCardSnapshot> {
     for (let attempt = 0; attempt < 3; attempt += 1) {
+      const markerCache = new Map<string, GeneratedBatchMarker | null>();
       const before = this.cardSnapshotVersion(storage);
       const memories = await storage.readAllMemories();
       const after = this.cardSnapshotVersion(storage);
       if (before !== after) continue;
-      const cards = this.projectOwnedCards(memories, namespace, owner);
+      const cards = await this.projectOwnedCards(storage, memories, namespace, ownerKey, markerCache);
       const snapshot = {
         version: after,
         cardsById: new Map(cards.map((card) => [card.card.cardId, card])),
@@ -268,25 +266,29 @@ export class SupportPassportGrantService {
     throw new SupportPassportError("storage_conflict", "The support card list changed during review.", 409);
   }
 
-  private projectOwnedCards(
+  private async projectOwnedCards(
+    storage: StorageManager,
     memories: MemoryFile[],
     namespace: string,
-    owner: string
-  ): StoredSupportPassportCard[] {
+    ownerKey: string,
+    markerCache = new Map<string, GeneratedBatchMarker | null>(),
+  ): Promise<StoredSupportPassportCard[]> {
     const cards = memories
       .map((memory) => projectSupportPassportCard(memory))
       .filter(
         (card): card is StoredSupportPassportCard =>
-          card !== null && card.namespace === namespace && card.owner === owner
+          card !== null && card.namespace === namespace && card.owner === ownerKey
       );
     const cardIds = new Set<string>();
+    const committed: StoredSupportPassportCard[] = [];
     for (const card of cards) {
       if (cardIds.has(card.card.cardId)) {
         throw new SupportPassportError("card_data_invalid", "Support card IDs must be unique.", 500);
       }
       cardIds.add(card.card.cardId);
+      if (await isCommittedGeneratedCard(storage, card, markerCache)) committed.push(card);
     }
-    return cards;
+    return committed;
   }
 
   private cardSnapshotVersion(storage: StorageManager): string {

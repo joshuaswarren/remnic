@@ -81,6 +81,8 @@ export const SUPPORT_PASSPORT_ATTRIBUTE_KEYS = Object.freeze({
   replacedRevision: "support-passport-replaced-revision",
   draftReplacementPrepared: "support-passport-draft-replacement-prepared",
   replacementComplete: "support-passport-replacement-complete",
+  generatedBatchId: "support-passport-generated-batch-id",
+  generatedBatchSize: "support-passport-generated-batch-size",
 });
 
 const SUPPORT_PASSPORT_NAMESPACE_ENCODING = "base64url-v1";
@@ -156,6 +158,8 @@ export interface StoredSupportPassportCard {
   replacesDraftId?: string;
   replacedRevision?: string;
   draftReplacementPrepared: boolean;
+  generatedBatchId?: string;
+  generatedBatchSize?: number;
 }
 
 export function computeSupportPassportOwnerKey(principal: string): string {
@@ -186,6 +190,8 @@ interface SupportPassportCardMetadata {
   replacesDraftId?: string;
   replacedRevision?: string;
   draftReplacementPrepared: boolean;
+  generatedBatchId?: string;
+  generatedBatchSize?: number;
 }
 
 function parseSupportPassportCardMetadata(memory: Pick<MemoryFile, "frontmatter">): SupportPassportCardMetadata | null {
@@ -214,6 +220,23 @@ function parseSupportPassportCardMetadata(memory: Pick<MemoryFile, "frontmatter"
   if (rawReplacedRevision !== undefined) {
     if (!/^[a-f0-9]{64}$/.test(rawReplacedRevision)) return null;
     replacedRevision = rawReplacedRevision;
+  }
+  const generatedBatchId = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.generatedBatchId];
+  const rawGeneratedBatchSize = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.generatedBatchSize];
+  let generatedBatchSize: number | undefined;
+  if (generatedBatchId !== undefined) {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(generatedBatchId)) {
+      return null;
+    }
+    if (
+      typeof rawGeneratedBatchSize !== "string" ||
+      !/^[1-8]$/.test(rawGeneratedBatchSize)
+    ) {
+      return null;
+    }
+    generatedBatchSize = Number(rawGeneratedBatchSize);
+  } else if (rawGeneratedBatchSize !== undefined) {
+    return null;
   }
   if (
     !category.success ||
@@ -246,6 +269,8 @@ function parseSupportPassportCardMetadata(memory: Pick<MemoryFile, "frontmatter"
     replacesDraftId,
     replacedRevision,
     draftReplacementPrepared: attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.draftReplacementPrepared] === "true",
+    generatedBatchId,
+    generatedBatchSize,
   };
 }
 
@@ -283,5 +308,7 @@ export function projectSupportPassportCard(memory: MemoryFile): StoredSupportPas
     replacesDraftId: metadata.replacesDraftId,
     replacedRevision: metadata.replacedRevision,
     draftReplacementPrepared: metadata.draftReplacementPrepared,
+    generatedBatchId: metadata.generatedBatchId,
+    generatedBatchSize: metadata.generatedBatchSize,
   };
 }

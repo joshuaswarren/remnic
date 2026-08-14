@@ -36,3 +36,5 @@ export {
   type RemnicPublicArtifact,
   type PublicArtifactContentType,
 } from "./public-artifacts.js";
+
+export { createOpenClawSupportPassportModelRoute } from "./support-passport-model-route.js";

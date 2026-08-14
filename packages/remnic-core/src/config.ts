@@ -469,23 +469,27 @@ export function resolveEnvVars(value: string): string {
 }
 
 function normalizeOpenaiBaseUrl(value: string | undefined, source: "config" | "env"): string | undefined {
-  if (!value) return undefined;
+  if (value === undefined) return undefined;
   const trimmed = value.trim();
-  if (trimmed.length === 0) return undefined;
+  if (trimmed.length === 0) {
+    throw new Error(`${source === "env" ? "OPENAI_BASE_URL" : "openaiBaseUrl"} must be an absolute HTTP or HTTPS URL`);
+  }
 
   let parsed: URL;
   try {
     parsed = new URL(trimmed);
   } catch {
-    log.warn(`ignoring invalid openaiBaseUrl from ${source}: not a valid URL`);
-    return undefined;
+    throw new Error(`${source === "env" ? "OPENAI_BASE_URL" : "openaiBaseUrl"} must be an absolute HTTP or HTTPS URL`);
   }
 
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    log.warn(
-      `ignoring openaiBaseUrl from ${source}: unsupported URL scheme (${parsed.protocol.replace(":", "")})`,
+    throw new Error(`${source === "env" ? "OPENAI_BASE_URL" : "openaiBaseUrl"} must use HTTP or HTTPS`);
+  }
+
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error(
+      `${source === "env" ? "OPENAI_BASE_URL" : "openaiBaseUrl"} must not include credentials, query parameters, or fragments`,
     );
-    return undefined;
   }
 
   if (parsed.protocol === "http:") {
@@ -1461,9 +1465,12 @@ export function parseConfig(
   };
 
   let baseUrl: string | undefined;
-  if (typeof cfg.openaiBaseUrl === "string" && cfg.openaiBaseUrl.length > 0) {
+  if (cfg.openaiBaseUrl !== undefined && typeof cfg.openaiBaseUrl !== "string") {
+    throw new Error("openaiBaseUrl must be a string");
+  }
+  if (cfg.openaiBaseUrl !== undefined) {
     baseUrl = normalizeOpenaiBaseUrl(resolveEnvVars(cfg.openaiBaseUrl), "config");
-  } else {
+  } else if (apiKey !== undefined) {
     baseUrl = normalizeOpenaiBaseUrl(readEnvVar("OPENAI_BASE_URL"), "env");
   }
 

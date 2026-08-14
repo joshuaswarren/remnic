@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import type { StorageManager } from "../index.js";
 import { log } from "../logger.js";
 import { stripAttributesSuffix } from "../structured-attributes.js";
@@ -28,6 +30,16 @@ import {
   computeSupportPassportCardRevision,
 } from "./contracts.js";
 import { SupportPassportError } from "./errors.js";
+import {
+  type GeneratedBatchMarker,
+  commitSupportPassportGeneratedBatch,
+  isCommittedGeneratedCard,
+  persistSupportPassportGeneratedBatchMarker,
+  projectCommittedSupportPassportCards,
+  recoverSupportPassportGeneratedBatches,
+  rollbackSupportPassportGeneratedBatch,
+} from "./generated-batch.js";
+import { type SupportPassportDraftCard, SupportPassportDraftOutputSchema } from "./model-contracts.js";
 import { withSupportPassportOwnerLock } from "./owner-lock.js";
 
 export interface SupportPassportOwnerScope {
@@ -97,6 +109,97 @@ export class SupportPassportCardService {
         namespace
       )
     );
+  }
+
+  async createGeneratedDrafts(input: {
+    principal: string;
+    cards: SupportPassportDraftCard[];
+  }): Promise<SupportPassportCard[]> {
+    const principal = SupportPassportListCardsInputSchema.safeParse({ principal: input.principal });
+    if (!principal.success) throw invalidInput();
+    const owner = await this.resolveOwnerScope(principal.data.principal);
+    return await this.createGeneratedDraftsForOwner({
+      authenticatedPrincipal: principal.data.principal,
+      owner,
+      cards: input.cards,
+    });
+  }
+
+  async createGeneratedDraftsForOwner(input: {
+    authenticatedPrincipal: string;
+    owner: SupportPassportOwnerScope;
+    cards: SupportPassportDraftCard[];
+    signal?: AbortSignal;
+    commitWithValidatedSources?: (commit: () => Promise<void>) => Promise<void>;
+  }): Promise<SupportPassportCard[]> {
+    const output = SupportPassportDraftOutputSchema.safeParse({ cards: input.cards });
+    if (!output.success) throw invalidInput();
+    const owner = this.validateOwnerScope(input.owner, input.authenticatedPrincipal);
+    const { principal, namespace, storage } = owner;
+    return await withSupportPassportOwnerLock(storage, { namespace, principal }, async (lock) => {
+      const batchContext = this.generatedBatchContext(storage, lock, principal, namespace);
+      const batchId = randomUUID();
+      const created: SupportPassportCard[] = [];
+      const createdIds: string[] = [];
+      const createdRecords: StoredSupportPassportCard[] = [];
+      let marker: GeneratedBatchMarker | null = null;
+      try {
+        input.signal?.throwIfAborted();
+        input.signal?.throwIfAborted();
+        const storedCards = await this.readStoredCards(storage, lock, principal, namespace);
+        if (this.ownerVisibleCards(storedCards).length + output.data.cards.length > MAX_OWNER_VISIBLE_CARDS) {
+          throw new SupportPassportError(
+            "invalid_input",
+            "A support passport can contain at most 100 visible cards.",
+            400
+          );
+        }
+        let nextOrder = storedCards.reduce((maximum, card) => Math.max(maximum, card.order), -1) + 1;
+        marker = await persistSupportPassportGeneratedBatchMarker(
+          batchContext,
+          batchId,
+          output.data.cards.length
+        );
+        for (const card of output.data.cards) {
+          input.signal?.throwIfAborted();
+          created.push(
+            await this.persistDraft(
+              storage,
+              {
+                title: card.title,
+                statement: card.statement,
+                category: card.category,
+                sourceMemoryIds: card.sourceMemoryIds,
+                order: nextOrder,
+                generatedBatch: { batchId, size: output.data.cards.length },
+                onPersisted: (record) => {
+                  createdIds.push(record.card.cardId);
+                  createdRecords.push(record);
+                },
+              },
+              lock,
+              principal,
+              namespace
+            )
+          );
+          nextOrder += 1;
+        }
+        input.signal?.throwIfAborted();
+        const commit = async () =>
+          await commitSupportPassportGeneratedBatch(batchContext, marker!, createdRecords);
+        if (input.commitWithValidatedSources) await input.commitWithValidatedSources(commit);
+        else await commit();
+        return created;
+      } catch (error) {
+        if (!marker) throw error;
+        if (
+          !(await rollbackSupportPassportGeneratedBatch(batchContext, batchId, createdIds))
+        ) {
+          throw new SupportPassportError("storage_conflict", "A generated draft batch could not be rolled back.", 500);
+        }
+        throw error;
+      }
+    });
   }
 
   async replaceCard(input: SupportPassportReplaceCardInput): Promise<SupportPassportCard> {
@@ -304,6 +407,8 @@ export class SupportPassportCardService {
       replacedRevision?: string;
       order?: number;
       draftReplacementPrepared?: boolean;
+      generatedBatch?: { batchId: string; size: number };
+      onPersisted?: (card: StoredSupportPassportCard) => void;
     },
     lock: HeldFileLockController,
     principal: string,
@@ -321,8 +426,33 @@ export class SupportPassportCardService {
     if (visibleCards.length - (replacesVisibleCard ? 1 : 0) >= MAX_OWNER_VISIBLE_CARDS) {
       throw new SupportPassportError("invalid_input", "A support passport can contain at most 100 visible cards.", 400);
     }
-    const maximumOrder = storedCards.reduce((maximum, card) => Math.max(maximum, card.order), -1);
-    const order = input.order ?? maximumOrder + 1;
+    const order = input.order ?? storedCards.reduce((maximum, card) => Math.max(maximum, card.order), -1) + 1;
+    return await this.persistDraft(storage, { ...input, order }, lock, principal, namespace);
+  }
+
+  private async persistDraft(
+    storage: StorageManager,
+    input: {
+      title: string;
+      statement: string;
+      category: SupportPassportCardCategory;
+      reviewBy?: string;
+      sourceMemoryIds: string[];
+      supersedes?: string;
+      replacesDraftId?: string;
+      replacedRevision?: string;
+      order: number;
+      draftReplacementPrepared?: boolean;
+      generatedBatch?: { batchId: string; size: number };
+      onPersisted?: (card: StoredSupportPassportCard) => void;
+    },
+    lock: HeldFileLockController,
+    principal: string,
+    namespace: string
+  ): Promise<SupportPassportCard> {
+    const now = this.now();
+    const reviewBy = input.reviewBy ?? now.toISOString();
+    const order = input.order;
     if (!Number.isSafeInteger(order)) {
       throw new SupportPassportError("storage_conflict", "The support card order range is exhausted.", 409);
     }
@@ -348,6 +478,12 @@ export class SupportPassportCardService {
           ...(input.draftReplacementPrepared
             ? { [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.draftReplacementPrepared]: "true" }
             : {}),
+          ...(input.generatedBatch
+            ? {
+                [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.generatedBatchId]: input.generatedBatch.batchId,
+                [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.generatedBatchSize]: String(input.generatedBatch.size),
+              }
+            : {}),
         },
         sourceReason: "support-passport",
       },
@@ -364,7 +500,9 @@ export class SupportPassportCardService {
     if (written.tombstoneBlocked) {
       throw new SupportPassportError("storage_conflict", "The support card needs memory review before use.", 409);
     }
-    return this.projectRequiredCard(written.memory, namespace, principal).card;
+    const stored = this.projectRequiredCard(written.memory, namespace, principal);
+    input.onPersisted?.(stored);
+    return stored.card;
   }
 
   private async changeStatus(
@@ -444,8 +582,12 @@ export class SupportPassportCardService {
   }
 
   private async resolveOwnerScope(principal: string): Promise<SupportPassportOwnerScope> {
-    const requestedPrincipal = SupportPassportListCardsInputSchema.safeParse({ principal });
     const owner = await this.resolveOwner(principal);
+    return this.validateOwnerScope(owner, principal);
+  }
+
+  private validateOwnerScope(owner: SupportPassportOwnerScope, principal: string): SupportPassportOwnerScope {
+    const requestedPrincipal = SupportPassportListCardsInputSchema.safeParse({ principal });
     const namespace = SupportPassportNamespaceSchema.safeParse(owner.namespace);
     const ownerPrincipal = SupportPassportListCardsInputSchema.safeParse({ principal: owner.principal });
     if (
@@ -491,7 +633,9 @@ export class SupportPassportCardService {
   ): Promise<StoredSupportPassportCard> {
     const stored = await storage.getMemoryById(cardId);
     const card = stored ? this.projectOwnedCard(stored, namespace, principal) : null;
-    if (!card) throw new SupportPassportError("card_not_found", "The support card was not found.", 404);
+    if (!card || !(await isCommittedGeneratedCard(storage, card))) {
+      throw new SupportPassportError("card_not_found", "The support card was not found.", 404);
+    }
     return card;
   }
 
@@ -529,10 +673,8 @@ export class SupportPassportCardService {
     namespace: string,
     principal: string
   ): Promise<StoredSupportPassportCard[]> {
-    const owner = computeSupportPassportOwnerKey(principal);
-    const projected = (await storage.readAllMemories())
-      .map(projectSupportPassportCard)
-      .filter((card): card is StoredSupportPassportCard => card?.namespace === namespace && card.owner === owner);
+    const memories = await storage.readAllMemories();
+    const projected = await projectCommittedSupportPassportCards(storage, memories, namespace, principal);
     const ids = new Set<string>();
     for (const item of projected) {
       if (ids.has(item.card.cardId)) {
@@ -563,16 +705,17 @@ export class SupportPassportCardService {
   ): Promise<StoredSupportPassportCard[]> {
     const initialVersion = storage.getCorpusScanVersion();
     const initial = await storage.readAllMemories();
+    await recoverSupportPassportGeneratedBatches(
+      this.generatedBatchContext(storage, lock, principal, namespace),
+      initial
+    );
     for (const memory of initial) {
       const card = this.projectOwnedCard(memory, namespace, principal);
       if (card) await this.recoverReplacementTransition(storage, memory, lock, principal, namespace);
     }
     const memories: MemoryFile[] =
       storage.getCorpusScanVersion() === initialVersion ? initial : await storage.readAllMemories();
-    const owner = computeSupportPassportOwnerKey(principal);
-    const projected = memories
-      .map(projectSupportPassportCard)
-      .filter((card): card is StoredSupportPassportCard => card?.namespace === namespace && card.owner === owner);
+    const projected = await projectCommittedSupportPassportCards(storage, memories, namespace, principal);
     const ids = new Set<string>();
     for (const item of projected) {
       if (ids.has(item.card.cardId)) {
@@ -597,6 +740,21 @@ export class SupportPassportCardService {
     return visibleCards.filter(
       (item) => item.card.status !== "active" || !activeCardsWithPendingReplacements.has(item.card.cardId)
     );
+  }
+
+  private generatedBatchContext(
+    storage: StorageManager,
+    lock: HeldFileLockController,
+    principal: string,
+    namespace: string
+  ) {
+    return {
+      storage,
+      principal,
+      namespace,
+      now: this.now,
+      requireOwnerLock: async () => await this.requireOwnerLock(lock),
+    };
   }
 
   private async preparePriorForReplacement(

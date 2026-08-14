@@ -23,12 +23,22 @@ export interface FallbackLlmOptions {
   maxTokens?: number;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** Set the Responses API storage policy. Other transports ignore this value. */
+  store?: boolean;
+  /** Request strict JSON output when a route uses the Responses API. */
+  responsesJsonSchema?: { name: string; schema: Record<string, unknown> };
+  /** Hide provider error details that could echo private request content. */
+  redactProviderErrors?: boolean;
   /** Explicit "provider/model" override to try before the configured chain. */
   model?: string;
   /** Explicit model chain override to use instead of the configured agent/default chain. */
   modelChain?: AgentPersonaModelConfig;
+  /** Append the gateway default chain after an explicit model chain. */
+  includeDefaultModelFallback?: boolean;
   /** Override which agent persona's model chain to use (by ID from agents.list[]). */
   agentId?: string;
+  /** Reject a transport-successful response and continue through the configured model chain. */
+  acceptResponse?: (response: FallbackLlmResponse) => boolean;
 }
 
 export interface FallbackLlmAvailabilityOptions {
@@ -177,7 +187,12 @@ export class FallbackLlmClient {
     messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
     options: FallbackLlmOptions = {},
   ): Promise<FallbackLlmResponse | null> {
-    const models = this.getModelChain(options.agentId, options.model, options.modelChain);
+    const models = this.getModelChain(
+      options.agentId,
+      options.model,
+      options.modelChain,
+      options.includeDefaultModelFallback,
+    );
     if (models.length === 0) {
       log.warn("fallback LLM: no models configured in gateway");
       return null;
@@ -186,6 +201,7 @@ export class FallbackLlmClient {
     const runChain = async (
       runOptions: FallbackLlmOptions,
     ): Promise<FallbackLlmResponse | null> => {
+      let lastRejectedResponse: FallbackLlmResponse | null = null;
       // Try each model in the chain
       for (let i = 0; i < models.length; i++) {
         if (runOptions.signal?.aborted) {
@@ -197,27 +213,37 @@ export class FallbackLlmClient {
         try {
           const result = await this.tryModel(model, messages, runOptions);
           if (result) {
-            if (isFallback) {
-              log.debug(`fallback LLM: succeeded using ${model.modelString} (fallback ${i})`);
-            }
-            return {
+            const response = {
               content: result.content,
               modelUsed: model.modelString,
               usage: result.usage,
             };
+            if (runOptions.acceptResponse && !runOptions.acceptResponse(response)) {
+              lastRejectedResponse = response;
+              log.debug(`fallback LLM: ${model.modelString} returned rejected output, trying next...`);
+              continue;
+            }
+            if (isFallback) {
+              log.debug(`fallback LLM: succeeded using ${model.modelString} (fallback ${i})`);
+            }
+            return response;
           }
         } catch (err) {
           if (runOptions.signal?.aborted) {
             throw abortReason(runOptions.signal);
           }
-          const errorMsg = err instanceof Error ? err.message : String(err);
+          const errorMsg = runOptions.redactProviderErrors
+            ? "provider error details redacted"
+            : err instanceof Error
+              ? err.message
+              : String(err);
           log.debug(`fallback LLM: ${model.modelString} failed (${errorMsg}), trying next...`);
           // Continue to next model in chain
         }
       }
 
       log.warn(`fallback LLM: all ${models.length} models in chain failed`);
-      return null;
+      return lastRejectedResponse;
     };
 
     if (typeof options.timeoutMs === "number") {
@@ -301,7 +327,12 @@ export class FallbackLlmClient {
       // Disambiguate via the resolved model chain so the retry layer can pick
       // the right failure class.
       const hasModels =
-        this.getModelChain(options.agentId, options.model, options.modelChain).length > 0;
+        this.getModelChain(
+          options.agentId,
+          options.model,
+          options.modelChain,
+          options.includeDefaultModelFallback,
+        ).length > 0;
       return { result: null, failureReason: hasModels ? "http_error" : "no_models" };
     }
 
@@ -335,6 +366,7 @@ export class FallbackLlmClient {
     agentId?: string,
     modelOverride?: string,
     modelChainOverride?: AgentPersonaModelConfig,
+    includeDefaultModelFallback = true,
   ): ModelRef[] {
     const chain: ModelRef[] = [];
     const providers = this.gatewayConfig?.models?.providers ?? {};
@@ -402,7 +434,7 @@ export class FallbackLlmClient {
     // the SAME activation condition chain resolution uses above — so a
     // primary-less override (e.g. {}) that falls through to a persona/default
     // chain does NOT get the default appended (gotcha #39). Issue #1365 / PR #1370.
-    if (modelChainOverride?.primary && modelStrings.length > 0) {
+    if (includeDefaultModelFallback && modelChainOverride?.primary && modelStrings.length > 0) {
       // Append the FULL gateway default chain (primary + fallbacks), not just
       // the primary — if the default primary is also unreachable, a listed
       // default fallback may still succeed (cursor review #1425).
@@ -858,6 +890,19 @@ export class FallbackLlmClient {
       ...buildChatCompletionTemperature(modelId, options.temperature ?? 0.3, {
         assumeOpenAI: shouldAssumeOpenAiChatCompletions(config.baseUrl),
       }),
+      ...(options.store === undefined ? {} : { store: options.store }),
+      ...(options.responsesJsonSchema
+        ? {
+            text: {
+              format: {
+                type: "json_schema",
+                name: options.responsesJsonSchema.name,
+                strict: true,
+                schema: options.responsesJsonSchema.schema,
+              },
+            },
+          }
+        : {}),
     };
     if (instructions.length > 0) {
       body.instructions = instructions;

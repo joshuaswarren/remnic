@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -379,6 +379,71 @@ test("card operations reject a resolved principal that differs from the authenti
   } finally {
     StorageManager.clearAllStaticCaches();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("generated draft creation rejects a non-canonical resolved namespace before writing", async () => {
+  StorageManager.clearAllStaticCaches();
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-passport-generated-namespace-"));
+  const storage = new StorageManager(path.join(root, "shared"));
+  await storage.ensureDirectories();
+  const service = new SupportPassportCardService({
+    resolveOwner: async (principal) => ({ principal, namespace: " alice ", storage }),
+  });
+  try {
+    await assert.rejects(
+      service.createGeneratedDrafts({
+        principal: "owner:alice",
+        cards: [
+          {
+            title: "Quiet place",
+            statement: "Offer me a quiet place.",
+            category: "environment",
+            sourceMemoryIds: ["source-1"],
+          },
+        ],
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "card_data_invalid"
+    );
+    assert.deepEqual(await storage.readAllMemories(), []);
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("generated draft batches scan the owner corpus once", async () => {
+  const subject = await makeSubject();
+  try {
+    const readAllMemories = subject.aliceStorage.readAllMemories.bind(subject.aliceStorage);
+    let corpusScans = 0;
+    subject.aliceStorage.readAllMemories = async (...args) => {
+      corpusScans += 1;
+      return await readAllMemories(...args);
+    };
+
+    const cards = await subject.service.createGeneratedDrafts({
+      principal: "owner:alice",
+      cards: [
+        {
+          title: "Quiet place",
+          statement: "Offer me a quiet place.",
+          category: "environment",
+          sourceMemoryIds: ["source-1"],
+        },
+        {
+          title: "Plan changes",
+          statement: "Tell me before plans change.",
+          category: "transitions",
+          sourceMemoryIds: ["source-2"],
+        },
+      ],
+    });
+
+    assert.equal(cards.length, 2);
+    assert.equal(corpusScans, 1);
+  } finally {
+    await subject.cleanup();
   }
 });
 
@@ -2456,6 +2521,283 @@ test("draft creation aborts when the owner lock is lost before its write", async
     );
     subject.aliceStorage.readAllMemories = readAllMemories;
     assert.deepEqual(await readAllMemories(), []);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("generated draft rollback retries a compare-and-swap conflict", async () => {
+  const subject = await makeSubject();
+  try {
+    const writeSealedMemory = subject.aliceStorage.writeSealedMemory.bind(subject.aliceStorage);
+    const readAllMemories = subject.aliceStorage.readAllMemories.bind(subject.aliceStorage);
+    let writes = 0;
+    subject.aliceStorage.writeSealedMemory = async (...args) => {
+      writes += 1;
+      if (writes === 2) throw new Error("second draft write failed");
+      return await writeSealedMemory(...args);
+    };
+    const writeFrontmatter = subject.aliceStorage.writeMemoryFrontmatterIfUnchanged.bind(subject.aliceStorage);
+    let rollbackAttempts = 0;
+    subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = async (memory, patch, lifecycle) => {
+      if (lifecycle?.reasonCode === "draft-batch-failed") {
+        rollbackAttempts += 1;
+        if (rollbackAttempts === 1) return false;
+      }
+      return await writeFrontmatter(memory, patch, lifecycle);
+    };
+
+    await assert.rejects(
+      subject.service.createGeneratedDrafts({
+        principal: "owner:alice",
+        cards: [
+          {
+            title: "First draft",
+            statement: "Give me time to answer.",
+            category: "communication",
+            sourceMemoryIds: ["source-1"],
+          },
+          {
+            title: "Second draft",
+            statement: "Tell me before plans change.",
+            category: "transitions",
+            sourceMemoryIds: ["source-2"],
+          },
+        ],
+      }),
+      /second draft write failed/
+    );
+    assert.equal(rollbackAttempts, 2);
+    assert.deepEqual(await subject.service.listCards({ principal: "owner:alice" }), []);
+    const rollbackEvent = (await subject.aliceStorage.readAllMemoryLifecycleEvents()).find(
+      (event) => event.reasonCode === "draft-batch-failed"
+    );
+    assert.equal(rollbackEvent?.actor, "owner:alice");
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("generated draft rollback continues after one cleanup throws", async () => {
+  const subject = await makeSubject();
+  try {
+    const writeSealedMemory = subject.aliceStorage.writeSealedMemory.bind(subject.aliceStorage);
+    let writes = 0;
+    subject.aliceStorage.writeSealedMemory = async (...args) => {
+      writes += 1;
+      if (writes === 3) throw new Error("third draft write failed");
+      return await writeSealedMemory(...args);
+    };
+    const writeFrontmatter = subject.aliceStorage.writeMemoryFrontmatterIfUnchanged.bind(subject.aliceStorage);
+    let rollbackAttempts = 0;
+    subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = async (memory, patch, lifecycle) => {
+      if (lifecycle?.reasonCode === "draft-batch-failed") {
+        rollbackAttempts += 1;
+        if (rollbackAttempts === 1) throw new Error("first cleanup failed");
+      }
+      return await writeFrontmatter(memory, patch, lifecycle);
+    };
+
+    await assert.rejects(
+      subject.service.createGeneratedDrafts({
+        principal: "owner:alice",
+        cards: [
+          {
+            title: "First draft",
+            statement: "Give me time to answer.",
+            category: "communication",
+            sourceMemoryIds: ["source-1"],
+          },
+          {
+            title: "Second draft",
+            statement: "Tell me before plans change.",
+            category: "transitions",
+            sourceMemoryIds: ["source-2"],
+          },
+          {
+            title: "Third draft",
+            statement: "Dim bright lights when possible.",
+            category: "sensory",
+            sourceMemoryIds: ["source-3"],
+          },
+        ],
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
+    );
+    assert.equal(rollbackAttempts, 2);
+    const remaining = await subject.service.listCards({ principal: "owner:alice" });
+    assert.deepEqual(remaining, []);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("generated draft rollback rejects known cards when the corpus scan fails", async () => {
+  const subject = await makeSubject();
+  try {
+    const writeSealedMemory = subject.aliceStorage.writeSealedMemory.bind(subject.aliceStorage);
+    const readAllMemories = subject.aliceStorage.readAllMemories.bind(subject.aliceStorage);
+    let writes = 0;
+    subject.aliceStorage.writeSealedMemory = async (...args) => {
+      const written = await writeSealedMemory(...args);
+      writes += 1;
+      if (writes === 1) {
+        let failNextCorpusScan = true;
+        subject.aliceStorage.readAllMemories = async (...readArgs) => {
+          if (!failNextCorpusScan) return await readAllMemories(...readArgs);
+          failNextCorpusScan = false;
+          throw new Error("simulated corpus scan failure");
+        };
+      }
+      if (writes === 2) throw new Error("second draft write failed");
+      return written;
+    };
+
+    await assert.rejects(
+      subject.service.createGeneratedDrafts({
+        principal: "owner:alice",
+        cards: [
+          {
+            title: "First draft",
+            statement: "Give me time to answer.",
+            category: "communication",
+            sourceMemoryIds: ["source-1"],
+          },
+          {
+            title: "Second draft",
+            statement: "Tell me before plans change.",
+            category: "transitions",
+            sourceMemoryIds: ["source-2"],
+          },
+        ],
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
+    );
+    const persisted = (await readAllMemories()).find((memory) =>
+      memory.frontmatter.tags?.includes("support-passport-card")
+    );
+    assert.equal(persisted?.frontmatter.status, "rejected");
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("listing rolls back an incomplete generated batch after restart", async () => {
+  const subject = await makeSubject();
+  try {
+    const writeSealedMemory = subject.aliceStorage.writeSealedMemory.bind(subject.aliceStorage);
+    let writes = 0;
+    subject.aliceStorage.writeSealedMemory = async (...args) => {
+      const written = await writeSealedMemory(...args);
+      writes += 1;
+      if (writes === 2) throw new Error("simulated process exit after the first generated card");
+      return written;
+    };
+    const writeFrontmatter = subject.aliceStorage.writeMemoryFrontmatterIfUnchanged.bind(subject.aliceStorage);
+    subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = async (memory, patch, lifecycle) => {
+      if (lifecycle?.reasonCode === "draft-batch-failed") {
+        throw new Error("simulated process exit before cleanup");
+      }
+      return await writeFrontmatter(memory, patch, lifecycle);
+    };
+
+    await assert.rejects(
+      subject.service.createGeneratedDrafts({
+        principal: "owner:alice",
+        cards: [
+          {
+            title: "First draft",
+            statement: "Give me time to answer.",
+            category: "communication",
+            sourceMemoryIds: ["source-1"],
+          },
+          {
+            title: "Second draft",
+            statement: "Tell me before plans change.",
+            category: "transitions",
+            sourceMemoryIds: ["source-2"],
+          },
+        ],
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
+    );
+    subject.aliceStorage.writeSealedMemory = writeSealedMemory;
+    subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = writeFrontmatter;
+
+    const persisted = await subject.aliceStorage.readAllMemories();
+    const card = persisted.find((memory) => memory.frontmatter.tags?.includes("support-passport-card"));
+    assert.ok(card);
+    assert.equal(card.frontmatter.status, "pending_review");
+    const batchId = card.frontmatter.structuredAttributes?.["support-passport-generated-batch-id"];
+    assert.match(batchId ?? "", /^[0-9a-f-]{36}$/);
+    const markerPath = path.join(
+      subject.aliceStorage.dir,
+      "state",
+      "support-passport",
+      "generated-batches",
+      `${batchId}.json`
+    );
+    const marker = JSON.parse(await readFile(markerPath, "utf8")) as { complete?: unknown; size?: unknown };
+    assert.equal(marker.complete, false);
+    assert.equal(marker.size, 2);
+
+    StorageManager.clearAllStaticCaches();
+    const restartedStorage = new StorageManager(subject.aliceStorage.dir);
+    await restartedStorage.ensureDirectories();
+    const restarted = new SupportPassportCardService({
+      resolveOwner: async (principal) => ({ principal, namespace: "alice", storage: restartedStorage }),
+    });
+    assert.deepEqual(await restarted.listCards({ principal: "owner:alice" }), []);
+    assert.deepEqual(await restarted.listCards({ principal: "owner:alice" }), []);
+    assert.equal((await restartedStorage.getMemoryById(card.frontmatter.id))?.frontmatter.status, "rejected");
+    await assert.rejects(readFile(markerPath, "utf8"), (error: unknown) => {
+      return (error as NodeJS.ErrnoException).code === "ENOENT";
+    });
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("completed generated batches survive individual card withdrawal", async () => {
+  const subject = await makeSubject();
+  try {
+    const drafts = await subject.service.createGeneratedDrafts({
+      principal: "owner:alice",
+      cards: [
+        {
+          title: "Communication",
+          statement: "Give me time to answer.",
+          category: "communication",
+          sourceMemoryIds: ["source-1"],
+        },
+        {
+          title: "Transitions",
+          statement: "Tell me before plans change.",
+          category: "transitions",
+          sourceMemoryIds: ["source-2"],
+        },
+      ],
+    });
+    const active = [];
+    for (const draft of drafts) {
+      active.push(
+        await subject.service.approveCard({
+          principal: "owner:alice",
+          cardId: draft.cardId,
+          expectedRevision: draft.revision,
+        })
+      );
+    }
+    await subject.service.withdrawCard({
+      principal: "owner:alice",
+      cardId: active[0]!.cardId,
+      expectedRevision: active[0]!.revision,
+    });
+
+    assert.deepEqual(
+      (await subject.service.listCards({ principal: "owner:alice" })).map((card) => card.cardId),
+      [active[1]!.cardId]
+    );
   } finally {
     await subject.cleanup();
   }
