@@ -208,6 +208,66 @@ test("OpenClaw support passport models reject a missing explicit gateway agent",
   assert.equal(callCount, 0);
 });
 
+test("OpenClaw plugin models ignore a stale gateway agent and use gateway defaults", { concurrency: false }, async () => {
+  const originalFetch = globalThis.fetch;
+  const models: string[] = [];
+  globalThis.fetch = (async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string };
+    models.push(body.model);
+    const content = JSON.stringify({
+      cards: [
+        {
+          title: "Plan changes",
+          statement: "Tell me before plans change.",
+          category: "transitions",
+          sourceMemoryIds: ["memory-1"],
+        },
+      ],
+    });
+    return new Response(JSON.stringify({ choices: [{ message: { content } }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  try {
+    const config = parseConfig({
+      modelSource: "plugin",
+      openaiApiKey: false,
+      localLlmEnabled: false,
+      gatewayAgentId: "missing-agent",
+      gatewayConfig: {
+        agents: { defaults: { model: { primary: "gateway/default" } } },
+        models: {
+          providers: {
+            gateway: {
+              baseUrl: "http://127.0.0.1:11434/v1",
+              api: "openai-completions",
+              models: [{ id: "default", name: "default" }],
+            },
+          },
+        },
+      },
+    });
+    const gatewayRoute = createOpenClawSupportPassportModelRoute(
+      config,
+      new FallbackLlmClient(config.gatewayConfig),
+    );
+    const adapter = createSupportPassportModelAdapter(config, { gatewayRoute });
+
+    const result = await adapter.draftCards({
+      consent: true,
+      memories: [{ memoryId: "memory-1", content: "Tell me before plans change." }],
+    });
+
+    assert.deepEqual(models, ["default"]);
+    assert.equal(result.route, "gateway");
+    assert.equal(result.modelUsed, "gateway/default");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("OpenClaw support passport models trim an explicit gateway agent before dispatch", async () => {
   let agentId: string | undefined;
   const config = parseConfig({

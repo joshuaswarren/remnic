@@ -7,6 +7,7 @@ type SupportPassportGatewayConfig = Pick<
 >;
 
 function hasConfiguredExplicitRoute(config: SupportPassportGatewayConfig): boolean {
+  if (config.modelSource !== "gateway") return true;
   if (config.taskModelChain !== undefined) {
     return typeof config.taskModelChain.primary === "string" && config.taskModelChain.primary.trim().length > 0;
   }
