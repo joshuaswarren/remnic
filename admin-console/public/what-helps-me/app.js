@@ -28,6 +28,9 @@
   const MAX_VISIBLE_GRANTS = 100;
   const MAX_SHARED_CARDS = 8;
   const PAGE_HIDDEN_ABORT = new Error("The page was hidden.");
+  const HELPER_READ_TIMEOUT_ABORT = Object.assign(new Error("The support passport check took too long."), {
+    code: "request_timeout",
+  });
   const SCROLL_BEHAVIOR = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
   const TERMINAL_HELPER_ERROR_CODES = new Set([
     "grant_expired",
@@ -1072,7 +1075,7 @@
     const helperNow = Date.now() + (state.helperServerOffsetMs ?? 0);
     const lock = model.lockState(error, lastGuide, helperNow);
     const retryable =
-      !lastGuide && Boolean(state.helperGrantId && state.helperSecret) && !TERMINAL_HELPER_ERROR_CODES.has(error?.code);
+      Boolean(state.helperGrantId && state.helperSecret) && !TERMINAL_HELPER_ERROR_CODES.has(error?.code);
     byId("lockedEyebrow").textContent = lock.eyebrow;
     byId("lockedTitle").textContent = lock.title;
     byId("lockedDetail").textContent = lock.detail;
@@ -1146,7 +1149,7 @@
     const controller = new AbortController();
     state.helperRevalidationController?.abort();
     state.helperRevalidationController = controller;
-    const timeout = window.setTimeout(() => controller.abort(), HELPER_READ_TIMEOUT_MS);
+    const timeout = window.setTimeout(() => controller.abort(HELPER_READ_TIMEOUT_ABORT), HELPER_READ_TIMEOUT_MS);
     try {
       const guide = await readHelperGuide(controller.signal);
       if (state.helperLifecyclePaused) return;
@@ -1154,7 +1157,12 @@
       state.helperRevalidationDelayMs = HELPER_REVALIDATION_MS;
       scheduleHelperExpiry();
     } catch (error) {
-      if (controller.signal.aborted || !state.guide) return;
+      if (state.helperLifecyclePaused || controller.signal.reason === PAGE_HIDDEN_ABORT || !state.guide) return;
+      if (controller.signal.aborted) {
+        if (controller.signal.reason !== HELPER_READ_TIMEOUT_ABORT) return;
+        showLocked(HELPER_READ_TIMEOUT_ABORT);
+        return;
+      }
       if (["grant_expired", "grant_gone", "grant_not_found", "grant_stale"].includes(error?.code)) {
         showLocked(error);
         return;
@@ -1189,7 +1197,7 @@
     const controller = new AbortController();
     state.helperLoadController?.abort();
     state.helperLoadController = controller;
-    const timeout = window.setTimeout(() => controller.abort(), HELPER_READ_TIMEOUT_MS);
+    const timeout = window.setTimeout(() => controller.abort(HELPER_READ_TIMEOUT_ABORT), HELPER_READ_TIMEOUT_MS);
     try {
       const guide = await readHelperGuide(controller.signal);
       if (state.helperLifecyclePaused) return;
@@ -1201,7 +1209,7 @@
     } catch (error) {
       if (state.helperLifecyclePaused || error === PAGE_HIDDEN_ABORT || controller.signal.reason === PAGE_HIDDEN_ABORT)
         return;
-      showLocked(error);
+      showLocked(controller.signal.reason === HELPER_READ_TIMEOUT_ABORT ? HELPER_READ_TIMEOUT_ABORT : error);
     } finally {
       window.clearTimeout(timeout);
       if (state.helperLoadController === controller) state.helperLoadController = null;

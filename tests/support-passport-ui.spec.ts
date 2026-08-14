@@ -2497,8 +2497,8 @@ test("helper revalidation backs off after a rate limit", async ({ page }, testIn
   await expect.poll(() => reads).toBe(3);
 });
 
-test("a stalled helper revalidation aborts and later observes revocation", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers revalidation recovery.");
+test("a stalled helper revalidation fails closed before a retry observes revocation", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers fail-closed revalidation.");
   const now = new Date("2026-08-11T12:00:00.000Z");
   await page.clock.install({ time: now });
   await page.addInitScript(() => {
@@ -2569,7 +2569,12 @@ test("a stalled helper revalidation aborts and later observes revocation", async
       )
     )
     .toBe(true);
-  await page.clock.fastForward(30_000);
+  await expect(page.getByRole("heading", { name: "The support passport did not load." })).toBeVisible();
+  await expect(page.locator(".public-card")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Try again" })).toBeVisible();
+  expect(serverReads).toBe(1);
+
+  await page.getByRole("button", { name: "Try again" }).click();
   await expect(page.getByRole("heading", { name: "This support passport is locked." })).toBeVisible();
   expect(serverReads).toBe(2);
 });
