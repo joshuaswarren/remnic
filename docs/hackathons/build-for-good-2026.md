@@ -12,7 +12,7 @@
 **Project name:** What Helps Me
 
 **Demo link or video:**
-[Synthetic product walkthrough](assets/what-helps-me/demo.webm)
+[Watch the 70-second product story](assets/what-helps-me/demo.webm)
 
 **Repository:** [github.com/joshuaswarren/remnic](https://github.com/joshuaswarren/remnic)
 
@@ -186,7 +186,7 @@ entry has no OpenAI-specific completion requirement.
 ## Submission checklist
 
 - [x] Build the complete owner and helper flow.
-- [x] Record a short walkthrough with synthetic data.
+- [x] Record a judge-focused product story with synthetic data.
 - [x] Add the repository, video, summary, model jobs, and prior-work boundary.
 - [x] Scan the public product and run-record files for private data.
 - [x] Prove local and gateway routes while direct OpenAI is disabled.
