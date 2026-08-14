@@ -392,6 +392,7 @@ export class SupportPassportModelBridge {
       }
       this.lastConsumerPollAt = Date.now();
       if (job) respondJson(res, 200, job);
+      else if (this.closed) respondJson(res, 410, { error: "bridge_closed", code: "bridge_closed" });
       else respondNoContent(res);
       return true;
     }
