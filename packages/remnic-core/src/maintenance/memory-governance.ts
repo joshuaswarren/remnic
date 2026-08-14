@@ -829,6 +829,7 @@ export async function runMemoryGovernance(
         maxMemories: options.maxMemories,
         batchSize: options.batchSize,
         updatedAfter,
+        includeMalformedPaths: true,
       })
     : undefined;
   const memories = excludeSupportPassportPrivateMemories(

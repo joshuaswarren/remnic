@@ -23,6 +23,7 @@ import { extractJsonCandidates } from "./json-extract.js";
 import { drainPassiveCorrectionNotifications } from "./correction/passive-correction-notifications.js";
 import { excludeSupportPassportPrivateMemories } from "./support-passport/card-projection.js";
 import { normalizeEntityName, StorageManager } from "./storage.js";
+import { safeReadMemories } from "./briefing-window.js";
 import { readEnvVar, resolveHomeDir } from "./runtime/env.js";
 import type {
   BriefingActiveThread,
@@ -834,7 +835,7 @@ export async function buildBriefing(options: BuildBriefingOptions): Promise<Brie
   const focus = options.focus ?? null;
 
   const [allMemories, allEntities] = await Promise.all([
-    safeReadMemories(options.storage),
+    safeReadMemories(options.storage, window).then(excludeSupportPassportPrivateMemories),
     safeReadEntities(options.storage),
   ]);
 
@@ -975,14 +976,6 @@ function defaultWindow(now: Date): ParsedBriefingWindow {
   const parsed = parseBriefingWindow("yesterday", now);
   if (parsed) return parsed;
   return { from: new Date(now.getTime() - DAY_MS), to: now, label: "yesterday" };
-}
-
-async function safeReadMemories(storage: StorageManager): Promise<MemoryFile[]> {
-  try {
-    return excludeSupportPassportPrivateMemories(await storage.readAllMemories());
-  } catch (err) { log.warn(`briefing: readAllMemories failed: ${err}`);
-    return [];
-  }
 }
 
 async function safeReadEntities(storage: StorageManager): Promise<EntityFile[]> {

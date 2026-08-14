@@ -26,7 +26,7 @@ import { resolveSafeStoragePath } from "./storage-paths.js";
 import { log } from "./logger.js";
 import { createMemorySnapshot } from "./memory-snapshot.js";
 import { assertMemoryFrontmatterId, warnProjectionFallback } from "./storage-guards.js";
-import { MemoryReadStore } from "./storage/memory-read-store.js";
+import { MemoryReadStore, readWindowedMemories, type WindowedMemoryReadOptions, type WindowedMemoryReadResult } from "./storage/memory-read-store.js";
 import { hasSupersessionAudit } from "./storage/supersession-audit.js";
 import { runCommittedInvalidation } from "./storage/committed-invalidation.js";
 import { renderProfileWithLastUpdated } from "./storage/profile-header.js";
@@ -4735,14 +4735,14 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private async readWindowUpdatedMs(filePath: string): Promise<number | null> {
     try {
       const raw = await readMaybeEncryptedFile(filePath, this._secureStoreKey, this.baseDir);
-      const match = raw.match(/^---\n([\s\S]*?)\n---\n?/);
+      const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
       if (!match) return null;
       const frontmatterBlock = match[1];
       const rawUpdated =
-        frontmatterBlock.match(/^updated:\s*"?([^"\n]*)"?/m)?.[1] ??
-        frontmatterBlock.match(/^created:\s*"?([^"\n]*)"?/m)?.[1] ??
+        frontmatterBlock.match(/^[ \t]*updated:[ \t]*"?([^"\r\n]*)"?/m)?.[1] ||
+        frontmatterBlock.match(/^[ \t]*created:[ \t]*"?([^"\r\n]*)"?/m)?.[1] ||
         null;
-      const updatedMs = rawUpdated ? Date.parse(rawUpdated) : Number.NaN;
+      const updatedMs = rawUpdated ? Date.parse(rawUpdated.trim()) : Number.NaN;
       return Number.isFinite(updatedMs) ? updatedMs : null;
     } catch {
       return null;
@@ -4827,14 +4827,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return { memories, filePaths };
   }
 
-  async readMemoriesWindow(
-    options: {
-      maxMemories?: number;
-      batchSize?: number;
-      updatedAfter?: Date;
-    } = {}
-  ): Promise<{ memories: MemoryFile[]; filePaths: string[] }> {
-    return this.memoryReadStore.readMemoriesWindow(options);
+  async readMemoriesWindow(options: WindowedMemoryReadOptions = {}): Promise<WindowedMemoryReadResult> {
+    return readWindowedMemories(this.memoryReadStore, options, { enabled: this.hotMemoriesCacheEnabled, baseDir: this.baseDir, corpusVersion: this.getMemoryCorpusVersion(), cacheKeyId: this.hotCacheKeyId(), ttlMs: this.hotCacheTtlMs() }, (memories) => this.rememberMemorySnapshots(memories));
   }
 
   private async _readAllMemoriesFromDisk(options?: CorpusReadOptions): Promise<MemoryFile[]> {

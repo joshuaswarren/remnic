@@ -654,6 +654,47 @@ test("readMemoriesWindow includes recently updated memories from older folders",
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+test("readMemoriesWindow reuses the warm corpus cache for briefing reads", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-window-cache-"));
+  try {
+    await writeText(
+      memoryDir,
+      "facts/2026-03-10/fact-recent.md",
+      memoryDoc({
+        id: "fact-recent",
+        content: "Recent memory.",
+        created: "2026-03-10T00:00:00.000Z",
+        updated: "2026-03-10T00:00:00.000Z",
+      }),
+    );
+    await writeText(
+      memoryDir,
+      "facts/2026-03-01/fact-old.md",
+      memoryDoc({
+        id: "fact-old",
+        content: "Old memory.",
+        created: "2026-03-01T00:00:00.000Z",
+        updated: "2026-03-01T00:00:00.000Z",
+      }),
+    );
+
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    await storage.readAllMemories();
+    await rm(path.join(memoryDir, "facts/2026-03-10/fact-recent.md"), { force: true });
+    await rm(path.join(memoryDir, "facts/2026-03-01/fact-old.md"), { force: true });
+
+    const window = await storage.readMemoriesWindow({
+      updatedAfter: new Date("2026-03-08T12:00:00.000Z"),
+    });
+
+    assert.deepEqual(window.memories.map((memory) => memory.frontmatter.id), ["fact-recent"]);
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 
 test("readMemoriesWindow skips stale corrections during recent-only scans", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-governance-corrections-"));
