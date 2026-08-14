@@ -38,11 +38,21 @@ const messages = [
   { role: "user" as const, content: JSON.stringify({ sourceNotes: [{ memoryId: "memory-1" }] }) },
 ];
 
+async function announceWorker(origin: string): Promise<void> {
+  const response = await fetch(`${origin}${SUPPORT_PASSPORT_MODEL_JOB_PATH}`, {
+    method: "POST",
+    headers: { authorization: "Bearer owner-token", "content-type": "application/json" },
+    body: JSON.stringify({ timeoutMs: 0 }),
+  });
+  assert.equal(response.status, 204);
+}
+
 test("the model bridge moves a provider-neutral job through authenticated memory only", async () => {
   const bridge = new SupportPassportModelBridge();
   const server = await startBridgeServer(bridge);
   const controller = new AbortController();
   try {
+    await announceWorker(server.origin);
     const resultPromise = bridge.route.invoke(messages, {
       temperature: 0.2,
       maxTokens: 500,
@@ -109,6 +119,7 @@ test("an aborted model caller removes its queued job", async () => {
   const server = await startBridgeServer(bridge);
   const controller = new AbortController();
   try {
+    await announceWorker(server.origin);
     const resultPromise = bridge.route.invoke(messages, {
       temperature: 0,
       maxTokens: 500,
@@ -133,8 +144,10 @@ test("an aborted model caller removes its queued job", async () => {
 
 test("an unclaimed model job expires without relying on the caller's wrapper", async () => {
   const bridge = new SupportPassportModelBridge();
+  const server = await startBridgeServer(bridge);
   const started = Date.now();
   try {
+    await announceWorker(server.origin);
     const result = await bridge.route.invoke(messages, {
       temperature: 0,
       maxTokens: 500,
@@ -146,6 +159,7 @@ test("an unclaimed model job expires without relying on the caller's wrapper", a
     assert.ok(Date.now() - started < 1_000);
   } finally {
     bridge.close();
+    await server.close();
   }
 });
 
@@ -154,6 +168,7 @@ test("an unacknowledged leased job becomes available to another worker", async (
   const server = await startBridgeServer(bridge);
   const controller = new AbortController();
   try {
+    await announceWorker(server.origin);
     const resultPromise = bridge.route.invoke(messages, {
       temperature: 0,
       maxTokens: 500,
