@@ -628,11 +628,18 @@ test("drafting rejects a memory changed after the owner reviewed it", async () =
   }
 });
 
-test("drafting preserves literal attribute-style source text", async () => {
+test("drafting treats empty structured attributes as absent", async () => {
   const subject = await makeSubject();
   try {
     const content = "Keep this literal line.\n[Attributes: user-authored note]";
     const selected = await subject.aliceStorage.writeMemory("preference", content, { source: "test" });
+    const selectedMemory = await subject.aliceStorage.getMemoryById(selected.id);
+    assert.ok(selectedMemory);
+    const storedContent = await readFile(selectedMemory.path, "utf8");
+    await writeFile(
+      selectedMemory.path,
+      storedContent.replace("\n---\n", "\nstructuredAttributes: {}\n---\n"),
+    );
     const modelInputs: string[] = [];
     const service = new SupportPassportDraftService({
       cardService: subject.cardService,
@@ -667,11 +674,18 @@ test("drafting preserves literal attribute-style source text", async () => {
     await service.draftCards({
       principal: "owner:alice",
       sourceMemoryIds: [selected.id],
-      sourceMemoryRevisions: sourceRevision(selected.id, content),
+      sourceMemoryRevisions: [{
+        memoryId: selected.id,
+        revision: computeSupportPassportSourceRevision(content, {}),
+      }],
       consent: true,
     });
 
     assert.equal(modelInputs[0]?.includes("[Attributes: user-authored note]"), true);
+    assert.equal(
+      computeSupportPassportSourceRevision(content, {}),
+      computeSupportPassportSourceRevision(content),
+    );
     assert.notEqual(
       computeSupportPassportSourceRevision(content),
       computeSupportPassportSourceRevision("Keep this literal line.")

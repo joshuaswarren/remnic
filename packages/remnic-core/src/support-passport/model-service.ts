@@ -64,8 +64,14 @@ const DraftServiceInputSchema = z
     }
   });
 
+function hasStructuredAttributes(attributes: Readonly<Record<string, string>> | undefined): boolean {
+  return attributes !== undefined && Object.keys(attributes).length > 0;
+}
+
 function supportPassportSourceContent(memory: Pick<MemoryFile, "content" | "frontmatter">): string {
-  return memory.frontmatter.structuredAttributes ? stripAttributesSuffix(memory.content) : memory.content;
+  return hasStructuredAttributes(memory.frontmatter.structuredAttributes)
+    ? stripAttributesSuffix(memory.content)
+    : memory.content;
 }
 
 export function computeSupportPassportSourceRevision(
@@ -74,7 +80,7 @@ export function computeSupportPassportSourceRevision(
 ): string {
   return createHash("sha256")
     .update("support-passport-source:v1\0")
-    .update(structuredAttributes ? stripAttributesSuffix(content) : content)
+    .update(hasStructuredAttributes(structuredAttributes) ? stripAttributesSuffix(content) : content)
     .digest("hex");
 }
 
