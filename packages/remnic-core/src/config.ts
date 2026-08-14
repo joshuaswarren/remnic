@@ -1465,7 +1465,10 @@ export function parseConfig(
   };
 
   let baseUrl: string | undefined;
-  if (typeof cfg.openaiBaseUrl === "string") {
+  if (cfg.openaiBaseUrl !== undefined && typeof cfg.openaiBaseUrl !== "string") {
+    throw new Error("openaiBaseUrl must be a string");
+  }
+  if (cfg.openaiBaseUrl !== undefined) {
     baseUrl = normalizeOpenaiBaseUrl(resolveEnvVars(cfg.openaiBaseUrl), "config");
   } else {
     baseUrl = normalizeOpenaiBaseUrl(readEnvVar("OPENAI_BASE_URL"), "env");
