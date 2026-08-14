@@ -4735,7 +4735,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private async readWindowUpdatedMs(filePath: string): Promise<number | null> {
     try {
       const raw = await readMaybeEncryptedFile(filePath, this._secureStoreKey, this.baseDir);
-      const match = raw.match(/^---\n([\s\S]*?)\n---\n?/);
+      const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
       if (!match) return null;
       const frontmatterBlock = match[1];
       const rawUpdated =

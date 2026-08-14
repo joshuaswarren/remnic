@@ -38,6 +38,12 @@ export async function readWindowedMemories(
   rememberMemorySnapshots: (memories: MemoryFile[]) => MemoryFile[]
 ): Promise<WindowedMemoryReadResult> {
   if (
+    options.updatedAfter !== undefined &&
+    (!(options.updatedAfter instanceof Date) || !Number.isFinite(options.updatedAfter.getTime()))
+  ) {
+    throw new TypeError("updatedAfter must be a valid Date");
+  }
+  if (
     hotCache.enabled &&
     options.updatedAfter !== undefined &&
     options.maxMemories === undefined &&
@@ -59,11 +65,15 @@ export async function readWindowedMemories(
       return { memories: rememberMemorySnapshots(memories), filePaths: memories.map((memory) => memory.path) };
     }
   }
-  return store.readMemoriesWindow(options);
+  const result = await store.readMemoriesWindow(options);
+  return {
+    ...result,
+    memories: rememberMemorySnapshots(result.memories),
+  };
 }
 
 async function readWindowTimestamp(memory: MemoryFile): Promise<number | null> {
-  const rawTimestamp = memory.frontmatter.updated ?? memory.frontmatter.created;
+  const rawTimestamp = memory.frontmatter.updated || memory.frontmatter.created;
   const timestampMs = typeof rawTimestamp === "string" ? Date.parse(rawTimestamp) : Number.NaN;
   if (Number.isFinite(timestampMs)) return timestampMs;
   try {
