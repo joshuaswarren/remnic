@@ -45,6 +45,8 @@ test("grant creation checks cancellation again before commit", async () => {
       readAllMemories: async () => [memory],
       getCorpusScanVersion: () => 1,
       hotCacheKeyId: () => "owner-cache",
+      hotCacheTtlMs: () => 60_000,
+      isHotCacheEnabled: () => true,
     } as unknown as StorageManager;
     const controller = new AbortController();
     let committed = false;
