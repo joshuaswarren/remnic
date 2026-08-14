@@ -130,7 +130,7 @@ export class SupportPassportCardService {
     owner: SupportPassportOwnerScope;
     cards: SupportPassportDraftCard[];
     signal?: AbortSignal;
-    validateSources?: () => Promise<void>;
+    commitWithValidatedSources?: (commit: () => Promise<void>) => Promise<void>;
   }): Promise<SupportPassportCard[]> {
     const output = SupportPassportDraftOutputSchema.safeParse({ cards: input.cards });
     if (!output.success) throw invalidInput();
@@ -145,7 +145,6 @@ export class SupportPassportCardService {
       let marker: GeneratedBatchMarker | null = null;
       try {
         input.signal?.throwIfAborted();
-        await input.validateSources?.();
         input.signal?.throwIfAborted();
         const storedCards = await this.readStoredCards(storage, lock, principal, namespace);
         if (this.ownerVisibleCards(storedCards).length + output.data.cards.length > MAX_OWNER_VISIBLE_CARDS) {
@@ -185,9 +184,11 @@ export class SupportPassportCardService {
           );
           nextOrder += 1;
         }
-        await input.validateSources?.();
         input.signal?.throwIfAborted();
-        await commitSupportPassportGeneratedBatch(batchContext, marker, createdRecords);
+        const commit = async () =>
+          await commitSupportPassportGeneratedBatch(batchContext, marker!, createdRecords);
+        if (input.commitWithValidatedSources) await input.commitWithValidatedSources(commit);
+        else await commit();
         return created;
       } catch (error) {
         if (!marker) throw error;

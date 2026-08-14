@@ -50,6 +50,22 @@ test("openaiBaseUrl falls back to OPENAI_BASE_URL when not set in config", () =>
   else process.env.OPENAI_BASE_URL = original;
 });
 
+test("openaiBaseUrl rejects malformed and unsupported environment values", () => {
+  const original = process.env.OPENAI_BASE_URL;
+  try {
+    for (const value of ["   ", "not a URL", "ftp://provider.example.test/v1"]) {
+      process.env.OPENAI_BASE_URL = value;
+      assert.throws(
+        () => parseConfig({ openaiApiKey: "sk-test" }),
+        /OPENAI_BASE_URL must (?:be an absolute HTTP or HTTPS URL|use HTTP or HTTPS)/,
+      );
+    }
+  } finally {
+    if (original === undefined) delete process.env.OPENAI_BASE_URL;
+    else process.env.OPENAI_BASE_URL = original;
+  }
+});
+
 test("openaiBaseUrl rejects unsupported schemes", () => {
   const { warnings } = withLoggerWarnings();
   assert.throws(
@@ -76,13 +92,15 @@ test("openaiBaseUrl rejects malformed configured URLs", () => {
 
 test("openaiBaseUrl rejects a blank configured URL", () => {
   const { warnings } = withLoggerWarnings();
-  assert.throws(
-    () => parseConfig({
-      openaiApiKey: "sk-test",
-      openaiBaseUrl: "   ",
-    }),
-    /openaiBaseUrl must be an absolute HTTP or HTTPS URL/,
-  );
+  for (const openaiBaseUrl of ["", "   "]) {
+    assert.throws(
+      () => parseConfig({
+        openaiApiKey: "sk-test",
+        openaiBaseUrl,
+      }),
+      /openaiBaseUrl must be an absolute HTTP or HTTPS URL/,
+    );
+  }
   assert.equal(warnings.length, 0);
 });
 

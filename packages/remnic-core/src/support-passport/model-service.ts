@@ -243,8 +243,21 @@ export class SupportPassportDraftService {
         owner,
         cards: modelResult.cards,
         signal: input.signal,
-        validateSources: async () =>
-          await this.revalidateSources(owner.storage, selectedMemories, input.signal, cancellationMessage),
+        commitWithValidatedSources: async (commit) => {
+          throwIfAborted(input.signal, cancellationMessage);
+          const committed = await owner.storage.withMemorySnapshotsIfUnchanged(
+            selectedMemories,
+            async (memories) => {
+              if (memories.some((memory) => !isEligibleSource(memory))) return false;
+              throwIfAborted(input.signal, cancellationMessage);
+              await commit();
+              return true;
+            },
+          );
+          if (committed !== true) {
+            throw new SupportPassportError("invalid_input", "A selected memory is not available.", 400);
+          }
+        },
       });
       scheduleAudit(this.audit, { ...auditBase, outcome: "success" });
       return cards;

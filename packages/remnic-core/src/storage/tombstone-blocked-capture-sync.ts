@@ -239,7 +239,14 @@ export abstract class TombstoneBlockedCaptureIndexHost {
 
   /** Read selected memories while their mutation locks remain held. */
   async readMemorySnapshotsIfUnchanged(expected: readonly MemoryFile[]): Promise<MemoryFile[] | null> {
-    if (expected.length === 0) return [];
+    return await this.withMemorySnapshotsIfUnchanged(expected, async (memories) => memories);
+  }
+
+  async withMemorySnapshotsIfUnchanged<T>(
+    expected: readonly MemoryFile[],
+    task: (memories: MemoryFile[]) => Promise<T>,
+  ): Promise<T | null> {
+    if (expected.length === 0) return await task([]);
     const pathnames = [...new Set(expected.map((memory) => memory.path))];
     if (pathnames.length !== expected.length) return null;
     return await this.withTombstoneBlockedCaptureWriteLock(async () => {
@@ -256,7 +263,7 @@ export abstract class TombstoneBlockedCaptureIndexHost {
           return null;
         }
       }
-      return current as MemoryFile[];
+      return await task(current as MemoryFile[]);
     }, pathnames.map(buildCapturePathLockIdentity));
   }
 
