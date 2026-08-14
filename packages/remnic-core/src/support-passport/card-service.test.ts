@@ -2840,7 +2840,7 @@ test("generated draft rollback rejects known cards when the corpus scan fails", 
 test("listing stays read-only before a later mutation recovers an incomplete batch", async () => {
   const subject = await makeSubject();
   try {
-    const validateSources = async () => {
+    const commitWithValidatedSources = async (_commit: () => Promise<void>) => {
       if ((await subject.aliceStorage.readAllMemories()).length > 0) {
         throw new Error("simulated process exit after generated card persistence");
       }
@@ -2865,7 +2865,7 @@ test("listing stays read-only before a later mutation recovers an incomplete bat
             sourceMemoryIds: ["source-1"],
           },
         ],
-        validateSources,
+        commitWithValidatedSources,
       }),
       (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
     );
