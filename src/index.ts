@@ -111,6 +111,7 @@ import {
   renderMemoryContextPrompt as renderSharedMemoryContextPrompt,
   resolveAgentAccessAuthToken,
   resolvePrincipal,
+  searchWithGenericExclusion,
   type RecallContextComposition,
 } from "@remnic/core";
 import {
@@ -3533,34 +3534,35 @@ const pluginDefinition = {
                     : opts?.qmdSearchModeOverride === "query"
                       ? "search"
                       : opts?.qmdSearchModeOverride ?? "search";
-                const rawResults = await orchestrator.searchAcrossNamespaces({
-                  query,
-                  maxResults: opts?.maxResults,
-                  namespaces: namespace ? [namespace] : undefined,
-                  mode: resolvedMode,
+                const requestedMaxResults =
+                  typeof opts?.maxResults === "number" && Number.isFinite(opts.maxResults)
+                    ? Math.max(0, Math.floor(opts.maxResults))
+                    : undefined;
+                const minScore =
+                  typeof opts?.minScore === "number" && Number.isFinite(opts.minScore)
+                    ? opts.minScore
+                    : undefined;
+                const visibleResults = await searchWithGenericExclusion({
+                  budget: requestedMaxResults ?? Number.MAX_SAFE_INTEGER,
+                  sendInitialLimit: requestedMaxResults !== undefined,
+                  search: (limit) => orchestrator.searchAcrossNamespaces({
+                    query,
+                    ...(limit !== undefined ? { maxResults: limit } : {}),
+                    namespaces: namespace ? [namespace] : undefined,
+                    mode: resolvedMode,
+                  }),
+                  filterPrivate: async (results) => {
+                    const visible = await orchestrator.filterPrivateSearchResults(
+                      results,
+                      namespace ? [namespace] : [],
+                    );
+                    return minScore === undefined
+                      ? visible
+                      : visible.filter((result) => result.score >= minScore);
+                  },
+                  isExcluded: (resultPath) => isMemoryArtifactPath(resultPath),
                 });
-                // Artifact-backed files are filtered from generic recall
-                // surfaces (see recallForActiveMemory in @remnic/core),
-                // so exclude them here too — otherwise this runtime path
-                // would bypass the isolation every other reader honors.
-                const visibleResults = await orchestrator.filterPrivateSearchResults(
-                  rawResults,
-                  namespace ? [namespace] : [],
-                );
                 return visibleResults
-                  .filter((result) => {
-                    const candidate = result as unknown as {
-                      path?: string;
-                      id?: string;
-                    };
-                    const p =
-                      typeof candidate.path === "string"
-                        ? candidate.path
-                        : typeof candidate.id === "string"
-                          ? candidate.id
-                          : "";
-                    return !isMemoryArtifactPath(p);
-                  })
                   .map((result, index): RuntimeSearchResult => {
                   const candidate = result as unknown as {
                     path?: string;
@@ -3609,16 +3611,7 @@ const pluginDefinition = {
                     source: isSessionsMemoryPath(normalizedPath) ? "sessions" : "memory",
                     citation: normalizedPath,
                   };
-                })
-                // Honor caller-supplied minScore. The underlying search
-                // orchestrator does not filter on score directly, so the
-                // threshold must be applied here before results leave
-                // the manager.
-                .filter((result) =>
-                  typeof opts?.minScore === "number" && Number.isFinite(opts.minScore)
-                    ? result.score >= opts.minScore
-                    : true,
-                );
+                });
               },
               async readFile(params: RuntimeReadParams) {
                 const requestedPath = readScope.normalizeWorkspacePath(params.relPath);
@@ -4889,27 +4882,22 @@ const pluginDefinition = {
               ? orchestrator.resolveSelfNamespace(agentSessionKey)
               : undefined;
           try {
-            const rawResults = await orchestrator.searchAcrossNamespaces({
-              query,
-              maxResults,
-              namespaces: namespace ? [namespace] : undefined,
-              mode: "search",
+            const visibleResults = await searchWithGenericExclusion({
+              budget: maxResults,
+              sendInitialLimit: true,
+              search: (limit) => orchestrator.searchAcrossNamespaces({
+                query,
+                ...(limit !== undefined ? { maxResults: limit } : {}),
+                namespaces: namespace ? [namespace] : undefined,
+                mode: "search",
+              }),
+              filterPrivate: (results) => orchestrator.filterPrivateSearchResults(
+                results,
+                namespace ? [namespace] : [],
+              ),
+              isExcluded: (resultPath) => isMemoryArtifactPath(resultPath),
             });
-            const visibleResults = await orchestrator.filterPrivateSearchResults(
-              rawResults,
-              namespace ? [namespace] : [],
-            );
             return visibleResults
-              .filter((result) => {
-                const candidate = result as unknown as { path?: string; id?: string };
-                const p =
-                  typeof candidate.path === "string"
-                    ? candidate.path
-                    : typeof candidate.id === "string"
-                      ? candidate.id
-                      : "";
-                return !isMemoryArtifactPath(p);
-              })
               .map((result, index) => {
                 const candidate = result as unknown as {
                   path?: string;

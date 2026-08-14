@@ -110,7 +110,7 @@ import {
   memorySearchThroughScope,
 } from "./access-memory-search-fanout.js";
 import { isSearchExcludedPath } from "./orchestration/generic-recall-paths.js";
-import { createSupportPassportPrivateFileExclusion, isSupportPassportPrivateMemory, SUPPORT_PASSPORT_AUDIT_TAG, SUPPORT_PASSPORT_CARD_TAG } from "./support-passport/card-projection.js";
+import { createSupportPassportPrivateFileExclusion, isSupportPassportPrivateMemory } from "./support-passport/card-projection.js";
 import {
   applySupportPassportOfflineSyncChangeset,
   applySupportPassportOfflineSyncFileContent,
@@ -3372,7 +3372,7 @@ export class EngramAccessService {
       query,
       status: statusFilter,
       category: categoryFilter,
-      excludeTags: [SUPPORT_PASSPORT_CARD_TAG, SUPPORT_PASSPORT_AUDIT_TAG],
+      excludePrivateRecords: true,
       sort,
       limit,
       offset,

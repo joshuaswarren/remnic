@@ -40,6 +40,7 @@ function memoryDoc(options: {
   confidenceTier?: string;
   entityRef?: string;
   tags?: string[];
+  structuredAttributes?: Record<string, string>;
 }): string {
   return [
     "---",
@@ -51,6 +52,9 @@ function memoryDoc(options: {
     `confidence: ${options.confidence ?? 0.8}`,
     `confidenceTier: ${options.confidenceTier ?? "implied"}`,
     `tags: [${(options.tags ?? ["projection"]).map((tag) => `"${tag}"`).join(", ")}]`,
+    ...(options.structuredAttributes
+      ? [`structuredAttributes: ${JSON.stringify(options.structuredAttributes)}`]
+      : []),
     ...(options.entityRef ? [`entityRef: ${options.entityRef}`] : []),
     "---",
     "",
@@ -253,10 +257,20 @@ test("projected browse excludes support passport records before pagination", asy
         memoryDoc({ id, content: `${id} content`, tags: [tag] }),
       );
     }
+    await writeText(
+      memoryDir,
+      "facts/2026-03-08/attribute-only.md",
+      memoryDoc({
+        id: "attribute-only",
+        content: "attribute-only content",
+        tags: ["public"],
+        structuredAttributes: { "support-passport-owner": "private-owner" },
+      }),
+    );
     await rebuildMemoryProjection({ memoryDir, dryRun: false });
 
     const browse = readProjectedMemoryBrowse(memoryDir, {
-      excludeTags: ["support-passport-card", "support-passport-audit"],
+      excludePrivateRecords: true,
       limit: 1,
       offset: 0,
     });

@@ -15,6 +15,7 @@ import { log } from "../logger.js";
 import { resolveNamespaceChildRoot } from "../namespaces/path.js";
 import { isSafeRouteNamespace } from "../routing/engine.js";
 import { StorageManager } from "../storage.js";
+import { excludeSupportPassportPrivateMemories } from "../support-passport/card-projection.js";
 import type { PluginConfig, MemoryFile } from "../types.js";
 import {
   hasCodexMaterializeSentinel,
@@ -106,6 +107,7 @@ export async function runCodexMaterialize(
     const storage = new StorageManager(nsDir);
     memories = await storage.readAllMemories();
   }
+  memories = excludeSupportPassportPrivateMemories(memories);
 
   // Intentionally NOT catching here: per the JSDoc contract above,
   // schema-validation and I/O errors from `materializeForNamespace` must

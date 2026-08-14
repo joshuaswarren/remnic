@@ -12,6 +12,7 @@ import {
   normalizeExplicitCaptureContent,
 } from "./storage/tombstone-blocked-capture-index.js";
 import type { StorageManager } from "./storage.js";
+import { isSupportPassportPrivateMemory } from "./support-passport/card-projection.js";
 
 export type ExplicitCaptureInput = {
   content: string;
@@ -480,6 +481,7 @@ async function findDuplicateExplicitCapture(
   const existing = [...hotMemories, ...coldMemories];
   const normalizedCandidate = normalizeExplicitCaptureContent(candidate.content);
   const match = existing.find((memory) => {
+    if (isSupportPassportPrivateMemory(memory)) return false;
     const status = memory.frontmatter.status ?? "active";
     if (status !== "active" && (status !== "pending_review" || !memory.frontmatter.blockedBy)) {
       return false;

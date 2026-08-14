@@ -220,6 +220,7 @@ export async function applySupportPassportOfflineSyncChangeset(
     sourceId: "local",
     includeContent: false,
     includeTranscripts: changeset.includeTranscripts,
+    excludeNodeLocalState: false,
     readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
     readFileDigest: async ({ filePath }) => storage.digestOfflineSyncFile(filePath),
     excludeFile: guard.excludePrivateFile,

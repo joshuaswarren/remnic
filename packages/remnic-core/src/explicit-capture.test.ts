@@ -52,6 +52,7 @@ type StoredMemory = {
     category: string;
     status?: string;
     tags?: string[];
+    structuredAttributes?: Record<string, string>;
     sourceConnector?: string;
     blockedBy?: string;
   };
@@ -1146,4 +1147,27 @@ test("explicit capture scans active rows when the blocked index is unavailable",
 
   assert.equal(result.duplicateOf, "active-existing");
   assert.equal(probe.envelopes.length, 0);
+});
+
+test("explicit capture never deduplicates against private support-passport records", async () => {
+  const probe = createInlineCaptureProcessorProbe();
+  const candidate = validateExplicitCaptureInput({
+    content: "The same words can exist in an owner-controlled passport card.",
+    category: "preference",
+  });
+  probe.memories.push({
+    frontmatter: {
+      id: "private-passport-card",
+      category: "preference",
+      status: "active",
+      structuredAttributes: { "support-passport-owner": "private-owner" },
+    },
+    content: candidate.content,
+  });
+
+  const result = await persistExplicitCapture(probe.orchestrator, candidate, "memory_store");
+
+  assert.equal(result.duplicateOf, undefined);
+  assert.equal(probe.envelopes.length, 1);
+  assert.notEqual(result.id, "private-passport-card");
 });

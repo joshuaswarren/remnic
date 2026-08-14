@@ -262,6 +262,32 @@ test("scenario: native corpus supplement searches and reads Remnic memory", asyn
       updatedAt: "2026-05-04T12:00:00.000Z",
     });
 
+    const refillLimits: number[] = [];
+    const rankedResults = [
+      {
+        id: "private-card",
+        path: "preferences/private-card.md",
+        score: 0.99,
+        snippet: "owner-controlled support text",
+      },
+      {
+        id: "safe-result",
+        path: "facts/safe.md",
+        score: 0.88,
+        snippet: "safe result",
+      },
+    ];
+    orchestrator.searchAcrossNamespaces = async (params: Record<string, unknown>) => {
+      const limit = Number(params.maxResults);
+      refillLimits.push(limit);
+      return rankedResults.slice(0, limit);
+    };
+    orchestrator.filterPrivateSearchResults = async (results: Array<{ path: string }>) =>
+      results.filter((result) => !result.path.includes("private-card.md"));
+    const refilled = await corpus!.search({ query: "support", maxResults: 1 });
+    assert.deepEqual(refillLimits, [1, 2]);
+    assert.deepEqual(refilled.map((result) => result.id), ["safe-result"]);
+
     orchestrator.storage.readAllMemories = async () => [
       {
         path: path.join(memoryDir, "facts", "dashboard.md"),
@@ -350,7 +376,10 @@ test("scenario: compatibility memory runtime excludes private support-passport r
             agentId: string;
           }): Promise<{
             manager: {
-              search(query: string): Promise<Array<{ citation: string }>>;
+              search(
+                query: string,
+                options?: { maxResults?: number },
+              ): Promise<Array<{ citation: string }>>;
               readFile(params: { relPath: string }): Promise<{ text: string }>;
             };
           }>;
@@ -363,15 +392,22 @@ test("scenario: compatibility memory runtime excludes private support-passport r
     fs.writeFileSync(path.join(preferencesDir, "private-card.md"), "private support text\n");
     fs.writeFileSync(path.join(preferencesDir, "safe.md"), "safe preference\n");
 
-    orchestrator.searchAcrossNamespaces = async () => [
+    const requestedLimits: number[] = [];
+    const rankedResults = [
       { id: "private-card", path: "preferences/private-card.md", snippet: "private support text", score: 0.9 },
       { id: "safe", path: "preferences/safe.md", snippet: "safe preference", score: 0.8 },
     ];
+    orchestrator.searchAcrossNamespaces = async (params: Record<string, unknown>) => {
+      const limit = Number(params.maxResults);
+      requestedLimits.push(limit);
+      return rankedResults.slice(0, limit);
+    };
     orchestrator.filterPrivateSearchResults = async (results: Array<{ path: string }>) =>
       results.filter((result) => !result.path.includes("private-card.md"));
 
     const { manager } = await runtime!.getMemorySearchManager({ cfg: {}, agentId: "generalist" });
-    const results = await manager.search("support");
+    const results = await manager.search("support", { maxResults: 1 });
+    assert.deepEqual(requestedLimits, [1, 2]);
     assert.deepEqual(results.map((result) => result.citation), ["preferences/safe.md"]);
     assert.match(
       await manager.readFile({ relPath: "preferences/safe.md" }).then((result) => result.text),

@@ -233,6 +233,7 @@ import {
 } from "./memory-projection-store.js";
 import { inferMemoryStatus, isArchivedMemoryPath, toMemoryPathRel } from "./memory-lifecycle-ledger-utils.js";
 import { normalizeProjectionPreview, normalizeProjectionTags } from "./memory-projection-format.js";
+import { isSupportPassportPrivateMemory } from "./support-passport/card-projection.js";
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 import {
   composeMemoryEnvelope,
@@ -6752,6 +6753,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       lastAccessed: memory.frontmatter.lastAccessed,
       tags: normalizeProjectionTags(memory.frontmatter.tags),
       preview: normalizeProjectionPreview(memory.content),
+      privateRecord: isSupportPassportPrivateMemory(memory),
     };
   }
 

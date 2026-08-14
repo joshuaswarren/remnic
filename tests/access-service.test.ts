@@ -2454,6 +2454,19 @@ test("access service uses projection-backed browse filters, including archived m
         ['entityRef: person-retired', 'archivedAt: 2026-03-08T02:00:00.000Z', 'tags: ["legacy", "browser"]'],
       ),
     );
+    await writeText(
+      memoryDir,
+      "archive/2026-03-08/private-attribute-only.md",
+      memoryDoc(
+        "private-attribute-only",
+        "Retired browser coverage text that must remain private.",
+        [
+          'archivedAt: 2026-03-08T02:00:00.000Z',
+          'tags: ["public"]',
+          `structuredAttributes: ${JSON.stringify({ "support-passport-owner": "private-owner" })}`,
+        ],
+      ),
+    );
 
     await rebuildMemoryProjection({
       memoryDir,

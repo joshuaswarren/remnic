@@ -330,10 +330,13 @@ test("offline read surfaces exclude support-passport private records", async () 
     await storage.ensureDirectories();
     const privatePath = path.join(root, "preferences", "2026-08-13", "passport.md");
     const publicPath = path.join(root, "facts", "2026-08-13", "public.md");
+    const localStatePath = path.join(root, "state", "lcm.sqlite");
     await mkdir(path.dirname(privatePath), { recursive: true });
     await mkdir(path.dirname(publicPath), { recursive: true });
+    await mkdir(path.dirname(localStatePath), { recursive: true });
     await writeFile(privatePath, supportPassportFile({ id: "passport" }));
     await writeFile(publicPath, memoryFile({ id: "public", body: "Public fact", status: "active" }));
+    await writeFile(localStatePath, "node-local state");
     const { service } = createManifestService({ root, storage });
 
     const snapshot = await service.offlineSyncSnapshot({ includeContent: true });
@@ -372,6 +375,7 @@ test("offline read surfaces exclude support-passport private records", async () 
       },
     });
     assert.equal(applyResult.currentFiles.some((file) => file.path === "facts/2026-08-13/public.md"), true);
+    assert.equal(applyResult.currentFiles.some((file) => file.path === "state/lcm.sqlite"), true);
     assert.equal(applyResult.currentFiles.some((file) => file.path.includes("passport.md")), false);
   } finally {
     await rm(root, { recursive: true, force: true });
