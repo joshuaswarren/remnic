@@ -141,7 +141,9 @@ export async function handleSupportPassportOwnerHttp(
       input = {
         cardIds: grant.data.cardIds,
         cardRevisions: grant.data.cardRevisions,
-        expiresAt: grant.data.expiresAt ?? new Date(Date.now() + grant.data.durationMs!).toISOString(),
+        ...(grant.data.expiresAt !== undefined
+          ? { expiresAt: grant.data.expiresAt }
+          : { durationMs: grant.data.durationMs }),
       };
     }
     const result = quotaLimitedWrite

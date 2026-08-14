@@ -183,8 +183,12 @@ export class SupportPassportGrantStore {
     if (!parsed.success) {
       throw new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
     }
+    const expiresAt = parsed.data.expiresAt;
+    if (expiresAt === undefined) {
+      throw new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
+    }
     const requestedAt = input.requestedAt ?? this.now();
-    const durationMs = Date.parse(parsed.data.expiresAt) - requestedAt.getTime();
+    const durationMs = Date.parse(expiresAt) - requestedAt.getTime();
     if (
       !Number.isFinite(requestedAt.getTime()) ||
       !Number.isFinite(durationMs) ||
@@ -214,7 +218,7 @@ export class SupportPassportGrantStore {
             const secret = secretBytes.toString("base64url");
             const createdAt = this.now();
             const createdAtMs = createdAt.getTime();
-            const expiresAtMs = Date.parse(parsed.data.expiresAt);
+            const expiresAtMs = Date.parse(expiresAt);
             if (
               !Number.isFinite(createdAtMs) ||
               requestedAt.getTime() > createdAtMs ||
@@ -233,7 +237,7 @@ export class SupportPassportGrantStore {
               secretHash: sha256("support-passport-secret:v1", secret),
               cards: parsed.data.cards,
               createdAt: createdAt.toISOString(),
-              expiresAt: parsed.data.expiresAt,
+              expiresAt,
             });
             await this.requireMutationLock(mutationLock);
             await mutationHooks.beforeCommit?.();

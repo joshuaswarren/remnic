@@ -537,9 +537,7 @@ test("owner HTTP forwards commit accounting to manual drafts and grant creation"
   }
 });
 
-test("owner HTTP derives a preset grant expiry from the server clock", async () => {
-  const originalNow = Date.now;
-  const serverNow = Date.parse("2026-08-11T12:00:00.000Z");
+test("owner HTTP preserves preset grant durations for the grant service clock", async () => {
   let grantInput: Record<string, unknown> | undefined;
   const service = {
     supportPassportEnabled: true,
@@ -560,7 +558,6 @@ test("owner HTTP derives a preset grant expiry from the server clock", async () 
     principal: "owner:alice",
     adminConsoleEnabled: false,
   });
-  Date.now = () => serverNow;
   const { port } = await server.start();
   try {
     const response = await fetch(`http://127.0.0.1:${port}/engram/v1/support-passport/grants`, {
@@ -573,9 +570,9 @@ test("owner HTTP derives a preset grant expiry from the server clock", async () 
       }),
     });
     assert.equal(response.status, 200);
-    assert.equal(grantInput?.expiresAt, "2026-08-11T12:30:00.000Z");
+    assert.equal(grantInput?.durationMs, 1_800_000);
+    assert.equal(Object.hasOwn(grantInput ?? {}, "expiresAt"), false);
   } finally {
-    Date.now = originalNow;
     await server.stop();
   }
 });

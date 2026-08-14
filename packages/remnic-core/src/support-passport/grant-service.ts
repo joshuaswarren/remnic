@@ -77,6 +77,7 @@ export class SupportPassportGrantService {
     const requestedAt = this.now();
     const parsed = SupportPassportCreateGrantInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();
+    const expiresAt = parsed.data.expiresAt ?? this.expiryFromDuration(requestedAt, parsed.data.durationMs);
     const owner = await this.resolveOwnerScope(parsed.data.principal);
     return await withSupportPassportOwnerLock(
       owner.storage,
@@ -124,7 +125,7 @@ export class SupportPassportGrantService {
             namespace: owner.namespace,
             principal: owner.principal,
             cards: parsed.data.cards,
-            expiresAt: parsed.data.expiresAt,
+            expiresAt,
             requestedAt,
           },
           {
@@ -408,6 +409,17 @@ export class SupportPassportGrantService {
       category: card.category,
       updatedAt: card.updatedAt,
     });
+  }
+
+  private expiryFromDuration(requestedAt: Date, durationMs: number | undefined): string {
+    if (durationMs === undefined) throw invalidInput();
+    const expiresAtMs = requestedAt.getTime() + durationMs;
+    if (!Number.isFinite(expiresAtMs)) throw invalidInput();
+    try {
+      return new Date(expiresAtMs).toISOString();
+    } catch {
+      throw invalidInput();
+    }
   }
 
   private async resolveOwnerScope(

@@ -63,6 +63,31 @@ test("manual and replacement MCP tools require an owner review date", () => {
   }
 });
 
+test("MCP tools publish the full opaque source memory ID contract", async () => {
+  const memoryId = `care notes/${"x".repeat(501)}`;
+  assert.equal(memoryId.length, 512);
+  const previewTool = SUPPORT_PASSPORT_MCP_TOOLS.find(
+    (candidate) => candidate.name === "engram.support_passport_memory_preview"
+  );
+  const properties = previewTool?.inputSchema.properties as Record<string, unknown> | undefined;
+  const previewSchema = properties?.memoryId as Record<string, unknown> | undefined;
+  assert.deepEqual(previewSchema, { type: "string", minLength: 1, maxLength: 512 });
+
+  let receivedMemoryId = "";
+  const service = {
+    supportPassportEnabled: true,
+    supportPassportPreviewMemory: async (_principal: string, received: string) => {
+      receivedMemoryId = received;
+      return { found: false };
+    },
+  } as unknown as EngramAccessService;
+  const response = await new EngramMcpServer(service, { principal: "owner:alice" }).handleRequest(
+    call("remnic.support_passport_memory_preview", { memoryId })
+  );
+  assert.equal((response as { result?: { isError?: boolean } }).result?.isError, false);
+  assert.equal(receivedMemoryId, memoryId);
+});
+
 test("MCP drafting requires revisions returned by the owner preview tool", async () => {
   const calls: unknown[] = [];
   const service = {

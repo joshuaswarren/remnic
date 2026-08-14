@@ -128,6 +128,45 @@ test("malformed model output is an error and never becomes an empty success", as
   );
 });
 
+test("draft schema accepts opaque source memory IDs through 512 characters", async () => {
+  const memoryId = `care notes/${"x".repeat(501)}`;
+  let sourceIdSchema: Record<string, unknown> | undefined;
+  const adapter = new SupportPassportModelAdapter({
+    routes: [
+      {
+        kind: "gateway",
+        invoke: async (_messages, options) => {
+          sourceIdSchema = (
+            options.jsonSchema.schema as {
+              properties?: {
+                cards?: { items?: { properties?: { sourceMemoryIds?: { items?: Record<string, unknown> } } } };
+              };
+            }
+          ).properties?.cards?.items?.properties?.sourceMemoryIds?.items;
+          return {
+            content: JSON.stringify({
+              cards: [
+                {
+                  title: "Plan changes",
+                  statement: "Tell me before plans change.",
+                  category: "transitions",
+                  sourceMemoryIds: [memoryId],
+                },
+              ],
+            }),
+            modelUsed: "gateway/test",
+          };
+        },
+      },
+    ],
+  });
+
+  const result = await adapter.draftCards({ consent: true, memories: [{ memoryId, content: "Selected note" }] });
+
+  assert.equal(result.cards[0]?.sourceMemoryIds[0], memoryId);
+  assert.deepEqual(sourceIdSchema, { type: "string", minLength: 1, maxLength: 512 });
+});
+
 test("provider-neutral prompts include every category and the exact uncovered answer", async () => {
   const systemPrompts: Record<string, string> = {};
   const adapter = new SupportPassportModelAdapter({
