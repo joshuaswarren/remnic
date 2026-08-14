@@ -24,7 +24,7 @@ node scripts/relay/judge-package.mjs serve
 Expected terminal output begins with:
 
 ```text
-RELAY_JUDGE_PACKAGE_OK root=69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be ui=55e9eb9ad7a6bc5faec7e431313d9ff3b47c6a46940b4cdb7f73adf39dfdb08b model=gpt-5.6-terra calls=4 filesystem=descriptor-pinned-nofollow-mount-locked
+RELAY_JUDGE_PACKAGE_OK root=69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be ui=31d3b46f8723e8b5d710378a3ab9efcc0e232567b0913dba2c6eca2b2eb12ca7 model=gpt-5.6-terra calls=4 filesystem=descriptor-pinned-nofollow-mount-locked
 Remnic Relay Mission Control: http://127.0.0.1:4173/
 Verified offline replay · zero credentials · zero external calls · Ctrl+C to stop
 ```
@@ -52,7 +52,7 @@ node scripts/relay/judge-package.mjs verify
 Expected output:
 
 ```text
-RELAY_JUDGE_PACKAGE_OK root=69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be ui=55e9eb9ad7a6bc5faec7e431313d9ff3b47c6a46940b4cdb7f73adf39dfdb08b model=gpt-5.6-terra calls=4 transition=failed->passed filesystem=descriptor-pinned-nofollow-mount-locked externalCalls=0 productionDataRead=false
+RELAY_JUDGE_PACKAGE_OK root=69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be ui=31d3b46f8723e8b5d710378a3ab9efcc0e232567b0913dba2c6eca2b2eb12ca7 model=gpt-5.6-terra calls=4 transition=failed->passed filesystem=descriptor-pinned-nofollow-mount-locked externalCalls=0 productionDataRead=false
 ```
 
 The dependency-free verifier does not merely trust the final JSON. It:
@@ -92,7 +92,7 @@ copy below must match that trusted source. Do not derive either the bootstrap
 or expected value solely from the checkout being tested.
 
 ```bash
-RELAY_LAUNCHER_SHA256=99619f5a287d85a6bfe026cf2d81f5a246ab2adf4bda885d3bae6c63f39471e8
+RELAY_LAUNCHER_SHA256=67d8e39bbf1eabad004f227dfb9f303cfa3d2ae0c3c3e6e63ce8b10465466d62
 relay_trust_dir="$(mktemp -d)"
 trap 'rm -r -- "$relay_trust_dir"' EXIT
 
@@ -170,7 +170,7 @@ node "$relay_trust_dir/launcher.mjs" --source-root "$PWD"
 Expected output on the verified platform:
 
 ```text
-RELAY_JUDGE_CLEAN_ROOM_OK platform=linux/x64 node=v22.23.1 root=69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be ui=55e9eb9ad7a6bc5faec7e431313d9ff3b47c6a46940b4cdb7f73adf39dfdb08b dependencies=0 filesystem=descriptor-pinned-nofollow-mount-locked executables=trusted-launcher-pinned-sha256 externalCalls=0 productionDataRead=false sensitiveFiles=39
+RELAY_JUDGE_CLEAN_ROOM_OK platform=linux/x64 node=v22.23.1 root=69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be ui=31d3b46f8723e8b5d710378a3ab9efcc0e232567b0913dba2c6eca2b2eb12ca7 dependencies=0 filesystem=descriptor-pinned-nofollow-mount-locked executables=trusted-launcher-pinned-sha256 externalCalls=0 productionDataRead=false sensitiveFiles=39
 ```
 
 The inline Node bootstrap opens every candidate-launcher path component through
