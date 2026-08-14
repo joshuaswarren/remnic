@@ -30,6 +30,8 @@ const GRANT_LOCK_HEARTBEAT_MS = 10_000;
 const SAFE_GRANT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const UUID_INPUT = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SAFE_OWNER_INDEX_HASH = /^[0-9a-f]{64}$/;
+const SAFE_OWNER_INDEX_RECOVERY_MARKER =
+  /^\.index-recovery-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/;
 const UNSUPPORTED_DIRECTORY_SYNC_ERRORS = new Set(["EINVAL", "ENOSYS", "ENOTSUP", "EOPNOTSUPP"]);
 const MAX_OWNER_GRANT_HISTORY = 100;
 const MAX_OWNER_INDEX_RECOVERY_ATTEMPTS = 3;
@@ -338,16 +340,21 @@ export class SupportPassportGrantStore {
   async listForOwner(namespace: string, principal: string): Promise<SupportPassportGrantState[]> {
     const normalizedNamespace = normalizeNamespace(namespace);
     const principalHash = computeSupportPassportOwnerKey(normalizePrincipal(principal));
-    const grantIds = await this.readOwnerIndex(normalizedNamespace, principalHash);
-    const states: SupportPassportGrantState[] = [];
-    for (const grantId of grantIds) {
-      try {
-        const state = await this.readState(grantId);
-        if (state.namespace === normalizedNamespace && hashesMatch(state.principalHash, principalHash)) {
-          states.push(state);
+    const ownerHash = this.ownerHash(normalizedNamespace, principalHash);
+    let states: SupportPassportGrantState[];
+    if (await this.ownerIndexRecoveryRequired(ownerHash)) {
+      states = await this.readOwnerMembershipStates(normalizedNamespace, principalHash);
+    } else {
+      states = [];
+      for (const grantId of await this.readOwnerIndexByHash(ownerHash)) {
+        try {
+          const state = await this.readState(grantId);
+          if (state.namespace === normalizedNamespace && hashesMatch(state.principalHash, principalHash)) {
+            states.push(state);
+          }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         }
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
     }
     const activeCutoff = this.now().getTime();
@@ -430,7 +437,7 @@ export class SupportPassportGrantStore {
     const current = await this.readOwnerIndexByHash(ownerHash);
     if (current.includes(state.grantId)) return;
     let retained = current;
-    let indexedStates: SupportPassportGrantState[] = [];
+    const indexedStates: SupportPassportGrantState[] = [];
     if (current.length >= MAX_OWNER_GRANT_HISTORY) {
       for (const grantId of current) {
         try {
@@ -467,9 +474,7 @@ export class SupportPassportGrantStore {
     const retainedIds = new Set(grantIds);
     const indexedStateById = new Map(indexedStates.map((indexedState) => [indexedState.grantId, indexedState]));
     const evictedGrantIds = current.filter((grantId) => !retainedIds.has(grantId));
-    await this.requireMutationLock(lock);
-    await this.writeOwnerIndex(ownerHash, grantIds);
-    await this.requireOwnerIndexLock(lock);
+    await this.writeOwnerIndexWhileLocked(ownerHash, grantIds, state.grantId, lock);
     try {
       for (const grantId of evictedGrantIds) {
         await this.withGrantLock(grantId, async (grantLock) => {
@@ -542,6 +547,65 @@ export class SupportPassportGrantStore {
     await this.removeOwnerMembership(state);
   }
 
+  private ownerIndexRecoveryMarkerName(grantId: string): string {
+    return `.index-recovery-${normalizeGrantId(grantId)}.json`;
+  }
+
+  private async writeOwnerIndexRecoveryMarker(ownerHash: string, grantId: string): Promise<void> {
+    const directory = await this.ensureOwnerMembershipDirectory(ownerHash);
+    const fileName = this.ownerIndexRecoveryMarkerName(grantId);
+    await writePrivateFileAtomicallyNoFollow(
+      directory,
+      path.join(directory, fileName),
+      `${JSON.stringify({ schemaVersion: 1, grantId: normalizeGrantId(grantId) })}\n`,
+      "support passport owner recovery markers must be regular files in a stable directory",
+      path.parse(this.memoryDir).root,
+    );
+  }
+
+  private async removeOwnerIndexRecoveryMarker(ownerHash: string, grantId: string): Promise<void> {
+    const directory = await this.ensureOwnerMembershipDirectory(ownerHash);
+    await removePrivateFilesNoFollow(
+      directory,
+      [this.ownerIndexRecoveryMarkerName(grantId)],
+      "support passport owner recovery markers must be regular files in a stable directory",
+      path.parse(this.memoryDir).root,
+    );
+  }
+
+  private async ownerIndexRecoveryRequired(ownerHash: string): Promise<boolean> {
+    await this.ensureSafeDirectories();
+    const directory = await this.ensureOwnerMembershipDirectory(ownerHash);
+    return await withPrivateDirectoryNoFollow(
+      path.parse(this.memoryDir).root,
+      directory,
+      "support passport owner indexes must be regular files in a stable directory",
+      async (pinnedDirectory) => {
+        for (const entry of await readdir(pinnedDirectory, { withFileTypes: true })) {
+          if (!SAFE_OWNER_INDEX_RECOVERY_MARKER.test(entry.name)) continue;
+          if (!entry.isFile()) {
+            throw new Error("support passport owner recovery markers must be regular files");
+          }
+          return true;
+        }
+        return false;
+      },
+    );
+  }
+
+  private async writeOwnerIndexWhileLocked(
+    ownerHash: string,
+    grantIds: string[],
+    recoveryGrantId: string,
+    lock: HeldFileLockController,
+  ): Promise<void> {
+    await this.writeOwnerIndexRecoveryMarker(ownerHash, recoveryGrantId);
+    await this.requireOwnerIndexLock(lock);
+    await this.writeOwnerIndex(ownerHash, grantIds);
+    await this.requireOwnerIndexLock(lock);
+    await this.removeOwnerIndexRecoveryMarker(ownerHash, recoveryGrantId);
+  }
+
   private async reconcileCreateAfterOwnerIndexLockLoss(
     committed: { state: SupportPassportGrantState; secret: string },
   ): Promise<{ state: SupportPassportGrantState; secret: string }> {
@@ -602,9 +666,12 @@ export class SupportPassportGrantStore {
       if (committedIndex !== -1) ownerStates.splice(committedIndex, 1);
     }
     const retained = this.retainedOwnerStates(ownerStates, activeCutoff);
-    await this.requireMutationLock(lock);
-    await this.writeOwnerIndex(ownerHash, retained.map((state) => state.grantId));
-    await this.requireOwnerIndexLock(lock);
+    await this.writeOwnerIndexWhileLocked(
+      ownerHash,
+      retained.map((state) => state.grantId),
+      committed.state.grantId,
+      lock,
+    );
     if (active.length > MAX_OWNER_GRANT_HISTORY) {
       throw new SupportPassportError("storage_conflict", "The share link store changed during the request.", 409);
     }
@@ -628,10 +695,6 @@ export class SupportPassportGrantStore {
       ...active,
       ...inactive.slice(0, MAX_OWNER_GRANT_HISTORY - active.length),
     ];
-  }
-
-  private async readOwnerIndex(namespace: string, principalHash: string): Promise<string[]> {
-    return await this.readOwnerIndexByHash(this.ownerHash(namespace, principalHash));
   }
 
   private async readOwnerMembershipStates(
