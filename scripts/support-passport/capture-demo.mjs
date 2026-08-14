@@ -40,7 +40,7 @@ async function probeDuration(filePath) {
     });
     child.stderr.pipe(process.stderr);
     child.once("error", reject);
-    child.once("exit", (code) =>
+    child.once("close", (code) =>
       code === 0 ? resolve() : reject(new Error(`ffprobe failed with exit code ${code}.`))
     );
   });
@@ -94,7 +94,6 @@ async function muxNarration(videoPath, outputPath, cues, narration) {
     "libopus",
     "-b:a",
     "112k",
-    "-shortest",
     outputPath,
   ]);
 }

@@ -12,7 +12,7 @@
 **Project name:** What Helps Me
 
 **Demo link or video:**
-[Watch the narrated 100-second product story](assets/what-helps-me/demo.webm)
+[Watch the narrated 102-second product story](assets/what-helps-me/demo.webm)
 
 **Repository:** [github.com/joshuaswarren/remnic](https://github.com/joshuaswarren/remnic)
 

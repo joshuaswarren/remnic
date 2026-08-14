@@ -25,7 +25,7 @@ No OpenAI API key is required. Manual cards need no model. Draft and question
 calls use the owner's existing Remnic route, including an OpenClaw gateway or a
 local model.
 
-[Watch the narrated 100-second product story](docs/hackathons/assets/what-helps-me/demo.webm)
+[Watch the narrated 102-second product story](docs/hackathons/assets/what-helps-me/demo.webm)
 or read the [full Build for Good entry](docs/hackathons/build-for-good-2026.md).
 The walkthrough always shows a **Synthetic replay** banner. It is not live-call
 proof. The separate live runner exercises the real standalone server and model
