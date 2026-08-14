@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { copyFile, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -133,6 +134,40 @@ test("capture asset publication preserves recovery files when rollback fails", a
     assert.ok(recoveryDir);
     assert.equal(await readFile(path.join(outputDir, recoveryDir, ".previous", ASSETS[0]), "utf8"), `old-${ASSETS[0]}`);
     assert.equal(await readFile(path.join(outputDir, recoveryDir, ASSETS[1]), "utf8"), `new-${ASSETS[1]}`);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("capture asset publication defers interruption until rollback completes", async () => {
+  const { root, outputDir } = await fixture();
+  const signalSource = new EventEmitter();
+  try {
+    let renameCalls = 0;
+    await assert.rejects(
+      captureAssets(
+        outputDir,
+        ASSETS,
+        async (stagingDir) => {
+          for (const assetName of ASSETS) await writeFile(path.join(stagingDir, assetName), `new-${assetName}`);
+        },
+        {
+          signalSource,
+          renameFile: async (source, destination) => {
+            renameCalls += 1;
+            await rename(source, destination);
+            if (renameCalls === 1) signalSource.emit("SIGTERM");
+          },
+        }
+      ),
+      /Capture publication interrupted by SIGTERM/
+    );
+    for (const assetName of ASSETS) {
+      assert.equal(await readFile(path.join(outputDir, assetName), "utf8"), `old-${assetName}`);
+    }
+    assert.deepEqual((await readdir(outputDir)).sort(), [...ASSETS].sort());
+    assert.equal(signalSource.listenerCount("SIGINT"), 0);
+    assert.equal(signalSource.listenerCount("SIGTERM"), 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
