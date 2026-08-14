@@ -236,3 +236,35 @@ test("memory_search refills after private records consume the first result windo
   assert.match(toolText(result), /public-1\.md/);
   assert.match(toolText(result), /public-2\.md/);
 });
+
+test("memory_search refills beyond 500 private records", async () => {
+  const calls: number[] = [];
+  const privateResults = Array.from({ length: 501 }, (_, index) => ({
+    path: `/tmp/private-${index}.md`,
+    score: 1 - index / 1_000,
+    snippet: "private",
+  }));
+  const all = [
+    ...privateResults,
+    { path: "/tmp/public-after-hidden.md", score: 0.1, snippet: "public" },
+  ];
+  const { tools } = buildHarness({
+    searchGlobal: async (_query, maxResults) => {
+      calls.push(maxResults ?? 0);
+      return all.slice(0, maxResults);
+    },
+    filterPrivateSearchResults: async (results) =>
+      results.filter((result) => !result.path.includes("private")),
+  });
+  const tool = tools.get("memory_search");
+  assert.ok(tool);
+
+  const result = await tool.execute("tc7", {
+    query: "support",
+    collection: "global",
+    maxResults: 1,
+  });
+
+  assert.ok(calls.some((limit) => limit > 500));
+  assert.match(toolText(result), /public-after-hidden\.md/);
+});

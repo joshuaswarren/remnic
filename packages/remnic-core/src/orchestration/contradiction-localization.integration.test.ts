@@ -1951,3 +1951,118 @@ test("QMD candidates under archive paths are not eligible without raw status", a
     omitStatus: true,
   });
 });
+
+test("live contradiction linking excludes support passport QMD candidates", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-contradiction-passport-qmd-"));
+  try {
+    const config = baseConfig(memoryDir) as PluginConfig;
+    const candidate = {
+      path: path.join(memoryDir, "facts", "passport.md"),
+      content: "I need written instructions.",
+      frontmatter: {
+        id: "passport-card",
+        category: "preference",
+        created: "2026-08-01T00:00:00.000Z",
+        updated: "2026-08-01T00:00:00.000Z",
+        source: "support-passport",
+        confidence: 1,
+        confidenceTier: "explicit",
+        tags: ["support-passport-card"],
+        status: "active",
+      },
+    } as unknown as MemoryFile;
+    const storage = {
+      dir: memoryDir,
+      readAllMemories: async () => [],
+      readAllColdMemories: async () => [],
+      getMemoryById: async () => candidate,
+    } as never as StorageManager;
+    let verificationCalls = 0;
+    const coordinator = new ContradictionLinkingCoordinator({
+      getConfig: () => config,
+      isSearchAvailable: () => true,
+      searchAcrossNamespaces: async () => [{
+        docid: candidate.path,
+        path: candidate.path,
+        snippet: candidate.content,
+        score: 0.99,
+      }],
+      extractMemoryIdsFromResults: () => [candidate.frontmatter.id],
+      namespaceFromPath: () => "default",
+      storageForNamespace: async () => storage,
+      getExtraction: () => ({
+        verifyContradiction: async () => {
+          verificationCalls++;
+          return null;
+        },
+      }) as unknown as ExtractionEngine,
+    });
+
+    const contradiction = await coordinator.checkForContradiction(
+      "New preference",
+      "preference",
+      "default",
+    );
+
+    assert.equal(contradiction, null);
+    assert.equal(verificationCalls, 0);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("live contradiction linking excludes support passport anchor candidates", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-contradiction-passport-anchor-"));
+  try {
+    const config = baseConfig(memoryDir) as PluginConfig;
+    const candidate = {
+      path: path.join(memoryDir, "facts", "passport.md"),
+      content: "I need written instructions.",
+      frontmatter: {
+        id: "passport-card",
+        category: "preference",
+        created: "2026-08-01T00:00:00.000Z",
+        updated: "2026-08-01T00:00:00.000Z",
+        source: "support-passport",
+        confidence: 1,
+        confidenceTier: "explicit",
+        tags: ["support-passport-card"],
+        status: "active",
+        entityRef: "person:owner",
+      },
+    } as unknown as MemoryFile;
+    const storage = {
+      dir: memoryDir,
+      readAllMemories: async () => [candidate],
+      readAllColdMemories: async () => [],
+      getMemoryById: async () => candidate,
+    } as never as StorageManager;
+    let verificationCalls = 0;
+    const coordinator = new ContradictionLinkingCoordinator({
+      getConfig: () => config,
+      isSearchAvailable: () => false,
+      searchAcrossNamespaces: async () => [],
+      extractMemoryIdsFromResults: () => [],
+      namespaceFromPath: () => "default",
+      storageForNamespace: async () => storage,
+      getExtraction: () => ({
+        verifyContradiction: async () => {
+          verificationCalls++;
+          return null;
+        },
+      }) as unknown as ExtractionEngine,
+    });
+
+    const contradiction = await coordinator.checkForContradiction(
+      "New preference",
+      "preference",
+      "default",
+      { entityRef: "person:owner", storageSnapshot: [candidate] },
+    );
+
+    assert.equal(contradiction, null);
+    assert.equal(verificationCalls, 0);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

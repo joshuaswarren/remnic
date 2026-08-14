@@ -87,8 +87,6 @@ function normalizeMemorySearchResultLimit(value: unknown): number {
   return Math.min(Math.max(value, 1), 50);
 }
 
-const MAX_PRIVATE_SEARCH_CANDIDATES = 500;
-
 const WORK_TASK_STATUSES = new Set(["todo", "in_progress", "blocked", "done", "cancelled"]);
 const WORK_TASK_PRIORITIES = new Set(["low", "medium", "high"]);
 const WORK_PROJECT_STATUSES = new Set(["active", "on_hold", "completed", "archived"]);
@@ -467,14 +465,17 @@ Best for:
         );
         while (
           filtered.length < resultLimit &&
-          candidates.length >= candidateLimit &&
-          candidateLimit < MAX_PRIVATE_SEARCH_CANDIDATES
+          candidates.length >= candidateLimit
         ) {
-          candidateLimit = Math.min(
-            MAX_PRIVATE_SEARCH_CANDIDATES,
+          const nextCandidateLimit = Math.min(
+            Number.MAX_SAFE_INTEGER,
             Math.max(candidateLimit + 16, candidateLimit * 2),
           );
-          candidates = await searchCandidates(candidateLimit);
+          if (nextCandidateLimit === candidateLimit) break;
+          const nextCandidates = await searchCandidates(nextCandidateLimit);
+          if (nextCandidates.length <= candidates.length) break;
+          candidateLimit = nextCandidateLimit;
+          candidates = nextCandidates;
           filtered = await orchestrator.filterPrivateSearchResults(
             candidates,
             namespaceFilter ? [namespaceFilter] : [],

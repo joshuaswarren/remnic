@@ -43,6 +43,7 @@ import type {
   DependencyPropagationDeliveryPort,
   DependencyPropagationPreparationToken,
 } from "./dependency-propagation-delivery.js";
+import { isSupportPassportPrivateMemory } from "../support-passport/card-projection.js";
 
 /** Result type of {@link ContradictionLinkingCoordinator.checkForContradiction}. */
 export interface ContradictionResult {
@@ -170,6 +171,7 @@ export class ContradictionLinkingCoordinator {
         const resultStorage = await this.storageForNamespace(resultNamespace);
         const existingMemory = await resultStorage.getMemoryById(memoryId);
         if (!existingMemory) continue;
+        if (isSupportPassportPrivateMemory(existingMemory)) continue;
         if (inferLocalizationMemoryStatus(existingMemory, resultStorage.dir) !== "active") continue;
         const verification = await this.getExtraction().verifyContradiction(
           { content, category },
@@ -231,6 +233,9 @@ export class ContradictionLinkingCoordinator {
       ]);
       anchorSnapshot = mergeMemorySnapshots(hot, cold, resultStorage.dir);
     }
+    anchorSnapshot = anchorSnapshot?.filter(
+      (memory) => !isSupportPassportPrivateMemory(memory),
+    );
     const anchorMemoryById = anchorSnapshot
       ? new Map(anchorSnapshot.map((memory) => [memory.frontmatter.id, memory]))
       : undefined;
@@ -264,6 +269,7 @@ export class ContradictionLinkingCoordinator {
               anchorMemoryById?.get(memoryId) ?? (await resultStorage.getMemoryById(memoryId));
             if (
               !existingMemory ||
+              isSupportPassportPrivateMemory(existingMemory) ||
               inferLocalizationMemoryStatus(existingMemory, resultStorage.dir) !== "active"
             ) continue;
             hits.push({
@@ -290,6 +296,7 @@ export class ContradictionLinkingCoordinator {
         anchorMemoryById?.get(candidate.id) ?? (await resultStorage.getMemoryById(candidate.id));
       if (
         !existingMemory ||
+        isSupportPassportPrivateMemory(existingMemory) ||
         inferLocalizationMemoryStatus(existingMemory, resultStorage.dir) !== "active"
       ) continue;
       const verification = await this.getExtraction().verifyContradiction(
