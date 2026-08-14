@@ -105,7 +105,7 @@ test("a quota slot is reserved before a successful helper read", async () => {
   }
 });
 
-test("long helper answers retain authentication capacity through model work", async () => {
+test("long helper answers use separate model capacity from guide reads", async () => {
   const allAnswersStarted = Promise.withResolvers<void>();
   const releaseAnswers = Promise.withResolvers<void>();
   let answerCalls = 0;
@@ -134,8 +134,15 @@ test("long helper answers retain authentication capacity through model work", as
     );
     await allAnswersStarted.promise;
 
-    const blockedRead = await fetch(`${root}/engram/v1/support-passport/public/grants/grant-one`, { headers });
-    assert.equal(blockedRead.status, 429, "model work must retain its authentication slot");
+    const admittedRead = await fetch(`${root}/engram/v1/support-passport/public/grants/grant-one`, { headers });
+    assert.equal(admittedRead.status, 200, "model work must not consume authentication capacity");
+    const blockedAsk = await fetch(askUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ question: "One more question?" }),
+    });
+    assert.equal(blockedAsk.status, 429, "model work must retain separate model capacity");
+    assert.equal(answerCalls, 8);
 
     releaseAnswers.resolve();
     const responses = await Promise.all(asks);
@@ -143,8 +150,8 @@ test("long helper answers retain authentication capacity through model work", as
       responses.map((response) => response.status),
       Array(8).fill(200)
     );
-    const admittedRead = await fetch(`${root}/engram/v1/support-passport/public/grants/grant-one`, { headers });
-    assert.equal(admittedRead.status, 200);
+    const finalRead = await fetch(`${root}/engram/v1/support-passport/public/grants/grant-one`, { headers });
+    assert.equal(finalRead.status, 200);
   } finally {
     releaseAnswers.resolve();
     await stopServer(server);
