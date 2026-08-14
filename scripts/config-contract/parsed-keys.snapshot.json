@@ -1331,7 +1331,6 @@
     "openaiApiKey.length",
     "openaiApiKey.replace",
     "openaiApiKey.trim",
-    "openaiBaseUrl.length",
     "openaiBaseUrl.replace",
     "openclawChannelEnvelopeCleaningEnabled.trim",
     "openclawHostEmbeddingProviderEnabled.trim",
