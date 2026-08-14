@@ -8,17 +8,23 @@ import { SupportPassportError } from "./errors.js";
 const CARD_MUTATION_LOCK_STALE_MS = 60_000;
 const CARD_MUTATION_LOCK_MAX_WAIT_MS = 30_000;
 
-export interface SupportPassportOwnerLockScope {
-  namespace: string;
-  principal: string;
+export type SupportPassportOwnerLockScope =
+  | { namespace: string; principal: string; ownerKey?: never }
+  | { namespace: string; ownerKey: string; principal?: never };
+
+export function computeSupportPassportOwnerLockKey(namespace: string, principal: string): string {
+  return createHash("sha256").update(JSON.stringify([namespace, principal])).digest("hex");
 }
 
 export function supportPassportOwnerLockPath(
   storage: StorageManager,
   scope: SupportPassportOwnerLockScope
 ): string {
-  const scopeKey = createHash("sha256").update(JSON.stringify([scope.namespace, scope.principal])).digest("hex");
-  return path.join(storage.dir, "state", `support-passport-cards-${scopeKey}.lock`);
+  const ownerLockKey = scope.ownerKey ?? computeSupportPassportOwnerLockKey(scope.namespace, scope.principal);
+  if (!/^[a-f0-9]{64}$/.test(ownerLockKey)) {
+    throw new SupportPassportError("card_data_invalid", "The support passport owner scope is invalid.", 500);
+  }
+  return path.join(storage.dir, "state", `support-passport-cards-${ownerLockKey}.lock`);
 }
 
 export async function withSupportPassportOwnerLock<T>(
