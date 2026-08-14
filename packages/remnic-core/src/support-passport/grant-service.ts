@@ -39,8 +39,6 @@ interface SupportPassportCardSnapshot {
   cardsById: ReadonlyMap<string, StoredSupportPassportCard>;
 }
 
-const MAX_CARD_SNAPSHOT_AGE_MS = 1_000;
-
 function invalidInput(): SupportPassportError {
   return new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
 }
@@ -194,7 +192,8 @@ export class SupportPassportGrantService {
             }
             await requireSupportPassportOwnerLock(ownerLock);
             const currentSnapshot =
-              initialSnapshot.version === this.cardSnapshotVersion(storage) && this.cardSnapshotIsFresh(initialSnapshot)
+              initialSnapshot.version === this.cardSnapshotVersion(storage) &&
+              this.cardSnapshotIsFresh(storage, initialSnapshot)
                 ? initialSnapshot
                 : await this.readStoredCardSnapshot(storage);
             const currentCards = this.readGrantCards(currentSnapshot, finalState);
@@ -240,7 +239,7 @@ export class SupportPassportGrantService {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const before = this.cardSnapshotVersion(storage);
       const cached = this.cardSnapshots.get(storage);
-      if (cached?.version === before && this.cardSnapshotIsFresh(cached)) return cached;
+      if (cached?.version === before && this.cardSnapshotIsFresh(storage, cached)) return cached;
       const cards = (await storage.readAllMemories())
         .map((memory) => projectSupportPassportCard(memory))
         .filter((card): card is StoredSupportPassportCard => card !== null);
@@ -267,12 +266,15 @@ export class SupportPassportGrantService {
     return `${storage.getCorpusScanVersion()}:${storage.hotCacheKeyId()}`;
   }
 
-  private cardSnapshotIsFresh(snapshot: SupportPassportCardSnapshot): boolean {
+  private cardSnapshotIsFresh(storage: StorageManager, snapshot: SupportPassportCardSnapshot): boolean {
+    if (!storage.isHotCacheEnabled()) return false;
     const nowMs = this.now().getTime();
+    const ttlMs = storage.hotCacheTtlMs();
     return (
       Number.isFinite(nowMs) &&
+      Number.isFinite(ttlMs) &&
       nowMs >= snapshot.validatedAtMs &&
-      nowMs - snapshot.validatedAtMs <= MAX_CARD_SNAPSHOT_AGE_MS
+      (ttlMs <= 0 || nowMs - snapshot.validatedAtMs <= ttlMs)
     );
   }
 

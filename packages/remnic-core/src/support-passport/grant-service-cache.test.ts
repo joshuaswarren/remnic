@@ -39,13 +39,19 @@ function supportCardMemory(): MemoryFile {
   } as MemoryFile;
 }
 
-test("card snapshots expire when a direct file edit bypasses corpus version counters", async () => {
+test("card snapshots match the storage cache freshness window", async () => {
   let nowMs = Date.parse("2026-08-11T12:00:00.000Z");
   let memories = [supportCardMemory()];
+  let reads = 0;
   const storage = {
     getCorpusScanVersion: () => 1,
     hotCacheKeyId: () => "stable",
-    readAllMemories: async () => memories,
+    hotCacheTtlMs: () => 60_000,
+    isHotCacheEnabled: () => true,
+    readAllMemories: async () => {
+      reads += 1;
+      return memories;
+    },
   } as unknown as StorageManager;
   const service = new SupportPassportGrantService({
     grantStore: {} as SupportPassportGrantStore,
@@ -57,7 +63,7 @@ test("card snapshots expire when a direct file edit bypasses corpus version coun
     readStoredCardSnapshot(
       storage: StorageManager,
       namespace?: string,
-      ownerKey?: string,
+      ownerKey?: string
     ): Promise<{ cardsById: ReadonlyMap<string, unknown> }>;
   };
   const ownerKey = computeSupportPassportOwnerKey("owner:alice");
@@ -65,8 +71,12 @@ test("card snapshots expire when a direct file edit bypasses corpus version coun
   assert.equal((await inspected.readStoredCardSnapshot(storage, "alice", ownerKey)).cardsById.size, 1);
   memories = [];
   nowMs += 1_001;
+  assert.equal((await inspected.readStoredCardSnapshot(storage, "alice", ownerKey)).cardsById.size, 1);
+  assert.equal(reads, 1);
+  nowMs += 59_000;
 
   assert.equal((await inspected.readStoredCardSnapshot(storage, "alice", ownerKey)).cardsById.size, 0);
+  assert.equal(reads, 2);
 });
 
 test("guide assembly rechecks snapshot age after owner-lock delay", async () => {
@@ -93,6 +103,8 @@ test("guide assembly rechecks snapshot age after owner-lock delay", async () => 
       dir: root,
       getCorpusScanVersion: () => 1,
       hotCacheKeyId: () => "stable",
+      hotCacheTtlMs: () => 1_000,
+      isHotCacheEnabled: () => true,
       readAllMemories: async () => memories,
     } as unknown as StorageManager;
     const grantStore = {
@@ -101,7 +113,7 @@ test("guide assembly rechecks snapshot age after owner-lock delay", async () => 
         _grantId: string,
         _secret: string,
         task: (current: SupportPassportGrantState) => Promise<T>,
-        beforeReturn?: (current: SupportPassportGrantState) => Promise<void>,
+        beforeReturn?: (current: SupportPassportGrantState) => Promise<void>
       ): Promise<T> => {
         nowMs += 1_001;
         memories = [];
@@ -119,7 +131,7 @@ test("guide assembly rechecks snapshot age after owner-lock delay", async () => 
 
     await assert.rejects(
       service.readGrant({ grantId: state.grantId, secret: "secret" }),
-      (error: unknown) => error instanceof SupportPassportError && error.code === "grant_stale",
+      (error: unknown) => error instanceof SupportPassportError && error.code === "grant_stale"
     );
   } finally {
     await rm(root, { recursive: true, force: true });
