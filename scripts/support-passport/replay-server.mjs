@@ -153,12 +153,31 @@ const stageHtml = `<!doctype html>
         font-size: 13px;
         letter-spacing: 0.08em;
       }
+      .narration-caption {
+        position: absolute;
+        z-index: 14;
+        left: 50%;
+        bottom: 16px;
+        width: min(920px, calc(100% - 80px));
+        margin: 0;
+        padding: 9px 15px 10px;
+        border-radius: 9px;
+        background: rgba(7, 24, 29, 0.9);
+        box-shadow: 0 6px 24px rgba(7, 24, 29, 0.25);
+        color: #fff;
+        font-size: 16px;
+        font-weight: 650;
+        line-height: 1.35;
+        text-align: center;
+        transform: translateX(-50%);
+      }
     </style>
   </head>
   <body>
     <iframe id="ownerFrame" title="What Helps Me owner replay" src="/remnic/ui/what-helps-me/?mode=replay"></iframe>
     <iframe id="helperFrame" title="What Helps Me helper replay" src="about:blank" hidden></iframe>
     <div class="demo-data" id="demoData">Demo data <span>no private information</span> provider neutral</div>
+    <p class="narration-caption" id="narrationCaption" hidden></p>
     <aside class="lower-third" id="lowerThird" hidden>
       <p class="kicker" id="lowerKicker"></p>
       <p class="headline" id="lowerHeadline"></p>
