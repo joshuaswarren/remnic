@@ -1001,6 +1001,7 @@
     "test:openclaw-scenarios": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" pnpm exec tsx --test tests/openclaw-adapter-scenarios.test.ts",
     "test:openclaw-privacy": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" pnpm exec tsx --test tests/openclaw-hook-privacy.test.ts",
     "test:entity-hardening": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx --test tests/intent.test.ts tests/recall-no-recall-short-circuit.test.ts tests/orchestrator-path-filter.test.ts tests/orchestrator-characterization.test.ts tests/artifact-cache.test.ts tests/memory-cache.test.ts tests/entity-retrieval.test.ts tests/entity-synthesis-storage.test.ts tests/entity-synthesis-orchestrator.test.ts tests/config-recall-pipeline.test.ts tests/entity-contamination.test.ts tests/entity-alias-isolation.test.ts tests/cache-invalidation-coherence.test.ts",
+    "test:support-passport-ui": "playwright test --config playwright.config.ts",
     "demo:coding-agent-memory": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx examples/coding-agent-memory-demo/demo.mts",
     "test:coding-agent-memory-demo": "node examples/coding-agent-memory-demo/smoke-test.mjs",
     "test:release-smoke": "pnpm run build && node scripts/check-release-artifacts.mjs",
@@ -1036,8 +1037,10 @@
     "prepack": "pnpm run check-types && pnpm run build"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
     "@biomejs/biome": "1.9.4",
     "@openclaw/plugin-inspector": "0.3.10",
+    "@playwright/test": "^1.62.1",
     "@remnic/bench": "workspace:*",
     "@types/better-sqlite3": "^7.6.13",
     "semver": "^7.7.4",

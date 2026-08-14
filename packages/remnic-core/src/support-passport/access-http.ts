@@ -131,6 +131,8 @@ export async function handleSupportPassportOwnerHttp(
     }
 
     if (!operation) return false;
+    dependencies.res.setHeader("cache-control", "private, no-store");
+    dependencies.res.setHeader("vary", "Authorization");
     if (dependencies.hasQuery) {
       throw new SupportPassportError("invalid_input", "Support passport routes do not accept query values.", 400);
     }

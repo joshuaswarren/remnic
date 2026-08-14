@@ -28,6 +28,7 @@ Model output is untrusted input. Strict schemas and citation checks validate it.
 | Threat | Control |
 |---|---|
 | A client supplies another owner or namespace. | Owner inputs contain neither field. The trusted principal resolves the namespace. |
+| A leaked link appears in server logs. | The UI keeps the secret in the URL fragment. It removes the fragment after reading it. |
 | A guessed or stolen grant opens wider access. | Grants use random 32-byte secrets, constant-time hash checks, expiry, and exact card revisions. |
 | A stopped link remains usable through a cache. | Every helper call reads durable state. Public responses use `private, no-store`. |
 | One changed card leaks a partial guide. | Any state or revision mismatch returns `410 grant_stale` with no cards. |
@@ -60,6 +61,9 @@ Support cards use the normal Remnic memory store. Grant records use
 
 Grant files contain a secret hash and an owner-principal hash. They never
 contain the raw secret. Owner grant listings return neither secret hash.
+
+The UI stores no owner token or helper secret in cookies, local storage, or
+session storage.
 
 ## Response rules
 
