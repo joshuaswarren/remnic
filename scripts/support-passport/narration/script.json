@@ -1,0 +1,42 @@
+[
+  {
+    "id": "intro",
+    "text": "The person receiving care should control the guide. What Helps Me is a private support passport inspired by NHS health and care passport guidance."
+  },
+  {
+    "id": "choose",
+    "text": "The owner starts with their own Remnic notes. They select only what helps, then give clear consent before any model sees the text."
+  },
+  {
+    "id": "model",
+    "text": "Drafting uses the model route already configured in Remnic: a local model, an OpenClaw gateway, an OpenAI-compatible endpoint, or direct OpenAI. No separate OpenAI setup is required."
+  },
+  {
+    "id": "review",
+    "text": "The model is the scribe. The person is the author. Every card stays a draft until the owner edits and approves it."
+  },
+  {
+    "id": "share",
+    "text": "The owner shares only approved cards, for a limited time. The link pins the exact words they reviewed."
+  },
+  {
+    "id": "helper",
+    "text": "A helper opens a focused guide. They cannot see source notes, search memories, or browse anything else in Remnic."
+  },
+  {
+    "id": "answer",
+    "text": "Questions stay grounded in the shared guide. Each answer cites the exact card, so the helper can check the source."
+  },
+  {
+    "id": "revoke",
+    "text": "Consent can change. The owner stops sharing once, and the next helper request locks the guide immediately."
+  },
+  {
+    "id": "locked",
+    "text": "The helper sees a clear locked state. The private notes never moved, and the owner remains in control."
+  },
+  {
+    "id": "close",
+    "text": "What Helps Me gives support that travels, while control stays with the person."
+  }
+]
