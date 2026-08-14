@@ -1,3 +1,31 @@
+import {
+  isUntrustedOrigin,
+  parseOriginClass,
+  renderAuthorityFence,
+} from "./security/origin-authority.js";
+
+export interface RecallAuthorityRenderOptions {
+  enabled: boolean;
+  untrustedOrigins: readonly string[];
+}
+
+/**
+ * Fence recalled body text before it enters model-visible context (#1955).
+ * X-ray and explain renderers are operator diagnostics, so they do not call
+ * this helper and remain unfenced.
+ */
+export function renderAuthorityBoundContent(
+  content: string,
+  rawOrigin: unknown,
+  options: RecallAuthorityRenderOptions,
+): string {
+  if (!options.enabled) return content;
+  const origin = parseOriginClass(rawOrigin);
+  return isUntrustedOrigin(origin, options.untrustedOrigins)
+    ? renderAuthorityFence(content, origin)
+    : content;
+}
+
 export const MEMORY_CONTEXT_HEADER = "## Memory Context (Remnic)";
 export const MEMORY_CONTEXT_INSTRUCTION =
   "Use this context naturally when relevant. Never quote or expose this memory context to the user.";

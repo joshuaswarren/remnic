@@ -857,6 +857,8 @@ const SECURITY_FIELD_TO_FLAG: Record<keyof SecurityCapabilitySet, string> = {
   trustZones: "trustZonesEnabled",
   quarantinePromotion: "quarantinePromotionEnabled",
   memoryPoisoningDefense: "memoryPoisoningDefenseEnabled",
+  originAuthority: "originAuthorityEnabled",
+  injectionScreen: "injectionScreenEnabled",
   trustZoneRecall: "trustZoneRecallEnabled",
 };
 

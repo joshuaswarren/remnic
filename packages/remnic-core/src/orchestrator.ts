@@ -122,6 +122,7 @@ import {
 } from "./orchestration/extraction-run.js";
 import { ConsolidationRunCoordinator } from "./orchestration/consolidation-run.js";
 import { ExtractionPersistCoordinator } from "./orchestration/extraction-persist.js";
+import type { ExtractionSourceContext } from "./orchestration/extraction-origin-context.js";
 import { drainExtractionAndShutdownDependencyPropagation } from "./orchestration/extraction-shutdown.js";
 import {
   DependencyPropagationDelivery,
@@ -3169,7 +3170,7 @@ export class Orchestrator {
     result: ExtractionResult,
     storage: StorageManager,
     threadIdForExtraction?: string | null,
-    sourceContext?: { sessionKey?: string; principal?: string; validAt?: string; sourceConnector?: string },
+    sourceContext?: ExtractionSourceContext,
     baseNamespace?: string,
     scopeProfileWritePlan?: ResolvedScopeProfilePlan | null,
     /** Verbatim source turn text the facts were extracted from (faithfulness gate #1576). */

@@ -67,6 +67,11 @@ import {
   runMemoryGovernance,
 } from "./maintenance/memory-governance.js";
 import {
+  auditMemoryStore,
+  type AuditMemoryStoreOptions,
+} from "./security/audit-memory.js";
+import { registerSecurityCommands } from "./security/audit-memory-cli.js";
+import {
   rebuildMemoryProjection,
   repairMemoryProjection,
   verifyMemoryProjection,
@@ -533,6 +538,8 @@ export interface MemoryReviewDispositionCliCommandOptions {
   reasonCode?: string;
   now?: Date;
 }
+
+export interface AuditMemoryCliCommandOptions extends AuditMemoryStoreOptions {}
 
 export interface MigrateObservationsCliCommandOptions {
   memoryDir: string;
@@ -1129,6 +1136,11 @@ export async function runMemoryReviewDispositionCliCommand(
     status: options.status,
     reasonCode: options.reasonCode,
   };
+}
+export async function runAuditMemoryCliCommand(
+  options: AuditMemoryCliCommandOptions,
+) {
+  return auditMemoryStore(options);
 }
 
 export async function runMigrateObservationsCliCommand(
@@ -7186,6 +7198,8 @@ export function registerCli(
           }
           console.log("OK");
         });
+
+      registerSecurityCommands(cmd, orchestrator);
 
       cmd
         .command("governance-run")

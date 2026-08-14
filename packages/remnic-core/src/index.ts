@@ -389,8 +389,8 @@ export {
   type TrustZoneRecordKind,
   type TrustZoneSourceClass,
 } from "./trust-zones.js";
-
-// ---------------------------------------------------------------------------
+export { DEFAULT_UNTRUSTED_ORIGINS, classifyOrigin, isUntrustedOrigin, parseOriginClass, renderAuthorityFence, type OriginClass } from "./security/origin-authority.js";
+export { INJECTION_SCREEN_THRESHOLD, screenCandidateFact, type InjectionScreenFinding, type InjectionScreenResult } from "./security/injection-screen.js";
 // Access layer (HTTP + MCP + schema validation)
 // ---------------------------------------------------------------------------
 

@@ -10,7 +10,7 @@ import type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
 export type { ContradictionLocalizationConfig, ContradictionScanConfig } from "./contradiction-config.js";
 export type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
 
-import type { AmbientCaptureProvenance, BufferTurnOwner } from "./buffer-turn-helpers.js";
+import type { AmbientCaptureProvenance, BufferTurnOwner, SecurityConfig, OriginMetadata } from "./security/types.js";
 export type ReasoningEffort = "none" | "low" | "medium" | "high";
 export type TriggerMode = "smart" | "every_n" | "time_based";
 export type ConvergeConflictPolicy = "newest-wins" | "manual";
@@ -679,7 +679,7 @@ export interface SemanticChunkingConfigShape {
 }
 
 
-export interface PluginConfig extends BoundedJsonlStateConfig {
+export interface PluginConfig extends BoundedJsonlStateConfig, SecurityConfig {
   openaiApiKey: string | undefined;
   openaiBaseUrl: string | undefined;
   model: string;
@@ -2802,7 +2802,7 @@ export interface ImportanceScore {
   keywords: string[];
 }
 
-export interface MemoryFrontmatter extends SourceConnectorProvenance {
+export interface MemoryFrontmatter extends SourceConnectorProvenance, OriginMetadata {
   /** True when write-time classification ties this memory to its source connector's tools or commands. */
   toolScoped?: true;
   id: string;
@@ -3466,7 +3466,7 @@ export interface ConsolidationObservation {
   merged: number;
   invalidated: number;
 }
-export interface QmdSearchResult {
+export interface QmdSearchResult extends OriginMetadata {
   docid: string;
   path: string;
   snippet: string;

@@ -1,3 +1,5 @@
+import { classifyExtractionOrigin, type ExtractionSourceContext } from "./extraction-origin-context.js";
+import { evaluateInjectionScreen } from "./extraction-injection-gate.js";
 /**
  * Extraction persistence coordinator (issue #1526, seam 16).
  *
@@ -26,9 +28,8 @@ import {
   resolvePresentationCapabilities,
   resolveNamespaceCapabilities,
   resolveRecallEnhancementCapabilities,
-  resolveConversationContextCapabilities,
   resolveRecallAuxiliaryCapabilities,
-  type GraphConstructionCapabilitySet,
+  resolveConversationContextCapabilities, resolveSecurityCapabilities, type GraphConstructionCapabilitySet,
   type MemoryLifecycleCapabilitySet,
 } from "../capabilities.js";
 import { coerceBool } from "../connectors/coerce.js";
@@ -132,7 +133,7 @@ export class ExtractionPersistCoordinator {
     result: ExtractionResult,
     storage: StorageManager,
     threadIdForExtraction?: string | null,
-    sourceContext?: { sessionKey?: string; principal?: string; validAt?: string; sourceConnector?: string },
+    sourceContext?: ExtractionSourceContext,
     baseNamespace?: string,
     scopeProfileWritePlan?: ResolvedScopeProfilePlan | null,
     /** Verbatim source turn text the facts were extracted from (faithfulness gate #1576). */
@@ -337,7 +338,7 @@ export class ExtractionPersistCoordinator {
     // (pre-judge + write-loop) so no new scattered config.*Enabled read is
     // introduced (ratchet scatteredConfigFlagReads; see #1523).
     const namespacesEnabled = resolveNamespaceCapabilities(this.deps.config).namespaces;
-    const sourceConnector = sourceContext?.sourceConnector; // #2183 tool-scope guard input
+    const sourceConnector = sourceContext?.sourceConnector; const origin = classifyExtractionOrigin(sourceContext);
     const promoteMemoryToProfileTargets = async (options: {
       sourceStorage: StorageManager;
       category: string;
@@ -400,7 +401,7 @@ export class ExtractionPersistCoordinator {
             {
               content: citedContent,
               category: options.category as MemoryCategory,
-              confidence: options.confidence,
+              origin, confidence: options.confidence,
               tags: withReservedMarkerTag(options.tags, `${target.target}-promotion`),
               entityRef: options.entityRef,
               structuredAttributes: options.structuredAttributes,
@@ -643,7 +644,7 @@ export class ExtractionPersistCoordinator {
           {
             content: citedContent,
             category: options.category as MemoryCategory,
-            confidence: options.confidence,
+            origin, confidence: options.confidence,
             tags: withReservedMarkerTag(options.tags, "shared-promotion"),
             entityRef: options.entityRef,
             structuredAttributes: options.structuredAttributes,
@@ -1918,7 +1919,8 @@ export class ExtractionPersistCoordinator {
         fact.requireSpansPending === true
           ? ("pending_review" as const)
           : undefined;
-      const faithfulnessEnforceStatus = faithfulnessGateStatus ?? requireSpansPendingStatus;
+      const { status: injectionScreenStatus, tags: injectionScreenTags } = evaluateInjectionScreen(fact.content, resolveSecurityCapabilities(this.deps.config).injectionScreen);
+      const faithfulnessEnforceStatus = faithfulnessGateStatus ?? requireSpansPendingStatus ?? injectionScreenStatus;
 
       // Issue #373 — write-time semantic similarity guard. Hook runs after
       // the exact content-hash miss and the importance gate so that:
@@ -2189,8 +2191,8 @@ export class ExtractionPersistCoordinator {
             {
               content: citedChunkedContent,
               category: writeCategory,
-              confidence: fact.confidence,
-              tags: withReservedMarkerTag(fact.tags, "chunked"),
+              origin, confidence: fact.confidence,
+              tags: withReservedMarkerTag([...fact.tags, ...injectionScreenTags], "chunked"),
               entityRef: fact.entityRef,
               structuredAttributes: fact.structuredAttributes,
               validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt,
@@ -2302,7 +2304,7 @@ export class ExtractionPersistCoordinator {
                   // the verified span (chatgpt-codex-connector thread Ocvmo).
                   ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
                   ...(fact.provenance ? { provenance: fact.provenance } : {}),
-                  ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
+                  ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}), ...(origin ? { origin } : {}),
                   ...(factToolScoped ? { toolScoped: true as const } : {}),
                 },
               );
@@ -2568,8 +2570,8 @@ export class ExtractionPersistCoordinator {
         {
           content: citedFactContent,
           category: writeCategory,
-          confidence: fact.confidence,
-          tags: fact.tags,
+          origin, confidence: fact.confidence,
+          tags: [...fact.tags, ...injectionScreenTags],
           entityRef:
             typeof (fact as any).entityRef === "string"
               ? (fact as any).entityRef

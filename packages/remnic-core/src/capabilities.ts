@@ -616,13 +616,12 @@ export function resolveLocalLlmCapabilities(
 }
 
 // ---------------------------------------------------------------------------
-// Security capability set (issue #1523 batch 7).
-//
-// The four security/trust-zone flags gate quarantine promotion, poisoning
-// defense, and trust-zone recall. Read sites span orchestrator, access-service,
-// CLI, and research-status commands. All flags are non-optional booleans on
-// PluginConfig (defaults resolved at the parse boundary), so the projection is
-// a pure pass-through.
+// Security capability set (issue #1523 batch 7). The six security/trust-zone
+// flags gate quarantine promotion, poisoning defense, origin authority,
+// injection screening, and trust-zone recall. Read sites span orchestrator,
+// access-service, CLI, and research-status commands. All flags are
+// non-optional booleans on PluginConfig (defaults resolved at the parse
+// boundary), so the projection is a pure pass-through.
 // ---------------------------------------------------------------------------
 
 /**
@@ -635,26 +634,27 @@ export interface SecurityCapabilitySet {
   readonly quarantinePromotion: boolean;
   /** `memoryPoisoningDefenseEnabled` — detect and defend against memory poisoning. */
   readonly memoryPoisoningDefense: boolean;
+  /** `originAuthorityEnabled` — preserve origin-bound write authority. */
+  readonly originAuthority: boolean;
+  /** `injectionScreenEnabled` — quarantine deterministic injection findings. */
+  readonly injectionScreen: boolean;
   /** `trustZoneRecallEnabled` — restrict recall to trusted zones. */
   readonly trustZoneRecall: boolean;
 }
 
-/**
- * Config projection consumed by {@link resolveSecurityCapabilities}.
- */
-export type SecurityConfigProjection = Pick<
-  PluginConfig,
-  "trustZonesEnabled" | "quarantinePromotionEnabled" | "memoryPoisoningDefenseEnabled" | "trustZoneRecallEnabled"
->;
+/** Config projection consumed by {@link resolveSecurityCapabilities}. */
+export type SecurityConfigProjection = Pick<PluginConfig,
+  | "trustZonesEnabled" | "quarantinePromotionEnabled" | "memoryPoisoningDefenseEnabled"
+  | "originAuthorityEnabled" | "injectionScreenEnabled" | "trustZoneRecallEnabled">;
 
-/**
- * Resolve the {@link SecurityCapabilitySet} from parsed config.
- */
+/** Resolve the {@link SecurityCapabilitySet} from parsed config. */
 export function resolveSecurityCapabilities(config: SecurityConfigProjection): SecurityCapabilitySet {
   return Object.freeze({
     trustZones: config.trustZonesEnabled,
     quarantinePromotion: config.quarantinePromotionEnabled,
     memoryPoisoningDefense: config.memoryPoisoningDefenseEnabled,
+    originAuthority: config.originAuthorityEnabled,
+    injectionScreen: config.injectionScreenEnabled,
     trustZoneRecall: config.trustZoneRecallEnabled,
   });
 }

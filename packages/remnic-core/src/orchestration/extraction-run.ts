@@ -32,6 +32,7 @@ import { resolvePrincipal, defaultNamespaceForPrincipal } from "../namespaces/pr
 import { resolveScopeProfilePlan, type ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
 import { resolveCodingNamespaceOverlay } from "../coding/coding-namespace.js";
 import type { CodingContext } from "../types.js";
+import { deriveExtractionOriginContext, type ExtractionSourceContext } from "./extraction-origin-context.js";
 import {
   resolvePresentationCapabilities,
   resolveMemoryLifecycleCapabilities,
@@ -76,7 +77,7 @@ export interface ExtractionRunCoordinatorDeps {
     result: ExtractionResult,
     storage: StorageManager,
     threadIdForExtraction?: string | null,
-    sourceContext?: { sessionKey?: string; principal?: string; validAt?: string; sourceConnector?: string },
+    sourceContext?: ExtractionSourceContext,
     baseNamespace?: string,
     scopeProfileWritePlan?: ResolvedScopeProfilePlan | null,
     sourceText?: string,
@@ -1062,6 +1063,7 @@ export class ExtractionRunCoordinator {
         log.warn("[threading] processTurn failed before persistence (non-fatal)", err);
       }
     }
+    const originContext = deriveExtractionOriginContext(targetTurns, result.sourceConnector);
     throwIfDeadlineExceeded("before_persist");
     throwIfAborted("before_persist");
 
@@ -1069,7 +1071,7 @@ export class ExtractionRunCoordinator {
       result,
       storage,
       threadIdForExtraction,
-      { sessionKey, principal, validAt: sourceValidAt, sourceConnector: result.sourceConnector },
+      { sessionKey, principal, validAt: sourceValidAt, ...originContext },
       // Pass the KNOWN base namespace (NHIdx) so the catalog write touch records the
       // real namespace rather than a guess decoded from the storage dir.
       selfNamespace,

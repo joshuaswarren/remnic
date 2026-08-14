@@ -19,8 +19,9 @@
 
 import { buildHandleIndexForResults } from "../recall-handles.js";
 import path from "node:path";
+import { renderAuthorityBoundContent } from "../recall-context-composition.js";
 import { renderEpistemicHedge } from "../trust-score.js";
-import { resolveIdentityContinuityCapabilities } from "../capabilities.js";
+import { resolveIdentityContinuityCapabilities, resolveSecurityCapabilities } from "../capabilities.js";
 import type { StorageManager } from "../index.js";
 import type { ObjectiveStateSearchResult } from "../objective-state.js";
 import type { CausalTrajectorySearchResult } from "../causal-trajectory.js";
@@ -201,7 +202,10 @@ export function displaySafeRecallSnapshot<
  * rendering (memory handles, epistemic hedges, identity injection mode).
  */
 export class RecallResultFormatter {
-  constructor(private readonly config: PluginConfig) {}
+  private readonly originAuthorityEnabled: boolean;
+  constructor(private readonly config: PluginConfig) {
+    this.originAuthorityEnabled = resolveSecurityCapabilities(config).originAuthority;
+  }
 
   // ── QMD results (memory handles + epistemic hedge) ──────────────────────
 
@@ -221,9 +225,17 @@ export class RecallResultFormatter {
       trustByPath !== undefined;
     const hedgeMap = renderHedge ? trustByPath : null;
     const entries = results.map((r, i) => {
-      const snippet = r.snippet
+      const snippetBody = r.snippet
         ? r.snippet.slice(0, 500).replace(/\n/g, " ")
         : "(no preview)";
+      const snippet = renderAuthorityBoundContent(
+        snippetBody,
+        r.origin,
+        {
+          enabled: this.originAuthorityEnabled,
+          untrustedOrigins: this.config.untrustedOrigins,
+        },
+      );
       const displayPath = displayResultPath(r.path, this.config.memoryDir, r.namespace);
       const source = typeof r.line === "number" ? `${displayPath}:${r.line}` : displayPath;
       const head = `[${i + 1}] ${source} (score: ${r.score.toFixed(3)})\n${snippet}`;

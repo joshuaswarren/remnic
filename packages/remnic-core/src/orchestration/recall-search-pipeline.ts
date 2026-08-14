@@ -1215,14 +1215,12 @@ export class RecallSearchPipelineCoordinator {
           continue;
         }
       }
-      // Issue #2183 — derive sourceConnector EXCLUSIVELY from the hydrated
-      // memory, on a copy so a shared/cached result object (global QMD cache)
-      // is never mutated across recalls and a result-supplied value (e.g.
-      // RemoteSearchBackend casting arbitrary responses) cannot pose as trusted
-      // provenance. Connectorless memory (or no memory) → cleared (undefined).
+      // Derive persisted provenance exclusively from hydrated frontmatter.
+      // The formatter parses this value at the model-context render site.
       filtered.push({
         ...r,
         sourceConnector: memory ? memory.frontmatter.sourceConnector : undefined,
+        origin: memory ? memory.frontmatter.origin : undefined,
       });
     }
     if (connectorPartitionFilteredCount > 0) {

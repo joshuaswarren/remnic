@@ -23,7 +23,7 @@ import { createHash } from "node:crypto";
 import { readFile, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import { type BoxFrontmatter } from "../boxes.js";
-import { type CapabilitySet, type GraphConstructionCapabilitySet, type MemoryLifecycleCapabilitySet, resolveCapabilities, resolveCompressionCapabilities, resolveConsolidationCapabilities, resolveConversationContextCapabilities, resolveCreationMemoryCapabilities, resolveGraphConstructionCapabilities, resolveIdentityContinuityCapabilities, resolveIndexingCapabilities, resolveMemoryLifecycleCapabilities, resolveNamespaceCapabilities, resolveObjectiveStateCapabilities, resolvePipelineProcessingCapabilities, resolvePresentationCapabilities, resolveQmdCapabilities, resolveRecallAuxiliaryCapabilities, resolveRecallEnhancementCapabilities, resolveSecurityCapabilities } from "../capabilities.js";
+import { type CapabilitySet, type GraphConstructionCapabilitySet, type MemoryLifecycleCapabilitySet, type SecurityCapabilitySet, resolveCapabilities, resolveCompressionCapabilities, resolveConsolidationCapabilities, resolveConversationContextCapabilities, resolveCreationMemoryCapabilities, resolveGraphConstructionCapabilities, resolveIdentityContinuityCapabilities, resolveIndexingCapabilities, resolveMemoryLifecycleCapabilities, resolveNamespaceCapabilities, resolveObjectiveStateCapabilities, resolvePipelineProcessingCapabilities, resolvePresentationCapabilities, resolveQmdCapabilities, resolveRecallAuxiliaryCapabilities, resolveRecallEnhancementCapabilities, resolveSecurityCapabilities } from "../capabilities.js";
 import { searchCausalTrajectories } from "../causal-trajectory.js";
 import { buildEntityRecallSection, entityRecentTranscriptLookbackHours, readRecentEntityTranscriptEntries } from "../entity-retrieval.js";
 import { buildEventOrderRecallSection, shouldRecallEventOrderEvidence } from "../event-order-recall.js";
@@ -44,7 +44,7 @@ import { buildQmdRecallCacheKey, getCachedQmdRecall, setCachedQmdRecall } from "
 import { MEMORY_ID_PATTERN } from "../recall-handles.js";
 import {
   boundRecallContextComposition, composeRecallContext, contextBudgetForFooter,
-  formatCuriosityFooter, selectCuriosityQuestion,
+  formatCuriosityFooter, renderAuthorityBoundContent, selectCuriosityQuestion,
 } from "../recall-context-composition.js";
 import {
   createBoundedCoreSectionRunner,
@@ -108,9 +108,8 @@ import type { RecallInternalDeps } from "./recall-internal-deps.js";
 import { resolveCompositeProfileStorage } from "./recall-profile-storage.js";
 
 export class RecallInternalCoordinator {
-  constructor(
-    private readonly deps: RecallInternalDeps,
-  ) {}
+  private readonly securityCapabilities: SecurityCapabilitySet;
+  constructor(private readonly deps: RecallInternalDeps) { this.securityCapabilities = resolveSecurityCapabilities(deps.config); }
 
   async recallInternal(
     prompt: string,
@@ -3308,6 +3307,8 @@ export class RecallInternalCoordinator {
             query: retrievalQuery,
             maxChars: eventOrderMaxChars,
             maxItems,
+            originAuthorityEnabled: this.securityCapabilities.originAuthority,
+            untrustedOrigins: this.deps.config.untrustedOrigins,
           });
         }
 
@@ -3443,7 +3444,11 @@ export class RecallInternalCoordinator {
         const created = createdRaw
           ? createdRaw.slice(0, 19).replace("T", " ")
           : "unknown-time";
-        return `- [${artifactType}] "${this.deps.truncateArtifactForRecall(a.content)}" (${created})`;
+        const content = renderAuthorityBoundContent(this.deps.truncateArtifactForRecall(a.content), a.frontmatter.origin, {
+          enabled: this.securityCapabilities.originAuthority,
+          untrustedOrigins: this.deps.config.untrustedOrigins,
+        });
+        return `- [${artifactType}] "${content}" (${created})`;
       });
       this.deps.appendRecallSection(
         sectionBuckets,
@@ -4552,6 +4557,7 @@ export class RecallInternalCoordinator {
                     namespace: this.deps.namespaceFromPath(m.path),
                     snippet: m.content,
                     score: 1.0 - i / Math.max(recentSorted.length, 1),
+                    origin: m.frontmatter.origin,
                   }),
                 );
                 const boostedRecent = (

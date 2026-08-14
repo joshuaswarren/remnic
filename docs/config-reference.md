@@ -924,6 +924,9 @@ FAISS notes:
 | `trustZoneStoreDir` | `{memoryDir}/state/trust-zones` | Root directory for trust-zone records |
 | `trustZoneRecallEnabled` | `false` | Inject prompt-relevant working and trusted trust-zone records into recall context |
 | `memoryPoisoningDefenseEnabled` | `false` | Enable deterministic provenance trust scoring and corroboration requirements for risky trusted promotions |
+| `originAuthorityEnabled` | `false` | Record the source origin class on each new memory write; untrusted origins remain data, not authority |
+| `injectionScreenEnabled` | `true` | Screen candidate facts with deterministic rules and queue findings as `pending_review` |
+| `untrustedOrigins` | `["tool_output", "import:*", "unknown"]` | Origin classes that receive the authority fence during recall rendering |
 | `memoryRedTeamBenchEnabled` | `false` | Enable typed `memory-red-team` benchmark packs and status accounting for poisoning-defense regression suites |
 | `harmonicRetrievalEnabled` | `false` | Enable harmonic retrieval and construct abstraction nodes after extraction |
 | `abstractionAnchorsEnabled` | `false` | Enable cue-anchor storage, status, and retrieval |
@@ -984,6 +987,16 @@ Current foundation slice:
 - When `promotionByOutcomeEnabled` is also on and a learner snapshot exists, Remnic applies bounded learned utility multipliers to ranking heuristic deltas and bounded promotion/demotion threshold nudges to tier migration without re-reading raw utility telemetry on the hot path.
 - Use `openclaw engram semantic-rule-verify <query>` to preview verified semantic-rule matches, including verification status, effective confidence, and the cited source memory id.
 - Future slices will add automated benchmark runners on top of this store and gate format.
+
+### Memory-poisoning hardening (#1955)
+
+The hardening path has three layers:
+
+1. The write path records the origin class when `originAuthorityEnabled` is `true`.
+2. The recall renderer wraps content from `untrustedOrigins` in a data-only authority fence.
+3. The deterministic injection screen sends suspicious candidate facts to `pending_review` when `injectionScreenEnabled` is `true`. It never drops a candidate.
+
+Run `remnic security audit-memory` to inspect stored memories for origin gaps, authority-sensitive content, and injection-screen findings. The command is read-only unless its command help states otherwise.
 
 ## v3.0 Namespaces
 

@@ -197,6 +197,7 @@ test("registry and exempt list disjointly cover every MemoryWriteInput field", (
     validAt: FIXED_NOW.toISOString(),
     sourceConnector: "bee",
     sourceReason: "r",
+    origin: "user",
   };
   for (const key of Object.keys(populated)) {
     assert.ok(classified.has(key), `field ${key} is not classified`);
