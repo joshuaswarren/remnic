@@ -117,6 +117,43 @@ test("failure-semantics: selected memory snapshots block member writes until eve
   }
 });
 
+test("failure-semantics: selected memory snapshot tasks hold every member lock", async () => {
+  const { storage, cleanup } = await makeStorage();
+  const taskStarted = Promise.withResolvers<void>();
+  const releaseTask = Promise.withResolvers<void>();
+  try {
+    const first = await storage.writeMemory("preference", "First source");
+    const second = await storage.writeMemory("preference", "Second source");
+    const firstSnapshot = await storage.readMemoryByPath(first.memory.path);
+    const secondSnapshot = await storage.readMemoryByPath(second.memory.path);
+    assert.ok(firstSnapshot);
+    assert.ok(secondSnapshot);
+
+    const snapshotTask = storage.withMemorySnapshotsIfUnchanged(
+      [firstSnapshot, secondSnapshot],
+      async (memories) => {
+        taskStarted.resolve();
+        await releaseTask.promise;
+        return memories.map((memory) => memory.frontmatter.id);
+      },
+    );
+    await taskStarted.promise;
+    let writeSettled = false;
+    const writePromise = storage.updateMemoryIfUnchanged(firstSnapshot, "Changed source").finally(() => {
+      writeSettled = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(writeSettled, false);
+
+    releaseTask.resolve();
+    assert.deepEqual(await snapshotTask, [first.id, second.id]);
+    assert.equal(await writePromise, true);
+  } finally {
+    releaseTask.resolve();
+    await cleanup();
+  }
+});
+
 test("failure-semantics: readMemoryByPath on a non-existent file returns null (not throw)", async () => {
   const { storage, baseDir, cleanup } = await makeStorage();
   try {
