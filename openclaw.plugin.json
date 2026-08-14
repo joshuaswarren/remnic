@@ -5469,6 +5469,15 @@
             "type": "boolean",
             "default": false,
             "description": "Enable support passport owner routes, MCP tools, and public share links."
+          },
+          "trustedProxyAddresses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "default": [],
+            "description": "Exact reverse-proxy IP addresses allowed to supply X-Forwarded-For for public helper limits."
           }
         }
       },
