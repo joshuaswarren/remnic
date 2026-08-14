@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -14,6 +14,35 @@ import {
   persistSupportPassportGeneratedBatchMarker,
   rollbackSupportPassportGeneratedBatch,
 } from "./generated-batch.js";
+
+test("generated batch setup hardens an existing writable directory", async () => {
+  StorageManager.clearAllStaticCaches();
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-passport-batch-mode-"));
+  const storage = new StorageManager(path.join(root, "shared"));
+  await storage.ensureDirectories();
+  const batchRoot = path.join(storage.dir, "state", "support-passport", "generated-batches");
+  await mkdir(batchRoot, { recursive: true, mode: 0o777 });
+  await chmod(batchRoot, 0o777);
+
+  try {
+    await persistSupportPassportGeneratedBatchMarker(
+      {
+        storage,
+        principal: "owner:alice",
+        namespace: "team",
+        now: () => new Date("2026-08-13T12:00:00.000Z"),
+        requireOwnerLock: async () => undefined,
+      },
+      "00000000-0000-4000-8000-000000000000",
+      1
+    );
+
+    assert.equal((await stat(batchRoot)).mode & 0o777, 0o700);
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("a visible generated batch marker reconciles its durability error as success", async () => {
   StorageManager.clearAllStaticCaches();
