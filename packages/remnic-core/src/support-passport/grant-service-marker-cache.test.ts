@@ -19,6 +19,8 @@ test("grant snapshots reuse generated batch markers across validation and projec
   const storage = {
     getCorpusScanVersion: () => 7,
     hotCacheKeyId: () => "owner-cache",
+    hotCacheTtlMs: () => 60_000,
+    isHotCacheEnabled: () => true,
   } as unknown as StorageManager;
   const service = new SupportPassportGrantService({
     grantStore: {} as SupportPassportGrantStore,
