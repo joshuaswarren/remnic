@@ -2136,7 +2136,7 @@ test("unrelated memory writes do not invalidate an unchanged shared guide", asyn
   }
 });
 
-test("one unchanged guide read projects one corpus snapshot", async () => {
+test("one unchanged guide read validates a fresh final corpus snapshot", async () => {
   const subject = await makeSubject();
   try {
     const card = await createActiveCard(subject);
@@ -2161,7 +2161,7 @@ test("one unchanged guide read projects one corpus snapshot", async () => {
     });
 
     assert.equal(guide.cards[0]?.cardId, card.cardId);
-    assert.equal(corpusReads, 1);
+    assert.equal(corpusReads, 2);
   } finally {
     await subject.cleanup();
   }
