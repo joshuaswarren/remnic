@@ -6,6 +6,7 @@ import { raceAbort, throwIfAborted } from "../abort-error.js";
 import { log } from "../logger.js";
 import { stripAttributesSuffix } from "../structured-attributes.js";
 import type { MemoryFile } from "../types.js";
+import { isSupportPassportPrivateMemory } from "./card-projection.js";
 import type { SupportPassportCardService, SupportPassportOwnerScope } from "./card-service.js";
 import {
   type SupportPassportCard,
@@ -96,6 +97,7 @@ function isEligibleSource(memory: MemoryFile): boolean {
   const status = memory.frontmatter.status ?? "active";
   return (
     status === "active" &&
+    !isSupportPassportPrivateMemory(memory) &&
     !memory.frontmatter.archivedAt &&
     !memory.frontmatter.blockedBy &&
     !memory.frontmatter.supersededBy

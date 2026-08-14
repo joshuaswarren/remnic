@@ -218,6 +218,71 @@ test("drafting persists into the owner scope used for source reads", async () =>
   }
 });
 
+test("drafting never sends another owner's support card to a model", async () => {
+  StorageManager.clearAllStaticCaches();
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-model-private-source-"));
+  const storage = new StorageManager(path.join(root, "shared"));
+  try {
+    await storage.ensureDirectories();
+    const resolveOwner = async (principal: string) => ({ principal, namespace: "team", storage });
+    const cardService = new SupportPassportCardService({ resolveOwner });
+    const bobDraft = await cardService.createManualDraft({
+      principal: "owner:bob",
+      title: "Private support",
+      statement: "Do not disclose this private support statement.",
+      category: "other",
+      reviewBy: "2026-09-01T12:00:00.000Z",
+    });
+    const bobCard = await cardService.approveCard({
+      principal: "owner:bob",
+      cardId: bobDraft.cardId,
+      expectedRevision: bobDraft.revision,
+    });
+    const stored = await storage.getMemoryById(bobCard.cardId);
+    assert.ok(stored);
+    let modelCalls = 0;
+    const service = new SupportPassportDraftService({
+      cardService,
+      modelAdapter: new SupportPassportModelAdapter({
+        routes: [
+          {
+            kind: "local",
+            invoke: async () => {
+              modelCalls += 1;
+              return null;
+            },
+          },
+        ],
+      }),
+      resolveOwner,
+      audit: { record: async () => undefined },
+    });
+
+    await assert.rejects(
+      service.draftCards({
+        principal: "owner:alice",
+        sourceMemoryIds: [bobCard.cardId],
+        sourceMemoryRevisions: [
+          {
+            memoryId: bobCard.cardId,
+            revision: computeSupportPassportSourceRevision(
+              stored.content,
+              stored.frontmatter.structuredAttributes,
+            ),
+          },
+        ],
+        consent: true,
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "invalid_input",
+    );
+    assert.equal(modelCalls, 0);
+    assert.deepEqual(await cardService.listCards({ principal: "owner:alice" }), []);
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("drafting rejects a resolved principal that differs from the authenticated principal", async () => {
   const subject = await makeSubject();
   try {
