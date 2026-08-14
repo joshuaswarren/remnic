@@ -32,6 +32,7 @@ const UUID_INPUT = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-
 const SAFE_OWNER_INDEX_HASH = /^[0-9a-f]{64}$/;
 const UNSUPPORTED_DIRECTORY_SYNC_ERRORS = new Set(["EINVAL", "ENOSYS", "ENOTSUP", "EOPNOTSUPP"]);
 const MAX_OWNER_GRANT_HISTORY = 100;
+const MAX_OWNER_INDEX_RECOVERY_ATTEMPTS = 3;
 
 class OwnerIndexLockLostError extends Error {
   constructor(cause: unknown) {
@@ -540,7 +541,7 @@ export class SupportPassportGrantStore {
     committed: { state: SupportPassportGrantState; secret: string },
   ): Promise<{ state: SupportPassportGrantState; secret: string }> {
     const ownerHash = this.ownerHash(committed.state.namespace, committed.state.principalHash);
-    while (true) {
+    for (let attempt = 1; attempt <= MAX_OWNER_INDEX_RECOVERY_ATTEMPTS; attempt += 1) {
       try {
         return await this.withOwnerIndexLock(ownerHash, async (lock) =>
           await this.reconcileCommittedGrant(committed, ownerHash, lock)
@@ -549,6 +550,7 @@ export class SupportPassportGrantStore {
         if (!(error instanceof OwnerIndexLockLostError)) throw error;
       }
     }
+    throw new SupportPassportError("storage_conflict", "The share link store changed during the request.", 409);
   }
 
   private async reconcileCommittedGrant(

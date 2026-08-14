@@ -1003,6 +1003,48 @@ test("grant recovery propagates transient reads from an owner membership", async
   }
 });
 
+test("grant recovery stops after repeated owner-index lock loss", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-bounded-recovery-"));
+  try {
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({
+      memoryDir: root,
+      makeGrantId: () => "00000000-0000-4000-8000-000000000001",
+      now: () => now,
+    });
+    const inspected = store as unknown as {
+      withOwnerIndexLock<T>(
+        ownerHash: string,
+        task: (lock: { refresh(): Promise<boolean> }) => Promise<T>,
+      ): Promise<T>;
+    };
+    let ownerLockRuns = 0;
+    inspected.withOwnerIndexLock = async (_ownerHash, task) => {
+      ownerLockRuns += 1;
+      let refreshes = 0;
+      return await task({
+        refresh: async () => {
+          refreshes += 1;
+          return refreshes === 1;
+        },
+      });
+    };
+
+    await assert.rejects(
+      store.create({
+        namespace: "alice",
+        principal: "owner:alice",
+        cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+        expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
+      }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict",
+    );
+    assert.equal(ownerLockRuns, 4);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("grant recovery prunes a stale owner-index entry after lock loss", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-stale-index-recovery-"));
   try {
