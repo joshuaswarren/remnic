@@ -847,7 +847,7 @@ test("grant creation rechecks the owner lock immediately before commit", async (
   }
 });
 
-test("grant creation reports its first durable write before later index failure", async () => {
+test("grant creation does not report a commit before owner indexing completes", async () => {
   const subject = await makeSubject();
   try {
     const active = await createActiveCard(subject);
@@ -876,7 +876,11 @@ test("grant creation reports its first durable write before later index failure"
       ),
       /simulated owner index failure/,
     );
-    assert.equal(committed, 1);
+    assert.equal(committed, 0);
+    assert.deepEqual(
+      await subject.grantService.listGrants({ principal: "owner:alice" }),
+      [],
+    );
   } finally {
     await subject.cleanup();
   }
@@ -3334,7 +3338,7 @@ test("the grant store fails closed for corrupt and symlinked grant files", async
   }
 });
 
-test("the grant store rejects a state file whose grant ID does not match its file name", async () => {
+test("the grant store omits a state file whose grant ID does not match its file name", async () => {
   const root = await mkdtemp(
     path.join(tmpdir(), "remnic-support-grant-identity-"),
   );
