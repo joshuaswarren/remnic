@@ -165,6 +165,7 @@ test("the owner note preview preserves API text and binds consent to its revisio
   });
 
   await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await expect(page.getByLabel("Bearer token")).not.toHaveAttribute("name");
   await page.getByLabel("Bearer token").fill("owner-token");
   await page.getByRole("button", { name: "Open my guide" }).click();
   await page.getByLabel("Memory ID").fill("note-with-attributes");
