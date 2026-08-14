@@ -26,7 +26,7 @@ import { resolveSafeStoragePath } from "./storage-paths.js";
 import { log } from "./logger.js";
 import { createMemorySnapshot } from "./memory-snapshot.js";
 import { assertMemoryFrontmatterId, warnProjectionFallback } from "./storage-guards.js";
-import { MemoryReadStore } from "./storage/memory-read-store.js";
+import { MemoryReadStore, readWindowedMemories, type WindowedMemoryReadOptions, type WindowedMemoryReadResult } from "./storage/memory-read-store.js";
 import { hasSupersessionAudit } from "./storage/supersession-audit.js";
 import { runCommittedInvalidation } from "./storage/committed-invalidation.js";
 import { renderProfileWithLastUpdated } from "./storage/profile-header.js";
@@ -4827,38 +4827,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return { memories, filePaths };
   }
 
-  async readMemoriesWindow(
-    options: {
-      maxMemories?: number;
-      batchSize?: number;
-      updatedAfter?: Date;
-    } = {}
-  ): Promise<{ memories: MemoryFile[]; filePaths: string[] }> {
-    // Briefings request only an update lower bound. Reuse a warm full-corpus
-    // cache for that shape instead of scanning every active path again.
-    if (
-      this.hotMemoriesCacheEnabled &&
-      options.updatedAfter !== undefined &&
-      options.maxMemories === undefined &&
-      options.batchSize === undefined
-    ) {
-      const cached = getCachedMemories(
-        this.baseDir,
-        this.getMemoryCorpusVersion(),
-        this.hotCacheKeyId(),
-        this.hotCacheTtlMs()
-      );
-      if (cached !== null) {
-        const updatedAfterMs = options.updatedAfter.getTime();
-        const memories = cached.filter((memory) => {
-          const rawTimestamp = memory.frontmatter.updated ?? memory.frontmatter.created;
-          const timestampMs = typeof rawTimestamp === "string" ? Date.parse(rawTimestamp) : Number.NaN;
-          return Number.isFinite(timestampMs) && timestampMs >= updatedAfterMs;
-        });
-        return { memories: this.rememberMemorySnapshots(memories), filePaths: memories.map((memory) => memory.path) };
-      }
-    }
-    return this.memoryReadStore.readMemoriesWindow(options);
+  async readMemoriesWindow(options: WindowedMemoryReadOptions = {}): Promise<WindowedMemoryReadResult> {
+    return readWindowedMemories(this.memoryReadStore, options, { enabled: this.hotMemoriesCacheEnabled, baseDir: this.baseDir, corpusVersion: this.getMemoryCorpusVersion(), cacheKeyId: this.hotCacheKeyId(), ttlMs: this.hotCacheTtlMs() }, (memories) => this.rememberMemorySnapshots(memories));
   }
 
   private async _readAllMemoriesFromDisk(options?: CorpusReadOptions): Promise<MemoryFile[]> {

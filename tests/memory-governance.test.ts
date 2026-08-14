@@ -690,6 +690,7 @@ test("readMemoriesWindow reuses the warm corpus cache for briefing reads", async
 
     assert.deepEqual(window.memories.map((memory) => memory.frontmatter.id), ["fact-recent"]);
   } finally {
+    StorageManager.clearAllStaticCaches();
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
