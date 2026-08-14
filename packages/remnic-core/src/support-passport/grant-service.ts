@@ -58,7 +58,7 @@ export class SupportPassportGrantService {
 
   async createGrant(
     input: SupportPassportCreateGrantInput,
-    options: { signal?: AbortSignal; onCommitted?: () => void } = {}
+    options: { signal?: AbortSignal; onCommitted?: () => void | Promise<void> } = {}
   ): Promise<SupportPassportCreatedGrant> {
     const requestedAt = this.now();
     const parsed = SupportPassportCreateGrantInputSchema.safeParse(input);
@@ -131,7 +131,7 @@ export class SupportPassportGrantService {
 
   async revokeGrant(
     input: SupportPassportRevokeGrantInput,
-    options: { signal?: AbortSignal; onCommitted?: () => void } = {}
+    options: { signal?: AbortSignal; onCommitted?: () => void | Promise<void> } = {}
   ): Promise<SupportPassportOwnerGrant> {
     const parsed = SupportPassportRevokeGrantInputSchema.safeParse(input);
     if (!parsed.success) throw invalidInput();

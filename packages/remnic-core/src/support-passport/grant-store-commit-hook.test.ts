@@ -22,11 +22,12 @@ test("commit notification failures do not orphan grants or hide revocations", as
         expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
       },
       {
-        onCommitted: () => {
+        onCommitted: async () => {
           throw new Error("simulated notification failure");
         },
       },
     );
+    await new Promise<void>((resolve) => setImmediate(resolve));
 
     assert.deepEqual(
       (await store.listForOwner("alice", "owner:alice")).map(
@@ -42,11 +43,12 @@ test("commit notification failures do not orphan grants or hide revocations", as
         principal: "owner:alice",
       },
       {
-        onCommitted: () => {
+        onCommitted: async () => {
           throw new Error("simulated notification failure");
         },
       },
     );
+    await new Promise<void>((resolve) => setImmediate(resolve));
 
     assert.ok(revoked.revokedAt);
     assert.equal(

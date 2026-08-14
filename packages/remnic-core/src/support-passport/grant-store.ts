@@ -67,7 +67,7 @@ export interface CreateStoredGrantInput {
 
 export interface SupportPassportGrantMutationHooks {
   beforeCommit?: () => Promise<void>;
-  onCommitted?: () => void;
+  onCommitted?: () => void | Promise<void>;
 }
 
 type SupportPassportGrantCreateHooks =
@@ -97,11 +97,16 @@ function grantNotFound(): SupportPassportError {
   return new SupportPassportError("grant_not_found", "The share link was not found.", 404);
 }
 
-function notifyCommitted(callback: (() => void) | undefined): void {
+function warnCommitNotificationFailure(error: unknown): void {
+  log.warn(`support passport commit notification failed: ${error instanceof Error ? error.message : String(error)}`);
+}
+
+function notifyCommitted(callback: (() => void | Promise<void>) | undefined): void {
   try {
-    callback?.();
+    const completion = callback?.();
+    if (completion) void Promise.resolve(completion).catch(warnCommitNotificationFailure);
   } catch (error) {
-    log.warn(`support passport commit notification failed: ${error instanceof Error ? error.message : String(error)}`);
+    warnCommitNotificationFailure(error);
   }
 }
 
