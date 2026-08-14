@@ -56,6 +56,7 @@
     helperRevalidationController: null,
     helperRevalidationTimer: null,
     helperRevalidationDelayMs: HELPER_REVALIDATION_MS,
+    helperViewGeneration: 0,
     helperLifecyclePaused: false,
     ownerServerOffsetMs: null,
     pendingCardMutationIds: new Set(),
@@ -67,6 +68,7 @@
     shareCreationCardIds: null,
     displayedGrant: null,
     displayedGrantTimer: null,
+    ownerGrantExpiryTimer: null,
     ownerLifecyclePaused: false,
     ownerRequestControllers: new Set(),
     ownerLoadGeneration: 0,
@@ -572,14 +574,18 @@
   }
 
   function renderGrants() {
+    window.clearTimeout(state.ownerGrantExpiryTimer);
+    state.ownerGrantExpiryTimer = null;
     const list = byId("grantList");
     clear(list);
     byId("grantsEmpty").hidden = state.grants.length > 0;
     for (const grant of state.grants) {
+      const grantStatus =
+        grant.status === "active" && Date.parse(grant.expiresAt) <= ownerNowMs() ? "expired" : grant.status;
       const article = element("article", "grant-card");
       article.dataset.grantId = grant.grantId;
       const stateText =
-        grant.status === "active" ? "Live share" : grant.status === "revoked" ? "Sharing stopped" : "Share time ended";
+        grantStatus === "active" ? "Live share" : grantStatus === "revoked" ? "Sharing stopped" : "Share time ended";
       article.append(
         element("p", "", stateText),
         element(
@@ -588,7 +594,7 @@
           `${grant.cards.length} card${grant.cards.length === 1 ? "" : "s"} · Ends ${model.formatDate(grant.expiresAt)}`
         )
       );
-      if (grant.status === "active") {
+      if (grantStatus === "active") {
         const stop = cardButton("Stop sharing", "button-danger", async (event) => {
           const ownerSessionGeneration = state.ownerSessionGeneration;
           const button = event.currentTarget;
@@ -645,6 +651,17 @@
         article.append(stop);
       }
       list.append(article);
+    }
+    const nextExpiry = state.grants
+      .filter((grant) => grant.status === "active")
+      .map((grant) => Date.parse(grant.expiresAt) - ownerNowMs())
+      .filter((remainingMs) => remainingMs > 0)
+      .sort((left, right) => left - right)[0];
+    if (Number.isFinite(nextExpiry)) {
+      state.ownerGrantExpiryTimer = window.setTimeout(() => {
+        reconcileDisplayedShareLink();
+        renderGrants();
+      }, nextExpiry);
     }
   }
 
@@ -939,7 +956,7 @@
     const choice = document.querySelector('input[name="duration"]:checked')?.value ?? "2h";
     let expiry;
     try {
-      expiry = model.expiryForChoice(choice, byId("customTimeInput").value);
+      expiry = model.expiryForChoice(choice, byId("customTimeInput").value, ownerNowMs());
     } catch (error) {
       setError("shareError", errorMessage(error, "Choose a valid share time."));
       return;
@@ -1064,6 +1081,7 @@
     state.helperQuestionController = null;
     state.helperRevalidationController?.abort();
     state.helperRevalidationController = null;
+    state.helperViewGeneration += 1;
     const lastGuide = state.guide;
     state.guide = null;
     byId("connectPanel")?.remove();
@@ -1146,18 +1164,25 @@
   async function revalidateHelper() {
     state.helperRevalidationTimer = null;
     if (!state.guide || state.helperLifecyclePaused) return;
+    const helperViewGeneration = state.helperViewGeneration;
     const controller = new AbortController();
     state.helperRevalidationController?.abort();
     state.helperRevalidationController = controller;
     const timeout = window.setTimeout(() => controller.abort(HELPER_READ_TIMEOUT_ABORT), HELPER_READ_TIMEOUT_MS);
     try {
       const guide = await readHelperGuide(controller.signal);
-      if (state.helperLifecyclePaused) return;
+      if (state.helperLifecyclePaused || helperViewGeneration !== state.helperViewGeneration) return;
       state.guide = guide;
       state.helperRevalidationDelayMs = HELPER_REVALIDATION_MS;
       scheduleHelperExpiry();
     } catch (error) {
-      if (state.helperLifecyclePaused || controller.signal.reason === PAGE_HIDDEN_ABORT || !state.guide) return;
+      if (
+        state.helperLifecyclePaused ||
+        helperViewGeneration !== state.helperViewGeneration ||
+        controller.signal.reason === PAGE_HIDDEN_ABORT ||
+        !state.guide
+      )
+        return;
       if (controller.signal.aborted) {
         if (controller.signal.reason !== HELPER_READ_TIMEOUT_ABORT) return;
         showLocked(HELPER_READ_TIMEOUT_ABORT);
@@ -1172,7 +1197,10 @@
       }
     } finally {
       window.clearTimeout(timeout);
-      if (state.helperRevalidationController === controller) {
+      if (
+        state.helperRevalidationController === controller &&
+        helperViewGeneration === state.helperViewGeneration
+      ) {
         state.helperRevalidationController = null;
         scheduleHelperRevalidation();
       }
@@ -1180,6 +1208,7 @@
   }
 
   async function loadHelper() {
+    const helperViewGeneration = ++state.helperViewGeneration;
     byId("connectPanel")?.remove();
     byId("ownerView")?.remove();
     byId("lockedView").hidden = true;
@@ -1200,14 +1229,19 @@
     const timeout = window.setTimeout(() => controller.abort(HELPER_READ_TIMEOUT_ABORT), HELPER_READ_TIMEOUT_MS);
     try {
       const guide = await readHelperGuide(controller.signal);
-      if (state.helperLifecyclePaused) return;
+      if (state.helperLifecyclePaused || helperViewGeneration !== state.helperViewGeneration) return;
       state.guide = guide;
       renderGuide(state.guide);
       if (!state.guide) return;
       scheduleHelperRevalidation();
       announce(`Support passport loaded with ${state.guide.cards.length} cards.`);
     } catch (error) {
-      if (state.helperLifecyclePaused || error === PAGE_HIDDEN_ABORT || controller.signal.reason === PAGE_HIDDEN_ABORT)
+      if (
+        state.helperLifecyclePaused ||
+        helperViewGeneration !== state.helperViewGeneration ||
+        error === PAGE_HIDDEN_ABORT ||
+        controller.signal.reason === PAGE_HIDDEN_ABORT
+      )
         return;
       showLocked(controller.signal.reason === HELPER_READ_TIMEOUT_ABORT ? HELPER_READ_TIMEOUT_ABORT : error);
     } finally {
@@ -1350,6 +1384,8 @@
     state.shareCreationPending = false;
     state.shareCreationCardIds = null;
     clearDisplayedShareLink();
+    window.clearTimeout(state.ownerGrantExpiryTimer);
+    state.ownerGrantExpiryTimer = null;
     clearPrefillToken();
     window.clearTimeout(state.announcementTimer);
     state.announcementTimer = null;
@@ -1357,8 +1393,10 @@
     byId("connectForm").reset();
     byId("memoryForm").reset();
     byId("memoryForm").querySelector('button[type="submit"]').textContent = "Add selected note";
+    byId("generateButton").textContent = "Draft my support cards";
     byId("cardForm").reset();
     byId("shareForm").reset();
+    byId("shareForm").querySelector('button[type="submit"]').textContent = "Create share link";
     byId("customTimeField").hidden = true;
     if (byId("cardDialog").open) byId("cardDialog").close();
     byId("toast").textContent = "";
