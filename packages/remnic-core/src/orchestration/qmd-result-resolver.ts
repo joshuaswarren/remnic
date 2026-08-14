@@ -353,7 +353,6 @@ export class QmdResultResolver {
     namespaces: readonly string[],
     preserveUnresolved: boolean
   ): Promise<boolean> {
-    const memory = await this.readQmdResultMemory(result.path, fallbackStorage, namespaces, result.namespace);
     const parts = qmdCollectionPathParts(result.path);
     const config = this.getConfig();
     const collectionIsKnownInternal = parts !== null && INTERNAL_QMD_ROOTS.has(parts.collection);
@@ -362,6 +361,10 @@ export class QmdResultResolver {
       (parts.collection === config.qmdCollection ||
         parts.collection === (config.qmdColdCollection ?? "openclaw-engram-cold") ||
         this.qmdCollectionNamespaceFromPrefix(parts.collection) !== null);
+    let memory = await this.readQmdResultMemory(result.path, fallbackStorage, namespaces, result.namespace);
+    if (!memory && parts && !collectionIsKnownInternal && !collectionIsConfigured) {
+      memory = await this.readQmdResultMemory(parts.relativePath, fallbackStorage, namespaces, result.namespace);
+    }
     const absoluteInsideMemoryRoot =
       path.isAbsolute(result.path) &&
       isPathInsideStorageRoot(path.resolve(config.memoryDir), path.resolve(result.path));

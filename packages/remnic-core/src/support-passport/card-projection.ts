@@ -35,7 +35,16 @@ export function createSupportPassportPrivateFileExclusion(storage: {
 }): OfflineSyncExcludeFile {
   const classifications = new Map<string, { identity: string; excluded: Promise<boolean> }>();
   return async ({ filePath }) => {
-    const file = await lstat(filePath);
+    let file: Awaited<ReturnType<typeof lstat>>;
+    try {
+      file = await lstat(filePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        classifications.delete(filePath);
+        return false;
+      }
+      throw error;
+    }
     const identity = `${file.dev}:${file.ino}:${file.size}:${file.mtimeMs}:${file.ctimeMs}`;
     const cached = classifications.get(filePath);
     if (cached?.identity === identity) return await cached.excluded;

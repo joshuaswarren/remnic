@@ -118,7 +118,34 @@ test("private-result filtering can preserve unresolved custom-collection hits", 
     });
     const result = { docid: "external", path: "custom-collection/page.md", snippet: "page", score: 1 };
 
+    const privateDir = path.join(dir, "preferences");
+    await mkdir(privateDir, { recursive: true });
+    await writeFile(
+      path.join(privateDir, "private.md"),
+      [
+        "---",
+        "id: private",
+        "category: preference",
+        "created: 2026-08-13T00:00:00.000Z",
+        "updated: 2026-08-13T00:00:00.000Z",
+        "status: active",
+        "tags:",
+        "  - support-passport-card",
+        "---",
+        "",
+        "Private support card.",
+        "",
+      ].join("\n"),
+      "utf8"
+    );
+
     assert.deepEqual(await resolver.filterPrivateSearchResults([result], storage), [result]);
+    const qualifiedPrivate = {
+      ...result,
+      path: "custom-collection/preferences/private.md",
+      snippet: "Private support card.",
+    };
+    assert.deepEqual(await resolver.filterPrivateSearchResults([qualifiedPrivate], storage), []);
     const configured = { ...result, path: `${config.qmdCollection}/page.md` };
     assert.deepEqual(await resolver.filterPrivateSearchResults([configured], storage), []);
     assert.deepEqual(await resolver.filterPrivateSearchResults([configured], storage, [], true), [configured]);

@@ -178,6 +178,34 @@ test("offline base privacy checks use bounded parallel batches", async () => {
   );
 });
 
+test("offline base privacy checks tolerate files deleted after enumeration", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-storage-deleted-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    const written = await storage.writeMemory("fact", "This file will be deleted.", {
+      source: "test",
+      confidence: 1,
+    });
+    const file = await stat(written.memory.path);
+    const baseFile = {
+      path: path.relative(memoryDir, written.memory.path),
+      sha256: "0".repeat(64),
+      bytes: file.size,
+      mtimeMs: file.mtimeMs,
+    };
+    const io = await createOfflineStorageIo(memoryDir, {
+      storage,
+      secureStoreKey: null,
+      secureStoreRequired: false,
+    });
+    await rm(written.memory.path);
+
+    assert.deepEqual(await filterOfflineSyncBaseFiles(memoryDir, [baseFile], io.excludeFile), [baseFile]);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("offline storage IO decrypts legacy namespaced AAD files in chunks", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-storage-legacy-aad-"));
   try {
