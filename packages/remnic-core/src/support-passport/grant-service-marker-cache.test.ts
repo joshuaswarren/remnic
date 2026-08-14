@@ -60,3 +60,40 @@ test("generated card checks reuse a marker within one snapshot build", async () 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("grant snapshots revalidate after the cross-process cache bound", async () => {
+  let currentTime = 1_000;
+  const storage = {
+    getCorpusScanVersion: () => 7,
+    hotCacheKeyId: () => "owner-cache",
+  } as unknown as StorageManager;
+  const service = new SupportPassportGrantService({
+    grantStore: {} as SupportPassportGrantStore,
+    resolveOwner: async () => ({ principal: "owner:alice", namespace: "alice", storage }),
+    resolveNamespace: async () => storage,
+    now: () => new Date(currentTime),
+  });
+  const cached: TestSnapshot = {
+    version: "7:owner-cache",
+    validatedAtMs: currentTime,
+    cardsById: new Map(),
+    activeReplacementPredecessors: new Set(),
+  };
+  const inspected = service as unknown as {
+    cardSnapshots: WeakMap<StorageManager, Map<string, TestSnapshot>>;
+    readStoredCardSnapshot(storage: StorageManager, namespace: string, ownerKey: string): Promise<TestSnapshot>;
+    readStoredCards(): Promise<StoredSupportPassportCard[]>;
+  };
+  inspected.cardSnapshots.set(storage, new Map([["alice\0owner-key", cached]]));
+  let storageReads = 0;
+  inspected.readStoredCards = async () => {
+    storageReads += 1;
+    return [];
+  };
+
+  assert.equal(await inspected.readStoredCardSnapshot(storage, "alice", "owner-key"), cached);
+  assert.equal(storageReads, 0);
+  currentTime += 1_001;
+  assert.notEqual(await inspected.readStoredCardSnapshot(storage, "alice", "owner-key"), cached);
+  assert.equal(storageReads, 1);
+});

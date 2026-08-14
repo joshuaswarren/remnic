@@ -183,21 +183,90 @@ test("slow helper bodies cannot bypass authentication capacity", async () => {
   });
   try {
     await requestsStarted.promise;
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        authorization: `SupportPassport ${SECRET}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ question: "Can you help?" }),
-      signal: AbortSignal.timeout(2_000),
+    const rejected = await new Promise<{ status: number | undefined; connection: string | undefined }>((resolve, reject) => {
+      const client = request({
+        hostname: url.hostname,
+        port: url.port,
+        path: url.pathname,
+        method: "POST",
+        headers: {
+          authorization: `SupportPassport ${SECRET}`,
+          "content-type": "application/json",
+          "content-length": "100",
+        },
+      }, (response) => {
+        response.resume();
+        response.once("end", () => resolve({
+          status: response.statusCode,
+          connection: response.headers.connection,
+        }));
+      });
+      client.once("error", reject);
+      client.flushHeaders();
+      client.write('{"question":"partial');
     });
-    assert.equal(response.status, 429);
+    assert.equal(rejected.status, 429);
+    assert.equal(rejected.connection, "close");
   } finally {
     for (const client of slowClients) client.destroy();
     await stopServer(server);
   }
   assert.deepEqual(unexpectedErrors, []);
+});
+
+test("oversized helper questions close the unread request body", async () => {
+  const service = {} as EngramAccessService;
+  const { server, root } = await startPublicServer(service);
+  const url = new URL(`${root}/engram/v1/support-passport/public/grants/grant-one/ask`);
+  try {
+    const response = await new Promise<{ status: number | undefined; connection: string | undefined }>((resolve, reject) => {
+      const client = request({
+        hostname: url.hostname,
+        port: url.port,
+        path: url.pathname,
+        method: "POST",
+        headers: {
+          authorization: `SupportPassport ${SECRET}`,
+          "content-type": "application/json",
+          "content-length": "10000",
+        },
+      }, (incoming) => {
+        incoming.resume();
+        incoming.once("end", () => resolve({
+          status: incoming.statusCode,
+          connection: incoming.headers.connection,
+        }));
+      });
+      client.once("error", reject);
+      client.flushHeaders();
+      client.write(`{"question":"${"a".repeat(4_200)}`);
+    });
+    assert.equal(response.status, 400);
+    assert.equal(response.connection, "close");
+  } finally {
+    await stopServer(server);
+  }
+});
+
+test("public routes canonicalize grant IDs before service and quota use", async () => {
+  const grantIds: string[] = [];
+  const service = {
+    supportPassportReadGrant: async (grantId: string) => {
+      grantIds.push(grantId);
+      return GUIDE;
+    },
+  } as unknown as EngramAccessService;
+  const { server, root } = await startPublicServer(service);
+  try {
+    const response = await fetch(
+      `${root}/engram/v1/support-passport/public/grants/AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE`,
+      { headers: { authorization: `SupportPassport ${SECRET}` } }
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual(grantIds, ["aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"]);
+  } finally {
+    await stopServer(server);
+  }
 });
 
 test("invalid helper credentials close an unread request body", async () => {

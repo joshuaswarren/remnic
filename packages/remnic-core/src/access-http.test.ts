@@ -4376,7 +4376,7 @@ test("support-passport MCP keeps reserved quota when generated drafts commit bef
   }
 });
 
-test("support-passport MCP can revoke a share link after the write quota is full", async () => {
+test("support-passport MCP applies the write quota to share-link revocation", async () => {
   let drafts = 0;
   let revocations = 0;
   const service = {
@@ -4436,14 +4436,9 @@ test("support-passport MCP can revoke a share link after the write quota is full
       },
       2,
     );
-    assert.equal(revoked.status, 200);
-    assert.equal(
-      ((await revoked.json()) as { result?: { isError?: boolean } }).result
-        ?.isError,
-      false,
-    );
+    assert.equal(revoked.status, 429);
     assert.equal(drafts, 1);
-    assert.equal(revocations, 1);
+    assert.equal(revocations, 0);
   } finally {
     await server.stop();
   }

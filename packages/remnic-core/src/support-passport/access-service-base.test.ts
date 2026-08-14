@@ -11,7 +11,7 @@ import { StorageManager } from "../storage.js";
 import { SupportPassportAccessServiceBase } from "./access-service-base.js";
 import type { SupportPassportModelRoute } from "./model-adapter.js";
 
-test("support passport stays disabled when a partial host config omits its settings", () => {
+test("support passport stays disabled when a partial host config omits its settings", async () => {
   class TestService extends SupportPassportAccessServiceBase {
     readonly configRef = {} as ReturnType<typeof parseConfig>;
     readonly localLlmRef = null;
@@ -25,7 +25,10 @@ test("support passport stays disabled when a partial host config omits its setti
     }
   }
 
-  assert.equal(new TestService().supportPassportEnabled, false);
+  const service = new TestService();
+  assert.equal(service.supportPassportEnabled, false);
+  await assert.rejects(service.supportPassportListCards("owner:alice"), /Support passport is disabled/);
+  await assert.rejects(service.supportPassportReadGrant("grant", "secret"), /share link was not found/);
 });
 
 test("support passport stays unavailable when private file pinning is unsupported", async () => {
@@ -94,7 +97,7 @@ test("support passport owner operations enforce the presenting token namespace",
   }
 });
 
-test("support passport preserves a legal configured default namespace identity", async () => {
+test("support passport preserves every configured default namespace identity", async () => {
   StorageManager.clearAllStaticCaches();
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-default-namespace-"));
   try {
@@ -103,7 +106,7 @@ test("support passport preserves a legal configured default namespace identity",
     class TestService extends SupportPassportAccessServiceBase {
       readonly configRef = parseConfig({
         memoryDir: root,
-        defaultNamespace: "team support",
+        defaultNamespace: "team../support\\care]primary",
         supportPassport: { enabled: true },
       });
       readonly localLlmRef = null;

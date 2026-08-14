@@ -10,12 +10,13 @@ import {
 } from "./access-surface.js";
 import type { SupportPassportOwnerScope } from "./card-state.js";
 import type { SupportPassportCard, SupportPassportCardCategory } from "./contracts.js";
+import { SupportPassportError } from "./errors.js";
 import type {
   SupportPassportCreateGrantRequest,
   SupportPassportOwnerGrant,
   SupportPassportPublicGuide,
 } from "./grant-contracts.js";
-import { createSupportPassportModelAdapter, type SupportPassportModelRoute } from "./model-adapter.js";
+import { type SupportPassportModelRoute, createSupportPassportModelAdapter } from "./model-adapter.js";
 import type { SupportPassportAnswerOutput } from "./model-contracts.js";
 import { supportsSupportPassportPrivateFiles } from "./private-file.js";
 
@@ -35,7 +36,13 @@ export abstract class SupportPassportAccessServiceBase {
     return process.platform;
   }
 
-  private get supportPassportSurface(): SupportPassportAccessSurface {
+  private getSupportPassportSurface(publicRequest = false): SupportPassportAccessSurface {
+    if (!this.supportPassportEnabled) {
+      if (publicRequest) {
+        throw new SupportPassportError("grant_not_found", "The share link was not found.", 404);
+      }
+      throw new SupportPassportError("feature_disabled", "Support passport is disabled.", 404);
+    }
     if (!this._supportPassportSurface) {
       this._supportPassportSurface = new SupportPassportAccessSurface({
         config: this.configRef,
@@ -63,11 +70,11 @@ export abstract class SupportPassportAccessServiceBase {
   }
 
   async supportPassportListCards(principal: string): Promise<SupportPassportCard[]> {
-    return this.supportPassportSurface.listCards(principal);
+    return this.getSupportPassportSurface().listCards(principal);
   }
 
   async supportPassportPreviewMemory(principal: string, memoryId: string): Promise<SupportPassportMemoryPreview> {
-    return this.supportPassportSurface.previewMemory(principal, memoryId);
+    return this.getSupportPassportSurface().previewMemory(principal, memoryId);
   }
 
   async supportPassportCreateManualDraft(
@@ -75,7 +82,7 @@ export abstract class SupportPassportAccessServiceBase {
     input: { title: string; statement: string; category: SupportPassportCardCategory; reviewBy: string },
     options: { signal?: AbortSignal; onCommitted?: () => void } = {}
   ): Promise<SupportPassportCard> {
-    return this.supportPassportSurface.createManualDraft(principal, input, options);
+    return this.getSupportPassportSurface().createManualDraft(principal, input, options);
   }
 
   async supportPassportGenerateDrafts(
@@ -88,7 +95,7 @@ export abstract class SupportPassportAccessServiceBase {
       onCommitted?: () => void;
     }
   ): Promise<SupportPassportCard[]> {
-    return this.supportPassportSurface.generateDrafts(principal, input);
+    return this.getSupportPassportSurface().generateDrafts(principal, input);
   }
 
   async supportPassportReplaceCard(
@@ -103,7 +110,7 @@ export abstract class SupportPassportAccessServiceBase {
     },
     options: { signal?: AbortSignal; onCommitted?: () => void } = {}
   ): Promise<SupportPassportCard> {
-    return this.supportPassportSurface.replaceCard(principal, cardId, input, options);
+    return this.getSupportPassportSurface().replaceCard(principal, cardId, input, options);
   }
 
   async supportPassportApproveCard(
@@ -112,7 +119,7 @@ export abstract class SupportPassportAccessServiceBase {
     input: { expectedRevision: string; reasonCode?: string },
     options: { signal?: AbortSignal; onCommitted?: () => void } = {}
   ): Promise<SupportPassportCard> {
-    return this.supportPassportSurface.approveCard(principal, cardId, input, options);
+    return this.getSupportPassportSurface().approveCard(principal, cardId, input, options);
   }
 
   async supportPassportRejectCard(
@@ -121,7 +128,7 @@ export abstract class SupportPassportAccessServiceBase {
     input: { expectedRevision: string; reasonCode?: string },
     options: { signal?: AbortSignal; onCommitted?: () => void } = {}
   ): Promise<SupportPassportCard> {
-    return this.supportPassportSurface.rejectCard(principal, cardId, input, options);
+    return this.getSupportPassportSurface().rejectCard(principal, cardId, input, options);
   }
 
   async supportPassportWithdrawCard(
@@ -130,7 +137,7 @@ export abstract class SupportPassportAccessServiceBase {
     input: { expectedRevision: string; reasonCode?: string },
     options: { signal?: AbortSignal; onCommitted?: () => void } = {}
   ): Promise<SupportPassportCard> {
-    return this.supportPassportSurface.withdrawCard(principal, cardId, input, options);
+    return this.getSupportPassportSurface().withdrawCard(principal, cardId, input, options);
   }
 
   async supportPassportCreateGrant(
@@ -138,11 +145,11 @@ export abstract class SupportPassportAccessServiceBase {
     input: SupportPassportCreateGrantRequest,
     options: { signal?: AbortSignal; onCommitted?: () => void } = {}
   ): Promise<SupportPassportCreateGrantResult> {
-    return this.supportPassportSurface.createGrant(principal, input, options);
+    return this.getSupportPassportSurface().createGrant(principal, input, options);
   }
 
   async supportPassportListGrants(principal: string): Promise<SupportPassportOwnerGrant[]> {
-    return this.supportPassportSurface.listGrants(principal);
+    return this.getSupportPassportSurface().listGrants(principal);
   }
 
   async supportPassportRevokeGrant(
@@ -151,11 +158,11 @@ export abstract class SupportPassportAccessServiceBase {
     input: { expectedVersion?: number },
     options: { signal?: AbortSignal; onCommitted?: () => void } = {}
   ): Promise<SupportPassportRevokeGrantResult> {
-    return this.supportPassportSurface.revokeGrant(principal, grantId, input, options);
+    return this.getSupportPassportSurface().revokeGrant(principal, grantId, input, options);
   }
 
   async supportPassportReadGrant(grantId: string, secret: string): Promise<SupportPassportPublicGuide> {
-    return this.supportPassportSurface.readGrant(grantId, secret);
+    return this.getSupportPassportSurface(true).readGrant(grantId, secret);
   }
 
   async supportPassportAskGrant(
@@ -164,6 +171,6 @@ export abstract class SupportPassportAccessServiceBase {
     question: string,
     signal?: AbortSignal
   ): Promise<SupportPassportAnswerOutput> {
-    return this.supportPassportSurface.askGrant(grantId, secret, question, signal);
+    return this.getSupportPassportSurface(true).askGrant(grantId, secret, question, signal);
   }
 }
