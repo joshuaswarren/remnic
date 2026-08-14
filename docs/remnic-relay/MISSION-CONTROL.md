@@ -41,7 +41,7 @@ and compares it to the committed JSON. Running
 recording/fixture manifests, semantic causal chain, ordered hidden-test output
 hashes, credit accounting, independently derived mission receipt, and the exact
 five-file UI root
-`55e9eb9ad7a6bc5faec7e431313d9ff3b47c6a46940b4cdb7f73adf39dfdb08b`.
+`31d3b46f8723e8b5d710378a3ab9efcc0e232567b0913dba2c6eca2b2eb12ca7`.
 A hand-edited or stale frame fails closed.
 
 ## Authenticated live mode

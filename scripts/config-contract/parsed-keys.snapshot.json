@@ -938,6 +938,7 @@
     "summaryRecallHours",
     "supportPassport",
     "supportPassport.enabled",
+    "supportPassport.trustedProxyAddresses",
     "tagIndexMaxEntries",
     "tagMaxPerMemory",
     "tagMemoryEnabled",

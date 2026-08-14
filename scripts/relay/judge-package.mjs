@@ -13,7 +13,7 @@ const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 
 export const DEFAULT_RELAY_REPO_ROOT = path.resolve(SCRIPT_DIR, "..", "..");
 export const RELAY_RECORDING_ROOT_SHA256 = "69d6f7f30d5603bcf514cea657aeb2a9bf1b6ff8b6712d5cfce6b5c33aae30be";
-export const RELAY_UI_ROOT_SHA256 = "55e9eb9ad7a6bc5faec7e431313d9ff3b47c6a46940b4cdb7f73adf39dfdb08b";
+export const RELAY_UI_ROOT_SHA256 = "31d3b46f8723e8b5d710378a3ab9efcc0e232567b0913dba2c6eca2b2eb12ca7";
 export const RELAY_SNAPSHOT_LIMITS = Object.freeze({
   maxDepth: 8,
   maxEntries: 128,
