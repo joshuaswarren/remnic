@@ -436,3 +436,21 @@ test("a completed job keeps the bridge available until its worker polls again", 
     await server.close();
   }
 });
+
+test("a closed model bridge tells pollers to back off", async () => {
+  const bridge = new SupportPassportModelBridge();
+  const server = await startBridgeServer(bridge);
+  try {
+    bridge.close();
+    const response = await fetch(`${server.origin}${SUPPORT_PASSPORT_MODEL_JOB_PATH}`, {
+      method: "POST",
+      headers: { authorization: "Bearer owner-token", "content-type": "application/json" },
+      body: JSON.stringify({ timeoutMs: 20_000, claimLease: true }),
+    });
+    assert.equal(response.status, 410);
+    assert.deepEqual(await response.json(), { error: "bridge_closed", code: "bridge_closed" });
+  } finally {
+    bridge.close();
+    await server.close();
+  }
+});
