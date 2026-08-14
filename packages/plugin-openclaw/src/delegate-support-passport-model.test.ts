@@ -224,6 +224,90 @@ test("the delegate retries an ambiguous acknowledgement before the claim deadlin
   }
 });
 
+test("the delegate renews an acknowledged claim while the gateway model runs", async () => {
+  const completion = Promise.withResolvers<Record<string, unknown>>();
+  const renewed = Promise.withResolvers<void>();
+  const job: SupportPassportModelJob = {
+    id: "a871fab2-2f1c-478c-af4c-8c4a755d8079",
+    claimId: "b871fab2-2f1c-478c-af4c-8c4a755d8080",
+    claimAckTimeoutMs: 500,
+    executionLeaseTimeoutMs: 90,
+    messages: [{ role: "user", content: "What helps?" }],
+    temperature: 0,
+    maxTokens: 100,
+    timeoutMs: 2_000,
+    operation: "support-passport-answer",
+    jsonSchema: { name: "answer", schema: { type: "object" } },
+  };
+  let served = false;
+  let acknowledgements = 0;
+  const server = http.createServer((req, res) => {
+    let raw = "";
+    req.on("data", (chunk) => {
+      raw += String(chunk);
+    });
+    req.on("end", () => {
+      if (req.url?.endsWith("/jobs/next")) {
+        if (!served) {
+          served = true;
+          res.end(JSON.stringify(job));
+        } else {
+          res.statusCode = 204;
+          res.end();
+        }
+        return;
+      }
+      if (req.url?.endsWith("/jobs/ack")) {
+        acknowledgements += 1;
+        if (acknowledgements === 3) renewed.resolve();
+        res.statusCode = 204;
+        res.end();
+        return;
+      }
+      completion.resolve(JSON.parse(raw) as Record<string, unknown>);
+      res.statusCode = 204;
+      res.end();
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("server did not bind");
+  const service = createDelegateSupportPassportModelService({
+    serviceId: "openclaw-remnic",
+    target: {
+      host: "127.0.0.1",
+      port: address.port,
+      resolveAuthToken: () => ({ token: "daemon-token", source: "REMNIC_AUTH_TOKEN" }),
+    },
+    route: {
+      kind: "gateway",
+      invoke: async () => {
+        await Promise.race([
+          renewed.promise,
+          new Promise((_, reject) => setTimeout(() => reject(new Error("claim was not renewed")), 1_000)),
+        ]);
+        return { content: "{}", modelUsed: "gateway/local" };
+      },
+    },
+  });
+  try {
+    await service.start();
+    assert.deepEqual(await completion.promise, {
+      id: job.id,
+      claimId: job.claimId,
+      result: { content: "{}", modelUsed: "gateway/local" },
+    });
+    assert.ok(acknowledgements >= 3);
+  } finally {
+    await service.stop();
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test("delegate pollers run overlapping gateway jobs concurrently", async () => {
   const jobs = ["a871fab2-2f1c-478c-af4c-8c4a755d8072", "b871fab2-2f1c-478c-af4c-8c4a755d8073"].map(
     (id): SupportPassportModelJob => ({

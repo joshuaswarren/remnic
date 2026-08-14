@@ -31,6 +31,7 @@ const ModelJobSchema = z
     maxTokens: z.number().int().min(1).max(32_000),
     timeoutMs: z.number().int().min(1).max(120_000),
     claimAckTimeoutMs: z.number().int().min(1).max(120_000).optional(),
+    executionLeaseTimeoutMs: z.number().int().min(1).max(120_000).optional(),
     operation: z.enum(["support-passport-draft", "support-passport-answer"]),
     jsonSchema: z
       .object({
@@ -94,6 +95,7 @@ interface PendingWaiter {
 export interface SupportPassportModelBridgeOptions {
   maxPendingJobs?: number;
   claimAckTimeoutMs?: number;
+  executionLeaseTimeoutMs?: number;
 }
 
 function respondJson(res: ServerResponse, status: number, payload: unknown): void {
@@ -141,6 +143,7 @@ export class SupportPassportModelBridge {
 
   private readonly maxPendingJobs: number;
   private readonly claimAckTimeoutMs: number;
+  private readonly executionLeaseTimeoutMs: number;
   private readonly pending = new Map<string, PendingJob>();
   private readonly available: string[] = [];
   private readonly waiters: PendingWaiter[] = [];
@@ -151,11 +154,19 @@ export class SupportPassportModelBridge {
   constructor(options: SupportPassportModelBridgeOptions = {}) {
     this.maxPendingJobs = options.maxPendingJobs ?? 32;
     this.claimAckTimeoutMs = options.claimAckTimeoutMs ?? 5_000;
+    this.executionLeaseTimeoutMs = options.executionLeaseTimeoutMs ?? 15_000;
     if (!Number.isInteger(this.maxPendingJobs) || this.maxPendingJobs < 1) {
       throw new Error("maxPendingJobs must be a positive integer");
     }
     if (!Number.isInteger(this.claimAckTimeoutMs) || this.claimAckTimeoutMs < 1) {
       throw new Error("claimAckTimeoutMs must be a positive integer");
+    }
+    if (
+      !Number.isInteger(this.executionLeaseTimeoutMs) ||
+      this.executionLeaseTimeoutMs < 1 ||
+      this.executionLeaseTimeoutMs > 120_000
+    ) {
+      throw new Error("executionLeaseTimeoutMs must be an integer from 1 through 120000");
     }
     this.route = {
       kind: "gateway",
@@ -258,10 +269,16 @@ export class SupportPassportModelBridge {
     this.claimed.add(job.id);
     if (!claimLease) return job;
     const claimAckTimeoutMs = Math.min(this.claimAckTimeoutMs, job.timeoutMs);
+    const executionLeaseTimeoutMs = Math.min(this.executionLeaseTimeoutMs, job.timeoutMs);
     pending.claimId = randomUUID();
-    pending.claimTimer = setTimeout(() => pending.requeue(), claimAckTimeoutMs);
+    this.armClaimTimer(pending, claimAckTimeoutMs);
+    return { ...job, claimId: pending.claimId, claimAckTimeoutMs, executionLeaseTimeoutMs };
+  }
+
+  private armClaimTimer(pending: PendingJob, timeoutMs: number): void {
+    if (pending.claimTimer) clearTimeout(pending.claimTimer);
+    pending.claimTimer = setTimeout(() => pending.requeue(), timeoutMs);
     pending.claimTimer.unref?.();
-    return { ...job, claimId: pending.claimId, claimAckTimeoutMs };
   }
 
   private takeAvailable(claimLease: boolean): SupportPassportModelJob | null {
@@ -278,7 +295,7 @@ export class SupportPassportModelBridge {
   private nextJob(
     timeoutMs: number,
     signal: AbortSignal,
-    claimLease: boolean,
+    claimLease: boolean
   ): Promise<SupportPassportModelJob | null> {
     const available = this.takeAvailable(claimLease);
     if (available || this.closed || signal.aborted || timeoutMs === 0 || this.waiters.length >= this.maxPendingJobs) {
@@ -373,8 +390,13 @@ export class SupportPassportModelBridge {
           respondJson(res, 404, { error: "job_not_found", code: "job_not_found" });
           return true;
         }
-        if (pending.claimTimer) clearTimeout(pending.claimTimer);
-        pending.claimTimer = undefined;
+        const remainingMs = pending.deadlineAt - Date.now();
+        if (remainingMs <= 0) {
+          pending.resolve(null);
+          respondJson(res, 404, { error: "job_not_found", code: "job_not_found" });
+          return true;
+        }
+        this.armClaimTimer(pending, Math.min(this.executionLeaseTimeoutMs, remainingMs));
         respondNoContent(res);
       } catch {
         respondJson(res, 400, { error: "invalid_request", code: "invalid_request" });
