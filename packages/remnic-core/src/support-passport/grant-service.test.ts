@@ -1283,9 +1283,9 @@ test("grant creation rechecks its mutation lock after the commit callback", asyn
       (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
     );
     assert.equal(refreshes, 2);
-    await assert.rejects(
-      lstat(path.join(root, "state", "support-passport", "grants")),
-      (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT"
+    assert.deepEqual(
+      await readdir(path.join(root, "state", "support-passport", "grants")),
+      ["owners"]
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -2568,7 +2568,7 @@ test("grant reads reject a memory-root ancestor swapped after a completed operat
 
     await assert.rejects(
       store.listForOwner("alice", "owner:alice"),
-      /support passport owner indexes must be regular files in a stable directory/
+      /support passport owner membership must remain inside the memory directory/
     );
     assert.deepEqual(await readdir(path.join(outsideParent, "memory", "state", "support-passport", "grants")), [
       "owners",
@@ -2643,7 +2643,10 @@ test("the grant store rejects a state file whose grant ID does not match its fil
     );
 
     await assert.rejects(store.authenticate(secondGrantId, second.secret), /grant ID must match its file name/);
-    await assert.rejects(store.listForOwner("alice", "owner:alice"), /grant ID must match its file name/);
+    assert.deepEqual(
+      (await store.listForOwner("alice", "owner:alice")).map((state) => state.grantId),
+      [firstGrantId]
+    );
     assert.equal(first.state.grantId, firstGrantId);
   } finally {
     await rm(root, { recursive: true, force: true });

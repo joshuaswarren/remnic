@@ -40,7 +40,7 @@ test("a final stale owner-index write cannot hide a peer grant", async () => {
     let ownerIndexWrites = 0;
     inspected.writeOwnerIndex = async (ownerHash, indexedGrantIds) => {
       ownerIndexWrites += 1;
-      if (ownerIndexWrites === 4) {
+      if (ownerIndexWrites === 3) {
         await inspected.writeState(peerState, true);
         await inspected.writeOwnerMembership(peerState);
         await writeOwnerIndex(ownerHash, [...indexedGrantIds, peerGrantId]);
@@ -65,7 +65,7 @@ test("a final stale owner-index write cannot hide a peer grant", async () => {
     );
 
     assert.equal(ownerLockRuns, 4);
-    assert.equal(ownerIndexWrites, 4);
+    assert.equal(ownerIndexWrites, 3);
     assert.deepEqual(
       new Set((await store.listForOwner(input.namespace, input.principal)).map((state) => state.grantId)),
       new Set([first.state.grantId, peerGrantId])
@@ -201,6 +201,101 @@ test("a later create rebuilds the derived index from owner membership", async ()
     const derivedIndex = JSON.parse(await readFile(indexPath, "utf8")) as { grantIds: string[] };
 
     assert.deepEqual(new Set(derivedIndex.grantIds), new Set([first.state.grantId, second.state.grantId, peerGrantId]));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("concurrent owner creates reserve capacity before writing membership", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-concurrent-cap-"));
+  try {
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    let nextGrantId = 1;
+    const store = new SupportPassportGrantStore({
+      memoryDir: root,
+      makeGrantId: () => `00000000-0000-4000-8000-${String(nextGrantId++).padStart(12, "0")}`,
+      now: () => now,
+    });
+    const input = {
+      namespace: "alice",
+      principal: "owner:alice",
+      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+      expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
+    };
+
+    const first = await store.create(input);
+    const inspected = store as unknown as {
+      writeState(state: typeof first.state, requireAbsent: boolean): Promise<void>;
+      writeOwnerMembership(state: typeof first.state): Promise<void>;
+    };
+    for (let index = 2; index <= 99; index += 1) {
+      const state = {
+        ...first.state,
+        grantId: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+      };
+      await inspected.writeState(state, true);
+      await inspected.writeOwnerMembership(state);
+    }
+    nextGrantId = 100;
+
+    const results = await Promise.allSettled([store.create(input), store.create(input)]);
+    const fulfilled = results.filter((result) => result.status === "fulfilled");
+    const rejected = results.filter((result) => result.status === "rejected");
+
+    assert.equal(fulfilled.length, 1);
+    assert.equal(rejected.length, 1);
+    assert.ok(
+      rejected.every(
+        (result) => result.reason instanceof SupportPassportError && result.reason.code === "invalid_input",
+      ),
+    );
+    assert.equal((await store.listForOwner(input.namespace, input.principal)).length, 100);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("owner-index recovery removes history entries beyond the retained set", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-overflow-recovery-"));
+  try {
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({
+      memoryDir: root,
+      makeGrantId: () => "00000000-0000-4000-8000-000000000001",
+      now: () => now,
+    });
+    const input = {
+      namespace: "alice",
+      principal: "owner:alice",
+      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+      expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
+    };
+    const committed = await store.create(input);
+    const inspected = store as unknown as {
+      ownerHash(namespace: string, principalHash: string): string;
+      writeState(state: typeof committed.state, requireAbsent: boolean): Promise<void>;
+      writeOwnerMembership(state: typeof committed.state): Promise<void>;
+      reconcileCommittedGrant(
+        value: typeof committed,
+        ownerHash: string,
+        lock: { refresh(): Promise<boolean> },
+      ): Promise<typeof committed>;
+    };
+    for (let index = 2; index <= 101; index += 1) {
+      const state = {
+        ...committed.state,
+        grantId: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+        stateVersion: 2,
+        revokedAt: now.toISOString(),
+      };
+      await inspected.writeState(state, true);
+      await inspected.writeOwnerMembership(state);
+    }
+    const ownerHash = inspected.ownerHash(committed.state.namespace, committed.state.principalHash);
+
+    await inspected.reconcileCommittedGrant(committed, ownerHash, { refresh: async () => true });
+
+    assert.equal((await store.listForOwner(input.namespace, input.principal)).length, 100);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

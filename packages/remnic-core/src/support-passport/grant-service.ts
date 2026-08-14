@@ -35,8 +35,11 @@ type SupportPassportGrantOwnerScope = Awaited<ReturnType<SupportPassportGrantSer
 
 interface SupportPassportCardSnapshot {
   version: string;
+  validatedAtMs: number;
   cardsById: ReadonlyMap<string, StoredSupportPassportCard>;
 }
+
+const MAX_CARD_SNAPSHOT_AGE_MS = 1_000;
 
 function invalidInput(): SupportPassportError {
   return new SupportPassportError("invalid_input", "The share link request is invalid.", 400);
@@ -238,7 +241,13 @@ export class SupportPassportGrantService {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const before = this.cardSnapshotVersion(storage);
       const cached = this.cardSnapshots.get(storage);
-      if (cached?.version === before) return cached;
+      const nowMs = this.now().getTime();
+      const cacheIsFresh =
+        cached !== undefined &&
+        Number.isFinite(nowMs) &&
+        nowMs >= cached.validatedAtMs &&
+        nowMs - cached.validatedAtMs <= MAX_CARD_SNAPSHOT_AGE_MS;
+      if (cached?.version === before && cacheIsFresh) return cached;
       const cards = (await storage.readAllMemories())
         .map((memory) => projectSupportPassportCard(memory))
         .filter((card): card is StoredSupportPassportCard => card !== null);
@@ -246,6 +255,7 @@ export class SupportPassportGrantService {
       if (before !== after) continue;
       const snapshot = {
         version: after,
+        validatedAtMs: this.now().getTime(),
         cardsById: new Map(cards.map((card) => [card.card.cardId, card])),
       };
       this.cardSnapshots.set(storage, snapshot);
