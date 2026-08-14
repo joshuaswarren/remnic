@@ -94,9 +94,9 @@ test("the access surface runs the owner and helper lifecycle without exposing a 
     const created = await surface.createGrant("owner:test", {
       cardIds: [approved.cardId],
       cardRevisions: [{ cardId: approved.cardId, revision: approved.revision }],
-      expiresAt: "2026-08-11T14:00:00.123Z",
+      durationMs: 300_000,
     });
-    assert.equal(created.expiresAt, "2026-08-11T14:00:00.123Z");
+    assert.equal(created.expiresAt, "2026-08-11T12:05:00.000Z");
 
     const ownerGrants = await surface.listGrants("owner:test");
     assert.equal(ownerGrants.length, 1);

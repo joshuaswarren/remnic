@@ -1,4 +1,5 @@
 import type { McpTool } from "../access-mcp.js";
+import { SUPPORT_PASSPORT_SOURCE_MEMORY_ID_MAX_LENGTH } from "./contracts.js";
 
 const CARD_CATEGORIES = [
   "communication",
@@ -27,6 +28,12 @@ const cardMutationProperties = {
   reasonCode: { type: "string", minLength: 1, maxLength: 64, pattern: "^[a-z0-9-]+$" },
 };
 
+const sourceMemoryIdProperty = {
+  type: "string",
+  minLength: 1,
+  maxLength: SUPPORT_PASSPORT_SOURCE_MEMORY_ID_MAX_LENGTH,
+};
+
 export const SUPPORT_PASSPORT_MCP_MIGRATED_OPERATIONS = {
   "engram.support_passport_memory_preview": "support_passport_memory_preview",
   "engram.support_passport_cards_list": "support_passport_cards_list",
@@ -47,7 +54,7 @@ export const SUPPORT_PASSPORT_MCP_TOOLS: McpTool[] = [
     description: "Preview one memory and get the exact revision required for model drafting consent.",
     inputSchema: {
       type: "object",
-      properties: { memoryId: { type: "string", minLength: 1, maxLength: 128 } },
+      properties: { memoryId: sourceMemoryIdProperty },
       required: ["memoryId"],
       additionalProperties: false,
     },
@@ -78,7 +85,7 @@ export const SUPPORT_PASSPORT_MCP_TOOLS: McpTool[] = [
           minItems: 1,
           maxItems: 20,
           uniqueItems: true,
-          items: { type: "string", minLength: 1, maxLength: 128 },
+          items: sourceMemoryIdProperty,
         },
         sourceMemoryRevisions: {
           type: "array",
@@ -88,7 +95,7 @@ export const SUPPORT_PASSPORT_MCP_TOOLS: McpTool[] = [
           items: {
             type: "object",
             properties: {
-              memoryId: { type: "string", minLength: 1, maxLength: 128 },
+              memoryId: sourceMemoryIdProperty,
               revision: { type: "string", pattern: "^[a-f0-9]{64}$" },
             },
             required: ["memoryId", "revision"],
@@ -152,8 +159,10 @@ export const SUPPORT_PASSPORT_MCP_TOOLS: McpTool[] = [
           },
         },
         expiresAt: { type: "string", format: "date-time" },
+        durationMs: { type: "integer", minimum: 300_000, maximum: 604_800_000 },
       },
-      required: ["cardIds", "cardRevisions", "expiresAt"],
+      required: ["cardIds", "cardRevisions"],
+      oneOf: [{ required: ["expiresAt"] }, { required: ["durationMs"] }],
       additionalProperties: false,
     },
   },

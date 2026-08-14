@@ -3,6 +3,7 @@ import { FallbackLlmClient, type FallbackLlmOptions } from "../fallback-llm.js";
 import { extractJsonCandidates } from "../json-extract.js";
 import { LocalLlmClient } from "../local-llm.js";
 import type { GatewayConfig, PluginConfig } from "../types.js";
+import { SUPPORT_PASSPORT_SOURCE_MEMORY_ID_MAX_LENGTH } from "./contracts.js";
 import { SupportPassportError } from "./errors.js";
 import {
   SUPPORT_PASSPORT_NOT_IN_GUIDE_ANSWER,
@@ -146,7 +147,11 @@ const DRAFT_JSON_SCHEMA: SupportPassportJsonSchema = {
               minItems: 1,
               maxItems: 5,
               uniqueItems: true,
-              items: { type: "string", minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]+$" },
+              items: {
+                type: "string",
+                minLength: 1,
+                maxLength: SUPPORT_PASSPORT_SOURCE_MEMORY_ID_MAX_LENGTH,
+              },
             },
           },
         },

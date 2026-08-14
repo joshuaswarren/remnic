@@ -60,7 +60,8 @@ export const SupportPassportCreateGrantInputSchema = z
   .object({
     principal: z.string().trim().min(1).max(512),
     cards: z.array(SupportPassportGrantCardRefSchema).min(1).max(8),
-    expiresAt: IsoTimestampSchema,
+    expiresAt: IsoTimestampSchema.optional(),
+    durationMs: z.number().int().min(300_000).max(604_800_000).optional(),
   })
   .strict()
   .superRefine((input, ctx) => {
@@ -75,33 +76,16 @@ export const SupportPassportCreateGrantInputSchema = z
       }
       ids.add(card.cardId);
     }
-  });
-
-export const SupportPassportCreateGrantRequestSchema = z
-  .object({
-    cardIds: z.array(SupportPassportMemoryIdSchema).min(1).max(8),
-    cardRevisions: z.array(SupportPassportGrantCardRefSchema).min(1).max(8),
-    expiresAt: IsoTimestampSchema,
-  })
-  .strict()
-  .superRefine((input, ctx) => {
-    const cardIds = new Set(input.cardIds);
-    const revisionIds = new Set(input.cardRevisions.map((card) => card.cardId));
-    if (
-      cardIds.size !== input.cardIds.length ||
-      revisionIds.size !== input.cardRevisions.length ||
-      cardIds.size !== revisionIds.size ||
-      input.cardIds.some((cardId) => !revisionIds.has(cardId))
-    ) {
+    if ((input.expiresAt === undefined) === (input.durationMs === undefined)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "card revisions must match the selected card IDs",
-        path: ["cardRevisions"],
+        message: "one expiry value is required",
+        path: ["expiresAt"],
       });
     }
   });
 
-export const SupportPassportOwnerCreateGrantRequestSchema = z
+export const SupportPassportCreateGrantRequestSchema = z
   .object({
     cardIds: z.array(SupportPassportMemoryIdSchema).min(1).max(8),
     cardRevisions: z.array(SupportPassportGrantCardRefSchema).min(1).max(8),
@@ -132,6 +116,8 @@ export const SupportPassportOwnerCreateGrantRequestSchema = z
       });
     }
   });
+
+export const SupportPassportOwnerCreateGrantRequestSchema = SupportPassportCreateGrantRequestSchema;
 
 export const SupportPassportOwnerGrantSchema = z
   .object({

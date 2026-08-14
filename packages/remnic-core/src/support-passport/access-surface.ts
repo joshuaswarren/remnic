@@ -213,7 +213,9 @@ export class SupportPassportAccessSurface {
       {
         principal: this.requirePrincipal(principal),
         cards: parsed.data.cardRevisions,
-        expiresAt: parsed.data.expiresAt,
+        ...(parsed.data.expiresAt !== undefined
+          ? { expiresAt: parsed.data.expiresAt }
+          : { durationMs: parsed.data.durationMs }),
       },
       options
     );
