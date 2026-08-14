@@ -834,7 +834,7 @@ export async function buildBriefing(options: BuildBriefingOptions): Promise<Brie
   const focus = options.focus ?? null;
 
   const [allMemories, allEntities] = await Promise.all([
-    safeReadMemories(options.storage),
+    safeReadMemories(options.storage, window),
     safeReadEntities(options.storage),
   ]);
 
@@ -977,10 +977,21 @@ function defaultWindow(now: Date): ParsedBriefingWindow {
   return { from: new Date(now.getTime() - DAY_MS), to: now, label: "yesterday" };
 }
 
-async function safeReadMemories(storage: StorageManager): Promise<MemoryFile[]> {
+async function safeReadMemories(
+  storage: StorageManager,
+  window: ParsedBriefingWindow,
+): Promise<MemoryFile[]> {
   try {
+    // A briefing only needs memories inside its lookback window. Avoid parsing
+    // the full corpus on cache misses; keep the full-read fallback for custom
+    // StorageManager-compatible callers that predate readMemoriesWindow().
+    if (typeof storage.readMemoriesWindow === "function") {
+      const result = await storage.readMemoriesWindow({ updatedAfter: window.from });
+      return excludeSupportPassportPrivateMemories(result.memories);
+    }
     return excludeSupportPassportPrivateMemories(await storage.readAllMemories());
-  } catch (err) { log.warn(`briefing: readAllMemories failed: ${err}`);
+  } catch (err) {
+    log.warn(`briefing: read memories failed: ${err}`);
     return [];
   }
 }

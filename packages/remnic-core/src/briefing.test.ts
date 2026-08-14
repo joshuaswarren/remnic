@@ -913,6 +913,31 @@ function makeEmptyStorage(): StorageManager {
     readAllEntityFiles: async () => [],
   } as unknown as StorageManager;
 }
+test("buildBriefing reads only memories updated inside the briefing window", async () => {
+  let readWindowOptions: { updatedAfter?: Date } | undefined;
+  const recentMemory = makeMemory("2026-04-10T12:00:00.000Z");
+  const storage = {
+    readAllMemories: async () => {
+      throw new Error("full corpus read must not be used by briefing");
+    },
+    readMemoriesWindow: async (options: { updatedAfter?: Date }) => {
+      readWindowOptions = options;
+      return { memories: [recentMemory], filePaths: [recentMemory.path] };
+    },
+    readAllEntityFiles: async () => [],
+  } as unknown as StorageManager;
+
+  const result = await buildBriefing({
+    storage,
+    window: makeWindow("2026-04-10T00:00:00.000Z", "2026-04-11T00:00:00.000Z"),
+    allowLlm: false,
+    now: new Date("2026-04-11T10:00:00.000Z"),
+  });
+
+  assert.equal(readWindowOptions?.updatedAfter?.toISOString(), "2026-04-10T00:00:00.000Z");
+  assert.equal(result.sections.activeThreads.length, 1);
+});
+
 
 test("buildBriefing excludes support passport records from generated context", async () => {
   const generatedPrompts: unknown[] = [];
