@@ -18,10 +18,17 @@ export const SUPPORT_PASSPORT_CARD_TAG = "support-passport-card";
 export const SUPPORT_PASSPORT_AUDIT_TAG = "support-passport-audit";
 
 export function isSupportPassportPrivateMemory(memory: {
-  frontmatter: Pick<MemoryFile["frontmatter"], "tags">;
+  frontmatter: {
+    tags?: readonly string[];
+    structuredAttributes?: Readonly<Record<string, string>>;
+  };
 }): boolean {
   const tags = memory.frontmatter.tags;
-  return tags?.includes(SUPPORT_PASSPORT_CARD_TAG) === true || tags?.includes(SUPPORT_PASSPORT_AUDIT_TAG) === true;
+  if (tags?.includes(SUPPORT_PASSPORT_CARD_TAG) === true || tags?.includes(SUPPORT_PASSPORT_AUDIT_TAG) === true) {
+    return true;
+  }
+  return Object.keys(memory.frontmatter.structuredAttributes ?? {})
+    .some((key) => key.startsWith("support-passport-"));
 }
 
 export function excludeSupportPassportPrivateMemories<T extends Pick<MemoryFile, "frontmatter">>(

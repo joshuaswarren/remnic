@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -83,6 +84,24 @@ function memoryFile(options: {
     "---",
     options.body,
   ].join("\n");
+}
+
+function supportPassportFile(options: { id: string; includeTag?: boolean }): string {
+  return [
+    "---",
+    `id: ${options.id}`,
+    "category: preference",
+    ...(options.includeTag === false ? [] : ["tags: [support-passport-card]"]),
+    `structuredAttributes: ${JSON.stringify({ "support-passport-owner": "a".repeat(64) })}`,
+    "created: 2026-08-13T00:00:00.000Z",
+    "updated: 2026-08-13T00:00:00.000Z",
+    "---",
+    "Private support statement",
+  ].join("\n");
+}
+
+function sha256(content: Buffer): string {
+  return createHash("sha256").update(content).digest("hex");
 }
 
 function createManifestService(options: {
@@ -313,16 +332,7 @@ test("offline read surfaces exclude support-passport private records", async () 
     const publicPath = path.join(root, "facts", "2026-08-13", "public.md");
     await mkdir(path.dirname(privatePath), { recursive: true });
     await mkdir(path.dirname(publicPath), { recursive: true });
-    await writeFile(privatePath, [
-      "---",
-      "id: passport",
-      "category: preference",
-      "tags: [support-passport-card]",
-      "created: 2026-08-13T00:00:00.000Z",
-      "updated: 2026-08-13T00:00:00.000Z",
-      "---",
-      "Private support statement",
-    ].join("\n"));
+    await writeFile(privatePath, supportPassportFile({ id: "passport" }));
     await writeFile(publicPath, memoryFile({ id: "public", body: "Public fact", status: "active" }));
     const { service } = createManifestService({ root, storage });
 
@@ -351,6 +361,151 @@ test("offline read surfaces exclude support-passport private records", async () 
       }),
       (error) => error instanceof EngramAccessInputError && /path is excluded/.test(error.message),
     );
+    const applyResult = await service.offlineSyncApply({
+      changeset: {
+        format: OFFLINE_SYNC_CHANGESET_FORMAT,
+        schemaVersion: 1,
+        createdAt: new Date().toISOString(),
+        sourceId: "peer",
+        includeTranscripts: true,
+        changes: [],
+      },
+    });
+    assert.equal(applyResult.currentFiles.some((file) => file.path === "facts/2026-08-13/public.md"), true);
+    assert.equal(applyResult.currentFiles.some((file) => file.path.includes("passport.md")), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline apply routes reject existing support-passport private records", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-access-private-apply-target-"));
+  try {
+    const storage = new StorageManager(root);
+    await storage.ensureDirectories();
+    const relativePath = "preferences/2026-08-13/passport.md";
+    const targetPath = path.join(root, relativePath);
+    const original = Buffer.from(supportPassportFile({ id: "passport", includeTag: false }));
+    await mkdir(path.dirname(targetPath), { recursive: true });
+    await writeFile(targetPath, original);
+    const { service } = createManifestService({ root, storage });
+    const replacement = Buffer.from(memoryFile({ id: "public", body: "Replacement", status: "active" }));
+
+    await assert.rejects(
+      () => service.offlineSyncApplyFileContent({
+        sourceId: "peer",
+        path: relativePath,
+        sha256: sha256(replacement),
+        bytes: replacement.length,
+        mtimeMs: 0,
+        offset: 0,
+        baseSha256: sha256(original),
+        content: replacement,
+      }),
+      (error) => error instanceof EngramAccessInputError && /private support-passport record/.test(error.message),
+    );
+    await assert.rejects(
+      () => service.offlineSyncApply({
+        returnCurrentFiles: false,
+        changeset: {
+          format: OFFLINE_SYNC_CHANGESET_FORMAT,
+          schemaVersion: 1,
+          createdAt: new Date().toISOString(),
+          sourceId: "peer",
+          includeTranscripts: true,
+          changes: [{
+            type: "delete",
+            path: relativePath,
+            baseSha256: sha256(original),
+          }],
+        },
+      }),
+      (error) => error instanceof EngramAccessInputError && /private support-passport record/.test(error.message),
+    );
+    assert.deepEqual(await readFile(targetPath), original);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline apply routes reject forged support-passport metadata and allow public records", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-access-private-apply-content-"));
+  try {
+    const storage = new StorageManager(root);
+    await storage.ensureDirectories();
+    const { service } = createManifestService({ root, storage });
+    const forgedPath = "preferences/2026-08-13/forged.md";
+    const forged = Buffer.from(supportPassportFile({ id: "forged", includeTag: false }));
+    const splitAt = forged.indexOf("support-passport-owner") + 8;
+
+    const first = await service.offlineSyncApplyFileContent({
+      sourceId: "peer",
+      path: forgedPath,
+      sha256: sha256(forged),
+      bytes: forged.length,
+      mtimeMs: 0,
+      offset: 0,
+      content: forged.subarray(0, splitAt),
+    });
+    assert.equal(first.applied, false);
+    assert.equal(first.done, false);
+    await assert.rejects(
+      () => service.offlineSyncApplyFileContent({
+        sourceId: "peer",
+        path: forgedPath,
+        sha256: sha256(forged),
+        bytes: forged.length,
+        mtimeMs: 0,
+        offset: splitAt,
+        content: forged.subarray(splitAt),
+      }),
+      (error) => error instanceof EngramAccessInputError && /private support-passport record/.test(error.message),
+    );
+    await assert.rejects(() => readFile(path.join(root, forgedPath)));
+
+    const changesetPath = "preferences/2026-08-13/forged-changeset.md";
+    await assert.rejects(
+      () => service.offlineSyncApply({
+        returnCurrentFiles: false,
+        changeset: {
+          format: OFFLINE_SYNC_CHANGESET_FORMAT,
+          schemaVersion: 1,
+          createdAt: new Date().toISOString(),
+          sourceId: "peer",
+          includeTranscripts: true,
+          changes: [{
+            type: "upsert",
+            path: changesetPath,
+            file: {
+              path: changesetPath,
+              sha256: sha256(forged),
+              bytes: forged.length,
+              mtimeMs: 0,
+              contentBase64: forged.toString("base64"),
+            },
+          }],
+        },
+      }),
+      (error) => error instanceof EngramAccessInputError && /private support-passport record/.test(error.message),
+    );
+
+    const publicPath = "facts/2026-08-13/public-sync.md";
+    const publicContent = Buffer.from(memoryFile({
+      id: "public-sync",
+      body: "The body can mention support-passport-owner without becoming private.",
+      status: "active",
+    }));
+    const publicResult = await service.offlineSyncApplyFileContent({
+      sourceId: "peer",
+      path: publicPath,
+      sha256: sha256(publicContent),
+      bytes: publicContent.length,
+      mtimeMs: 0,
+      offset: 0,
+      content: publicContent,
+    });
+    assert.equal(publicResult.applied, true);
+    assert.deepEqual(await storage.readOfflineSyncFile(path.join(root, publicPath)), publicContent);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

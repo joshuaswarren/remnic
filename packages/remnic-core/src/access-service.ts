@@ -111,6 +111,7 @@ import {
 } from "./access-memory-search-fanout.js";
 import { isSearchExcludedPath } from "./orchestration/generic-recall-paths.js";
 import { createSupportPassportPrivateFileExclusion, isSupportPassportPrivateMemory, SUPPORT_PASSPORT_AUDIT_TAG, SUPPORT_PASSPORT_CARD_TAG } from "./support-passport/card-projection.js";
+import { createSupportPassportOfflineSyncGuard } from "./support-passport/offline-sync-guard.js";
 import {
   buildQualityScore,
   buildProposedActions,
@@ -290,6 +291,7 @@ import {
   buildOfflineSyncSnapshotForPaths,
   iterateOfflineSyncSnapshotFileRecords,
   filterOfflineSyncDeletionRevisions,
+  normalizeOfflineSyncChangeset,
   OFFLINE_SYNC_SNAPSHOT_FORMAT,
   readOfflineSyncFileContentChunk,
   type OfflineSyncApplyFileContentChunkResult,
@@ -5614,7 +5616,9 @@ export class EngramAccessService {
       options.principal,
     );
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
+    const passportGuard = createSupportPassportOfflineSyncGuard(storage);
     try {
+      await passportGuard.assertPathAllowed(options.path);
       const result = await applyOfflineSyncFileContentChunk({
         root: storage.dir,
         sourceId: options.sourceId,
@@ -5630,7 +5634,13 @@ export class EngramAccessService {
         readFileDigest: async ({ filePath }) => storage.digestOfflineSyncFile(filePath),
         writeFile: async ({ filePath, content }) => storage.writeOfflineSyncFile(filePath, content),
         writeStagingFile: async ({ filePath, content }) => storage.writeOfflineSyncStagingFile(filePath, content),
-        writeFileChunks: async ({ filePath, chunks }) => storage.writeOfflineSyncFileChunks(filePath, chunks),
+        writeFileChunks: async (target) => {
+          await passportGuard.assertTargetAllowed(target);
+          await storage.writeOfflineSyncFileChunks(
+            target.filePath,
+            passportGuard.guardChunks(target.path, target.chunks),
+          );
+        },
       });
       return {
         namespace: resolvedNamespace,
@@ -5688,19 +5698,53 @@ export class EngramAccessService {
       options.principal,
     );
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
+    const passportGuard = createSupportPassportOfflineSyncGuard(storage);
     try {
+      const changeset = normalizeOfflineSyncChangeset(options.changeset);
+      for (const change of changeset.changes) {
+        await passportGuard.assertPathAllowed(change.path);
+        if (change.type === "upsert") {
+          passportGuard.assertContentAllowed(
+            change.path,
+            Buffer.from(change.file.contentBase64, "base64"),
+          );
+        }
+      }
       const result = await applyOfflineSyncChangeset({
         root: storage.dir,
-        changeset: options.changeset,
-        returnCurrentFiles: options.returnCurrentFiles,
+        changeset,
+        returnCurrentFiles: false,
         readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
         readFileDigest: async ({ filePath }) => storage.digestOfflineSyncFile(filePath),
-        writeFile: async ({ filePath, content }) => storage.writeOfflineSyncFile(filePath, content),
-        deleteFile: async ({ filePath, mtimeMs }) =>
-          storage.deleteOfflineSyncFile(filePath, mtimeMs ?? null),
+        writeFile: async (target) => {
+          await passportGuard.assertTargetAllowed(target);
+          passportGuard.assertContentAllowed(target.path, target.content);
+          await storage.writeOfflineSyncFile(target.filePath, target.content);
+        },
+        deleteFile: async (target) => {
+          await passportGuard.assertTargetAllowed(target);
+          await storage.deleteOfflineSyncFile(target.filePath, target.mtimeMs ?? null);
+        },
         recordDeletionRevision: async ({ filePath, mtimeMs }) =>
           storage.recordReplicatedDeletionRevision(filePath, mtimeMs),
       });
+      if (options.returnCurrentFiles !== false) {
+        const current = await buildOfflineSyncSnapshot({
+          root: storage.dir,
+          sourceId: "local",
+          includeContent: false,
+          includeTranscripts: changeset.includeTranscripts,
+          readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
+          readFileDigest: async ({ filePath }) => storage.digestOfflineSyncFile(filePath),
+          excludeFile: passportGuard.excludePrivateFile,
+        });
+        const { currentFiles: _partialFiles, currentFilesComplete: _incomplete, ...counts } = result;
+        return {
+          namespace: resolvedNamespace,
+          ...counts,
+          currentFiles: current.files,
+        };
+      }
       return {
         namespace: resolvedNamespace,
         ...result,
