@@ -42,6 +42,17 @@ function decodeId(value: string, label: string): string {
   }
 }
 
+function closeUnreadRequestAfterResponse(req: IncomingMessage, res: ServerResponse): void {
+  const contentLength = req.headers["content-length"];
+  const declaresBody =
+    req.headers["transfer-encoding"] !== undefined ||
+    (contentLength !== undefined && contentLength !== "0");
+  if (!declaresBody || req.readableEnded || req.destroyed) return;
+  res.shouldKeepAlive = false;
+  res.setHeader("connection", "close");
+  res.once("finish", () => req.destroy());
+}
+
 async function runOperation(
   name: OperationName,
   input: Record<string, unknown>,
@@ -152,6 +163,7 @@ export async function handleSupportPassportOwnerHttp(
     dependencies.respondJson(200, result);
   } catch (error) {
     if (!(error instanceof SupportPassportError)) throw error;
+    closeUnreadRequestAfterResponse(req, dependencies.res);
     dependencies.respondJson(error.status, { error: error.message, code: error.code });
   }
   return true;

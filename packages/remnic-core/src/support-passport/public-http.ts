@@ -541,20 +541,20 @@ export function buildSupportPassportPublicRequestHandler(
             }
             throw error;
           }
-          await readGrantUnderAuthenticationReservation(
-            service,
-            grantId,
-            secret,
-            digest,
-            rateLimits.networkQuestions,
-            rateLimits.grantQuestions,
-            rateLimits.networkQuestionFailures
-          );
           const releaseModelCall = rateLimits.modelCalls.reserve(digest);
           if (!releaseModelCall) throw rateLimited();
-          releaseAuthentication();
-          releaseAuthentication = undefined;
           try {
+            await readGrantUnderAuthenticationReservation(
+              service,
+              grantId,
+              secret,
+              digest,
+              rateLimits.networkQuestions,
+              rateLimits.grantQuestions,
+              rateLimits.networkQuestionFailures
+            );
+            releaseAuthentication();
+            releaseAuthentication = undefined;
             const answer = await runPublicOperation(
               service,
               "support_passport_grant_ask",

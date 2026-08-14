@@ -151,6 +151,20 @@ test("long helper answers use separate model capacity from guide reads", async (
       responses.map((response) => response.status),
       Array(8).fill(200)
     );
+    for (let index = 0; index < 12; index += 1) {
+      const response = await fetch(askUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ question: `Follow-up ${index + 1}?` }),
+      });
+      assert.equal(response.status, 200, "a model-capacity rejection must not consume question quota");
+    }
+    const quotaLimited = await fetch(askUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ question: "Question twenty-one?" }),
+    });
+    assert.equal(quotaLimited.status, 429);
     const finalRead = await fetch(`${root}/engram/v1/support-passport/public/grants/grant-one`, { headers });
     assert.equal(finalRead.status, 200);
   } finally {

@@ -1000,7 +1000,14 @@ export class SupportPassportCardService {
       ownsMemory(currentDraft, namespace, principal) &&
       currentDraft.frontmatter.status === "rejected"
     ) {
-      await this.finishPreparedDraftReplacement(storage, replacement.card.cardId, lock, principal, namespace);
+      await this.finishPreparedDraftReplacement(
+        storage,
+        replacement.card.cardId,
+        lock,
+        principal,
+        namespace,
+        onCommitted
+      );
       return;
     }
     if (

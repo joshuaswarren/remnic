@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { request } from "node:http";
 import test from "node:test";
 
 import { EngramAccessHttpServer } from "../access-http.js";
@@ -620,6 +621,50 @@ test("owner HTTP applies the write quota to share-link revocation", async () => 
     });
     assert.equal(revoked.status, 429);
     assert.equal(revocations.length, 0);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("owner HTTP closes an unread body when a query is rejected", async () => {
+  const service = { supportPassportEnabled: true } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: TOKEN,
+    principal: "owner:alice",
+    adminConsoleEnabled: false,
+  });
+  const { port } = await server.start();
+  try {
+    const result = await new Promise<{ status: number | undefined; connection: string | undefined }>(
+      (resolve, reject) => {
+        const client = request(
+          {
+            hostname: "127.0.0.1",
+            port,
+            path: "/engram/v1/support-passport/drafts?unexpected=true",
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${TOKEN}`,
+              "content-type": "application/json",
+              "content-length": "100",
+            },
+          },
+          (response) => {
+            response.resume();
+            response.once("end", () =>
+              resolve({ status: response.statusCode, connection: response.headers.connection })
+            );
+          }
+        );
+        client.once("error", reject);
+        client.flushHeaders();
+        client.write('{"title":"partial');
+      }
+    );
+    assert.equal(result.status, 400);
+    assert.equal(result.connection, "close");
   } finally {
     await server.stop();
   }
