@@ -1,11 +1,11 @@
-import { lstat, mkdir, mkdtemp, rename, rm } from "node:fs/promises";
+import { copyFile, lstat, mkdir, mkdtemp, rename, rm } from "node:fs/promises";
 import path from "node:path";
 
 class CapturePublicationError extends AggregateError {
   preserveStaging = true;
 }
 
-async function publishAssets(outputDir, stagingDir, assetNames, renameFile) {
+async function publishAssets(outputDir, stagingDir, assetNames, renameFile, copyAsset) {
   const backupDir = path.join(stagingDir, ".previous");
   await mkdir(backupDir);
   const existing = [];
@@ -18,12 +18,10 @@ async function publishAssets(outputDir, stagingDir, assetNames, renameFile) {
       if (error?.code !== "ENOENT") throw error;
     }
   }
-  const backedUp = [];
   const published = [];
   try {
     for (const assetName of existing) {
-      await renameFile(path.join(outputDir, assetName), path.join(backupDir, assetName));
-      backedUp.push(assetName);
+      await copyAsset(path.join(outputDir, assetName), path.join(backupDir, assetName));
     }
     for (const assetName of assetNames) {
       await renameFile(path.join(stagingDir, assetName), path.join(outputDir, assetName));
@@ -33,14 +31,11 @@ async function publishAssets(outputDir, stagingDir, assetNames, renameFile) {
     const rollbackErrors = [];
     for (const assetName of published.reverse()) {
       try {
-        await rm(path.join(outputDir, assetName), { force: true });
-      } catch (error) {
-        rollbackErrors.push(error);
-      }
-    }
-    for (const assetName of backedUp.reverse()) {
-      try {
-        await renameFile(path.join(backupDir, assetName), path.join(outputDir, assetName));
+        if (existing.includes(assetName)) {
+          await renameFile(path.join(backupDir, assetName), path.join(outputDir, assetName));
+        } else {
+          await rm(path.join(outputDir, assetName), { force: true });
+        }
       } catch (error) {
         rollbackErrors.push(error);
       }
@@ -61,7 +56,9 @@ export async function captureAssets(outputDir, assetNames, runCapture, operation
   }
   if (new Set(assetNames).size !== assetNames.length) throw new Error("Capture asset names must be unique");
   const renameFile = operations.renameFile ?? rename;
+  const copyAsset = operations.copyFile ?? copyFile;
   if (typeof renameFile !== "function") throw new Error("renameFile must be a function");
+  if (typeof copyAsset !== "function") throw new Error("copyFile must be a function");
   await mkdir(outputDir, { recursive: true });
   const stagingDir = await mkdtemp(path.join(outputDir, ".capture-"));
   let removeStaging = true;
@@ -71,7 +68,7 @@ export async function captureAssets(outputDir, assetNames, runCapture, operation
       const staged = await lstat(path.join(stagingDir, assetName));
       if (!staged.isFile()) throw new Error(`Capture asset is not a file: ${assetName}`);
     }
-    await publishAssets(outputDir, stagingDir, assetNames, renameFile);
+    await publishAssets(outputDir, stagingDir, assetNames, renameFile, copyAsset);
   } catch (error) {
     if (error instanceof CapturePublicationError) removeStaging = false;
     throw error;
