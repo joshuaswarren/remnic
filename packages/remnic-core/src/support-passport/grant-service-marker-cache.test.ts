@@ -9,7 +9,9 @@ import type { SupportPassportGrantStore } from "./grant-store.js";
 
 interface TestSnapshot {
   version: string;
+  validatedAtMs: number;
   cardsById: ReadonlyMap<string, StoredSupportPassportCard>;
+  generatedBatchMarkers: ReadonlyMap<string, GeneratedBatchMarker | null>;
   activeReplacementPredecessors: ReadonlySet<string>;
 }
 
@@ -20,12 +22,19 @@ test("grant snapshots reuse generated batch markers across validation and projec
   } as unknown as StorageManager;
   const service = new SupportPassportGrantService({
     grantStore: {} as SupportPassportGrantStore,
-    resolveOwner: async () => ({ principal: "owner:alice", namespace: "alice", storage }),
+    resolveOwner: async () => ({
+      principal: "owner:alice",
+      namespace: "alice",
+      storage,
+    }),
     resolveNamespace: async () => storage,
+    now: () => new Date("2026-08-13T12:00:00.000Z"),
   });
   const cached: TestSnapshot = {
     version: "7:owner-cache",
+    validatedAtMs: Date.parse("2026-08-13T12:00:00.000Z"),
     cardsById: new Map(),
+    generatedBatchMarkers: new Map(),
     activeReplacementPredecessors: new Set(),
   };
   const inspected = service as unknown as {
@@ -59,4 +68,5 @@ test("grant snapshots reuse generated batch markers across validation and projec
   const snapshot = await inspected.readStoredCardSnapshot(storage, "alice", "owner-key");
 
   assert.equal(snapshot.cardsById.size, 0);
+  assert.equal(snapshot.generatedBatchMarkers.has("00000000-0000-4000-8000-000000000001"), true);
 });
