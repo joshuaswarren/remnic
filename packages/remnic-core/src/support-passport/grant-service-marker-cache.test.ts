@@ -77,6 +77,7 @@ test("grant snapshots revalidate after the cross-process cache bound", async () 
     version: "7:owner-cache",
     validatedAtMs: currentTime,
     cardsById: new Map(),
+    generatedBatchMarkers: new Map(),
     activeReplacementPredecessors: new Set(),
   };
   const inspected = service as unknown as {

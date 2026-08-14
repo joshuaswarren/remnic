@@ -11,6 +11,7 @@ import {
   SupportPassportCardStatusSchema,
   SupportPassportMemoryIdSchema,
   SupportPassportNamespaceSchema,
+  SupportPassportSourceMemoryIdSchema,
   computeSupportPassportCardRevision,
 } from "./contracts.js";
 
@@ -177,14 +178,14 @@ export function activeSupportPassportReplacementPredecessorIds(
   );
 }
 
-function parseSourceMemoryIds(value: string | undefined): string[] | null {
-  if (value === undefined) return null;
-  if (value === "") return [];
-  const rawIds = value.split(",");
+function parseSourceMemoryIds(frontmatter: MemoryFile["frontmatter"]): string[] | null {
+  const lineage = frontmatter.lineage;
+  const legacyValue = frontmatter.structuredAttributes?.[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.sourceMemoryIds];
+  const rawIds = lineage ?? (legacyValue === undefined || legacyValue === "" ? [] : legacyValue.split(","));
   if (rawIds.length > 5) return null;
   const normalized: string[] = [];
   for (const rawId of rawIds) {
-    const parsed = SupportPassportMemoryIdSchema.safeParse(rawId);
+    const parsed = SupportPassportSourceMemoryIdSchema.safeParse(rawId);
     if (!parsed.success) return null;
     normalized.push(parsed.data);
   }
@@ -226,9 +227,7 @@ function parseSupportPassportCardMetadata(
   const status = SupportPassportCardStatusSchema.safeParse(frontmatter.status);
   const rawOrder = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.order];
   const order = Number(rawOrder);
-  const sourceMemoryIds = parseSourceMemoryIds(
-    attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.sourceMemoryIds],
-  );
+  const sourceMemoryIds = parseSourceMemoryIds(frontmatter);
   const namespace = decodeSupportPassportNamespaceAttributes(attributes);
   const owner = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.owner];
   let replacesDraftId: string | undefined;

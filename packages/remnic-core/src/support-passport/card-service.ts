@@ -538,7 +538,6 @@ export class SupportPassportCardService {
           [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.category]: input.category,
           [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.order]: String(order),
           [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.reviewBy]: reviewBy,
-          [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.sourceMemoryIds]: input.sourceMemoryIds.join(","),
           ...(input.replacesDraftId
             ? {
                 [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.replacesDraftId]: input.replacesDraftId,

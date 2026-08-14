@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { isIP } from "node:net";
 
 import { abortError, isAbortError } from "../abort-error.js";
 import { type OperationName, getOperation } from "../access-boundary.js";
@@ -146,6 +147,7 @@ interface PublicRateLimits {
 
 export interface SupportPassportPublicHandlerOptions {
   now?: () => number;
+  trustedProxyAddresses?: readonly string[];
 }
 
 function createRateLimits(now: () => number): PublicRateLimits {
@@ -269,9 +271,33 @@ async function readGrantWithRateLimits(
   }
 }
 
-function networkDigest(req: IncomingMessage): string {
+function normalizeNetworkAddress(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const address = value.trim().toLowerCase();
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(address)?.[1];
+  if (mapped && isIP(mapped) === 4) return mapped;
+  return isIP(address) === 0 ? undefined : address;
+}
+
+function requestNetworkAddress(req: IncomingMessage, trustedProxyAddresses: ReadonlySet<string>): string {
+  const directAddress = normalizeNetworkAddress(req.socket.remoteAddress) ?? "unknown";
+  if (!trustedProxyAddresses.has(directAddress)) return directAddress;
+  const forwarded = req.headers["x-forwarded-for"];
+  if (typeof forwarded !== "string") return directAddress;
+  const rawAddresses = forwarded.split(",");
+  if (rawAddresses.length < 1 || rawAddresses.length > 32) return directAddress;
+  const addresses = rawAddresses.map((address) => normalizeNetworkAddress(address));
+  if (addresses.some((address) => address === undefined)) return directAddress;
+  for (let index = addresses.length - 1; index >= 0; index -= 1) {
+    const address = addresses[index];
+    if (address && !trustedProxyAddresses.has(address)) return address;
+  }
+  return addresses[0] ?? directAddress;
+}
+
+function networkDigest(req: IncomingMessage, trustedProxyAddresses: ReadonlySet<string>): string {
   return createHash("sha256")
-    .update(req.socket.remoteAddress ?? "unknown")
+    .update(requestNetworkAddress(req, trustedProxyAddresses))
     .digest("hex");
 }
 
@@ -426,6 +452,11 @@ export function buildSupportPassportPublicRequestHandler(
   options: SupportPassportPublicHandlerOptions = {}
 ): SupportPassportExternalRequestHandler {
   const rateLimits = createRateLimits(options.now ?? Date.now);
+  const trustedProxyAddresses = new Set(
+    (options.trustedProxyAddresses ?? [])
+      .map((address) => normalizeNetworkAddress(address))
+      .filter((address): address is string => address !== undefined)
+  );
   return async (req, res) => {
     let parsed: URL;
     try {
@@ -467,7 +498,7 @@ export function buildSupportPassportPublicRequestHandler(
 
     const lifecycle = requestSignal(req, res);
     try {
-      const digest = networkDigest(req);
+      const digest = networkDigest(req, trustedProxyAddresses);
       if (ownedRead) {
         const guide = await readGrantWithRateLimits(
           service,
@@ -483,8 +514,8 @@ export function buildSupportPassportPublicRequestHandler(
       } else {
         const releaseAuthentication = rateLimits.authentications.reserve(digest);
         if (!releaseAuthentication) throw new UnreadSupportPassportRequestError(rateLimited());
-        let question: string;
         try {
+          let question: string;
           const bodyFailure = rateLimits.networkQuestionFailures.reserve(digest);
           if (!bodyFailure) throw new UnreadSupportPassportRequestError(rateLimited());
           try {
@@ -509,16 +540,16 @@ export function buildSupportPassportPublicRequestHandler(
             rateLimits.grantQuestions,
             rateLimits.networkQuestionFailures
           );
+          const answer = await runPublicOperation(
+            service,
+            "support_passport_grant_ask",
+            { grantId, secret, question },
+            lifecycle.signal
+          );
+          respondJson(res, 200, answer);
         } finally {
           releaseAuthentication();
         }
-        const answer = await runPublicOperation(
-          service,
-          "support_passport_grant_ask",
-          { grantId, secret, question },
-          lifecycle.signal
-        );
-        respondJson(res, 200, answer);
       }
     } catch (error) {
       if (error instanceof UnreadSupportPassportRequestError) {
