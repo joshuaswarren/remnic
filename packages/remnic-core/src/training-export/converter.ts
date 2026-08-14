@@ -15,6 +15,7 @@ import path from "node:path";
 
 import { parseStrictCliDate } from "./date-parse.js";
 import type { TrainingExportOptions, TrainingExportRecord } from "./types.js";
+import { isSupportPassportPrivateMemory } from "../support-passport/card-projection.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 
 // ---------------------------------------------------------------------------
@@ -293,6 +294,7 @@ export async function convertMemoriesToRecords(
     const parsed = parseFrontmatter(raw);
     if (!parsed) continue; // skip malformed files
     if (!parsed.content) continue; // skip empty content
+    if (isSupportPassportPrivateMemory({ frontmatter: { tags: parsed.tags } })) continue;
 
     parsed.filePath = filePath;
 

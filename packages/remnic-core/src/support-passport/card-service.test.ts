@@ -6,7 +6,7 @@ import { test } from "node:test";
 
 import { StorageManager } from "../storage.js";
 import { stripAttributesSuffix } from "../structured-attributes.js";
-import { projectSupportPassportCard } from "./card-projection.js";
+import { computeSupportPassportNamespaceKey, projectSupportPassportCard } from "./card-projection.js";
 import { SupportPassportCardService } from "./card-service.js";
 import { SupportPassportError } from "./errors.js";
 import { supportPassportOwnerLockPath } from "./owner-lock.js";
@@ -243,7 +243,10 @@ test("card reads and mutations stay inside the resolved namespace on shared stor
 
     const stored = await subject.storage.getMemoryById(aliceDraft.cardId);
     assert.equal(stored?.frontmatter.status, "pending_review");
-    assert.equal(stored?.frontmatter.structuredAttributes?.["support-passport-namespace"], "alice");
+    assert.equal(
+      stored?.frontmatter.structuredAttributes?.["support-passport-namespace"],
+      computeSupportPassportNamespaceKey("alice")
+    );
   } finally {
     await subject.cleanup();
   }
@@ -317,7 +320,7 @@ test("card operations preserve configured default namespace identities", async (
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-passport-default-namespace-"));
   const storage = new StorageManager(path.join(root, "shared"));
   await storage.ensureDirectories();
-  const namespace = `team support:${"long ".repeat(60).trim()}`;
+  const namespace = `tenant/${"n".repeat(4096)}`;
   const service = new SupportPassportCardService({
     resolveOwner: async (principal) => ({ principal, namespace, storage }),
   });
@@ -332,7 +335,7 @@ test("card operations preserve configured default namespace identities", async (
     assert.deepEqual(await service.listCards({ principal: "owner:alice" }), [card]);
     assert.equal(
       (await storage.getMemoryById(card.cardId))?.frontmatter.structuredAttributes?.["support-passport-namespace"],
-      namespace,
+      computeSupportPassportNamespaceKey(namespace)
     );
   } finally {
     StorageManager.clearAllStaticCaches();
@@ -727,7 +730,10 @@ test("replacement audits retain the card owner scope and omit internal attribute
     );
     assert.equal(stripAttributesSuffix(audit.content).includes("support-passport-title"), false);
     assert.equal(audit.frontmatter.source, "support-passport");
-    assert.equal(audit.frontmatter.structuredAttributes?.["support-passport-namespace"], "alice");
+    assert.equal(
+      audit.frontmatter.structuredAttributes?.["support-passport-namespace"],
+      computeSupportPassportNamespaceKey("alice")
+    );
     assert.equal(
       audit.frontmatter.structuredAttributes?.["support-passport-owner"],
       (await subject.storage.getMemoryById(active.cardId))?.frontmatter.structuredAttributes?.["support-passport-owner"]

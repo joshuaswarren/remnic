@@ -114,7 +114,7 @@ test("decideTierTransition keeps live support passport cards in the hot tier", (
       tags: ["support-passport-card"],
       structuredAttributes: {
         "support-passport-category": "environment",
-        "support-passport-namespace": "default",
+        "support-passport-namespace": "b".repeat(64),
         "support-passport-owner": "a".repeat(64),
         "support-passport-title": "Quiet space",
         "support-passport-order": "0",
@@ -143,7 +143,7 @@ test("decideTierTransition does not pin incomplete support passport metadata", (
   const now = new Date("2026-02-01T00:00:00.000Z");
   const attributes = {
     "support-passport-category": "environment",
-    "support-passport-namespace": "default",
+    "support-passport-namespace": "b".repeat(64),
     "support-passport-owner": "a".repeat(64),
     "support-passport-title": "Quiet space",
     "support-passport-order": "0",
@@ -187,7 +187,7 @@ test("decideTierTransition does not pin a support passport card with an invalid 
         tags: ["support-passport-card"],
         structuredAttributes: {
           "support-passport-category": "environment",
-          "support-passport-namespace": "default",
+          "support-passport-namespace": "b".repeat(64),
           "support-passport-owner": "a".repeat(64),
           "support-passport-title": "Quiet space",
           "support-passport-order": "0",

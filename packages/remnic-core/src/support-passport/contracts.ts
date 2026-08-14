@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 
+import { normalizeNamespaceIdentity } from "../namespaces/identity.js";
 import { parseIsoOffsetTimestamp } from "../utils/iso-timestamp.js";
-import { STRUCTURED_ATTRIBUTE_LIMITS } from "../write-envelope.js";
 
 export const SUPPORT_PASSPORT_CARD_CATEGORIES = [
   "communication",
@@ -42,23 +42,10 @@ const IsoTimestampSchema = z
 export const SupportPassportNamespaceSchema = z
   .string()
   .min(1)
-  .max(STRUCTURED_ATTRIBUTE_LIMITS.maxValueLength)
-  .refine((namespace) => namespace === namespace.trim(), {
+  .refine((namespace) => namespace === normalizeNamespaceIdentity(namespace), {
     message: "namespaces must be canonical",
-  })
-  .refine(
-    (namespace) =>
-      !namespace.includes("/") &&
-      !namespace.includes("\\") &&
-      !namespace.includes("..") &&
-      !namespace.includes("]") &&
-      !namespace.includes("\0") &&
-      !namespace.includes("\n") &&
-      !namespace.includes("\r"),
-    {
-      message: "namespaces cannot contain path or attribute delimiters",
-    },
-  );
+  });
+export const SupportPassportNamespaceKeySchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const SupportPassportMemoryIdSchema = z
   .string()
   .trim()

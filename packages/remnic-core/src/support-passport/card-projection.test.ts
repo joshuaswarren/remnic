@@ -4,7 +4,11 @@ import { test } from "node:test";
 
 import { SupportPassportCardService as PublicSupportPassportCardService } from "../index.js";
 import type { MemoryFile } from "../types.js";
-import { computeSupportPassportOwnerKey, projectSupportPassportCard } from "./card-projection.js";
+import {
+  computeSupportPassportNamespaceKey,
+  computeSupportPassportOwnerKey,
+  projectSupportPassportCard,
+} from "./card-projection.js";
 import { SupportPassportCardService } from "./card-service.js";
 import { computeSupportPassportCardRevision } from "./contracts.js";
 
@@ -41,7 +45,9 @@ function makeMemory(
       supersededBy: overrides.supersededBy,
       tags: ["support-passport-card"],
       structuredAttributes: {
-        ...(overrides.namespace === "" ? {} : { "support-passport-namespace": overrides.namespace ?? "alice" }),
+        ...(overrides.namespace === ""
+          ? {}
+          : { "support-passport-namespace": overrides.namespace ?? computeSupportPassportNamespaceKey("alice") }),
         ...(overrides.owner === null
           ? {}
           : { "support-passport-owner": overrides.owner ?? computeSupportPassportOwnerKey("owner:alice") }),
@@ -73,7 +79,7 @@ test("card projection normalizes IDs and public fields before revision hashing",
   assert.equal(projected.card.title, "Quiet space");
   assert.equal(projected.card.statement, "Offer me a quiet place and time.");
   assert.deepEqual(projected.sourceMemoryIds, ["source-1", "source-2"]);
-  assert.equal(projected.namespace, "alice");
+  assert.equal(projected.namespaceKey, computeSupportPassportNamespaceKey("alice"));
   const { revision, ...fields } = projected.card;
   assert.equal(revision, computeSupportPassportCardRevision(fields));
 });

@@ -94,15 +94,14 @@ test("support card titles reject attribute delimiters and line breaks", () => {
   }
 });
 
-test("support passport namespaces reject path and attribute delimiters", () => {
-  for (const namespace of ["alice/bob", "alice\\bob", "alice]bob", "alice..bob", "alice\nbob"]) {
+test("support passport namespaces use the shared canonical identity grammar", () => {
+  for (const namespace of ["", " alice", "alice "]) {
     assert.equal(SupportPassportNamespaceSchema.safeParse(namespace).success, false);
   }
   assert.equal(SupportPassportNamespaceSchema.safeParse("team.alpha-1").success, true);
   assert.equal(SupportPassportNamespaceSchema.safeParse("team support:primary").success, true);
-  assert.equal(SupportPassportNamespaceSchema.safeParse("team ".repeat(100).trim()).success, true);
-  assert.equal(SupportPassportNamespaceSchema.safeParse("n".repeat(1024)).success, true);
-  assert.equal(SupportPassportNamespaceSchema.safeParse("n".repeat(1025)).success, false);
+  assert.equal(SupportPassportNamespaceSchema.safeParse("tenant/default").success, true);
+  assert.equal(SupportPassportNamespaceSchema.safeParse("n".repeat(4096)).success, true);
 });
 
 test("support card revisions change when any public field changes", () => {
