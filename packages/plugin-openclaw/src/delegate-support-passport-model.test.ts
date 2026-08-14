@@ -3,6 +3,7 @@ import http from "node:http";
 import test from "node:test";
 
 import type { SupportPassportModelJob, SupportPassportModelRoute } from "@remnic/core";
+import { initLogger, resetLogger } from "@remnic/core/logger";
 import {
   createDelegateSupportPassportModelService,
   supportPassportModelPollRetryDelayMs,
@@ -303,6 +304,105 @@ test("the delegate renews an acknowledged claim while the gateway model runs", a
     assert.ok(acknowledgements >= 3);
   } finally {
     await service.stop();
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("a late claim renewal rejection does not report an accepted completion as failed", async () => {
+  const renewalStarted = Promise.withResolvers<void>();
+  const completionSent = Promise.withResolvers<void>();
+  const warnings: string[] = [];
+  const job: SupportPassportModelJob = {
+    id: "a871fab2-2f1c-478c-af4c-8c4a755d8081",
+    claimId: "b871fab2-2f1c-478c-af4c-8c4a755d8082",
+    claimAckTimeoutMs: 500,
+    executionLeaseTimeoutMs: 90,
+    messages: [{ role: "user", content: "What helps?" }],
+    temperature: 0,
+    maxTokens: 100,
+    timeoutMs: 2_000,
+    operation: "support-passport-answer",
+    jsonSchema: { name: "answer", schema: { type: "object" } },
+  };
+  let served = false;
+  let acknowledgements = 0;
+  let pendingRenewal: http.ServerResponse | undefined;
+  const server = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      if (req.url?.endsWith("/jobs/next")) {
+        if (!served) {
+          served = true;
+          res.end(JSON.stringify(job));
+        } else {
+          res.statusCode = 204;
+          res.end();
+        }
+        return;
+      }
+      if (req.url?.endsWith("/jobs/ack")) {
+        acknowledgements += 1;
+        if (acknowledgements === 1) {
+          res.statusCode = 204;
+          res.end();
+        } else {
+          pendingRenewal = res;
+          renewalStarted.resolve();
+        }
+        return;
+      }
+      pendingRenewal?.writeHead(404).end();
+      setTimeout(() => {
+        res.statusCode = 204;
+        res.end();
+        completionSent.resolve();
+      }, 20);
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("server did not bind");
+  initLogger(
+    {
+      info() {},
+      warn(message) {
+        warnings.push(message);
+      },
+      error() {},
+    },
+    false,
+    { timestamps: false }
+  );
+  const service = createDelegateSupportPassportModelService({
+    serviceId: "openclaw-remnic",
+    target: {
+      host: "127.0.0.1",
+      port: address.port,
+      resolveAuthToken: () => ({ token: "daemon-token", source: "REMNIC_AUTH_TOKEN" }),
+    },
+    route: {
+      kind: "gateway",
+      invoke: async () => {
+        await renewalStarted.promise;
+        return { content: "{}", modelUsed: "gateway/local" };
+      },
+    },
+  });
+  try {
+    await service.start();
+    await completionSent.promise;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(
+      warnings.some((warning) => warning.includes("support passport model completion failed")),
+      false
+    );
+  } finally {
+    await service.stop();
+    resetLogger();
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }

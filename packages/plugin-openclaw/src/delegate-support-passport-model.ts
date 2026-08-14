@@ -283,16 +283,17 @@ export function createDelegateSupportPassportModelService(
         const heartbeatSignal = AbortSignal.any([signal, heartbeatController.signal]);
         const workSignal = AbortSignal.any([signal, workController.signal]);
         let heartbeatError: unknown;
+        let completing = false;
         const heartbeat = maintainClaim(claimedJob, heartbeatSignal, deadline).catch((error) => {
-          if (heartbeatSignal.aborted) return;
+          if (heartbeatSignal.aborted || completing) return;
           heartbeatError = error;
           workController.abort();
         });
         try {
           const result = await invoke(claimedJob, workSignal);
+          completing = true;
           if (heartbeatError) throw heartbeatError;
           await complete(claimedJob, result, workSignal, deadline, signal);
-          if (heartbeatError) throw heartbeatError;
         } catch (error) {
           log.warn(`delegate support passport model completion failed: ${String(error)}`);
         } finally {
