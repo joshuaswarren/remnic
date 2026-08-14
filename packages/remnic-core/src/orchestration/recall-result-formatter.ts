@@ -357,13 +357,16 @@ export class RecallResultFormatter {
         // #1955 review: node title/summary copy active source-memory content;
         // harmonic nodes carry no per-node origin yet, so fence as unknown
         // (least privilege) when origin authority is on (plumbing: #2397).
-        const nodeBody = renderAuthorityBoundContent(
-          [node.title, node.summary].filter(Boolean).join("\n"),
-          undefined,
-          { enabled: this.originAuthorityEnabled, untrustedOrigins: this.config.untrustedOrigins },
-        );
+        // Flag-off keeps the original two-slot shape byte-identical.
+        const bodyParts = this.originAuthorityEnabled
+          ? [renderAuthorityBoundContent(
+              [node.title, node.summary].filter(Boolean).join("\n"),
+              undefined,
+              { enabled: true, untrustedOrigins: this.config.untrustedOrigins },
+            )]
+          : [node.title, node.summary];
         const details = [
-          nodeBody,
+          ...bodyParts,
           `scores: node=${nodeScore.toFixed(1)} anchor=${anchorScore.toFixed(1)}`,
         ];
         if (matchedAnchors.length > 0) {

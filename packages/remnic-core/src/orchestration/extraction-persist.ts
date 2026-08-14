@@ -1,5 +1,5 @@
 import { classifyExtractionOrigin, type ExtractionSourceContext } from "./extraction-origin-context.js";
-import { evaluateInjectionScreen } from "./extraction-injection-gate.js";
+import { evaluateInjectionScreen, screenEntityForIndex } from "./extraction-injection-gate.js";
 /**
  * Extraction persistence coordinator (issue #1526, seam 16).
  *
@@ -2840,29 +2840,23 @@ export class ExtractionPersistCoordinator {
       durableNonFactTouchRecorded = true;
       touchBaseNonFactNamespace();
     };
+    // #1955 review: entity-derived fields are recallable via entity hints, so
+    // they pass the injection screen (screenEntityForIndex) before entering
+    // the entity index; withheld fields are logged with their rules.
+    const entityScreenOn = resolveSecurityCapabilities(this.deps.config).injectionScreen;
     for (const entity of entities) {
       try {
-        const name = (entity as any)?.name;
-        const type = (entity as any)?.type;
-        if (
-          typeof name !== "string" ||
-          !name.trim() ||
-          typeof type !== "string" ||
-          !type.trim()
-        ) {
-          continue;
+        const screened = screenEntityForIndex(entity, entityScreenOn);
+        if (!screened) continue;
+        if (screened.withheldRules.length > 0) {
+          log.warn(`persistExtraction: injection screen withheld ${screened.withheldRules.length} entity field(s) for "${screened.name}" [${screened.withheldRules.join(", ")}]`);
         }
-        const safeFacts = Array.isArray((entity as any)?.facts)
-          ? (entity as any).facts.filter((f: any) => typeof f === "string")
-          : [];
-          const id = await storage.writeEntity(name, type, safeFacts, {
-            source: typeof (entity as any)?.source === "string" ? (entity as any).source : "extraction",
-            timestamp: sourceContext?.validAt,
-            sessionKey: sourceContext?.sessionKey,
-            principal: sourceContext?.principal,
-            structuredSections: Array.isArray((entity as any)?.structuredSections)
-            ? (entity as any).structuredSections
-            : undefined,
+        const id = await storage.writeEntity(screened.name, screened.type, screened.facts, {
+          source: screened.source,
+          timestamp: sourceContext?.validAt,
+          sessionKey: sourceContext?.sessionKey,
+          principal: sourceContext?.principal,
+          structuredSections: screened.structuredSections,
         });
         if (id) {
           trackPersistedId(storage, id);
