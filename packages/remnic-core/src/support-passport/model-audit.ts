@@ -5,7 +5,7 @@ import { z } from "zod";
 import { expandTildePath } from "../utils/path.js";
 import { serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
 import {
-  appendPrivateFileNoFollow,
+  appendPrivateFileInPinnedDirectory,
   ensurePrivateDirectoryNoFollow,
   ensurePrivateDirectoryTreeNoFollow,
   withPrivateDirectoryNoFollow,
@@ -79,7 +79,10 @@ export class SupportPassportModelAuditStore implements SupportPassportModelAudit
   private memoryRootReady?: Promise<void>;
   private readonly runWithHeldFileLock: typeof withHeldFileLock;
 
-  constructor(options: { memoryDir: string; withHeldFileLock?: typeof withHeldFileLock }) {
+  constructor(options: {
+    memoryDir: string;
+    withHeldFileLock?: typeof withHeldFileLock;
+  }) {
     this.memoryDir = path.resolve(expandTildePath(options.memoryDir));
     this.auditDir = path.join(this.memoryDir, "state", "support-passport", "audit");
     this.runWithHeldFileLock = options.withHeldFileLock ?? withHeldFileLock;
@@ -105,12 +108,11 @@ export class SupportPassportModelAuditStore implements SupportPassportModelAudit
             },
             async (acquired) => {
               if (!acquired) throw new Error("could not acquire the support passport audit lock");
-              await appendPrivateFileNoFollow(
-                this.auditDir,
-                filePath,
+              await appendPrivateFileInPinnedDirectory(
+                pinnedDirectory,
+                `${day}.jsonl`,
                 `${JSON.stringify(record)}\n`,
-                "support passport audit paths must be regular files in a stable directory",
-                this.memoryDir
+                "support passport audit paths must be regular files in a stable directory"
               );
             }
           )

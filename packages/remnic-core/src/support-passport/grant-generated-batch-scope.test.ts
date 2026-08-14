@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
 import { StorageManager } from "../storage.js";
-import { SUPPORT_PASSPORT_ATTRIBUTE_KEYS } from "./card-projection.js";
+import { SUPPORT_PASSPORT_ATTRIBUTE_KEYS, computeSupportPassportOwnerKey } from "./card-projection.js";
 import { SupportPassportCardService } from "./card-service.js";
 import { SupportPassportError } from "./errors.js";
 import { SupportPassportGrantService } from "./grant-service.js";
@@ -138,6 +138,62 @@ test("a removed generated batch marker invalidates a cached grant snapshot", asy
       grantService.readGrant({ grantId: grant.grant.grantId, secret: grant.secret }),
       (error: unknown) => error instanceof SupportPassportError && error.code === "grant_stale",
     );
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a completed generated batch invalidates a cached omission", async () => {
+  StorageManager.clearAllStaticCaches();
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-batch-complete-"));
+  try {
+    const storage = new StorageManager(path.join(root, "owner"));
+    await storage.ensureDirectories();
+    const now = () => new Date("2026-08-13T12:00:00.000Z");
+    const principal = "owner:alice";
+    const resolveOwner = async () => ({ principal, namespace: "owner", storage });
+    const cardService = new SupportPassportCardService({ resolveOwner, now });
+    const [draft] = await cardService.createGeneratedDrafts({
+      principal,
+      cards: [{
+        title: "Time to answer",
+        statement: "Give me time to answer.",
+        category: "communication",
+        sourceMemoryIds: ["source-1"],
+      }],
+    });
+    assert.ok(draft);
+    const card = await cardService.approveCard({
+      principal,
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+    });
+    const memory = await storage.getMemoryById(card.cardId);
+    const batchId = memory?.frontmatter.structuredAttributes?.[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.generatedBatchId];
+    assert.ok(batchId);
+    const markerPath = path.join(storage.dir, "state", "support-passport", "generated-batches", `${batchId}.json`);
+    const completeMarker = JSON.parse(await readFile(markerPath, "utf8")) as Record<string, unknown>;
+    await writeFile(markerPath, `${JSON.stringify({ ...completeMarker, complete: false })}\n`, "utf8");
+    const service = new SupportPassportGrantService({
+      grantStore: {} as SupportPassportGrantStore,
+      resolveOwner,
+      resolveNamespace: async () => storage,
+      now,
+    });
+    const inspected = service as unknown as {
+      readStoredCardSnapshot(
+        target: StorageManager,
+        namespace: string,
+        ownerKey: string,
+      ): Promise<{ cardsById: ReadonlyMap<string, unknown> }>;
+    };
+    const ownerKey = computeSupportPassportOwnerKey(principal);
+
+    assert.equal((await inspected.readStoredCardSnapshot(storage, "owner", ownerKey)).cardsById.size, 0);
+    await writeFile(markerPath, `${JSON.stringify(completeMarker)}\n`, "utf8");
+
+    assert.equal((await inspected.readStoredCardSnapshot(storage, "owner", ownerKey)).cardsById.size, 1);
   } finally {
     StorageManager.clearAllStaticCaches();
     await rm(root, { recursive: true, force: true });

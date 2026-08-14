@@ -78,7 +78,10 @@ async function ensureBatchDirectory(storage: StorageManager): Promise<void> {
   await ensurePrivateDirectoryTreeNoFollow(batchDirectory(storage), BATCH_ERROR);
 }
 
-async function readBatchMarker(storage: StorageManager, batchId: string): Promise<GeneratedBatchMarker | null> {
+export async function readSupportPassportGeneratedBatchMarker(
+  storage: StorageManager,
+  batchId: string
+): Promise<GeneratedBatchMarker | null> {
   const directory = batchDirectory(storage);
   try {
     const content = await readPrivateFileNoFollow(directory, batchPath(storage, batchId), BATCH_ERROR, storage.dir);
@@ -101,14 +104,10 @@ async function readBatchMarker(storage: StorageManager, batchId: string): Promis
 
 export async function isSupportPassportGeneratedBatchCommitted(
   context: GeneratedBatchContext,
-  marker: GeneratedBatchMarker,
+  marker: GeneratedBatchMarker
 ): Promise<boolean> {
-  const current = await readBatchMarker(context.storage, marker.batchId);
-  return Boolean(
-    current?.complete &&
-      sameOwner(current, context) &&
-      current.size === marker.size,
-  );
+  const current = await readSupportPassportGeneratedBatchMarker(context.storage, marker.batchId);
+  return Boolean(current?.complete && sameOwner(current, context) && current.size === marker.size);
 }
 
 async function writeBatchMarker(storage: StorageManager, marker: GeneratedBatchMarker): Promise<void> {
@@ -148,7 +147,7 @@ export async function commitSupportPassportGeneratedBatch(
   context: GeneratedBatchContext,
   marker: GeneratedBatchMarker,
   cards: readonly StoredSupportPassportCard[],
-  writeMarker: GeneratedBatchMarkerWriter = writeBatchMarker,
+  writeMarker: GeneratedBatchMarkerWriter = writeBatchMarker
 ): Promise<void> {
   const cardIds = cards.map((card) => card.card.cardId);
   if (!sameOwner(marker, context) || cards.length !== marker.size || new Set(cardIds).size !== cards.length) {
@@ -201,7 +200,7 @@ export async function rollbackSupportPassportGeneratedBatch(
   batchId: string,
   knownCardIds: readonly string[]
 ): Promise<boolean> {
-  const marker = await readBatchMarker(context.storage, batchId);
+  const marker = await readSupportPassportGeneratedBatchMarker(context.storage, batchId);
   if (marker && !sameOwner(marker, context)) return false;
   if (marker?.complete) return false;
   const cardIds = new Set(knownCardIds);
@@ -239,7 +238,7 @@ export async function isCommittedGeneratedCard(
   if (!card.generatedBatchId) return true;
   let marker = markerCache?.get(card.generatedBatchId);
   if (!markerCache?.has(card.generatedBatchId)) {
-    marker = await readBatchMarker(storage, card.generatedBatchId);
+    marker = await readSupportPassportGeneratedBatchMarker(storage, card.generatedBatchId);
     markerCache?.set(card.generatedBatchId, marker);
   }
   return Boolean(
@@ -283,7 +282,7 @@ export async function recoverSupportPassportGeneratedBatches(
     cardsByBatch.set(card.generatedBatchId, cards);
   }
   for (const [batchId, cards] of cardsByBatch) {
-    const marker = await readBatchMarker(context.storage, batchId);
+    const marker = await readSupportPassportGeneratedBatchMarker(context.storage, batchId);
     if (marker?.complete === true && sameOwner(marker, context)) continue;
     if (!marker) {
       let recovered = true;
