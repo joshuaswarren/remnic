@@ -2,11 +2,16 @@ import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 
+import { SUPPORT_PASSPORT_SOURCE_MEMORY_ID_MAX_LENGTH } from "./contracts.js";
 import type {
   SupportPassportModelMessage,
   SupportPassportModelRoute,
   SupportPassportModelRouteResult,
 } from "./model-adapter.js";
+import {
+  SUPPORT_PASSPORT_DRAFT_MAX_CONTENT_CHARACTERS,
+  SUPPORT_PASSPORT_DRAFT_MAX_MEMORIES,
+} from "./model-contracts.js";
 import type { SupportPassportExternalRequestHandler } from "./public-http.js";
 
 export const SUPPORT_PASSPORT_MODEL_JOB_PATH = "/engram/v1/support-passport/internal/model/jobs/next";
@@ -14,11 +19,20 @@ export const SUPPORT_PASSPORT_MODEL_ACK_PATH = "/engram/v1/support-passport/inte
 export const SUPPORT_PASSPORT_MODEL_RESULT_PATH = "/engram/v1/support-passport/internal/model/jobs/result";
 
 const CONSUMER_HANDOFF_GRACE_MS = 1_000;
+const MAX_JSON_STRING_EXPANSION = 6;
+const MAX_DRAFT_MESSAGE_STRUCTURE = JSON.stringify({
+  sourceNotes: Array.from({ length: SUPPORT_PASSPORT_DRAFT_MAX_MEMORIES }, () => ({ memoryId: "", content: "" })),
+}).length;
+const MAX_MODEL_MESSAGE_CHARACTERS =
+  MAX_DRAFT_MESSAGE_STRUCTURE +
+  MAX_JSON_STRING_EXPANSION *
+    (SUPPORT_PASSPORT_DRAFT_MAX_CONTENT_CHARACTERS +
+      SUPPORT_PASSPORT_DRAFT_MAX_MEMORIES * SUPPORT_PASSPORT_SOURCE_MEMORY_ID_MAX_LENGTH);
 
 const ModelMessageSchema = z
   .object({
     role: z.enum(["system", "user", "assistant"]),
-    content: z.string().max(120_000),
+    content: z.string().max(MAX_MODEL_MESSAGE_CHARACTERS),
   })
   .strict();
 
@@ -303,7 +317,6 @@ export class SupportPassportModelBridge {
     }
     return new Promise((resolve) => {
       let active = true;
-      let waiter: PendingWaiter;
       const done = (job: SupportPassportModelJob | null): void => {
         if (!active) return;
         active = false;
@@ -311,6 +324,7 @@ export class SupportPassportModelBridge {
         signal.removeEventListener("abort", abort);
         resolve(job);
       };
+      const waiter: PendingWaiter = { claimLease, resolve: done };
       const abort = (): void => {
         const index = this.waiters.indexOf(waiter);
         if (index >= 0) this.waiters.splice(index, 1);
@@ -322,7 +336,6 @@ export class SupportPassportModelBridge {
         done(null);
       }, timeoutMs);
       signal.addEventListener("abort", abort, { once: true });
-      waiter = { claimLease, resolve: done };
       this.waiters.push(waiter);
     });
   }

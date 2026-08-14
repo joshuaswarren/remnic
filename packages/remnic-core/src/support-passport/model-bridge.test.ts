@@ -8,6 +8,7 @@ import {
   SUPPORT_PASSPORT_MODEL_RESULT_PATH,
   SupportPassportModelBridge,
 } from "./model-bridge.js";
+import { SupportPassportDraftModelInputSchema } from "./model-contracts.js";
 
 function startBridgeServer(bridge: SupportPassportModelBridge) {
   const server = http.createServer((req, res) => {
@@ -86,6 +87,51 @@ test("the model bridge moves a provider-neutral job through authenticated memory
       content: '{"cards":[]}',
       modelUsed: "gateway/test",
     });
+  } finally {
+    controller.abort();
+    bridge.close();
+    await server.close();
+  }
+});
+
+test("the model bridge accepts the maximum JSON-escaped valid draft payload", async () => {
+  const bridge = new SupportPassportModelBridge();
+  const server = await startBridgeServer(bridge);
+  const controller = new AbortController();
+  try {
+    const draft = SupportPassportDraftModelInputSchema.parse({
+      consent: true,
+      memories: Array.from({ length: 20 }, (_, index) => ({
+        memoryId: `${"\0".repeat(510)}${String(index).padStart(2, "0")}`,
+        content: "\0".repeat(5_000),
+      })),
+    });
+    const escapedMessages = [
+      { role: "system" as const, content: "Return JSON." },
+      { role: "user" as const, content: JSON.stringify({ sourceNotes: draft.memories }) },
+    ];
+    assert.ok(escapedMessages[1].content.length > 600_000);
+    await announceWorker(server.origin);
+
+    const resultPromise = bridge.route.invoke(escapedMessages, {
+      temperature: 0.2,
+      maxTokens: 500,
+      timeoutMs: 5_000,
+      signal: controller.signal,
+      operation: "support-passport-draft",
+      jsonSchema: { name: "drafts", schema: { type: "object" } },
+    });
+    const jobResponse = await fetch(`${server.origin}${SUPPORT_PASSPORT_MODEL_JOB_PATH}`, {
+      method: "POST",
+      headers: { authorization: "Bearer owner-token", "content-type": "application/json" },
+      body: JSON.stringify({ timeoutMs: 0 }),
+    });
+
+    assert.equal(jobResponse.status, 200);
+    const job = (await jobResponse.json()) as { messages: unknown };
+    assert.deepEqual(job.messages, escapedMessages);
+    controller.abort();
+    assert.equal(await resultPromise, null);
   } finally {
     controller.abort();
     bridge.close();

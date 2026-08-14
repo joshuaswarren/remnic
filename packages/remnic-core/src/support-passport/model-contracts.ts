@@ -9,6 +9,8 @@ import {
 import { SupportPassportPublicGuideSchema } from "./grant-contracts.js";
 
 export const SUPPORT_PASSPORT_NOT_IN_GUIDE_ANSWER = "That is not covered in this person's support guide.";
+export const SUPPORT_PASSPORT_DRAFT_MAX_MEMORIES = 20;
+export const SUPPORT_PASSPORT_DRAFT_MAX_CONTENT_CHARACTERS = 100_000;
 
 export const SupportPassportDraftCardSchema = z
   .object({
@@ -47,7 +49,7 @@ export const SupportPassportDraftModelInputSchema = z
           .strict()
       )
       .min(1)
-      .max(20),
+      .max(SUPPORT_PASSPORT_DRAFT_MAX_MEMORIES),
   })
   .strict()
   .superRefine((input, ctx) => {
@@ -64,7 +66,7 @@ export const SupportPassportDraftModelInputSchema = z
       }
       ids.add(memory.memoryId);
     }
-    if (totalCharacters > 100_000) {
+    if (totalCharacters > SUPPORT_PASSPORT_DRAFT_MAX_CONTENT_CHARACTERS) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "selected memory content is too large",
