@@ -2111,8 +2111,8 @@ grep "\[engram\]" ~/.openclaw/logs/gateway.log
 43. **Direct-write paths must trigger reindex** — bypassing the normal extraction→persist→index pipeline (e.g., heartbeat import writing directly to storage) leaves data undiscoverable until unrelated maintenance. After direct writes, explicitly call the reindex step.
 49. **Deduplicate batch operation inputs before executing** — duplicate rollout slugs in a batch rename cause ENOENT crash when the second rename tries to move an already-moved file. Check for duplicates before processing, or verify source exists before each move. PR #392.
 
-50. **Use canonical validation script names** — the root package and `@remnic/core` expose `check:ratchets` (plural) and `check-types`; neither exposes a `typecheck` script. Verify `package.json` before invoking scripts. Twenty fleet notes in one week came from guessed names.
-51. **Use Biome for formatting** — the root package pins `@biomejs/biome` 1.9.4. Prettier is not installed anywhere in the workspace, so `npx prettier` and `pnpm exec prettier` fail. Do not run whole-file formatting on baseline-unformatted legacy files; format changed lines only. Six incidents caused whole-file churn.
+50. **Use canonical validation script names** — the root package exposes `check:ratchets` (plural) and `check-types`; `@remnic/core` exposes only `check-types`. Neither defines a `typecheck` script. Verify `package.json` before invoking scripts. Twenty fleet notes in one week came from guessed names.
+51. **Use Biome for formatting** — the root package pins `@biomejs/biome` 1.9.4. Prettier is not installed anywhere in the workspace: `pnpm exec prettier` fails, and `npx prettier` may download Prettier and prompt for confirmation — use the pinned Biome binary instead. Do not run whole-file formatting on baseline-unformatted legacy files; format changed lines only. Six incidents caused whole-file churn.
 52. **Keep napkins per worktree** — copy or create `.claude/napkin.md` in every worktree. Per-worktree napkins prevent concurrent writer clobbering.
 
 ## Sealed memory-write envelope (issue #1989)
