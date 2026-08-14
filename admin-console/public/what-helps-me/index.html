@@ -272,6 +272,18 @@
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <div class="sr-only" id="announcer" role="status" aria-live="assertive"></div>
 
+  <script>
+    (() => {
+      const clearOwnerToken = () => {
+        const input = document.getElementById("tokenInput");
+        if (input instanceof HTMLInputElement) input.value = "";
+      };
+      window.addEventListener("pagehide", clearOwnerToken);
+      window.addEventListener("pageshow", (event) => {
+        if (event.persisted) clearOwnerToken();
+      });
+    })();
+  </script>
   <script src="./model.js"></script>
   <script src="./app.js"></script>
 </body>
