@@ -74,6 +74,7 @@ test("What Helps Me serves both aliases from one exact feature-gated allow-list"
         assert.equal(authorizedShell.headers.get("cache-control"), "private, no-store");
         const authorizedShellText = await authorizedShell.text();
         assert.match(authorizedShellText, /Object\.defineProperty\(window,key/);
+        assert.match(authorizedShellText, /new URLSearchParams\(location\.hash\.slice\(1\)\)\.has\("secret"\)/);
         assert.match(authorizedShellText, /\}\)\("owner-token",document\.currentScript\)/);
 
         const helperShell = await fetch(`${origin}/${prefix}/ui/what-helps-me/?grant=grant-one`, {
