@@ -131,6 +131,34 @@ test("the demo isolates ambient direct-model credentials from selected routes", 
   assert.equal(new Set(DEMO_ENVIRONMENT_KEYS).size, DEMO_ENVIRONMENT_KEYS.length);
 });
 
+test("the demo clears invalid core feature overrides and restores them", () => {
+  const names = [
+    "REMNIC_PROVENANCE_ENABLED",
+    "ENGRAM_PROVENANCE_ENABLED",
+    "REMNIC_EMIT_LEGACY_TOOLS",
+    "ENGRAM_EMIT_LEGACY_TOOLS",
+  ];
+  const previous = new Map(names.map((name) => [name, process.env[name]]));
+  for (const name of names) process.env[name] = "maybe";
+  let restoreEnvironment;
+
+  try {
+    const runtime = prepareDemoRuntime({}, "/tmp/fresh-memory");
+    restoreEnvironment = runtime.restoreEnvironment;
+    for (const name of names) assert.equal(process.env[name], undefined);
+
+    restoreEnvironment();
+    restoreEnvironment = undefined;
+    for (const name of names) assert.equal(process.env[name], "maybe");
+  } finally {
+    restoreEnvironment?.();
+    for (const [name, value] of previous) {
+      if (value === undefined) Reflect.deleteProperty(process.env, name);
+      else process.env[name] = value;
+    }
+  }
+});
+
 test("the demo resolves selected direct-model placeholders before environment isolation", () => {
   const names = ["OPENAI_API_KEY", "OPENAI_BASE_URL"];
   const previous = new Map(names.map((name) => [name, process.env[name]]));
@@ -238,7 +266,9 @@ test("runWithReservedOutput aborts work and releases its receipt after a signal"
     outputDir,
     async (_reservation, signal) => {
       started.resolve();
-      await new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+      await new Promise((_resolve, reject) =>
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true })
+      );
     },
     signals
   );
