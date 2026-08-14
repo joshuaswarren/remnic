@@ -340,7 +340,7 @@ export class SupportPassportGrantStore {
     const normalizedNamespace = normalizeNamespace(namespace);
     const principalHash = computeSupportPassportOwnerKey(normalizePrincipal(principal));
     const activeCutoff = this.now().getTime();
-    const states = this.retainedOwnerStates(
+    const states = this.listedOwnerStates(
       await this.readOwnerMembershipStates(normalizedNamespace, principalHash),
       activeCutoff
     );
@@ -563,7 +563,10 @@ export class SupportPassportGrantStore {
     const activeCutoff = this.now().getTime();
     const active = ownerStates.filter((state) => !state.revokedAt && Date.parse(state.expiresAt) > activeCutoff);
     if (active.length > MAX_OWNER_GRANT_HISTORY) {
-      await this.removeStoredGrant(committed.state);
+      await this.withGrantLock(committed.state.grantId, async (grantLock) => {
+        await this.requireMutationLock(grantLock);
+        await this.removeStoredGrant(committed.state);
+      });
       const committedIndex = ownerStates.findIndex((state) => state.grantId === committed.state.grantId);
       if (committedIndex !== -1) ownerStates.splice(committedIndex, 1);
     }
@@ -576,10 +579,16 @@ export class SupportPassportGrantStore {
     const retainedIds = new Set(retained.map((state) => state.grantId));
     for (const state of ownerStates) {
       if (retainedIds.has(state.grantId)) continue;
-      await this.withGrantLock(state.grantId, async (grantLock) => {
-        await this.requireMutationLock(grantLock);
-        await this.removeStoredGrant(state);
-      });
+      try {
+        await this.withGrantLock(state.grantId, async (grantLock) => {
+          await this.requireMutationLock(grantLock);
+          await this.removeStoredGrant(state);
+        });
+      } catch (error) {
+        log.warn(
+          `support passport could not remove inactive grant state: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
     }
     if (active.length > MAX_OWNER_GRANT_HISTORY) {
       throw new SupportPassportError("storage_conflict", "The share link store changed during the request.", 409);
@@ -590,12 +599,20 @@ export class SupportPassportGrantStore {
   private retainedOwnerStates(states: SupportPassportGrantState[], activeCutoff: number): SupportPassportGrantState[] {
     const active = states.filter((state) => !state.revokedAt && Date.parse(state.expiresAt) > activeCutoff);
     if (active.length > MAX_OWNER_GRANT_HISTORY) {
-      throw new Error("support passport owner has too many active grants");
+      throw new SupportPassportError("storage_conflict", "The share link store contains too many active links.", 409);
     }
     const inactive = states
       .filter((state) => state.revokedAt || Date.parse(state.expiresAt) <= activeCutoff)
       .sort(newestGrantFirst);
     return [...active, ...inactive.slice(0, MAX_OWNER_GRANT_HISTORY - active.length)];
+  }
+
+  private listedOwnerStates(states: SupportPassportGrantState[], activeCutoff: number): SupportPassportGrantState[] {
+    const active = states.filter((state) => !state.revokedAt && Date.parse(state.expiresAt) > activeCutoff);
+    const inactive = states
+      .filter((state) => state.revokedAt || Date.parse(state.expiresAt) <= activeCutoff)
+      .sort(newestGrantFirst);
+    return [...active, ...inactive.slice(0, Math.max(0, MAX_OWNER_GRANT_HISTORY - active.length))];
   }
 
   private async requireAvailableOwnerGrantSlot(namespace: string, principalHash: string): Promise<void> {

@@ -8,6 +8,7 @@ import { test } from "node:test";
 import { StorageManager } from "../storage.js";
 import type { withHeldFileLock } from "../utils/serialize-mutations.js";
 import { SupportPassportCardService } from "./card-service.js";
+import { computeSupportPassportOwnerKey } from "./card-projection.js";
 import { SupportPassportError } from "./errors.js";
 import { SupportPassportGrantService } from "./grant-service.js";
 import { SupportPassportGrantStore, syncDirectoryForDurability } from "./grant-store.js";
@@ -1539,6 +1540,76 @@ test("grants reject cards owned by another principal inside a shared namespace",
     await assert.rejects(
       grantService.readGrant({ grantId: forged.state.grantId, secret: forged.secret }),
       (error: unknown) => error instanceof SupportPassportError && error.code === "grant_stale"
+    );
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("helper snapshots ignore colliding card IDs from other owners and reject owned duplicates", async () => {
+  StorageManager.clearAllStaticCaches();
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-snapshot-scope-"));
+  try {
+    const storage = new StorageManager(path.join(root, "shared-storage"));
+    await storage.ensureDirectories();
+    const now = () => new Date("2026-08-11T12:00:00.000Z");
+    const resolveOwner = async (principal: string) => ({ principal, namespace: "team", storage });
+    const cardService = new SupportPassportCardService({ resolveOwner, now });
+    const grantStore = new SupportPassportGrantStore({ memoryDir: path.join(root, "grants"), now });
+    const grantService = new SupportPassportGrantService({
+      grantStore,
+      resolveOwner,
+      resolveNamespace: async () => storage,
+      now,
+    });
+    const draft = await cardService.createManualDraft({
+      principal: "owner:alice",
+      title: "Alice card",
+      statement: "Offer Alice a quiet place.",
+      category: "environment",
+      reviewBy: "2026-09-01T12:00:00.000Z",
+    });
+    const card = await cardService.approveCard({
+      principal: "owner:alice",
+      cardId: draft.cardId,
+      expectedRevision: draft.revision,
+    });
+    const created = await grantService.createGrant({
+      principal: "owner:alice",
+      cards: [{ cardId: card.cardId, revision: card.revision }],
+      expiresAt: "2026-08-11T13:00:00.000Z",
+    });
+    const originalMemories = await storage.readAllMemories();
+    const aliceMemory = originalMemories.find((memory) => memory.frontmatter.id === card.cardId);
+    assert.ok(aliceMemory);
+    const foreignCollision = {
+      ...aliceMemory,
+      path: path.join(storage.dir, "preferences", "foreign-collision.md"),
+      frontmatter: {
+        ...aliceMemory.frontmatter,
+        structuredAttributes: {
+          ...aliceMemory.frontmatter.structuredAttributes,
+          "support-passport-owner": computeSupportPassportOwnerKey("owner:bob"),
+        },
+      },
+    };
+    storage.readAllMemories = async () => [...originalMemories, foreignCollision];
+
+    const guide = await grantService.readGrant({
+      grantId: created.grant.grantId,
+      secret: created.secret,
+    });
+    assert.deepEqual(guide.cards.map((item) => item.cardId), [card.cardId]);
+
+    const ownedDuplicate = {
+      ...aliceMemory,
+      path: path.join(storage.dir, "preferences", "owned-duplicate.md"),
+    };
+    storage.readAllMemories = async () => [...originalMemories, foreignCollision, ownedDuplicate];
+    await assert.rejects(
+      grantService.readGrant({ grantId: created.grant.grantId, secret: created.secret }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "card_data_invalid",
     );
   } finally {
     StorageManager.clearAllStaticCaches();

@@ -1,4 +1,5 @@
 import type { StorageManager } from "../index.js";
+import type { MemoryFile } from "../types.js";
 import {
   type StoredSupportPassportCard,
   computeSupportPassportOwnerKey,
@@ -68,13 +69,20 @@ export class SupportPassportGrantService {
       { namespace: owner.namespace, principal: owner.principal },
       async (ownerLock) => {
         options.signal?.throwIfAborted();
-        const cardsById = new Map((await this.readStoredCards(owner.storage)).map((card) => [card.card.cardId, card]));
+        const ownerHash = computeSupportPassportOwnerKey(owner.principal);
+        const cardsById = new Map(
+          this.projectOwnedCards(
+            await owner.storage.readAllMemories(),
+            owner.namespace,
+            ownerHash
+          ).map((card) => [card.card.cardId, card])
+        );
         for (const cardRef of parsed.data.cards) {
           const stored = cardsById.get(cardRef.cardId);
           if (
             !stored ||
             stored.namespace !== owner.namespace ||
-            stored.owner !== computeSupportPassportOwnerKey(owner.principal) ||
+            stored.owner !== ownerHash ||
             stored.card.status !== "active"
           ) {
             throw new SupportPassportError("invalid_card_status", "Only approved support cards can be shared.", 409);
@@ -173,7 +181,11 @@ export class SupportPassportGrantService {
   private async readGrantAttempt(input: { grantId: string; secret: string }): Promise<SupportPassportPublicGuide> {
     const initialState = await this.grantStore.authenticate(input.grantId, input.secret);
     const storage = await this.resolveNamespace(initialState.namespace);
-    const initialSnapshot = await this.readStoredCardSnapshot(storage);
+    const initialSnapshot = await this.readStoredCardSnapshot(
+      storage,
+      initialState.namespace,
+      initialState.principalHash
+    );
     const cards = this.readGrantCards(initialSnapshot, initialState);
     const firstCard = cards[0];
     if (!firstCard) throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
@@ -192,7 +204,11 @@ export class SupportPassportGrantService {
               throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
             }
             await requireSupportPassportOwnerLock(ownerLock);
-            const currentSnapshot = await this.readStoredCardSnapshot(storage);
+            const currentSnapshot = await this.readStoredCardSnapshot(
+              storage,
+              finalState.namespace,
+              finalState.principalHash
+            );
             const currentCards = this.readGrantCards(currentSnapshot, finalState);
             await requireSupportPassportOwnerLock(ownerLock);
             if (JSON.stringify(currentCards) !== JSON.stringify(cards)) {
@@ -232,14 +248,17 @@ export class SupportPassportGrantService {
     });
   }
 
-  private async readStoredCardSnapshot(storage: StorageManager): Promise<SupportPassportCardSnapshot> {
+  private async readStoredCardSnapshot(
+    storage: StorageManager,
+    namespace: string,
+    owner: string
+  ): Promise<SupportPassportCardSnapshot> {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const before = this.cardSnapshotVersion(storage);
-      const cards = (await storage.readAllMemories())
-        .map((memory) => projectSupportPassportCard(memory))
-        .filter((card): card is StoredSupportPassportCard => card !== null);
+      const memories = await storage.readAllMemories();
       const after = this.cardSnapshotVersion(storage);
       if (before !== after) continue;
+      const cards = this.projectOwnedCards(memories, namespace, owner);
       const snapshot = {
         version: after,
         cardsById: new Map(cards.map((card) => [card.card.cardId, card])),
@@ -249,10 +268,25 @@ export class SupportPassportGrantService {
     throw new SupportPassportError("storage_conflict", "The support card list changed during review.", 409);
   }
 
-  private async readStoredCards(storage: StorageManager): Promise<StoredSupportPassportCard[]> {
-    return (await storage.readAllMemories())
+  private projectOwnedCards(
+    memories: MemoryFile[],
+    namespace: string,
+    owner: string
+  ): StoredSupportPassportCard[] {
+    const cards = memories
       .map((memory) => projectSupportPassportCard(memory))
-      .filter((card): card is StoredSupportPassportCard => card !== null);
+      .filter(
+        (card): card is StoredSupportPassportCard =>
+          card !== null && card.namespace === namespace && card.owner === owner
+      );
+    const cardIds = new Set<string>();
+    for (const card of cards) {
+      if (cardIds.has(card.card.cardId)) {
+        throw new SupportPassportError("card_data_invalid", "Support card IDs must be unique.", 500);
+      }
+      cardIds.add(card.card.cardId);
+    }
+    return cards;
   }
 
   private cardSnapshotVersion(storage: StorageManager): string {

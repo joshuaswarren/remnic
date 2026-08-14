@@ -128,6 +128,152 @@ test("owner membership enforces capacity when the derived index is stale", async
   }
 });
 
+test("an owner can list every active grant while repairing an overflow", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-list-overflow-"));
+  try {
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({ memoryDir: root, now: () => now });
+    const created = await store.create({
+      namespace: "alice",
+      principal: "owner:alice",
+      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+      expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
+    });
+    const states = Array.from({ length: 101 }, (_, index) => ({
+      ...created.state,
+      grantId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+    }));
+    const inspected = store as unknown as {
+      readOwnerMembershipStates(namespace: string, principalHash: string): Promise<typeof states>;
+    };
+    inspected.readOwnerMembershipStates = async () => states;
+
+    const listed = await store.listForOwner("alice", "owner:alice");
+
+    assert.equal(listed.length, 101);
+    assert.equal(listed.every((state) => !state.revokedAt), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("overflow recovery locks a committed grant before removing it", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-locked-overflow-"));
+  try {
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({ memoryDir: root, now: () => now });
+    const committed = await store.create({
+      namespace: "alice",
+      principal: "owner:alice",
+      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+      expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
+    });
+    const states = Array.from({ length: 101 }, (_, index) => ({
+      ...committed.state,
+      grantId: index === 0
+        ? committed.state.grantId
+        : `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+    }));
+    const lockedGrantIds: string[] = [];
+    const removedGrantIds: string[] = [];
+    const inspected = store as unknown as {
+      reconcileCommittedGrant(
+        value: typeof committed,
+        ownerHash: string,
+        lock: { refresh(): Promise<boolean> },
+      ): Promise<typeof committed>;
+      readState(grantId: string): Promise<typeof committed.state>;
+      readOwnerMembershipStates(namespace: string, principalHash: string): Promise<typeof states>;
+      withGrantLock<T>(
+        grantId: string,
+        task: (lock: { refresh(): Promise<boolean> }) => Promise<T>,
+      ): Promise<T>;
+      removeStoredGrant(state: typeof committed.state): Promise<void>;
+      writeOwnerIndexWhileLocked(): Promise<void>;
+    };
+    inspected.readState = async () => committed.state;
+    inspected.readOwnerMembershipStates = async () => states;
+    inspected.withGrantLock = async (grantId, task) => {
+      lockedGrantIds.push(grantId);
+      return await task({ refresh: async () => true });
+    };
+    inspected.removeStoredGrant = async (state) => {
+      removedGrantIds.push(state.grantId);
+    };
+    inspected.writeOwnerIndexWhileLocked = async () => undefined;
+
+    await assert.rejects(
+      inspected.reconcileCommittedGrant(committed, "a".repeat(64), { refresh: async () => true }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict",
+    );
+
+    assert.deepEqual(lockedGrantIds, [committed.state.grantId]);
+    assert.deepEqual(removedGrantIds, [committed.state.grantId]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("recovery keeps a committed grant when stale history cleanup fails", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-cleanup-isolation-"));
+  try {
+    const now = new Date("2026-08-11T12:00:00.000Z");
+    const store = new SupportPassportGrantStore({ memoryDir: root, now: () => now });
+    const committed = await store.create({
+      namespace: "alice",
+      principal: "owner:alice",
+      cards: [{ cardId: "card-1", revision: "a".repeat(64) }],
+      expiresAt: new Date(now.getTime() + 3_600_000).toISOString(),
+    });
+    const inactiveStates = Array.from({ length: 100 }, (_, index) => ({
+      ...committed.state,
+      grantId: `00000000-0000-4000-8000-${String(index + 2).padStart(12, "0")}`,
+      stateVersion: 2,
+      revokedAt: now.toISOString(),
+    }));
+    const cleanupAttempts: string[] = [];
+    const inspected = store as unknown as {
+      reconcileCommittedGrant(
+        value: typeof committed,
+        ownerHash: string,
+        lock: { refresh(): Promise<boolean> },
+      ): Promise<typeof committed>;
+      readState(grantId: string): Promise<typeof committed.state>;
+      readOwnerMembershipStates(
+        namespace: string,
+        principalHash: string,
+      ): Promise<Array<typeof committed.state>>;
+      withGrantLock<T>(
+        grantId: string,
+        task: (lock: { refresh(): Promise<boolean> }) => Promise<T>,
+      ): Promise<T>;
+      removeStoredGrant(state: typeof committed.state): Promise<void>;
+      writeOwnerIndexWhileLocked(): Promise<void>;
+    };
+    inspected.readState = async () => committed.state;
+    inspected.readOwnerMembershipStates = async () => [committed.state, ...inactiveStates];
+    inspected.withGrantLock = async (grantId, task) => {
+      cleanupAttempts.push(grantId);
+      return await task({ refresh: async () => true });
+    };
+    inspected.removeStoredGrant = async () => {
+      throw new Error("simulated stale history cleanup failure");
+    };
+    inspected.writeOwnerIndexWhileLocked = async () => undefined;
+
+    const result = await inspected.reconcileCommittedGrant(
+      committed,
+      "a".repeat(64),
+      { refresh: async () => true },
+    );
+
+    assert.equal(result.state.grantId, committed.state.grantId);
+    assert.equal(cleanupAttempts.length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("an owner list ignores a stale derived index", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-list-recovery-"));
   try {
