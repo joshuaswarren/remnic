@@ -98,10 +98,19 @@ test("support passport namespaces use the shared canonical identity grammar", ()
   for (const namespace of ["", " alice", "alice "]) {
     assert.equal(SupportPassportNamespaceSchema.safeParse(namespace).success, false);
   }
-  assert.equal(SupportPassportNamespaceSchema.safeParse("team.alpha-1").success, true);
-  assert.equal(SupportPassportNamespaceSchema.safeParse("team support:primary").success, true);
-  assert.equal(SupportPassportNamespaceSchema.safeParse("tenant/default").success, true);
-  assert.equal(SupportPassportNamespaceSchema.safeParse("n".repeat(4096)).success, true);
+  for (const namespace of [
+    "team.alpha-1",
+    "team support:primary",
+    "tenant/default",
+    "alice\\bob",
+    "alice]bob",
+    "alice..bob",
+    "alice\nbob",
+    "alice\0bob",
+    "n".repeat(4096),
+  ]) {
+    assert.equal(SupportPassportNamespaceSchema.safeParse(namespace).success, true);
+  }
 });
 
 test("support card revisions change when any public field changes", () => {

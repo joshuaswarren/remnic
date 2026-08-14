@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 
-import { normalizeNamespaceIdentity } from "../namespaces/identity.js";
 import type { OfflineSyncExcludeFile } from "../offline-sync-file-io.js";
 import { stripAttributesSuffix } from "../structured-attributes.js";
 import type { MemoryFile } from "../types.js";
@@ -10,7 +9,7 @@ import {
   SupportPassportCardSchema,
   SupportPassportCardStatusSchema,
   SupportPassportMemoryIdSchema,
-  SupportPassportNamespaceKeySchema,
+  SupportPassportNamespaceSchema,
   computeSupportPassportCardRevision,
 } from "./contracts.js";
 
@@ -44,6 +43,7 @@ export function createSupportPassportPrivateFileExclusion(
 
 export const SUPPORT_PASSPORT_ATTRIBUTE_KEYS = Object.freeze({
   namespace: "support-passport-namespace",
+  namespaceEncoding: "support-passport-namespace-encoding",
   owner: "support-passport-owner",
   title: "support-passport-title",
   category: "support-passport-category",
@@ -56,12 +56,75 @@ export const SUPPORT_PASSPORT_ATTRIBUTE_KEYS = Object.freeze({
   replacementComplete: "support-passport-replacement-complete",
 });
 
+const SUPPORT_PASSPORT_NAMESPACE_ENCODING = "base64url-v1";
+const SUPPORT_PASSPORT_NAMESPACE_CHUNK_PREFIX = "support-passport-namespace-";
+const SUPPORT_PASSPORT_NAMESPACE_CHUNK_SIZE = 1_024;
+const LegacySupportPassportNamespaceSchema = SupportPassportNamespaceSchema.refine(
+  (namespace) =>
+    !namespace.includes("/") &&
+    !namespace.includes("\\") &&
+    !namespace.includes("..") &&
+    !namespace.includes("]") &&
+    !namespace.includes("\0") &&
+    !namespace.includes("\n") &&
+    !namespace.includes("\r"),
+);
+
+export function encodeSupportPassportNamespaceAttributes(namespace: string): Record<string, string> {
+  const canonical = SupportPassportNamespaceSchema.parse(namespace);
+  const encoded = Buffer.from(canonical, "utf8").toString("base64url");
+  const chunks = encoded.match(new RegExp(`.{1,${SUPPORT_PASSPORT_NAMESPACE_CHUNK_SIZE}}`, "g")) ?? [];
+  const digest = createHash("sha256").update(encoded).digest("hex");
+  return Object.fromEntries([
+    [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.namespace, chunks[0] ?? ""],
+    [
+      SUPPORT_PASSPORT_ATTRIBUTE_KEYS.namespaceEncoding,
+      `${SUPPORT_PASSPORT_NAMESPACE_ENCODING}:${chunks.length}:${digest}`,
+    ],
+    ...chunks.slice(1).map((chunk, index) => [
+      `${SUPPORT_PASSPORT_NAMESPACE_CHUNK_PREFIX}${index + 1}`,
+      chunk,
+    ]),
+  ]);
+}
+
+export function decodeSupportPassportNamespaceAttributes(
+  attributes: Readonly<Record<string, string>>,
+): string | null {
+  const firstChunk = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.namespace];
+  const encoding = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.namespaceEncoding];
+  if (encoding === undefined) {
+    const legacy = LegacySupportPassportNamespaceSchema.safeParse(firstChunk);
+    return legacy.success ? legacy.data : null;
+  }
+  const match = /^base64url-v1:([1-9]\d*):([a-f0-9]{64})$/.exec(encoding);
+  if (!match || typeof firstChunk !== "string") return null;
+  const chunkCount = Number(match[1]);
+  if (!Number.isSafeInteger(chunkCount) || chunkCount > 8) return null;
+  const chunks = [firstChunk];
+  for (let index = 1; index < chunkCount; index += 1) {
+    const chunk = attributes[`${SUPPORT_PASSPORT_NAMESPACE_CHUNK_PREFIX}${index}`];
+    if (typeof chunk !== "string" || chunk.length === 0) return null;
+    chunks.push(chunk);
+  }
+  for (const key of Object.keys(attributes)) {
+    const chunkMatch = /^support-passport-namespace-(\d+)$/.exec(key);
+    if (chunkMatch && Number(chunkMatch[1]) >= chunkCount) return null;
+  }
+  const encoded = chunks.join("");
+  if (createHash("sha256").update(encoded).digest("hex") !== match[2]) return null;
+  const decoded = Buffer.from(encoded, "base64url").toString("utf8");
+  if (Buffer.from(decoded, "utf8").toString("base64url") !== encoded) return null;
+  const namespace = SupportPassportNamespaceSchema.safeParse(decoded);
+  return namespace.success ? namespace.data : null;
+}
+
 export interface StoredSupportPassportCard {
   card: SupportPassportCard;
   memory: MemoryFile;
   order: number;
   sourceMemoryIds: string[];
-  namespaceKey: string;
+  namespace: string;
   owner: string;
   replacesDraftId?: string;
   replacedRevision?: string;
@@ -70,10 +133,6 @@ export interface StoredSupportPassportCard {
 
 export function computeSupportPassportOwnerKey(principal: string): string {
   return createHash("sha256").update(principal).digest("hex");
-}
-
-export function computeSupportPassportNamespaceKey(namespace: string): string {
-  return createHash("sha256").update(normalizeNamespaceIdentity(namespace)).digest("hex");
 }
 
 function parseSourceMemoryIds(value: string | undefined): string[] | null {
@@ -95,7 +154,7 @@ interface SupportPassportCardMetadata {
   fields: Omit<SupportPassportCard, "revision" | "statement">;
   order: number;
   sourceMemoryIds: string[];
-  namespaceKey: string;
+  namespace: string;
   owner: string;
   replacesDraftId?: string;
   replacedRevision?: string;
@@ -114,9 +173,7 @@ function parseSupportPassportCardMetadata(memory: Pick<MemoryFile, "frontmatter"
   const rawOrder = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.order];
   const order = Number(rawOrder);
   const sourceMemoryIds = parseSourceMemoryIds(attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.sourceMemoryIds]);
-  const namespaceKey = SupportPassportNamespaceKeySchema.safeParse(
-    attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.namespace]
-  );
+  const namespace = decodeSupportPassportNamespaceAttributes(attributes);
   const owner = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.owner];
   let replacesDraftId: string | undefined;
   const rawReplacesDraftId = attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.replacesDraftId];
@@ -138,7 +195,7 @@ function parseSupportPassportCardMetadata(memory: Pick<MemoryFile, "frontmatter"
     typeof rawOrder !== "string" ||
     !/^(?:0|[1-9]\d*)$/.test(rawOrder) ||
     !Number.isSafeInteger(order) ||
-    !namespaceKey.success ||
+    namespace === null ||
     typeof owner !== "string" ||
     !/^[a-f0-9]{64}$/.test(owner) ||
     !sourceMemoryIds
@@ -157,7 +214,7 @@ function parseSupportPassportCardMetadata(memory: Pick<MemoryFile, "frontmatter"
     fields: fields.data,
     order,
     sourceMemoryIds,
-    namespaceKey: namespaceKey.data,
+    namespace,
     owner,
     replacesDraftId,
     replacedRevision,
@@ -196,7 +253,7 @@ export function projectSupportPassportCard(memory: MemoryFile): StoredSupportPas
     memory,
     order: metadata.order,
     sourceMemoryIds: metadata.sourceMemoryIds,
-    namespaceKey: metadata.namespaceKey,
+    namespace: metadata.namespace,
     owner: metadata.owner,
     replacesDraftId: metadata.replacesDraftId,
     replacedRevision: metadata.replacedRevision,

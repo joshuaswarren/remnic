@@ -8,8 +8,9 @@ import {
   SUPPORT_PASSPORT_ATTRIBUTE_KEYS,
   SUPPORT_PASSPORT_CARD_TAG,
   type StoredSupportPassportCard,
-  computeSupportPassportNamespaceKey,
   computeSupportPassportOwnerKey,
+  decodeSupportPassportNamespaceAttributes,
+  encodeSupportPassportNamespaceAttributes,
   projectSupportPassportCard,
 } from "./card-projection.js";
 import {
@@ -331,7 +332,7 @@ export class SupportPassportCardService {
         category: "preference",
         tags: [SUPPORT_PASSPORT_CARD_TAG],
         structuredAttributes: {
-          [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.namespace]: computeSupportPassportNamespaceKey(namespace),
+          ...encodeSupportPassportNamespaceAttributes(namespace),
           [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.owner]: computeSupportPassportOwnerKey(principal),
           [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.title]: input.title,
           [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.category]: input.category,
@@ -498,7 +499,7 @@ export class SupportPassportCardService {
     const card = projectSupportPassportCard(memory);
     if (!card) throw new SupportPassportError("card_data_invalid", "The support card data is invalid.", 500);
     if (
-      card.namespaceKey !== computeSupportPassportNamespaceKey(namespace) ||
+      card.namespace !== namespace ||
       card.owner !== computeSupportPassportOwnerKey(principal)
     ) {
       throw new SupportPassportError("card_not_found", "The support card was not found.", 404);
@@ -508,7 +509,7 @@ export class SupportPassportCardService {
 
   private projectOwnedCard(memory: MemoryFile, namespace: string, principal: string): StoredSupportPassportCard | null {
     const card = projectSupportPassportCard(memory);
-    return card?.namespaceKey === computeSupportPassportNamespaceKey(namespace) &&
+    return card?.namespace === namespace &&
       card.owner === computeSupportPassportOwnerKey(principal)
       ? card
       : null;
@@ -517,7 +518,8 @@ export class SupportPassportCardService {
   private ownsMemory(memory: MemoryFile, namespace: string, principal: string): boolean {
     const attributes = memory.frontmatter.structuredAttributes;
     return (
-      attributes?.[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.namespace] === computeSupportPassportNamespaceKey(namespace) &&
+      attributes !== undefined &&
+      decodeSupportPassportNamespaceAttributes(attributes) === namespace &&
       attributes[SUPPORT_PASSPORT_ATTRIBUTE_KEYS.owner] === computeSupportPassportOwnerKey(principal)
     );
   }
@@ -528,10 +530,9 @@ export class SupportPassportCardService {
     principal: string
   ): Promise<StoredSupportPassportCard[]> {
     const owner = computeSupportPassportOwnerKey(principal);
-    const namespaceKey = computeSupportPassportNamespaceKey(namespace);
     const projected = (await storage.readAllMemories())
       .map(projectSupportPassportCard)
-      .filter((card): card is StoredSupportPassportCard => card?.namespaceKey === namespaceKey && card.owner === owner);
+      .filter((card): card is StoredSupportPassportCard => card?.namespace === namespace && card.owner === owner);
     const ids = new Set<string>();
     for (const item of projected) {
       if (ids.has(item.card.cardId)) {
@@ -569,10 +570,9 @@ export class SupportPassportCardService {
     const memories: MemoryFile[] =
       storage.getCorpusScanVersion() === initialVersion ? initial : await storage.readAllMemories();
     const owner = computeSupportPassportOwnerKey(principal);
-    const namespaceKey = computeSupportPassportNamespaceKey(namespace);
     const projected = memories
       .map(projectSupportPassportCard)
-      .filter((card): card is StoredSupportPassportCard => card?.namespaceKey === namespaceKey && card.owner === owner);
+      .filter((card): card is StoredSupportPassportCard => card?.namespace === namespace && card.owner === owner);
     const ids = new Set<string>();
     for (const item of projected) {
       if (ids.has(item.card.cardId)) {
@@ -859,7 +859,7 @@ export class SupportPassportCardService {
           content: stripAttributesSuffix(prior.content),
           tags: ["supersession", "auto-resolved", "support-passport-audit"],
           structuredAttributes: {
-            [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.namespace]: computeSupportPassportNamespaceKey(namespace),
+            ...encodeSupportPassportNamespaceAttributes(namespace),
             [SUPPORT_PASSPORT_ATTRIBUTE_KEYS.owner]: computeSupportPassportOwnerKey(principal),
           },
           source: "support-passport",

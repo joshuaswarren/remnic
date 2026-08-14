@@ -5,8 +5,8 @@ import { test } from "node:test";
 import { SupportPassportCardService as PublicSupportPassportCardService } from "../index.js";
 import type { MemoryFile } from "../types.js";
 import {
-  computeSupportPassportNamespaceKey,
   computeSupportPassportOwnerKey,
+  encodeSupportPassportNamespaceAttributes,
   projectSupportPassportCard,
 } from "./card-projection.js";
 import { SupportPassportCardService } from "./card-service.js";
@@ -47,7 +47,7 @@ function makeMemory(
       structuredAttributes: {
         ...(overrides.namespace === ""
           ? {}
-          : { "support-passport-namespace": overrides.namespace ?? computeSupportPassportNamespaceKey("alice") }),
+          : encodeSupportPassportNamespaceAttributes(overrides.namespace ?? "alice")),
         ...(overrides.owner === null
           ? {}
           : { "support-passport-owner": overrides.owner ?? computeSupportPassportOwnerKey("owner:alice") }),
@@ -79,7 +79,7 @@ test("card projection normalizes IDs and public fields before revision hashing",
   assert.equal(projected.card.title, "Quiet space");
   assert.equal(projected.card.statement, "Offer me a quiet place and time.");
   assert.deepEqual(projected.sourceMemoryIds, ["source-1", "source-2"]);
-  assert.equal(projected.namespaceKey, computeSupportPassportNamespaceKey("alice"));
+  assert.equal(projected.namespace, "alice");
   const { revision, ...fields } = projected.card;
   assert.equal(revision, computeSupportPassportCardRevision(fields));
 });
@@ -107,4 +107,18 @@ test("card projection accepts only canonical nonnegative decimal order values", 
   for (const order of ["", " ", "00", "01", "+1", "-1", "0x10", "1.0"]) {
     assert.equal(projectSupportPassportCard(makeMemory({ order })), null);
   }
+});
+
+test("card projection decodes configured namespace identities without attribute ambiguity", () => {
+  const namespace = "team../support\\care]primary\nline";
+  const memory = makeMemory({ namespace });
+  const projected = projectSupportPassportCard(memory);
+  assert.ok(projected);
+  assert.equal(projected.namespace, namespace);
+});
+
+test("card projection rejects incomplete namespace encodings", () => {
+  const memory = makeMemory({ namespace: "n".repeat(1_024) });
+  memory.frontmatter.structuredAttributes!["support-passport-namespace-1"] = "";
+  assert.equal(projectSupportPassportCard(memory), null);
 });

@@ -6,7 +6,10 @@ import { test } from "node:test";
 
 import { StorageManager } from "../storage.js";
 import { stripAttributesSuffix } from "../structured-attributes.js";
-import { computeSupportPassportNamespaceKey, projectSupportPassportCard } from "./card-projection.js";
+import {
+  decodeSupportPassportNamespaceAttributes,
+  projectSupportPassportCard,
+} from "./card-projection.js";
 import { SupportPassportCardService } from "./card-service.js";
 import { SupportPassportError } from "./errors.js";
 import { supportPassportOwnerLockPath } from "./owner-lock.js";
@@ -244,8 +247,8 @@ test("card reads and mutations stay inside the resolved namespace on shared stor
     const stored = await subject.storage.getMemoryById(aliceDraft.cardId);
     assert.equal(stored?.frontmatter.status, "pending_review");
     assert.equal(
-      stored?.frontmatter.structuredAttributes?.["support-passport-namespace"],
-      computeSupportPassportNamespaceKey("alice")
+      decodeSupportPassportNamespaceAttributes(stored?.frontmatter.structuredAttributes ?? {}),
+      "alice"
     );
   } finally {
     await subject.cleanup();
@@ -334,8 +337,10 @@ test("card operations preserve configured default namespace identities", async (
     });
     assert.deepEqual(await service.listCards({ principal: "owner:alice" }), [card]);
     assert.equal(
-      (await storage.getMemoryById(card.cardId))?.frontmatter.structuredAttributes?.["support-passport-namespace"],
-      computeSupportPassportNamespaceKey(namespace)
+      decodeSupportPassportNamespaceAttributes(
+        (await storage.getMemoryById(card.cardId))?.frontmatter.structuredAttributes ?? {},
+      ),
+      namespace
     );
   } finally {
     StorageManager.clearAllStaticCaches();
@@ -731,8 +736,8 @@ test("replacement audits retain the card owner scope and omit internal attribute
     assert.equal(stripAttributesSuffix(audit.content).includes("support-passport-title"), false);
     assert.equal(audit.frontmatter.source, "support-passport");
     assert.equal(
-      audit.frontmatter.structuredAttributes?.["support-passport-namespace"],
-      computeSupportPassportNamespaceKey("alice")
+      decodeSupportPassportNamespaceAttributes(audit.frontmatter.structuredAttributes ?? {}),
+      "alice"
     );
     assert.equal(
       audit.frontmatter.structuredAttributes?.["support-passport-owner"],

@@ -45,7 +45,6 @@ export const SupportPassportNamespaceSchema = z
   .refine((namespace) => namespace === normalizeNamespaceIdentity(namespace), {
     message: "namespaces must be canonical",
   });
-export const SupportPassportNamespaceKeySchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const SupportPassportMemoryIdSchema = z
   .string()
   .trim()
