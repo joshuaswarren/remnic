@@ -1470,7 +1470,7 @@ export function parseConfig(
   }
   if (cfg.openaiBaseUrl !== undefined) {
     baseUrl = normalizeOpenaiBaseUrl(resolveEnvVars(cfg.openaiBaseUrl), "config");
-  } else {
+  } else if (modelSource !== "gateway" || apiKey !== undefined) {
     baseUrl = normalizeOpenaiBaseUrl(readEnvVar("OPENAI_BASE_URL"), "env");
   }
 
