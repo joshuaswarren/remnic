@@ -23,11 +23,8 @@ import {
 export const MEMORY_PROJECTION_SCHEMA_VERSION = 4;
 
 export interface ProjectedMemoryBrowseOptions {
-  query?: string;
-  status?: string;
-  category?: string;
-  excludeTags?: readonly string[];
-  excludePrivateRecords?: boolean;
+  query?: string; status?: string; category?: string;
+  excludeTags?: readonly string[]; excludePrivateRecords?: boolean;
   sort?: "updated_desc" | "updated_asc" | "created_desc" | "created_asc";
   limit: number;
   offset: number;
@@ -156,17 +153,13 @@ function migrateProjectionSchemaIfNeeded(memoryDir: string): void {
 }
 
 export function memoryCurrentSelectExpressions(db: BetterSqlite3Database): {
-  tagsJson: string;
-  previewText: string;
-  hasPathValid: boolean;
-  privateRecord: string;
-  hasPrivateRecord: boolean;
+  tagsJson: string; previewText: string; hasPathValid: boolean;
+  privateRecord: string; hasPrivateRecord: boolean;
 } {
   const columns = listTableColumns(db, "memory_current");
   return {
     tagsJson: columns.has("tags_json") ? "tags_json" : `'[]' AS tags_json`,
-    previewText: columns.has("preview_text") ? "preview_text" : `'' AS preview_text`,
-    hasPathValid: columns.has("path_valid"),
+    previewText: columns.has("preview_text") ? "preview_text" : `'' AS preview_text`, hasPathValid: columns.has("path_valid"),
     privateRecord: columns.has("private_record") ? "private_record" : "0 AS private_record",
     hasPrivateRecord: columns.has("private_record"),
   };
@@ -831,29 +824,19 @@ export function readProjectedMemoryBrowse(
   return withProjectionReadonly(memoryDir, (db) => {
     const normalizedQuery = options.query?.trim().toLowerCase() ?? "";
     const currentSelect = memoryCurrentSelectExpressions(db);
-    if ((options.excludeTags?.length ?? 0) > 0 && currentSelect.tagsJson.startsWith("'[]'")) {
+    if ((options.excludeTags?.length ?? 0) > 0 && currentSelect.tagsJson.startsWith("'[]'"))
       throw new Error("tag exclusions require tags_json");
-    }
-    if (options.excludePrivateRecords && !currentSelect.hasPrivateRecord) {
+    if (options.excludePrivateRecords && !currentSelect.hasPrivateRecord)
       throw new Error("private-record exclusions require private_record");
-    }
     const whereClauses: string[] = [];
     const params: unknown[] = [];
-    if (options.status) {
-      whereClauses.push("status = ?");
-      params.push(options.status);
-    }
-    if (options.category) {
-      whereClauses.push("category = ?");
-      params.push(options.category);
-    }
+    if (options.status) { whereClauses.push("status = ?"); params.push(options.status); }
+    if (options.category) { whereClauses.push("category = ?"); params.push(options.category); }
     for (const tag of options.excludeTags ?? []) {
       whereClauses.push("NOT EXISTS (SELECT 1 FROM json_each(memory_current.tags_json) WHERE value = ?)");
       params.push(tag);
     }
-    if (options.excludePrivateRecords) {
-      whereClauses.push("private_record = 0");
-    }
+    if (options.excludePrivateRecords) whereClauses.push("private_record = 0");
     const orderBySql = (() => {
       switch (options.sort ?? "updated_desc") {
         case "updated_asc":

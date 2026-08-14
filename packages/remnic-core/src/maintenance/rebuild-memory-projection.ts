@@ -694,9 +694,7 @@ function readProjectedCurrentRows(
           memory_kind,
           access_count,
           last_accessed,
-          ${selectExpressions.tagsJson},
-          ${selectExpressions.previewText},
-          ${selectExpressions.privateRecord}
+          ${selectExpressions.tagsJson}, ${selectExpressions.previewText}, ${selectExpressions.privateRecord}
         FROM memory_current
       `).all() as Array<Record<string, unknown>>;
 
@@ -792,9 +790,7 @@ function writeProjectionDb(
         memory_kind,
         access_count,
         last_accessed,
-        tags_json,
-        preview_text,
-        private_record
+        tags_json, preview_text, private_record
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
@@ -904,9 +900,7 @@ function writeProjectionDb(
           row.confidenceTier,
           row.memoryKind ?? null,
           row.accessCount ?? null,
-          row.lastAccessed ?? null,
-          JSON.stringify(row.tags ?? []),
-          row.preview ?? "",
+          row.lastAccessed ?? null, JSON.stringify(row.tags ?? []), row.preview ?? "",
           row.privateRecord === true ? 1 : 0,
         );
       }

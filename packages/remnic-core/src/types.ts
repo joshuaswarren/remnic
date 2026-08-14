@@ -3631,8 +3631,7 @@ export interface MemoryProjectionCurrentState {
   accessCount?: number;
   lastAccessed?: string;
   tags?: string[];
-  preview?: string;
-  privateRecord?: boolean;
+  preview?: string; privateRecord?: boolean;
 }
 
 export interface CompressionGuidelineOptimizerSourceWindow {

@@ -6649,10 +6649,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       (await this.readArchivedMemories()).find((memory) => memory.frontmatter.id === id) ?? null;
   }
 
-  /**
-   * Resolve existing active memory IDs to their on-disk paths.
-   * Uses a lightweight directory scan without parsing frontmatter.
-   */
+  /** Resolve existing active memory IDs through a lightweight directory scan. */
   async findExistingMemoryPaths(
     ids: string[],
     preferredPaths: Map<string, string[]> = new Map()
@@ -6919,8 +6916,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     reason: string,
     supersessionMetadata?: Pick<MemoryFrontmatter, "supersessionCause" | "invalidatedBy">,
     options: {
-      actor?: string; requireActive?: boolean;
-      acceptExactReplay?: boolean;
+      actor?: string; requireActive?: boolean; acceptExactReplay?: boolean;
       expectedSnapshot?: Pick<MemoryFile, "content" | "frontmatter"> & Partial<Pick<MemoryFile, "path">>;
       audit?: SupersessionAuditOptions;
     } = {},
