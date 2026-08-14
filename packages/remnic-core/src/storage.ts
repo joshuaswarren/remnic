@@ -4739,8 +4739,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       if (!match) return null;
       const frontmatterBlock = match[1];
       const rawUpdated =
-        frontmatterBlock.match(/^updated:\s*"?([^"\n]*)"?/m)?.[1] ??
-        frontmatterBlock.match(/^created:\s*"?([^"\n]*)"?/m)?.[1] ??
+        frontmatterBlock.match(/^updated:\s*"?([^"\n]*)"?/m)?.[1] ||
+        frontmatterBlock.match(/^created:\s*"?([^"\n]*)"?/m)?.[1] ||
         null;
       const updatedMs = rawUpdated ? Date.parse(rawUpdated) : Number.NaN;
       return Number.isFinite(updatedMs) ? updatedMs : null;
