@@ -49,6 +49,14 @@ interface SupportPassportCardSnapshot {
   activeReplacementPredecessors: ReadonlySet<string>;
 }
 
+interface CachedOwnerCards {
+  version: string;
+  expiresAt: number;
+  cards: readonly StoredSupportPassportCard[];
+}
+
+const MAX_OWNER_CARD_CACHE_ENTRIES = 256;
+
 function invalidInput(): SupportPassportError {
   return new SupportPassportError(
     "invalid_input",
@@ -62,6 +70,7 @@ export class SupportPassportGrantService {
   private readonly resolveOwner: SupportPassportGrantServiceDependencies["resolveOwner"];
   private readonly resolveNamespace: SupportPassportGrantServiceDependencies["resolveNamespace"];
   private readonly now: () => Date;
+  private readonly ownerCardCache = new Map<string, CachedOwnerCards>();
 
   constructor(dependencies: SupportPassportGrantServiceDependencies) {
     this.grantStore = dependencies.grantStore;
@@ -331,10 +340,27 @@ export class SupportPassportGrantService {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const markerCache = new Map<string, GeneratedBatchMarker | null>();
       const before = this.cardSnapshotVersion(storage);
-      const memories = await storage.readAllMemories();
+      const cacheKey = JSON.stringify([storage.dir, namespace, ownerKey]);
+      const nowMs = this.now().getTime();
+      const cached = this.ownerCardCache.get(cacheKey);
+      let ownerCards: readonly StoredSupportPassportCard[];
+      if (cached && cached.version === before && cached.expiresAt >= nowMs) {
+        this.ownerCardCache.delete(cacheKey);
+        this.ownerCardCache.set(cacheKey, cached);
+        ownerCards = cached.cards;
+      } else {
+        this.ownerCardCache.delete(cacheKey);
+        ownerCards = this.projectOwnedCards(await storage.readAllMemories(), namespace, ownerKey);
+      }
       const after = this.cardSnapshotVersion(storage);
       if (before !== after) continue;
-      const cards = await this.projectOwnedCards(storage, memories, namespace, ownerKey, markerCache);
+      if (!cached || cached.version !== before || cached.expiresAt < nowMs) {
+        this.cacheOwnerCards(storage, cacheKey, after, ownerCards, nowMs);
+      }
+      const cards: StoredSupportPassportCard[] = [];
+      for (const card of ownerCards) {
+        if (await isCommittedGeneratedCard(storage, card, markerCache)) cards.push(card);
+      }
       const snapshot = {
         version: after,
         cardsById: new Map(cards.map((card) => [card.card.cardId, card])),
@@ -346,13 +372,11 @@ export class SupportPassportGrantService {
     throw new SupportPassportError("storage_conflict", "The support card list changed during review.", 409);
   }
 
-  private async projectOwnedCards(
-    storage: StorageManager,
+  private projectOwnedCards(
     memories: MemoryFile[],
     namespace: string,
     ownerKey: string,
-    markerCache = new Map<string, GeneratedBatchMarker | null>(),
-  ): Promise<StoredSupportPassportCard[]> {
+  ): StoredSupportPassportCard[] {
     const cards = memories
       .map((memory) => projectSupportPassportCard(memory))
       .filter(
@@ -360,15 +384,31 @@ export class SupportPassportGrantService {
           card !== null && card.namespace === namespace && card.owner === ownerKey
       );
     const cardIds = new Set<string>();
-    const committed: StoredSupportPassportCard[] = [];
     for (const card of cards) {
       if (cardIds.has(card.card.cardId)) {
         throw new SupportPassportError("card_data_invalid", "Support card IDs must be unique.", 500);
       }
       cardIds.add(card.card.cardId);
-      if (await isCommittedGeneratedCard(storage, card, markerCache)) committed.push(card);
     }
-    return committed;
+    return cards;
+  }
+
+  private cacheOwnerCards(
+    storage: StorageManager,
+    cacheKey: string,
+    version: string,
+    cards: readonly StoredSupportPassportCard[],
+    nowMs: number,
+  ): void {
+    if (!storage.isHotCacheEnabled()) return;
+    const ttlMs = storage.hotCacheTtlMs();
+    if (!Number.isFinite(ttlMs) || ttlMs <= 0) return;
+    this.ownerCardCache.set(cacheKey, { version, cards, expiresAt: nowMs + ttlMs });
+    while (this.ownerCardCache.size > MAX_OWNER_CARD_CACHE_ENTRIES) {
+      const oldestKey = this.ownerCardCache.keys().next().value as string | undefined;
+      if (oldestKey === undefined) break;
+      this.ownerCardCache.delete(oldestKey);
+    }
   }
 
   private cardSnapshotVersion(storage: StorageManager): string {
