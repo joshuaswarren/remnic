@@ -1,5 +1,6 @@
 import type { MemoryFile, MemoryFrontmatter } from "../types.js";
 import { screenCandidateFact } from "./injection-screen.js";
+import { inferMemoryStatus, isArchivedMemoryPath, toMemoryPathRel } from "../memory-lifecycle-ledger-utils.js";
 
 export type AuditMemoryFindingCategory =
   | "injection-signature"
@@ -53,8 +54,12 @@ export interface AuditMemoryReport {
   };
 }
 
-function isActive(memory: MemoryFile): boolean {
-  return memory.frontmatter.status === undefined || memory.frontmatter.status === "active";
+function isActive(memory: MemoryFile, memoryDir: string): boolean {
+  if (memory.frontmatter.status !== "active") return false;
+  if (memory.frontmatter.archivedAt !== undefined) return false;
+  const pathRel = toMemoryPathRel(memoryDir, memory.path);
+  if (isArchivedMemoryPath(memory.path) || isArchivedMemoryPath(pathRel)) return false;
+  return inferMemoryStatus(memory.frontmatter, pathRel) === "active";
 }
 
 function parseSince(value: string | Date | undefined): Date | undefined {
@@ -79,14 +84,18 @@ function excerpt(value: string): string {
   return compact.length > 180 ? `${compact.slice(0, 177)}...` : compact;
 }
 
+type LineageMetadata = MemoryFrontmatter & {
+  sessionKey?: unknown;
+  sourceSessionKey?: unknown;
+  conversationId?: unknown;
+};
+
 function lineageHint(memory: MemoryFile): string {
-  const frontmatter = memory.frontmatter as MemoryFrontmatter & {
-    sessionKey?: unknown;
-    sourceSessionKey?: unknown;
-    conversationId?: unknown;
-  };
+  const frontmatter = memory.frontmatter as LineageMetadata;
   const source = frontmatter.sources?.[0];
-  if (source?.sessionKey) return source.sessionKey;
+  if (typeof source?.sessionKey === "string" && source.sessionKey.trim().length > 0) {
+    return source.sessionKey.trim();
+  }
   for (const value of [
     frontmatter.sourceSessionKey,
     frontmatter.sessionKey,
@@ -100,10 +109,39 @@ function lineageHint(memory: MemoryFile): string {
   return "unknown";
 }
 
+const GENERIC_LINEAGE_VALUES: Record<string, true> = {
+  unknown: true,
+  none: true,
+  null: true,
+  "n/a": true,
+  na: true,
+  extraction: true,
+  connector: true,
+};
+
+function lineageKey(memory: MemoryFile): string | undefined {
+  const frontmatter = memory.frontmatter as LineageMetadata;
+  const source = frontmatter.sources?.[0];
+  for (const value of [
+    source?.sessionKey,
+    frontmatter.sourceSessionKey,
+    frontmatter.sessionKey,
+    frontmatter.conversationId,
+  ]) {
+    if (typeof value !== "string") continue;
+    const key = value.trim();
+    if (key.length > 0 && GENERIC_LINEAGE_VALUES[key.toLowerCase()] !== true) return key;
+  }
+  return undefined;
+}
+
 function sourceGroups(memories: MemoryFile[]): Map<string, MemoryFile[]> {
   const groups = new Map<string, MemoryFile[]>();
   for (const memory of memories) {
-    const key = lineageHint(memory);
+    const key = lineageKey(memory);
+    // Do not create an "unknown" group. Generic or absent provenance cannot
+    // establish a write burst.
+    if (key === undefined) continue;
     const group = groups.get(key) ?? [];
     group.push(memory);
     groups.set(key, group);
@@ -111,20 +149,40 @@ function sourceGroups(memories: MemoryFile[]): Map<string, MemoryFile[]> {
   return groups;
 }
 
-function writeBurstStats(groups: Map<string, MemoryFile[]>): AuditMemoryReport["writeBurstStats"] {
-  const counts = [...groups.values()].map((group) => group.length);
-  const groupCount = counts.length;
-  const mean = groupCount === 0 ? 0 : counts.reduce((sum, count) => sum + count, 0) / groupCount;
-  const variance = groupCount === 0
-    ? 0
-    : counts.reduce((sum, count) => sum + (count - mean) ** 2, 0) / groupCount;
+function burstBaseline(counts: number[]): {
+  mean: number;
+  standardDeviation: number;
+  threshold: number;
+} {
+  if (counts.length === 0) return { mean: 0, standardDeviation: 0, threshold: 10 };
+  const mean = counts.reduce((sum, count) => sum + count, 0) / counts.length;
+  const variance = counts.reduce((sum, count) => sum + (count - mean) ** 2, 0) / counts.length;
   const standardDeviation = Math.sqrt(variance);
-  // Issue #1955: a burst must exceed both the statistical threshold and 10 writes.
-  const threshold = Math.max(10, mean + 3 * standardDeviation);
-  const anomalousGroups = [...groups.entries()]
-    .filter(([, group]) => group.length > threshold)
+  return {
+    mean,
+    standardDeviation,
+    threshold: Math.max(10, mean + 3 * standardDeviation),
+  };
+}
+
+function writeBurstStats(groups: Map<string, MemoryFile[]>): AuditMemoryReport["writeBurstStats"] {
+  const entries = [...groups.entries()];
+  const counts = entries.map(([, group]) => group.length);
+  const summary = burstBaseline(counts);
+  const anomalousGroups = entries
+    .filter(([, group], candidateIndex) => {
+      const baselineCounts = counts.filter((_, index) => index !== candidateIndex);
+      const baseline = burstBaseline(baselineCounts);
+      return group.length > baseline.threshold;
+    })
     .map(([lineage, group]) => ({ lineageHint: lineage, count: group.length }));
-  return { groupCount, mean, standardDeviation, threshold, anomalousGroups };
+  return {
+    groupCount: counts.length,
+    mean: summary.mean,
+    standardDeviation: summary.standardDeviation,
+    threshold: summary.threshold,
+    anomalousGroups,
+  };
 }
 
 export async function auditMemoryStore(options: AuditMemoryStoreOptions): Promise<AuditMemoryReport> {
@@ -133,11 +191,15 @@ export async function auditMemoryStore(options: AuditMemoryStoreOptions): Promis
   const hotMemories = await storage.readAllMemories();
   const coldMemories = storage.readAllColdMemories ? await storage.readAllColdMemories() : [];
   const allMemories = [...hotMemories, ...coldMemories];
-  const activeMemories = allMemories.filter((memory) => isActive(memory) && isInWindow(memory, since));
+  const activeMemories = allMemories.filter(
+    (memory) => isActive(memory, options.memoryDir) && isInWindow(memory, since),
+  );
   const findings: AuditMemoryFinding[] = [];
+  const quarantineIds = new Set<string>();
 
   for (const memory of activeMemories) {
     const screened = screenCandidateFact(memory.content);
+    if (screened.quarantine === true) quarantineIds.add(memory.frontmatter.id);
     for (const screenFinding of screened.findings) {
       findings.push({
         memoryId: memory.frontmatter.id,
@@ -164,6 +226,7 @@ export async function auditMemoryStore(options: AuditMemoryStoreOptions): Promis
   for (const [lineage, group] of groups) {
     if (!anomalousLineages.has(lineage)) continue;
     for (const memory of group) {
+      quarantineIds.add(memory.frontmatter.id);
       findings.push({
         memoryId: memory.frontmatter.id,
         category: "write-burst",
@@ -176,7 +239,7 @@ export async function auditMemoryStore(options: AuditMemoryStoreOptions): Promis
 
   const quarantinedMemoryIds: string[] = [];
   if (options.quarantine) {
-    const flaggedIds = new Set(findings.map((finding) => finding.memoryId));
+    const flaggedIds = quarantineIds;
     const now = (options.now ?? new Date()).toISOString();
     for (const memory of activeMemories) {
       if (!flaggedIds.has(memory.frontmatter.id)) continue;

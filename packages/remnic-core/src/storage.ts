@@ -3771,7 +3771,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (options.sourceConnector !== undefined) {
       fm.sourceConnector = options.sourceConnector;
     }
-    if (options.origin !== undefined) fm.origin = options.origin;
+    if (options.origin !== undefined) fm.origin = parseOriginClass(options.origin);
 
     // Assemble the persisted body (attribute-suffix enrichment + combined
     // sanitize) via the SHARED helper — the sealed-envelope composer uses the
@@ -6865,7 +6865,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       ...(options.sources ? { sources: options.sources } : {}),
       ...(options.provenance ? { provenance: options.provenance } : {}),
       ...(options.sourceConnector ? { sourceConnector: options.sourceConnector } : {}),
-      ...(options.origin ? { origin: options.origin } : {}),
+      ...(options.origin ? { origin: parseOriginClass(options.origin) } : {}),
       ...(options.toolScoped ||
       withholdToolScopedFromSharedNamespace({
         content: sanitized.text,

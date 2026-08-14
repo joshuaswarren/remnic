@@ -1033,6 +1033,7 @@ export class RecallInternalCoordinator {
             maxRelatedEntities,
             maxChars,
             transcriptEntries,
+            originAuthorityEnabled: this.securityCapabilities.originAuthority, untrustedOrigins: this.deps.config.untrustedOrigins,
             abortSignal: sectionSignal,
           }).catch((err) => {
             // Cancellation is the deadline/abort contract working; let the bounded
@@ -3307,8 +3308,7 @@ export class RecallInternalCoordinator {
             query: retrievalQuery,
             maxChars: eventOrderMaxChars,
             maxItems,
-            originAuthorityEnabled: this.securityCapabilities.originAuthority,
-            untrustedOrigins: this.deps.config.untrustedOrigins,
+            originAuthorityEnabled: this.securityCapabilities.originAuthority, untrustedOrigins: this.deps.config.untrustedOrigins,
           });
         }
 

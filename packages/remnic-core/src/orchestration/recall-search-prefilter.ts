@@ -244,6 +244,7 @@ export async function searchEmbeddingFallback(
       path: fullPath,
       score: hit.score,
       snippet: memory.content.slice(0, 400).replace(/\n/g, " "),
+      origin: memory.frontmatter.origin,
     });
   }
   return results;

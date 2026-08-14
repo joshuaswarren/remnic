@@ -411,6 +411,7 @@ export class QmdResultResolver {
         docid: result.docid || memory.frontmatter.id,
         path: memory.path,
         snippet: result.snippet || memory.content.slice(0, 400),
+        origin: memory.frontmatter.origin,
       },
     };
   }

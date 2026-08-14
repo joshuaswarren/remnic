@@ -424,6 +424,7 @@ export class GraphRecallCoordinator {
             namespace,
             snippet: memory.content.slice(0, 400),
             score,
+            ...(memory.frontmatter.origin !== undefined ? { origin: memory.frontmatter.origin } : {}),
           });
           expandedPaths.push({
             path: memory.path,
@@ -532,6 +533,7 @@ export class GraphRecallCoordinator {
             namespace,
             snippet: memory.content.slice(0, 400),
             score,
+            ...(memory.frontmatter.origin !== undefined ? { origin: memory.frontmatter.origin } : {}),
             pathPenaltyApplied: pathScoreDetail.pathPenaltyApplied,
             ...(config.graphPathScoring.includePathInProvenance &&
             candidate.activationPath

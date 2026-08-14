@@ -38,6 +38,17 @@ const RULE_WEIGHTS = {
 export const INJECTION_SCREEN_THRESHOLD = 4;
 
 const MAX_EXCERPT_LENGTH = 180;
+const AUTHORITY_EXECUTABLE_TOOL_REFERENCE =
+  String.raw`(?:remnic|engram)(?:\s+security\s+audit-memory\b|\s+(?:memory_store|suggestion_submit|observe|recall|delete_memory|memory_correct_apply|memory_search)(?:\s+(?:tool|command))?\b|\s+(?:tool|command)\b|[_:-](?:memory_store|suggestion_submit|observe|recall|delete_memory|memory_correct_apply|memory_search)\b)`;
+const AUTHORITY_OPTIONAL_QUOTE = String.raw`[\`"']?`;
+const AUTHORITY_DIRECTIVE_PATTERN = new RegExp(
+  String.raw`\b(?:call|invoke|execute|run|use)\s+(?:the\s+)?${AUTHORITY_OPTIONAL_QUOTE}${AUTHORITY_EXECUTABLE_TOOL_REFERENCE}`,
+  "i",
+);
+const AUTHORITY_MANDATORY_DIRECTIVE_PATTERN = new RegExp(
+  String.raw`\byou\s+(?:must|should)\s+(?:call|invoke|execute|run|use)\s+(?:the\s+)?${AUTHORITY_OPTIONAL_QUOTE}${AUTHORITY_EXECUTABLE_TOOL_REFERENCE}`,
+  "i",
+);
 
 function excerptFor(content: string, match?: RegExpMatchArray): string {
   const start = match?.index ?? 0;
@@ -75,7 +86,7 @@ function findToolInvocationSyntax(content: string): InjectionScreenFinding | und
     // (namespaced / snake_case / dotted) or is explicitly called a tool —
     // plain English like "on-call SRE" or "call Sam" must not trip the
     // screen (#1955 false-positive criterion).
-    /<(?:tool(?:_call)?|function(?:_call)?|invoke)\b[^>]*>|\b(?:call|invoke|execute|run)\s+(?:the\s+)?[a-z][\w-]*(?:[_:.][\w-]+)+\b|\b(?:call|invoke|execute|run)\s+the\s+[\w-]+\s+tool\b/i,
+    /<(?:tool(?:_call)?|function(?:_call)?|invoke)\b[^>]*>|\b(?:call|invoke|execute|run)\s+(?:the\s+)?[a-z][a-z0-9-]*(?:[_:.][a-z0-9-]+)+\b|\b(?:call|invoke|execute|run)\s+the\s+[a-z0-9-]+\s+tool\b/i,
   ) ?? findingFor(
     "tool-invocation-syntax",
     content,
@@ -119,11 +130,11 @@ function findAuthorityEscalation(content: string): InjectionScreenFinding | unde
   return findingFor(
     "authority-escalation",
     content,
-    /\b(?:remnic|engram)\b[\s\S]{0,80}\b(?:tool|command|memory_store|suggestion_submit|observe|recall|delete_memory|memory_correct_apply|memory_search)\b/i,
+    AUTHORITY_DIRECTIVE_PATTERN,
   ) ?? findingFor(
     "authority-escalation",
     content,
-    /\b(?:memory_store|suggestion_submit|delete_memory|memory_correct_apply|memory_search)\s+(?:tool|command)\b/i,
+    AUTHORITY_MANDATORY_DIRECTIVE_PATTERN,
   );
 }
 

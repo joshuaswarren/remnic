@@ -12,13 +12,14 @@ export interface ExtractionSourceContext {
   sourceConnector?: string;
   turnRole?: "user" | "assistant" | "tool" | string;
   importAdapter?: string;
+  originConflict?: boolean;
 }
 
 /** Derive one origin context from the turns that supplied an extraction. */
 export function deriveExtractionOriginContext(
   targetTurns: readonly BufferTurn[],
   fallbackConnector?: string,
-): Pick<ExtractionSourceContext, "turnRole" | "importAdapter" | "sourceConnector"> {
+): Pick<ExtractionSourceContext, "turnRole" | "importAdapter" | "sourceConnector" | "originConflict"> {
   const originRoles = new Set(targetTurns.map((turn) => turn.role));
   const turnRole = originRoles.size === 1 ? [...originRoles][0] : undefined;
   const originConnectors = new Set(
@@ -42,21 +43,31 @@ export function deriveExtractionOriginContext(
       .map((turn) => turn.importProvenance?.sourceLabel)
       .filter((adapter): adapter is string => typeof adapter === "string" && adapter.length > 0),
   );
+  const originConflict =
+    originConnectors.size > 1 ||
+    originAdapters.size > 1 ||
+    (originConnectors.size > 0 && originAdapters.size > 0);
   const importAdapter =
     targetTurns.length > 0 &&
-    targetTurns.every((turn) => typeof turn.importProvenance?.sourceLabel === "string") &&
+    targetTurns.every(
+      (turn) =>
+        typeof turn.importProvenance?.sourceLabel === "string" &&
+        turn.importProvenance.sourceLabel.length > 0,
+    ) &&
     originAdapters.size === 1
       ? [...originAdapters][0]
       : undefined;
   return {
     ...(turnRole ? { turnRole } : {}),
     ...(importAdapter ? { importAdapter } : {}),
+    ...(originConflict ? { originConflict: true } : {}),
     sourceConnector: fallbackConnector ?? connector,
   };
 }
 
 /** Classify the persisted origin without reading config flags. */
 export function classifyExtractionOrigin(sourceContext?: ExtractionSourceContext): OriginClass {
+  if (sourceContext?.originConflict === true) return "unknown";
   return classifyOrigin({
     turnRole: sourceContext?.turnRole,
     connectorId: sourceContext?.sourceConnector,

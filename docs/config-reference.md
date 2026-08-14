@@ -924,7 +924,7 @@ FAISS notes:
 | `trustZoneStoreDir` | `{memoryDir}/state/trust-zones` | Root directory for trust-zone records |
 | `trustZoneRecallEnabled` | `false` | Inject prompt-relevant working and trusted trust-zone records into recall context |
 | `memoryPoisoningDefenseEnabled` | `false` | Enable deterministic provenance trust scoring and corroboration requirements for risky trusted promotions |
-| `originAuthorityEnabled` | `false` | Record the source origin class on each new memory write; untrusted origins remain data, not authority |
+| `originAuthorityEnabled` | `false` | Gate the recall-time authority fence for origins in `untrustedOrigins`; origin metadata is always recorded |
 | `injectionScreenEnabled` | `true` | Screen candidate facts with deterministic rules and queue findings as `pending_review` |
 | `untrustedOrigins` | `["tool_output", "import:*", "unknown"]` | Origin classes that receive the authority fence during recall rendering |
 | `memoryRedTeamBenchEnabled` | `false` | Enable typed `memory-red-team` benchmark packs and status accounting for poisoning-defense regression suites |
@@ -992,8 +992,8 @@ Current foundation slice:
 
 The hardening path has three layers:
 
-1. The write path records the origin class when `originAuthorityEnabled` is `true`.
-2. The recall renderer wraps content from `untrustedOrigins` in a data-only authority fence.
+1. Origin metadata is always recorded on writes; `originAuthorityEnabled` gates only the recall-time authority fence.
+2. The recall renderer wraps content from origins selected by `untrustedOrigins` in a data-only authority fence.
 3. The deterministic injection screen sends suspicious candidate facts to `pending_review` when `injectionScreenEnabled` is `true`. It never drops a candidate.
 
 Run `remnic security audit-memory` to inspect stored memories for origin gaps, authority-sensitive content, and injection-screen findings. The command is read-only unless its command help states otherwise.

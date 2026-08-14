@@ -1623,6 +1623,7 @@ export class ExtractionPersistCoordinator {
         entityRef: fact.entityRef,
         validAt: biTemporal?.validFrom ?? sourceContext?.validAt,
       };
+      const { status: injectionScreenStatus, tags: injectionScreenTags } = evaluateInjectionScreen({ content: fact.content, category: writeCategory, structuredAttributes: fact.structuredAttributes, procedureSteps: fact.procedureSteps }, resolveSecurityCapabilities(this.deps.config).injectionScreen);
       // #1669 redaction-rule gate: consult BOTH source and target namespace
       // rules before any write. A never-store pattern registered under the
       // source namespace must survive scope-routing to a different target
@@ -1725,7 +1726,7 @@ export class ExtractionPersistCoordinator {
           exactDuplicate = false;
         }
       }
-      if (exactDuplicate) {
+      if (exactDuplicate && injectionScreenStatus !== "pending_review") {
         // #1671 — before short-circuiting, backfill bi-temporal bounds
         // onto the existing source-namespace copy if it lacks bounds the
         // incoming fact now carries (re-extraction with a resolved invalidAt).
@@ -1810,8 +1811,7 @@ export class ExtractionPersistCoordinator {
         dedupedCount++;
         continue;
       }
-
-      if (writeCategory === "procedure" && this.deps.config.procedural?.enabled !== true) {
+      if (writeCategory === "procedure" && this.deps.config.procedural?.enabled !== true && injectionScreenStatus !== "pending_review") {
         log.debug("persistExtraction: skip procedure memory (procedural.enabled is false)");
         continue;
       }
@@ -1825,6 +1825,7 @@ export class ExtractionPersistCoordinator {
       // gate, trivial turn-level chatter ("hi", "k", heartbeat pings) gets
       // persisted as a fact memory and dilutes the store.
       if (
+        injectionScreenStatus !== "pending_review" &&
         !isAboveImportanceThreshold(
           importance.level,
           this.deps.config.extractionMinImportanceLevel,
@@ -1852,7 +1853,7 @@ export class ExtractionPersistCoordinator {
       // extraction pass. The judge module tracks how many times the same
       // content has been deferred and converts to reject at the configured
       // cap, so the orchestrator only needs to skip the write here.
-      if (judgeVerdictsByFactIndex) {
+      if (judgeVerdictsByFactIndex && injectionScreenStatus !== "pending_review") {
         const verdict = judgeVerdictsByFactIndex.get(factLoopIndex);
         if (verdict && !verdict.durable) {
           const verdictKind = getVerdictKind(verdict);
@@ -1879,7 +1880,7 @@ export class ExtractionPersistCoordinator {
       // Procedure extraction gate (issue #519): ≥2 steps + trigger phrasing.
       // Runs even when extractionJudgeEnabled is false (durability judge is unrelated).
       // Never tied to extractionJudgeShadow — that flag is only for the LLM durability judge.
-      if (writeCategory === "procedure") {
+      if (writeCategory === "procedure" && injectionScreenStatus !== "pending_review") {
         const procGate = validateProcedureExtraction({
           content: fact.content,
           procedureSteps: fact.procedureSteps,
@@ -1919,7 +1920,6 @@ export class ExtractionPersistCoordinator {
         fact.requireSpansPending === true
           ? ("pending_review" as const)
           : undefined;
-      const { status: injectionScreenStatus, tags: injectionScreenTags } = evaluateInjectionScreen(fact.content, resolveSecurityCapabilities(this.deps.config).injectionScreen);
       const faithfulnessEnforceStatus = faithfulnessGateStatus ?? requireSpansPendingStatus ?? injectionScreenStatus;
 
       // Issue #373 — write-time semantic similarity guard. Hook runs after
@@ -1941,7 +1941,7 @@ export class ExtractionPersistCoordinator {
       // a high-similarity update/correction is linked as a superseding
       // contradiction rather than silently dropped.
       let pendingSemanticSkip: (SemanticDedupDecision & { action: "skip" }) | null = null;
-      if (resolvePipelineProcessingCapabilities(this.deps.config).semanticDedup) {
+      if (resolvePipelineProcessingCapabilities(this.deps.config).semanticDedup && injectionScreenStatus !== "pending_review") {
         let semanticDecision: SemanticDedupDecision;
         // UUI2: skip embedding lookup for the rest of this batch once we know
         // the backend is unavailable. The flag is reset per-batch (set to false

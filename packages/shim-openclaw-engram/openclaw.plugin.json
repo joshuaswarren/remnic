@@ -3427,7 +3427,7 @@
       "originAuthorityEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Record origin-bound authority metadata on new memory writes (issue #1955)."
+        "description": "Fence recall-rendered content from untrusted origins as data-only (issue #1955). Origin metadata is always recorded; this flag gates only the recall-time fence."
       },
       "injectionScreenEnabled": {
         "type": "boolean",
@@ -7414,7 +7414,7 @@
     "originAuthorityEnabled": {
       "label": "Origin Authority",
       "advanced": true,
-      "help": "Record origin-bound authority metadata on new memory writes (issue #1955)."
+      "help": "Fence recall-rendered content from untrusted origins as data-only (issue #1955). Origin metadata is always recorded; this flag gates only the recall-time fence."
     },
     "injectionScreenEnabled": {
       "label": "Injection Screen",
