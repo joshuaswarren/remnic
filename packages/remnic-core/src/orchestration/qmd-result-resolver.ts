@@ -30,6 +30,7 @@ import path from "node:path";
 import { log } from "../logger.js";
 import { isPathInsideStorageRoot } from "../storage-paths.js";
 import { namespaceIdentityFromToken } from "../namespaces/identity.js";
+import { normalizeQmdResultPath } from "../namespaces/search.js";
 import { resolveNamespaceCapabilities } from "../capabilities.js";
 import { SecureStoreLockedError } from "../secure-store/index.js";
 import type { PluginConfig, QmdSearchResult, MemoryFile } from "../types.js";
@@ -68,6 +69,20 @@ export function qmdCollectionPathParts(resultPath: string): {
   relativePath: string;
 } | null {
   if (!resultPath || path.isAbsolute(resultPath)) return null;
+  if (resultPath.trim().startsWith("qmd://")) {
+    try {
+      const parsed = new URL(resultPath.trim());
+      if (parsed.protocol !== "qmd:" || !parsed.hostname) return null;
+      const collection = parsed.hostname;
+      const relativePath = normalizeQmdResultPath(resultPath, collection)
+        .replace(/\\/g, "/")
+        .replace(/^\/+/, "");
+      if (!relativePath) return null;
+      return { collection, relativePath };
+    } catch {
+      return null;
+    }
+  }
   const normalized = resultPath.replace(/\\/g, "/").replace(/^\/+/, "");
   const slashIndex = normalized.indexOf("/");
   if (slashIndex <= 0 || slashIndex >= normalized.length - 1) return null;
@@ -177,6 +192,10 @@ export class QmdResultResolver {
     const fallbackStorageDir = storageDirOrNull(fallbackStorage);
     const config = this.getConfig();
     const coldCollection = config.qmdColdCollection ?? "openclaw-engram-cold";
+    const fallbackResultPath =
+      resultPath.trim().startsWith("qmd://") && parts?.collection === config.qmdCollection
+        ? parts.relativePath
+        : resultPath;
     if (parts && parts.collection === coldCollection) {
       const storages: StorageManager[] = [];
       const seenStorageDirs = new Set<string>();
@@ -274,7 +293,7 @@ export class QmdResultResolver {
         const preferredStorage = await this.storageFor(preferredNamespace);
         for (const candidate of qmdResultPathCandidates(
           preferredStorage.dir,
-          resultPath,
+          fallbackResultPath,
         )) {
           const memory = await preferredStorage.readMemoryByPath(candidate);
           if (memory) return memory;
@@ -292,21 +311,21 @@ export class QmdResultResolver {
       // is stale/deleted — do NOT fall through to the default store and validate
       // a same-relative-path memory from the wrong namespace (#2020). Absolute
       // paths still fall through: the absolute branch resolves the true owner.
-      if (!path.isAbsolute(resultPath)) return null;
+      if (!path.isAbsolute(fallbackResultPath)) return null;
     }
-    if (path.isAbsolute(resultPath)) {
+    if (path.isAbsolute(fallbackResultPath)) {
       if (!fallbackStorageDir) {
-        return await fallbackStorage.readMemoryByPath(resultPath);
+        return await fallbackStorage.readMemoryByPath(fallbackResultPath);
       }
       const ownerStorage = await this.storageForAbsoluteQmdResultPath(
-        resultPath,
+        fallbackResultPath,
         fallbackStorage,
         recallNamespaces,
       );
       if (!ownerStorage) return null;
       for (const candidate of qmdResultPathCandidates(
         ownerStorage.dir,
-        resultPath,
+        fallbackResultPath,
       )) {
         const memory = await ownerStorage.storage.readMemoryByPath(candidate);
         if (memory) return memory;
@@ -315,11 +334,11 @@ export class QmdResultResolver {
     }
 
     if (!fallbackStorageDir) {
-      return await fallbackStorage.readMemoryByPath(resultPath);
+      return await fallbackStorage.readMemoryByPath(fallbackResultPath);
     }
     for (const candidate of qmdResultPathCandidates(
       fallbackStorageDir,
-      resultPath,
+      fallbackResultPath,
     )) {
       const memory = await fallbackStorage.readMemoryByPath(candidate);
       if (memory) return memory;

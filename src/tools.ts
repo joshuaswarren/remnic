@@ -87,6 +87,8 @@ function normalizeMemorySearchResultLimit(value: unknown): number {
   return Math.min(Math.max(value, 1), 50);
 }
 
+const MEMORY_SEARCH_CANDIDATE_CAP = 25_000;
+
 const WORK_TASK_STATUSES = new Set(["todo", "in_progress", "blocked", "done", "cancelled"]);
 const WORK_TASK_PRIORITIES = new Set(["low", "medium", "high"]);
 const WORK_PROJECT_STATUSES = new Set(["active", "on_hold", "completed", "archived"]);
@@ -465,10 +467,11 @@ Best for:
         );
         while (
           filtered.length < resultLimit &&
-          candidates.length >= candidateLimit
+          candidates.length >= candidateLimit &&
+          candidateLimit < MEMORY_SEARCH_CANDIDATE_CAP
         ) {
           const nextCandidateLimit = Math.min(
-            Number.MAX_SAFE_INTEGER,
+            MEMORY_SEARCH_CANDIDATE_CAP,
             Math.max(candidateLimit + 16, candidateLimit * 2),
           );
           if (nextCandidateLimit === candidateLimit) break;

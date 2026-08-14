@@ -268,3 +268,31 @@ test("memory_search refills beyond 500 private records", async () => {
   assert.ok(calls.some((limit) => limit > 500));
   assert.match(toolText(result), /public-after-hidden\.md/);
 });
+
+test("memory_search stops at the shared candidate safety bound", async () => {
+  const calls: number[] = [];
+  const { tools } = buildHarness({
+    searchGlobal: async (_query, maxResults) => {
+      const limit = maxResults ?? 0;
+      calls.push(limit);
+      return Array.from({ length: limit }, (_, index) => ({
+        path: `/tmp/private-${index}.md`,
+        score: 1,
+        snippet: "private",
+      }));
+    },
+    filterPrivateSearchResults: async () => [],
+  });
+  const tool = tools.get("memory_search");
+  assert.ok(tool);
+
+  const result = await tool.execute("tc8", {
+    query: "support",
+    collection: "global",
+    maxResults: 1,
+  });
+
+  assert.equal(calls.at(-1), 25_000);
+  assert.ok(calls.length < 20);
+  assert.match(toolText(result), /No memories found/);
+});

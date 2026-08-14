@@ -8,8 +8,16 @@ import { parseConfig } from "../config.js";
 import { StorageManager } from "../index.js";
 import {
   QmdResultResolver,
+  qmdCollectionPathParts,
   qmdResultPathCandidates,
 } from "./qmd-result-resolver.js";
+
+test("qmdCollectionPathParts normalizes QMD URIs", () => {
+  assert.deepEqual(
+    qmdCollectionPathParts("qmd://openclaw-engram/facts/private.md"),
+    { collection: "openclaw-engram", relativePath: "facts/private.md" },
+  );
+});
 
 test("qmdResultPathCandidates probes the facts/ fallback for relative date paths", () => {
   const root = path.join(os.tmpdir(), "remnic-resolver-rel");
@@ -145,6 +153,52 @@ test("private-result filtering rejects unresolved internal-root hits", async () 
       const result = { docid: root, path: `${root}/missing.md`, snippet: "private", score: 1 };
       assert.deepEqual(await resolver.filterPrivateSearchResults([result], storage, [], true), []);
     }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("private-result filtering resolves QMD URIs before checking passport privacy", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-resolver-qmd-uri-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const factDir = path.join(dir, "facts");
+    await mkdir(factDir, { recursive: true });
+    await writeFile(
+      path.join(factDir, "private.md"),
+      [
+        "---",
+        "id: private",
+        "category: preference",
+        "created: 2026-08-13T00:00:00.000Z",
+        "updated: 2026-08-13T00:00:00.000Z",
+        "status: active",
+        "tags:",
+        "  - support-passport-card",
+        "---",
+        "",
+        "Private support card.",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const config = parseConfig({ memoryDir: dir });
+    const resolver = new QmdResultResolver({
+      getConfig: () => config,
+      storageFor: async () => storage,
+      storageDirNamespace: () => config.defaultNamespace,
+      qmdCollectionNamespaceFromPrefix: () => null,
+      namespaceFromPath: () => config.defaultNamespace,
+    });
+    const result = {
+      docid: "private",
+      path: `qmd://${config.qmdCollection}/facts/private.md`,
+      snippet: "Private support card.",
+      score: 1,
+    };
+
+    assert.deepEqual(await resolver.filterPrivateSearchResults([result], storage), []);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
