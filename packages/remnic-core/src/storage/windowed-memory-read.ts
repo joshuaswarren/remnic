@@ -77,8 +77,8 @@ async function readWindowTimestamp(memory: MemoryFile): Promise<number | null> {
   const rawDocument = readRawMemoryDocument(memory);
   const frontmatterBlock = rawDocument?.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1];
   const rawTimestamp =
-    frontmatterBlock?.match(/^updated:\s*"?([^"\r\n]*)"?/m)?.[1] ||
-    frontmatterBlock?.match(/^created:\s*"?([^"\r\n]*)"?/m)?.[1] ||
+    frontmatterBlock?.match(/^[ \t]*updated:[ \t]*"?([^"\r\n]*)"?/m)?.[1] ||
+    frontmatterBlock?.match(/^[ \t]*created:[ \t]*"?([^"\r\n]*)"?/m)?.[1] ||
     memory.frontmatter.updated ||
     memory.frontmatter.created;
   const timestampMs = typeof rawTimestamp === "string" ? Date.parse(rawTimestamp.trim()) : Number.NaN;

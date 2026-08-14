@@ -221,7 +221,7 @@
     "packages/remnic-core/src/maintenance/purge.ts": "tombstone-blocked-capture",
     "packages/remnic-core/src/maintenance/memory-governance.ts": "extraction-lifecycle",
     "packages/remnic-core/src/maintenance/pattern-reinforcement.ts": "extraction-lifecycle",
-    "packages/remnic-core/src/storage/windowed-memory-read.ts": "extraction-lifecycle",
+    "packages/remnic-core/src/storage/windowed-memory-read.ts": "windowed-memory-read",
     "packages/remnic-core/src/maintenance/first-start-migration.ts": "first-start-tier-migration",
     "packages/remnic-core/src/orchestration/recall-section-coordinator.ts": "recall-budget",
     "packages/remnic-core/src/orchestration/recall-internal-deps.ts": "recall-budget",
