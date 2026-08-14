@@ -139,6 +139,8 @@ test("the owner link disappears at its expiry time", async ({ page }, testInfo) 
 
   await expect(page.getByText("Share link ready")).toBeHidden();
   await expect(page.getByLabel("Copy this link once")).toHaveValue("");
+  await expect(page.getByText("Share time ended", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Stop sharing" })).toHaveCount(0);
 });
 
 test("a fast owner clock keeps a server-authorized share link visible", async ({ page }, testInfo) => {
@@ -167,6 +169,7 @@ test("a fast owner clock keeps a server-authorized share link visible", async ({
     status: "active",
   };
   let created = false;
+  let createInput: Record<string, unknown> | undefined;
   await page.route("**/engram/v1/support-passport/cards", async (route) => {
     await route.fulfill({
       status: 200,
@@ -178,6 +181,7 @@ test("a fast owner clock keeps a server-authorized share link visible", async ({
   await page.route("**/engram/v1/support-passport/grants", async (route) => {
     if (route.request().method() === "POST") {
       created = true;
+      createInput = route.request().postDataJSON() as Record<string, unknown>;
       await route.fulfill({
         status: 201,
         headers: { date: new Date(serverNow).toUTCString() },
@@ -203,10 +207,20 @@ test("a fast owner clock keeps a server-authorized share link visible", async ({
   await page.getByLabel("Bearer token").fill("owner-token");
   await page.getByRole("button", { name: "Open my guide" }).click();
   await page.locator('input[name="shareCard"]').check();
+  await page.locator('input[name="duration"][value="custom"]').check();
+  const customExpiry = serverNow + 60 * 60_000;
+  await page.locator("#customTimeInput").fill(
+    await page.evaluate((timestamp) => {
+      const date = new Date(timestamp);
+      const offset = date.getTimezoneOffset() * 60_000;
+      return new Date(timestamp - offset).toISOString().slice(0, 16);
+    }, customExpiry)
+  );
   await page.getByRole("button", { name: "Create share link" }).click();
 
   await expect(page.getByText("Share link ready")).toBeVisible();
   await expect(page.getByLabel("Copy this link once")).toHaveValue(/#secret=/);
+  expect(createInput?.expiresAt).toBe(new Date(Math.floor(customExpiry / 60_000) * 60_000).toISOString());
 });
 
 test("the owner note preview preserves API text and binds consent to its revision", async ({ page }, testInfo) => {
@@ -530,6 +544,8 @@ test("a hidden owner write cannot add an error after reconnect", async ({ page }
   await expect(page.getByRole("button", { name: "Drafting cards…" })).toBeDisabled();
 
   await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })));
+  await expect(page.locator("#generateButton")).toHaveText("Draft my support cards");
+  await expect(page.locator('#shareForm button[type="submit"]')).toHaveText("Create share link");
   await expect
     .poll(() =>
       page.evaluate(() => (window as typeof window & { __hiddenOwnerWriteAborted?: boolean }).__hiddenOwnerWriteAborted)
