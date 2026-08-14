@@ -19,28 +19,22 @@
 
 import path from "node:path";
 
+import { resolveQmdCapabilities } from "../capabilities.js";
+import { type CompoundingEngine, defaultTierMigrationCycleBudget } from "../compounding/engine.js";
 // StorageManager type comes from the package barrel (type-only) so this
 // module does not add a direct storage.ts import (#1533 ratchet).
 import type { StorageManager } from "../index.js";
+import { log } from "../logger.js";
+import type {
+  TierMigrationCycleSummary,
+  TierMigrationStatusSnapshot,
+  TierMigrationStatusStore,
+} from "../recall-state.js";
 import type { SearchBackend } from "../search/port.js";
 import { TierMigrationExecutor } from "../tier-migration.js";
-import { decideTierTransition, type MemoryTier } from "../tier-routing.js";
-import {
-  TierMigrationStatusStore,
-  type TierMigrationCycleSummary,
-  type TierMigrationStatusSnapshot,
-} from "../recall-state.js";
-import {
-  type CompoundingEngine,
-  defaultTierMigrationCycleBudget,
-} from "../compounding/engine.js";
-import {
-  applyUtilityPromotionRuntimePolicy,
-  type UtilityRuntimeValues,
-} from "../utility-runtime.js";
-import type { PluginConfig, MemoryFile } from "../types.js";
-import { log } from "../logger.js";
-import { resolveQmdCapabilities } from "../capabilities.js";
+import { type MemoryTier, decideTierTransition } from "../tier-routing.js";
+import type { MemoryFile, PluginConfig } from "../types.js";
+import { type UtilityRuntimeValues, applyUtilityPromotionRuntimePolicy } from "../utility-runtime.js";
 
 /** Dependencies injected by the orchestrator. All stable references or live
  *  accessors (the orchestrator reassigns `qmd` to NoopSearchBackend and
@@ -91,7 +85,7 @@ export class TierMigrationCoordinator {
       dryRun?: boolean;
       limitOverride?: number;
       force?: boolean;
-    },
+    }
   ): Promise<TierMigrationCycleSummary> {
     const { config, tierMigrationStatus } = this.deps;
     const dryRun = options?.dryRun === true;
@@ -110,11 +104,7 @@ export class TierMigrationCoordinator {
       if (persistSkipped) await tierMigrationStatus.recordCycle(skipped);
       return skipped;
     }
-    if (
-      trigger === "maintenance" &&
-      !resolveQmdCapabilities(config).qmdTierAutoBackfill &&
-      options?.force !== true
-    ) {
+    if (trigger === "maintenance" && !resolveQmdCapabilities(config).qmdTierAutoBackfill && options?.force !== true) {
       const skipped: TierMigrationCycleSummary = {
         trigger,
         scanned: 0,
@@ -147,15 +137,9 @@ export class TierMigrationCoordinator {
     const budget =
       this.deps.getCompounding()?.tierMigrationCycleBudget(budgetTrigger) ??
       defaultTierMigrationCycleBudget(config, budgetTrigger);
-    const limit =
-      options?.limitOverride !== undefined
-        ? Math.max(0, Math.floor(options.limitOverride))
-        : budget.limit;
+    const limit = options?.limitOverride !== undefined ? Math.max(0, Math.floor(options.limitOverride)) : budget.limit;
     const nowMs = Date.now();
-    if (
-      options?.force !== true &&
-      nowMs - this.lastRunAtMs < budget.minIntervalMs
-    ) {
+    if (options?.force !== true && nowMs - this.lastRunAtMs < budget.minIntervalMs) {
       const skipped: TierMigrationCycleSummary = {
         trigger,
         scanned: 0,
@@ -177,28 +161,17 @@ export class TierMigrationCoordinator {
         demotionValueThreshold: config.qmdTierDemotionValueThreshold,
         promotionValueThreshold: config.qmdTierPromotionValueThreshold,
       },
-      this.deps.getUtilityRuntimeValues(),
+      this.deps.getUtilityRuntimeValues()
     );
 
     this.inFlight = true;
     try {
-      const coldStorage = this.deps.createColdStorage(
-        path.join(storage.dir, "cold"),
-      );
-      const [hotMemories, coldMemories] = await Promise.all([
-        storage.readAllMemories(),
-        coldStorage.readAllMemories(),
-      ]);
+      const coldStorage = this.deps.createColdStorage(path.join(storage.dir, "cold"));
+      const [hotMemories, coldMemories] = await Promise.all([storage.readAllMemories(), coldStorage.readAllMemories()]);
       const now = new Date();
       const scanLimit = Math.max(0, Math.floor(budget.scanLimit));
-      const hotScanLimit = Math.min(
-        hotMemories.length,
-        Math.ceil(scanLimit * 0.75),
-      );
-      const coldScanLimit = Math.min(
-        coldMemories.length,
-        Math.max(0, scanLimit - hotScanLimit),
-      );
+      const hotScanLimit = Math.min(hotMemories.length, Math.ceil(scanLimit * 0.75));
+      const coldScanLimit = Math.min(coldMemories.length, Math.max(0, scanLimit - hotScanLimit));
       const toTimestamp = (memory: MemoryFile): number =>
         Date.parse(memory.frontmatter.updated ?? memory.frontmatter.created);
       const hotCandidates = hotMemories
@@ -215,8 +188,7 @@ export class TierMigrationCoordinator {
         storage,
         qmd: this.deps.getQmd(),
         hotCollection: config.qmdCollection,
-        coldCollection:
-          config.qmdColdCollection ?? `${config.qmdCollection}-cold`,
+        coldCollection: config.qmdColdCollection ?? `${config.qmdCollection}-cold`,
         autoEmbed: resolveQmdCapabilities(config).qmdAutoEmbed,
       });
 
@@ -225,12 +197,7 @@ export class TierMigrationCoordinator {
       let demoted = 0;
       for (const candidate of candidates) {
         if (migrated >= limit) break;
-        const decision = decideTierTransition(
-          candidate.memory,
-          candidate.tier,
-          policy,
-          now,
-        );
+        const decision = decideTierTransition(candidate.memory, candidate.tier, policy, now);
         if (!decision.changed) continue;
 
         if (!dryRun) {
@@ -249,7 +216,7 @@ export class TierMigrationCoordinator {
 
       if (!dryRun) this.lastRunAtMs = Date.now();
       log.debug(
-        `tier migration cycle completed: trigger=${trigger} scanned=${candidates.length} migrated=${migrated} limit=${limit}${dryRun ? " dryRun=true" : ""}`,
+        `tier migration cycle completed: trigger=${trigger} scanned=${candidates.length} migrated=${migrated} limit=${limit}${dryRun ? " dryRun=true" : ""}`
       );
       const summary: TierMigrationCycleSummary = {
         trigger,

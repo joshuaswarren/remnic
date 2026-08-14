@@ -27,13 +27,37 @@
  */
 
 import path from "node:path";
-import { log } from "../logger.js";
-import { isPathInsideStorageRoot } from "../storage-paths.js";
-import { namespaceIdentityFromToken } from "../namespaces/identity.js";
 import { resolveNamespaceCapabilities } from "../capabilities.js";
-import { SecureStoreLockedError } from "../secure-store/index.js";
-import type { PluginConfig, QmdSearchResult, MemoryFile } from "../types.js";
 import type { StorageManager } from "../index.js";
+import { log } from "../logger.js";
+import { namespaceIdentityFromToken } from "../namespaces/identity.js";
+import { normalizeQmdResultPath } from "../namespaces/search.js";
+import { SecureStoreLockedError } from "../secure-store/index.js";
+import { isPathInsideStorageRoot } from "../storage-paths.js";
+import { isSupportPassportPrivateMemory } from "../support-passport/card-projection.js";
+import type { MemoryFile, PluginConfig, QmdSearchResult } from "../types.js";
+import { ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
+
+const INTERNAL_QMD_ROOTS = new Set([
+  ...ALL_CATEGORY_DIRS,
+  "activity",
+  "archive",
+  "artifacts",
+  "cold",
+  "config",
+  "entities",
+  "identity",
+  "meetings",
+  "namespaces",
+  "state",
+  "summaries",
+  "transcripts",
+  "wearables",
+  "work",
+  "workspace",
+]);
+
+const PRIVATE_RESULT_RESOLUTION_CONCURRENCY = 16;
 
 /**
  * Split a relative QMD result path into its collection prefix and the
@@ -45,6 +69,18 @@ export function qmdCollectionPathParts(resultPath: string): {
   relativePath: string;
 } | null {
   if (!resultPath || path.isAbsolute(resultPath)) return null;
+  if (resultPath.trim().startsWith("qmd://")) {
+    try {
+      const parsed = new URL(resultPath.trim());
+      if (parsed.protocol !== "qmd:" || !parsed.hostname) return null;
+      const collection = parsed.hostname;
+      const relativePath = normalizeQmdResultPath(resultPath, collection).replace(/\\/g, "/").replace(/^\/+/, "");
+      if (!relativePath) return null;
+      return { collection, relativePath };
+    } catch {
+      return null;
+    }
+  }
   const normalized = resultPath.replace(/\\/g, "/").replace(/^\/+/, "");
   const slashIndex = normalized.indexOf("/");
   if (slashIndex <= 0 || slashIndex >= normalized.length - 1) return null;
@@ -61,10 +97,7 @@ export function qmdCollectionPathParts(resultPath: string): {
  * constrained to the storage root so a result path can never escape the
  * namespace directory.
  */
-export function qmdResultPathCandidates(
-  storageDir: string,
-  resultPath: string,
-): string[] {
+export function qmdResultPathCandidates(storageDir: string, resultPath: string): string[] {
   const candidates = new Set<string>();
   const storageRoot = path.resolve(storageDir);
   const addCandidate = (candidate: string) => {
@@ -122,25 +155,20 @@ export class QmdResultResolver {
   private readonly getConfig: () => PluginConfig;
   private readonly storageFor: (namespace: string) => Promise<StorageManager>;
   private readonly storageDirNamespace: (storageDir: string) => string;
-  private readonly qmdCollectionNamespaceFromPrefix: (
-    collectionPrefix: string,
-  ) => string | null;
+  private readonly qmdCollectionNamespaceFromPrefix: (collectionPrefix: string) => string | null;
   private readonly namespaceFromPath: (p: string) => string;
 
   constructor(options: {
     getConfig: () => PluginConfig;
     storageFor: (namespace: string) => Promise<StorageManager>;
     storageDirNamespace: (storageDir: string) => string;
-    qmdCollectionNamespaceFromPrefix: (
-      collectionPrefix: string,
-    ) => string | null;
+    qmdCollectionNamespaceFromPrefix: (collectionPrefix: string) => string | null;
     namespaceFromPath: (p: string) => string;
   }) {
     this.getConfig = options.getConfig;
     this.storageFor = options.storageFor;
     this.storageDirNamespace = options.storageDirNamespace;
-    this.qmdCollectionNamespaceFromPrefix =
-      options.qmdCollectionNamespaceFromPrefix;
+    this.qmdCollectionNamespaceFromPrefix = options.qmdCollectionNamespaceFromPrefix;
     this.namespaceFromPath = options.namespaceFromPath;
   }
 
@@ -148,29 +176,29 @@ export class QmdResultResolver {
     resultPath: string,
     fallbackStorage: StorageManager,
     recallNamespaces: readonly string[] = [],
-    preferredNamespace?: string,
+    preferredNamespace?: string
   ): Promise<MemoryFile | null> {
     const parts = qmdCollectionPathParts(resultPath);
     const fallbackStorageDir = storageDirOrNull(fallbackStorage);
     const config = this.getConfig();
     const coldCollection = config.qmdColdCollection ?? "openclaw-engram-cold";
+    const fallbackResultPath =
+      resultPath.trim().startsWith("qmd://") && parts?.collection === config.qmdCollection
+        ? parts.relativePath
+        : resultPath;
     if (parts && parts.collection === coldCollection) {
       const storages: StorageManager[] = [];
       const seenStorageDirs = new Set<string>();
       const addStorage = (storage: StorageManager): void => {
         const storageDir = storageDirOrNull(storage);
-        const storageKey = storageDir
-          ? path.resolve(storageDir)
-          : `storage-without-dir-${storages.length}`;
+        const storageKey = storageDir ? path.resolve(storageDir) : `storage-without-dir-${storages.length}`;
         if (seenStorageDirs.has(storageKey)) return;
         seenStorageDirs.add(storageKey);
         storages.push(storage);
       };
 
       const fallbackNamespace =
-        fallbackStorageDir !== null
-          ? this.storageDirNamespace(fallbackStorageDir)
-          : config.defaultNamespace;
+        fallbackStorageDir !== null ? this.storageDirNamespace(fallbackStorageDir) : config.defaultNamespace;
       if (
         recallNamespaces.length === 0 ||
         !resolveNamespaceCapabilities(config).namespaces ||
@@ -202,10 +230,7 @@ export class QmdResultResolver {
         }
         try {
           const coldRoot = path.join(storageDir, "cold");
-          for (const candidate of qmdResultPathCandidates(
-            coldRoot,
-            parts.relativePath,
-          )) {
+          for (const candidate of qmdResultPathCandidates(coldRoot, parts.relativePath)) {
             const memory = await storage.readMemoryByPath(candidate);
             if (memory) return memory;
           }
@@ -220,17 +245,12 @@ export class QmdResultResolver {
       }
       return null;
     }
-    const collectionNamespace = parts
-      ? this.qmdCollectionNamespaceFromPrefix(parts.collection)
-      : null;
+    const collectionNamespace = parts ? this.qmdCollectionNamespaceFromPrefix(parts.collection) : null;
 
     if (parts && collectionNamespace) {
       try {
         const collectionStorage = await this.storageFor(collectionNamespace);
-        for (const candidate of qmdResultPathCandidates(
-          collectionStorage.dir,
-          parts.relativePath,
-        )) {
+        for (const candidate of qmdResultPathCandidates(collectionStorage.dir, parts.relativePath)) {
           const memory = await collectionStorage.readMemoryByPath(candidate);
           if (memory) return memory;
         }
@@ -249,10 +269,7 @@ export class QmdResultResolver {
     if (preferredNamespace) {
       try {
         const preferredStorage = await this.storageFor(preferredNamespace);
-        for (const candidate of qmdResultPathCandidates(
-          preferredStorage.dir,
-          resultPath,
-        )) {
+        for (const candidate of qmdResultPathCandidates(preferredStorage.dir, fallbackResultPath)) {
           const memory = await preferredStorage.readMemoryByPath(candidate);
           if (memory) return memory;
         }
@@ -269,22 +286,19 @@ export class QmdResultResolver {
       // is stale/deleted — do NOT fall through to the default store and validate
       // a same-relative-path memory from the wrong namespace (#2020). Absolute
       // paths still fall through: the absolute branch resolves the true owner.
-      if (!path.isAbsolute(resultPath)) return null;
+      if (!path.isAbsolute(fallbackResultPath)) return null;
     }
-    if (path.isAbsolute(resultPath)) {
+    if (path.isAbsolute(fallbackResultPath)) {
       if (!fallbackStorageDir) {
-        return await fallbackStorage.readMemoryByPath(resultPath);
+        return await fallbackStorage.readMemoryByPath(fallbackResultPath);
       }
       const ownerStorage = await this.storageForAbsoluteQmdResultPath(
-        resultPath,
+        fallbackResultPath,
         fallbackStorage,
-        recallNamespaces,
+        recallNamespaces
       );
       if (!ownerStorage) return null;
-      for (const candidate of qmdResultPathCandidates(
-        ownerStorage.dir,
-        resultPath,
-      )) {
+      for (const candidate of qmdResultPathCandidates(ownerStorage.dir, fallbackResultPath)) {
         const memory = await ownerStorage.storage.readMemoryByPath(candidate);
         if (memory) return memory;
       }
@@ -292,46 +306,101 @@ export class QmdResultResolver {
     }
 
     if (!fallbackStorageDir) {
-      return await fallbackStorage.readMemoryByPath(resultPath);
+      return await fallbackStorage.readMemoryByPath(fallbackResultPath);
     }
-    for (const candidate of qmdResultPathCandidates(
-      fallbackStorageDir,
-      resultPath,
-    )) {
+    for (const candidate of qmdResultPathCandidates(fallbackStorageDir, fallbackResultPath)) {
       const memory = await fallbackStorage.readMemoryByPath(candidate);
       if (memory) return memory;
     }
     return null;
   }
 
+  async filterPrivateSearchResults(
+    results: QmdSearchResult[],
+    fallbackStorage: StorageManager,
+    namespaces: readonly string[] = [],
+    preserveUnresolved = false,
+    visibilityCache = new Map<string, boolean>()
+  ): Promise<QmdSearchResult[]> {
+    const namespaceKey = namespaces.join("\0");
+    const entries = results
+      .filter((result) => Boolean(result.path))
+      .map((result) => ({
+        result,
+        cacheKey: `${namespaceKey}\0${preserveUnresolved ? "1" : "0"}\0${result.namespace ?? ""}\0${result.path}`,
+      }));
+    const pending = new Map<string, QmdSearchResult>();
+    for (const { result, cacheKey } of entries) {
+      if (!visibilityCache.has(cacheKey)) pending.set(cacheKey, result);
+    }
+    const unresolved = [...pending];
+    for (let offset = 0; offset < unresolved.length; offset += PRIVATE_RESULT_RESOLUTION_CONCURRENCY) {
+      await Promise.all(
+        unresolved.slice(offset, offset + PRIVATE_RESULT_RESOLUTION_CONCURRENCY).map(async ([cacheKey, result]) => {
+          visibilityCache.set(
+            cacheKey,
+            await this.isVisibleSearchResult(result, fallbackStorage, namespaces, preserveUnresolved)
+          );
+        })
+      );
+    }
+    return entries.filter(({ cacheKey }) => visibilityCache.get(cacheKey) === true).map(({ result }) => result);
+  }
+
+  private async isVisibleSearchResult(
+    result: QmdSearchResult,
+    fallbackStorage: StorageManager,
+    namespaces: readonly string[],
+    preserveUnresolved: boolean
+  ): Promise<boolean> {
+    const parts = qmdCollectionPathParts(result.path);
+    const config = this.getConfig();
+    const collectionIsKnownInternal = parts !== null && INTERNAL_QMD_ROOTS.has(parts.collection);
+    const collectionIsConfigured =
+      parts !== null &&
+      (parts.collection === config.qmdCollection ||
+        parts.collection === (config.qmdColdCollection ?? "openclaw-engram-cold") ||
+        this.qmdCollectionNamespaceFromPrefix(parts.collection) !== null);
+    let memory = await this.readQmdResultMemory(result.path, fallbackStorage, namespaces, result.namespace);
+    if (!memory && parts && !collectionIsKnownInternal && !collectionIsConfigured) {
+      memory = await this.readQmdResultMemory(parts.relativePath, fallbackStorage, namespaces, result.namespace);
+    }
+    const absoluteInsideMemoryRoot =
+      path.isAbsolute(result.path) &&
+      isPathInsideStorageRoot(path.resolve(config.memoryDir), path.resolve(result.path));
+    const hasExplicitQmdCollection = result.path.trim().startsWith("qmd://");
+    const unresolvedInternalPath =
+      !memory &&
+      (absoluteInsideMemoryRoot ||
+        (collectionIsKnownInternal && (!preserveUnresolved || hasExplicitQmdCollection)) ||
+        (hasExplicitQmdCollection && collectionIsConfigured));
+    const unresolvedExternalCollection =
+      !memory &&
+      ((parts !== null && !collectionIsKnownInternal && !collectionIsConfigured) ||
+        (path.isAbsolute(result.path) &&
+          !isPathInsideStorageRoot(path.resolve(config.memoryDir), path.resolve(result.path))));
+    return (
+      (memory !== null && !isSupportPassportPrivateMemory(memory)) ||
+      (!memory && !unresolvedInternalPath && (preserveUnresolved || unresolvedExternalCollection))
+    );
+  }
+
   async resolveColdQmdResultForRecall(
     result: QmdSearchResult,
     fallbackStorage: StorageManager,
-    recallNamespaces: readonly string[] = [],
+    recallNamespaces: readonly string[] = []
   ): Promise<{ namespace: string; result: QmdSearchResult } | null> {
-    const memory = await this.readQmdResultMemory(
-      result.path,
-      fallbackStorage,
-      recallNamespaces,
-      result.namespace,
-    );
+    const memory = await this.readQmdResultMemory(result.path, fallbackStorage, recallNamespaces, result.namespace);
     if (!memory) return null;
 
     let ownerNamespace: string | null = null;
     if (path.isAbsolute(memory.path)) {
-      const ownerStorage = await this.storageForAbsoluteQmdResultPath(
-        memory.path,
-        fallbackStorage,
-        recallNamespaces,
-      );
+      const ownerStorage = await this.storageForAbsoluteQmdResultPath(memory.path, fallbackStorage, recallNamespaces);
       ownerNamespace = ownerStorage?.namespace ?? null;
       if (!ownerNamespace && resolveNamespaceCapabilities(this.getConfig()).namespaces) return null;
     }
     ownerNamespace ??= this.namespaceFromPath(memory.path);
-    if (
-      recallNamespaces.length > 0 &&
-      !recallNamespaces.includes(ownerNamespace)
-    ) {
+    if (recallNamespaces.length > 0 && !recallNamespaces.includes(ownerNamespace)) {
       return null;
     }
 
@@ -349,7 +418,7 @@ export class QmdResultResolver {
   async storageForAbsoluteQmdResultPath(
     resultPath: string,
     fallbackStorage: StorageManager,
-    recallNamespaces: readonly string[] = [],
+    recallNamespaces: readonly string[] = []
   ): Promise<{ storage: StorageManager; dir: string; namespace: string } | null> {
     const resolvedPath = path.resolve(resultPath);
     const config = this.getConfig();
@@ -365,10 +434,7 @@ export class QmdResultResolver {
       const candidateRoot = path.resolve(storageDir);
       if (seenDirs.has(candidateRoot)) return;
       if (!isPathInsideStorageRoot(candidateRoot, resolvedPath)) return;
-      if (
-        candidateRoot === memoryRoot &&
-        isPathInsideStorageRoot(namespacesRoot, resolvedPath)
-      ) {
+      if (candidateRoot === memoryRoot && isPathInsideStorageRoot(namespacesRoot, resolvedPath)) {
         return;
       }
       seenDirs.add(candidateRoot);
@@ -376,9 +442,7 @@ export class QmdResultResolver {
     };
 
     const fallbackNamespace =
-      fallbackStorageDir !== null
-        ? this.storageDirNamespace(fallbackStorageDir)
-        : config.defaultNamespace;
+      fallbackStorageDir !== null ? this.storageDirNamespace(fallbackStorageDir) : config.defaultNamespace;
     maybeAddStorage(fallbackStorage, fallbackNamespace);
 
     const candidateNamespaces = new Set<string>();
@@ -391,9 +455,7 @@ export class QmdResultResolver {
       const relativeToNamespaces = path.relative(namespacesRoot, resolvedPath);
       const [namespaceSegment] = relativeToNamespaces.split(/[\\/]/);
       if (namespaceSegment) {
-        candidateNamespaces.add(
-          namespaceIdentityFromToken(namespaceSegment) ?? namespaceSegment,
-        );
+        candidateNamespaces.add(namespaceIdentityFromToken(namespaceSegment) ?? namespaceSegment);
       }
     }
     for (const policy of config.namespacePolicies ?? []) {
@@ -404,9 +466,7 @@ export class QmdResultResolver {
       if (!ns) continue;
       try {
         maybeAddStorage(await this.storageFor(ns), ns);
-      } catch {
-        continue;
-      }
+      } catch {}
     }
 
     matches.sort((a, b) => b.dir.length - a.dir.length);

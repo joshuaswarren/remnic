@@ -9,6 +9,7 @@ import { EngramAccessInputError, EngramAccessService } from "../src/access-servi
 import { runMemoryGovernance } from "../src/maintenance/memory-governance.ts";
 import { rebuildMemoryProjection } from "../src/maintenance/rebuild-memory-projection.ts";
 import { getMemoryProjectionPath } from "../src/memory-projection-store.js";
+import { openBetterSqlite3 } from "../src/runtime/better-sqlite.js";
 import { getObjectiveStateStoreStatus } from "../src/objective-state.js";
 import {
   keyring,
@@ -2192,6 +2193,38 @@ test("access service review dispositions reject namespaces outside the trusted t
   );
 });
 
+test("access service review dispositions reject private support passport records", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-access-private-disposition-"));
+  try {
+    await writeText(
+      memoryDir,
+      "preferences/2026-03-08/passport-card.md",
+      memoryDoc("passport-card", "Owner-controlled support text.", [
+        'tags: ["support-passport-card"]',
+        "status: pending_review",
+      ]),
+    );
+    const storage = new StorageManager(memoryDir);
+    const service = new EngramAccessService({
+      config: { memoryDir, namespacesEnabled: false, defaultNamespace: "global" },
+      getStorage: async () => storage,
+    } as any);
+
+    await assert.rejects(
+      () => service.reviewDisposition({
+        memoryId: "passport-card",
+        status: "active",
+        reasonCode: "operator_confirmed",
+      }),
+      (error: unknown) =>
+        error instanceof EngramAccessInputError && error.message === "memory not found: passport-card",
+    );
+    assert.equal((await storage.getMemoryById("passport-card"))?.frontmatter.status, "pending_review");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("access service suggestionSubmit queues pending review memories", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-service-suggestion-"));
   try {
@@ -2346,6 +2379,64 @@ test("access service browses memories, lists entities, and applies review dispos
   }
 });
 
+test("access service hides private memory timelines when the projection is stale", { skip: skipUnlessBetterSqlite3() }, async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-access-timeline-private-"));
+  try {
+    const relativePath = "preferences/2026-03-08/passport-card.md";
+    await writeText(
+      memoryDir,
+      relativePath,
+      memoryDoc("passport-card", "Owner-controlled support text.", ['tags: ["support-passport-card"]']),
+    );
+    await rebuildMemoryProjection({ memoryDir, dryRun: false });
+    const projection = openBetterSqlite3(getMemoryProjectionPath(memoryDir));
+    try {
+      projection.prepare("UPDATE memory_current SET tags_json = ? WHERE memory_id = ?")
+        .run('["public"]', "passport-card");
+    } finally {
+      projection.close();
+    }
+
+    const storage = new StorageManager(memoryDir);
+    const service = new EngramAccessService({
+      config: {
+        memoryDir,
+        namespacesEnabled: false,
+        defaultNamespace: "global",
+      },
+      getStorage: async () => storage,
+    } as any);
+
+    assert.deepEqual(await service.memoryTimeline("passport-card"), {
+      found: false,
+      namespace: "global",
+      count: 0,
+      timeline: [],
+    });
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("access service keeps cold-memory timelines visible", { skip: skipUnlessBetterSqlite3() }, async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-access-timeline-cold-"));
+  try {
+    await writeText(memoryDir, "cold/facts/2026-03-08/cold-fact.md", memoryDoc("cold-fact", "Cold public memory."));
+    await rebuildMemoryProjection({ memoryDir, dryRun: false });
+    const storage = new StorageManager(memoryDir);
+    const service = new EngramAccessService({
+      config: { memoryDir, namespacesEnabled: false, defaultNamespace: "global" },
+      getStorage: async () => storage,
+    } as any);
+
+    const result = await service.memoryTimeline("cold-fact");
+    assert.equal(result.found, true);
+    assert.ok(result.count > 0);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("access service uses projection-backed browse filters, including archived memories", { skip: skipUnlessBetterSqlite3() }, async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-service-projection-browse-"));
   try {
@@ -2361,6 +2452,19 @@ test("access service uses projection-backed browse filters, including archived m
         "fact-archived",
         "Retired browser coverage memory for the archived projection path.",
         ['entityRef: person-retired', 'archivedAt: 2026-03-08T02:00:00.000Z', 'tags: ["legacy", "browser"]'],
+      ),
+    );
+    await writeText(
+      memoryDir,
+      "archive/2026-03-08/private-attribute-only.md",
+      memoryDoc(
+        "private-attribute-only",
+        "Retired browser coverage text that must remain private.",
+        [
+          'archivedAt: 2026-03-08T02:00:00.000Z',
+          'tags: ["public"]',
+          `structuredAttributes: ${JSON.stringify({ "support-passport-owner": "private-owner" })}`,
+        ],
       ),
     );
 

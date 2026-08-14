@@ -1,26 +1,27 @@
 import assert from "node:assert/strict";
-import test from "node:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import test from "node:test";
 
 import { parseConfig } from "../config.js";
 import { StorageManager } from "../index.js";
-import {
-  QmdResultResolver,
-  qmdResultPathCandidates,
-} from "./qmd-result-resolver.js";
+import { QmdResultResolver, qmdCollectionPathParts, qmdResultPathCandidates } from "./qmd-result-resolver.js";
+
+test("qmdCollectionPathParts normalizes QMD URIs", () => {
+  assert.deepEqual(qmdCollectionPathParts("qmd://openclaw-engram/facts/private.md"), {
+    collection: "openclaw-engram",
+    relativePath: "facts/private.md",
+  });
+});
 
 test("qmdResultPathCandidates probes the facts/ fallback for relative date paths", () => {
   const root = path.join(os.tmpdir(), "remnic-resolver-rel");
   const candidates = qmdResultPathCandidates(root, "2026-07-21/fact-x.md");
   assert.deepEqual(
     candidates.sort(),
-    [
-      path.join(root, "2026-07-21", "fact-x.md"),
-      path.join(root, "facts", "2026-07-21", "fact-x.md"),
-    ].sort(),
-    "relative date paths probe both the literal and the facts/ location",
+    [path.join(root, "2026-07-21", "fact-x.md"), path.join(root, "facts", "2026-07-21", "fact-x.md")].sort(),
+    "relative date paths probe both the literal and the facts/ location"
   );
 });
 
@@ -31,7 +32,7 @@ test("qmdResultPathCandidates probes the facts/ fallback for absolute date paths
   assert.deepEqual(
     candidates.sort(),
     [absolute, path.join(root, "facts", "2026-07-21", "fact-x.md")].sort(),
-    "pre-absolutized date paths must probe the facts/ location too",
+    "pre-absolutized date paths must probe the facts/ location too"
   );
 });
 
@@ -41,7 +42,7 @@ test("qmdResultPathCandidates keeps non-date absolute paths literal", () => {
   assert.deepEqual(
     qmdResultPathCandidates(root, absolute),
     [absolute],
-    "non-date absolute paths must not grow a facts/ variant",
+    "non-date absolute paths must not grow a facts/ variant"
   );
 });
 
@@ -51,7 +52,7 @@ test("qmdResultPathCandidates rejects absolute paths outside the storage root", 
   assert.deepEqual(
     qmdResultPathCandidates(root, outside),
     [],
-    "containment must drop escaping paths, including their facts/ variant",
+    "containment must drop escaping paths, including their facts/ variant"
   );
 });
 
@@ -77,7 +78,7 @@ test("readQmdResultMemory resolves an absolute date path whose file lives under 
         "The storefront manages a uniqueId cookie with a 90-day expiration.",
         "",
       ].join("\n"),
-      "utf8",
+      "utf8"
     );
 
     const config = parseConfig({ memoryDir: dir });
@@ -97,6 +98,206 @@ test("readQmdResultMemory resolves an absolute date path whose file lives under 
     assert.ok(memory, "the memory must resolve via the facts/ fallback");
     assert.equal(memory.frontmatter.id, "fact-cookie-note");
     assert.equal(path.resolve(memory.path), path.resolve(factPath));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("private-result filtering can preserve unresolved custom-collection hits", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-resolver-custom-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const config = parseConfig({ memoryDir: dir });
+    const resolver = new QmdResultResolver({
+      getConfig: () => config,
+      storageFor: async () => storage,
+      storageDirNamespace: () => config.defaultNamespace,
+      qmdCollectionNamespaceFromPrefix: () => null,
+      namespaceFromPath: () => config.defaultNamespace,
+    });
+    const result = { docid: "external", path: "custom-collection/page.md", snippet: "page", score: 1 };
+
+    const privateDir = path.join(dir, "preferences");
+    await mkdir(privateDir, { recursive: true });
+    await writeFile(
+      path.join(privateDir, "private.md"),
+      [
+        "---",
+        "id: private",
+        "category: preference",
+        "created: 2026-08-13T00:00:00.000Z",
+        "updated: 2026-08-13T00:00:00.000Z",
+        "status: active",
+        "tags:",
+        "  - support-passport-card",
+        "---",
+        "",
+        "Private support card.",
+        "",
+      ].join("\n"),
+      "utf8"
+    );
+
+    assert.deepEqual(await resolver.filterPrivateSearchResults([result], storage), [result]);
+    const qualifiedPrivate = {
+      ...result,
+      path: "custom-collection/preferences/private.md",
+      snippet: "Private support card.",
+    };
+    assert.deepEqual(await resolver.filterPrivateSearchResults([qualifiedPrivate], storage), []);
+    const configured = { ...result, path: `${config.qmdCollection}/page.md` };
+    assert.deepEqual(await resolver.filterPrivateSearchResults([configured], storage), []);
+    assert.deepEqual(await resolver.filterPrivateSearchResults([configured], storage, [], true), [configured]);
+    const externalAbsolute = { ...result, path: path.join(os.tmpdir(), "external-collection", "page.md") };
+    assert.deepEqual(await resolver.filterPrivateSearchResults([externalAbsolute], storage), [externalAbsolute]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("private-result filtering distinguishes custom category paths from explicit internal collections", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-resolver-internal-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const config = parseConfig({ memoryDir: dir });
+    const resolver = new QmdResultResolver({
+      getConfig: () => config,
+      storageFor: async () => storage,
+      storageDirNamespace: () => config.defaultNamespace,
+      qmdCollectionNamespaceFromPrefix: () => null,
+      namespaceFromPath: () => config.defaultNamespace,
+    });
+    for (const root of [
+      "activity",
+      "archive",
+      "artifacts",
+      "cold",
+      "entities",
+      "identity",
+      "state",
+      "summaries",
+      "transcripts",
+    ]) {
+      const result = { docid: root, path: `${root}/missing.md`, snippet: "private", score: 1 };
+      assert.deepEqual(await resolver.filterPrivateSearchResults([result], storage), []);
+      assert.deepEqual(await resolver.filterPrivateSearchResults([result], storage, [], true), [result]);
+    }
+    const explicitInternal = {
+      docid: "internal",
+      path: `qmd://${config.qmdCollection}/facts/missing.md`,
+      snippet: "private",
+      score: 1,
+    };
+    assert.deepEqual(await resolver.filterPrivateSearchResults([explicitInternal], storage, [], true), []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("private-result filtering resolves QMD URIs before checking passport privacy", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-resolver-qmd-uri-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const factDir = path.join(dir, "facts");
+    await mkdir(factDir, { recursive: true });
+    await writeFile(
+      path.join(factDir, "private.md"),
+      [
+        "---",
+        "id: private",
+        "category: preference",
+        "created: 2026-08-13T00:00:00.000Z",
+        "updated: 2026-08-13T00:00:00.000Z",
+        "status: active",
+        "tags:",
+        "  - support-passport-card",
+        "---",
+        "",
+        "Private support card.",
+        "",
+      ].join("\n"),
+      "utf8"
+    );
+    const config = parseConfig({ memoryDir: dir });
+    const resolver = new QmdResultResolver({
+      getConfig: () => config,
+      storageFor: async () => storage,
+      storageDirNamespace: () => config.defaultNamespace,
+      qmdCollectionNamespaceFromPrefix: () => null,
+      namespaceFromPath: () => config.defaultNamespace,
+    });
+    const result = {
+      docid: "private",
+      path: `qmd://${config.qmdCollection}/facts/private.md`,
+      snippet: "Private support card.",
+      score: 1,
+    };
+
+    assert.deepEqual(await resolver.filterPrivateSearchResults([result], storage), []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("private-result filtering resolves bounded batches and reuses prefix results", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-resolver-batch-"));
+  try {
+    let activeReads = 0;
+    let maximumReads = 0;
+    const readCounts = new Map<string, number>();
+    const storage = {
+      dir,
+      async readMemoryByPath(filePath: string) {
+        const id = path.basename(filePath, ".md");
+        readCounts.set(id, (readCounts.get(id) ?? 0) + 1);
+        activeReads += 1;
+        maximumReads = Math.max(maximumReads, activeReads);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        activeReads -= 1;
+        return {
+          path: filePath,
+          content: `content for ${id}`,
+          frontmatter: {
+            id,
+            category: "fact",
+            created: "2026-08-13T00:00:00.000Z",
+            updated: "2026-08-13T00:00:00.000Z",
+            status: "active",
+            tags: id === "memory-0" ? ["support-passport-card"] : [],
+          },
+        };
+      },
+    } as unknown as StorageManager;
+    const config = parseConfig({ memoryDir: dir });
+    const resolver = new QmdResultResolver({
+      getConfig: () => config,
+      storageFor: async () => storage,
+      storageDirNamespace: () => config.defaultNamespace,
+      qmdCollectionNamespaceFromPrefix: () => null,
+      namespaceFromPath: () => config.defaultNamespace,
+    });
+    const results = Array.from({ length: 20 }, (_, index) => ({
+      docid: `memory-${index}`,
+      path: `facts/memory-${index}.md`,
+      snippet: "candidate",
+      score: 1,
+    }));
+    const visibilityCache = new Map<string, boolean>();
+
+    const first = await resolver.filterPrivateSearchResults(results.slice(0, 16), storage, [], false, visibilityCache);
+    const second = await resolver.filterPrivateSearchResults(results, storage, [], false, visibilityCache);
+
+    assert.equal(first.length, 15);
+    assert.equal(second.length, 19);
+    assert.equal(maximumReads, 16);
+    assert.equal(
+      [...readCounts.values()].reduce((total, count) => total + count, 0),
+      20
+    );
+    assert.equal(readCounts.get("memory-0"), 1);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

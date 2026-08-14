@@ -40,6 +40,7 @@ function memoryDoc(options: {
   confidenceTier?: string;
   entityRef?: string;
   tags?: string[];
+  structuredAttributes?: Record<string, string>;
 }): string {
   return [
     "---",
@@ -51,6 +52,9 @@ function memoryDoc(options: {
     `confidence: ${options.confidence ?? 0.8}`,
     `confidenceTier: ${options.confidenceTier ?? "implied"}`,
     `tags: [${(options.tags ?? ["projection"]).map((tag) => `"${tag}"`).join(", ")}]`,
+    ...(options.structuredAttributes
+      ? [`structuredAttributes: ${JSON.stringify(options.structuredAttributes)}`]
+      : []),
     ...(options.entityRef ? [`entityRef: ${options.entityRef}`] : []),
     "---",
     "",
@@ -233,6 +237,46 @@ test("rebuildMemoryProjection includes hot cold and archived memories", async ()
     assert.ok(readProjectedMemoryState(memoryDir, "fact-hot"));
     assert.ok(readProjectedMemoryState(memoryDir, "fact-cold"));
     assert.ok(readProjectedMemoryState(memoryDir, "fact-archived"));
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("projected browse excludes support passport records before pagination", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-memory-projection-private-"));
+  try {
+    for (const [id, tag] of [
+      ["card", "support-passport-card"],
+      ["audit", "support-passport-audit"],
+      ["near-card", "support-passport-card-extra"],
+      ["public", "public"],
+    ] as const) {
+      await writeText(
+        memoryDir,
+        `facts/2026-03-08/${id}.md`,
+        memoryDoc({ id, content: `${id} content`, tags: [tag] }),
+      );
+    }
+    await writeText(
+      memoryDir,
+      "facts/2026-03-08/attribute-only.md",
+      memoryDoc({
+        id: "attribute-only",
+        content: "attribute-only content",
+        tags: ["public"],
+        structuredAttributes: { "support-passport-owner": "private-owner" },
+      }),
+    );
+    await rebuildMemoryProjection({ memoryDir, dryRun: false });
+
+    const browse = readProjectedMemoryBrowse(memoryDir, {
+      excludePrivateRecords: true,
+      limit: 1,
+      offset: 0,
+    });
+
+    assert.equal(browse?.total, 2);
+    assert.deepEqual(browse?.memories.map((memory) => memory.id), ["near-card"]);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

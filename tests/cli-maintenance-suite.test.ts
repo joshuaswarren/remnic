@@ -16,6 +16,8 @@ import {
 } from "../src/cli.js";
 import { StorageManager } from "../src/storage.js";
 import { isEncryptedFile, SECURE_STORE_ENVELOPE_OVERHEAD_BYTES } from "../src/secure-store/index.js";
+import { getMemoryProjectionPath } from "../src/memory-projection-store.js";
+import { openBetterSqlite3 } from "../src/runtime/better-sqlite.js";
 import { NamespaceStorageRouter } from "../src/namespaces/storage.js";
 import type { PluginConfig } from "../src/types.js";
 
@@ -423,6 +425,32 @@ alpha
     memoryId: "fact-1",
   });
   assert.deepEqual(rows.map((row) => row.eventType), ["created", "updated"]);
+});
+
+test("memory-timeline CLI hides private records when the projection is stale", { skip: skipUnlessBetterSqlite3() }, async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-cli-memory-timeline-private-"));
+  try {
+    const relativePath = "preferences/2026-03-08/passport-card.md";
+    await writeText(
+      memoryDir,
+      relativePath,
+      `---\nid: passport-card\ncategory: preference\ncreated: 2026-03-08T00:00:00.000Z\n` +
+      `updated: 2026-03-08T01:00:00.000Z\nsource: test\nconfidence: 0.8\n` +
+      `confidenceTier: explicit\ntags: ["support-passport-card"]\n---\n\nOwner-controlled support text.\n`,
+    );
+    await runRebuildMemoryProjectionCliCommand({ memoryDir, write: true });
+    const projection = openBetterSqlite3(getMemoryProjectionPath(memoryDir));
+    try {
+      projection.prepare("UPDATE memory_current SET tags_json = ? WHERE memory_id = ?")
+        .run('["public"]', "passport-card");
+    } finally {
+      projection.close();
+    }
+
+    assert.deepEqual(await runMemoryTimelineCliCommand({ memoryDir, memoryId: "passport-card" }), []);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
 });
 
 test("verify-memory-projection and repair-memory-projection CLI wrappers detect and repair drift", { skip: skipUnlessBetterSqlite3() }, async () => {

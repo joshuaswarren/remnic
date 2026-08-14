@@ -1,8 +1,9 @@
 import { resolveNamespaceCapabilities } from "./capabilities.js";
 import { canReadNamespace, defaultNamespaceForPrincipal, resolvePrincipal } from "./namespaces/principal.js";
-import type { MemoryFile, PluginConfig } from "./types.js";
+import type { MemoryFile, PluginConfig, QmdSearchResult } from "./types.js";
 import { collapseWhitespace, truncateCodePointSafe } from "./whitespace.js";
 import { isHandleToken } from "./recall-handles.js";
+import { isSupportPassportPrivateMemory } from "./support-passport/card-projection.js";
 
 export interface ActiveMemoryMetadata {
   type?: "fact" | "preference";
@@ -42,6 +43,16 @@ interface ActiveMemoryScopedOrchestrator {
   config?: PluginConfig;
   resolvePrincipal?: (sessionKey?: string) => string | undefined;
   resolveSelfNamespace?: (sessionKey?: string) => string;
+  getStorageForNamespace?: (namespace: string) => Promise<{
+    readMemoryByPath?: (path: string) => Promise<MemoryFile | null>;
+    getMemoryById?: (id: string) => Promise<MemoryFile | null>;
+  }>;
+  filterPrivateSearchResults?: (
+    results: QmdSearchResult[],
+    namespaces?: readonly string[],
+    preserveUnresolved?: boolean,
+    visibilityCache?: Map<string, boolean>,
+  ) => Promise<QmdSearchResult[]>;
 }
 
 type ActiveMemorySearchCandidate = {
@@ -55,6 +66,54 @@ type ActiveMemorySearchCandidate = {
 
 function isArtifactPath(value: string | undefined): boolean {
   return typeof value === "string" && /(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(value);
+}
+
+async function filterVisibleActiveMemoryCandidates(
+  orchestrator: ActiveMemoryScopedOrchestrator,
+  namespace: string,
+  storage: Awaited<ReturnType<NonNullable<ActiveMemoryScopedOrchestrator["getStorageForNamespace"]>>> | undefined,
+  candidates: ActiveMemorySearchCandidate[],
+  visibilityCache?: Map<string, boolean>,
+): Promise<ActiveMemorySearchCandidate[]> {
+  const visible = new Set<ActiveMemorySearchCandidate>();
+  const pathCandidates = candidates.filter(
+    (candidate) => typeof candidate.path === "string" && !isArtifactPath(candidate.path),
+  );
+  if (pathCandidates.length > 0 && typeof orchestrator.filterPrivateSearchResults === "function") {
+    const qmdCandidates = pathCandidates.map((candidate): QmdSearchResult => ({
+      docid: candidate.id ?? candidate.path!,
+      path: candidate.path!,
+      snippet: candidate.snippet ?? candidate.text ?? "",
+      score: typeof candidate.score === "number" ? candidate.score : 0,
+      namespace,
+    }));
+    const filtered = await orchestrator.filterPrivateSearchResults(
+      qmdCandidates,
+      [namespace],
+      false,
+      visibilityCache,
+    );
+    const visibleKeys = new Set(filtered.map((candidate) => `${candidate.docid}\0${candidate.path}`));
+    qmdCandidates.forEach((candidate, index) => {
+      if (visibleKeys.has(`${candidate.docid}\0${candidate.path}`)) visible.add(pathCandidates[index]!);
+    });
+  }
+
+  const idCandidates = candidates.filter(
+    (candidate) => candidate.path === undefined && typeof candidate.id === "string",
+  );
+  if (storage) {
+    const idVisibility = await Promise.all(
+      idCandidates.map(async (candidate) => {
+        const memory = await storage.getMemoryById?.(candidate.id!);
+        return memory !== null && memory !== undefined && !isSupportPassportPrivateMemory(memory);
+      }),
+    );
+    idCandidates.forEach((candidate, index) => {
+      if (idVisibility[index]) visible.add(candidate);
+    });
+  }
+  return candidates.filter((candidate) => visible.has(candidate));
 }
 
 function clampLimit(value: number | undefined): number {
@@ -127,6 +186,8 @@ export async function recallForActiveMemory(
     config?: PluginConfig;
     resolvePrincipal?: (sessionKey?: string) => string | undefined;
     resolveSelfNamespace?: (sessionKey?: string) => string;
+    getStorageForNamespace?: ActiveMemoryScopedOrchestrator["getStorageForNamespace"];
+    filterPrivateSearchResults?: ActiveMemoryScopedOrchestrator["filterPrivateSearchResults"];
     searchAcrossNamespaces: (params: {
       query: string;
       maxResults?: number;
@@ -137,7 +198,6 @@ export async function recallForActiveMemory(
   params: ActiveMemoryRecallParams,
 ): Promise<ActiveMemorySearchOutput> {
   const limit = clampLimit(params.limit);
-  const requestedResults = Math.min(200, limit + 20);
   const snippetMaxChars =
     typeof params.snippetMaxChars === "number" && Number.isFinite(params.snippetMaxChars)
       ? Math.max(1, Math.min(4000, Math.floor(params.snippetMaxChars)))
@@ -148,13 +208,29 @@ export async function recallForActiveMemory(
     typeof params.filters?.namespace === "string" ? params.filters.namespace : undefined,
   );
 
-  const raw = await orchestrator.searchAcrossNamespaces({
-    query: params.query,
-    maxResults: requestedResults,
-    namespaces: [namespace],
-    mode: "search",
-  });
-  const visible = raw.filter((candidate) => !isArtifactPath(candidate.path));
+  const storage = await orchestrator.getStorageForNamespace?.(namespace);
+  const candidateCap = 25_000;
+  let requestedResults = Math.min(candidateCap, limit + 20);
+  let raw: ActiveMemorySearchCandidate[] = [];
+  let visible: ActiveMemorySearchCandidate[] = [];
+  const privateVisibilityCache = new Map<string, boolean>();
+  for (;;) {
+    raw = await orchestrator.searchAcrossNamespaces({
+      query: params.query,
+      maxResults: requestedResults,
+      namespaces: [namespace],
+      mode: "search",
+    });
+    visible = await filterVisibleActiveMemoryCandidates(
+      orchestrator,
+      namespace,
+      storage,
+      raw,
+      privateVisibilityCache,
+    );
+    if (visible.length > limit || raw.length < requestedResults || requestedResults >= candidateCap) break;
+    requestedResults = Math.min(candidateCap, requestedResults * 2);
+  }
 
   return {
     results: visible.slice(0, limit).map((candidate, index) => ({
@@ -163,7 +239,7 @@ export async function recallForActiveMemory(
       text: truncateSnippet(candidate.snippet ?? candidate.text ?? "", snippetMaxChars),
       metadata: pickMetadata(candidate.metadata),
     })),
-    truncated: visible.length > limit,
+    truncated: visible.length > limit || (raw.length === requestedResults && requestedResults >= candidateCap),
   };
 }
 
@@ -231,7 +307,7 @@ export async function getMemoryForActiveMemory(
     }
   }
   const memory = await storage?.getMemoryById?.(resolvedId);
-  if (!memory) return { error: "not_found" };
+  if (!memory || isSupportPassportPrivateMemory(memory)) return { error: "not_found" };
   return {
     id: resolvedId,
     text: collapseWhitespace(memory.content),

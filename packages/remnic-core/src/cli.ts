@@ -236,6 +236,9 @@ import {
 import { resolveHomeDir } from "./runtime/env.js";
 import { expandTildePath } from "./utils/path.js";
 import { RECALL_FALLBACK_DIRS } from "./utils/category-dir.js";
+import {
+  isSupportPassportPrivateMemory,
+} from "./support-passport/card-projection.js";
 import { assertPathInsideRoot } from "./utils/path-containment.js";
 import { convertMemoriesToRecords } from "./training-export/converter.js";
 import { parseStrictCliDate as parseStrictCliDateShared } from "./training-export/date-parse.js";
@@ -1066,6 +1069,8 @@ export async function runMemoryTimelineCliCommand(
   options: MemoryTimelineCliCommandOptions,
 ) {
   const storage = new (await import("./storage.js")).StorageManager(options.memoryDir);
+  const memory = await storage.getMemoryByIdIncludingArchived(options.memoryId);
+  if (!memory || isSupportPassportPrivateMemory(memory)) return [];
   return storage.getMemoryTimeline(options.memoryId, options.limit);
 }
 
@@ -1382,7 +1387,7 @@ export async function runVerifiedRecallSearchCliCommand(options: {
 }
 
 export function isNormalRetrievalVisibleMemory(memory: MemoryFile): boolean {
-  return memory.frontmatter.status !== "forgotten";
+  return memory.frontmatter.status !== "forgotten" && !isSupportPassportPrivateMemory(memory);
 }
 
 export async function filterNormalMemorySearchResults(

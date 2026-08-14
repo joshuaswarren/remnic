@@ -33,6 +33,7 @@ import { evaluateMemoryActionPolicy } from "../memory-action-policy.js";
 import { NamespaceStorageRouter } from "../namespaces/storage.js";
 import { namespaceCollectionName } from "../namespaces/search.js";
 import { parseMemoryActionEligibilityContext } from "../schemas.js";
+import { isSupportPassportPrivateMemory } from "../support-passport/card-projection.js";
 import type { SearchBackend } from "../search/port.js";
 import { type AccessTrackingEntry, type MemoryActionEvent, type MemoryFile, type PluginConfig, confidenceTier } from "../types.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
@@ -371,41 +372,16 @@ export class WorkspaceOpsCoordinator {
             const fullPath = path.join(dateDir, entry.name);
             try {
               assertPathInsideRoot(memoryRootReal, await realpath(fullPath), fullPath);
-              const raw = await readFile(fullPath, "utf-8");
-              const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-              if (!fmMatch) continue;
-              const fmBlock = fmMatch[1];
-              const content = fmMatch[2].trim();
-              const fm: Record<string, string> = {};
-              for (const line of fmBlock.split("\n")) {
-                const colonIdx = line.indexOf(":");
-                if (colonIdx === -1) continue;
-                fm[line.slice(0, colonIdx).trim()] = line
-                  .slice(colonIdx + 1)
-                  .trim();
-              }
-              const created = fm.created || "unknown";
-              const createdAt = parseFiniteDate(created);
+              const memory = await storage.readMemoryByPath(fullPath);
+              if (!memory || isSupportPassportPrivateMemory(memory)) continue;
+              const createdAt = parseFiniteDate(memory.frontmatter.created);
               if (
                 createdAt &&
                 formatDateInTimeZone(createdAt, timeZone) !== targetLocalDate
               ) {
                 continue;
               }
-              facts.push({
-                path: fullPath,
-                frontmatter: {
-                  id: fm.id || path.basename(entry.name, ".md"),
-                  category: (fm.category as any) || "fact",
-                  created,
-                  updated: fm.updated || created,
-                  source: fm.source || "unknown",
-                  confidence: parseFloat(fm.confidence || "0.8"),
-                  confidenceTier: (fm.confidenceTier as any) || "implied",
-                  tags: [],
-                },
-                content,
-              });
+              facts.push(memory);
             } catch {
               // Skip unreadable files
             }

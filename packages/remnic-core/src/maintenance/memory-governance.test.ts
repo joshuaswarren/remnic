@@ -51,3 +51,28 @@ test("governance restore manifest pre-marks actions applied before mutation", as
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("governance excludes support-passport private records", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-governance-passport-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    const { id } = await storage.writeMemory("preference", "Give me advance notice.", {
+      source: "support-passport",
+      tags: ["support-passport-card"],
+      confidence: 0.9,
+    });
+    await storage.updateMemoryFrontmatter(id, { verificationState: "disputed" });
+
+    const result = await runMemoryGovernance({
+      memoryDir,
+      mode: "apply",
+      now: new Date("2026-08-13T12:00:00.000Z"),
+    });
+
+    assert.equal(result.summary.scannedMemories, 0);
+    assert.deepEqual(result.proposedActions, []);
+    assert.equal((await storage.getMemoryById(id))?.frontmatter.status, "active");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

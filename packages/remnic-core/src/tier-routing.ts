@@ -1,10 +1,6 @@
+import { type LifecycleSignals, clamp01, computeLifecycleValueInputs, daysSince } from "./lifecycle.js";
+import { hasLiveSupportPassportCard } from "./support-passport/card-projection.js";
 import type { MemoryFile } from "./types.js";
-import {
-  clamp01,
-  computeLifecycleValueInputs,
-  daysSince,
-  type LifecycleSignals,
-} from "./lifecycle.js";
 
 export type MemoryTier = "hot" | "cold";
 
@@ -23,34 +19,39 @@ export interface TierTransitionDecision {
   reason: string;
 }
 
+function requiresHotTier(memory: Pick<MemoryFile, "frontmatter" | "content">): boolean {
+  return hasLiveSupportPassportCard(memory);
+}
+
 export function computeTierValueScore(
   memory: Pick<MemoryFile, "frontmatter">,
   now: Date,
-  signals?: LifecycleSignals,
+  signals?: LifecycleSignals
 ): number {
   const fm = memory.frontmatter;
   const inputs = computeLifecycleValueInputs(memory, now, signals);
   const correctionBoost = fm.category === "correction" ? 0.08 : 0;
   const confirmedBoost = fm.verificationState === "user_confirmed" ? 0.05 : 0;
 
-  const score = (inputs.confidence * 0.24)
-    + (inputs.access * 0.26)
-    + (inputs.recency * 0.2)
-    + (inputs.importance * 0.2)
-    + (inputs.feedback * 0.1)
-    + correctionBoost
-    + confirmedBoost
-    - (inputs.disputedPenalty * 0.5);
+  const score =
+    inputs.confidence * 0.24 +
+    inputs.access * 0.26 +
+    inputs.recency * 0.2 +
+    inputs.importance * 0.2 +
+    inputs.feedback * 0.1 +
+    correctionBoost +
+    confirmedBoost -
+    inputs.disputedPenalty * 0.5;
 
   return clamp01(score);
 }
 
 export function decideTierTransition(
-  memory: Pick<MemoryFile, "frontmatter">,
+  memory: Pick<MemoryFile, "frontmatter" | "content">,
   currentTier: MemoryTier,
   policy: TierRoutingPolicy,
   now: Date,
-  signals?: LifecycleSignals,
+  signals?: LifecycleSignals
 ): TierTransitionDecision {
   const valueScore = computeTierValueScore(memory, now, signals);
   if (!policy.enabled) {
@@ -60,6 +61,16 @@ export function decideTierTransition(
       valueScore,
       changed: false,
       reason: "tier_migration_disabled",
+    };
+  }
+
+  if (requiresHotTier(memory)) {
+    return {
+      currentTier,
+      nextTier: "hot",
+      valueScore,
+      changed: currentTier !== "hot",
+      reason: "support_passport_card_requires_hot_tier",
     };
   }
 

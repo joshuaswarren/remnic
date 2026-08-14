@@ -44,6 +44,7 @@ import {
 } from "../memory-projection-format.js";
 import { openBetterSqlite3 } from "../runtime/better-sqlite.js";
 import { commitPreparedFileAtomically } from "./atomic-file.js";
+import { isSupportPassportPrivateMemory } from "../support-passport/card-projection.js";
 
 export interface RebuildMemoryProjectionOptions {
   memoryDir: string;
@@ -204,6 +205,7 @@ function toCurrentStateRow(memoryDir: string, memory: MemoryFile): MemoryProject
     lastAccessed: memory.frontmatter.lastAccessed,
     tags: normalizeProjectionTags(memory.frontmatter.tags),
     preview: normalizeProjectionPreview(memory.content),
+    privateRecord: isSupportPassportPrivateMemory(memory),
   };
 }
 
@@ -406,6 +408,7 @@ function serializeCurrentStateRow(row: MemoryProjectionCurrentState): string {
     lastAccessed: row.lastAccessed ?? null,
     tags: row.tags ?? [],
     preview: row.preview ?? "",
+    privateRecord: row.privateRecord === true,
   });
 }
 
@@ -691,8 +694,7 @@ function readProjectedCurrentRows(
           memory_kind,
           access_count,
           last_accessed,
-          ${selectExpressions.tagsJson},
-          ${selectExpressions.previewText}
+          ${selectExpressions.tagsJson}, ${selectExpressions.previewText}, ${selectExpressions.privateRecord}
         FROM memory_current
       `).all() as Array<Record<string, unknown>>;
 
@@ -788,9 +790,8 @@ function writeProjectionDb(
         memory_kind,
         access_count,
         last_accessed,
-        tags_json,
-        preview_text
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        tags_json, preview_text, private_record
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const insertTimeline = db.prepare(`
@@ -899,9 +900,8 @@ function writeProjectionDb(
           row.confidenceTier,
           row.memoryKind ?? null,
           row.accessCount ?? null,
-          row.lastAccessed ?? null,
-          JSON.stringify(row.tags ?? []),
-          row.preview ?? "",
+          row.lastAccessed ?? null, JSON.stringify(row.tags ?? []), row.preview ?? "",
+          row.privateRecord === true ? 1 : 0,
         );
       }
 

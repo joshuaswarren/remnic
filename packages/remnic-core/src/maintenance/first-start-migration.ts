@@ -34,6 +34,7 @@ import {
   applyUtilityPromotionRuntimePolicy,
   loadUtilityRuntimeValues,
 } from "../utility-runtime.js";
+import { excludeSupportPassportPrivateMemories } from "../support-passport/card-projection.js";
 
 export const FIRST_START_DEMOTION_CAP = 50;
 export const LIFECYCLE_INIT_DONE_MARKER = ".lifecycle-init-done";
@@ -243,7 +244,7 @@ export async function runFirstStartMigration(
     return abortedResult();
   }
 
-  const hotMemories = await storage.readAllMemories();
+  const hotMemories = excludeSupportPassportPrivateMemories(await storage.readAllMemories());
   if (signal?.aborted) {
     return abortedResult();
   }

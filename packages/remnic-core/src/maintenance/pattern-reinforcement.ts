@@ -35,6 +35,7 @@
 import { clusterByKey } from "../procedural/reinforcement-core.js";
 import { buildRetiredFactTombstoneInputs, type TombstoneReason, type TombstoneCreatedBy } from "../lifecycle/tombstones.js";
 import { supersessionKeysForFact } from "../temporal-supersession.js";
+import { excludeSupportPassportPrivateMemories } from "../support-passport/card-projection.js";
 import type {
   MemoryFile,
   MemoryFrontmatter,
@@ -225,7 +226,7 @@ export async function runPatternReinforcement(
     return emptyResult();
   }
 
-  const memories = await storage.readAllMemories();
+  const memories = excludeSupportPassportPrivateMemories(await storage.readAllMemories());
 
   // Cluster across BOTH active and already-superseded memories so a
   // canonical that has previously absorbed duplicates still gets

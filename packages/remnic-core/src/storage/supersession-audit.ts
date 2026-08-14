@@ -2,6 +2,7 @@ import { readdir } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import path from "node:path";
 
+import { stripAttributesSuffix } from "../structured-attributes.js";
 import type { MemoryFile } from "../types.js";
 import { isErrnoCode } from "../utils/errno.js";
 
@@ -15,6 +16,7 @@ export async function hasSupersessionAudit(
   oldMemoryId: string,
   newMemoryId: string,
   auditBody: string,
+  structuredAttributes?: Record<string, string>
 ): Promise<boolean> {
   let entries: Dirent[];
   try {
@@ -32,7 +34,11 @@ export async function hasSupersessionAudit(
       (memory.frontmatter.sourceMemoryId === oldMemoryId ||
         (memory.frontmatter.sourceMemoryId === undefined && memory.frontmatter.lineage?.includes(oldMemoryId))) &&
       memory.frontmatter.lineage?.includes(newMemoryId) &&
-      memory.content === auditBody
+      stripAttributesSuffix(memory.content) === auditBody &&
+      (structuredAttributes === undefined ||
+        Object.entries(structuredAttributes).every(
+          ([key, value]) => memory.frontmatter.structuredAttributes?.[key] === value
+        ))
     ) {
       return true;
     }

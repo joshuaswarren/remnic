@@ -72,6 +72,30 @@ describe("convertMemoriesToRecords", () => {
     assert.deepEqual(records[0].sourceIds, ["mem-001"]);
   });
 
+  it("excludes private support passport cards and audits", async () => {
+    const dir = await makeTmpDir();
+    await writeSyntheticMemory(dir, "facts", "public.md", {
+      id: "public",
+      content: "This memory can be exported.",
+    });
+    await writeSyntheticMemory(dir, "preferences", "card.md", {
+      id: "card",
+      category: "preference",
+      tags: ["support-passport-card"],
+      content: "Private support card.",
+    });
+    await writeSyntheticMemory(dir, "corrections", "audit.md", {
+      id: "audit",
+      category: "correction",
+      tags: ["support-passport-audit"],
+      content: "Private support card audit.",
+    });
+
+    const records = await convertMemoriesToRecords({ memoryDir: dir });
+
+    assert.deepEqual(records.map((record) => record.sourceIds?.[0]), ["public"]);
+  });
+
   it("filters by minConfidence", async () => {
     const dir = await makeTmpDir();
     await writeSyntheticMemory(dir, "facts", "high.md", {

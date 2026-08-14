@@ -1140,6 +1140,7 @@ test("#1501 implicit memorySearch honors active scope profile readOrder", async 
     config,
     qmd: { isAvailable: () => true },
     getStorage: async () => ({ dir: config.memoryDir } as StorageManager),
+    filterPrivateSearchResults: async (results: unknown[]) => results,
     searchAcrossNamespaces: async (options: { namespaces: string[] }) => {
       searchedNamespaces = options.namespaces;
       return [];
@@ -1193,6 +1194,7 @@ test("#1501 memorySearch collection names stay constrained to active scope profi
     config,
     qmd: { isAvailable: () => true },
     getStorage: async () => ({ dir: config.memoryDir } as StorageManager),
+    filterPrivateSearchResults: async (results: unknown[]) => results,
     searchAcrossNamespaces: async (options: { namespaces: string[] }) => {
       searchedNamespaces = options.namespaces;
       return [];

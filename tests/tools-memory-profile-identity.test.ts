@@ -20,6 +20,15 @@ function buildHarness(overrides?: {
     score: number;
     snippet?: string;
   }>>;
+  filterPrivateSearchResults?: (results: Array<{
+    path: string;
+    score: number;
+    snippet?: string;
+  }>) => Promise<Array<{
+    path: string;
+    score: number;
+    snippet?: string;
+  }>>;
   searchAcrossNamespaces?: (params: {
     query: string;
     namespaces?: string[];
@@ -116,6 +125,8 @@ function buildHarness(overrides?: {
       namespaceSearchCalls.push(params);
       return overrides?.searchAcrossNamespaces?.(params) ?? [];
     },
+    filterPrivateSearchResults:
+      overrides?.filterPrivateSearchResults ?? (async (results: unknown[]) => results),
   };
 
   registerTools(api as any, orchestrator as any);
@@ -194,4 +205,94 @@ test("memory_search avoids pre-filter global caps for namespace requests", async
 
   const text = toolText(result);
   assert.match(text, /shared\.md/);
+});
+
+test("memory_search refills after private records consume the first result window", async () => {
+  const calls: number[] = [];
+  const all = [
+    { path: "/tmp/private-1.md", score: 1, snippet: "private" },
+    { path: "/tmp/private-2.md", score: 0.9, snippet: "private" },
+    { path: "/tmp/public-1.md", score: 0.8, snippet: "public one" },
+    { path: "/tmp/public-2.md", score: 0.7, snippet: "public two" },
+  ];
+  const { tools } = buildHarness({
+    searchGlobal: async (_query, maxResults) => {
+      calls.push(maxResults ?? 0);
+      return all.slice(0, maxResults);
+    },
+    filterPrivateSearchResults: async (results) =>
+      results.filter((result) => !result.path.includes("private")),
+  });
+  const tool = tools.get("memory_search");
+  assert.ok(tool);
+
+  const result = await tool.execute("tc6", {
+    query: "support",
+    collection: "global",
+    maxResults: 2,
+  });
+
+  assert.deepEqual(calls, [2, 18]);
+  assert.match(toolText(result), /public-1\.md/);
+  assert.match(toolText(result), /public-2\.md/);
+});
+
+test("memory_search refills beyond 500 private records", async () => {
+  const calls: number[] = [];
+  const privateResults = Array.from({ length: 501 }, (_, index) => ({
+    path: `/tmp/private-${index}.md`,
+    score: 1 - index / 1_000,
+    snippet: "private",
+  }));
+  const all = [
+    ...privateResults,
+    { path: "/tmp/public-after-hidden.md", score: 0.1, snippet: "public" },
+  ];
+  const { tools } = buildHarness({
+    searchGlobal: async (_query, maxResults) => {
+      calls.push(maxResults ?? 0);
+      return all.slice(0, maxResults);
+    },
+    filterPrivateSearchResults: async (results) =>
+      results.filter((result) => !result.path.includes("private")),
+  });
+  const tool = tools.get("memory_search");
+  assert.ok(tool);
+
+  const result = await tool.execute("tc7", {
+    query: "support",
+    collection: "global",
+    maxResults: 1,
+  });
+
+  assert.ok(calls.some((limit) => limit > 500));
+  assert.match(toolText(result), /public-after-hidden\.md/);
+});
+
+test("memory_search stops at the shared candidate safety bound", async () => {
+  const calls: number[] = [];
+  const { tools } = buildHarness({
+    searchGlobal: async (_query, maxResults) => {
+      const limit = maxResults ?? 0;
+      calls.push(limit);
+      return Array.from({ length: limit }, (_, index) => ({
+        path: `/tmp/private-${index}.md`,
+        score: 1,
+        snippet: "private",
+      }));
+    },
+    filterPrivateSearchResults: async () => [],
+  });
+  const tool = tools.get("memory_search");
+  assert.ok(tool);
+
+  const result = await tool.execute("tc8", {
+    query: "support",
+    collection: "global",
+    maxResults: 1,
+  });
+
+  assert.equal(calls.at(-1), 25_000);
+  assert.ok(calls.length < 20);
+  assert.match(toolText(result), /No memories found/);
 });

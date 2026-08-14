@@ -86,6 +86,13 @@ test("#1672 item 2: isEligibleCorrectionCandidate rejects archived memory with n
   assert.equal(isEligibleCorrectionCandidate(m), false);
 });
 
+test("support passport records are not correction candidates", () => {
+  for (const tag of ["support-passport-card", "support-passport-audit"]) {
+    const memory = fakeMemoryFile({ id: tag, status: "active", tags: [tag] });
+    assert.equal(isEligibleCorrectionCandidate(memory), false);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // item 3: contentHash recomputed on edit
 // ---------------------------------------------------------------------------

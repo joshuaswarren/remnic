@@ -562,6 +562,19 @@ test("support corpus includes pending_review rows and excludes terminal statuses
       "pending-1",
     );
 
+    const privatePassport = makeRow(
+      "passport-1",
+      "pending_review",
+      "The launch moved to September twelfth after the vendor call, noted earlier.",
+    );
+    privatePassport.frontmatter.tags.push("support-passport-card");
+    const passportUnsupported = await runSmartSync([privatePassport]);
+    assert.equal(passportUnsupported.status, "pending_review");
+    assert.equal(
+      (passportUnsupported.structuredAttributes as Record<string, string>).supportingMemoryId,
+      undefined,
+    );
+
     // Terminal statuses with the same content are NOT support evidence.
     const similar =
       "The launch moved to September twelfth after the vendor call, noted earlier.";

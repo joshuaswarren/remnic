@@ -192,6 +192,8 @@ import {
   createConfiguredOfflineStorage,
   createOfflineStorageForPath,
   createOfflineStorageIo,
+  filterOfflineSyncBaseFiles,
+  resolveOfflineDirectHydrationPath,
 } from "./offline-storage-io.js";
 import type {
   BinaryLifecycleConfig,
@@ -7826,16 +7828,6 @@ function offlineDirectPushFiles(options: {
     .sort((left, right) => right.bytes - left.bytes || left.path.localeCompare(right.path));
 }
 
-function resolveOfflineDirectHydrationPath(memoryDir: string, relPath: string): string {
-  const base = path.resolve(memoryDir);
-  const target = path.resolve(base, relPath);
-  const relative = path.relative(base, target);
-  if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-    throw new Error(`offline sync direct hydration path escapes memory dir: ${relPath}`);
-  }
-  return target;
-}
-
 export const OFFLINE_SYNC_FILE_CONTENT_UPLOAD_CHUNK_BYTES =
   OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES;
 
@@ -8688,6 +8680,7 @@ export async function runOfflineSyncOnce(options: {
     options.secureStoreEncryptOnWrite,
   );
   const storageIo = await createOfflineStorageIo(options.memoryDir, offlineStorage);
+  const syncBaseFiles = await filterOfflineSyncBaseFiles(options.memoryDir, baseFiles, storageIo.excludeFile);
   const localSourceId = localOfflineSourceId(options.memoryDir);
   await drainOfflineSyncImpressions(options.memoryDir, options);
   await drainPendingLifecycleForOfflineSync(
@@ -8703,21 +8696,22 @@ export async function runOfflineSyncOnce(options: {
   const currentSnapshotForPush = await buildOfflineSyncSnapshotFromBase({
     root: options.memoryDir,
     sourceId: localSourceId,
-    baseFiles,
+    baseFiles: syncBaseFiles,
     baseCapturedAt,
     includeContent: false,
     includeTranscripts: options.includeTranscripts,
     readFile: storageIo.readFile,
     readFileDigest: storageIo.readFileDigest,
+    excludeFile: storageIo.excludeFile,
     userExcludeRegexps: options.userExcludeRegexps,
   });
   const pendingSummary = summarizeOfflineSyncPendingFiles({
-    baseFiles,
+    baseFiles: syncBaseFiles,
     currentFiles: currentSnapshotForPush.files,
     includeTranscripts: options.includeTranscripts,
     userExcludeRegexps: options.userExcludeRegexps,
   });
-  const baseByPath = offlineFileStateMap(baseFiles);
+  const baseByPath = offlineFileStateMap(syncBaseFiles);
   let directPushAppliedUpserts = 0;
   let directPushSkipped = 0;
   let directPushNamespace: string | undefined;
@@ -8727,7 +8721,7 @@ export async function runOfflineSyncOnce(options: {
   const directPushFailures: Array<{ path: string; error: string }> = [];
   for (const file of offlineDirectPushFiles({
     currentFiles: currentSnapshotForPush.files,
-    baseFiles,
+    baseFiles: syncBaseFiles,
   })) {
     if (options.skipLargeFilePaths?.has(file.path)) {
       // 3-strikes policy (#1786): the watch loop already logged a single
@@ -8826,7 +8820,7 @@ export async function runOfflineSyncOnce(options: {
       resolvedOfflineSnapshotNamespace({ namespace: pushed?.namespace ?? "" }, syncNamespace);
     const stateWritePaths = stateWritePathsFor(resolvedNamespace);
     const nextBaseFiles = advanceOfflineBaseFilesForSuccessfulPush({
-      baseFiles,
+      baseFiles: syncBaseFiles,
       currentFiles: currentSnapshotForPush.files,
       directPushedPaths: [...directPushedPaths],
       hydratedFiles: partial?.hydratedFiles,
@@ -8874,12 +8868,13 @@ export async function runOfflineSyncOnce(options: {
     ? await buildOfflineSyncSnapshotFromBase({
         root: options.memoryDir,
         sourceId: localSourceId,
-        baseFiles,
+        baseFiles: syncBaseFiles,
         baseCapturedAt,
         includeContent: false,
         includeTranscripts: options.includeTranscripts,
         readFile: storageIo.readFile,
         readFileDigest: storageIo.readFileDigest,
+        excludeFile: storageIo.excludeFile,
         userExcludeRegexps: options.userExcludeRegexps,
       })
     : currentSnapshotForPush;
@@ -8890,7 +8885,7 @@ export async function runOfflineSyncOnce(options: {
         root: options.memoryDir,
         sourceId: localSourceId,
         currentFiles: currentSnapshotForChangeset.files,
-        baseFiles,
+        baseFiles: syncBaseFiles,
         // 3-strikes skipped large files must be excluded here too — the
         // direct-push loop skips them, but without this line the changeset
         // path would still try to upsert them inline (Cursor review, PR
@@ -8928,12 +8923,13 @@ export async function runOfflineSyncOnce(options: {
       currentSnapshotForChangeset = await buildOfflineSyncSnapshotFromBase({
         root: options.memoryDir,
         sourceId: localSourceId,
-        baseFiles,
+        baseFiles: syncBaseFiles,
         baseCapturedAt,
         includeContent: false,
         includeTranscripts: options.includeTranscripts,
         readFile: storageIo.readFile,
         readFileDigest: storageIo.readFileDigest,
+        excludeFile: storageIo.excludeFile,
         userExcludeRegexps: options.userExcludeRegexps,
       });
     }
@@ -8973,7 +8969,7 @@ export async function runOfflineSyncOnce(options: {
       namespace: syncNamespace,
       includeTranscripts: options.includeTranscripts,
       includeContent: false,
-      baseFiles,
+      baseFiles: syncBaseFiles,
       baseCapturedAt,
     });
   } catch (error) {
@@ -8985,12 +8981,13 @@ export async function runOfflineSyncOnce(options: {
     currentSnapshot = await buildOfflineSyncSnapshotFromBase({
       root: options.memoryDir,
       sourceId: localSourceId,
-      baseFiles,
+      baseFiles: syncBaseFiles,
       baseCapturedAt,
       includeContent: false,
       includeTranscripts: options.includeTranscripts,
       readFile: storageIo.readFile,
       readFileDigest: storageIo.readFileDigest,
+      excludeFile: storageIo.excludeFile,
     });
   } catch (error) {
     if (pushed) return writePartialPushState(error);
@@ -9008,7 +9005,7 @@ export async function runOfflineSyncOnce(options: {
       namespace: syncNamespace,
       includeTranscripts: options.includeTranscripts,
       snapshot: remoteSnapshotMetadata,
-      baseFiles,
+      baseFiles: syncBaseFiles,
       currentFiles: currentSnapshot.files,
       memoryDir: options.memoryDir,
       readFile: storageIo.readFile,
@@ -9069,7 +9066,7 @@ export async function runOfflineSyncOnce(options: {
       namespace: syncNamespace,
       includeTranscripts: options.includeTranscripts,
       snapshot: remoteSnapshotMetadata,
-      baseFiles,
+      baseFiles: syncBaseFiles,
       currentFiles: applyCurrentSnapshot.files,
       deferredPaths: [...remoteDeferredPaths],
       missingContentDeferredPaths: remoteDeferredPaths,
@@ -9087,7 +9084,7 @@ export async function runOfflineSyncOnce(options: {
     pull = await applyOfflineSyncSnapshot({
       root: options.memoryDir,
       snapshot: remoteSnapshot,
-      baseFiles,
+      baseFiles: syncBaseFiles,
       currentFiles: latestApplySnapshot.files,
       deferredPaths: [...remoteDeferredPaths],
       allowMissingConflictContent: true,
@@ -9115,7 +9112,7 @@ export async function runOfflineSyncOnce(options: {
         namespace: syncNamespace,
         includeTranscripts: options.includeTranscripts,
         snapshot: remoteSnapshotMetadata,
-        baseFiles,
+        baseFiles: syncBaseFiles,
         currentFiles: applyCurrentSnapshot.files,
         deferredPaths: [...remoteDeferredPaths],
         missingContentDeferredPaths: remoteDeferredPaths,
@@ -9134,7 +9131,7 @@ export async function runOfflineSyncOnce(options: {
       pull = await applyOfflineSyncSnapshot({
         root: options.memoryDir,
         snapshot: retrySnapshot,
-        baseFiles,
+        baseFiles: syncBaseFiles,
         currentFiles: latestRetryApplySnapshot.files,
         deferredPaths: [...remoteDeferredPaths],
         allowMissingConflictContent: true,

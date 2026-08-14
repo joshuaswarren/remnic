@@ -6,9 +6,12 @@ import {
   recallForActiveMemory,
 } from "./active-memory-bridge.js";
 
+const keepVisibleSearchResults = async <T>(results: T[]): Promise<T[]> => results;
+
 test("recallForActiveMemory caps limit, truncates snippets, and strips internal scoring fields", async () => {
   const orchestrator = {
     resolveSelfNamespace: (_sessionKey?: string) => "resolved-namespace",
+    filterPrivateSearchResults: keepVisibleSearchResults,
     searchAcrossNamespaces: async (_params: unknown) => [
       {
         id: "mem-1",
@@ -54,6 +57,9 @@ test("recallForActiveMemory caps limit, truncates snippets, and strips internal 
 test("recallForActiveMemory truncates snippets without splitting surrogate pairs", async () => {
   const orchestrator = {
     resolveSelfNamespace: () => "resolved-namespace",
+    getStorageForNamespace: async () => ({
+      getMemoryById: async () => ({ content: "emoji memory", frontmatter: {} } as never),
+    }),
     searchAcrossNamespaces: async () => [
       {
         id: "mem-emoji",
@@ -95,6 +101,7 @@ test("recallForActiveMemory prioritizes an explicit namespace filter over the se
   let receivedNamespaces: string[] | undefined;
   const orchestrator = {
     resolveSelfNamespace: () => "session-namespace",
+    filterPrivateSearchResults: keepVisibleSearchResults,
     searchAcrossNamespaces: async (params: { namespaces?: string[] }) => {
       receivedNamespaces = params.namespaces;
       return [];
@@ -165,6 +172,7 @@ test("recallForActiveMemory denies blank session keys when namespaces are enable
 test("recallForActiveMemory marks results truncated when the underlying recall exceeds the requested limit", async () => {
   const orchestrator = {
     resolveSelfNamespace: () => "session-namespace",
+    filterPrivateSearchResults: keepVisibleSearchResults,
     searchAcrossNamespaces: async () =>
       Array.from({ length: 3 }, (_, index) => ({
         id: `mem-${index + 1}`,
@@ -187,6 +195,7 @@ test("recallForActiveMemory marks results truncated when the underlying recall e
 test("recallForActiveMemory excludes artifact-backed hits before applying the visible result cap", async () => {
   const orchestrator = {
     resolveSelfNamespace: () => "session-namespace",
+    filterPrivateSearchResults: keepVisibleSearchResults,
     searchAcrossNamespaces: async () => [
       {
         id: "artifact-1",
@@ -226,6 +235,128 @@ test("recallForActiveMemory excludes artifact-backed hits before applying the vi
   );
 });
 
+test("recallForActiveMemory excludes support passport records before applying the visible result cap", async () => {
+  const memories = new Map([
+    ["/tmp/memory/preferences/card.md", {
+      content: "Give me time to answer.",
+      frontmatter: { tags: ["support-passport-card"] },
+    } as never],
+    ["/tmp/memory/corrections/audit.md", {
+      content: "Superseded: Give me time to answer.",
+      frontmatter: { tags: ["support-passport-audit"] },
+    } as never],
+    ["/tmp/memory/facts/safe.md", {
+      content: "Safe memory.",
+      frontmatter: { tags: [] },
+    } as never],
+  ]);
+  const orchestrator = {
+    resolveSelfNamespace: () => "session-namespace",
+    getStorageForNamespace: async () => ({
+      readMemoryByPath: async (memoryPath: string) => memories.get(memoryPath) ?? null,
+    }),
+    filterPrivateSearchResults: async (results: Array<{ path: string }>) =>
+      results.filter((result) => !result.path.includes("/preferences/card.md") && !result.path.includes("/corrections/audit.md")),
+    searchAcrossNamespaces: async () => [
+      { id: "card", score: 0.99, path: "/tmp/memory/preferences/card.md", snippet: "private card" },
+      { id: "audit", score: 0.98, path: "/tmp/memory/corrections/audit.md", snippet: "private audit" },
+      { id: "safe", score: 0.8, path: "/tmp/memory/facts/safe.md", snippet: "safe memory" },
+    ],
+  };
+
+  const result = await recallForActiveMemory(orchestrator as never, {
+    query: "support",
+    limit: 2,
+    sessionKey: "session-b",
+  });
+
+  assert.deepEqual(result.results.map((entry) => entry.id), ["safe"]);
+  assert.equal(result.truncated, false);
+});
+
+test("recallForActiveMemory pages past private passport records", async () => {
+  const corpus = [
+    ...Array.from({ length: 40 }, (_, index) => ({
+      id: `private-${index}`,
+      score: 1 - index / 100,
+      path: `/tmp/memory/preferences/private-${index}.md`,
+      snippet: "private support card",
+    })),
+    { id: "safe", score: 0.5, path: "/tmp/memory/facts/safe.md", snippet: "safe memory" },
+  ];
+  const limits: number[] = [];
+  const orchestrator = {
+    resolveSelfNamespace: () => "session-namespace",
+    filterPrivateSearchResults: async (results: Array<{ path: string }>) =>
+      results.filter((result) => result.path.endsWith("safe.md")),
+    searchAcrossNamespaces: async ({ maxResults }: { maxResults?: number }) => {
+      limits.push(maxResults ?? corpus.length);
+      return corpus.slice(0, maxResults);
+    },
+  };
+
+  const result = await recallForActiveMemory(orchestrator as never, {
+    query: "support",
+    limit: 1,
+    sessionKey: "session-b",
+  });
+
+  assert.deepEqual(result.results.map((entry) => entry.id), ["safe"]);
+  assert.ok(limits.length > 1);
+  assert.equal(result.truncated, false);
+});
+
+test("recallForActiveMemory resolves collection-prefixed paths through the private-result filter", async () => {
+  const calls: Array<{ paths: string[]; namespaces: readonly string[] | undefined }> = [];
+  const orchestrator = {
+    resolveSelfNamespace: () => "session-namespace",
+    getStorageForNamespace: async () => ({
+      readMemoryByPath: async () => {
+        throw new Error("direct path reads must not decide QMD visibility");
+      },
+    }),
+    filterPrivateSearchResults: async (
+      results: Array<{ path: string }>,
+      namespaces: readonly string[] | undefined,
+    ) => {
+      calls.push({ paths: results.map((result) => result.path), namespaces });
+      return results.filter((result) => result.path.endsWith("safe.md"));
+    },
+    searchAcrossNamespaces: async () => [
+      { id: "card", score: 0.99, path: "openclaw-engram/preferences/card.md", snippet: "private card" },
+      { id: "safe", score: 0.8, path: "openclaw-engram/facts/safe.md", snippet: "safe memory" },
+    ],
+  };
+
+  const result = await recallForActiveMemory(orchestrator as never, {
+    query: "support",
+    sessionKey: "session-b",
+  });
+
+  assert.deepEqual(result.results.map((entry) => entry.id), ["safe"]);
+  assert.deepEqual(calls, [{
+    paths: ["openclaw-engram/preferences/card.md", "openclaw-engram/facts/safe.md"],
+    namespaces: ["session-namespace"],
+  }]);
+});
+
+test("recallForActiveMemory fails closed when candidate storage cannot be resolved", async () => {
+  const orchestrator = {
+    resolveSelfNamespace: () => "session-namespace",
+    searchAcrossNamespaces: async () => [
+      { id: "unresolved-path", path: "openclaw-engram/preferences/card.md", snippet: "private path" },
+      { id: "unresolved-id", snippet: "private id" },
+    ],
+  };
+
+  const result = await recallForActiveMemory(orchestrator as never, {
+    query: "support",
+    sessionKey: "session-b",
+  });
+
+  assert.deepEqual(result, { results: [], truncated: false });
+});
+
 test("getMemoryForActiveMemory returns not_found instead of throwing", async () => {
   const orchestrator = {
     resolveSelfNamespace: () => "readable-session",
@@ -236,6 +367,26 @@ test("getMemoryForActiveMemory returns not_found instead of throwing", async () 
 
   const result = await getMemoryForActiveMemory(orchestrator as never, "missing");
   assert.deepEqual(result, { error: "not_found" });
+});
+
+test("getMemoryForActiveMemory hides support passport records", async () => {
+  for (const tag of ["support-passport-card", "support-passport-audit"]) {
+    const orchestrator = {
+      resolveSelfNamespace: () => "readable-session",
+      getStorageForNamespace: async () => ({
+        getMemoryById: async () => ({
+          content: "owner-controlled content",
+          frontmatter: { tags: [tag] },
+        } as never),
+      }),
+    };
+
+    assert.deepEqual(
+      await getMemoryForActiveMemory(orchestrator as never, "private-record"),
+      { error: "not_found" },
+      tag,
+    );
+  }
 });
 
 test("getMemoryForActiveMemory reads via the session-derived namespace storage", async () => {

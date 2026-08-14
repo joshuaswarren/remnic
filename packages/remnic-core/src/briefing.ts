@@ -21,6 +21,7 @@ import path from "node:path";
 import { log } from "./logger.js";
 import { extractJsonCandidates } from "./json-extract.js";
 import { drainPassiveCorrectionNotifications } from "./correction/passive-correction-notifications.js";
+import { excludeSupportPassportPrivateMemories } from "./support-passport/card-projection.js";
 import { normalizeEntityName, StorageManager } from "./storage.js";
 import { readEnvVar, resolveHomeDir } from "./runtime/env.js";
 import type {
@@ -978,9 +979,8 @@ function defaultWindow(now: Date): ParsedBriefingWindow {
 
 async function safeReadMemories(storage: StorageManager): Promise<MemoryFile[]> {
   try {
-    return await storage.readAllMemories();
-  } catch (err) {
-    log.warn(`briefing: readAllMemories failed: ${err}`);
+    return excludeSupportPassportPrivateMemories(await storage.readAllMemories());
+  } catch (err) { log.warn(`briefing: readAllMemories failed: ${err}`);
     return [];
   }
 }

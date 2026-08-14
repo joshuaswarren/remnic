@@ -48,6 +48,7 @@ export {
   defaultWorkspaceDir,
 } from "./orchestrator.js";
 export * from "./memory-projection-format.js";
+export { searchWithGenericExclusion } from "./access-memory-search-fanout.js";
 export * from "./model-registry.js";
 export * from "./contradiction/index.js";
 
@@ -404,6 +405,7 @@ export {
   type RemnicAdminModelOption,
 } from "./access-http.js";
 export { EngramMcpServer } from "./access-mcp.js";
+export * from "./support-passport/index.js";
 
 // Remnic Relay — host-agnostic mission evidence and receipt contract.
 export {
@@ -873,6 +875,7 @@ export {
   type OfflineSyncDeletionRevision,
   type OfflineSyncFileDeleteTarget,
   type OfflineSyncFileDigest,
+  type OfflineSyncExcludeFile,
   type OfflineSyncFileRecord,
   type OfflineSyncFileContentChunk,
   type OfflineSyncRecordDeletionRevision,

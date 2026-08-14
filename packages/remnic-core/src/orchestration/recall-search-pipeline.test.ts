@@ -108,6 +108,47 @@ test("recall safety derives sourceConnector exclusively from the hydrated memory
   }
 });
 
+test("recall safety keeps support passport records out of generic recall", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-passport-recall-"));
+  try {
+    const coordinator = await makeCoordinator(memoryDir);
+    const card = {
+      path: "preferences/support-card.md",
+      content: "Give me time to answer.",
+      frontmatter: {
+        status: "active",
+        tags: ["support-passport-card"],
+        created: "2026-07-19T00:00:00.000Z",
+        updated: "2026-07-19T00:00:00.000Z",
+      },
+    } as unknown as MemoryFile;
+    const audit = {
+      path: "corrections/support-card-audit.md",
+      content: "Superseded: Give me time to answer.",
+      frontmatter: {
+        status: "active",
+        tags: ["support-passport-audit"],
+        created: "2026-07-19T00:00:00.000Z",
+        updated: "2026-07-19T00:00:00.000Z",
+      },
+    } as unknown as MemoryFile;
+    const candidates = [result("default", card.path), result("default", audit.path)];
+    const memoryByPath = new Map([
+      [`default\0${card.path}`, card],
+      [`default\0${audit.path}`, audit],
+    ]);
+
+    assert.deepEqual(coordinator.filterSearchResultsByRecallSafety(candidates, memoryByPath), []);
+    assert.deepEqual(
+      coordinator.filterSearchResultsByRecallSafety(candidates, memoryByPath, { allowDedicatedSurface: true }),
+      [],
+      "a generic-recall override must not disclose owner-controlled support records",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("recall safety partitions tool-scoped memories by requesting connector", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-connector-partition-"));
   try {

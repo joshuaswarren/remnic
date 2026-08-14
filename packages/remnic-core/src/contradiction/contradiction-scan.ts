@@ -32,6 +32,7 @@ import {
 } from "./contradiction-review.js";
 import type { LocalLlmClient } from "../local-llm.js";
 import type { FallbackLlmClient } from "../fallback-llm.js";
+import { isSupportPassportPrivateMemory } from "../support-passport/card-projection.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -450,6 +451,7 @@ async function loadEligibleMemories(storage: StorageManager): Promise<MemoryFile
 
   return all.filter((mem) => {
     const fm = mem.frontmatter;
+    if (isSupportPassportPrivateMemory(mem)) return false;
     // Only active memories (rule 53: explicit ACTIVE_STATUSES set)
     const status = (fm.status as MemoryStatus) ?? "active";
     if (!ACTIVE_STATUSES.has(status)) return false;

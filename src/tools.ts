@@ -4,11 +4,8 @@ import { Type } from "@sinclair/typebox";
 import type { Orchestrator } from "@remnic/core/orchestrator";
 import type {
   ContinuityImprovementLoop,
-  MemoryActionEligibilityContext,
-  MemoryActionEligibilitySource,
   MemoryActionType,
   MemoryCategory,
-  MemoryFile,
 } from "./types.js";
 import { indexMemoryAsync, indexesExistAsync } from "./temporal-index.js";
 import {
@@ -25,6 +22,11 @@ import { wrapWorkLayerContext } from "@remnic/core/work/boundary";
 import { VALID_MEMORY_CATEGORIES } from "./config.js";
 import { formatProfileTraceAscii } from "./profiling.js";
 import { runMemoryGovernance } from "@remnic/core/maintenance/memory-governance";
+import {
+  blocksSupportPassportMutation,
+  deriveMemoryActionPolicyEligibility,
+  readReferencedMemoryForPolicyEligibility,
+} from "./memory-action-target.js";
 
 interface ToolApi {
   registerTool(
@@ -69,13 +71,6 @@ function normalizeToolNamespace(value: unknown): string | undefined {
   return asNonEmptyString(value);
 }
 
-function clampUnitInterval(value: unknown, fallback: number): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
-  if (value < 0) return 0;
-  if (value > 1) return 1;
-  return value;
-}
-
 function normalizeProfilingReportLimit(value: unknown): number {
   if (value === undefined) return 5;
   if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value)) {
@@ -92,59 +87,7 @@ function normalizeMemorySearchResultLimit(value: unknown): number {
   return Math.min(Math.max(value, 1), 50);
 }
 
-function normalizeMemoryActionEligibilitySource(value: unknown): MemoryActionEligibilitySource {
-  switch (value) {
-    case "extraction":
-    case "consolidation":
-    case "replay":
-    case "manual":
-      return value;
-    default:
-      return "unknown";
-  }
-}
-
-function deriveMemoryActionPolicyEligibility(
-  memory: Pick<MemoryFile, "frontmatter"> | null | undefined,
-): MemoryActionEligibilityContext | undefined {
-  if (!memory) return undefined;
-  const frontmatter = memory.frontmatter;
-  return {
-    confidence: clampUnitInterval(frontmatter.confidence, 0),
-    lifecycleState:
-      frontmatter.status === "archived" ? "archived" : frontmatter.lifecycleState ?? "candidate",
-    importance: clampUnitInterval(frontmatter.importance?.score, 0),
-    source: normalizeMemoryActionEligibilitySource(frontmatter.source),
-  };
-}
-
-async function readReferencedMemoryForPolicyEligibility(
-  storage: {
-    getMemoryById?: (id: string) => Promise<MemoryFile | null>;
-    readAllMemories?: () => Promise<MemoryFile[]>;
-    readArchivedMemories?: () => Promise<MemoryFile[]>;
-  },
-  memoryId: string | undefined,
-): Promise<MemoryFile | null | undefined> {
-  if (!memoryId) return undefined;
-
-  if (typeof storage.getMemoryById === "function") {
-    const direct = await storage.getMemoryById(memoryId);
-    if (direct) return direct;
-  }
-
-  if (typeof storage.readAllMemories === "function") {
-    const active = (await storage.readAllMemories()).find((memory) => memory.frontmatter.id === memoryId);
-    if (active) return active;
-  }
-
-  if (typeof storage.readArchivedMemories === "function") {
-    const archived = (await storage.readArchivedMemories()).find((memory) => memory.frontmatter.id === memoryId);
-    if (archived) return archived;
-  }
-
-  return undefined;
-}
+const MEMORY_SEARCH_CANDIDATE_CAP = 25_000;
 
 const WORK_TASK_STATUSES = new Set(["todo", "in_progress", "blocked", "done", "cancelled"]);
 const WORK_TASK_PRIORITIES = new Set(["low", "medium", "high"]);
@@ -504,16 +447,46 @@ Best for:
 
         const namespaceFilter = namespace && namespace.length > 0 ? namespace : undefined;
         const resultLimit = normalizeMemorySearchResultLimit(maxResults);
-        const filtered =
+        const searchCandidates = async (limit: number) =>
           collection === "global" && !namespaceFilter
-            ? (await orchestrator.qmd.searchGlobal(query, resultLimit))
-              .slice(0, resultLimit)
+            ? await orchestrator.qmd.searchGlobal(query, limit)
             : await orchestrator.searchAcrossNamespaces({
-              query,
-              namespaces: namespaceFilter ? [namespaceFilter] : undefined,
-              maxResults: resultLimit,
-              mode: "search",
-            });
+                query,
+                namespaces: namespaceFilter ? [namespaceFilter] : undefined,
+                maxResults: limit,
+                mode: "search",
+              });
+        let candidateLimit = resultLimit;
+        const privateVisibilityCache = new Map<string, boolean>();
+        let candidates = await searchCandidates(candidateLimit);
+        let filtered = await orchestrator.filterPrivateSearchResults(
+          candidates,
+          namespaceFilter ? [namespaceFilter] : [],
+          false,
+          privateVisibilityCache,
+        );
+        while (
+          filtered.length < resultLimit &&
+          candidates.length >= candidateLimit &&
+          candidateLimit < MEMORY_SEARCH_CANDIDATE_CAP
+        ) {
+          const nextCandidateLimit = Math.min(
+            MEMORY_SEARCH_CANDIDATE_CAP,
+            Math.max(candidateLimit + 16, candidateLimit * 2),
+          );
+          if (nextCandidateLimit === candidateLimit) break;
+          const nextCandidates = await searchCandidates(nextCandidateLimit);
+          if (nextCandidates.length <= candidates.length) break;
+          candidateLimit = nextCandidateLimit;
+          candidates = nextCandidates;
+          filtered = await orchestrator.filterPrivateSearchResults(
+            candidates,
+            namespaceFilter ? [namespaceFilter] : [],
+            false,
+            privateVisibilityCache,
+          );
+        }
+        filtered = filtered.slice(0, resultLimit);
 
         if (filtered.length === 0) {
           return toolResult(`No memories found matching: "${query}"`);
@@ -1683,6 +1656,19 @@ Best for:
             ? await orchestrator.getStorage(ns)
             : orchestrator.storage;
         const referencedMemory = await readReferencedMemoryForPolicyEligibility(storage, memoryIdValue);
+        if (blocksSupportPassportMutation(action, referencedMemory)) {
+          await orchestrator.appendMemoryActionEvent({
+            ...baseEvent,
+            outcome: "failed",
+            status: "rejected",
+            dryRun: dryRun === true,
+            outputMemoryIds: [],
+            reason: "validation: support passport records require the owner surface",
+          });
+          return toolResult(
+            "Validation failed: support passport records can only be changed through the support passport owner surface.",
+          );
+        }
         const structuredEvent = {
           ...baseEvent,
           outcome: outcome ?? "applied",

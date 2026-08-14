@@ -197,6 +197,65 @@ test("runner honors configured codex.codexHome when no runtime override is suppl
   }
 });
 
+test("runner excludes private support-passport memories from caller-provided materialization", async () => {
+  const memoryDir = makeTempDir("codex-materialize-runner-private-memdir-");
+  const workspaceDir = makeTempDir("codex-materialize-runner-private-workspace-");
+  const { root: codexHome, memoriesDir } = makeCodexHome();
+
+  try {
+    ensureSentinel(memoriesDir, "default", new Date("2026-04-02T00:00:00Z"));
+    const config = parseConfig({
+      openaiApiKey: false,
+      memoryDir,
+      workspaceDir,
+      qmdEnabled: false,
+      codexMaterializeMemories: true,
+    });
+    const baseFrontmatter = {
+      category: "preference" as const,
+      created: "2026-04-01T00:00:00Z",
+      updated: "2026-04-01T00:00:00Z",
+      source: "synthetic-test",
+      confidence: 0.8,
+      tags: ["public"],
+    };
+
+    await runCodexMaterialize({
+      config,
+      codexHome,
+      memories: [
+        {
+          path: path.join(memoryDir, "public.md"),
+          frontmatter: { ...baseFrontmatter, id: "public-memory" } as any,
+          content: "public materialized memory",
+        },
+        {
+          path: path.join(memoryDir, "private.md"),
+          frontmatter: {
+            ...baseFrontmatter,
+            id: "private-passport-memory",
+            structuredAttributes: { "support-passport-owner": "private-owner" },
+          } as any,
+          content: "private passport statement",
+        },
+      ],
+      reason: "manual",
+      now: new Date("2026-04-02T00:00:00Z"),
+    });
+
+    const rawContents = (await import("node:fs")).readFileSync(
+      path.join(memoriesDir, "raw_memories.md"),
+      "utf-8",
+    );
+    assert.match(rawContents, /public materialized memory/);
+    assert.doesNotMatch(rawContents, /private passport statement/);
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
 test("runner rejects unsafe materialize namespaces before resolving storage paths", async () => {
   const memoryDir = makeTempDir("codex-materialize-runner-unsafe-ns-memdir-");
   const workspaceDir = makeTempDir("codex-materialize-runner-unsafe-ns-workspace-");

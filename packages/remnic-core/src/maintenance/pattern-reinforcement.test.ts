@@ -328,6 +328,26 @@ test("runPatternReinforcement: skips out-of-scope categories", async () => {
   assert.equal(writes.length, 0);
 });
 
+test("runPatternReinforcement: excludes support-passport private records", async () => {
+  const content = "Give me advance notice before plans change.";
+  const passport = makeMemory({
+    id: "passport-card",
+    content,
+    tags: ["support-passport-card"],
+  });
+  const publicPreference = makeMemory({ id: "public-preference", content });
+  const { stub, writes } = makeStorageStub([passport, publicPreference]);
+
+  const result = await runPatternReinforcement(stub, {
+    categories: ["preference"],
+    minCount: 2,
+    now: frozenNow,
+  });
+
+  assert.equal(result.clustersFound, 0);
+  assert.deepEqual(writes, []);
+});
+
 test("runPatternReinforcement: counts both active and already-superseded members; only writes to active duplicates", async () => {
   const dupContent = "mixed status cluster";
   const memories = [

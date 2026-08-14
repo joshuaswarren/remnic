@@ -70,6 +70,7 @@ import {
 } from "../orchestrator.js";
 import { isActivityDigestPath } from "./orchestrator-helpers.js";
 import { isGenericRecallExcludedPath, isTopLevelArchivePath } from "./generic-recall-paths.js";
+import { isSupportPassportPrivateMemory } from "../support-passport/card-projection.js";
 
 export interface RecallSearchPipelineDeps {
   applyMemoryWorthRerank(
@@ -1091,6 +1092,7 @@ export class RecallSearchPipelineCoordinator {
     let forgottenFilteredCount = 0;
     let blockedPathFilteredCount = 0;
     let connectorPartitionFilteredCount = 0;
+    let supportPassportFilteredCount = 0;
     const filtered: QmdSearchResult[] = [];
     for (const r of results) {
       if (options?.blockedPaths && resultHasKey(options.blockedPaths, r)) {
@@ -1124,6 +1126,11 @@ export class RecallSearchPipelineCoordinator {
           recallStatus === "quarantined"
         ) {
           forgottenFilteredCount += 1;
+          continue;
+        }
+
+        if (isSupportPassportPrivateMemory(memory)) {
+          supportPassportFilteredCount += 1;
           continue;
         }
 
@@ -1221,6 +1228,11 @@ export class RecallSearchPipelineCoordinator {
     if (connectorPartitionFilteredCount > 0) {
       log.debug(
         `connector partition filter removed ${connectorPartitionFilteredCount} tool-scoped candidates from recall`,
+      );
+    }
+    if (supportPassportFilteredCount > 0) {
+      log.debug(
+        `support passport filter removed ${supportPassportFilteredCount} owner-controlled records from generic recall`,
       );
     }
     if (lifecycleFilteredCount > 0) {

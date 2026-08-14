@@ -20,12 +20,11 @@ import {
   type BetterSqlite3Database,
 } from "./runtime/better-sqlite.js";
 
-export const MEMORY_PROJECTION_SCHEMA_VERSION = 3;
+export const MEMORY_PROJECTION_SCHEMA_VERSION = 4;
 
 export interface ProjectedMemoryBrowseOptions {
-  query?: string;
-  status?: string;
-  category?: string;
+  query?: string; status?: string; category?: string;
+  excludeTags?: readonly string[]; excludePrivateRecords?: boolean;
   sort?: "updated_desc" | "updated_asc" | "created_desc" | "created_asc";
   limit: number;
   offset: number;
@@ -154,15 +153,15 @@ function migrateProjectionSchemaIfNeeded(memoryDir: string): void {
 }
 
 export function memoryCurrentSelectExpressions(db: BetterSqlite3Database): {
-  tagsJson: string;
-  previewText: string;
-  hasPathValid: boolean;
+  tagsJson: string; previewText: string; hasPathValid: boolean;
+  privateRecord: string; hasPrivateRecord: boolean;
 } {
   const columns = listTableColumns(db, "memory_current");
   return {
     tagsJson: columns.has("tags_json") ? "tags_json" : `'[]' AS tags_json`,
-    previewText: columns.has("preview_text") ? "preview_text" : `'' AS preview_text`,
-    hasPathValid: columns.has("path_valid"),
+    previewText: columns.has("preview_text") ? "preview_text" : `'' AS preview_text`, hasPathValid: columns.has("path_valid"),
+    privateRecord: columns.has("private_record") ? "private_record" : "0 AS private_record",
+    hasPrivateRecord: columns.has("private_record"),
   };
 }
 
@@ -192,7 +191,8 @@ export function initializeMemoryProjectionDb(db: BetterSqlite3Database): void {
       access_count INTEGER,
       last_accessed TEXT,
       tags_json TEXT NOT NULL DEFAULT '[]',
-      preview_text TEXT NOT NULL DEFAULT ''
+      preview_text TEXT NOT NULL DEFAULT '',
+      private_record INTEGER NOT NULL DEFAULT 0 CHECK (private_record IN (0, 1))
     );
 
     CREATE INDEX IF NOT EXISTS idx_memory_current_status
@@ -428,6 +428,7 @@ const REQUIRED_MEMORY_CURRENT_COLUMNS = [
   "created_at",
   "updated_at",
   "entity_ref",
+  "private_record",
 ] as const;
 
 function assertProjectionSchemaReadable(db: BetterSqlite3Database): void {
@@ -698,6 +699,7 @@ export function parseCurrentRow(
     lastAccessed: typeof row.last_accessed === "string" ? row.last_accessed : undefined,
     tags: parseStringArray(row.tags_json),
     preview: typeof row.preview_text === "string" ? row.preview_text : "",
+    privateRecord: row.private_record === 1,
   };
 }
 
@@ -760,7 +762,8 @@ export function readProjectedMemoryState(
             access_count,
             last_accessed,
             ${currentSelect.tagsJson},
-            ${currentSelect.previewText}
+            ${currentSelect.previewText},
+            ${currentSelect.privateRecord}
           FROM memory_current
           WHERE memory_id = ?
         `,
@@ -820,38 +823,33 @@ export function readProjectedMemoryBrowse(
 ): ProjectedMemoryBrowsePage | null {
   return withProjectionReadonly(memoryDir, (db) => {
     const normalizedQuery = options.query?.trim().toLowerCase() ?? "";
-
     const currentSelect = memoryCurrentSelectExpressions(db);
+    if ((options.excludeTags?.length ?? 0) > 0 && currentSelect.tagsJson.startsWith("'[]'"))
+      throw new Error("tag exclusions require tags_json");
+    if (options.excludePrivateRecords && !currentSelect.hasPrivateRecord)
+      throw new Error("private-record exclusions require private_record");
     const whereClauses: string[] = [];
     const params: unknown[] = [];
-
-    if (options.status) {
-      whereClauses.push("status = ?");
-      params.push(options.status);
+    if (options.status) { whereClauses.push("status = ?"); params.push(options.status); }
+    if (options.category) { whereClauses.push("category = ?"); params.push(options.category); }
+    for (const tag of options.excludeTags ?? []) {
+      whereClauses.push("NOT EXISTS (SELECT 1 FROM json_each(memory_current.tags_json) WHERE value = ?)");
+      params.push(tag);
     }
-    if (options.category) {
-      whereClauses.push("category = ?");
-      params.push(options.category);
-    }
-    const sort = options.sort ?? "updated_desc";
+    if (options.excludePrivateRecords) whereClauses.push("private_record = 0");
     const orderBySql = (() => {
-      switch (sort) {
+      switch (options.sort ?? "updated_desc") {
         case "updated_asc":
           return "updated_at ASC, created_at ASC, memory_id ASC";
         case "created_desc":
           return "created_at DESC, updated_at DESC, memory_id ASC";
         case "created_asc":
           return "created_at ASC, updated_at ASC, memory_id ASC";
-        case "updated_desc":
         default:
           return "updated_at DESC, created_at DESC, memory_id ASC";
       }
     })();
-    const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
-
     if (normalizedQuery) {
-      // Full-content search still examines every eligible row so totals and
-      // matches stay exact, but iteration keeps memory use proportional to the page.
       const queryWhereClauses = currentSelect.hasPathValid
         ? [...whereClauses, ...projectedBrowsePathSqlClauses(), "path_valid = 1"]
         : whereClauses;

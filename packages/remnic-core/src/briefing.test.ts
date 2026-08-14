@@ -914,6 +914,44 @@ function makeEmptyStorage(): StorageManager {
   } as unknown as StorageManager;
 }
 
+test("buildBriefing excludes support passport records from generated context", async () => {
+  const generatedPrompts: unknown[] = [];
+  const privateMemory: MemoryFile = {
+    ...makeMemory("2026-04-10T12:00:00.000Z"),
+    frontmatter: {
+      ...makeMemory("2026-04-10T12:00:00.000Z").frontmatter,
+      tags: ["support-passport-card"],
+    },
+    content: "Private support statement",
+  };
+  const publicMemory: MemoryFile = {
+    ...makeMemory("2026-04-10T13:00:00.000Z"),
+    frontmatter: {
+      ...makeMemory("2026-04-10T13:00:00.000Z").frontmatter,
+      id: "public-memory",
+    },
+    content: "Public project update",
+  };
+  const storage = {
+    readAllMemories: async () => [privateMemory, publicMemory],
+    readAllEntityFiles: async () => [],
+  } as unknown as StorageManager;
+
+  const result = await buildBriefing({
+    storage,
+    window: makeWindow("2026-04-10T00:00:00.000Z", "2026-04-11T00:00:00.000Z"),
+    followupGenerator: async (prompt) => {
+      generatedPrompts.push(prompt);
+      return [];
+    },
+    now: new Date("2026-04-11T10:00:00.000Z"),
+  });
+
+  assert.equal(result.markdown.includes(privateMemory.content), false);
+  assert.equal(JSON.stringify(generatedPrompts).includes(privateMemory.content), false);
+  assert.equal(result.markdown.includes(publicMemory.content), true);
+});
+
 test("buildBriefing: model-not-found 400 error produces user-friendly followupsUnavailableReason", async () => {
   // Inject a mock generator that throws an error resembling a Responses API
   // 400 "model does not exist" response.

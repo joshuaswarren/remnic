@@ -137,7 +137,7 @@ import {
   type TombstoneStats,
 } from "./lifecycle/tombstones.js";
 import { supersessionKeysForFact } from "./temporal-supersession.js";
-import { runSupersessionSideEffects } from "./storage/supersession-side-effects.js";
+import { runSupersessionSideEffects, type SupersessionAuditOptions } from "./storage/supersession-side-effects.js";
 import type {
   AccessTrackingEntry,
   BufferState,
@@ -233,6 +233,7 @@ import {
 } from "./memory-projection-store.js";
 import { inferMemoryStatus, isArchivedMemoryPath, toMemoryPathRel } from "./memory-lifecycle-ledger-utils.js";
 import { normalizeProjectionPreview, normalizeProjectionTags } from "./memory-projection-format.js";
+import { isSupportPassportPrivateMemory } from "./support-passport/card-projection.js";
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 import {
   composeMemoryEnvelope,
@@ -3682,7 +3683,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     category: MemoryCategory,
     content: string,
     options: WriteMemoryOptions = {}
-  ): Promise<MemoryWriteResult> {
+  ) {
     await this.ensureDirectories();
     const rawEntityRef = options.entityRef;
     let refIds = typeof options.entityRef === "string" ? this.currentHistoricalIds() : null;
@@ -3883,6 +3884,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         tombstoneBlocked: true,
         blockedBy: duplicateBlocked.frontmatter.blockedBy,
         duplicateOf: duplicateBlocked.frontmatter.id,
+        memory: duplicateBlocked,
       };
     }
     await this.patchHotMemoriesCache({ addedPath: filePath }, "memory-create");
@@ -3937,7 +3939,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       }
     }
     log.debug(`wrote memory ${id} to ${filePath}`);
-    return { id, tombstoneBlocked, ...(fm.blockedBy ? { blockedBy: fm.blockedBy } : {}) };
+    return { id, tombstoneBlocked, ...(fm.blockedBy ? { blockedBy: fm.blockedBy } : {}), memory: { path: filePath, frontmatter: fm, content: sanitized.text } };
   }
 
   /**
@@ -3959,7 +3961,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    * `envelope.sourceReason` is access-layer metadata with no frontmatter
    * field and is deliberately not persisted here.
    */
-  async writeSealedMemory(envelope: SealedMemoryEnvelope, extras: SealedWriteExtras = {}): Promise<MemoryWriteResult> {
+  async writeSealedMemory(envelope: SealedMemoryEnvelope, extras: SealedWriteExtras = {}) {
     if (!isSealedMemoryEnvelope(envelope)) {
       throw new Error(
         "writeSealedMemory: value is not a valid sealed memory envelope (fails the composeMemoryEnvelope contract)"
@@ -6636,21 +6638,18 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return updated;
   }
 
-  /**
-   * Get a memory by its ID.
-   */
   async getMemoryById(id: string): Promise<MemoryFile | null> {
     const memories = await this.readAllMemories();
     return memories.find((m) => m.frontmatter.id === id) ?? null;
   }
 
-  /**
-   * Resolve existing active memory IDs to their on-disk paths.
-   *
-   * Uses a lightweight directory scan (collectActiveMemoryPaths) that reads
-   * file names without parsing frontmatter — much cheaper than readAllMemories()
-   * for citation usage tracking and other existence checks.
-   */
+  async getMemoryByIdIncludingArchived(id: string): Promise<MemoryFile | null> {
+    const active = await this.getMemoryById(id);
+    return active ?? (await this.readAllColdMemories()).find((memory) => memory.frontmatter.id === id) ??
+      (await this.readArchivedMemories()).find((memory) => memory.frontmatter.id === id) ?? null;
+  }
+
+  /** Resolve existing active memory IDs through a lightweight directory scan. */
   async findExistingMemoryPaths(
     ids: string[],
     preferredPaths: Map<string, string[]> = new Map()
@@ -6751,6 +6750,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       lastAccessed: memory.frontmatter.lastAccessed,
       tags: normalizeProjectionTags(memory.frontmatter.tags),
       preview: normalizeProjectionPreview(memory.content),
+      privateRecord: isSupportPassportPrivateMemory(memory),
     };
   }
 
@@ -6916,9 +6916,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     reason: string,
     supersessionMetadata?: Pick<MemoryFrontmatter, "supersessionCause" | "invalidatedBy">,
     options: {
-      requireActive?: boolean;
-      acceptExactReplay?: boolean;
+      actor?: string; requireActive?: boolean; acceptExactReplay?: boolean;
       expectedSnapshot?: Pick<MemoryFile, "content" | "frontmatter"> & Partial<Pick<MemoryFile, "path">>;
+      audit?: SupersessionAuditOptions;
     } = {},
   ): Promise<boolean> {
     const matchesSupersession = (memory: MemoryFile): boolean =>
@@ -7061,6 +7061,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         exactReplay,
         currentBefore,
         updatedFm,
+        actor: options.actor, audit: options.audit,
         citationTemplate: this.citationTemplate,
         correctionsDir: this.correctionsDir,
         readMemoryByPath: (filePath) => this.readMemoryByPath(filePath),
@@ -7093,7 +7094,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
             memoryId: oldMemoryId,
             eventType: "superseded",
             timestamp: supersededAt,
-            actor: "storage.supersedeMemory",
+            actor: options.actor ?? "storage.supersedeMemory",
             reasonCode: reason,
             before: exactReplay ? { ...beforeState, status: "active" } : beforeState,
             after: afterState,
@@ -7107,13 +7108,11 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         writeSealedMemory: (envelope, extras) => this.writeSealedMemory(envelope, extras),
       });
       return sideEffectsComplete || options.acceptExactReplay !== true;
-
     } catch (err) {
       log.error(`failed to supersede memory ${oldMemoryId}:`, err);
       return false;
     }
   }
-
 
   private get summariesDir(): string {
     return path.join(this.baseDir, "summaries");

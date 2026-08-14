@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -9,7 +9,7 @@ import {
   OFFLINE_SYNC_DIRECT_PUSH_MIN_BYTES,
   runOfflineSyncOnce,
 } from "./index.js";
-import { writeOfflineSyncState } from "@remnic/core";
+import { readOfflineSyncState, StorageManager, writeOfflineSyncState } from "@remnic/core";
 import type { OfflineSyncChangeset } from "@remnic/core";
 
 const IMPRESSIONS_REL = "state/recall_impressions.jsonl";
@@ -105,6 +105,81 @@ test("offline sync drains pending impression spills before building the initial 
     });
 
     await assertImpressionFolded(root, nonce);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline sync drops private support cards from prior bases without pushing or deleting them", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-private-base-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const storage = new StorageManager(root);
+    const written = await storage.writeMemory("preference", "Tell me before plans change.", {
+      source: "support-passport",
+      tags: ["support-passport-card"],
+      confidence: 1,
+    });
+    const privatePath = written.memory.path;
+    const privateContent = await readFile(privatePath);
+    const privateStat = await stat(privatePath);
+    const privateRelativePath = path.relative(root, privatePath).split(path.sep).join("/");
+    const statePath = path.join(root, ".offline-sync", "state", "test.json");
+    await writeOfflineSyncState(statePath, {
+      version: 1,
+      remoteId: "http://remnic.test",
+      namespace: "generalist",
+      includeTranscripts: true,
+      lastSyncedAt: "2026-05-31T00:00:00.000Z",
+      baseFiles: [{
+        path: privateRelativePath,
+        sha256: createHash("sha256").update(privateContent).digest("hex"),
+        bytes: privateContent.byteLength,
+        mtimeMs: privateStat.mtimeMs,
+      }],
+    });
+
+    const pushedPaths: string[] = [];
+    globalThis.fetch = (async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("/remnic/v1/offline-sync/apply")) {
+        const request = JSON.parse(String(init?.body ?? "{}")) as { changeset?: OfflineSyncChangeset };
+        pushedPaths.push(...(request.changeset?.changes.map((change) => change.path) ?? []));
+        return new Response(JSON.stringify({
+          namespace: "generalist",
+          appliedUpserts: 0,
+          appliedDeletes: 0,
+          skipped: 0,
+          conflicts: [],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.pathname.endsWith("/remnic/v1/offline-sync/snapshot")) {
+        return new Response(JSON.stringify(EMPTY_REMOTE_SNAPSHOT), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected fetch: ${url.pathname}`);
+    }) as typeof fetch;
+
+    await runOfflineSyncOnce({
+      memoryDir: root,
+      remoteUrl: "http://remnic.test",
+      token: "test-token",
+      namespace: "generalist",
+      includeTranscripts: true,
+      statePath,
+      statePathExplicit: true,
+      impressionsRotateBytes: 0,
+      impressionsRotateKeep: 5,
+    });
+
+    assert.equal(pushedPaths.includes(privateRelativePath), false);
+    assert.deepEqual(await readFile(privatePath), privateContent);
+    assert.equal((await readOfflineSyncState(statePath))?.baseFiles.some(
+      (file) => file.path === privateRelativePath,
+    ), false);
   } finally {
     globalThis.fetch = originalFetch;
     await rm(root, { recursive: true, force: true });

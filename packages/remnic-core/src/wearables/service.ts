@@ -13,6 +13,7 @@ import {
 } from "./corrections.js";
 import { describeErrorForOperator, WearablesInputError } from "./errors.js";
 import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
+import { isSupportPassportPrivateMemory } from "../support-passport/card-projection.js";
 import {
   bodyIsEscaped,
   decodeTranscriptBody,
@@ -388,6 +389,7 @@ export class WearablesService {
             const memories = await storage.readAllMemories();
             const support: Array<{ id: string; content: string }> = [];
             for (const memory of memories) {
+              if (isSupportPassportPrivateMemory(memory)) continue;
               // WearableStorageIo narrows MemoryFrontmatter for
               // testability; production hands us the real thing.
               const status = inferMemoryStatus(

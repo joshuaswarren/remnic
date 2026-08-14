@@ -51,6 +51,7 @@ import type { PluginConfig, MemoryFile, AgentPersonaModelConfig } from "../types
 import { log } from "../logger.js";
 import { composeMemoryEnvelope } from "../write-envelope.js";
 import { resolveConversationContextCapabilities } from "../capabilities.js";
+import { excludeSupportPassportPrivateMemories } from "../support-passport/card-projection.js";
 
 /** Dependencies injected by the orchestrator. All stable references or
  *  live accessors. */
@@ -110,7 +111,7 @@ export class SemanticConsolidationCoordinator {
 
     log.info("[semantic-consolidation] starting run");
 
-    const allMemories = await targetStorage.readAllMemories();
+    const allMemories = excludeSupportPassportPrivateMemories(await targetStorage.readAllMemories());
     if (allMemories.length < 10) {
       log.debug("[semantic-consolidation] too few memories, skipping");
       return result;

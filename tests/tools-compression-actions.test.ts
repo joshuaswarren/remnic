@@ -919,6 +919,40 @@ test("memory_action_apply passes explicit actor metadata to update_note writes",
   });
 });
 
+test("memory_action_apply rejects generic mutations of private support passport records", async () => {
+  const passportMemory = {
+    path: "/tmp/passport-card.md",
+    frontmatter: {
+      id: "passport-card",
+      tags: ["support-passport-card"],
+      status: "active",
+      source: "manual",
+    },
+    content: "Owner-controlled support text.",
+  };
+  const { tools, capturedEvents, capturedUpdateWrites, capturedFrontmatterWrites, capturedLinkWrites } = buildHarness({
+    contextCompressionActionsEnabled: true,
+    readAllMemories: async () => [passportMemory],
+  });
+  const tool = tools.get("memory_action_apply");
+  assert.ok(tool);
+
+  for (const params of [
+    { action: "update_note", memoryId: "passport-card", content: "Changed." },
+    { action: "discard", memoryId: "passport-card", execute: true },
+    { action: "link_graph", memoryId: "passport-card", linkTargetId: "fact-1", linkType: "related" },
+  ]) {
+    const result = await tool.execute("private-passport-mutation", params);
+    assert.match(toolText(result), /support passport owner surface/i);
+  }
+
+  assert.equal(capturedUpdateWrites.length, 0);
+  assert.equal(capturedFrontmatterWrites.length, 0);
+  assert.equal(capturedLinkWrites.length, 0);
+  assert.equal(capturedEvents.length, 3);
+  assert.ok(capturedEvents.every((event) => event.outcome === "failed" && event.status === "rejected"));
+});
+
 test("memory_action_apply passes explicit actor metadata to create_artifact writes", async () => {
   const { tools, capturedArtifactWrites, capturedEvents } = buildHarness({
     contextCompressionActionsEnabled: true,

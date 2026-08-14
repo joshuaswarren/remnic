@@ -7,6 +7,7 @@ import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 import { assertPathInsideRoot } from "../utils/path-containment.js";
 import { requestEntityCanonicalIdReconcile } from "../storage/entity-canonical-id-references.js";
+import { excludeSupportPassportPrivateMemories } from "../support-passport/card-projection.js";
 
 export type MemoryGovernanceMode = "shadow" | "apply";
 export type MemoryGovernanceReasonCode =
@@ -830,7 +831,9 @@ export async function runMemoryGovernance(
         updatedAfter,
       })
     : undefined;
-  const memories = memoryWindow?.memories ?? await storage.readAllMemories();
+  const memories = excludeSupportPassportPrivateMemories(
+    memoryWindow?.memories ?? await storage.readAllMemories(),
+  );
   const reviewQueue = await buildReviewQueue(options.memoryDir, storage, memories, now, {
     malformedCandidateFiles: memoryWindow?.filePaths,
   });

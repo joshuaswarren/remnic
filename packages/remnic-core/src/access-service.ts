@@ -110,6 +110,11 @@ import {
   memorySearchThroughScope,
 } from "./access-memory-search-fanout.js";
 import { isSearchExcludedPath } from "./orchestration/generic-recall-paths.js";
+import { createSupportPassportPrivateFileExclusion, isSupportPassportPrivateMemory } from "./support-passport/card-projection.js";
+import {
+  applySupportPassportOfflineSyncChangeset,
+  applySupportPassportOfflineSyncFileContent,
+} from "./support-passport/offline-sync-guard.js";
 import {
   buildQualityScore,
   buildProposedActions,
@@ -281,9 +286,7 @@ import {
   type CapsuleListEntry,
 } from "./capsule-cli.js";
 import {
-  applyOfflineSyncFileContentChunk,
   compileOfflineSyncExcludeGlobs,
-  applyOfflineSyncChangeset,
   buildOfflineSyncSnapshot,
   buildOfflineSyncSnapshotFromBase,
   buildOfflineSyncSnapshotForPaths,
@@ -3000,9 +3003,7 @@ export class EngramAccessService {
     const resolvedNamespace = this.resolveReadableNamespace(namespace, principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     const memory = await storage.getMemoryById(resolvedId);
-    if (!memory) {
-      return { found: false, namespace: resolvedNamespace };
-    }
+    if (!memory || isSupportPassportPrivateMemory(memory)) return { found: false, namespace: resolvedNamespace };
     return {
       found: true,
       namespace: resolvedNamespace,
@@ -3371,6 +3372,7 @@ export class EngramAccessService {
       query,
       status: statusFilter,
       category: categoryFilter,
+      excludePrivateRecords: true,
       sort,
       limit,
       offset,
@@ -3389,6 +3391,7 @@ export class EngramAccessService {
 
     let memories = [...await storage.readAllMemories(), ...await storage.readArchivedMemories()];
     memories = memories.filter((memory) => {
+      if (isSupportPassportPrivateMemory(memory)) return false;
       const status = inferMemoryStatus(memory.frontmatter, toMemoryPathRel(storage.dir, memory.path)).toLowerCase();
       if (statusFilter && status !== statusFilter) return false;
       if (categoryFilter && memory.frontmatter.category.toLowerCase() !== categoryFilter) return false;
@@ -3427,6 +3430,8 @@ export class EngramAccessService {
   ): Promise<EngramAccessTimelineResponse> {
     const resolvedNamespace = this.resolveReadableNamespace(namespace, principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
+    const memory = await storage.getMemoryByIdIncludingArchived(memoryId);
+    if (!memory || isSupportPassportPrivateMemory(memory)) return { found: false, namespace: resolvedNamespace, count: 0, timeline: [] };
     const timeline = await storage.getMemoryTimeline(memoryId, limit);
     return {
       found: timeline.length > 0,
@@ -3918,7 +3923,7 @@ export class EngramAccessService {
     );
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     const memory = await storage.getMemoryById(memoryId);
-    if (!memory) {
+    if (!memory || isSupportPassportPrivateMemory(memory)) {
       throw new EngramAccessInputError(`memory not found: ${memoryId}`);
     }
 
@@ -4546,8 +4551,6 @@ export class EngramAccessService {
     );
   }
 
-  // ── Shared Context / Compounding ────────────────────────────────────────
-
   async sharedContextWriteOutput(request: {
     agentId: string;
     title: string;
@@ -4678,8 +4681,6 @@ export class EngramAccessService {
     });
   }
 
-  // ── Compression Guidelines ────────────────────────────────────────────
-
   async compressionGuidelinesOptimize(request: {
     dryRun?: boolean;
     eventLimit?: number;
@@ -4705,7 +4706,6 @@ export class EngramAccessService {
       expectedGuidelineVersion: request.expectedGuidelineVersion,
     });
   }
-  // ── Memory search & debug ─────────────────────────────────────────────
 
   async memorySearch(request: {
     query: string;
@@ -4719,6 +4719,7 @@ export class EngramAccessService {
     return memorySearchThroughScope(
       {
         namespacesEnabled: resolveNamespaceCapabilities(config).namespaces,
+        memoryCollections: [config.qmdCollection, config.qmdColdCollection ?? "openclaw-engram-cold"],
         // `0` is preserved, never coerced: a zero limit is a runtime
         // compatibility guarantee (AGENTS.md guardrail 4), and it means the
         // same thing here as an explicit `maxResults: 0` from the caller - an
@@ -4736,9 +4737,8 @@ export class EngramAccessService {
             { ...config, requestedCollection: request.collection?.trim() || undefined },
             "qmd",
           ),
-        authorizeFlatCorpus: (namespace, principal) => {
-          this.resolveReadableNamespace(namespace, principal);
-        },
+        filterPrivate: this.orchestrator.filterPrivateSearchResults,
+        authorizeFlatCorpus: (namespace, principal) => void this.resolveReadableNamespace(namespace, principal),
         authorizeNamespaces: async (namespace, principal, collection) =>
           this.resolveMemorySearchNamespacesForCollection(
             collection,
@@ -5483,6 +5483,7 @@ export class EngramAccessService {
       signal: options.signal,
       userExcludeRegexps: this.offlineSyncUserExcludes,
       deletions,
+      excludeFile: createSupportPassportPrivateFileExclusion(storage),
     });
     return {
       namespace: resolvedNamespace,
@@ -5519,6 +5520,7 @@ export class EngramAccessService {
         readFileDigest: async ({ filePath }) => storage.digestOfflineSyncFile(filePath),
         signal: options.signal,
         userExcludeRegexps: this.offlineSyncUserExcludes,
+        excludeFile: createSupportPassportPrivateFileExclusion(storage),
       }),
     };
   }
@@ -5551,6 +5553,7 @@ export class EngramAccessService {
         includeTranscripts: options.includeTranscripts !== false,
         readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
         userExcludeRegexps: this.offlineSyncUserExcludes,
+        excludeFile: createSupportPassportPrivateFileExclusion(storage),
       });
       return {
         namespace: resolvedNamespace,
@@ -5583,6 +5586,7 @@ export class EngramAccessService {
         includeTranscripts: options.includeTranscripts !== false,
         readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
         userExcludeRegexps: this.offlineSyncUserExcludes,
+        excludeFile: createSupportPassportPrivateFileExclusion(storage),
       });
       return {
         namespace: resolvedNamespace,
@@ -5613,23 +5617,7 @@ export class EngramAccessService {
     );
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     try {
-      const result = await applyOfflineSyncFileContentChunk({
-        root: storage.dir,
-        sourceId: options.sourceId,
-        path: options.path,
-        sha256: options.sha256,
-        bytes: options.bytes,
-        mtimeMs: options.mtimeMs,
-        offset: options.offset,
-        baseSha256: options.baseSha256,
-        content: options.content,
-        includeTranscripts: options.includeTranscripts !== false,
-        readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
-        readFileDigest: async ({ filePath }) => storage.digestOfflineSyncFile(filePath),
-        writeFile: async ({ filePath, content }) => storage.writeOfflineSyncFile(filePath, content),
-        writeStagingFile: async ({ filePath, content }) => storage.writeOfflineSyncStagingFile(filePath, content),
-        writeFileChunks: async ({ filePath, chunks }) => storage.writeOfflineSyncFileChunks(filePath, chunks),
-      });
+      const result = await applySupportPassportOfflineSyncFileContent(storage, options);
       return {
         namespace: resolvedNamespace,
         ...result,
@@ -5687,18 +5675,7 @@ export class EngramAccessService {
     );
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     try {
-      const result = await applyOfflineSyncChangeset({
-        root: storage.dir,
-        changeset: options.changeset,
-        returnCurrentFiles: options.returnCurrentFiles,
-        readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
-        readFileDigest: async ({ filePath }) => storage.digestOfflineSyncFile(filePath),
-        writeFile: async ({ filePath, content }) => storage.writeOfflineSyncFile(filePath, content),
-        deleteFile: async ({ filePath, mtimeMs }) =>
-          storage.deleteOfflineSyncFile(filePath, mtimeMs ?? null),
-        recordDeletionRevision: async ({ filePath, mtimeMs }) =>
-          storage.recordReplicatedDeletionRevision(filePath, mtimeMs),
-      });
+      const result = await applySupportPassportOfflineSyncChangeset(storage, options);
       return {
         namespace: resolvedNamespace,
         ...result,

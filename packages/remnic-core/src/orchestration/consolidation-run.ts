@@ -67,6 +67,7 @@ import type {
   PluginConfig,
   RecallSectionConfig,
 } from "../types.js";
+import { excludeSupportPassportPrivateMemories } from "../support-passport/card-projection.js";
 
 /** Dependencies injected by the orchestrator. Stable references or live
  *  accessors — lazy getters for mutable fields tests reassign
@@ -449,7 +450,7 @@ export class ConsolidationRunCoordinator {
     }
     await this.pruneHarmonicStores(storage);
 
-    let allMemories = await storage.readAllMemories();
+    let allMemories = excludeSupportPassportPrivateMemories(await storage.readAllMemories());
     if (allMemories.length < 5) {
       return { memoriesProcessed: allMemories.length, merged, invalidated };
     }
@@ -801,7 +802,7 @@ export class ConsolidationRunCoordinator {
       // mutations for the catalog touch below (codex NThSW).
       const tierMigration = await this.deps.tierMigrationCoordinator.runCycle(storage, "maintenance");
       if (tierMigration.migrated > 0) memoryItemMutated = true;
-      allMemories = await storage.readAllMemories();
+      allMemories = excludeSupportPassportPrivateMemories(await storage.readAllMemories());
 
       // Fact archival pass (v6.0) — move old, low-importance, rarely-accessed facts to archive/
       if (resolveRecallEnhancementCapabilities(config).factArchival) {
@@ -823,7 +824,7 @@ export class ConsolidationRunCoordinator {
     } catch (err) {
       log.warn(`deep-sleep maintenance pass failed (ignored): ${err}`);
       try {
-        allMemories = await storage.readAllMemories();
+        allMemories = excludeSupportPassportPrivateMemories(await storage.readAllMemories());
       } catch (readErr) {
         log.warn(`deep-sleep maintenance recovery read failed: ${readErr}`);
         throw err;
@@ -862,7 +863,7 @@ export class ConsolidationRunCoordinator {
           const semResult = await this.deps.semanticConsolidationCoordinator.runSemanticConsolidation();
           let remItemsProcessed = allMemories.length;
           try {
-            allMemories = await storage.readAllMemories();
+            allMemories = excludeSupportPassportPrivateMemories(await storage.readAllMemories());
             remItemsProcessed = allMemories.length;
           } catch (err) {
             log.warn(
