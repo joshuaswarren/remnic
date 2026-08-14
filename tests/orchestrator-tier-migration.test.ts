@@ -35,7 +35,7 @@ test("tier migration cycle demotes hot memory when enabled", async () => {
       updateCollection: async () => {},
       embedCollection: async () => {},
     };
-    const storage = orchestrator.storage;
+    const storage: StorageManager = orchestrator.storage;
     await storage.writeMemory("fact", "demote me", { source: "test" });
 
     await orchestrator.runTierMigrationCycle(storage, "extraction");
@@ -60,7 +60,7 @@ test("tier migration pins live passport cards but routes completed private recor
       updateCollection: async () => {},
       embedCollection: async () => {},
     };
-    const storage = orchestrator.storage;
+    const storage: StorageManager = orchestrator.storage;
     const cardAttributes = {
       "support-passport-category": "environment",
       "support-passport-namespace": "alice",
