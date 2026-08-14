@@ -1,19 +1,52 @@
 import path from "node:path";
 
 import type { OfflineSyncFileTarget } from "../offline-sync-file-io.js";
-import { parseFrontmatter } from "../storage.js";
+import {
+  applyOfflineSyncChangeset,
+  applyOfflineSyncFileContentChunk,
+  buildOfflineSyncSnapshot,
+  normalizeOfflineSyncChangeset,
+  type OfflineSyncApplyChangesetResult,
+  type OfflineSyncApplyFileContentChunkResult,
+} from "../offline-sync.js";
 import { validateArchiveRelativePath } from "../transfer/fs-utils.js";
 import type { MemoryFile } from "../types.js";
-import {
-  createSupportPassportPrivateFileExclusion,
-  isSupportPassportPrivateMemory,
-} from "./card-projection.js";
+import { createSupportPassportPrivateFileExclusion } from "./card-projection.js";
 
 const MAX_SUPPORT_PASSPORT_FRONTMATTER_BYTES = 1_048_576;
 const SUPPORT_PASSPORT_MARKER = "support-passport-";
 const FRONTMATTER_PREFIXES = ["---\n", "---\r\n"] as const;
 
 type FrontmatterDecision = "allow" | "wait";
+
+interface SupportPassportOfflineSyncStorage {
+  dir: string;
+  readMemoryByPath(filePath: string): Promise<MemoryFile | null>;
+  readOfflineSyncFile(filePath: string): Promise<Buffer>;
+  digestOfflineSyncFile(filePath: string): Promise<{ sha256: string; bytes: number }>;
+  writeOfflineSyncFile(filePath: string, content: Buffer): Promise<void>;
+  writeOfflineSyncStagingFile(filePath: string, content: Buffer): Promise<void>;
+  writeOfflineSyncFileChunks(filePath: string, chunks: AsyncIterable<Buffer>): Promise<void>;
+  deleteOfflineSyncFile(filePath: string, deletionMtimeMs?: number | null): Promise<void>;
+  recordReplicatedDeletionRevision(filePath: string, mtimeMs: number): Promise<void>;
+}
+
+interface SupportPassportOfflineSyncFileContentInput {
+  includeTranscripts?: boolean;
+  sourceId: string;
+  path: string;
+  sha256: string;
+  bytes: number;
+  mtimeMs: number;
+  offset?: number;
+  baseSha256?: string;
+  content: Buffer;
+}
+
+interface SupportPassportOfflineSyncApplyInput {
+  changeset: unknown;
+  returnCurrentFiles?: boolean;
+}
 
 function frontmatterPrefixState(raw: Buffer): "absent" | "present" | "pending" {
   const prefix = raw.subarray(0, Math.min(raw.length, 5)).toString("utf8");
@@ -28,11 +61,7 @@ function completeFrontmatter(raw: Buffer): string | null {
 }
 
 function assertFrontmatterAllowed(frontmatter: string, relativePath: string): void {
-  const parsed = parseFrontmatter(frontmatter);
-  if (
-    frontmatter.includes(SUPPORT_PASSPORT_MARKER)
-    || (parsed !== null && isSupportPassportPrivateMemory(parsed))
-  ) {
+  if (frontmatter.includes(SUPPORT_PASSPORT_MARKER)) {
     throw new Error(`offline sync cannot modify private support-passport record: ${relativePath}`);
   }
 }
@@ -121,4 +150,80 @@ export function createSupportPassportOfflineSyncGuard(storage: {
     },
     excludePrivateFile,
   };
+}
+
+export async function applySupportPassportOfflineSyncFileContent(
+  storage: SupportPassportOfflineSyncStorage,
+  options: SupportPassportOfflineSyncFileContentInput,
+): Promise<OfflineSyncApplyFileContentChunkResult> {
+  const guard = createSupportPassportOfflineSyncGuard(storage);
+  await guard.assertPathAllowed(options.path);
+  return applyOfflineSyncFileContentChunk({
+    root: storage.dir,
+    sourceId: options.sourceId,
+    path: options.path,
+    sha256: options.sha256,
+    bytes: options.bytes,
+    mtimeMs: options.mtimeMs,
+    offset: options.offset,
+    baseSha256: options.baseSha256,
+    content: options.content,
+    includeTranscripts: options.includeTranscripts !== false,
+    readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
+    readFileDigest: async ({ filePath }) => storage.digestOfflineSyncFile(filePath),
+    writeFile: async ({ filePath, content }) => storage.writeOfflineSyncFile(filePath, content),
+    writeStagingFile: async ({ filePath, content }) => storage.writeOfflineSyncStagingFile(filePath, content),
+    writeFileChunks: async (target) => {
+      await guard.assertTargetAllowed(target);
+      await storage.writeOfflineSyncFileChunks(
+        target.filePath,
+        guard.guardChunks(target.path, target.chunks),
+      );
+    },
+  });
+}
+
+export async function applySupportPassportOfflineSyncChangeset(
+  storage: SupportPassportOfflineSyncStorage,
+  options: SupportPassportOfflineSyncApplyInput,
+): Promise<OfflineSyncApplyChangesetResult> {
+  const guard = createSupportPassportOfflineSyncGuard(storage);
+  const changeset = normalizeOfflineSyncChangeset(options.changeset);
+  for (const change of changeset.changes) {
+    await guard.assertPathAllowed(change.path);
+    if (change.type === "upsert") {
+      guard.assertContentAllowed(change.path, Buffer.from(change.file.contentBase64, "base64"));
+    }
+  }
+  const result = await applyOfflineSyncChangeset({
+    root: storage.dir,
+    changeset,
+    returnCurrentFiles: false,
+    readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
+    readFileDigest: async ({ filePath }) => storage.digestOfflineSyncFile(filePath),
+    writeFile: async (target) => {
+      await guard.assertTargetAllowed(target);
+      guard.assertContentAllowed(target.path, target.content);
+      await storage.writeOfflineSyncFile(target.filePath, target.content);
+    },
+    deleteFile: async (target) => {
+      await guard.assertTargetAllowed(target);
+      await storage.deleteOfflineSyncFile(target.filePath, target.mtimeMs ?? null);
+    },
+    recordDeletionRevision: async ({ filePath, mtimeMs }) =>
+      storage.recordReplicatedDeletionRevision(filePath, mtimeMs),
+  });
+  if (options.returnCurrentFiles === false) return result;
+
+  const current = await buildOfflineSyncSnapshot({
+    root: storage.dir,
+    sourceId: "local",
+    includeContent: false,
+    includeTranscripts: changeset.includeTranscripts,
+    readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
+    readFileDigest: async ({ filePath }) => storage.digestOfflineSyncFile(filePath),
+    excludeFile: guard.excludePrivateFile,
+  });
+  const { currentFiles: _partialFiles, currentFilesComplete: _incomplete, ...counts } = result;
+  return { ...counts, currentFiles: current.files };
 }
