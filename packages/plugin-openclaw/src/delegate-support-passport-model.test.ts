@@ -352,12 +352,10 @@ test("a late claim renewal rejection does not report an accepted completion as f
         }
         return;
       }
-      pendingRenewal?.writeHead(404).end();
-      setTimeout(() => {
-        res.statusCode = 204;
-        res.end();
-        completionSent.resolve();
-      }, 20);
+      res.statusCode = 204;
+      res.end();
+      completionSent.resolve();
+      setTimeout(() => pendingRenewal?.writeHead(404).end(), 20);
     });
   });
   await new Promise<void>((resolve, reject) => {
@@ -399,6 +397,98 @@ test("a late claim renewal rejection does not report an accepted completion as f
     assert.equal(
       warnings.some((warning) => warning.includes("support passport model completion failed")),
       false
+    );
+  } finally {
+    await service.stop();
+    resetLogger();
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("a claim renewal failure stops transient completion retries", async () => {
+  const leaseFailureLogged = Promise.withResolvers<void>();
+  const warnings: string[] = [];
+  const job: SupportPassportModelJob = {
+    id: "a871fab2-2f1c-478c-af4c-8c4a755d8083",
+    claimId: "b871fab2-2f1c-478c-af4c-8c4a755d8084",
+    claimAckTimeoutMs: 500,
+    executionLeaseTimeoutMs: 90,
+    messages: [{ role: "user", content: "What helps?" }],
+    temperature: 0,
+    maxTokens: 100,
+    timeoutMs: 2_000,
+    operation: "support-passport-answer",
+    jsonSchema: { name: "answer", schema: { type: "object" } },
+  };
+  let served = false;
+  let acknowledgements = 0;
+  let completionAttempts = 0;
+  const server = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      if (req.url?.endsWith("/jobs/next")) {
+        if (!served) {
+          served = true;
+          res.end(JSON.stringify(job));
+        } else {
+          res.statusCode = 204;
+          res.end();
+        }
+        return;
+      }
+      if (req.url?.endsWith("/jobs/ack")) {
+        acknowledgements += 1;
+        res.statusCode = acknowledgements === 1 ? 204 : 404;
+        res.end();
+        return;
+      }
+      completionAttempts += 1;
+      res.statusCode = 503;
+      res.end();
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("server did not bind");
+  initLogger(
+    {
+      info() {},
+      warn(message) {
+        warnings.push(message);
+        if (message.includes("claim lease renewal failed")) leaseFailureLogged.resolve();
+      },
+      error() {},
+    },
+    false,
+    { timestamps: false }
+  );
+  const service = createDelegateSupportPassportModelService({
+    serviceId: "openclaw-remnic",
+    target: {
+      host: "127.0.0.1",
+      port: address.port,
+      resolveAuthToken: () => ({ token: "daemon-token", source: "REMNIC_AUTH_TOKEN" }),
+    },
+    route: {
+      kind: "gateway",
+      invoke: async () => ({ content: "{}", modelUsed: "gateway/local" }),
+    },
+  });
+  try {
+    await service.start();
+    await Promise.race([
+      leaseFailureLogged.promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("lease failure was not propagated")), 1_000)),
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    assert.equal(completionAttempts, 1, "the stale worker did not retry its result");
+    assert.equal(
+      warnings.some((warning) => warning.includes("claim lease renewal failed")),
+      true
     );
   } finally {
     await service.stop();
