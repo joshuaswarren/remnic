@@ -56,7 +56,12 @@ export interface AuditMemoryReport {
 }
 
 function isActive(memory: MemoryFile, memoryDir: string): boolean {
-  if (memory.frontmatter.status !== "active") return false;
+  // #1955 review: legacy memories without an explicit status ARE active in
+  // normal recall (inferMemoryStatus handles missing status), so the audit
+  // must include them — otherwise injection-bearing legacy memories can
+  // never be reported or quarantined. Explicit non-active statuses bail.
+  const status = memory.frontmatter.status;
+  if (status !== undefined && status !== "active") return false;
   if (memory.frontmatter.archivedAt !== undefined) return false;
   const pathRel = toMemoryPathRel(memoryDir, memory.path);
   if (isArchivedMemoryPath(memory.path) || isArchivedMemoryPath(pathRel)) return false;
@@ -139,13 +144,21 @@ function lineageKey(memory: MemoryFile): string | undefined {
   return undefined;
 }
 
+/**
+ * Group by lineage AND creation day: a burst is many writes in a SHORT
+ * interval, so a long-lived legitimate session must not aggregate months of
+ * normal writes into one quarantine-eligible bucket (#1955 review).
+ */
 function sourceGroups(memories: MemoryFile[]): Map<string, MemoryFile[]> {
   const groups = new Map<string, MemoryFile[]>();
   for (const memory of memories) {
-    const key = lineageKey(memory);
+    const lineage = lineageKey(memory);
     // Do not create an "unknown" group. Generic or absent provenance cannot
     // establish a write burst.
-    if (key === undefined) continue;
+    if (lineage === undefined) continue;
+    const day = typeof memory.frontmatter.created === "string" ? memory.frontmatter.created.slice(0, 10) : "";
+    if (!day) continue;
+    const key = `${lineage}@${day}`;
     const group = groups.get(key) ?? [];
     group.push(memory);
     groups.set(key, group);

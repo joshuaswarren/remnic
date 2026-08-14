@@ -450,7 +450,14 @@ export class RecallResultFormatter {
           verificationStatus,
           `confidence:${effectiveConfidence.toFixed(2)}`,
         ].join(" | ");
-        const details = [rule.content, `source memory: ${sourceMemoryId}`];
+        // #1955 review: the rule body derives from a source memory whose
+        // origin is not copied onto the rule — fence via the rule's own
+        // frontmatter origin (missing → unknown, least privilege) when on.
+        const ruleBody = renderAuthorityBoundContent(rule.content, rule.frontmatter.origin, {
+          enabled: this.originAuthorityEnabled,
+          untrustedOrigins: this.config.untrustedOrigins,
+        });
+        const details = [ruleBody, `source memory: ${sourceMemoryId}`];
         if (matchedFields.length > 0) {
           details.push(`matched: ${matchedFields.join(", ")}`);
         }
