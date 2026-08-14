@@ -104,6 +104,21 @@ test("openaiBaseUrl rejects a blank configured URL", () => {
   assert.equal(warnings.length, 0);
 });
 
+test("openaiBaseUrl rejects URL components that alter the request destination", () => {
+  const { warnings } = withLoggerWarnings();
+  for (const openaiBaseUrl of [
+    "https://user:pass@models.example.test/v1",
+    "https://models.example.test/v1?route=other",
+    "https://models.example.test/v1#fragment",
+  ]) {
+    assert.throws(
+      () => parseConfig({ openaiApiKey: "sk-test", openaiBaseUrl }),
+      /openaiBaseUrl must not include credentials, query parameters, or fragments/,
+    );
+  }
+  assert.equal(warnings.length, 0);
+});
+
 test("openaiBaseUrl warns when using insecure http", () => {
   const { warnings } = withLoggerWarnings();
   const cfg = parseConfig({

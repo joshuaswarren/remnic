@@ -176,3 +176,34 @@ test("OpenClaw support passport models never spill into the gateway default chai
     globalThis.fetch = originalFetch;
   }
 });
+
+test("OpenClaw support passport models reject a missing explicit gateway agent", async () => {
+  let callCount = 0;
+  const config = parseConfig({
+    modelSource: "gateway",
+    openaiApiKey: false,
+    gatewayAgentId: "missing-agent",
+    gatewayConfig: {
+      agents: { defaults: { model: { primary: "gateway/default" } } },
+    },
+  });
+  const gatewayRoute = createOpenClawSupportPassportModelRoute(config, {
+    chatCompletion: async () => {
+      callCount += 1;
+      return {
+        content: JSON.stringify({ cards: [] }),
+        modelUsed: "gateway/default",
+      };
+    },
+  });
+  const adapter = createSupportPassportModelAdapter(config, { gatewayRoute });
+
+  await assert.rejects(
+    adapter.draftCards({
+      consent: true,
+      memories: [{ memoryId: "memory-1", content: "Tell me before plans change." }],
+    }),
+    (error: unknown) => (error as { code?: string }).code === "provider_unavailable",
+  );
+  assert.equal(callCount, 0);
+});

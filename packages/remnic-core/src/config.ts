@@ -486,6 +486,12 @@ function normalizeOpenaiBaseUrl(value: string | undefined, source: "config" | "e
     throw new Error(`${source === "env" ? "OPENAI_BASE_URL" : "openaiBaseUrl"} must use HTTP or HTTPS`);
   }
 
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error(
+      `${source === "env" ? "OPENAI_BASE_URL" : "openaiBaseUrl"} must not include credentials, query parameters, or fragments`,
+    );
+  }
+
   if (parsed.protocol === "http:") {
     log.warn(`openaiBaseUrl from ${source} is using insecure http; prefer https`);
   }
