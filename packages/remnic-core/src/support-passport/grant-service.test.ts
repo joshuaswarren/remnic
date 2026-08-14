@@ -750,6 +750,48 @@ test("grant creation reports one commit after its final owner check", async () =
   }
 });
 
+test("grant revocation reports its committed state when the owner lock is lost after storage", async () => {
+  const subject = await makeSubject();
+  try {
+    const card = await createActiveCard(subject);
+    const created = await subject.grantService.createGrant({
+      principal: "owner:alice",
+      cards: [{ cardId: card.cardId, revision: card.revision }],
+      expiresAt: expiryAfter(subject, 3_600_000),
+    });
+    const revoke = subject.grantStore.revoke.bind(subject.grantStore);
+    subject.grantStore.revoke = async (...args) => {
+      const revoked = await revoke(...args);
+      const lockPath = supportPassportOwnerLockPath(subject.aliceStorage, {
+        namespace: "alice",
+        principal: "owner:alice",
+      });
+      await writeFile(lockPath, `${process.pid} 00000000-0000-4000-8000-000000000000 peer\n`);
+      return revoked;
+    };
+    let commitNotifications = 0;
+
+    const revoked = await subject.grantService.revokeGrant(
+      {
+        principal: "owner:alice",
+        grantId: created.grant.grantId,
+        expectedStateVersion: created.grant.stateVersion,
+      },
+      {
+        onCommitted: () => {
+          commitNotifications += 1;
+        },
+      }
+    );
+
+    assert.equal(revoked.status, "revoked");
+    assert.ok(revoked.revokedAt);
+    assert.equal(commitNotifications, 1);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
 test("grant creation measures its minimum lifetime from request receipt", async () => {
   const subject = await makeSubject();
   try {

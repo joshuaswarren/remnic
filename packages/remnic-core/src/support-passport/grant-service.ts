@@ -21,7 +21,7 @@ import {
   type SupportPassportRevokeGrantInput,
   SupportPassportRevokeGrantInputSchema,
 } from "./grant-contracts.js";
-import { notifySupportPassportCommitted, type SupportPassportGrantStore } from "./grant-store.js";
+import { type SupportPassportGrantStore, notifySupportPassportCommitted } from "./grant-store.js";
 import { requireSupportPassportOwnerLock, withSupportPassportOwnerLock } from "./owner-lock.js";
 
 export interface SupportPassportGrantServiceDependencies {
@@ -153,11 +153,11 @@ export class SupportPassportGrantService {
               options.signal?.throwIfAborted();
               await requireSupportPassportOwnerLock(ownerLock);
             },
-            ...(options.onCommitted ? { onCommitted: options.onCommitted } : {}),
           }
         );
-        await requireSupportPassportOwnerLock(ownerLock);
-        return this.ownerGrant(state);
+        const output = this.ownerGrant(state);
+        notifySupportPassportCommitted(options.onCommitted);
+        return output;
       }
     );
   }
