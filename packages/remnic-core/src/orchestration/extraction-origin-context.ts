@@ -26,7 +26,17 @@ export function deriveExtractionOriginContext(
       .map((turn) => turn.sourceConnector)
       .filter((connector): connector is string => typeof connector === "string" && connector.length > 0),
   );
-  const connector = originConnectors.size === 1 ? [...originConnectors][0] : undefined;
+  // Mirror the pre-#1955 provenance rule: a batch only carries a connector
+  // when EVERY turn is tagged with the same one — a mixed tagged+untagged
+  // batch must stay connector-less (connector-provenance-lifecycle tests).
+  const connector =
+    targetTurns.length > 0 &&
+    targetTurns.every(
+      (turn) => typeof turn.sourceConnector === "string" && turn.sourceConnector.length > 0,
+    ) &&
+    originConnectors.size === 1
+      ? [...originConnectors][0]
+      : undefined;
   const originAdapters = new Set(
     targetTurns
       .map((turn) => turn.importProvenance?.sourceLabel)

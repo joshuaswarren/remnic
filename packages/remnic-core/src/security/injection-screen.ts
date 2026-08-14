@@ -71,7 +71,11 @@ function findToolInvocationSyntax(content: string): InjectionScreenFinding | und
   ) ?? findingFor(
     "tool-invocation-syntax",
     content,
-    /<(?:tool(?:_call)?|function(?:_call)?|invoke)\b[^>]*>|\b(?:call|invoke|execute|run)\s+[a-z][\w:-]*(?:\s+tool)?\b/i,
+    // Bare verbs only count when the target looks like a tool identifier
+    // (namespaced / snake_case / dotted) or is explicitly called a tool —
+    // plain English like "on-call SRE" or "call Sam" must not trip the
+    // screen (#1955 false-positive criterion).
+    /<(?:tool(?:_call)?|function(?:_call)?|invoke)\b[^>]*>|\b(?:call|invoke|execute|run)\s+(?:the\s+)?[a-z][\w-]*(?:[_:.][\w-]+)+\b|\b(?:call|invoke|execute|run)\s+the\s+[\w-]+\s+tool\b/i,
   ) ?? findingFor(
     "tool-invocation-syntax",
     content,
