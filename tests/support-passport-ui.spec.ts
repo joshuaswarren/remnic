@@ -486,11 +486,9 @@ test("a hidden owner write cannot add an error after reconnect", async ({ page }
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url.endsWith("/engram/v1/support-passport/drafts/generate") && init?.method === "POST") {
         return await new Promise((_resolve, reject) => {
-          init.signal?.addEventListener(
-            "abort",
-            () => Object.assign(window, { __hiddenOwnerWriteAborted: true }),
-            { once: true }
-          );
+          init.signal?.addEventListener("abort", () => Object.assign(window, { __hiddenOwnerWriteAborted: true }), {
+            once: true,
+          });
           Object.assign(window, {
             __releaseHiddenOwnerWrite: () => reject(new Error("late hidden owner write failure")),
           });
@@ -532,17 +530,13 @@ test("a hidden owner write cannot add an error after reconnect", async ({ page }
   await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })));
   await expect
     .poll(() =>
-      page.evaluate(
-        () => (window as typeof window & { __hiddenOwnerWriteAborted?: boolean }).__hiddenOwnerWriteAborted
-      )
+      page.evaluate(() => (window as typeof window & { __hiddenOwnerWriteAborted?: boolean }).__hiddenOwnerWriteAborted)
     )
     .toBe(true);
   await page.getByLabel("Bearer token").fill("owner-token");
   await page.getByRole("button", { name: "Open my guide" }).click();
   await page.evaluate(() => {
-    const release = (
-      window as typeof window & { __releaseHiddenOwnerWrite?: () => void }
-    ).__releaseHiddenOwnerWrite;
+    const release = (window as typeof window & { __releaseHiddenOwnerWrite?: () => void }).__releaseHiddenOwnerWrite;
     release?.();
   });
 
@@ -1312,7 +1306,9 @@ test("a timed-out manual draft stays uncertain when an identical draft appears",
         url.endsWith("/engram/v1/support-passport/cards") &&
         (window as typeof window & { __ownerDraftAbortObserved?: boolean }).__ownerDraftAbortObserved
       ) {
-        if ((window as typeof window & { __ownerDraftReconciliationStarted?: boolean }).__ownerDraftReconciliationStarted) {
+        if (
+          (window as typeof window & { __ownerDraftReconciliationStarted?: boolean }).__ownerDraftReconciliationStarted
+        ) {
           return identicalDraftResponse();
         }
         Object.assign(window, { __ownerDraftReconciliationStarted: true });
@@ -1940,6 +1936,22 @@ test("a fragment helper suppresses owner prefill when the model bundle fails", a
   expect(pageErrors).toContain("What Helps Me model did not load.");
 });
 
+test("a manual owner token clears when the app bundles fail", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers bundle-independent token cleanup.");
+  await page.route(/\/what-helps-me\/(?:model|app)\.js$/, async (route) => {
+    await route.abort();
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await page.getByLabel("Bearer token").fill("manual-owner-token");
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })));
+
+  await expect(page.getByLabel("Bearer token")).toHaveValue("");
+  await page.getByLabel("Bearer token").fill("restored-owner-token");
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })));
+  await expect(page.getByLabel("Bearer token")).toHaveValue("");
+});
+
 test("a transient initial helper failure can retry without the removed URL secret", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers initial helper retry.");
   const now = new Date();
@@ -2010,7 +2022,9 @@ test("owner navigation avoids smooth scrolling when reduced motion is requested"
   ).toEqual(["auto"]);
 });
 
-test("share links use the canonical path and keep preset duration independent from browser time", async ({ page }, testInfo) => {
+test("share links use the canonical path and keep preset duration independent from browser time", async ({
+  page,
+}, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers the browser policy helpers.");
   await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
 
@@ -2281,43 +2295,64 @@ test("a live helper view locks after the owner revokes its grant", async ({ page
   await page.clock.install({ time: now });
   let reads = 0;
   const updatedAt = now.toISOString();
-  await page.route("**/engram/v1/support-passport/public/grants/replay-grant-live-revoked", async (route) => {
-    reads += 1;
-    if (reads > 1) {
+  await page.route(
+    /\/engram\/v1\/support-passport\/public\/grants\/replay-grant-live-revoked(?:\/ask)?$/,
+    async (route) => {
+      if (route.request().method() === "POST") {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            answer: "Offer a quiet place.",
+            citedCardIds: ["card-live"],
+            coverage: "grounded",
+          }),
+        });
+        return;
+      }
+      reads += 1;
+      if (reads > 1) {
+        await route.fulfill({
+          status: 410,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "ended", code: "grant_gone" }),
+        });
+        return;
+      }
       await route.fulfill({
-        status: 410,
+        status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ error: "ended", code: "grant_gone" }),
+        body: JSON.stringify({
+          schemaVersion: 1,
+          grantId: "replay-grant-live-revoked",
+          expiresAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
+          updatedAt,
+          cards: [
+            {
+              cardId: "card-live",
+              title: "Quiet place",
+              statement: "Offer me a quiet place and time.",
+              category: "environment",
+              updatedAt,
+            },
+          ],
+        }),
       });
-      return;
     }
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        schemaVersion: 1,
-        grantId: "replay-grant-live-revoked",
-        expiresAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
-        updatedAt,
-        cards: [
-          {
-            cardId: "card-live",
-            title: "Quiet place",
-            statement: "Offer me a quiet place and time.",
-            category: "environment",
-            updatedAt,
-          },
-        ],
-      }),
-    });
-  });
+  );
 
   await page.goto(helperUrl("-live-revoked").replace("mode=replay&", ""));
   await expect(page.locator(".public-card")).toHaveCount(1);
+  await page.getByLabel("Your question").fill("What helps right now?");
+  await page.getByRole("button", { name: "Ask from this guide" }).click();
+  await expect(page.getByText("Offer a quiet place.", { exact: true })).toBeVisible();
   await page.clock.fastForward(30_000);
   await expect(page.getByRole("heading", { name: "This support passport is locked." })).toBeVisible();
   expect(reads).toBeGreaterThanOrEqual(2);
   await expect(page.locator(".public-card")).toHaveCount(0);
+  await expect(page.getByLabel("Your question")).toHaveValue("");
+  await expect(page.locator("#answerCopy")).toHaveText("");
+  await expect(page.locator("#citationList")).toBeEmpty();
 });
 
 test("a restored helper view stays locked without its removed secret", async ({ page }, testInfo) => {
@@ -2385,11 +2420,9 @@ test("a late helper load failure cannot replace the hidden-page lock", async ({ 
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url.includes("replay-grant-hidden-helper") && (init?.method ?? "GET") === "GET") {
         return await new Promise((_resolve, reject) => {
-          init?.signal?.addEventListener(
-            "abort",
-            () => Object.assign(window, { __hiddenHelperReadAborted: true }),
-            { once: true }
-          );
+          init?.signal?.addEventListener("abort", () => Object.assign(window, { __hiddenHelperReadAborted: true }), {
+            once: true,
+          });
           Object.assign(window, {
             __releaseHiddenHelperRead: () => reject(new Error("late hidden helper read failure")),
           });
@@ -2405,15 +2438,11 @@ test("a late helper load failure cannot replace the hidden-page lock", async ({ 
   await expect(page.getByRole("heading", { name: "This helper session ended." })).toBeVisible();
   await expect
     .poll(() =>
-      page.evaluate(
-        () => (window as typeof window & { __hiddenHelperReadAborted?: boolean }).__hiddenHelperReadAborted
-      )
+      page.evaluate(() => (window as typeof window & { __hiddenHelperReadAborted?: boolean }).__hiddenHelperReadAborted)
     )
     .toBe(true);
   await page.evaluate(() => {
-    const release = (
-      window as typeof window & { __releaseHiddenHelperRead?: () => void }
-    ).__releaseHiddenHelperRead;
+    const release = (window as typeof window & { __releaseHiddenHelperRead?: () => void }).__releaseHiddenHelperRead;
     release?.();
   });
 

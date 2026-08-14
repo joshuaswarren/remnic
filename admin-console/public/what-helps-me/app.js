@@ -1038,6 +1038,16 @@
     }
   }
 
+  function clearHelperSensitiveView() {
+    byId("questionForm").reset();
+    byId("questionInput").disabled = false;
+    byId("questionCount").textContent = "0";
+    byId("answerCopy").textContent = "";
+    byId("answerPanel").hidden = true;
+    clear(byId("citationList"));
+    setError("questionError");
+  }
+
   function showLocked(error) {
     if (state.helperLifecyclePaused && error?.code !== "session_ended") return;
     window.clearTimeout(state.helperExpiryTimer);
@@ -1057,8 +1067,7 @@
     byId("helperView").hidden = true;
     byId("helperLoading").hidden = false;
     clear(byId("guideGroups"));
-    byId("answerPanel").hidden = true;
-    clear(byId("citationList"));
+    clearHelperSensitiveView();
     const helperNow = Date.now() + (state.helperServerOffsetMs ?? 0);
     const lock = model.lockState(error, lastGuide, helperNow);
     const retryable =
@@ -1397,13 +1406,8 @@
     const error = new Error("The helper session ended when this page was hidden.");
     error.code = "session_ended";
     showLocked(error);
-    byId("questionForm").reset();
-    byId("questionInput").disabled = false;
-    byId("questionCount").textContent = "0";
-    byId("answerCopy").textContent = "";
     byId("helperExpiry").textContent = "";
     byId("helperCardCount").textContent = "";
-    setError("questionError");
   }
 
   async function init() {
