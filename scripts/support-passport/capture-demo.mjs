@@ -1,4 +1,4 @@
-import { copyFile, mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,6 +35,58 @@ async function pause(page, milliseconds = 1_200) {
   await page.waitForTimeout(milliseconds);
 }
 
+async function showFilmCard(page, { kicker, title, copy, badges }) {
+  await page.evaluate(
+    ({ kicker: nextKicker, title: nextTitle, copy: nextCopy, badges: nextBadges }) => {
+      const card = document.getElementById("filmCard");
+      document.getElementById("filmKicker").textContent = nextKicker;
+      document.getElementById("filmTitle").textContent = nextTitle;
+      document.getElementById("filmCopy").textContent = nextCopy;
+      document
+        .getElementById("filmBadges")
+        .replaceChildren(
+          ...nextBadges.map((badge) => Object.assign(document.createElement("span"), { textContent: badge }))
+        );
+      card.hidden = false;
+      requestAnimationFrame(() => card.classList.add("visible"));
+    },
+    { kicker, title, copy, badges }
+  );
+  await pause(page, 450);
+}
+
+async function hideFilmCard(page) {
+  await page.evaluate(() => document.getElementById("filmCard").classList.remove("visible"));
+  await pause(page, 500);
+  await page.evaluate(() => {
+    document.getElementById("filmCard").hidden = true;
+    document.getElementById("demoData").hidden = false;
+  });
+}
+
+async function showLowerThird(page, kicker, headline, detail) {
+  await page.evaluate(
+    ({ nextKicker, nextHeadline, nextDetail }) => {
+      const lowerThird = document.getElementById("lowerThird");
+      document.getElementById("lowerKicker").textContent = nextKicker;
+      document.getElementById("lowerHeadline").textContent = nextHeadline;
+      document.getElementById("lowerDetail").textContent = nextDetail;
+      lowerThird.hidden = false;
+      requestAnimationFrame(() => lowerThird.classList.add("visible"));
+    },
+    { nextKicker: kicker, nextHeadline: headline, nextDetail: detail }
+  );
+  await pause(page, 350);
+}
+
+async function hideLowerThird(page) {
+  await page.evaluate(() => document.getElementById("lowerThird").classList.remove("visible"));
+  await pause(page, 350);
+  await page.evaluate(() => {
+    document.getElementById("lowerThird").hidden = true;
+  });
+}
+
 async function capture() {
   await captureAssets(outputDir, assetNames, async (stagingDir) => {
     let server;
@@ -56,12 +108,37 @@ async function capture() {
       await page.goto(`${server.origin}/demo-stage.html`);
       const owner = page.frameLocator("#ownerFrame");
       await owner.getByText("Synthetic replay").waitFor();
-      await pause(page);
+      await pause(page, 5_500);
+
+      await hideFilmCard(page);
+      await showLowerThird(
+        page,
+        "1 · Choose",
+        "The person is the author.",
+        "They choose the source notes. Nothing leaves Remnic without clear consent."
+      );
+      await pause(page, 4_800);
 
       await owner.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
       await owner.getByRole("button", { name: "Draft my support cards" }).click();
       await owner.locator(".support-card").first().waitFor();
-      await pause(page);
+      await hideLowerThird(page);
+      await showFilmCard(page, {
+        kicker: "One Remnic flow · Your model",
+        title: "Use the model you already trust.",
+        copy: "Local LLM. OpenClaw gateway. OpenAI-compatible endpoint. Or direct OpenAI. What Helps Me uses Remnic's existing routing.",
+        badges: ["Local LLM", "OpenClaw gateway", "Compatible endpoint", "Direct OpenAI"],
+      });
+      await pause(page, 5_500);
+      await hideFilmCard(page);
+
+      await showLowerThird(
+        page,
+        "2 · Review",
+        "Nothing publishes itself.",
+        "The model drafts. The person edits and approves every card."
+      );
+      await pause(page, 3_800);
 
       await owner.getByRole("button", { name: "Edit" }).first().click();
       await owner.getByLabel("Card title").fill("Softer lighting");
@@ -70,8 +147,9 @@ async function capture() {
       const planCard = owner.locator(".support-card").filter({ hasText: "Plan changes" });
       await planCard.getByRole("button", { name: "Approve" }).click();
       await planCard.locator(".status-pill.approved").waitFor();
+      await pause(page, 3_800);
+      await hideLowerThird(page);
       await page.screenshot({ path: path.join(stagingDir, "owner-approved.png") });
-      await pause(page);
 
       await owner
         .locator(".card-choice")
@@ -82,7 +160,14 @@ async function capture() {
       await owner.getByText("Share link ready").waitFor();
       const shareUrl = await owner.locator("#shareLinkInput").inputValue();
       await page.screenshot({ path: path.join(stagingDir, "owner-share.png") });
-      await pause(page);
+      await showLowerThird(
+        page,
+        "3 · Share",
+        "Share only what helps.",
+        "Each link pins exact approved words. It ends on the person's schedule."
+      );
+      await pause(page, 5_200);
+      await hideLowerThird(page);
 
       await page.locator("#helperFrame").evaluate((frame, url) => {
         frame.src = url;
@@ -92,26 +177,57 @@ async function capture() {
       await helper.getByRole("heading", { name: "What helps me" }).waitFor();
       await helper.locator(".public-card").waitFor();
       await helper.locator(".public-card").getByRole("heading", { name: "Plan changes" }).waitFor();
-      await pause(page);
+      await showLowerThird(
+        page,
+        "Helper view",
+        "A helper sees only the chosen cards.",
+        "No source notes. No memory search. No Remnic account."
+      );
+      await pause(page, 5_000);
+      await hideLowerThird(page);
       await helper.getByLabel("Your question").fill("What should I do when plans change?");
       await helper.getByRole("button", { name: "Ask from this guide" }).click();
       await helper.locator("#answerCopy").getByText("Tell me before plans change.", { exact: true }).waitFor();
       await page.screenshot({ path: path.join(stagingDir, "helper-answer.png") });
-      await pause(page, 1_800);
+      await showLowerThird(
+        page,
+        "Grounded help",
+        "Answers stay inside the guide.",
+        "Every answer uses the shared cards only and cites the exact card."
+      );
+      await pause(page, 6_000);
+      await hideLowerThird(page);
 
       await showFrame(page, "owner");
+      await showLowerThird(
+        page,
+        "Owner control",
+        "Consent can change.",
+        "Stop sharing once. The next helper request locks immediately."
+      );
+      await pause(page, 3_500);
       await owner.getByRole("button", { name: "Stop sharing" }).click();
       await owner.getByText("Sharing stopped", { exact: true }).waitFor();
-      await pause(page);
+      await pause(page, 2_000);
+      await hideLowerThird(page);
 
       await showFrame(page, "helper");
       await helper.getByRole("heading", { name: "This support passport is locked." }).waitFor();
       await page.screenshot({ path: path.join(stagingDir, "helper-locked.png") });
-      await pause(page, 2_000);
+      await pause(page, 4_800);
+
+      await showFilmCard(page, {
+        kicker: "What Helps Me · Built with Remnic",
+        title: "Support that travels. Control that stays with the person.",
+        copy: "A modern health and care passport. Private by default. Revocable by design. Provider neutral.",
+        badges: ["The model is the scribe", "The person is the author"],
+      });
+      await pause(page, 7_000);
 
       await page.close();
-      const videoPath = await video.path();
-      await copyFile(videoPath, path.join(stagingDir, "demo.webm"));
+      await context.close();
+      context = undefined;
+      await video.saveAs(path.join(stagingDir, "demo.webm"));
     } finally {
       await context?.close().catch(() => undefined);
       await browser?.close().catch(() => undefined);
