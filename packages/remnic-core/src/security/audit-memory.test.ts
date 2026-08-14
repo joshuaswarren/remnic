@@ -232,3 +232,18 @@ test("auditMemoryStore uses a leave-one-out burst baseline", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("auditMemoryStore rejects malformed --since dates instead of normalizing them (#1955 review)", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-audit-memory-date-"));
+  try {
+    const storage = memoryStorage([makeMemory(root, "one", "session-a", "A fact")]);
+    // Calendar overflow (Feb 31) and trailing junk must fail closed — a
+    // silently reinterpreted cutoff changes what --quarantine may mutate.
+    await assert.rejects(() => auditMemoryStore({ memoryDir: root, storage, since: "2026-02-31" }));
+    await assert.rejects(() => auditMemoryStore({ memoryDir: root, storage, since: "2026-01-01junk" }));
+    const ok = await auditMemoryStore({ memoryDir: root, storage, since: "2026-01-01" });
+    assert.ok(Array.isArray(ok.findings));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

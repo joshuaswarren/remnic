@@ -11,6 +11,7 @@ import {
   classifyExtractionOrigin,
   deriveExtractionOriginContext,
 } from "./extraction-origin-context.js";
+import { serializeInjectionScreenCandidate } from "./extraction-injection-gate.js";
 import type { StorageManager } from "../storage.js";
 import type { PersistExtractionFn } from "../testing/orchestrator-lite.js";
 
@@ -197,6 +198,31 @@ test("empty import source labels do not create adapter origins", () => {
   assert.equal(context.importAdapter, undefined);
   assert.equal(classifyExtractionOrigin(context), "user");
 });
+test("mixed import labels (some labeled, some not) resolve to unknown origin", () => {
+  const turns: BufferTurn[] = [
+    {
+      role: "user",
+      content: "one",
+      timestamp: "2026-01-01T00:00:00Z",
+      importProvenance: { sourceLabel: "chatgpt" },
+    },
+    { role: "user", content: "two", timestamp: "2026-01-01T00:00:01Z" },
+  ];
+  const context = deriveExtractionOriginContext(turns);
+  assert.equal(context.originConflict, true);
+  assert.equal(classifyExtractionOrigin(context), "unknown");
+});
+
+test("non-string structured attribute values are salvaged, not thrown (#1955 review)", () => {
+  const serialized = serializeInjectionScreenCandidate({
+    content: "Deploy checklist",
+    structuredAttributes: { priority: 1, urgent: true, weird: { nested: "x" }, note: "keep" } as Record<string, unknown>,
+  });
+  assert.match(serialized, /priority.*1/);
+  assert.match(serialized, /note.*keep/);
+  assert.doesNotMatch(serialized, /nested/);
+});
+
 
 test("disabled injection screen preserves active write fields apart from origin", async () => {
   const { orchestrator, storage, memoryDir } = await makeHarness({ injectionScreenEnabled: false });

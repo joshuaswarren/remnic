@@ -43,10 +43,24 @@ export function deriveExtractionOriginContext(
       .map((turn) => turn.importProvenance?.sourceLabel)
       .filter((adapter): adapter is string => typeof adapter === "string" && adapter.length > 0),
   );
+  // Conflict when identities disagree OR are only partially present: a batch
+  // where some turns carry an import label (or connector) and others do not
+  // must classify as unknown, never fall back to the uniform turn role
+  // (#1955 review: mixed import labels previously became `user`).
+  const everyTurnHasConnector =
+    targetTurns.length > 0 &&
+    targetTurns.every((turn) => typeof turn.sourceConnector === "string" && turn.sourceConnector.length > 0);
+  const everyTurnHasAdapter =
+    targetTurns.length > 0 &&
+    targetTurns.every(
+      (turn) => typeof turn.importProvenance?.sourceLabel === "string" && turn.importProvenance.sourceLabel.length > 0,
+    );
   const originConflict =
     originConnectors.size > 1 ||
     originAdapters.size > 1 ||
-    (originConnectors.size > 0 && originAdapters.size > 0);
+    (originConnectors.size > 0 && originAdapters.size > 0) ||
+    (originConnectors.size > 0 && !everyTurnHasConnector) ||
+    (originAdapters.size > 0 && !everyTurnHasAdapter);
   const importAdapter =
     targetTurns.length > 0 &&
     targetTurns.every(

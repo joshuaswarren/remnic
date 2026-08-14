@@ -9,7 +9,7 @@ import { screenCandidateFact } from "../security/injection-screen.js";
 export interface InjectionScreenCandidate {
   content: string;
   category?: string;
-  structuredAttributes?: Record<string, string>;
+  structuredAttributes?: Record<string, unknown>;
   procedureSteps?: unknown;
 }
 
@@ -24,8 +24,18 @@ export function serializeInjectionScreenCandidate(candidate: InjectionScreenCand
     candidate.category === "procedure"
       ? buildProcedurePersistBody(candidate.content, candidate.procedureSteps)
       : candidate.content;
-  return candidate.structuredAttributes && Object.keys(candidate.structuredAttributes).length > 0
-    ? `${body}\n[Attributes: ${normalizeAttributePairs(candidate.structuredAttributes)}]`
+  // Salvage malformed extractor output: non-string attribute values (e.g.
+  // `{ priority: 1 }`) must not throw and abort the whole extraction batch
+  // (#1955 review). Coerce primitives; drop anything else.
+  const attrs = Object.fromEntries(
+    Object.entries(candidate.structuredAttributes ?? {}).flatMap(([key, value]): Array<[string, string]> => {
+      if (typeof value === "string") return [[key, value]];
+      if (typeof value === "number" || typeof value === "boolean") return [[key, String(value)]];
+      return [];
+    }),
+  );
+  return Object.keys(attrs).length > 0
+    ? `${body}\n[Attributes: ${normalizeAttributePairs(attrs)}]`
     : body;
 }
 

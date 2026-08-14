@@ -7,6 +7,8 @@ import type { StorageManager } from "../storage.js";
 import { inferIntentFromText, intentCompatibilityScore, isTaskInitiationIntent } from "../intent.js";
 import { isActiveMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import { canRecallToolScopedMemory } from "../tool-scoped-memory.js";
+import { resolveSecurityCapabilities } from "../capabilities.js";
+import { renderAuthorityBoundContent } from "../recall-context-composition.js";
 
 function tokenOverlapScore(prompt: string, memoryText: string): number {
   const norm = (s: string) =>
@@ -85,12 +87,20 @@ export async function buildProcedureRecallSection(
 
   if (scored.length === 0) return null;
 
+  // #1955: procedure bodies are model-visible instructions by nature — an
+  // untrusted-origin procedure must render inside the data-only authority
+  // fence like every other recall surface.
+  const security = resolveSecurityCapabilities(config);
   const blocks = scored.map(({ m, score }) => {
     const id = m.frontmatter.id;
     const flat = m.content.replace(/\s+/g, " ").trim();
     const preview = flat.slice(0, 320);
     const suffix = flat.length > 320 ? "…" : "";
-    return `### ${id} (match ${score.toFixed(2)})\n\n${preview}${suffix}`;
+    const body = renderAuthorityBoundContent(`${preview}${suffix}`, m.frontmatter.origin, {
+      enabled: security.originAuthority,
+      untrustedOrigins: config.untrustedOrigins,
+    });
+    return `### ${id} (match ${score.toFixed(2)})\n\n${body}`;
   });
 
   return `## Relevant procedures\n\n${blocks.join("\n\n")}`;

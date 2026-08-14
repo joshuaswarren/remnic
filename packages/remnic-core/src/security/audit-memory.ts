@@ -1,6 +1,7 @@
 import type { MemoryFile, MemoryFrontmatter } from "../types.js";
 import { screenCandidateFact } from "./injection-screen.js";
 import { inferMemoryStatus, isArchivedMemoryPath, toMemoryPathRel } from "../memory-lifecycle-ledger-utils.js";
+import { parseStrictCliDate } from "../training-export/date-parse.js";
 
 export type AuditMemoryFindingCategory =
   | "injection-signature"
@@ -64,11 +65,14 @@ function isActive(memory: MemoryFile, memoryDir: string): boolean {
 
 function parseSince(value: string | Date | undefined): Date | undefined {
   if (value === undefined) return undefined;
-  const parsed = value instanceof Date ? new Date(value.getTime()) : new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    throw new Error(`invalid --since date: ${String(value)}`);
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) throw new Error("invalid --since date");
+    return new Date(value.getTime());
   }
-  return parsed;
+  // Strict parse (rejects calendar overflow like 2026-02-31 and trailing
+  // junk) — a silently reinterpreted date changes which memories
+  // --quarantine may mutate (#1955 review).
+  return parseStrictCliDate(value, "--since");
 }
 
 function isInWindow(memory: MemoryFile, since: Date | undefined): boolean {
