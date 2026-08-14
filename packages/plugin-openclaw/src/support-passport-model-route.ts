@@ -22,7 +22,9 @@ export function createOpenClawSupportPassportModelRoute(
   config: SupportPassportGatewayConfig,
   client: Pick<FallbackLlmClient, "chatCompletion">
 ): SupportPassportModelRoute {
-  const explicitRouteAvailable = hasConfiguredExplicitRoute(config);
+  const routeConfig = { ...config, gatewayAgentId: config.gatewayAgentId.trim() };
+  const explicitRouteAvailable = hasConfiguredExplicitRoute(routeConfig);
+  const routeSelection = gatewayTaskChainOptions(routeConfig);
   return {
     kind: "gateway",
     invoke: async (messages, options) => {
@@ -37,7 +39,7 @@ export function createOpenClawSupportPassportModelRoute(
         redactProviderErrors: true,
         includeDefaultModelFallback: false,
         acceptResponse: options.acceptResponse,
-        ...gatewayTaskChainOptions(config),
+        ...routeSelection,
       };
       return await client.chatCompletion(messages, routeOptions);
     },

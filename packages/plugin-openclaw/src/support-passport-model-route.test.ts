@@ -207,3 +207,45 @@ test("OpenClaw support passport models reject a missing explicit gateway agent",
   );
   assert.equal(callCount, 0);
 });
+
+test("OpenClaw support passport models trim an explicit gateway agent before dispatch", async () => {
+  let agentId: string | undefined;
+  const config = parseConfig({
+    modelSource: "gateway",
+    openaiApiKey: false,
+    gatewayAgentId: " passport-agent ",
+    gatewayConfig: {
+      agents: {
+        defaults: { model: { primary: "gateway/default" } },
+        list: [{ id: "passport-agent", model: { primary: "gateway/private" } }],
+      },
+    },
+  });
+  const gatewayRoute = createOpenClawSupportPassportModelRoute(config, {
+    chatCompletion: async (_messages, options) => {
+      agentId = options?.agentId;
+      return {
+        content: JSON.stringify({
+          cards: [
+            {
+              title: "Plan changes",
+              statement: "Tell me before plans change.",
+              category: "transitions",
+              sourceMemoryIds: ["memory-1"],
+            },
+          ],
+        }),
+        modelUsed: "gateway/private",
+      };
+    },
+  });
+  const adapter = createSupportPassportModelAdapter(config, { gatewayRoute });
+
+  const result = await adapter.draftCards({
+    consent: true,
+    memories: [{ memoryId: "memory-1", content: "Tell me before plans change." }],
+  });
+
+  assert.equal(agentId, "passport-agent");
+  assert.equal(result.modelUsed, "gateway/private");
+});
