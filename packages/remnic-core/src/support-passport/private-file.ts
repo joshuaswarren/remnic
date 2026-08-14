@@ -411,7 +411,8 @@ export async function writePrivateFileAtomicallyNoFollow(
   content: string,
   errorMessage: string,
   trustedRoot = directory,
-  platform: NodeJS.Platform = process.platform
+  platform: NodeJS.Platform = process.platform,
+  syncVerifiedDirectory: (handle: FileHandle) => Promise<void> = syncDirectoryHandle
 ): Promise<void> {
   if (path.dirname(filePath) !== path.resolve(directory)) throw new Error(errorMessage);
   const targetName = path.basename(filePath);
@@ -442,12 +443,17 @@ export async function writePrivateFileAtomicallyNoFollow(
     await fileHandle.chmod(0o600);
     await fileHandle.writeFile(content, "utf8");
     await fileHandle.sync();
-    await fileHandle.close();
-    fileHandle = undefined;
     assertStableDirectory(stableDirectory.before, stableDirectory.opened, await lstat(directory), errorMessage);
     await rename(tempPath, targetPath);
     assertStableDirectory(stableDirectory.before, stableDirectory.opened, await lstat(directory), errorMessage);
-    if (stableDirectory.handle) await syncDirectoryHandle(stableDirectory.handle);
+    if (stableDirectory.handle) await syncVerifiedDirectory(stableDirectory.handle);
+    const committedMetadata = await lstatPrivateTarget(targetPath, errorMessage);
+    assertStableRegularFile(
+      committedMetadata,
+      await fileHandle.stat(),
+      await lstatPrivateTarget(targetPath, errorMessage),
+      errorMessage
+    );
   } finally {
     await fileHandle?.close().catch(() => undefined);
     if (tempPath) await rm(tempPath, { force: true }).catch(() => undefined);
