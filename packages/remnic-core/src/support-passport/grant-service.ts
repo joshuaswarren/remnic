@@ -7,7 +7,7 @@ import {
 } from "./card-projection.js";
 import { SupportPassportListCardsInputSchema, SupportPassportNamespaceSchema } from "./contracts.js";
 import { SupportPassportError } from "./errors.js";
-import { isCommittedGeneratedCard } from "./generated-batch.js";
+import { type GeneratedBatchMarker, isCommittedGeneratedCard } from "./generated-batch.js";
 import {
   type SupportPassportCreateGrantInput,
   SupportPassportCreateGrantInputSchema,
@@ -251,11 +251,12 @@ export class SupportPassportGrantService {
     ownerKey: string,
   ): Promise<SupportPassportCardSnapshot> {
     for (let attempt = 0; attempt < 3; attempt += 1) {
+      const markerCache = new Map<string, GeneratedBatchMarker | null>();
       const before = this.cardSnapshotVersion(storage);
       const memories = await storage.readAllMemories();
       const after = this.cardSnapshotVersion(storage);
       if (before !== after) continue;
-      const cards = await this.projectOwnedCards(storage, memories, namespace, ownerKey);
+      const cards = await this.projectOwnedCards(storage, memories, namespace, ownerKey, markerCache);
       const snapshot = {
         version: after,
         cardsById: new Map(cards.map((card) => [card.card.cardId, card])),
@@ -270,6 +271,7 @@ export class SupportPassportGrantService {
     memories: MemoryFile[],
     namespace: string,
     ownerKey: string,
+    markerCache = new Map<string, GeneratedBatchMarker | null>(),
   ): Promise<StoredSupportPassportCard[]> {
     const cards = memories
       .map((memory) => projectSupportPassportCard(memory))
@@ -284,7 +286,7 @@ export class SupportPassportGrantService {
         throw new SupportPassportError("card_data_invalid", "Support card IDs must be unique.", 500);
       }
       cardIds.add(card.card.cardId);
-      if (await isCommittedGeneratedCard(storage, card)) committed.push(card);
+      if (await isCommittedGeneratedCard(storage, card, markerCache)) committed.push(card);
     }
     return committed;
   }
