@@ -4852,12 +4852,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         const updatedAfterMs = options.updatedAfter.getTime();
         const memories = cached.filter((memory) => {
           const rawTimestamp = memory.frontmatter.updated ?? memory.frontmatter.created;
-          const timestampMs =
-            rawTimestamp instanceof Date
-              ? rawTimestamp.getTime()
-              : typeof rawTimestamp === "string"
-                ? Date.parse(rawTimestamp)
-                : Number.NaN;
+          const timestampMs = typeof rawTimestamp === "string" ? Date.parse(rawTimestamp) : Number.NaN;
           return Number.isFinite(timestampMs) && timestampMs >= updatedAfterMs;
         });
         return { memories: this.rememberMemorySnapshots(memories), filePaths: memories.map((memory) => memory.path) };
