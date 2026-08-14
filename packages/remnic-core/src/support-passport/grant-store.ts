@@ -622,7 +622,12 @@ export class SupportPassportGrantStore {
     await this.writeOwnerIndexRecoveryMarker(ownerHash, recoveryGrantId);
     await this.requireOwnerIndexLock(lock);
     await this.writeOwnerIndex(ownerHash, grantIds);
-    for (const markerGrantId of new Set([...priorRecoveryGrantIds, recoveryGrantId])) {
+    const indexedGrantIds = new Set(grantIds);
+    const removableRecoveryGrantIds = new Set([
+      recoveryGrantId,
+      ...priorRecoveryGrantIds.filter((grantId) => indexedGrantIds.has(grantId)),
+    ]);
+    for (const markerGrantId of removableRecoveryGrantIds) {
       await this.requireOwnerIndexLock(lock);
       await this.removeOwnerIndexRecoveryMarker(ownerHash, markerGrantId);
     }
