@@ -125,7 +125,8 @@ export function createDelegateSupportPassportModelService(
     result: SupportPassportModelRouteResult | null,
     signal: AbortSignal,
     deadline: number,
-    serviceSignal: AbortSignal
+    serviceSignal: AbortSignal,
+    onAccepted: () => void
   ): Promise<void> => {
     const completeDuringShutdown = async (shutdownResult: SupportPassportModelRouteResult | null): Promise<void> => {
       const remainingMs = deadline - Date.now();
@@ -172,8 +173,12 @@ export function createDelegateSupportPassportModelService(
         continue;
       }
       const status = completion.status;
+      if (completion.ok) {
+        onAccepted();
+        await completion.body?.cancel().catch(() => undefined);
+        return;
+      }
       await completion.body?.cancel();
-      if (completion.ok) return;
       if (status !== 408 && status !== 425 && status !== 429 && status < 500) {
         throw new Error(`delegate support passport model completion was rejected with HTTP ${status}`);
       }
@@ -283,17 +288,19 @@ export function createDelegateSupportPassportModelService(
         const heartbeatSignal = AbortSignal.any([signal, heartbeatController.signal]);
         const workSignal = AbortSignal.any([signal, workController.signal]);
         let heartbeatError: unknown;
-        let completing = false;
+        let completionAccepted = false;
         const heartbeat = maintainClaim(claimedJob, heartbeatSignal, deadline).catch((error) => {
-          if (heartbeatSignal.aborted || completing) return;
+          if (heartbeatSignal.aborted || completionAccepted) return;
           heartbeatError = error;
           workController.abort();
         });
         try {
           const result = await invoke(claimedJob, workSignal);
-          completing = true;
           if (heartbeatError) throw heartbeatError;
-          await complete(claimedJob, result, workSignal, deadline, signal);
+          await complete(claimedJob, result, workSignal, deadline, signal, () => {
+            completionAccepted = true;
+          });
+          if (heartbeatError && !completionAccepted) throw heartbeatError;
         } catch (error) {
           log.warn(`delegate support passport model completion failed: ${String(error)}`);
         } finally {
