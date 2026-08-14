@@ -414,6 +414,7 @@ export class SupportPassportModelBridge {
         respondJson(res, 404, { error: "job_not_found", code: "job_not_found" });
         return true;
       }
+      this.lastConsumerPollAt = Date.now();
       pending.resolve(parsed.result);
       respondNoContent(res);
     } catch {

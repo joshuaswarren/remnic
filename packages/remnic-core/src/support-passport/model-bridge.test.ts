@@ -342,3 +342,51 @@ test("an empty long poll keeps the bridge available during worker handoff", asyn
     await server.close();
   }
 });
+
+test("a completed job keeps the bridge available until its worker polls again", async () => {
+  const bridge = new SupportPassportModelBridge();
+  const server = await startBridgeServer(bridge);
+  const controller = new AbortController();
+  const invoke = () =>
+    bridge.route.invoke(messages, {
+      temperature: 0,
+      maxTokens: 500,
+      timeoutMs: 5_000,
+      signal: controller.signal,
+      operation: "support-passport-draft",
+      jsonSchema: { name: "drafts", schema: { type: "object" } },
+    });
+  const poll = () =>
+    fetch(`${server.origin}${SUPPORT_PASSPORT_MODEL_JOB_PATH}`, {
+      method: "POST",
+      headers: { authorization: "Bearer owner-token", "content-type": "application/json" },
+      body: JSON.stringify({ timeoutMs: 0 }),
+    });
+  const complete = (id: string, content: string) =>
+    fetch(`${server.origin}${SUPPORT_PASSPORT_MODEL_RESULT_PATH}`, {
+      method: "POST",
+      headers: { authorization: "Bearer owner-token", "content-type": "application/json" },
+      body: JSON.stringify({ id, result: { content, modelUsed: "gateway/local" } }),
+    });
+  try {
+    await announceWorker(server.origin);
+    const firstResult = invoke();
+    const firstResponse = await poll();
+    assert.equal(firstResponse.status, 200);
+    const first = (await firstResponse.json()) as { id: string };
+    (bridge as unknown as { lastConsumerPollAt: number }).lastConsumerPollAt = 0;
+    assert.equal((await complete(first.id, '{"first":true}')).status, 204);
+    assert.deepEqual(await firstResult, { content: '{"first":true}', modelUsed: "gateway/local" });
+
+    const secondResult = invoke();
+    const secondResponse = await poll();
+    assert.equal(secondResponse.status, 200);
+    const second = (await secondResponse.json()) as { id: string };
+    assert.equal((await complete(second.id, '{"second":true}')).status, 204);
+    assert.deepEqual(await secondResult, { content: '{"second":true}', modelUsed: "gateway/local" });
+  } finally {
+    controller.abort();
+    bridge.close();
+    await server.close();
+  }
+});
