@@ -125,10 +125,9 @@ export function createDelegateSupportPassportModelService(
     result: SupportPassportModelRouteResult | null,
     signal: AbortSignal,
     deadline: number,
+    serviceSignal: AbortSignal
   ): Promise<void> => {
-    const completeDuringShutdown = async (
-      shutdownResult: SupportPassportModelRouteResult | null,
-    ): Promise<void> => {
+    const completeDuringShutdown = async (shutdownResult: SupportPassportModelRouteResult | null): Promise<void> => {
       const remainingMs = deadline - Date.now();
       if (remainingMs <= 0) return;
       const shutdownTimeoutMs = Math.min(SHUTDOWN_RESULT_REQUEST_TIMEOUT_MS, remainingMs);
@@ -146,7 +145,7 @@ export function createDelegateSupportPassportModelService(
       }
     };
     if (signal.aborted) {
-      await completeDuringShutdown(null);
+      if (serviceSignal.aborted) await completeDuringShutdown(null);
       return;
     }
     let lastFailure = "the job deadline elapsed";
@@ -164,7 +163,7 @@ export function createDelegateSupportPassportModelService(
         );
       } catch (error) {
         if (signal.aborted) {
-          await completeDuringShutdown(null);
+          if (serviceSignal.aborted) await completeDuringShutdown(null);
           return;
         }
         lastFailure = String(error);
@@ -179,7 +178,7 @@ export function createDelegateSupportPassportModelService(
         throw new Error(`delegate support passport model completion was rejected with HTTP ${status}`);
       }
       if (signal.aborted) {
-        await completeDuringShutdown(null);
+        if (serviceSignal.aborted) await completeDuringShutdown(null);
         return;
       }
       lastFailure = `HTTP ${status}`;
@@ -187,7 +186,7 @@ export function createDelegateSupportPassportModelService(
       if (retryDelayMs > 0) await abortableRetryDelay(signal, retryDelayMs);
     }
     if (signal.aborted) {
-      await completeDuringShutdown(null);
+      if (serviceSignal.aborted) await completeDuringShutdown(null);
       return;
     }
     throw new Error(`delegate support passport model completion missed its deadline after ${lastFailure}`);
@@ -195,9 +194,10 @@ export function createDelegateSupportPassportModelService(
   const acknowledge = async (
     job: NonNullable<ReturnType<typeof parseSupportPassportModelJob>>,
     signal: AbortSignal,
+    timeoutMs: number
   ): Promise<boolean> => {
     if (!job.claimId) return true;
-    const deadline = Date.now() + Math.min(job.timeoutMs, job.claimAckTimeoutMs ?? job.timeoutMs);
+    const deadline = Date.now() + Math.min(job.timeoutMs, timeoutMs);
     while (!signal.aborted && Date.now() < deadline) {
       const remainingMs = deadline - Date.now();
       try {
@@ -207,7 +207,7 @@ export function createDelegateSupportPassportModelService(
           SUPPORT_PASSPORT_MODEL_ACK_PATH,
           { id: job.id, claimId: job.claimId },
           signal,
-          Math.min(RESULT_REQUEST_TIMEOUT_MS, remainingMs),
+          Math.min(RESULT_REQUEST_TIMEOUT_MS, remainingMs)
         );
         const status = response.status;
         await response.body?.cancel();
@@ -220,6 +220,22 @@ export function createDelegateSupportPassportModelService(
       if (retryDelayMs > 0) await abortableRetryDelay(signal, retryDelayMs);
     }
     return false;
+  };
+  const maintainClaim = async (
+    job: NonNullable<ReturnType<typeof parseSupportPassportModelJob>>,
+    signal: AbortSignal,
+    deadline: number
+  ): Promise<void> => {
+    if (!job.claimId || !job.executionLeaseTimeoutMs) return;
+    const renewalDelayMs = Math.max(1, Math.floor(job.executionLeaseTimeoutMs / 3));
+    const renewalTimeoutMs = Math.max(1, job.executionLeaseTimeoutMs - renewalDelayMs);
+    while (!signal.aborted && Date.now() < deadline) {
+      await abortableRetryDelay(signal, Math.min(renewalDelayMs, deadline - Date.now()));
+      if (signal.aborted || Date.now() >= deadline) return;
+      if (!(await acknowledge(job, signal, Math.min(renewalTimeoutMs, deadline - Date.now())))) {
+        throw new Error("delegate support passport model claim lease renewal failed");
+      }
+    }
   };
   const runPoller = async (signal: AbortSignal): Promise<void> => {
     let consecutiveFailures = 0;
@@ -254,7 +270,7 @@ export function createDelegateSupportPassportModelService(
         }
         consecutiveFailures = 0;
         const deadline = Date.now() + job.timeoutMs;
-        if (!(await acknowledge(job, signal))) {
+        if (!(await acknowledge(job, signal, job.claimAckTimeoutMs ?? job.timeoutMs))) {
           log.warn("delegate support passport model bridge could not acknowledge a claimed job");
           await delayAfterFailure();
           continue;
@@ -262,10 +278,27 @@ export function createDelegateSupportPassportModelService(
         const remainingMs = deadline - Date.now();
         if (remainingMs <= 0) continue;
         const claimedJob = { ...job, timeoutMs: remainingMs };
+        const heartbeatController = new AbortController();
+        const workController = new AbortController();
+        const heartbeatSignal = AbortSignal.any([signal, heartbeatController.signal]);
+        const workSignal = AbortSignal.any([signal, workController.signal]);
+        let heartbeatError: unknown;
+        const heartbeat = maintainClaim(claimedJob, heartbeatSignal, deadline).catch((error) => {
+          if (heartbeatSignal.aborted) return;
+          heartbeatError = error;
+          workController.abort();
+        });
         try {
-          await complete(claimedJob, await invoke(claimedJob, signal), signal, deadline);
+          const result = await invoke(claimedJob, workSignal);
+          if (heartbeatError) throw heartbeatError;
+          await complete(claimedJob, result, workSignal, deadline, signal);
+          if (heartbeatError) throw heartbeatError;
         } catch (error) {
           log.warn(`delegate support passport model completion failed: ${String(error)}`);
+        } finally {
+          heartbeatController.abort();
+          workController.abort();
+          await heartbeat;
         }
       } catch (error) {
         if (signal.aborted) break;
