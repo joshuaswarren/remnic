@@ -66,6 +66,8 @@ test("grant snapshots revalidate after the cross-process cache bound", async () 
   const storage = {
     getCorpusScanVersion: () => 7,
     hotCacheKeyId: () => "owner-cache",
+    hotCacheTtlMs: () => 1_000,
+    isHotCacheEnabled: () => true,
   } as unknown as StorageManager;
   const service = new SupportPassportGrantService({
     grantStore: {} as SupportPassportGrantStore,
