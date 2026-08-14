@@ -549,9 +549,7 @@ export interface ChatConfig {
 }
 
 export interface SupportPassportConfig {
-  /** Master gate for support cards, share links, helper views, and model calls. */
   enabled: boolean;
-  /** Exact reverse-proxy addresses allowed to supply X-Forwarded-For for helper limits. */
   trustedProxyAddresses: string[];
 }
 
