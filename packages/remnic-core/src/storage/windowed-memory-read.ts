@@ -1,6 +1,7 @@
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import { getCachedMemories } from "../memory-cache.js";
+import { readRawMemoryDocument } from "./memory-frontmatter-metadata.js";
 import type { MemoryFile } from "../types.js";
 import type { MemoryReadStore } from "./memory-read-store.js";
 
@@ -73,8 +74,14 @@ export async function readWindowedMemories(
 }
 
 async function readWindowTimestamp(memory: MemoryFile): Promise<number | null> {
-  const rawTimestamp = memory.frontmatter.updated || memory.frontmatter.created;
-  const timestampMs = typeof rawTimestamp === "string" ? Date.parse(rawTimestamp) : Number.NaN;
+  const rawDocument = readRawMemoryDocument(memory);
+  const frontmatterBlock = rawDocument?.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1];
+  const rawTimestamp =
+    frontmatterBlock?.match(/^updated:\s*"?([^"\r\n]*)"?/m)?.[1] ||
+    frontmatterBlock?.match(/^created:\s*"?([^"\r\n]*)"?/m)?.[1] ||
+    memory.frontmatter.updated ||
+    memory.frontmatter.created;
+  const timestampMs = typeof rawTimestamp === "string" ? Date.parse(rawTimestamp.trim()) : Number.NaN;
   if (Number.isFinite(timestampMs)) return timestampMs;
   try {
     return (await stat(memory.path)).mtimeMs;
