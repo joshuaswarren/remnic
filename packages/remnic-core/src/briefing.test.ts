@@ -915,14 +915,18 @@ function makeEmptyStorage(): StorageManager {
 }
 test("buildBriefing reads only memories updated inside the briefing window", async () => {
   let readWindowOptions: { updatedAfter?: Date } | undefined;
-  const recentMemory = makeMemory("2026-04-10T12:00:00.000Z");
+  const atWindowStart = makeMemory("2026-04-10T00:00:00.000Z");
+  const atWindowEnd = makeMemory("2026-04-11T00:00:00.000Z");
   const storage = {
     readAllMemories: async () => {
       throw new Error("full corpus read must not be used by briefing");
     },
     readMemoriesWindow: async (options: { updatedAfter?: Date }) => {
       readWindowOptions = options;
-      return { memories: [recentMemory], filePaths: [recentMemory.path] };
+      return {
+        memories: [atWindowStart, atWindowEnd],
+        filePaths: [atWindowStart.path, atWindowEnd.path],
+      };
     },
     readAllEntityFiles: async () => [],
   } as unknown as StorageManager;
