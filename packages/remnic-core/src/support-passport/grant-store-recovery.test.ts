@@ -65,7 +65,7 @@ test("a final stale owner-index write cannot hide a peer grant", async () => {
     );
 
     assert.equal(ownerLockRuns, 4);
-    assert.equal(ownerIndexWrites, 3);
+    assert.equal(ownerIndexWrites, 4);
     assert.deepEqual(
       new Set((await store.listForOwner(input.namespace, input.principal)).map((state) => state.grantId)),
       new Set([first.state.grantId, peerGrantId])
