@@ -966,10 +966,10 @@ function formatEntityHintSection(
 ): string | null {
   if (candidates.length === 0) return null;
   const lines: string[] = ["## entity_answer_hints", ""];
-  // #1955 review: fact/section snippets lack per-field origin → unknown (least privilege); plumbing is follow-up.
-  const renderSnippet = (snippet: EntityHintSnippet): string =>
-    snippet.kind === "memory" || snippet.kind === "fact" || snippet.kind === "section"
-      ? renderAuthorityBoundContent(snippet.text, snippet.origin, { enabled: originAuthorityEnabled, untrustedOrigins }) : snippet.text;
+  // #1955 review: non-native snippet kinds may embed extraction-written content
+  // without per-field origin — fence as unknown (least privilege; plumbing #2397).
+  const renderSnippet = (snippet: EntityHintSnippet): string => snippet.kind !== "native"
+    ? renderAuthorityBoundContent(snippet.text, snippet.origin, { enabled: originAuthorityEnabled, untrustedOrigins }) : snippet.text;
   for (const { candidate, snippets, uncertainty } of candidates) {
     const hasSummary = Boolean(candidate.entry.summary?.trim());
     const preferredTopSnippets = hasSummary
