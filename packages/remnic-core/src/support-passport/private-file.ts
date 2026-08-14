@@ -113,6 +113,12 @@ export async function resolvePrivateDirectoryPath(
   return pinnedPath;
 }
 
+export function supportsSupportPassportPrivateFiles(
+  platform: NodeJS.Platform = process.platform
+): boolean {
+  return platform === "linux" || platform === "darwin" || platform === "freebsd" || platform === "openbsd";
+}
+
 export function requirePrivateFileDescriptorRoot(platform: NodeJS.Platform, errorMessage: string): string {
   if (platform === "linux") return "/proc/self/fd";
   if (platform === "darwin" || platform === "freebsd" || platform === "openbsd") return "/dev/fd";

@@ -19,7 +19,7 @@ const packagePaths = [
 ];
 const trustedExecutableSha256 = new Map([
   ["scripts/relay/checkout-decision-contract.mjs", "fc6d4bf3df4c1c9095fb23f81c27c1c311e5c76bd651f3b55669b7fbcc0ba372"],
-  ["scripts/relay/judge-package.mjs", "4714984a100bdacb8337b76008f9aa971d63f83e6b8016385292d440ed132b66"],
+  ["scripts/relay/judge-package.mjs", "54823f90f6beb977af20a9f1d4a939c84e0c9573523c8664444ac21df0637493"],
 ]);
 const executableVerificationMode = "trusted-launcher-pinned-sha256";
 const sourceSnapshotLimits = Object.freeze({

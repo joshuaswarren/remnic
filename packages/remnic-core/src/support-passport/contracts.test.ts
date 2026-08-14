@@ -7,6 +7,7 @@ import {
   SupportPassportManualDraftInputSchema,
   SupportPassportNamespaceSchema,
   SupportPassportReplaceCardInputSchema,
+  SupportPassportSourceMemoryIdSchema,
   computeSupportPassportCardRevision,
 } from "./contracts.js";
 
@@ -94,8 +95,11 @@ test("support card titles reject attribute delimiters and line breaks", () => {
   }
 });
 
-test("support passport namespaces use the shared canonical identity grammar", () => {
-  for (const namespace of ["", " alice", "alice "]) {
+test("support passport namespaces preserve configured default identities", () => {
+  for (const namespace of ["alice/bob", "alice\\bob", "alice]bob", "alice..bob", "alice\nbob", "alice\0bob"]) {
+    assert.equal(SupportPassportNamespaceSchema.safeParse(namespace).success, true);
+  }
+  for (const namespace of ["", " team", "team "]) {
     assert.equal(SupportPassportNamespaceSchema.safeParse(namespace).success, false);
   }
   for (const namespace of [
@@ -111,6 +115,15 @@ test("support passport namespaces use the shared canonical identity grammar", ()
   ]) {
     assert.equal(SupportPassportNamespaceSchema.safeParse(namespace).success, true);
   }
+});
+
+test("source memory IDs use the core opaque ID contract", () => {
+  for (const memoryId of ["Imported memory / café 1", "team,care]note", "記憶 1"]) {
+    assert.equal(SupportPassportSourceMemoryIdSchema.safeParse(memoryId).success, true);
+  }
+  assert.equal(SupportPassportSourceMemoryIdSchema.safeParse(" ").success, false);
+  assert.equal(SupportPassportSourceMemoryIdSchema.safeParse("m".repeat(513)).success, false);
+  assert.equal(SupportPassportCardSchema.safeParse({ ...makeCard("card/one"), cardId: "card/one" }).success, false);
 });
 
 test("support card revisions change when any public field changes", () => {

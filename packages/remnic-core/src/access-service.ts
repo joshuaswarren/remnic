@@ -1,217 +1,219 @@
-import { stat } from "node:fs/promises";
-import { buildAccessWriteRequestFingerprint, buildObserveRequestFingerprint } from "./write-envelope.js";
-import * as nodeFs from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { readdirSync, unlinkSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { stat } from "node:fs/promises";
+import * as nodeFs from "node:fs/promises";
 import { ZodError } from "zod";
-import { AccessIdempotencyStore, hashAccessIdempotencyPayload } from "./access-idempotency.js";
-import { computeExtractionLivenessStatus, ExtractionLivenessWarnThrottle } from "./extraction-liveness.js";
-import { readAggregateExtractionWatermark } from "./orchestration/extraction-watermark.js";
-import { enforceNamespaceAllowList, tokenCapabilityStore } from "./access-token-capabilities.js";
+import { decodeCitationNamespace } from "./access-citation-namespace.js";
 import {
-  recordCitationUsage as recordCitationUsageForAccess,
   type CitationUsageRequest,
   type CitationUsageResult,
+  recordCitationUsage as recordCitationUsageForAccess,
 } from "./access-citation.js";
-import { decodeCitationNamespace } from "./access-citation-namespace.js";
-import { coordinateRecall, type RecallCoordinatorHost, type RecallExecResult } from "./access-recall-concurrency.js";
-import { resolveNamespaceCapabilities,
-  resolveMemoryLifecycleCapabilities,
-  resolveQmdCapabilities,
-  resolveSecurityCapabilities, resolveObjectiveStateCapabilities, resolveCompressionCapabilities, resolveRecallAuxiliaryCapabilities } from "./capabilities.js";
-import { CorpusWatermarkCache, computeServiceCorpusCensus } from "./corpus-watermark.js";
-import { ReplicaDivergenceMonitor } from "./replica-divergence.js";
-import type { ResolveSecretRefFn } from "./resolve-auth-token.js";
 import type {
   EngramAccessHealthResponse,
   EngramAccessQmdCollectionState,
   EngramAccessQmdHealthResponse,
 } from "./access-health-types.js";
+import { AccessIdempotencyStore, hashAccessIdempotencyPayload } from "./access-idempotency.js";
+import { type RecallCoordinatorHost, type RecallExecResult, coordinateRecall } from "./access-recall-concurrency.js";
+import { enforceNamespaceAllowList, tokenCapabilityStore } from "./access-token-capabilities.js";
+import {
+  resolveCompressionCapabilities,
+  resolveMemoryLifecycleCapabilities,
+  resolveNamespaceCapabilities,
+  resolveObjectiveStateCapabilities,
+  resolveQmdCapabilities,
+  resolveRecallAuxiliaryCapabilities,
+  resolveSecurityCapabilities,
+} from "./capabilities.js";
+import { CorpusWatermarkCache, computeServiceCorpusCensus } from "./corpus-watermark.js";
+import { ExtractionLivenessWarnThrottle, computeExtractionLivenessStatus } from "./extraction-liveness.js";
+import { readAggregateExtractionWatermark } from "./orchestration/extraction-watermark.js";
+import { ReplicaDivergenceMonitor } from "./replica-divergence.js";
+import type { ResolveSecretRefFn } from "./resolve-auth-token.js";
+import { buildAccessWriteRequestFingerprint, buildObserveRequestFingerprint } from "./write-envelope.js";
 export type { EngramAccessHealthResponse, EngramAccessQmdCollectionState, EngramAccessQmdHealthResponse };
 import { AccessAuditAdapter, type AccessAuditConfig, type AccessAuditResult } from "./access-audit.js";
-import type { AnomalyDetectorResult } from "./recall-audit-anomaly.js";
-import { resolveGitContext } from "./coding/git-context.js";
 import {
-  combineNamespaces,
-  lcmSessionKeyForNamespace,
-  projectTagProjectId,
-  resolveCodingNamespaceOverlay,
-  type CodingNamespaceOverlay,
-} from "./coding/coding-namespace.js";
-import {
-  resolveCodingContextFromOptions,
   type InterruptibleCodingScopeInput,
+  resolveCodingContextFromOptions,
 } from "./access-coding-context-resolution.js";
 import {
-  handleCodingDecision,
-  type DecisionSurfaceRequest,
-  type DecisionSurfaceResponse,
-} from "./coding/decision-surfaces.js";
+  defaultNamespaceAtFlatRoot,
+  memorySearchThroughScope,
+  mergeMemorySearchDefaultFallback,
+  resolveMemorySearchDefaultFallback,
+} from "./access-memory-search-fanout.js";
+import { buildArchitectureCard, createArchitectureCardSummariser } from "./coding/architecture-card.js";
 import {
-  handleCodingArchitecture,
+  ARCHITECTURE_CARD_TAG,
   type ArchitectureSurfaceRequest,
   type ArchitectureSurfaceResponse,
   type ArchitectureSurfaceStorage,
   createArchitectureVersioningHook,
-  ARCHITECTURE_CARD_TAG,
+  handleCodingArchitecture,
 } from "./coding/architecture-surfaces.js";
-import { buildArchitectureCard, createArchitectureCardSummariser } from "./coding/architecture-card.js";
 import {
-  handleCodegraphTool,
-  type CodegraphSurfaceContext,
-  type CodegraphSurfaceRequest,
-  type CodegraphSurfaceResponse,
-} from "./coding/codegraph-surfaces.js";
-import {
+  type CodegraphStore,
   codegraphSurfaceVisible,
   getCodegraphStore,
   makeCodegraphRuntimeDelegates,
   resolveCodegraphProjectId,
-  type CodegraphStore,
 } from "./coding/codegraph-runtime.js";
 import {
-  handleCodingDelta,
+  type CodegraphSurfaceContext,
+  type CodegraphSurfaceRequest,
+  type CodegraphSurfaceResponse,
+  handleCodegraphTool,
+} from "./coding/codegraph-surfaces.js";
+import {
+  type CodingNamespaceOverlay,
+  combineNamespaces,
+  lcmSessionKeyForNamespace,
+  projectTagProjectId,
+  resolveCodingNamespaceOverlay,
+} from "./coding/coding-namespace.js";
+import {
+  type DecisionSurfaceRequest,
+  type DecisionSurfaceResponse,
+  handleCodingDecision,
+} from "./coding/decision-surfaces.js";
+import { resolveGitContext } from "./coding/git-context.js";
+import { defaultGitInvokerSync } from "./coding/git-context.js";
+import {
   type DeltaSurfaceRequest,
   type DeltaSurfaceResponse,
   type DeltaSurfaceStorage,
+  handleCodingDelta,
 } from "./coding/session-delta-surfaces.js";
-import { defaultGitInvokerSync } from "./coding/git-context.js";
 import {
-  createCorrectionService,
-  isCorrectionFeatureEnabled,
-  CorrectionService,
   type CorrectionOutcome,
   type CorrectionPlan,
   type CorrectionRequest,
+  type CorrectionService,
+  createCorrectionService,
+  isCorrectionFeatureEnabled,
 } from "./correction/index.js";
-import { isHandleToken } from "./recall-handles.js";
-import { createVersion } from "./page-versioning.js";
-import { WorkStorage } from "./work/storage.js";
+import { type BudgetWarning, CrossNamespaceBudget } from "./cross-namespace-budget.js";
 import {
-  exportWorkBoardMarkdown,
-  exportWorkBoardSnapshot,
-  importWorkBoardSnapshot,
-} from "./work/board.js";
-import { wrapWorkLayerContext } from "./work/boundary.js";
-import {
+  type ExplicitCaptureInput,
+  type ValidExplicitCapture,
   persistExplicitCapture,
   queueExplicitCaptureForReview,
   validateExplicitCaptureInput,
-  type ExplicitCaptureInput,
-  type ValidExplicitCapture,
 } from "./explicit-capture.js";
-import { CrossNamespaceBudget, type BudgetWarning } from "./cross-namespace-budget.js";
+import type { LiveConnectorsRunSummary } from "./live-connectors-runner.js";
 import { log } from "./logger.js";
 import {
-  defaultNamespaceAtFlatRoot,
-  mergeMemorySearchDefaultFallback,
-  resolveMemorySearchDefaultFallback,
-  memorySearchThroughScope,
-} from "./access-memory-search-fanout.js";
+  buildProposedActions,
+  buildQualityScore,
+  groupActionsByStatus,
+  listMemoryGovernanceRuns,
+  type readMemoryGovernanceRunArtifact,
+  runMemoryGovernance,
+} from "./maintenance/memory-governance.js";
+import type { PatternReinforcementResult } from "./maintenance/pattern-reinforcement.js";
+import type { MeetingsDayBuildSummary } from "./meetings/build.js";
+import type { MeetingsGetResult, MeetingsListResult } from "./meetings/service.js";
 import { isSearchExcludedPath } from "./orchestration/generic-recall-paths.js";
-import { createSupportPassportPrivateFileExclusion, isSupportPassportPrivateMemory } from "./support-passport/card-projection.js";
+import { createVersion } from "./page-versioning.js";
+import { runProcedureMining } from "./procedural/procedure-miner.js";
+import type { AnomalyDetectorResult } from "./recall-audit-anomaly.js";
+import { isHandleToken } from "./recall-handles.js";
+import { displayErrorDetail } from "./runtime/better-sqlite.js";
+import {
+  SUPPORT_PASSPORT_AUDIT_TAG,
+  SUPPORT_PASSPORT_CARD_TAG,
+  createSupportPassportPrivateFileExclusion,
+  isSupportPassportPrivateMemory,
+} from "./support-passport/card-projection.js";
 import {
   applySupportPassportOfflineSyncChangeset,
   applySupportPassportOfflineSyncFileContent,
 } from "./support-passport/offline-sync-guard.js";
-import {
-  buildQualityScore,
-  buildProposedActions,
-  groupActionsByStatus,
-  listMemoryGovernanceRuns,
-  readMemoryGovernanceRunArtifact,
-  runMemoryGovernance,
-} from "./maintenance/memory-governance.js";
-import { runProcedureMining } from "./procedural/procedure-miner.js";
-import { displayErrorDetail } from "./runtime/better-sqlite.js";
-import type { PatternReinforcementResult } from "./maintenance/pattern-reinforcement.js";
-import type { LiveConnectorsRunSummary } from "./live-connectors-runner.js";
 import type { WearablesService } from "./wearables/service.js";
-import type { MeetingsGetResult, MeetingsListResult } from "./meetings/service.js";
-import type { MeetingsDayBuildSummary } from "./meetings/build.js";
+import { exportWorkBoardMarkdown, exportWorkBoardSnapshot, importWorkBoardSnapshot } from "./work/board.js";
+import { wrapWorkLayerContext } from "./work/boundary.js";
+import { WorkStorage } from "./work/storage.js";
 
 import * as wearablesMeetings from "./access-wearables-meetings-surface.js";
 import type { WearablesMeetingsHost, WearablesMeetingsScope } from "./access-wearables-meetings-surface.js";
 export type { WearablesMeetingsScope };
+import * as nodePath from "node:path";
 import {
-  computeProcedureStats,
-  type ProcedureStatsReport,
-} from "./procedural/procedure-stats.js";
+  type EngramAccessNamespaceWritableRequest,
+  resolveNamespaceWritablePreflight,
+} from "./access-namespace-preflight.js";
 import {
-  normalizeProjectionPreview,
-  normalizeProjectionTags,
-} from "./memory-projection-format.js";
+  type EngramAccessExtractionForceFlushRequest,
+  type EngramAccessExtractionForceFlushResponse,
+  type EngramAccessLcmCompactionFlushRequest,
+  type EngramAccessLcmCompactionFlushResponse,
+  delegateExtractionForceFlush,
+} from "./access-service-helpers.js";
 import {
-  inferMemoryStatus,
-  toMemoryPathRel,
-} from "./memory-lifecycle-ledger-utils.js";
-import { getMemoryProjectionPath } from "./memory-projection-store.js";
-import { canReadNamespace, canWriteNamespace, citationAuthorizedNamespaces, defaultNamespaceForPrincipal, recallNamespacesForPrincipal, resolvePrincipal } from "./namespaces/principal.js";
-import {
-  expandScopeProfileReadNamespaces,
-  resolveScopeProfilePlan,
-  type ResolvedScopeProfilePlan,
-  type ScopeProfileLayerResolution,
-  type ScopeProfilePromotionResolution,
-} from "./namespaces/scope-profiles.js";
-import {
-  type ScopePlan,
-  resolveScopePlan,
-  resolveScopedWritableNamespaceValue,
-  resolveWritableNamespaceValue,
-  type WritableNamespaceResult,
-} from "./scopes/scope-plan.js";
-import { resolveNamespaceWritablePreflight, type EngramAccessNamespaceWritableRequest } from "./access-namespace-preflight.js";
-import { namespaceIdentityFromToken } from "./namespaces/identity.js";
-import { namespaceCollectionName } from "./namespaces/search.js";
-import { SecureStoreLockedError } from "./secure-store/index.js";
-import { isPathInsideStorageRoot } from "./storage-paths.js";
-import {
+  type AdminNamespaceFilter,
+  type AdminNamespaceQmdHealth,
   AdminPromotionError,
+  type InspectScopeOptions,
+  type MemoryPromotionTargetKind,
+  type PromotionStorageProvider,
+  type ScopeInspection,
   auditTranscripts,
   gatherMaintenanceHealth,
   inspectScope,
   listAdminNamespaces,
   promoteMemory,
   redactSensitive,
-  type AdminNamespaceFilter,
-  type AdminNamespaceQmdHealth,
-  type InspectScopeOptions,
-  type MemoryPromotionTargetKind,
-  type PromotionStorageProvider,
-  type ScopeInspection,
 } from "./admin/admin-surfaces.js";
-import type { LastRecallSnapshot } from "./recall-state.js";
-import type { RecallContextComposition } from "./recall-context-composition.js";
+import { FileCalendarSource, buildBriefing, parseBriefingFocus, parseBriefingWindow } from "./briefing.js";
+import {
+  type GraphSnapshotNodeMetadata,
+  type GraphSnapshotRequest,
+  type GraphSnapshotResponse,
+  buildGraphSnapshot,
+} from "./graph-snapshot.js";
+import { inferMemoryStatus, toMemoryPathRel } from "./memory-lifecycle-ledger-utils.js";
+import { normalizeProjectionPreview, normalizeProjectionTags } from "./memory-projection-format.js";
+import { getMemoryProjectionPath } from "./memory-projection-store.js";
+import { namespaceIdentityFromToken } from "./namespaces/identity.js";
+import {
+  canReadNamespace,
+  canWriteNamespace,
+  citationAuthorizedNamespaces,
+  defaultNamespaceForPrincipal,
+  recallNamespacesForPrincipal,
+  resolvePrincipal,
+} from "./namespaces/principal.js";
+import {
+  type ResolvedScopeProfilePlan,
+  type ScopeProfileLayerResolution,
+  type ScopeProfilePromotionResolution,
+  expandScopeProfileReadNamespaces,
+  resolveScopeProfilePlan,
+} from "./namespaces/scope-profiles.js";
+import { namespaceCollectionName } from "./namespaces/search.js";
 import type {
   GraphRecallSnapshot,
   IntentDebugSnapshot,
   Orchestrator,
   RecallInvocationOptions,
 } from "./orchestrator.js";
-import { parseEntityFile, parseFrontmatter, StorageManager } from "./storage.js";
+import { type ProcedureStatsReport, computeProcedureStats } from "./procedural/procedure-stats.js";
+import type { RecallContextComposition } from "./recall-context-composition.js";
+import type { LastRecallSnapshot } from "./recall-state.js";
 import {
-  buildGraphSnapshot,
-  type GraphSnapshotRequest,
-  type GraphSnapshotResponse,
-  type GraphSnapshotNodeMetadata,
-} from "./graph-snapshot.js";
-import * as nodePath from "node:path";
+  type ScopePlan,
+  type WritableNamespaceResult,
+  resolveScopePlan,
+  resolveScopedWritableNamespaceValue,
+  resolveWritableNamespaceValue,
+} from "./scopes/scope-plan.js";
+import { SecureStoreLockedError } from "./secure-store/index.js";
+import { isPathInsideStorageRoot } from "./storage-paths.js";
+import { type StorageManager, parseEntityFile, parseFrontmatter } from "./storage.js";
 import {
-  buildBriefing,
-  FileCalendarSource,
-  parseBriefingFocus,
-  parseBriefingWindow,
-} from "./briefing.js";
-import {
-  getTrustZoneStoreStatus,
-  isTrustZoneName,
-  listTrustZoneRecords,
-  promoteTrustZoneRecord,
-  scoreTrustZoneProvenance,
-  seedTrustZoneDemoDataset,
-  summarizeTrustZonePromotionReadiness,
   type TrustZoneDemoSeedResult,
   type TrustZoneName,
   type TrustZonePromotionResult,
@@ -220,26 +222,27 @@ import {
   type TrustZoneRecordKind,
   type TrustZoneSourceClass,
   type TrustZoneStoreStatus,
+  getTrustZoneStoreStatus,
+  isTrustZoneName,
+  listTrustZoneRecords,
+  promoteTrustZoneRecord,
+  scoreTrustZoneProvenance,
+  seedTrustZoneDemoDataset,
+  summarizeTrustZonePromotionReadiness,
 } from "./trust-zones.js";
 import type {
+  CodingContext,
   EntityFile,
-  MemoryFile,
   MemoryActionOutcome,
-  CodingContext, SourceConnectorProvenance,
   MemoryActionType,
+  MemoryFile,
   MemoryLifecycleEvent,
   MemoryStatus,
   PluginConfig,
   RecallDisclosure,
   RecallPlanMode,
+  SourceConnectorProvenance,
 } from "./types.js";
-import {
-  delegateExtractionForceFlush,
-  type EngramAccessExtractionForceFlushRequest,
-  type EngramAccessExtractionForceFlushResponse,
-  type EngramAccessLcmCompactionFlushRequest,
-  type EngramAccessLcmCompactionFlushResponse,
-} from "./access-service-helpers.js";
 export type {
   EngramAccessExtractionForceFlushRequest,
   EngramAccessExtractionForceFlushResponse,
@@ -247,79 +250,70 @@ export type {
   EngramAccessLcmCompactionFlushResponse,
 };
 
-import { DEFAULT_RECALL_DISCLOSURE, isRecallDisclosure } from "./types.js";
-import { estimateRecallTokens, type RecallXraySnapshot } from "./recall-xray.js";
-import type {
-  LcmMessagePartInput,
-  MessagePartSourceFormat,
-} from "./message-parts/index.js";
+import { AccessAdminOpsSurface } from "./access-admin-ops-surface.js";
+import { AccessIdentityContinuitySurface } from "./access-identity-continuity-surface.js";
+import { AccessLcmSurface } from "./access-lcm-surface.js";
+import { AccessObserveWriteSurface } from "./access-observe-write-surface.js";
+import { type OfflineSyncManifestStreamResponse, createOfflineSyncManifestStream } from "./access-offline-manifest.js";
+import { AccessRecallSurface } from "./access-recall-surface.js";
 import {
-  applyTagFilter,
-  normalizeTags,
-  parseTagMatch,
-  type TagMatchMode,
-} from "./recall-tag-filter.js";
-import { decideDisclosureEscalation } from "./recall-disclosure-escalation.js";
-import type { LocalLlmClient } from "./local-llm.js";
-import type { FallbackLlmClient } from "./fallback-llm.js";
-import type { SemanticDedupLookup } from "./dedup/semantic.js";
-import { toRecallExplainJson } from "./recall-explain-renderer.js";
-import {
-  recordMemoryOutcome,
-  type MemoryOutcomeKind,
-  type RecordMemoryOutcomeResult,
-} from "./memory-worth-outcomes.js";
-import { objectiveStateStoreOverrideForNamespace } from "./objective-state.js";
-import { recordObjectiveStateSnapshotsFromObservedMessages } from "./objective-state-writers.js";
-import {
-  importCapsule as importCapsuleFn,
-  type ImportCapsuleOptions,
-  type ImportCapsuleResult,
-} from "./transfer/capsule-import.js";
-import {
-  exportCapsule as exportCapsuleFn,
-  type ExportCapsuleOptions,
-  type ExportCapsuleResult,
-} from "./transfer/capsule-export.js";
-import {
-  defaultCapsulesDir,
-  type CapsuleListEntry,
-} from "./capsule-cli.js";
-import {
-  compileOfflineSyncExcludeGlobs,
-  buildOfflineSyncSnapshot,
-  buildOfflineSyncSnapshotFromBase,
-  buildOfflineSyncSnapshotForPaths,
-  iterateOfflineSyncSnapshotFileRecords,
-  filterOfflineSyncDeletionRevisions,
-  OFFLINE_SYNC_SNAPSHOT_FORMAT,
-  readOfflineSyncFileContentChunk,
-  type OfflineSyncApplyFileContentChunkResult,
-  type OfflineSyncApplyChangesetResult,
-  type OfflineSyncFileRecord,
-  type OfflineSyncFileContentChunk,
-  type OfflineSyncFileState,
-  type OfflineSyncSnapshot,
-} from "./offline-sync.js";
-import { offlineSyncStorageForSnapshot } from "./offline-sync-impression-drain.js";
-import {
-  createOfflineSyncManifestStream,
-  type OfflineSyncManifestStreamResponse,
-} from "./access-offline-manifest.js";
-import {
-  evaluateActionConfidence,
   type ActionConfidenceInput,
   type ActionConfidenceResult,
+  evaluateActionConfidence,
 } from "./action-confidence.js";
-import { formatProfileTraceAscii } from "./profiling.js";
-import { resolveAccessSetupCapabilities, resolveGraphConstructionCapabilities, resolveIndexingCapabilities } from "./capabilities.js";
+import {
+  resolveAccessSetupCapabilities,
+  resolveGraphConstructionCapabilities,
+  resolveIndexingCapabilities,
+} from "./capabilities.js";
 import { resolveRecallEnhancementCapabilities } from "./capabilities.js";
-import { AccessObserveWriteSurface } from "./access-observe-write-surface.js";
-import { AccessLcmSurface } from "./access-lcm-surface.js";
-import { AccessAdminOpsSurface } from "./access-admin-ops-surface.js";
-import { AccessRecallSurface } from "./access-recall-surface.js";
-import { AccessIdentityContinuitySurface } from "./access-identity-continuity-surface.js";
+import { type CapsuleListEntry, defaultCapsulesDir } from "./capsule-cli.js";
+import type { SemanticDedupLookup } from "./dedup/semantic.js";
+import type { FallbackLlmClient } from "./fallback-llm.js";
+import type { LocalLlmClient } from "./local-llm.js";
+import {
+  type MemoryOutcomeKind,
+  type RecordMemoryOutcomeResult,
+  recordMemoryOutcome,
+} from "./memory-worth-outcomes.js";
+import type { LcmMessagePartInput, MessagePartSourceFormat } from "./message-parts/index.js";
+import { recordObjectiveStateSnapshotsFromObservedMessages } from "./objective-state-writers.js";
+import { objectiveStateStoreOverrideForNamespace } from "./objective-state.js";
+import { offlineSyncStorageForSnapshot } from "./offline-sync-impression-drain.js";
+import {
+  OFFLINE_SYNC_SNAPSHOT_FORMAT,
+  type OfflineSyncApplyChangesetResult,
+  type OfflineSyncApplyFileContentChunkResult,
+  type OfflineSyncFileContentChunk,
+  type OfflineSyncFileRecord,
+  type OfflineSyncFileState,
+  type OfflineSyncSnapshot,
+  buildOfflineSyncSnapshot,
+  buildOfflineSyncSnapshotForPaths,
+  buildOfflineSyncSnapshotFromBase,
+  compileOfflineSyncExcludeGlobs,
+  filterOfflineSyncDeletionRevisions,
+  iterateOfflineSyncSnapshotFileRecords,
+  readOfflineSyncFileContentChunk,
+} from "./offline-sync.js";
 import { selfDeps } from "./orchestration/self-deps.js";
+import { formatProfileTraceAscii } from "./profiling.js";
+import { decideDisclosureEscalation } from "./recall-disclosure-escalation.js";
+import { toRecallExplainJson } from "./recall-explain-renderer.js";
+import { type TagMatchMode, applyTagFilter, normalizeTags, parseTagMatch } from "./recall-tag-filter.js";
+import { type RecallXraySnapshot, estimateRecallTokens } from "./recall-xray.js";
+import { SupportPassportAccessServiceBase } from "./support-passport/access-service-base.js";
+import {
+  type ExportCapsuleOptions,
+  type ExportCapsuleResult,
+  exportCapsule as exportCapsuleFn,
+} from "./transfer/capsule-export.js";
+import {
+  type ImportCapsuleOptions,
+  type ImportCapsuleResult,
+  importCapsule as importCapsuleFn,
+} from "./transfer/capsule-import.js";
+import { DEFAULT_RECALL_DISCLOSURE, isRecallDisclosure } from "./types.js";
 
 import { EngramAccessInputError, NamespaceNotWritableError } from "./access-errors.js";
 // Re-exported so existing `import { … } from "./access-service.js"` callers keep
@@ -349,9 +343,7 @@ async function getPackageVersion(): Promise<string> {
   try {
     const raw = await nodeFs.readFile(new URL("../package.json", import.meta.url), "utf-8");
     const parsed = JSON.parse(raw) as { version?: unknown };
-    cachedPackageVersion = typeof parsed.version === "string" && parsed.version.length > 0
-      ? parsed.version
-      : "unknown";
+    cachedPackageVersion = typeof parsed.version === "string" && parsed.version.length > 0 ? parsed.version : "unknown";
   } catch {
     cachedPackageVersion = "unknown";
   }
@@ -880,7 +872,9 @@ export type EngramAccessActionConfidenceResponse = ActionConfidenceResult;
 
 export async function buildProjectedGovernanceProposedActions(
   storage: Awaited<ReturnType<Orchestrator["getStorage"]>>,
-  projected: NonNullable<Awaited<ReturnType<Awaited<ReturnType<Orchestrator["getStorage"]>>["getProjectedGovernanceRecord"]>>>,
+  projected: NonNullable<
+    Awaited<ReturnType<Awaited<ReturnType<Orchestrator["getStorage"]>>["getProjectedGovernanceRecord"]>>
+  >
 ): Promise<Awaited<ReturnType<typeof readMemoryGovernanceRunArtifact>>["appliedActions"]> {
   const reviewQueue = projected.reviewQueueRows.map((row) => ({
     entryId: row.entryId,
@@ -892,13 +886,14 @@ export async function buildProjectedGovernanceProposedActions(
     suggestedStatus: row.suggestedStatus,
     relatedMemoryIds: row.relatedMemoryIds,
   })) as Awaited<ReturnType<typeof readMemoryGovernanceRunArtifact>>["reviewQueue"];
-  const memories = (await Promise.all(projected.reviewQueueRows.map((row) => storage.getMemoryById(row.memoryId))))
-    .filter((memory): memory is MemoryFile => Boolean(memory));
+  const memories = (
+    await Promise.all(projected.reviewQueueRows.map((row) => storage.getMemoryById(row.memoryId)))
+  ).filter((memory): memory is MemoryFile => Boolean(memory));
   return buildProposedActions(reviewQueue, memories);
 }
 
 export function hasGroupedGovernanceActions(
-  grouped?: Awaited<ReturnType<typeof readMemoryGovernanceRunArtifact>>["transitionReport"]["proposed"],
+  grouped?: Awaited<ReturnType<typeof readMemoryGovernanceRunArtifact>>["transitionReport"]["proposed"]
 ): boolean {
   if (!grouped) return false;
   return Object.values(grouped).some((actions) => Array.isArray(actions) && actions.length > 0);
@@ -1132,7 +1127,6 @@ export interface EngramAccessLcmStatusResponse {
   stats?: { totalTurns?: number };
 }
 
-
 export interface EngramAccessLcmCompactionRecordRequest {
   sessionKey: string;
   namespace?: string;
@@ -1158,7 +1152,7 @@ function normalizePagination(limit?: number, offset?: number): { limit: number; 
 }
 
 function normalizeBrowseSort(
-  sort?: EngramAccessMemoryBrowseRequest["sort"],
+  sort?: EngramAccessMemoryBrowseRequest["sort"]
 ): NonNullable<EngramAccessMemoryBrowseRequest["sort"]> {
   switch (sort) {
     case "updated_asc":
@@ -1191,7 +1185,7 @@ function summarizeTrustZoneRecord(
   allRecords: TrustZoneRecord[],
   poisoningDefenseEnabled: boolean,
   trustZonesEnabled: boolean,
-  promotionEnabled: boolean,
+  promotionEnabled: boolean
 ): EngramAccessTrustZoneRecordSummary {
   const trustScore = poisoningDefenseEnabled ? scoreTrustZoneProvenance(record) : undefined;
   const readiness = summarizeTrustZonePromotionReadiness({
@@ -1234,7 +1228,7 @@ function summarizeTrustZoneRecord(
 function compareBrowseMemory(
   sort: NonNullable<EngramAccessMemoryBrowseRequest["sort"]>,
   left: MemoryFile,
-  right: MemoryFile,
+  right: MemoryFile
 ): number {
   const leftUpdated = left.frontmatter.updated ?? left.frontmatter.created ?? "";
   const rightUpdated = right.frontmatter.updated ?? right.frontmatter.created ?? "";
@@ -1286,10 +1280,9 @@ export function shapeMemorySummary(
   memory: MemoryFile,
   baseDir: string,
   disclosure?: RecallDisclosure,
-  rawExcerpts?: EngramAccessMemorySummary["rawExcerpts"],
+  rawExcerpts?: EngramAccessMemorySummary["rawExcerpts"]
 ): EngramAccessMemorySummary {
-  const includeFullContent =
-    disclosure === "section" || disclosure === "raw";
+  const includeFullContent = disclosure === "section" || disclosure === "raw";
   return {
     id: memory.frontmatter.id,
     path: memory.path,
@@ -1302,13 +1295,11 @@ export function shapeMemorySummary(
     preview: normalizeProjectionPreview(memory.content),
     ...(disclosure !== undefined ? { disclosure } : {}),
     ...(includeFullContent ? { content: memory.content } : {}),
-    ...(disclosure === "raw" && rawExcerpts !== undefined
-      ? { rawExcerpts }
-      : {}),
+    ...(disclosure === "raw" && rawExcerpts !== undefined ? { rawExcerpts } : {}),
   };
 }
 
-export class EngramAccessService {
+export class EngramAccessService extends SupportPassportAccessServiceBase {
   private readonly idempotency: AccessIdempotencyStore;
   private readonly idempotencyLocks = new Map<string, Promise<void>>();
   private readonly recallSemaphores = new Map<string, unknown>();
@@ -1324,7 +1315,7 @@ export class EngramAccessService {
   private get accessObserveWriteSurface(): AccessObserveWriteSurface {
     if (!this._accessObserveWriteSurface) {
       this._accessObserveWriteSurface = new AccessObserveWriteSurface(
-        selfDeps<ConstructorParameters<typeof AccessObserveWriteSurface>[0]>(this),
+        selfDeps<ConstructorParameters<typeof AccessObserveWriteSurface>[0]>(this)
       );
     }
     return this._accessObserveWriteSurface;
@@ -1335,9 +1326,7 @@ export class EngramAccessService {
 
   private get accessLcmSurface(): AccessLcmSurface {
     if (!this._accessLcmSurface) {
-      this._accessLcmSurface = new AccessLcmSurface(
-        selfDeps<ConstructorParameters<typeof AccessLcmSurface>[0]>(this),
-      );
+      this._accessLcmSurface = new AccessLcmSurface(selfDeps<ConstructorParameters<typeof AccessLcmSurface>[0]>(this));
     }
     return this._accessLcmSurface;
   }
@@ -1348,7 +1337,7 @@ export class EngramAccessService {
   private get accessAdminOpsSurface(): AccessAdminOpsSurface {
     if (!this._accessAdminOpsSurface) {
       this._accessAdminOpsSurface = new AccessAdminOpsSurface(
-        selfDeps<ConstructorParameters<typeof AccessAdminOpsSurface>[0]>(this),
+        selfDeps<ConstructorParameters<typeof AccessAdminOpsSurface>[0]>(this)
       );
     }
     return this._accessAdminOpsSurface;
@@ -1360,7 +1349,7 @@ export class EngramAccessService {
   private get accessRecallSurface(): AccessRecallSurface {
     if (!this._accessRecallSurface) {
       this._accessRecallSurface = new AccessRecallSurface(
-        selfDeps<ConstructorParameters<typeof AccessRecallSurface>[0]>(this),
+        selfDeps<ConstructorParameters<typeof AccessRecallSurface>[0]>(this)
       );
     }
     return this._accessRecallSurface;
@@ -1372,14 +1361,18 @@ export class EngramAccessService {
   private get accessIdentityContinuitySurface(): AccessIdentityContinuitySurface {
     if (!this._accessIdentityContinuitySurface) {
       this._accessIdentityContinuitySurface = new AccessIdentityContinuitySurface(
-        selfDeps<ConstructorParameters<typeof AccessIdentityContinuitySurface>[0]>(this),
+        selfDeps<ConstructorParameters<typeof AccessIdentityContinuitySurface>[0]>(this)
       );
     }
     return this._accessIdentityContinuitySurface;
   }
   private readonly extractionLivenessWarn = new ExtractionLivenessWarnThrottle();
 
-  constructor(private readonly orchestrator: Orchestrator, options: { resolveSecretRef?: ResolveSecretRefFn | null } = {}) {
+  constructor(
+    private readonly orchestrator: Orchestrator,
+    options: { resolveSecretRef?: ResolveSecretRefFn | null } = {}
+  ) {
+    super();
     this.idempotency = new AccessIdempotencyStore(orchestrator.config.memoryDir);
     // Peer SecretRef tokens resolve at poll time through the host resolver, the
     // same indirection as agentAccessHttp.authToken (review round 1). Absent a
@@ -1424,7 +1417,10 @@ export class EngramAccessService {
   private resolveNamespace(namespace?: string): string {
     const requested = namespace?.trim();
     if (!requested) return this.orchestrator.config.defaultNamespace;
-    if (!resolveNamespaceCapabilities(this.orchestrator.config).namespaces && requested !== this.orchestrator.config.defaultNamespace) {
+    if (
+      !resolveNamespaceCapabilities(this.orchestrator.config).namespaces &&
+      requested !== this.orchestrator.config.defaultNamespace
+    ) {
       throw new EngramAccessInputError(`unsupported namespace: ${requested}`);
     }
     return requested;
@@ -1441,7 +1437,7 @@ export class EngramAccessService {
   private resolveRecallNamespace(
     namespace: string | undefined,
     sessionKey: string | undefined,
-    authenticatedPrincipal?: string,
+    authenticatedPrincipal?: string
   ): string | undefined {
     const requested = namespace?.trim();
     if (!requested) return undefined;
@@ -1462,7 +1458,7 @@ export class EngramAccessService {
   private writableNamespaceFor(
     namespace: string | undefined,
     sessionKey: string | undefined,
-    authenticatedPrincipal?: string,
+    authenticatedPrincipal?: string
   ): string {
     // #1521: delegates to the scope-module resolver. The inline
     // namespace/principal resolution + writability check is retired so the
@@ -1471,7 +1467,7 @@ export class EngramAccessService {
       namespace,
       sessionKey,
       authenticatedPrincipal,
-      this.orchestrator.config,
+      this.orchestrator.config
     );
     if (!result.ok) {
       if (result.reason === "unsupported") {
@@ -1479,12 +1475,11 @@ export class EngramAccessService {
       }
       throw new NamespaceNotWritableError(
         result.namespace,
-        this.resolveRequestPrincipal(sessionKey, authenticatedPrincipal),
+        this.resolveRequestPrincipal(sessionKey, authenticatedPrincipal)
       );
     }
     return result.namespace;
   }
-
 
   /** Shared coding-scope derivation for the read/write resolvers below —
    *  coding context, overlay, principal, scope-profile plan for an IMPLICIT
@@ -1497,7 +1492,7 @@ export class EngramAccessService {
       namespace?: string;
       sessionKey?: string;
       authenticatedPrincipal?: string;
-    },
+    }
   ): Promise<{
     principal: string | undefined;
     codingContext: CodingContext | null;
@@ -1509,14 +1504,13 @@ export class EngramAccessService {
     // searches the base namespace; a sessionless write/read must too — otherwise
     // a client that injects cwd/projectTag but no sessionKey would land in a
     // `default-project-*` namespace its own recall never searches (Codex review).
-    const hasSession =
-      typeof request.sessionKey === "string" && request.sessionKey.length > 0;
+    const hasSession = typeof request.sessionKey === "string" && request.sessionKey.length > 0;
     const codingContext =
       hasSession &&
       resolveNamespaceCapabilities(this.orchestrator.config).namespaces &&
       this.orchestrator.config.codingMode?.projectScope
-        ? this.orchestrator.getCodingContextForSession(request.sessionKey) ??
-          (await resolveCodingContextFromOptions(request))
+        ? (this.orchestrator.getCodingContextForSession(request.sessionKey) ??
+          (await resolveCodingContextFromOptions(request)))
         : null;
     const overlay =
       hasSession &&
@@ -1525,13 +1519,10 @@ export class EngramAccessService {
         ? resolveCodingNamespaceOverlay(
             codingContext,
             this.orchestrator.config.codingMode,
-            this.orchestrator.config.defaultNamespace,
+            this.orchestrator.config.defaultNamespace
           )
         : null;
-    const principal = this.resolveRequestPrincipal(
-      request.sessionKey,
-      request.authenticatedPrincipal,
-    );
+    const principal = this.resolveRequestPrincipal(request.sessionKey, request.authenticatedPrincipal);
     const profilePlan = resolveScopeProfilePlan({
       config: this.orchestrator.config,
       principal,
@@ -1542,11 +1533,7 @@ export class EngramAccessService {
   }
 
   private assertTokenCanWriteNamespace(namespace: string): void {
-    enforceNamespaceAllowList(
-      tokenCapabilityStore.getStore(),
-      namespace,
-      this.orchestrator.config.defaultNamespace,
-    );
+    enforceNamespaceAllowList(tokenCapabilityStore.getStore(), namespace, this.orchestrator.config.defaultNamespace);
   }
 
   /**
@@ -1564,15 +1551,11 @@ export class EngramAccessService {
       sessionKey?: string;
       authenticatedPrincipal?: string;
     },
-    enforceToken: boolean = true,
+    enforceToken = true
   ): Promise<string> {
     const requested = request.namespace?.trim();
     if (requested) {
-      const namespace = this.writableNamespaceFor(
-        requested,
-        request.sessionKey,
-        request.authenticatedPrincipal,
-      );
+      const namespace = this.writableNamespaceFor(requested, request.sessionKey, request.authenticatedPrincipal);
       if (enforceToken) this.assertTokenCanWriteNamespace(namespace);
       return namespace;
     }
@@ -1594,7 +1577,7 @@ export class EngramAccessService {
       throw new NamespaceNotWritableError(
         result.namespace,
         principal,
-        `scope profile ${profilePlan.profileId} has no writable layer for principal ${principal ?? "anonymous"}`,
+        `scope profile ${profilePlan.profileId} has no writable layer for principal ${principal ?? "anonymous"}`
       );
     }
 
@@ -1604,12 +1587,9 @@ export class EngramAccessService {
     throw new NamespaceNotWritableError(result.namespace, principal);
   }
 
-  async namespaceWritablePreflight(
-    request: EngramAccessNamespaceWritableRequest,
-  ): Promise<WritableNamespaceResult> {
-    return resolveNamespaceWritablePreflight(
-      request,
-      (preflightRequest) => this.resolveCodingScopedWriteNamespace(preflightRequest, false),
+  async namespaceWritablePreflight(request: EngramAccessNamespaceWritableRequest): Promise<WritableNamespaceResult> {
+    return resolveNamespaceWritablePreflight(request, (preflightRequest) =>
+      this.resolveCodingScopedWriteNamespace(preflightRequest, false)
     );
   }
 
@@ -1625,14 +1605,10 @@ export class EngramAccessService {
       namespace?: string;
       sessionKey?: string;
       authenticatedPrincipal?: string;
-    },
+    }
   ): Promise<string> {
-    const principal = this.resolveRequestPrincipal(
-      request.sessionKey,
-      request.authenticatedPrincipal,
-    );
-    const hasExplicitNamespace =
-      typeof request.namespace === "string" && request.namespace.trim().length > 0;
+    const principal = this.resolveRequestPrincipal(request.sessionKey, request.authenticatedPrincipal);
+    const hasExplicitNamespace = typeof request.namespace === "string" && request.namespace.trim().length > 0;
     if (hasExplicitNamespace) {
       return this.resolveReadableNamespace(request.namespace, principal);
     }
@@ -1696,15 +1672,11 @@ export class EngramAccessService {
       namespace?: string;
       sessionKey?: string;
       authenticatedPrincipal?: string;
-    },
+    }
   ): Promise<MemoryScopePlan> {
     const warnings: string[] = [];
-    const principal = this.resolveRequestPrincipal(
-      request.sessionKey,
-      request.authenticatedPrincipal,
-    );
-    const hasExplicitNamespace =
-      typeof request.namespace === "string" && request.namespace.trim().length > 0;
+    const principal = this.resolveRequestPrincipal(request.sessionKey, request.authenticatedPrincipal);
+    const hasExplicitNamespace = typeof request.namespace === "string" && request.namespace.trim().length > 0;
 
     if (hasExplicitNamespace) {
       // Explicit namespace wins; authorized through the existing policy path.
@@ -1714,7 +1686,7 @@ export class EngramAccessService {
       const writeNamespace = this.writableNamespaceFor(
         request.namespace,
         request.sessionKey,
-        request.authenticatedPrincipal,
+        request.authenticatedPrincipal
       );
       this.assertTokenCanWriteNamespace(writeNamespace);
       return {
@@ -1732,22 +1704,14 @@ export class EngramAccessService {
     // No explicit namespace → principal self base, optionally overlaid with the
     // session's coding (project/branch) context — the SAME resolution recall and
     // the orchestrator buffer-flush write path use (rule 42 symmetry).
-    const baseNamespace = defaultNamespaceForPrincipal(
-      principal,
-      this.orchestrator.config,
-    );
+    const baseNamespace = defaultNamespaceForPrincipal(principal, this.orchestrator.config);
 
     // Resolve the coding context and overlay through the shared read-only
     // resolver used by the other scoped access paths. It applies the same
     // session-first, per-call fallback precedence without mutating session
     // state, so concurrent requests cannot observe temporary context.
-    const {
-      overlay: codingOverlay,
-      profilePlan,
-    } = await this.resolveCodingScopeInputs(request);
-    const overlaidBase = codingOverlay
-      ? combineNamespaces(baseNamespace, codingOverlay.namespace)
-      : baseNamespace;
+    const { overlay: codingOverlay, profilePlan } = await this.resolveCodingScopeInputs(request);
+    const overlaidBase = codingOverlay ? combineNamespaces(baseNamespace, codingOverlay.namespace) : baseNamespace;
     const codingOverlayApplied = overlaidBase !== baseNamespace;
     const assertWriteNamespaceAllowed = (namespace: string): void => {
       this.assertTokenCanWriteNamespace(namespace);
@@ -1755,11 +1719,13 @@ export class EngramAccessService {
     if (profilePlan) {
       const selectedLayer = profilePlan.layers.find((layer) => layer.id === profilePlan.writeLayer);
       const writeNamespaceReadable =
-        profilePlan.writeNamespace.length > 0 &&
-        profilePlan.readNamespaces.includes(profilePlan.writeNamespace);
+        profilePlan.writeNamespace.length > 0 && profilePlan.readNamespaces.includes(profilePlan.writeNamespace);
       if (!selectedLayer?.writable || !writeNamespaceReadable) {
-        throw new NamespaceNotWritableError(profilePlan.writeNamespace, principal,
-          `scope profile ${profilePlan.profileId} has no writable layer for principal ${principal ?? "anonymous"}`);
+        throw new NamespaceNotWritableError(
+          profilePlan.writeNamespace,
+          principal,
+          `scope profile ${profilePlan.profileId} has no writable layer for principal ${principal ?? "anonymous"}`
+        );
       }
       const legacyRecallNamespaces = Array.isArray(this.orchestrator.config.defaultRecallNamespaces)
         ? recallNamespacesForPrincipal(principal, this.orchestrator.config)
@@ -1780,8 +1746,8 @@ export class EngramAccessService {
               (layer.id === "userProject" || layer.id === "teamProject") &&
               layer.readable &&
               layer.namespace &&
-              readNamespaces.includes(layer.namespace),
-          ),
+              readNamespaces.includes(layer.namespace)
+          )
       );
       assertWriteNamespaceAllowed(profilePlan.writeNamespace);
       return {
@@ -1806,11 +1772,7 @@ export class EngramAccessService {
       // namespace), collapsing the namespaces-disabled / no-session /
       // projectScope-off cases to config.defaultNamespace exactly as before
       // (rule 39 parity with resolveCodingScopedWriteNamespace).
-      const writeNamespace = this.writableNamespaceFor(
-        undefined,
-        request.sessionKey,
-        request.authenticatedPrincipal,
-      );
+      const writeNamespace = this.writableNamespaceFor(undefined, request.sessionKey, request.authenticatedPrincipal);
       // Objective-state keeps its STRICTER pre-#1495 contract (#928): an implicit
       // snapshot is based on the PRINCIPAL SELF namespace and authorized against
       // THAT base (rule 48 least-privilege). This rejection MUST stay (security):
@@ -1892,9 +1854,7 @@ export class EngramAccessService {
     if (scope.scopeProfile && scope.writeLayer !== "userProject") {
       return scope.writeNamespace;
     }
-    return scope.codingOverlayApplied
-      ? this.orchestrator.config.defaultNamespace
-      : scope.writeNamespace;
+    return scope.codingOverlayApplied ? this.orchestrator.config.defaultNamespace : scope.writeNamespace;
   }
 
   private async objectiveStateStoreLocationForNamespace(namespace: string): Promise<{
@@ -1932,9 +1892,7 @@ export class EngramAccessService {
     // unauthenticated.  Unauthenticated callers must NOT be allowed to read
     // arbitrary namespaces: that would bypass all readPrincipals policies.
     if (!principal) {
-      throw new EngramAccessInputError(
-        "authentication required: namespaces are enabled and no principal was supplied",
-      );
+      throw new EngramAccessInputError("authentication required: namespaces are enabled and no principal was supplied");
     }
 
     // Authenticated caller — enforce the namespace ACL as normal.
@@ -1946,7 +1904,7 @@ export class EngramAccessService {
 
   private async resolveReadableNamespacesForSearch(
     namespace: string | undefined,
-    principal?: string,
+    principal?: string
   ): Promise<string[]> {
     const requested = namespace?.trim();
     if (requested) {
@@ -1958,15 +1916,10 @@ export class EngramAccessService {
     }
 
     if (!principal) {
-      throw new EngramAccessInputError(
-        "authentication required: namespaces are enabled and no principal was supplied",
-      );
+      throw new EngramAccessInputError("authentication required: namespaces are enabled and no principal was supplied");
     }
 
-    const legacyRecallNamespaces = recallNamespacesForPrincipal(
-      principal,
-      this.orchestrator.config,
-    );
+    const legacyRecallNamespaces = recallNamespacesForPrincipal(principal, this.orchestrator.config);
     const profilePlan = resolveScopeProfilePlan({
       config: this.orchestrator.config,
       principal,
@@ -1998,9 +1951,7 @@ export class EngramAccessService {
       });
       return mergeMemorySearchDefaultFallback(profileNamespaces, fallback);
     }
-    return legacyRecallNamespaces.filter((ns) =>
-      canReadNamespace(principal, ns, this.orchestrator.config),
-    );
+    return legacyRecallNamespaces.filter((ns) => canReadNamespace(principal, ns, this.orchestrator.config));
   }
 
   private resolveAllReadableConfiguredNamespaces(principal: string): string[] {
@@ -2010,14 +1961,13 @@ export class EngramAccessService {
       config.sharedNamespace,
       ...config.namespacePolicies.map((policy) => policy.name),
     ];
-    return [...new Set(candidates)]
-      .filter((namespace) => canReadNamespace(principal, namespace, config));
+    return [...new Set(candidates)].filter((namespace) => canReadNamespace(principal, namespace, config));
   }
 
   private resolveMemorySearchNamespacesForCollection(
     collection: string | undefined,
     namespaces: string[],
-    collectionPrincipal?: string,
+    collectionPrincipal?: string
   ): string[] {
     if (!resolveNamespaceCapabilities(this.orchestrator.config).namespaces) {
       return namespaces;
@@ -2057,16 +2007,14 @@ export class EngramAccessService {
       return matchedNamespaces;
     }
 
-    throw new EngramAccessInputError(
-      "collection is not namespace-scoped for the requested principal",
-    );
+    throw new EngramAccessInputError("collection is not namespace-scoped for the requested principal");
   }
 
   private async buildRecallDebug(
     snapshot: LastRecallSnapshot | null,
     namespace: string,
     includeDebug: boolean,
-    sessionKey?: string,
+    sessionKey?: string
   ): Promise<EngramAccessRecallResponse["debug"] | undefined> {
     if (!includeDebug) return undefined;
     if (!sessionKey?.trim()) return undefined;
@@ -2076,10 +2024,10 @@ export class EngramAccessService {
     ]);
     return snapshot || intent || graph
       ? {
-        snapshot: snapshot ?? undefined,
-        intent,
-        graph,
-      }
+          snapshot: snapshot ?? undefined,
+          intent,
+          graph,
+        }
       : undefined;
   }
 
@@ -2112,60 +2060,52 @@ export class EngramAccessService {
      */
     rawExcerptsSuppressed?: boolean;
   }): Promise<EngramAccessRecallResponse> {
-    return this.accessRecallSurface.buildRecallResponseFromXraySnapshot(
-      options,
-    );
+    return this.accessRecallSurface.buildRecallResponseFromXraySnapshot(options);
   }
 
   private async serializeRecallResults(
     snapshot: LastRecallSnapshot | null,
     disclosure: RecallDisclosure,
-    rawContext:
-      | {
-          query: string;
-          sessionKey?: string;
-          /**
-           * Read-authorization-gated namespace for the raw-excerpt LCM lookup
-           * (#1505 thread 2f7). When the caller supplies it, the raw lookup uses
-           * THIS namespace prefix instead of `snapshot.namespace` (the
-           * write/overlay namespace), so raw disclosure honours the SAME read
-           * gate as normal recall + `lcmSearch`. Omitted ⇒ falls back to the
-           * snapshot namespace (single-store / sessionless callers, unchanged).
-           */
-          rawExcerptNamespace?: string;
-          /**
-           * Ordered, read-authorized LCM read session_id SET (#1505 fallback
-           * unification). When supplied, raw disclosure queries each key (primary
-           * coding overlay → read fallbacks) and merges rows so a branch-scoped
-           * session finds excerpts archived at project/root scope. Already
-           * read-gated, so no unauthorized overlay key is present. Omitted ⇒ the
-           * legacy single `rawExcerptNamespace`-prefixed key (unchanged).
-           */
-          rawExcerptSessionIds?: string[];
-          /**
-           * Force NO raw excerpts even when `disclosure === "raw"` (#1505 thread
-           * NBHWz). Set by callers when the IMPLICIT raw-excerpt read gate found
-           * NO readable LCM namespace (a restrictive `default` READ policy with
-           * no readable overlay/self namespace). The lookup must NOT fall back to
-           * `snapshot.namespace` (the write/overlay namespace the read gate
-           * excludes) — it returns empty excerpts so raw recall degrades
-           * gracefully instead of leaking unreadable rows or throwing.
-           */
-          rawExcerptsSuppressed?: boolean;
-        }
-      | null = null,
+    rawContext: {
+      query: string;
+      sessionKey?: string;
+      /**
+       * Read-authorization-gated namespace for the raw-excerpt LCM lookup
+       * (#1505 thread 2f7). When the caller supplies it, the raw lookup uses
+       * THIS namespace prefix instead of `snapshot.namespace` (the
+       * write/overlay namespace), so raw disclosure honours the SAME read
+       * gate as normal recall + `lcmSearch`. Omitted ⇒ falls back to the
+       * snapshot namespace (single-store / sessionless callers, unchanged).
+       */
+      rawExcerptNamespace?: string;
+      /**
+       * Ordered, read-authorized LCM read session_id SET (#1505 fallback
+       * unification). When supplied, raw disclosure queries each key (primary
+       * coding overlay → read fallbacks) and merges rows so a branch-scoped
+       * session finds excerpts archived at project/root scope. Already
+       * read-gated, so no unauthorized overlay key is present. Omitted ⇒ the
+       * legacy single `rawExcerptNamespace`-prefixed key (unchanged).
+       */
+      rawExcerptSessionIds?: string[];
+      /**
+       * Force NO raw excerpts even when `disclosure === "raw"` (#1505 thread
+       * NBHWz). Set by callers when the IMPLICIT raw-excerpt read gate found
+       * NO readable LCM namespace (a restrictive `default` READ policy with
+       * no readable overlay/self namespace). The lookup must NOT fall back to
+       * `snapshot.namespace` (the write/overlay namespace the read gate
+       * excludes) — it returns empty excerpts so raw recall degrades
+       * gracefully instead of leaking unreadable rows or throwing.
+       */
+      rawExcerptsSuppressed?: boolean;
+    } | null = null
   ): Promise<EngramAccessMemorySummary[]> {
-    return this.accessRecallSurface.serializeRecallResults(
-      snapshot,
-      disclosure,
-      rawContext,
-    );
+    return this.accessRecallSurface.serializeRecallResults(snapshot, disclosure, rawContext);
   }
 
   private async storageForAbsoluteRecallPath(
     memoryPath: string,
     primaryNamespace: string,
-    recallNamespaces: readonly string[] = [],
+    recallNamespaces: readonly string[] = []
   ): Promise<{ storage: StorageManager; dir: string; namespace: string } | null> {
     const resolvedPath = nodePath.resolve(memoryPath);
     const memoryRoot = nodePath.resolve(this.orchestrator.config.memoryDir);
@@ -2196,10 +2136,7 @@ export class EngramAccessService {
       }
       const candidateRoot = nodePath.resolve(candidateStorage.dir);
       if (!isPathInsideStorageRoot(candidateRoot, resolvedPath)) continue;
-      if (
-        candidateRoot === memoryRoot &&
-        isPathInsideStorageRoot(namespacesRoot, resolvedPath)
-      ) {
+      if (candidateRoot === memoryRoot && isPathInsideStorageRoot(namespacesRoot, resolvedPath)) {
         continue;
       }
       matches.push({ storage: candidateStorage, dir: candidateRoot, namespace: ns });
@@ -2227,12 +2164,9 @@ export class EngramAccessService {
        * callers).
        */
       lcmSessionIds?: string[];
-    } | null,
+    } | null
   ): Promise<EngramAccessMemorySummary["rawExcerpts"] | null> {
-    return this.accessRecallSurface.fetchRawExcerpts(
-      disclosure,
-      context,
-    );
+    return this.accessRecallSurface.fetchRawExcerpts(disclosure, context);
   }
 
   private async handleIdempotentWrite<T extends { idempotencyReplay?: boolean }>(options: {
@@ -2352,7 +2286,10 @@ export class EngramAccessService {
     const current = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const queued = previous.then(() => current, () => current);
+    const queued = previous.then(
+      () => current,
+      () => current
+    );
     this.idempotencyLocks.set(key, queued);
 
     await previous.catch(() => {});
@@ -2381,7 +2318,7 @@ export class EngramAccessService {
     const extraction = await computeExtractionLivenessStatus(
       this.orchestrator,
       extractionWatermark,
-      caps?.namespaces !== undefined ? undefined : this.extractionLivenessWarn,
+      caps?.namespaces !== undefined ? undefined : this.extractionLivenessWarn
     );
     let scopedDegradedReason: string | null = null;
     if (extraction.degraded) {
@@ -2406,7 +2343,9 @@ export class EngramAccessService {
     // ONE call: the corpus array and the flag describing it must not come from
     // two independently-cached scans (round 8, codex P1).
     const corpusCensus = await computeServiceCorpusCensus(this.orchestrator, {
-      cache: this.corpusWatermarkCache, caps });
+      cache: this.corpusWatermarkCache,
+      caps,
+    });
     let projectionAvailable = false;
     try {
       await stat(getMemoryProjectionPath(storage.dir));
@@ -2426,7 +2365,7 @@ export class EngramAccessService {
         searchBackend,
         qmdEnabled,
         resolvedNamespace,
-        this.qmdCollectionForHealth(resolvedNamespace, storage.dir),
+        this.qmdCollectionForHealth(resolvedNamespace, storage.dir)
       ),
       nativeKnowledgeEnabled: this.orchestrator.config.nativeKnowledge?.enabled === true,
       projectionAvailable,
@@ -2452,8 +2391,7 @@ export class EngramAccessService {
     }
 
     const useLegacyDefaultCollection =
-      namespace === this.orchestrator.config.defaultNamespace &&
-      storageDir === this.orchestrator.config.memoryDir;
+      namespace === this.orchestrator.config.defaultNamespace && storageDir === this.orchestrator.config.memoryDir;
     return namespaceCollectionName(this.orchestrator.config.qmdCollection, namespace, {
       defaultNamespace: this.orchestrator.config.defaultNamespace,
       useLegacyDefaultCollection,
@@ -2464,34 +2402,24 @@ export class EngramAccessService {
     searchBackend: string,
     qmdEnabled: boolean,
     namespace: string,
-    collection: string,
+    collection: string
   ): Promise<EngramAccessQmdHealthResponse> {
-    return this.accessObserveWriteSurface.qmdHealth(
-      searchBackend,
-      qmdEnabled,
-      namespace,
-      collection,
-    );
+    return this.accessObserveWriteSurface.qmdHealth(searchBackend, qmdEnabled, namespace, collection);
   }
 
   private async namespaceQmdHealth(
     searchBackend: string,
     qmdEnabled: boolean,
     namespace: string,
-    fallbackCollection: string,
+    fallbackCollection: string
   ): Promise<EngramAccessQmdHealthResponse | null> {
-    return this.accessObserveWriteSurface.namespaceQmdHealth(
-      searchBackend,
-      qmdEnabled,
-      namespace,
-      fallbackCollection,
-    );
+    return this.accessObserveWriteSurface.namespaceQmdHealth(searchBackend, qmdEnabled, namespace, fallbackCollection);
   }
 
   private async qmdCollectionState(
     searchBackend: string,
     qmdEnabled: boolean,
-    collection: string,
+    collection: string
   ): Promise<EngramAccessQmdCollectionState> {
     if (searchBackend !== "qmd" || !qmdEnabled) return "skipped";
     const qmd = this.orchestrator.qmd;
@@ -2512,10 +2440,7 @@ export class EngramAccessService {
     }
   }
 
-  private async qmdProbeAvailable(
-    searchBackend: string,
-    qmdEnabled: boolean,
-  ): Promise<boolean> {
+  private async qmdProbeAvailable(searchBackend: string, qmdEnabled: boolean): Promise<boolean> {
     if (searchBackend !== "qmd" || !qmdEnabled) return false;
     const qmd = this.orchestrator.qmd;
     if (!qmd) return false;
@@ -2546,14 +2471,12 @@ export class EngramAccessService {
   }
 
   async actionConfidence(
-    request: EngramAccessActionConfidenceRequest = {},
+    request: EngramAccessActionConfidenceRequest = {}
   ): Promise<EngramAccessActionConfidenceResponse> {
     return evaluateActionConfidence(request);
   }
 
-  async daySummary(
-    request: EngramAccessDaySummaryRequest,
-  ): Promise<import("./types.js").DaySummaryResult | null> {
+  async daySummary(request: EngramAccessDaySummaryRequest): Promise<import("./types.js").DaySummaryResult | null> {
     if (!resolveRecallAuxiliaryCapabilities(this.orchestrator.config).daySummary) {
       throw new EngramAccessInputError("day summary is disabled");
     }
@@ -2570,12 +2493,8 @@ export class EngramAccessService {
     return this.orchestrator.generateDaySummary(memories);
   }
 
-  async briefing(
-    request: EngramAccessBriefingRequest,
-  ): Promise<EngramAccessBriefingResponse> {
-    return this.accessObserveWriteSurface.briefing(
-      request,
-    );
+  async briefing(request: EngramAccessBriefingRequest): Promise<EngramAccessBriefingResponse> {
+    return this.accessObserveWriteSurface.briefing(request);
   }
 
   /**
@@ -2640,7 +2559,7 @@ export class EngramAccessService {
    */
   private async maybeAttachCodingContext(
     sessionKey: string | undefined,
-    options: { cwd?: string; projectTag?: string },
+    options: { cwd?: string; projectTag?: string }
   ): Promise<void> {
     if (!sessionKey) return;
     // Respect the configuration gate (CLAUDE.md #30).
@@ -2692,10 +2611,9 @@ export class EngramAccessService {
    * later bare recalls miss (Codex review).
    */
   private async attachCodingContextAfterScopedWrite(
-    request: CodingScopedWriteInput & { namespace?: string; sessionKey?: string },
+    request: CodingScopedWriteInput & { namespace?: string; sessionKey?: string }
   ): Promise<void> {
-    const hasExplicitNamespace =
-      typeof request.namespace === "string" && request.namespace.trim().length > 0;
+    const hasExplicitNamespace = typeof request.namespace === "string" && request.namespace.trim().length > 0;
     if (hasExplicitNamespace) return;
     await this.maybeAttachCodingContext(request.sessionKey, {
       cwd: request.cwd,
@@ -2713,9 +2631,7 @@ export class EngramAccessService {
     const authenticatedPrincipal = request.authenticatedPrincipal?.trim();
     const principal = this.resolveRequestPrincipal(request.sessionKey, authenticatedPrincipal);
     if (resolveNamespaceCapabilities(this.orchestrator.config).namespaces && !principal) {
-      throw new EngramAccessInputError(
-        "authentication required: namespaces are enabled and no principal was supplied",
-      );
+      throw new EngramAccessInputError("authentication required: namespaces are enabled and no principal was supplied");
     }
     const principalKey = principal ?? "default";
     // Single-flight gate resolved through the shared access-setup capability
@@ -2727,66 +2643,49 @@ export class EngramAccessService {
       normalizedRequest,
       requestFingerprint,
       principalKey,
-      singleFlight,
+      singleFlight
     );
   }
 
-  private async executeRecall(
-    request: EngramAccessRecallRequest,
-  ): Promise<RecallExecResult> {
-    return this.accessRecallSurface.executeRecall(
-      request,
-    );
+  private async executeRecall(request: EngramAccessRecallRequest): Promise<RecallExecResult> {
+    return this.accessRecallSurface.executeRecall(request);
   }
 
-  async recallExplain(
-    request: EngramAccessRecallExplainRequest = {},
-  ): Promise<EngramAccessRecallExplainResponse> {
-    const requestedNamespace = request.namespace?.trim()
-      ? this.resolveNamespace(request.namespace)
-      : undefined;
+  async recallExplain(request: EngramAccessRecallExplainRequest = {}): Promise<EngramAccessRecallExplainResponse> {
+    const requestedNamespace = request.namespace?.trim() ? this.resolveNamespace(request.namespace) : undefined;
     const authenticatedPrincipal = request.authenticatedPrincipal?.trim();
-    const principal =
-      authenticatedPrincipal
-      || resolvePrincipal(request.sessionKey, this.orchestrator.config);
+    const principal = authenticatedPrincipal || resolvePrincipal(request.sessionKey, this.orchestrator.config);
     if (requestedNamespace) {
       if (!canReadNamespace(principal, requestedNamespace, this.orchestrator.config)) {
         return { found: false };
       }
-    } else if (
-      resolveNamespaceCapabilities(this.orchestrator.config).namespaces
-      && !principal
-    ) {
+    } else if (resolveNamespaceCapabilities(this.orchestrator.config).namespaces && !principal) {
       return { found: false };
     }
     const snapshot = request.sessionKey
       ? (() => {
-        const candidate = this.orchestrator.lastRecall.get(request.sessionKey);
-        if (!candidate) return null;
-        if (!requestedNamespace) return candidate;
-        return candidate.namespace === requestedNamespace ? candidate : null;
-      })()
+          const candidate = this.orchestrator.lastRecall.get(request.sessionKey);
+          if (!candidate) return null;
+          if (!requestedNamespace) return candidate;
+          return candidate.namespace === requestedNamespace ? candidate : null;
+        })()
       : (() => {
-        const candidate = this.orchestrator.lastRecall.getMostRecent();
-        if (!candidate) return null;
-        if (!requestedNamespace) return candidate;
-        return candidate.namespace === requestedNamespace ? candidate : null;
-      })();
+          const candidate = this.orchestrator.lastRecall.getMostRecent();
+          if (!candidate) return null;
+          if (!requestedNamespace) return candidate;
+          return candidate.namespace === requestedNamespace ? candidate : null;
+        })();
     const readableSnapshot = (() => {
       if (!snapshot || !resolveNamespaceCapabilities(this.orchestrator.config).namespaces) return snapshot;
       const snapshotNamespace = snapshot.namespace ?? this.orchestrator.config.defaultNamespace;
-      return canReadNamespace(principal, snapshotNamespace, this.orchestrator.config)
-        ? snapshot
-        : null;
+      return canReadNamespace(principal, snapshotNamespace, this.orchestrator.config) ? snapshot : null;
     })();
     const namespace = (() => {
       if (requestedNamespace) return requestedNamespace;
       if (readableSnapshot?.namespace) return readableSnapshot.namespace;
       const fallbackNamespace = this.orchestrator.config.defaultNamespace;
       if (!resolveNamespaceCapabilities(this.orchestrator.config).namespaces) return fallbackNamespace;
-      return canReadNamespace(principal, fallbackNamespace, this.orchestrator.config)
-        ? fallbackNamespace
-        : null;
+      return canReadNamespace(principal, fallbackNamespace, this.orchestrator.config) ? fallbackNamespace : null;
     })();
     if (!namespace) return { found: false };
     const [intent, graph] = await Promise.all([
@@ -2797,17 +2696,10 @@ export class EngramAccessService {
     return { found: true, snapshot: readableSnapshot ?? undefined, intent, graph };
   }
 
-  async recallTierExplain(
-    sessionKey?: string,
-    namespace?: string,
-    authenticatedPrincipal?: string,
-  ) {
+  async recallTierExplain(sessionKey?: string, namespace?: string, authenticatedPrincipal?: string) {
     const namespacesEnabled = resolveNamespaceCapabilities(this.orchestrator.config).namespaces;
-    const requestedNamespace = namespace?.trim()
-      ? this.resolveNamespace(namespace)
-      : undefined;
-    const principal = authenticatedPrincipal?.trim()
-      || resolvePrincipal(sessionKey, this.orchestrator.config);
+    const requestedNamespace = namespace?.trim() ? this.resolveNamespace(namespace) : undefined;
+    const principal = authenticatedPrincipal?.trim() || resolvePrincipal(sessionKey, this.orchestrator.config);
 
     if (requestedNamespace) {
       if (!canReadNamespace(principal, requestedNamespace, this.orchestrator.config)) {
@@ -2827,11 +2719,8 @@ export class EngramAccessService {
         return candidate.namespace === requestedNamespace ? candidate : null;
       }
       if (!namespacesEnabled) return candidate;
-      const snapshotNs = candidate.namespace
-        ?? this.orchestrator.config.defaultNamespace;
-      return canReadNamespace(principal, snapshotNs, this.orchestrator.config)
-        ? candidate
-        : null;
+      const snapshotNs = candidate.namespace ?? this.orchestrator.config.defaultNamespace;
+      return canReadNamespace(principal, snapshotNs, this.orchestrator.config) ? candidate : null;
     })();
 
     return toRecallExplainJson(snapshot);
@@ -2884,18 +2773,13 @@ export class EngramAccessService {
     snapshot?: RecallXraySnapshot;
     recall?: EngramAccessRecallResponse;
   }> {
-    return this.accessRecallSurface.recallXray(
-      request,
-    );
+    return this.accessRecallSurface.recallXray(request);
   }
   async memoryStore(
     request: EngramAccessMemoryStoreRequest,
-    hooks?: { enforceWriteQuota?: () => void | Promise<void> },
+    hooks?: { enforceWriteQuota?: () => void | Promise<void> }
   ): Promise<EngramAccessWriteResponse> {
-    return this.accessObserveWriteSurface.memoryStore(
-      request,
-      hooks,
-    );
+    return this.accessObserveWriteSurface.memoryStore(request, hooks);
   }
 
   async peekMemoryStoreIdempotency(request: EngramAccessMemoryStoreRequest): Promise<EngramAccessIdempotencyStatus> {
@@ -2927,16 +2811,13 @@ export class EngramAccessService {
 
   async suggestionSubmit(
     request: EngramAccessSuggestionSubmitRequest,
-    hooks?: { enforceWriteQuota?: () => void | Promise<void> },
+    hooks?: { enforceWriteQuota?: () => void | Promise<void> }
   ): Promise<EngramAccessWriteResponse> {
-    return this.accessObserveWriteSurface.suggestionSubmit(
-      request,
-      hooks,
-    );
+    return this.accessObserveWriteSurface.suggestionSubmit(request, hooks);
   }
 
   async peekSuggestionSubmitIdempotency(
-    request: EngramAccessSuggestionSubmitRequest,
+    request: EngramAccessSuggestionSubmitRequest
   ): Promise<EngramAccessIdempotencyStatus> {
     const namespace = await this.resolveCodingScopedWriteNamespace(request);
     const schemaVersion = request.schemaVersion ?? ENGRAM_ACCESS_WRITE_SCHEMA_VERSION;
@@ -2966,7 +2847,7 @@ export class EngramAccessService {
 
   private validateWriteCandidate(
     request: EngramAccessMemoryStoreRequest | EngramAccessSuggestionSubmitRequest,
-    namespace: string,
+    namespace: string
   ): ValidExplicitCapture {
     try {
       return {
@@ -2975,7 +2856,7 @@ export class EngramAccessService {
             ...request,
             namespace,
           },
-          "legacy_tool",
+          "legacy_tool"
         ),
         // The namespace was resolved AND authorized by
         // resolveCodingScopedWriteNamespace (explicit namespaces via
@@ -2994,7 +2875,7 @@ export class EngramAccessService {
     memoryId: string,
     namespace?: string,
     principal?: string,
-    sessionKey?: string,
+    sessionKey?: string
   ): Promise<EngramAccessMemoryResponse> {
     // Issue #1582 — accept a `[m:xxxx]` handle in place of a memory id; resolve
     // it against the caller's session via the shared helper (rule 22). A raw id
@@ -3021,7 +2902,7 @@ export class EngramAccessService {
   async codegraphTool(
     request: CodegraphSurfaceRequest,
     authenticatedPrincipal?: string,
-    sourceConnector?: string,
+    sourceConnector?: string
   ): Promise<CodegraphSurfaceResponse> {
     const principal = authenticatedPrincipal ?? "default";
     const memoryDir = this.orchestrator.config.memoryDir;
@@ -3073,8 +2954,10 @@ export class EngramAccessService {
 
   /** Whether the coding_decision tool should appear in tools/list (rule 39). */
   get decisionRecordSurfaceVisible(): boolean {
-    return this.orchestrator.config.codingKnowledge?.enabled === true
-      && this.orchestrator.config.codingKnowledge?.decisionRecords === true;
+    return (
+      this.orchestrator.config.codingKnowledge?.enabled === true &&
+      this.orchestrator.config.codingKnowledge?.decisionRecords === true
+    );
   }
   /**
    * Thin delegate — handler logic in coding/decision-surfaces.ts (#1548 PR2).
@@ -3086,7 +2969,7 @@ export class EngramAccessService {
   async codingDecision(
     request: DecisionSurfaceRequest,
     authenticatedPrincipal?: string,
-    sourceConnector?: string,
+    sourceConnector?: string
   ): Promise<DecisionSurfaceResponse> {
     return handleCodingDecision(request, {
       codingKnowledge: this.orchestrator.config.codingKnowledge,
@@ -3099,23 +2982,27 @@ export class EngramAccessService {
               sessionKey: req.sessionKey,
               authenticatedPrincipal,
             })
-        : await this.resolveCodingScopedReadableNamespace({
-            namespace: req.namespace,
-            sessionKey: req.sessionKey,
-            authenticatedPrincipal,
-          });
+          : await this.resolveCodingScopedReadableNamespace({
+              namespace: req.namespace,
+              sessionKey: req.sessionKey,
+              authenticatedPrincipal,
+            });
         const storage = await this.orchestrator.getStorage(ns);
         return Object.assign(storage, { namespace: ns });
       },
-      throwInputError: (msg) => { throw new EngramAccessInputError(msg); },
+      throwInputError: (msg) => {
+        throw new EngramAccessInputError(msg);
+      },
       sourceConnector,
     });
   }
 
   /** Whether the coding_architecture tool should appear in tools/list (rule 39). */
   get architectureCardSurfaceVisible(): boolean {
-    return this.orchestrator.config.codingKnowledge?.enabled === true
-      && this.orchestrator.config.codingKnowledge?.architectureCard === true;
+    return (
+      this.orchestrator.config.codingKnowledge?.enabled === true &&
+      this.orchestrator.config.codingKnowledge?.architectureCard === true
+    );
   }
 
   /**
@@ -3134,7 +3021,7 @@ export class EngramAccessService {
   async codingArchitecture(
     request: ArchitectureSurfaceRequest,
     authenticatedPrincipal?: string,
-    sourceConnector?: string,
+    sourceConnector?: string
   ): Promise<ArchitectureSurfaceResponse> {
     const resolvedConfig = this.orchestrator.config;
     return handleCodingArchitecture(request, {
@@ -3148,35 +3035,40 @@ export class EngramAccessService {
               sessionKey: req.sessionKey,
               authenticatedPrincipal,
             })
-        : await this.resolveCodingScopedReadableNamespace({
-            namespace: req.namespace,
-            sessionKey: req.sessionKey,
-            authenticatedPrincipal,
-          });
+          : await this.resolveCodingScopedReadableNamespace({
+              namespace: req.namespace,
+              sessionKey: req.sessionKey,
+              authenticatedPrincipal,
+            });
         const storage = await this.orchestrator.getStorage(ns);
         return Object.assign(storage, { namespace: ns }) as ArchitectureSurfaceStorage;
       },
-      buildCard: async (repoRoot) => buildArchitectureCard(repoRoot, {
-        llmSummary: this.orchestrator.config.codingKnowledge?.architectureCardLlmSummary === true,
-        summariser: createArchitectureCardSummariser(this.fallbackLlmRef ?? this.localLlmRef),
-      }),
+      buildCard: async (repoRoot) =>
+        buildArchitectureCard(repoRoot, {
+          llmSummary: this.orchestrator.config.codingKnowledge?.architectureCardLlmSummary === true,
+          summariser: createArchitectureCardSummariser(this.fallbackLlmRef ?? this.localLlmRef),
+        }),
       versioning: createArchitectureVersioningHook(
         resolvedConfig.versioningEnabled === true,
         resolvedConfig.versioningMaxPerPage,
         resolvedConfig.versioningSidecarDir,
         resolvedConfig.memoryDir,
         (p) => nodeFs.readFile(p, "utf-8"),
-        createVersion,
+        createVersion
       ),
-      throwInputError: (msg) => { throw new EngramAccessInputError(msg); },
+      throwInputError: (msg) => {
+        throw new EngramAccessInputError(msg);
+      },
       sourceConnector,
     });
   }
 
   /** Whether the coding_delta tool should appear in tools/list (rule 39). */
   get sessionDeltaSurfaceVisible(): boolean {
-    return this.orchestrator.config.codingKnowledge?.enabled === true
-      && this.orchestrator.config.codingKnowledge?.sessionDelta === true;
+    return (
+      this.orchestrator.config.codingKnowledge?.enabled === true &&
+      this.orchestrator.config.codingKnowledge?.sessionDelta === true
+    );
   }
   /**
    * Thin delegate — handler logic in coding/session-delta-surfaces.ts (#1548 PR4).
@@ -3185,10 +3077,7 @@ export class EngramAccessService {
    * coding surfaces; the delta state file lives under
    * `<memoryDir>/state/coding-knowledge/<namespace>.json`.
    */
-  async codingDelta(
-    request: DeltaSurfaceRequest,
-    authenticatedPrincipal?: string,
-  ): Promise<DeltaSurfaceResponse> {
+  async codingDelta(request: DeltaSurfaceRequest, authenticatedPrincipal?: string): Promise<DeltaSurfaceResponse> {
     return handleCodingDelta(request, {
       codingKnowledge: this.orchestrator.config.codingKnowledge,
       getCodingContext: (sk) => this.orchestrator.getCodingContextForSession(sk),
@@ -3231,7 +3120,9 @@ export class EngramAccessService {
         // bounded synchronous invoker rather than the abortable scope resolver.
         return defaultGitInvokerSync()(cwd, args);
       },
-      throwInputError: (msg) => { throw new EngramAccessInputError(msg); },
+      throwInputError: (msg) => {
+        throw new EngramAccessInputError(msg);
+      },
     });
   }
 
@@ -3280,7 +3171,7 @@ export class EngramAccessService {
             { role: "system", content: system },
             { role: "user", content: user },
           ],
-          { operation: "correction-classify", priority: "background" },
+          { operation: "correction-classify", priority: "background" }
         );
         if (!result) {
           throw new Error("correction classify+draft: local LLM unavailable (disabled or in cooldown)");
@@ -3299,28 +3190,18 @@ export class EngramAccessService {
    * handle that misses or is ambiguous becomes an EngramAccessInputError so the
    * boundary maps it to a 400 (rule 34/51 — list candidates, never guess).
    */
-  private resolveMemoryIdOrHandleInput(
-    ref: string,
-    sessionKey: string | undefined,
-  ): string {
+  private resolveMemoryIdOrHandleInput(ref: string, sessionKey: string | undefined): string {
     if (!isHandleToken(ref)) return ref;
     try {
       return this.orchestrator.resolveMemoryIdOrHandle(ref, sessionKey);
     } catch (err) {
-      throw new EngramAccessInputError(
-        err instanceof Error ? err.message : String(err),
-      );
+      throw new EngramAccessInputError(err instanceof Error ? err.message : String(err));
     }
   }
 
-  async correctionPlan(
-    request: CorrectionRequest,
-    opts?: { abortSignal?: AbortSignal },
-  ): Promise<CorrectionPlan> {
+  async correctionPlan(request: CorrectionRequest, opts?: { abortSignal?: AbortSignal }): Promise<CorrectionPlan> {
     if (request.targetIds?.some((id) => isHandleToken(id))) {
-      const targetIds = request.targetIds.map((id) =>
-        this.resolveMemoryIdOrHandleInput(id, request.sessionKey),
-      );
+      const targetIds = request.targetIds.map((id) => this.resolveMemoryIdOrHandleInput(id, request.sessionKey));
       return this.correctionService().plan({ ...request, targetIds }, opts);
     }
     return this.correctionService().plan(request, opts);
@@ -3334,7 +3215,7 @@ export class EngramAccessService {
       sessionKey?: string;
       principal?: string;
       abortSignal?: AbortSignal;
-    },
+    }
   ): Promise<CorrectionOutcome> {
     return this.correctionService().apply(planId, opts);
   }
@@ -3349,18 +3230,13 @@ export class EngramAccessService {
 
   async correctionDiscard(
     planId: string,
-    opts: { namespace?: string; sessionKey?: string; principal?: string },
+    opts: { namespace?: string; sessionKey?: string; principal?: string }
   ): Promise<void> {
     return this.correctionService().discard(planId, opts);
   }
 
-  async memoryBrowse(
-    request: EngramAccessMemoryBrowseRequest = {},
-  ): Promise<EngramAccessMemoryBrowseResponse> {
-    const resolvedNamespace = this.resolveReadableNamespace(
-      request.namespace,
-      request.authenticatedPrincipal,
-    );
+  async memoryBrowse(request: EngramAccessMemoryBrowseRequest = {}): Promise<EngramAccessMemoryBrowseResponse> {
+    const resolvedNamespace = this.resolveReadableNamespace(request.namespace, request.authenticatedPrincipal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     const { limit, offset } = normalizePagination(request.limit, request.offset);
     const sort = normalizeBrowseSort(request.sort);
@@ -3389,7 +3265,7 @@ export class EngramAccessService {
       };
     }
 
-    let memories = [...await storage.readAllMemories(), ...await storage.readArchivedMemories()];
+    let memories = [...(await storage.readAllMemories()), ...(await storage.readArchivedMemories())];
     memories = memories.filter((memory) => {
       if (isSupportPassportPrivateMemory(memory)) return false;
       const status = inferMemoryStatus(memory.frontmatter, toMemoryPathRel(storage.dir, memory.path)).toLowerCase();
@@ -3402,7 +3278,9 @@ export class EngramAccessService {
         memory.content,
         memory.frontmatter.entityRef ?? "",
         ...memory.frontmatter.tags,
-      ].join("\n").toLowerCase();
+      ]
+        .join("\n")
+        .toLowerCase();
       return haystack.includes(query);
     });
 
@@ -3425,8 +3303,8 @@ export class EngramAccessService {
   async memoryTimeline(
     memoryId: string,
     namespace?: string,
-    limit: number = 200,
-    principal?: string,
+    limit = 200,
+    principal?: string
   ): Promise<EngramAccessTimelineResponse> {
     const resolvedNamespace = this.resolveReadableNamespace(namespace, principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
@@ -3441,12 +3319,14 @@ export class EngramAccessService {
     };
   }
 
-  async entityList(options: {
-    namespace?: string;
-    query?: string;
-    limit?: number;
-    offset?: number;
-  } = {}): Promise<EngramAccessEntityListResponse> {
+  async entityList(
+    options: {
+      namespace?: string;
+      query?: string;
+      limit?: number;
+      offset?: number;
+    } = {}
+  ): Promise<EngramAccessEntityListResponse> {
     const storage = await this.orchestrator.getStorage(options.namespace);
     const resolvedNamespace = options.namespace?.trim() || this.orchestrator.config.defaultNamespace;
     const { limit, offset } = normalizePagination(options.limit, options.offset);
@@ -3466,7 +3346,9 @@ export class EngramAccessService {
           ...entity.aliases,
           ...entity.facts,
           ...(entity.structuredSections ?? []).flatMap((section) => [section.title, ...section.facts]),
-        ].join("\n").toLowerCase();
+        ]
+          .join("\n")
+          .toLowerCase();
         if (!haystack.includes(query)) continue;
       }
       entities.push({
@@ -3503,11 +3385,7 @@ export class EngramAccessService {
   }
 
   async reviewQueue(runId?: string, namespace?: string, principal?: string): Promise<EngramAccessReviewQueueResponse> {
-    return this.accessAdminOpsSurface.reviewQueue(
-      runId,
-      namespace,
-      principal,
-    );
+    return this.accessAdminOpsSurface.reviewQueue(runId, namespace, principal);
   }
 
   async maintenance(namespace?: string, principal?: string): Promise<EngramAccessMaintenanceResponse> {
@@ -3531,7 +3409,7 @@ export class EngramAccessService {
     let staleActive = 0;
     let lowConfidenceActive = 0;
 
-    const memories = [...await storage.readAllMemories(), ...await storage.readArchivedMemories()];
+    const memories = [...(await storage.readAllMemories()), ...(await storage.readArchivedMemories())];
     for (const memory of memories) {
       const status = inferMemoryStatus(memory.frontmatter, toMemoryPathRel(storage.dir, memory.path)).toLowerCase();
       const confidenceTier = memory.frontmatter.confidenceTier ?? "unknown";
@@ -3580,7 +3458,7 @@ export class EngramAccessService {
       batchSize?: number;
       authenticatedPrincipal?: string;
     },
-    principal?: string,
+    principal?: string
   ): Promise<{
     namespace: string;
     runId: string;
@@ -3592,10 +3470,7 @@ export class EngramAccessService {
     summaryPath: string;
     reportPath: string;
   }> {
-    return this.accessAdminOpsSurface.governanceRun(
-      request,
-      principal,
-    );
+    return this.accessAdminOpsSurface.governanceRun(request, principal);
   }
 
   async entitySynthesisRun(
@@ -3604,7 +3479,7 @@ export class EngramAccessService {
       maxEntities?: number;
       authenticatedPrincipal?: string;
     },
-    principal?: string,
+    principal?: string
   ): Promise<{
     namespace: string;
     requested: number;
@@ -3619,7 +3494,7 @@ export class EngramAccessService {
       namespace?: string;
       authenticatedPrincipal?: string;
     },
-    principal?: string,
+    principal?: string
   ): Promise<{
     namespace: string;
     clustersProcessed: number;
@@ -3629,7 +3504,7 @@ export class EngramAccessService {
     const resolvedNamespace = this.writableNamespaceFor(
       request.namespace,
       undefined,
-      request.authenticatedPrincipal ?? principal,
+      request.authenticatedPrincipal ?? principal
     );
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     const result = await runProcedureMining({
@@ -3650,13 +3525,9 @@ export class EngramAccessService {
       authenticatedPrincipal?: string;
       force?: boolean;
     } = {},
-    principal?: string,
+    principal?: string
   ): Promise<LiveConnectorsRunSummary> {
-    this.writableNamespaceFor(
-      undefined,
-      undefined,
-      request.authenticatedPrincipal ?? principal,
-    );
+    this.writableNamespaceFor(undefined, undefined, request.authenticatedPrincipal ?? principal);
     return this.orchestrator.runLiveConnectors({
       force: request.force === true,
     });
@@ -3688,7 +3559,7 @@ export class EngramAccessService {
       authenticatedPrincipal?: string;
       force?: boolean;
     } = {},
-    principal?: string,
+    principal?: string
   ): Promise<{
     namespace: string;
     ran: boolean;
@@ -3701,7 +3572,7 @@ export class EngramAccessService {
     const resolvedNamespace = this.writableNamespaceFor(
       request.namespace,
       undefined,
-      request.authenticatedPrincipal ?? principal,
+      request.authenticatedPrincipal ?? principal
     );
     const outcome = await this.orchestrator.runPatternReinforcement({
       namespace: resolvedNamespace,
@@ -3735,12 +3606,9 @@ export class EngramAccessService {
    */
   async procedureStats(
     request: { namespace?: string } = {},
-    principal?: string,
+    principal?: string
   ): Promise<ProcedureStatsReport & { namespace: string }> {
-    const resolvedNamespace = this.resolveReadableNamespace(
-      request.namespace,
-      principal,
-    );
+    const resolvedNamespace = this.resolveReadableNamespace(request.namespace, principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     const report = await computeProcedureStats({
       storage,
@@ -3765,7 +3633,7 @@ export class EngramAccessService {
       sessionKey?: string;
       hours?: number;
       embed?: boolean;
-    } = {},
+    } = {}
   ): Promise<{
     enabled: boolean;
     sessionKey?: string;
@@ -3777,17 +3645,11 @@ export class EngramAccessService {
     reason?: string;
     retryAfterMs?: number;
   }> {
-    return this.accessAdminOpsSurface.conversationIndexUpdate(
-      request,
-    );
+    return this.accessAdminOpsSurface.conversationIndexUpdate(request);
   }
 
-  async profilingReport(
-    request: AccessProfilingReportRequest = {},
-  ): Promise<AccessProfilingReportResponse> {
-    return this.accessAdminOpsSurface.profilingReport(
-      request,
-    );
+  async profilingReport(request: AccessProfilingReportRequest = {}): Promise<AccessProfilingReportResponse> {
+    return this.accessAdminOpsSurface.profilingReport(request);
   }
 
   async trustZoneStatus(namespace?: string, principal?: string): Promise<EngramAccessTrustZoneStatusResponse> {
@@ -3807,7 +3669,7 @@ export class EngramAccessService {
 
   async trustZoneBrowse(
     request: EngramAccessTrustZoneBrowseRequest,
-    principal?: string,
+    principal?: string
   ): Promise<EngramAccessTrustZoneBrowseResponse> {
     const resolvedNamespace = this.resolveReadableNamespace(request.namespace, principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
@@ -3834,22 +3696,17 @@ export class EngramAccessService {
           result.allRecords,
           resolveSecurityCapabilities(this.orchestrator.config).memoryPoisoningDefense === true,
           resolveSecurityCapabilities(this.orchestrator.config).trustZones === true,
-          resolveSecurityCapabilities(this.orchestrator.config).quarantinePromotion === true,
-        )),
+          resolveSecurityCapabilities(this.orchestrator.config).quarantinePromotion === true
+        )
+      ),
     };
   }
 
-  async trustZonePromote(
-    request: EngramAccessTrustZonePromoteRequest,
-  ): Promise<EngramAccessTrustZonePromoteResponse> {
+  async trustZonePromote(request: EngramAccessTrustZonePromoteRequest): Promise<EngramAccessTrustZonePromoteResponse> {
     if (!isTrustZoneName(request.targetZone)) {
       throw new EngramAccessInputError(`unsupported trust-zone target: ${String(request.targetZone)}`);
     }
-    const resolvedNamespace = this.writableNamespaceFor(
-      request.namespace,
-      undefined,
-      request.authenticatedPrincipal,
-    );
+    const resolvedNamespace = this.writableNamespaceFor(request.namespace, undefined, request.authenticatedPrincipal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     let result: TrustZonePromotionResult;
     try {
@@ -3877,13 +3734,9 @@ export class EngramAccessService {
   }
 
   async trustZoneDemoSeed(
-    request: EngramAccessTrustZoneDemoSeedRequest,
+    request: EngramAccessTrustZoneDemoSeedRequest
   ): Promise<EngramAccessTrustZoneDemoSeedResponse> {
-    const resolvedNamespace = this.writableNamespaceFor(
-      request.namespace,
-      undefined,
-      request.authenticatedPrincipal,
-    );
+    const resolvedNamespace = this.writableNamespaceFor(request.namespace, undefined, request.authenticatedPrincipal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     let result: TrustZoneDemoSeedResult;
     try {
@@ -3905,7 +3758,7 @@ export class EngramAccessService {
   }
 
   async reviewDisposition(
-    request: EngramAccessReviewDispositionRequest,
+    request: EngramAccessReviewDispositionRequest
   ): Promise<EngramAccessReviewDispositionResponse> {
     const memoryId = request.memoryId.trim();
     const reasonCode = request.reasonCode.trim();
@@ -3916,11 +3769,7 @@ export class EngramAccessService {
       throw new EngramAccessInputError("reasonCode is required");
     }
 
-    const resolvedNamespace = this.writableNamespaceFor(
-      request.namespace,
-      undefined,
-      request.authenticatedPrincipal,
-    );
+    const resolvedNamespace = this.writableNamespaceFor(request.namespace, undefined, request.authenticatedPrincipal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     const memory = await storage.getMemoryById(memoryId);
     if (!memory || isSupportPassportPrivateMemory(memory)) {
@@ -3953,10 +3802,14 @@ export class EngramAccessService {
       };
     }
 
-    const updated = await storage.writeMemoryFrontmatter(memory, {
-      status: request.status,
-      updated: updatedAt,
-    }, lifecycle);
+    const updated = await storage.writeMemoryFrontmatter(
+      memory,
+      {
+        status: request.status,
+        updated: updatedAt,
+      },
+      lifecycle
+    );
     if (!updated) {
       throw new Error(`failed to update memory disposition: ${memoryId}`);
     }
@@ -3987,14 +3840,14 @@ export class EngramAccessService {
     memory: MemoryFile,
     baseDir: string,
     disclosure?: RecallDisclosure,
-    rawExcerpts?: EngramAccessMemorySummary["rawExcerpts"],
+    rawExcerpts?: EngramAccessMemorySummary["rawExcerpts"]
   ): EngramAccessMemorySummary {
     return shapeMemorySummary(memory, baseDir, disclosure, rawExcerpts);
   }
 
   async observe(
     request: EngramAccessObserveRequest,
-    hooks?: { enforceWriteQuota?: () => void | Promise<void> },
+    hooks?: { enforceWriteQuota?: () => void | Promise<void> }
   ): Promise<EngramAccessObserveResponse> {
     // Issue #1649: dedup retried observe POSTs server-side. A retry with the
     // same `idempotencyKey` replays the cached response and skips every side
@@ -4049,15 +3902,11 @@ export class EngramAccessService {
   }
 
   private async runObserve(request: EngramAccessObserveRequest): Promise<EngramAccessObserveResponse> {
-    return this.accessObserveWriteSurface.runObserve(
-      request,
-    );
+    return this.accessObserveWriteSurface.runObserve(request);
   }
 
   async lcmSearch(request: EngramAccessLcmSearchRequest): Promise<EngramAccessLcmSearchResponse> {
-    return this.accessLcmSurface.lcmSearch(
-      request,
-    );
+    return this.accessLcmSurface.lcmSearch(request);
   }
 
   /**
@@ -4087,27 +3936,23 @@ export class EngramAccessService {
     resolvedNamespace: string,
     sessionKeyForOverlay: string | undefined,
     authenticatedPrincipal: string | undefined,
-    purpose: "read" | "write" = "read",
+    purpose: "read" | "write" = "read"
   ): string {
     return this.accessLcmSurface.resolveLcmReadNamespace(
       explicitNamespace,
       resolvedNamespace,
       sessionKeyForOverlay,
       authenticatedPrincipal,
-      purpose,
+      purpose
     );
   }
 
   private resolveRawExcerptReadNamespace(
     explicitNamespace: string | undefined,
     sessionKey: string | undefined,
-    authenticatedPrincipal: string | undefined,
+    authenticatedPrincipal: string | undefined
   ): string | undefined {
-    return this.accessLcmSurface.resolveRawExcerptReadNamespace(
-      explicitNamespace,
-      sessionKey,
-      authenticatedPrincipal,
-    );
+    return this.accessLcmSurface.resolveRawExcerptReadNamespace(explicitNamespace, sessionKey, authenticatedPrincipal);
   }
 
   /**
@@ -4140,9 +3985,7 @@ export class EngramAccessService {
    * `config.defaultNamespace`, keeping single-user recall byte-for-byte
    * unchanged.
    */
-  private resolveImplicitLcmReadFallbackNamespace(
-    principal: string | undefined,
-  ): string | undefined {
+  private resolveImplicitLcmReadFallbackNamespace(principal: string | undefined): string | undefined {
     const config = this.orchestrator.config;
     if (!resolveNamespaceCapabilities(config).namespaces) return config.defaultNamespace;
     // PROCEED when `default` is readable (single-store / readable-default flows)
@@ -4166,10 +4009,7 @@ export class EngramAccessService {
     // scoped overlay key (with a session) or empty (sessionless). SUPPRESS
     // (`undefined`) when the self base is not readable-in-recall.
     const selfBase = defaultNamespaceForPrincipal(principal, config);
-    const selfReadableInRecall = recallNamespacesForPrincipal(
-      principal,
-      config,
-    ).includes(selfBase);
+    const selfReadableInRecall = recallNamespacesForPrincipal(principal, config).includes(selfBase);
     return selfReadableInRecall ? config.defaultNamespace : undefined;
   }
 
@@ -4178,21 +4018,17 @@ export class EngramAccessService {
     resolvedNamespace: string,
     sessionKey: string,
     authenticatedPrincipal: string | undefined,
-    purpose: "read" | "write" = "read",
+    purpose: "read" | "write" = "read"
   ): string {
     const effectiveNamespace = this.resolveLcmReadNamespace(
       explicitNamespace,
       resolvedNamespace,
       sessionKey,
       authenticatedPrincipal,
-      purpose,
+      purpose
     );
     return (
-      lcmSessionKeyForNamespace(
-        effectiveNamespace,
-        sessionKey,
-        this.orchestrator.config.defaultNamespace,
-      ) ?? sessionKey
+      lcmSessionKeyForNamespace(effectiveNamespace, sessionKey, this.orchestrator.config.defaultNamespace) ?? sessionKey
     );
   }
 
@@ -4225,18 +4061,12 @@ export class EngramAccessService {
    */
   private resolveScopeProfileLcmReadNamespaces(
     sessionKey: string | undefined,
-    authenticatedPrincipal: string | undefined,
+    authenticatedPrincipal: string | undefined
   ): string[] | null {
     const config = this.orchestrator.config;
     const principal = this.resolveRequestPrincipal(sessionKey, authenticatedPrincipal);
-    const codingContext = sessionKey
-      ? this.orchestrator.getCodingContextForSession(sessionKey)
-      : null;
-    const codingOverlay = resolveCodingNamespaceOverlay(
-      codingContext,
-      config.codingMode,
-      config.defaultNamespace,
-    );
+    const codingContext = sessionKey ? this.orchestrator.getCodingContextForSession(sessionKey) : null;
+    const codingOverlay = resolveCodingNamespaceOverlay(codingContext, config.codingMode, config.defaultNamespace);
     const profilePlan = resolveScopeProfilePlan({
       config,
       principal,
@@ -4263,11 +4093,7 @@ export class EngramAccessService {
     const seen = new Set<string>();
     for (const namespace of namespaces) {
       const key =
-        lcmSessionKeyForNamespace(
-          namespace,
-          sessionKey,
-          this.orchestrator.config.defaultNamespace,
-        ) ?? sessionKey;
+        lcmSessionKeyForNamespace(namespace, sessionKey, this.orchestrator.config.defaultNamespace) ?? sessionKey;
       if (!seen.has(key)) {
         seen.add(key);
         out.push(key);
@@ -4280,18 +4106,18 @@ export class EngramAccessService {
     explicitNamespace: string | undefined,
     resolvedNamespace: string,
     sessionKey: string,
-    authenticatedPrincipal: string | undefined,
+    authenticatedPrincipal: string | undefined
   ): string[] {
     return this.accessLcmSurface.resolveLcmReadSessionIds(
       explicitNamespace,
       resolvedNamespace,
       sessionKey,
-      authenticatedPrincipal,
+      authenticatedPrincipal
     );
   }
 
   async lcmCompactionFlush(
-    request: EngramAccessLcmCompactionFlushRequest,
+    request: EngramAccessLcmCompactionFlushRequest
   ): Promise<EngramAccessLcmCompactionFlushResponse> {
     if (!request.sessionKey || typeof request.sessionKey !== "string" || request.sessionKey.trim().length === 0) {
       throw new EngramAccessInputError("sessionKey is required and must be a non-empty string");
@@ -4313,11 +4139,8 @@ export class EngramAccessService {
 
     // Flush the same LCM session ID observe archived under.
     const lcmSessionKey =
-      lcmSessionKeyForNamespace(
-        scope.writeNamespace,
-        request.sessionKey,
-        this.orchestrator.config.defaultNamespace,
-      ) ?? request.sessionKey;
+      lcmSessionKeyForNamespace(scope.writeNamespace, request.sessionKey, this.orchestrator.config.defaultNamespace) ??
+      request.sessionKey;
     await this.orchestrator.lcmEngine.waitForSessionObserveIdle(lcmSessionKey);
     await this.orchestrator.lcmEngine.preCompactionFlush(lcmSessionKey);
     return {
@@ -4328,7 +4151,9 @@ export class EngramAccessService {
     };
   }
 
-  async extractionForceFlush(request: EngramAccessExtractionForceFlushRequest): Promise<EngramAccessExtractionForceFlushResponse> {
+  async extractionForceFlush(
+    request: EngramAccessExtractionForceFlushRequest
+  ): Promise<EngramAccessExtractionForceFlushResponse> {
     return delegateExtractionForceFlush(this.accessObserveWriteSurface, request);
   }
   cancelPendingObservePreparations(sessionKey: string, scopeHint?: string): void {
@@ -4339,12 +4164,12 @@ export class EngramAccessService {
     sessionKey: string,
     principal?: string,
     namespace?: string,
-    scopeHint?: string,
+    scopeHint?: string
   ): void {
     this.accessObserveWriteSurface.cancelPendingObserveExtractions(sessionKey, principal, namespace, scopeHint);
   }
   async lcmCompactionRecord(
-    request: EngramAccessLcmCompactionRecordRequest,
+    request: EngramAccessLcmCompactionRecordRequest
   ): Promise<EngramAccessLcmCompactionRecordResponse> {
     if (!request.sessionKey || typeof request.sessionKey !== "string" || request.sessionKey.trim().length === 0) {
       throw new EngramAccessInputError("sessionKey is required and must be a non-empty string");
@@ -4386,17 +4211,10 @@ export class EngramAccessService {
     // A write-only / self-omitted principal still records on the overlay queue
     // because the scope plan authorized the write target by WRITE policy.
     const lcmSessionKey =
-      lcmSessionKeyForNamespace(
-        scope.writeNamespace,
-        request.sessionKey,
-        this.orchestrator.config.defaultNamespace,
-      ) ?? request.sessionKey;
+      lcmSessionKeyForNamespace(scope.writeNamespace, request.sessionKey, this.orchestrator.config.defaultNamespace) ??
+      request.sessionKey;
     await this.orchestrator.lcmEngine.waitForSessionObserveIdle(lcmSessionKey);
-    await this.orchestrator.lcmEngine.recordCompaction(
-      lcmSessionKey,
-      request.tokensBefore,
-      request.tokensAfter,
-    );
+    await this.orchestrator.lcmEngine.recordCompaction(lcmSessionKey, request.tokensBefore, request.tokensAfter);
     return {
       enabled: true,
       recorded: true,
@@ -4519,9 +4337,7 @@ export class EngramAccessService {
     tags?: string[];
     dueAt?: string;
   }): Promise<unknown> {
-    return this.accessObserveWriteSurface.workTask(
-      request,
-    );
+    return this.accessObserveWriteSurface.workTask(request);
   }
 
   async workProject(request: {
@@ -4535,9 +4351,7 @@ export class EngramAccessService {
     taskId?: string;
     projectId?: string;
   }): Promise<unknown> {
-    return this.accessObserveWriteSurface.workProject(
-      request,
-    );
+    return this.accessObserveWriteSurface.workProject(request);
   }
 
   async workBoard(request: {
@@ -4546,9 +4360,7 @@ export class EngramAccessService {
     snapshotJson?: string;
     linkToMemory?: boolean;
   }): Promise<unknown> {
-    return this.accessObserveWriteSurface.workBoard(
-      request,
-    );
+    return this.accessObserveWriteSurface.workBoard(request);
   }
 
   async sharedContextWriteOutput(request: {
@@ -4686,7 +4498,10 @@ export class EngramAccessService {
     eventLimit?: number;
   }): Promise<unknown> {
     if (!resolveCompressionCapabilities(this.orchestrator.config).compressionGuidelineLearning) {
-      return { enabled: false, reason: "Compression guideline learning is disabled. Enable `compressionGuidelineLearningEnabled: true`." };
+      return {
+        enabled: false,
+        reason: "Compression guideline learning is disabled. Enable `compressionGuidelineLearningEnabled: true`.",
+      };
     }
     return await this.orchestrator.compressionGuidelineCoordinator.optimizeCompressionGuidelines({
       dryRun: request.dryRun,
@@ -4735,7 +4550,7 @@ export class EngramAccessService {
             // The caller's own collection disambiguates a prefix that is also
             // a memory category name (`collection: "facts"`).
             { ...config, requestedCollection: request.collection?.trim() || undefined },
-            "qmd",
+            "qmd"
           ),
         filterPrivate: this.orchestrator.filterPrivateSearchResults,
         authorizeFlatCorpus: (namespace, principal) => void this.resolveReadableNamespace(namespace, principal),
@@ -4743,13 +4558,13 @@ export class EngramAccessService {
           this.resolveMemorySearchNamespacesForCollection(
             collection,
             await this.resolveReadableNamespacesForSearch(namespace, principal),
-            namespace?.trim() ? undefined : principal,
+            namespace?.trim() ? undefined : principal
           ),
         searchAcrossNamespaces: (params) => this.orchestrator.searchAcrossNamespaces(params),
         searchGlobal: (query, maxResults) => qmd.searchGlobal(query, maxResults),
         search: (query, collection, maxResults) => qmd.search(query, collection, maxResults),
       },
-      request,
+      request
     );
   }
 
@@ -4769,7 +4584,10 @@ export class EngramAccessService {
     return { entities, count: entities.length };
   }
 
-  async memoryQuestions(namespace?: string, principal?: string): Promise<{ questions: Array<{ id: string; question: string; resolved: boolean }>; count: number }> {
+  async memoryQuestions(
+    namespace?: string,
+    principal?: string
+  ): Promise<{ questions: Array<{ id: string; question: string; resolved: boolean }>; count: number }> {
     const resolvedNs = this.resolveReadableNamespace(namespace, principal);
     const storage = await this.orchestrator.getStorage(resolvedNs);
     const questions = await storage.readQuestions();
@@ -4803,12 +4621,9 @@ export class EngramAccessService {
 
   async graphSnapshot(
     request: GraphSnapshotRequest & { namespace?: string },
-    authenticatedPrincipal?: string,
+    authenticatedPrincipal?: string
   ): Promise<GraphSnapshotResponse> {
-    return this.accessAdminOpsSurface.graphSnapshot(
-      request,
-      authenticatedPrincipal,
-    );
+    return this.accessAdminOpsSurface.graphSnapshot(request, authenticatedPrincipal);
   }
 
   async memoryFeedback(request: {
@@ -4823,11 +4638,7 @@ export class EngramAccessService {
         reason: "Feedback is disabled. Enable `feedbackEnabled: true` in the Engram config to store feedback.",
       };
     }
-    await this.orchestrator.recordMemoryFeedback(
-      request.memoryId,
-      request.vote,
-      request.note,
-    );
+    await this.orchestrator.recordMemoryFeedback(request.memoryId, request.vote, request.note);
     return { recorded: true };
   }
 
@@ -4854,15 +4665,9 @@ export class EngramAccessService {
     timestamp?: string;
   }): Promise<RecordMemoryOutcomeResult> {
     if (request.memoryId.includes("/") || request.memoryId.includes("\\")) {
-      throw new EngramAccessInputError(
-        "memoryId must not contain path separators",
-      );
+      throw new EngramAccessInputError("memoryId must not contain path separators");
     }
-    const resolvedNs = this.writableNamespaceFor(
-      request.namespace,
-      request.sessionKey,
-      request.principal,
-    );
+    const resolvedNs = this.writableNamespaceFor(request.namespace, request.sessionKey, request.principal);
     const storage = await this.orchestrator.getStorage(resolvedNs);
     // We only have the ID at the access surface, but `recordMemoryOutcome`
     // accepts a path for the benefit of ledger-driven callers that already
@@ -4910,9 +4715,7 @@ export class EngramAccessService {
     sourcePrompt?: string;
     dryRun?: boolean;
   }): Promise<unknown> {
-    return this.accessObserveWriteSurface.memoryActionApply(
-      request,
-    );
+    return this.accessObserveWriteSurface.memoryActionApply(request);
   }
 
   async contextCheckpoint(request: {
@@ -4960,39 +4763,23 @@ export class EngramAccessService {
     };
   }
 
-  async recordCitationUsage(
-    request: CitationUsageRequest,
-  ): Promise<CitationUsageResult> {
+  async recordCitationUsage(request: CitationUsageRequest): Promise<CitationUsageResult> {
     return recordCitationUsageForAccess(
       {
         resolveNamespace: (namespace, sessionId, authenticatedPrincipal) =>
           this.writableNamespaceFor(namespace, sessionId, authenticatedPrincipal),
-        resolveNamespaceForPath: async (
-          memoryPath,
-          fallbackNamespace,
-          sessionId,
-          authenticatedPrincipal,
-        ) => {
+        resolveNamespaceForPath: async (memoryPath, fallbackNamespace, sessionId, authenticatedPrincipal) => {
           const principal = this.resolveRequestPrincipal(sessionId, authenticatedPrincipal);
           const namespacesEnabled = resolveNamespaceCapabilities(this.orchestrator.config).namespaces;
-          if (
-            namespacesEnabled &&
-            !canReadNamespace(principal, fallbackNamespace, this.orchestrator.config)
-          ) {
-            throw new EngramAccessInputError(
-              `namespace is not readable: ${fallbackNamespace}`,
-            );
+          if (namespacesEnabled && !canReadNamespace(principal, fallbackNamespace, this.orchestrator.config)) {
+            throw new EngramAccessInputError(`namespace is not readable: ${fallbackNamespace}`);
           }
           const authorizedNamespaces = namespacesEnabled
             ? Array.from(
-                new Set([...citationAuthorizedNamespaces(principal, this.orchestrator.config), fallbackNamespace]),
+                new Set([...citationAuthorizedNamespaces(principal, this.orchestrator.config), fallbackNamespace])
               )
             : [fallbackNamespace];
-          const resolved = await this.storageForAbsoluteRecallPath(
-            memoryPath,
-            fallbackNamespace,
-            authorizedNamespaces,
-          );
+          const resolved = await this.storageForAbsoluteRecallPath(memoryPath, fallbackNamespace, authorizedNamespaces);
           if (!resolved) {
             if (nodePath.isAbsolute(memoryPath)) {
               throw new EngramAccessInputError("cited path is outside the caller's readable namespaces");
@@ -5001,7 +4788,7 @@ export class EngramAccessService {
               (ns) => this.orchestrator.getStorage(ns),
               authorizedNamespaces,
               memoryPath,
-              fallbackNamespace,
+              fallbackNamespace
             );
           }
           return resolved.namespace;
@@ -5010,7 +4797,7 @@ export class EngramAccessService {
         trackMemoryAccess: (memoryIds, memoryPaths, memoryNamespaces) =>
           this.orchestrator.trackMemoryAccess(memoryIds, memoryPaths, memoryNamespaces),
       },
-      request,
+      request
     );
   }
 
@@ -5028,7 +4815,7 @@ export class EngramAccessService {
    */
   async consoleState(
     namespace?: string,
-    principal?: string,
+    principal?: string
   ): Promise<import("./console/state.js").ConsoleStateSnapshot> {
     // Enforce namespace ACL — throws EngramAccessInputError if unauthorized.
     const resolvedNamespace = this.resolveReadableNamespace(namespace, principal);
@@ -5067,12 +4854,7 @@ export class EngramAccessService {
    * not exist rather than throwing, matching the `memoryGet` / `entityGet`
    * pattern used throughout the service.
    */
-  async peerGet(
-    peerId: string,
-  ): Promise<
-    | { found: true; peer: import("./peers/types.js").Peer }
-    | { found: false }
-  > {
+  async peerGet(peerId: string): Promise<{ found: true; peer: import("./peers/types.js").Peer } | { found: false }> {
     const peers = await import("./peers/index.js");
     const validateId: (id: unknown) => void = peers.assertValidPeerId;
     try {
@@ -5118,9 +4900,7 @@ export class EngramAccessService {
       // First write — require kind.
       const kind = input.kind ?? "human";
       if (!ALLOWED_KINDS.has(kind)) {
-        throw new EngramAccessInputError(
-          `peer kind must be one of ${[...ALLOWED_KINDS].join(", ")}`,
-        );
+        throw new EngramAccessInputError(`peer kind must be one of ${[...ALLOWED_KINDS].join(", ")}`);
       }
       const newPeer: import("./peers/types.js").Peer = {
         id,
@@ -5188,10 +4968,7 @@ export class EngramAccessService {
    * was removed; `{ ok: true, purged: false }` when the directory did
    * not exist (idempotent no-op).
    */
-  async peerForget(
-    peerId: string,
-    opts: { confirm: string },
-  ): Promise<{ ok: true; purged: boolean }> {
+  async peerForget(peerId: string, opts: { confirm: string }): Promise<{ ok: true; purged: boolean }> {
     const peers = await import("./peers/index.js");
     const validateId: (id: unknown) => void = peers.assertValidPeerId;
     try {
@@ -5200,9 +4977,7 @@ export class EngramAccessService {
       throw new EngramAccessInputError((err as Error).message);
     }
     if (opts.confirm !== "yes") {
-      throw new EngramAccessInputError(
-        "peerForget requires confirm: 'yes' to prevent accidental data loss",
-      );
+      throw new EngramAccessInputError("peerForget requires confirm: 'yes' to prevent accidental data loss");
     }
     const result = await peers.forgetPeer(this.orchestrator.config.memoryDir, peerId, {
       confirm: "yes",
@@ -5217,11 +4992,8 @@ export class EngramAccessService {
    * but in practice the reasoner only writes profiles for registered peers.
    */
   async peerProfileGet(
-    peerId: string,
-  ): Promise<
-    | { found: true; profile: import("./peers/types.js").PeerProfile }
-    | { found: false }
-  > {
+    peerId: string
+  ): Promise<{ found: true; profile: import("./peers/types.js").PeerProfile } | { found: false }> {
     const peers = await import("./peers/index.js");
     const validateId: (id: unknown) => void = peers.assertValidPeerId;
     try {
@@ -5260,7 +5032,10 @@ export class EngramAccessService {
     return storage.dir;
   }
 
-  async getReadableStorageForNamespace(namespace?: string, principal?: string): Promise<{
+  async getReadableStorageForNamespace(
+    namespace?: string,
+    principal?: string
+  ): Promise<{
     namespace: string;
     storage: StorageManager;
   }> {
@@ -5269,28 +5044,32 @@ export class EngramAccessService {
     return { namespace: resolved, storage };
   }
 
-  async getWritableStorageForNamespace(namespace?: string, principal?: string): Promise<{
+  async getWritableStorageForNamespace(
+    namespace?: string,
+    principal?: string
+  ): Promise<{
+    principal: string;
     namespace: string;
     storage: StorageManager;
   }> {
     if (resolveNamespaceCapabilities(this.orchestrator.config).namespaces && !principal?.trim()) {
-      throw new EngramAccessInputError(
-        "authentication required: namespaces are enabled and no principal was supplied",
-      );
+      throw new EngramAccessInputError("authentication required: namespaces are enabled and no principal was supplied");
     }
     const resolved = this.writableNamespaceFor(namespace, undefined, principal);
     const storage = await this.orchestrator.getStorage(resolved);
-    return { namespace: resolved, storage };
+    return { principal: principal?.trim() ?? "system", namespace: resolved, storage };
   }
-
   get storageRef(): StorageManager {
     return this.orchestrator.storage;
   }
 
-// #1522: recordCatalogWrite removed — catalog touch handled at the storage chokepoint.
+  // #1522: recordCatalogWrite removed — catalog touch handled at the storage chokepoint.
 
   get configRef(): PluginConfig {
     return this.orchestrator.config;
+  }
+  getStorageForResolvedNamespace(namespace: string): Promise<StorageManager> {
+    return this.orchestrator.getStorage(namespace);
   }
 
   get localLlmRef(): LocalLlmClient | null {
@@ -5332,7 +5111,7 @@ export class EngramAccessService {
       memoryDir?: string;
       namespace?: string;
       principal?: string;
-    },
+    }
   ): Promise<ImportCapsuleResult> {
     const { namespace, principal, root: explicitRoot, memoryDir: explicitMemoryDir, ...importOptions } = opts;
     const resolvedNamespace = this.writableNamespaceFor(namespace, undefined, principal);
@@ -5378,23 +5157,15 @@ export class EngramAccessService {
   }
 
   private isCapsuleImportPathInputFsError(err: unknown): boolean {
-    const code = typeof err === "object" && err !== null && "code" in err
-      ? (err as { code?: unknown }).code
-      : undefined;
-    return (
-      code === "ENOENT" ||
-      code === "ENOTDIR" ||
-      code === "EACCES" ||
-      code === "EPERM" ||
-      code === "ELOOP"
-    );
+    const code =
+      typeof err === "object" && err !== null && "code" in err ? (err as { code?: unknown }).code : undefined;
+    return code === "ENOENT" || code === "ENOTDIR" || code === "EACCES" || code === "EPERM" || code === "ELOOP";
   }
 
   private isCapsuleImportArchiveInputError(err: unknown, message: string): boolean {
     if (err instanceof ZodError) return true;
-    const code = typeof err === "object" && err !== null && "code" in err
-      ? (err as { code?: unknown }).code
-      : undefined;
+    const code =
+      typeof err === "object" && err !== null && "code" in err ? (err as { code?: unknown }).code : undefined;
     if (typeof code === "string" && code.startsWith("Z_")) return true;
     return (
       message.startsWith("importCapsule: archive") ||
@@ -5419,14 +5190,14 @@ export class EngramAccessService {
       memoryDir?: string;
       namespace?: string;
       principal?: string;
-    },
+    }
   ): Promise<ExportCapsuleResult> {
     const { namespace, principal, root: explicitRoot, memoryDir: explicitMemoryDir, ...exportOptions } = opts;
     const resolvedNamespace = this.writableNamespaceFor(namespace, undefined, principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     const root = explicitRoot ?? storage.dir;
     const memoryDir = explicitMemoryDir ?? this.orchestrator.config.memoryDir;
-    const pluginVersion = exportOptions.pluginVersion ?? await getPackageVersion();
+    const pluginVersion = exportOptions.pluginVersion ?? (await getPackageVersion());
     return exportCapsuleFn({
       ...exportOptions,
       pluginVersion,
@@ -5439,9 +5210,7 @@ export class EngramAccessService {
     namespace?: string;
     principal?: string;
   }): Promise<EngramAccessCapsuleListResponse> {
-    return this.accessAdminOpsSurface.capsuleList(
-      options,
-    );
+    return this.accessAdminOpsSurface.capsuleList(options);
   }
 
   /**
@@ -5455,23 +5224,23 @@ export class EngramAccessService {
   private get offlineSyncUserExcludes(): RegExp[] {
     if (!this._offlineSyncUserExcludes) {
       this._offlineSyncUserExcludes = compileOfflineSyncExcludeGlobs(
-        this.orchestrator.config.offlineSyncExcludes ?? [],
+        this.orchestrator.config.offlineSyncExcludes ?? []
       );
     }
     return this._offlineSyncUserExcludes;
   }
 
   async offlineSyncSnapshot(
-    options: EngramAccessOfflineSyncSnapshotRequest & { signal?: AbortSignal } = {},
+    options: EngramAccessOfflineSyncSnapshotRequest & { signal?: AbortSignal } = {}
   ): Promise<EngramAccessOfflineSyncSnapshotResponse> {
     const resolvedNamespace = this.resolveReadableNamespace(options.namespace, options.principal);
     const storage = await offlineSyncStorageForSnapshot(this.orchestrator, resolvedNamespace);
     const storageHash = createHash("sha256").update(storage.dir).digest("hex").slice(0, 16);
-    const deletions = [...await storage.readDeletionRevisions()]
-      .map(([path, mtimeMs]) => ({ path, mtimeMs }));
-    const snapshotBuilder = options.includeContent === false && options.baseFiles && options.baseFiles.length > 0
-      ? buildOfflineSyncSnapshotFromBase
-      : buildOfflineSyncSnapshot;
+    const deletions = [...(await storage.readDeletionRevisions())].map(([path, mtimeMs]) => ({ path, mtimeMs }));
+    const snapshotBuilder =
+      options.includeContent === false && options.baseFiles && options.baseFiles.length > 0
+        ? buildOfflineSyncSnapshotFromBase
+        : buildOfflineSyncSnapshot;
     const snapshot = await snapshotBuilder({
       root: storage.dir,
       sourceId: `remnic:${resolvedNamespace}:${storageHash}`,
@@ -5492,15 +5261,16 @@ export class EngramAccessService {
   }
 
   async offlineSyncSnapshotStream(
-    options: Omit<EngramAccessOfflineSyncSnapshotRequest, "baseCapturedAt" | "baseFiles"> & { signal?: AbortSignal } = {},
+    options: Omit<EngramAccessOfflineSyncSnapshotRequest, "baseCapturedAt" | "baseFiles"> & {
+      signal?: AbortSignal;
+    } = {}
   ): Promise<EngramAccessOfflineSyncSnapshotStreamResponse> {
     const resolvedNamespace = this.resolveReadableNamespace(options.namespace, options.principal);
     const storage = await offlineSyncStorageForSnapshot(this.orchestrator, resolvedNamespace);
     const storageHash = createHash("sha256").update(storage.dir).digest("hex").slice(0, 16);
     const deletions = await filterOfflineSyncDeletionRevisions({
       root: storage.dir,
-      deletions: [...await storage.readDeletionRevisions()]
-        .map(([path, mtimeMs]) => ({ path, mtimeMs })),
+      deletions: [...(await storage.readDeletionRevisions())].map(([path, mtimeMs]) => ({ path, mtimeMs })),
       includeTranscripts: options.includeTranscripts !== false,
       userExcludeRegexps: this.offlineSyncUserExcludes,
     });
@@ -5525,7 +5295,7 @@ export class EngramAccessService {
     };
   }
   async offlineSyncManifestStream(
-    options: EngramAccessOfflineSyncManifestRequest & { signal?: AbortSignal } = {},
+    options: EngramAccessOfflineSyncManifestRequest & { signal?: AbortSignal } = {}
   ): Promise<OfflineSyncManifestStreamResponse> {
     const namespace = this.resolveReadableNamespace(options.namespace, options.principal);
     return createOfflineSyncManifestStream(
@@ -5533,14 +5303,11 @@ export class EngramAccessService {
       namespace,
       this.offlineSyncUserExcludes,
       options,
-      parseFrontmatter,
+      parseFrontmatter
     );
   }
 
-
-  async offlineSyncFiles(
-    options: EngramAccessOfflineSyncFilesRequest,
-  ): Promise<EngramAccessOfflineSyncFilesResponse> {
+  async offlineSyncFiles(options: EngramAccessOfflineSyncFilesRequest): Promise<EngramAccessOfflineSyncFilesResponse> {
     const resolvedNamespace = this.resolveReadableNamespace(options.namespace, options.principal);
     const storage = await offlineSyncStorageForSnapshot(this.orchestrator, resolvedNamespace);
     const storageHash = createHash("sha256").update(storage.dir).digest("hex").slice(0, 16);
@@ -5573,7 +5340,7 @@ export class EngramAccessService {
   }
 
   async offlineSyncFileContent(
-    options: EngramAccessOfflineSyncFileContentRequest,
+    options: EngramAccessOfflineSyncFileContentRequest
   ): Promise<EngramAccessOfflineSyncFileContentResponse> {
     const resolvedNamespace = this.resolveReadableNamespace(options.namespace, options.principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
@@ -5608,13 +5375,9 @@ export class EngramAccessService {
   }
 
   async offlineSyncApplyFileContent(
-    options: EngramAccessOfflineSyncApplyFileContentRequest,
+    options: EngramAccessOfflineSyncApplyFileContentRequest
   ): Promise<EngramAccessOfflineSyncApplyFileContentResponse> {
-    const resolvedNamespace = this.writableNamespaceFor(
-      options.namespace,
-      undefined,
-      options.principal,
-    );
+    const resolvedNamespace = this.writableNamespaceFor(options.namespace, undefined, options.principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     try {
       const result = await applySupportPassportOfflineSyncFileContent(storage, options);
@@ -5643,21 +5406,17 @@ export class EngramAccessService {
   }
 
   async offlineSyncFinalizeConvergence(
-    options: EngramAccessOfflineSyncFinalizeConvergenceRequest,
+    options: EngramAccessOfflineSyncFinalizeConvergenceRequest
   ): Promise<EngramAccessOfflineSyncFinalizeConvergenceResponse> {
     if (options.sourceId !== "remnic-converge") {
       throw new EngramAccessInputError("sourceId must be remnic-converge");
     }
-    const requestedNamespaces = options.namespaces?.length
-      ? options.namespaces
-      : [undefined];
-    const resolvedNamespaces = Array.from(new Set(
-      requestedNamespaces.map((namespace) => this.writableNamespaceFor(
-        namespace,
-        undefined,
-        options.principal,
-      )),
-    ));
+    const requestedNamespaces = options.namespaces?.length ? options.namespaces : [undefined];
+    const resolvedNamespaces = Array.from(
+      new Set(
+        requestedNamespaces.map((namespace) => this.writableNamespaceFor(namespace, undefined, options.principal))
+      )
+    );
     await this.orchestrator.refreshNamespacesAfterConvergence(resolvedNamespaces);
     return {
       namespaces: resolvedNamespaces,
@@ -5665,14 +5424,8 @@ export class EngramAccessService {
     };
   }
 
-  async offlineSyncApply(
-    options: EngramAccessOfflineSyncApplyRequest,
-  ): Promise<EngramAccessOfflineSyncApplyResponse> {
-    const resolvedNamespace = this.writableNamespaceFor(
-      options.namespace,
-      undefined,
-      options.principal,
-    );
+  async offlineSyncApply(options: EngramAccessOfflineSyncApplyRequest): Promise<EngramAccessOfflineSyncApplyResponse> {
+    const resolvedNamespace = this.writableNamespaceFor(options.namespace, undefined, options.principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     try {
       const result = await applySupportPassportOfflineSyncChangeset(storage, options);
@@ -5717,9 +5470,7 @@ export class EngramAccessService {
     namespace?: string;
     authenticatedPrincipal?: string;
   }): Promise<import("./types.js").DreamsRunResult> {
-    return this.accessAdminOpsSurface.dreamsRun(
-      options,
-    );
+    return this.accessAdminOpsSurface.dreamsRun(options);
   }
 
   // ---------------------------------------------------------------------------
@@ -5748,19 +5499,27 @@ export class EngramAccessService {
     return wearablesMeetings.wearablesStatus(this.wmHost, scope);
   }
 
-  async wearablesSync(request: { source?: string; date?: string; days?: number; forceMemories?: boolean } & WearablesMeetingsScope): Promise<Awaited<ReturnType<WearablesService["sync"]>>> {
+  async wearablesSync(
+    request: { source?: string; date?: string; days?: number; forceMemories?: boolean } & WearablesMeetingsScope
+  ): Promise<Awaited<ReturnType<WearablesService["sync"]>>> {
     return wearablesMeetings.wearablesSync(this.wmHost, request);
   }
 
-  async wearablesTranscriptDay(request: { date: string; source?: string } & WearablesMeetingsScope): Promise<Awaited<ReturnType<WearablesService["dayTranscript"]>>> {
+  async wearablesTranscriptDay(
+    request: { date: string; source?: string } & WearablesMeetingsScope
+  ): Promise<Awaited<ReturnType<WearablesService["dayTranscript"]>>> {
     return wearablesMeetings.wearablesTranscriptDay(this.wmHost, request);
   }
 
-  async wearablesTranscriptSearch(request: { query: string; source?: string; from?: string; to?: string; limit?: number } & WearablesMeetingsScope): Promise<Awaited<ReturnType<WearablesService["searchTranscripts"]>>> {
+  async wearablesTranscriptSearch(
+    request: { query: string; source?: string; from?: string; to?: string; limit?: number } & WearablesMeetingsScope
+  ): Promise<Awaited<ReturnType<WearablesService["searchTranscripts"]>>> {
     return wearablesMeetings.wearablesTranscriptSearch(this.wmHost, request);
   }
 
-  async wearablesTranscriptMemories(request: { source?: string; date?: string; limit?: number } & WearablesMeetingsScope): Promise<Awaited<ReturnType<WearablesService["transcriptMemories"]>>> {
+  async wearablesTranscriptMemories(
+    request: { source?: string; date?: string; limit?: number } & WearablesMeetingsScope
+  ): Promise<Awaited<ReturnType<WearablesService["transcriptMemories"]>>> {
     return wearablesMeetings.wearablesTranscriptMemories(this.wmHost, request);
   }
 
@@ -5800,7 +5559,7 @@ export class EngramAccessService {
     // inspectScope helper (admin-surfaces.ts) owns the single namespace-flag
     // read for this surface and threads it through resolveScopePlan.
     const codingContext = options.sessionKey
-      ? this.orchestrator.getCodingContextForSession(options.sessionKey) ?? null
+      ? (this.orchestrator.getCodingContextForSession(options.sessionKey) ?? null)
       : null;
     const inspection = inspectScope({
       config,
@@ -5878,8 +5637,6 @@ export class EngramAccessService {
     reason: string;
     actor?: never; // ignored — actor is derived from the authenticated principal
   }) {
-    return this.accessAdminOpsSurface.adminPromoteMemory(
-      request,
-    );
+    return this.accessAdminOpsSurface.adminPromoteMemory(request);
   }
 }

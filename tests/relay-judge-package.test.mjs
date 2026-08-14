@@ -24,9 +24,9 @@ import {
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const recordingRelative = "docs/remnic-relay/recordings/gpt-5-6-checkout-recovery";
-const trustedLauncherSha256 = "99619f5a287d85a6bfe026cf2d81f5a246ab2adf4bda885d3bae6c63f39471e8";
+const trustedLauncherSha256 = "67d8e39bbf1eabad004f227dfb9f303cfa3d2ae0c3c3e6e63ce8b10465466d62";
 const trustedDecisionContractSha256 = "fc6d4bf3df4c1c9095fb23f81c27c1c311e5c76bd651f3b55669b7fbcc0ba372";
-const trustedJudgePackageSha256 = "4714984a100bdacb8337b76008f9aa971d63f83e6b8016385292d440ed132b66";
+const trustedJudgePackageSha256 = "54823f90f6beb977af20a9f1d4a939c84e0c9573523c8664444ac21df0637493";
 
 function descriptorPinnedTest(name, fn) {
   return test(

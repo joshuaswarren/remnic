@@ -66,6 +66,7 @@ import { parseProvenanceConfig } from "./provenance.js";
 import { parseBoundedJsonlStateConfig } from "./bounded-jsonl-state.js";
 import { parseCodingKnowledgeConfig } from "./coding/coding-knowledge-config.js";
 import { parseChatConfig } from "./chat/chat-config.js";
+import { parseSupportPassportConfig } from "./support-passport/config.js";
 import { parseCorrectionIntentConfig, parseFaithfulnessGateConfig } from "./faithfulness-config.js";
 import { parseOfflineSyncExcludes } from "./offline-sync.js";
 import { parseExternalWikiRoots } from "./external-wiki-config.js";
@@ -2332,6 +2333,7 @@ export function parseConfig(
     codexCompat,
     codingKnowledge: parseCodingKnowledgeConfig(cfg.codingKnowledge),
     chat: parseChatConfig(cfg.chat),
+    supportPassport: parseSupportPassportConfig(cfg.supportPassport),
     hourlySummariesEnabled: cfg.hourlySummariesEnabled !== false, // default: true
     daySummaryEnabled: cfg.daySummaryEnabled !== false, // default: true
     hourlySummaryCronAutoRegister: cfg.hourlySummaryCronAutoRegister === true,

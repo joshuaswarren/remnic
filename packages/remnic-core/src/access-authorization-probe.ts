@@ -1,6 +1,7 @@
 import {
   getOperation,
   operationRequiresAuthorizedNamespace,
+  operationUsesPrincipalNamespace,
   OPERATION_NAMES,
   type OperationName,
 } from "./access-boundary.js";
@@ -15,6 +16,11 @@ const UNRESOLVABLE_RESOURCE_OPERATIONS = new Set<OperationName>([
   "contradiction_detail",
   "chat_message",
   "chat_events",
+]);
+
+const HELPER_ONLY_OPERATIONS = new Set<OperationName>([
+  "support_passport_grant_read",
+  "support_passport_grant_ask",
 ]);
 
 export interface AuthorizationProbeResponse {
@@ -32,7 +38,10 @@ export function probeOperationAuthorization(
 ): AuthorizationProbeResponse {
   const operations: OperationName[] = [];
   for (const candidate of requestedOperations) {
-    if (!OPERATION_NAMES.includes(candidate as OperationName)) {
+    if (
+      !OPERATION_NAMES.includes(candidate as OperationName) ||
+      HELPER_ONLY_OPERATIONS.has(candidate as OperationName)
+    ) {
       throw new EngramAccessInputError(`unsupported operation: ${candidate}`);
     }
     const operation = candidate as OperationName;
@@ -46,7 +55,9 @@ export function probeOperationAuthorization(
   for (const operation of operations) {
     const boundOperation = getOperation(operation);
     if (!boundOperation) {
-      throw new Error(`authorization probe operation is not registered: ${operation}`);
+      throw new Error(
+        `authorization probe operation is not registered: ${operation}`,
+      );
     }
     assertOperationAuthorizationAllowed(capabilities, boundOperation.spec);
   }
@@ -69,4 +80,11 @@ export function authorizationProbeNamespaces(
       !UNRESOLVABLE_RESOURCE_OPERATIONS.has(operation),
   );
   return namespaceOperations.length > 0 ? [requestedNamespace] : [];
+}
+
+/** Whether a probe must resolve the authenticated principal's owner namespace. */
+export function authorizationProbeRequiresPrincipalNamespace(
+  operations: readonly OperationName[],
+): boolean {
+  return operations.some(operationUsesPrincipalNamespace);
 }

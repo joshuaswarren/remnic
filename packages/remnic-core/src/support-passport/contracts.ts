@@ -51,6 +51,12 @@ export const SupportPassportMemoryIdSchema = z
   .min(1)
   .max(128)
   .regex(/^[A-Za-z0-9._:-]+$/);
+export const SUPPORT_PASSPORT_SOURCE_MEMORY_ID_MAX_LENGTH = 512;
+export const SupportPassportSourceMemoryIdSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(SUPPORT_PASSPORT_SOURCE_MEMORY_ID_MAX_LENGTH);
 
 export const SupportPassportCardSchema = z
   .object({
@@ -103,6 +109,13 @@ export const SupportPassportCardMutationInputSchema = z
     principal: z.string().trim().min(1).max(512),
     cardId: SupportPassportMemoryIdSchema,
     expectedRevision: z.string().regex(/^[a-f0-9]{64}$/),
+    reasonCode: z
+      .string()
+      .trim()
+      .min(1)
+      .max(64)
+      .regex(/^[a-z0-9-]+$/)
+      .optional(),
   })
   .strict();
 

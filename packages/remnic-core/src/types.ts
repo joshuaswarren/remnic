@@ -548,6 +548,11 @@ export interface ChatConfig {
   sessionTtlHours: number;
 }
 
+export interface SupportPassportConfig {
+  enabled: boolean;
+  trustedProxyAddresses: string[];
+}
+
 /**
  * Session-scoped coding context. Produced by `resolveGitContext()` in the
  * connector layer and attached to a session so that recall + write paths can
@@ -1257,6 +1262,8 @@ export interface PluginConfig extends BoundedJsonlStateConfig {
   // Conversational memory inspection and correction (issue #1583). Off by
   // default — byte-identical pre-feature when enabled === false (rule 39).
   chat: ChatConfig;
+  /** Owner-controlled support passport. Off by default. */
+  supportPassport: SupportPassportConfig;
   slotBehavior: SlotBehaviorConfig;
   /** OpenClaw bridge mode (#2120): `"embedded"` (default) or `"delegate"`. */
   bridgeMode: string;

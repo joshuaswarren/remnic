@@ -990,8 +990,9 @@
 
   async function initialize() {
     bindEvents();
-    if (typeof window.__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__ === "string") {
-      safeSessionSet(TOKEN_KEY, window.__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__);
+    const prefillToken = window.__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__;
+    if (typeof prefillToken === "string") {
+      safeSessionSet(TOKEN_KEY, prefillToken);
     }
     state.token = safeSessionGet(TOKEN_KEY);
     const params = new URLSearchParams(window.location.search);

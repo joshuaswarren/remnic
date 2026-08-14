@@ -42,6 +42,7 @@ export interface GeneratedBatchContext {
   namespace: string;
   now: () => Date;
   requireOwnerLock: () => Promise<void>;
+  onCommitted?: () => void;
 }
 
 type GeneratedBatchMarkerWriter = (storage: StorageManager, marker: GeneratedBatchMarker) => Promise<void>;
@@ -143,6 +144,7 @@ export async function persistSupportPassportGeneratedBatchMarker(
   await context.requireOwnerLock();
   await ensureBatchDirectory(context.storage);
   await writeMarker(context.storage, marker);
+  context.onCommitted?.();
   return marker;
 }
 
@@ -174,6 +176,7 @@ export async function commitSupportPassportGeneratedBatch(
   } catch (error) {
     if (!(await isSupportPassportGeneratedBatchCommitted(context, marker))) throw error;
   }
+  context.onCommitted?.();
 }
 
 async function rejectGeneratedDraft(context: GeneratedBatchContext, cardId: string): Promise<boolean> {
@@ -192,6 +195,7 @@ async function rejectGeneratedDraft(context: GeneratedBatchContext, cardId: stri
         { actor: context.principal, reasonCode: "draft-batch-failed" }
       )
     ) {
+      context.onCommitted?.();
       return true;
     }
   }
@@ -227,6 +231,7 @@ export async function rollbackSupportPassportGeneratedBatch(
   if (!complete) return false;
   try {
     await removeBatchMarker(context.storage, batchId);
+    context.onCommitted?.();
   } catch {
     complete = false;
   }
@@ -269,7 +274,27 @@ export async function projectCommittedSupportPassportCards(
   for (const card of projected) {
     if (await isCommittedGeneratedCard(storage, card, markers)) committed.push(card);
   }
+  const ids = new Set<string>();
+  for (const card of committed) {
+    if (ids.has(card.card.cardId)) {
+      throw new SupportPassportError("card_data_invalid", "Support card IDs must be unique.", 500);
+    }
+    ids.add(card.card.cardId);
+  }
   return committed;
+}
+
+export async function readCommittedSupportPassportCards(
+  storage: StorageManager,
+  namespace: string,
+  principal: string
+): Promise<StoredSupportPassportCard[]> {
+  return await projectCommittedSupportPassportCards(
+    storage,
+    await storage.readAllMemories(),
+    namespace,
+    principal
+  );
 }
 
 export async function recoverSupportPassportGeneratedBatches(
