@@ -94,8 +94,11 @@ test("support card titles reject attribute delimiters and line breaks", () => {
   }
 });
 
-test("support passport namespaces use the shared canonical identity grammar", () => {
-  for (const namespace of ["", " alice", "alice "]) {
+test("support passport namespaces preserve configured default identities", () => {
+  for (const namespace of ["alice/bob", "alice\\bob", "alice]bob", "alice..bob", "alice\nbob", "alice\0bob"]) {
+    assert.equal(SupportPassportNamespaceSchema.safeParse(namespace).success, true);
+  }
+  for (const namespace of ["", " team", "team "]) {
     assert.equal(SupportPassportNamespaceSchema.safeParse(namespace).success, false);
   }
   for (const namespace of [

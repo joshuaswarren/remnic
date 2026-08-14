@@ -39,6 +39,13 @@ interface WindowReservation {
   release(): void;
 }
 
+class UnreadSupportPassportRequestError extends Error {
+  constructor(readonly response: SupportPassportError) {
+    super(response.message);
+    this.name = "UnreadSupportPassportRequestError";
+  }
+}
+
 class FixedWindowLimiter {
   private readonly entries = new Map<string, WindowEntry>();
 
@@ -320,26 +327,58 @@ function respondBeforeReadingBody(
 }
 
 async function readQuestionBody(req: IncomingMessage, signal: AbortSignal): Promise<string> {
-  const chunks: Buffer[] = [];
-  let bytes = 0;
-  try {
-    for await (const chunk of req) {
+  const content = await new Promise<Buffer>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    let settled = false;
+    const cleanup = () => {
+      req.off("data", onData);
+      req.off("end", onEnd);
+      req.off("error", onError);
+      req.off("aborted", onAborted);
+      signal.removeEventListener("abort", onSignalAbort);
+    };
+    const fail = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const helperLeft = () =>
+      isAbortError(signal.reason) ? signal.reason : abortError("The helper left.");
+    const onData = (chunk: Buffer | string) => {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       bytes += buffer.length;
       if (bytes > 4_096) {
-        throw new SupportPassportError("invalid_input", "The helper question is invalid.", 400);
+        req.pause();
+        fail(
+          new UnreadSupportPassportRequestError(
+            new SupportPassportError("invalid_input", "The helper question is invalid.", 400)
+          )
+        );
+        return;
       }
       chunks.push(buffer);
-    }
-  } catch (error) {
-    if (signal.aborted || req.aborted) {
-      throw isAbortError(signal.reason) ? signal.reason : abortError("The helper left.");
-    }
-    throw error;
-  }
+    };
+    const onEnd = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(Buffer.concat(chunks, bytes));
+    };
+    const onError = (error: Error) => fail(signal.aborted || req.aborted ? helperLeft() : error);
+    const onAborted = () => fail(helperLeft());
+    const onSignalAbort = () => fail(helperLeft());
+    req.on("data", onData);
+    req.once("end", onEnd);
+    req.once("error", onError);
+    req.once("aborted", onAborted);
+    signal.addEventListener("abort", onSignalAbort, { once: true });
+    if (signal.aborted) onSignalAbort();
+  });
   let parsed: unknown;
   try {
-    parsed = JSON.parse(Buffer.concat(chunks, bytes).toString("utf8"));
+    parsed = JSON.parse(content.toString("utf8"));
   } catch {
     throw new SupportPassportError("invalid_input", "The helper question is invalid.", 400);
   }
@@ -376,7 +415,7 @@ function requestSignal(req: IncomingMessage, res: ServerResponse): { signal: Abo
 function decodeGrantId(raw: string): string | undefined {
   try {
     const value = decodeURIComponent(raw);
-    return /^[A-Za-z0-9_-]{1,128}$/.test(value) ? value : undefined;
+    return /^[A-Za-z0-9_-]{1,128}$/.test(value) ? value.toLowerCase() : undefined;
   } catch {
     return undefined;
   }
@@ -443,16 +482,18 @@ export function buildSupportPassportPublicRequestHandler(
         respondJson(res, 200, guide);
       } else {
         const releaseAuthentication = rateLimits.authentications.reserve(digest);
-        if (!releaseAuthentication) throw rateLimited();
+        if (!releaseAuthentication) throw new UnreadSupportPassportRequestError(rateLimited());
         let question: string;
         try {
           const bodyFailure = rateLimits.networkQuestionFailures.reserve(digest);
-          if (!bodyFailure) throw rateLimited();
+          if (!bodyFailure) throw new UnreadSupportPassportRequestError(rateLimited());
           try {
             question = await readQuestionBody(req, lifecycle.signal);
             bodyFailure.release();
           } catch (error) {
-            if (error instanceof SupportPassportError && error.code === "invalid_input") {
+            const supportError =
+              error instanceof UnreadSupportPassportRequestError ? error.response : error;
+            if (supportError instanceof SupportPassportError && supportError.code === "invalid_input") {
               bodyFailure.commit();
             } else {
               bodyFailure.release();
@@ -480,6 +521,13 @@ export function buildSupportPassportPublicRequestHandler(
         respondJson(res, 200, answer);
       }
     } catch (error) {
+      if (error instanceof UnreadSupportPassportRequestError) {
+        respondJsonAndCloseUnreadRequest(req, res, error.response.status, {
+          error: error.response.message,
+          code: error.response.code,
+        });
+        return true;
+      }
       if (!(error instanceof SupportPassportError)) throw error;
       respondJson(res, error.status, { error: error.message, code: error.code });
     } finally {

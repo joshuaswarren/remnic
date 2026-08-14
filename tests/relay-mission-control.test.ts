@@ -393,6 +393,8 @@ test("Mission Control assets expose honest modes, keyboard paths, and session-on
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
   assert.match(controller, /sessionStorage/);
   assert.doesNotMatch(controller, /localStorage/);
+  assert.equal((controller.match(/window\.__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__/g) || []).length, 1);
+  assert.match(controller, /const prefillToken = window\.__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__;/);
   assert.match(controller, /\/engram\/v1\/relay\/missions/);
   assert.match(controller, /x-remnic-authenticated-principal/);
   assert.match(controller, /Model\.isValidActorId\(state\.authenticatedPrincipal\)/);

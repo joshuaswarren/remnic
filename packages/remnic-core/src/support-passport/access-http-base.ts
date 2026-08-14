@@ -22,6 +22,8 @@ const SUPPORT_PASSPORT_QUOTA_LIMITED_WRITE_TOOLS = new Set([
   "remnic.support_passport_card_withdraw",
   "engram.support_passport_grant_create",
   "remnic.support_passport_grant_create",
+  "engram.support_passport_grant_revoke",
+  "remnic.support_passport_grant_revoke",
 ]);
 
 export abstract class SupportPassportAccessHttpBase {
@@ -48,7 +50,11 @@ export abstract class SupportPassportAccessHttpBase {
       principal: this.resolveRequestPrincipal(req),
       abortSignal,
       readJsonBody: () => this.readJsonBody(req),
-      respondJson: (status, payload) => this.respondJson(res, status, payload),
+      respondJson: (status, payload) => {
+        res.setHeader("cache-control", "private, no-store");
+        res.setHeader("vary", "Authorization");
+        this.respondJson(res, status, payload);
+      },
       reserveWriteRateLimitSlot: () => this.reserveWriteRateLimitSlot(req),
     });
   }

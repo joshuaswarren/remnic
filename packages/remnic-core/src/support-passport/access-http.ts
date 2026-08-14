@@ -2,8 +2,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { type OperationName, getOperation } from "../access-boundary.js";
 import type { EngramAccessService } from "../access-service.js";
-import { SupportPassportOwnerCreateGrantRequestSchema } from "./grant-contracts.js";
 import { SupportPassportError } from "./errors.js";
+import { SupportPassportOwnerCreateGrantRequestSchema } from "./grant-contracts.js";
 
 export interface SupportPassportOwnerHttpDependencies {
   req: IncomingMessage;
@@ -115,6 +115,7 @@ export async function handleSupportPassportOwnerHttp(
       } else if (grantMatch && req.method === "POST") {
         operation = "support_passport_grant_revoke";
         input.grantId = decodeId(grantMatch[1] ?? "", "grantId");
+        quotaLimitedWrite = true;
       }
     }
 

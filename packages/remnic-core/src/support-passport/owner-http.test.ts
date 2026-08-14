@@ -44,6 +44,8 @@ test("owner HTTP routes require bearer auth and use the trusted principal", asyn
     assert.equal((await fetch(url, { headers: { authorization: "SupportPassport helper-secret" } })).status, 401);
     const response = await fetch(url, { headers: { authorization: `Bearer ${TOKEN}` } });
     assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "private, no-store");
+    assert.equal(response.headers.get("vary"), "Authorization");
     assert.deepEqual(await response.json(), { cards: [card("active")] });
     assert.deepEqual(principals, ["owner:alice"]);
 
@@ -578,7 +580,7 @@ test("owner HTTP derives a preset grant expiry from the server clock", async () 
   }
 });
 
-test("owner HTTP can revoke a share link after the write quota is full", async () => {
+test("owner HTTP applies the write quota to share-link revocation", async () => {
   const revocations: unknown[] = [];
   const service = {
     supportPassportEnabled: true,
@@ -619,8 +621,8 @@ test("owner HTTP can revoke a share link after the write quota is full", async (
       headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
       body: JSON.stringify({ expectedVersion: 1 }),
     });
-    assert.equal(revoked.status, 200);
-    assert.equal(revocations.length, 1);
+    assert.equal(revoked.status, 429);
+    assert.equal(revocations.length, 0);
   } finally {
     await server.stop();
   }
