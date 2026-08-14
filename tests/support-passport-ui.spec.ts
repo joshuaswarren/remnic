@@ -55,6 +55,11 @@ function helperUrl(suffix = "") {
   return `${origin}/remnic/ui/what-helps-me/?mode=replay&grant=replay-grant${suffix}#secret=${"s".repeat(43)}`;
 }
 
+function injectOwnerPrefill(shell: string, token: string): string {
+  const script = `<script>(function(token,script){const key="__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__";const clear=function(){token="";try{delete window[key]}catch{window[key]=""}};window.addEventListener("pagehide",clear,{once:true});window.addEventListener("beforeunload",clear,{once:true});try{if(new URLSearchParams(location.hash.slice(1)).has("secret")){clear();return}Object.defineProperty(window,key,{configurable:true,get:function(){const value=token;clear();return value}})}finally{if(script){script.textContent="";script.remove()}}})(${JSON.stringify(token)},document.currentScript);</script>`;
+  return shell.replace("</head>", `${script}</head>`);
+}
+
 async function createReplayShare(page: Page): Promise<void> {
   await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
   await page.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
@@ -285,6 +290,60 @@ test("a note preview preserves a newer memory ID while its request settles", asy
   await expect(page.getByLabel("Memory ID")).toHaveValue("next-note");
 });
 
+test("drafting waits for a pending note preview", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers pending note previews.");
+  const releasePreview = Promise.withResolvers<void>();
+  let generationCalls = 0;
+  await page.route("**/engram/v1/support-passport/cards", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ cards: [] }) });
+  });
+  await page.route("**/engram/v1/support-passport/grants", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grants: [] }) });
+  });
+  await page.route(/\/engram\/v1\/support-passport\/memories\/(first-note|second-note)$/, async (route) => {
+    const memoryId = new URL(route.request().url()).pathname.split("/").at(-1) ?? "";
+    if (memoryId === "second-note") await releasePreview.promise;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        found: true,
+        memory: {
+          id: memoryId,
+          content: `${memoryId} content.`,
+          revision: (memoryId === "first-note" ? "a" : "b").repeat(64),
+        },
+      }),
+    });
+  });
+  await page.route("**/engram/v1/support-passport/drafts/generate", async (route) => {
+    generationCalls += 1;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ cards: [] }) });
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await page.getByLabel("Bearer token").fill("owner-token");
+  await page.getByRole("button", { name: "Open my guide" }).click();
+  await page.getByLabel("Memory ID").fill("first-note");
+  await page.getByRole("button", { name: "Add selected note" }).click();
+  await page.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
+  await page.getByLabel("Memory ID").fill("second-note");
+  await page.getByRole("button", { name: "Add selected note" }).click();
+
+  await expect(page.getByRole("button", { name: "Adding note…" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Draft my support cards" })).toBeDisabled();
+  await page.locator("#generateButton").dispatchEvent("click");
+  await expect(page.getByText("Wait for the selected note to finish loading before drafting.")).toBeVisible();
+  expect(generationCalls).toBe(0);
+
+  releasePreview.resolve();
+  await expect(page.locator(".note-item")).toHaveCount(2);
+  await expect(page.getByRole("button", { name: "Draft my support cards" })).toBeEnabled();
+  await expect(
+    page.getByLabel("Send these selected notes to my configured model to draft my cards.")
+  ).not.toBeChecked();
+});
+
 test("an owner page clears private state before browser-cache restoration", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers owner browser-cache cleanup.");
   const now = new Date();
@@ -311,10 +370,7 @@ test("an owner page clears private state before browser-cache restoration", asyn
     await route.fulfill({
       status: 200,
       contentType: "text/html; charset=utf-8",
-      body: ownerShell.replace(
-        "</head>",
-        '<script>(function(token,script){const key="__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__";const clear=function(){token="";try{delete window[key]}catch{window[key]=""}};window.addEventListener("pagehide",clear,{once:true});window.addEventListener("beforeunload",clear,{once:true});try{Object.defineProperty(window,key,{configurable:true,get:function(){const value=token;clear();return value}})}finally{if(script){script.textContent="";script.remove()}}})("prefilled-owner-token",document.currentScript);</script></head>'
-      ),
+      body: injectOwnerPrefill(ownerShell, "prefilled-owner-token"),
     });
   });
   await page.route("**/engram/v1/support-passport/cards", async (route) => {
@@ -372,6 +428,50 @@ test("an owner page clears private state before browser-cache restoration", asyn
   await expect(page.locator("#customTimeField")).toBeHidden();
   await expect(page.locator("#customTimeInput")).toHaveValue("");
   await expect(page.getByLabel("Copy this link once")).toHaveValue("");
+});
+
+test("owner cleanup cancels delayed private announcements", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers announcement cleanup.");
+  const now = new Date("2026-08-13T12:00:00.000Z");
+  const card = {
+    cardId: "private-announcement-card",
+    title: "Private support title",
+    statement: "Private support text.",
+    category: "other",
+    status: "pending_review",
+    updatedAt: now.toISOString(),
+    reviewBy: new Date(now.getTime() + 24 * 60 * 60_000).toISOString(),
+    revision: "a".repeat(64),
+  };
+  let approved = false;
+  await page.clock.install({ time: now });
+  await page.route("**/engram/v1/support-passport/cards", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        cards: approved ? [{ ...card, status: "active", revision: "b".repeat(64) }] : [card],
+      }),
+    });
+  });
+  await page.route("**/engram/v1/support-passport/cards/private-announcement-card/approve", async (route) => {
+    approved = true;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ card }) });
+  });
+  await page.route("**/engram/v1/support-passport/grants", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grants: [] }) });
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await page.getByLabel("Bearer token").fill("owner-token");
+  await page.getByRole("button", { name: "Open my guide" }).click();
+  await page.getByRole("button", { name: "Approve" }).click();
+  await expect(page.locator("#toast")).toContainText("Private support title");
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })));
+  await page.clock.fastForward(20);
+
+  await expect(page.locator("#announcer")).toHaveText("");
+  await expect(page.locator("#ownerView")).toBeHidden();
 });
 
 test("a hidden owner write cannot add an error after reconnect", async ({ page }, testInfo) => {
@@ -568,6 +668,58 @@ test("two share submissions create one grant", async ({ page }, testInfo) => {
   releaseGrant.resolve();
   await expect(page.getByRole("button", { name: "Create share link" })).toBeEnabled();
   expect(createCalls).toBe(1);
+});
+
+test("sharing waits while a selected card is being withdrawn", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers the card and share write lock.");
+  const now = new Date();
+  const card = {
+    cardId: "card-being-withdrawn",
+    title: "Quiet place",
+    statement: "Offer me a quiet place and time.",
+    category: "environment",
+    status: "active",
+    updatedAt: now.toISOString(),
+    reviewBy: new Date(now.getTime() + 24 * 60 * 60_000).toISOString(),
+    revision: "a".repeat(64),
+  };
+  const releaseWithdrawal = Promise.withResolvers<void>();
+  let withdrawn = false;
+  let createCalls = 0;
+  await page.route("**/engram/v1/support-passport/cards", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ cards: withdrawn ? [] : [card] }),
+    });
+  });
+  await page.route("**/engram/v1/support-passport/cards/card-being-withdrawn/withdraw", async (route) => {
+    await releaseWithdrawal.promise;
+    withdrawn = true;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ card }) });
+  });
+  await page.route("**/engram/v1/support-passport/grants", async (route) => {
+    if (route.request().method() === "POST") createCalls += 1;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grants: [] }) });
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await page.getByLabel("Bearer token").fill("owner-token");
+  await page.getByRole("button", { name: "Open my guide" }).click();
+  await page.locator('input[name="shareCard"]').check();
+  await page.getByRole("button", { name: "Withdraw" }).click();
+
+  await expect(page.getByRole("button", { name: "Stopping…" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Create share link" })).toBeDisabled();
+  await page.locator("#shareForm").dispatchEvent("submit");
+  await expect(
+    page.getByText("Wait for the selected support card to finish changing before sharing it.")
+  ).toBeVisible();
+  expect(createCalls).toBe(0);
+
+  releaseWithdrawal.resolve();
+  await expect(page.locator('input[name="shareCard"]')).toHaveCount(0);
+  expect(createCalls).toBe(0);
 });
 
 test("a created share link remains visible when its list refresh fails", async ({ page }, testInfo) => {
@@ -1111,11 +1263,27 @@ test("a stalled owner read aborts and restores the connect action", async ({ pag
   await expect(button).toBeEnabled();
 });
 
-test("a stalled manual draft aborts without leaving a retryable duplicate", async ({ page }, testInfo) => {
+test("a timed-out manual draft stays uncertain when an identical draft appears", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers owner write cancellation.");
   await page.clock.install({ time: new Date("2026-08-11T12:00:00.000Z") });
   await page.addInitScript(() => {
     const realFetch = window.fetch.bind(window);
+    let submittedDraft: Record<string, string> | undefined;
+    const identicalDraftResponse = () =>
+      new Response(
+        JSON.stringify({
+          cards: [
+            {
+              ...submittedDraft,
+              cardId: "identical-other-tab-draft",
+              status: "pending_review",
+              updatedAt: new Date().toISOString(),
+              revision: "c".repeat(64),
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
     Object.assign(window, {
       __ownerDraftAbortObserved: false,
       __ownerDraftCalls: 0,
@@ -1125,6 +1293,7 @@ test("a stalled manual draft aborts without leaving a retryable duplicate", asyn
     window.fetch = async (input, init) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url.endsWith("/engram/v1/support-passport/drafts") && init?.method === "POST") {
+        submittedDraft = JSON.parse(typeof init.body === "string" ? init.body : "{}") as Record<string, string>;
         Object.assign(window, {
           __ownerDraftCalls: ((window as typeof window & { __ownerDraftCalls?: number }).__ownerDraftCalls ?? 0) + 1,
         });
@@ -1141,19 +1310,15 @@ test("a stalled manual draft aborts without leaving a retryable duplicate", asyn
       }
       if (
         url.endsWith("/engram/v1/support-passport/cards") &&
-        (window as typeof window & { __ownerDraftAbortObserved?: boolean }).__ownerDraftAbortObserved &&
-        !(window as typeof window & { __ownerDraftReconciliationStarted?: boolean }).__ownerDraftReconciliationStarted
+        (window as typeof window & { __ownerDraftAbortObserved?: boolean }).__ownerDraftAbortObserved
       ) {
+        if ((window as typeof window & { __ownerDraftReconciliationStarted?: boolean }).__ownerDraftReconciliationStarted) {
+          return identicalDraftResponse();
+        }
         Object.assign(window, { __ownerDraftReconciliationStarted: true });
         return await new Promise<Response>((resolve) => {
           Object.assign(window, {
-            __releaseOwnerDraftReconciliation: () =>
-              resolve(
-                new Response(JSON.stringify({ cards: [] }), {
-                  status: 200,
-                  headers: { "content-type": "application/json" },
-                })
-              ),
+            __releaseOwnerDraftReconciliation: () => resolve(identicalDraftResponse()),
           });
         });
       }
@@ -1200,7 +1365,14 @@ test("a stalled manual draft aborts without leaving a retryable duplicate", asyn
   });
   await page.clock.fastForward(750);
 
-  await expect(page.getByText("The request stopped before the draft saved.")).toBeVisible();
+  await expect(
+    page.getByText(
+      "The request timed out. Review the current guide to see whether the draft saved before trying again."
+    )
+  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Quiet place" })).toBeVisible();
+  await expect(page.locator("#cardDialog")).toBeVisible();
+  await expect(page.locator("#toast")).not.toHaveText("Draft saved. Review and approve it before sharing.");
   await expect(page.getByRole("button", { name: "Save draft" })).toBeEnabled();
   expect(await page.evaluate(() => (window as typeof window & { __ownerDraftCalls?: number }).__ownerDraftCalls)).toBe(
     1
@@ -1486,6 +1658,8 @@ test("a stalled share creation shows uncertain state without revoking a grant", 
   await expect(page.getByRole("button", { name: "Creating link…" })).toBeDisabled();
   await expect(page.locator('input[name="shareCard"]')).toBeDisabled();
   await expect(page.locator('input[name="duration"][value="30m"]')).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Edit" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Withdraw" })).toBeDisabled();
   await page.clock.fastForward(60_000);
   await expect
     .poll(() =>
@@ -1629,6 +1803,98 @@ test("a new helper question clears the prior answer before dispatch", async ({ p
   await expect(page.locator("#answerPanel")).toBeHidden();
 });
 
+test("an older helper ask cannot unlock a newer ask", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers overlapping helper asks.");
+  const now = new Date();
+  await page.addInitScript(() => {
+    const realFetch = window.fetch.bind(window);
+    let askCalls = 0;
+    Object.assign(window, { __helperAskCalls: 0, __releaseSecondHelperAsk: undefined });
+    window.fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (!url.endsWith("/ask") || init?.method !== "POST") return await realFetch(input, init);
+      askCalls += 1;
+      Object.assign(window, { __helperAskCalls: askCalls });
+      if (askCalls === 1) {
+        return await new Promise((_resolve, reject) => {
+          init.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("The request was aborted.", "AbortError")),
+            { once: true }
+          );
+        });
+      }
+      return await new Promise<Response>((resolve) => {
+        Object.assign(window, {
+          __releaseSecondHelperAsk: () =>
+            resolve(
+              new Response(
+                JSON.stringify({
+                  answer: "Offer a quiet place.",
+                  citedCardIds: ["card-quiet"],
+                  coverage: "grounded",
+                }),
+                { status: 200, headers: { "content-type": "application/json" } }
+              )
+            ),
+        });
+      });
+    };
+  });
+  await page.route("**/engram/v1/support-passport/public/grants/replay-grant-overlap", async (route) => {
+    await route.fulfill({
+      status: 200,
+      headers: { date: now.toUTCString() },
+      contentType: "application/json",
+      body: JSON.stringify({
+        schemaVersion: 1,
+        grantId: "replay-grant-overlap",
+        expiresAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
+        updatedAt: now.toISOString(),
+        cards: [
+          {
+            cardId: "card-quiet",
+            title: "Quiet place",
+            statement: "Offer me a quiet place and time.",
+            category: "environment",
+            updatedAt: now.toISOString(),
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/?grant=replay-grant-overlap#secret=${"s".repeat(43)}`);
+  await page.getByLabel("Your question").fill("What helps first?");
+  await page.getByRole("button", { name: "Ask from this guide" }).click();
+  await expect
+    .poll(() => page.evaluate(() => (window as typeof window & { __helperAskCalls?: number }).__helperAskCalls))
+    .toBe(1);
+  await page.evaluate(() => {
+    const input = document.getElementById("questionInput");
+    const form = document.getElementById("questionForm");
+    if (!(input instanceof HTMLTextAreaElement) || !(form instanceof HTMLFormElement)) return;
+    input.disabled = false;
+    input.value = "What helps second?";
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  });
+  await expect
+    .poll(() => page.evaluate(() => (window as typeof window & { __helperAskCalls?: number }).__helperAskCalls))
+    .toBe(2);
+
+  await expect(page.getByLabel("Your question")).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Checking shared cards…" })).toBeDisabled();
+  await expect(page.locator("#questionError")).toHaveText("");
+  await page.evaluate(() => {
+    const release = (window as typeof window & { __releaseSecondHelperAsk?: () => void }).__releaseSecondHelperAsk;
+    release?.();
+  });
+
+  await expect(page.getByText("Offer a quiet place.", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Your question")).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Ask from this guide" })).toBeEnabled();
+});
+
 test("a bad helper link has a clear locked view", async ({ page }, testInfo) => {
   await page.goto(`${origin}/remnic/ui/what-helps-me/#secret=${"s".repeat(43)}`);
 
@@ -1638,6 +1904,40 @@ test("a bad helper link has a clear locked view", async ({ page }, testInfo) => 
   await expect(page.locator("#lockedTitle")).toBeFocused();
   await expectNoSeriousAxeFindings(page);
   await page.screenshot({ path: testInfo.outputPath(`locked-${testInfo.project.name}.png`), fullPage: true });
+});
+
+test("a fragment helper suppresses owner prefill when the model bundle fails", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers bootstrap secret cleanup.");
+  const ownerShell = await readFile(path.join(publicDir, "index.html"), "utf8");
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.route(`${origin}/remnic/ui/what-helps-me/`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/html; charset=utf-8",
+      body: injectOwnerPrefill(ownerShell, "prefilled-owner-token"),
+    });
+  });
+  await page.route("**/what-helps-me/model.js", async (route) => {
+    await route.fulfill({ status: 404, contentType: "application/javascript", body: "" });
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/#secret=${"s".repeat(43)}`);
+
+  expect(new URL(page.url()).hash).toBe("");
+  expect(
+    await page.evaluate(
+      () =>
+        (window as typeof window & { __REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__?: string })
+          .__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__
+    )
+  ).toBeUndefined();
+  expect(
+    await page
+      .locator("script")
+      .evaluateAll((scripts) => scripts.some((script) => script.textContent?.includes("prefilled-owner-token")))
+  ).toBe(false);
+  expect(pageErrors).toContain("What Helps Me model did not load.");
 });
 
 test("a transient initial helper failure can retry without the removed URL secret", async ({ page }, testInfo) => {
@@ -1821,12 +2121,23 @@ test("helper load, error, stale, stopped, and expired states fail closed", async
 test("a fast helper clock does not expire a server-authorized guide", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers helper clock calibration.");
 
+  const serverNow = Date.parse("2026-08-13T12:00:00.000Z");
+  await page.clock.install({ time: new Date(serverNow) });
   await page.addInitScript(() => {
     const realNow = Date.now.bind(Date);
     Date.now = () => realNow() + 24 * 60 * 60_000;
   });
-  const serverNow = Date.now();
+  let reads = 0;
   await page.route("**/engram/v1/support-passport/public/grants/replay-grant-fast-clock", async (route) => {
+    reads += 1;
+    if (reads > 1) {
+      await route.fulfill({
+        status: 410,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "ended", code: "grant_gone" }),
+      });
+      return;
+    }
     await route.fulfill({
       status: 200,
       headers: { date: new Date(serverNow).toUTCString() },
@@ -1853,6 +2164,9 @@ test("a fast helper clock does not expire a server-authorized guide", async ({ p
 
   await expect(page.locator(".public-card")).toHaveCount(1);
   await expect(page.locator("#lockedView")).toBeHidden();
+  await page.clock.fastForward(30_000);
+  await expect(page.getByRole("heading", { name: "This support passport is locked." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "This share link has expired." })).toHaveCount(0);
 });
 
 test("a stalled initial helper read aborts and fails closed", async ({ page }, testInfo) => {
