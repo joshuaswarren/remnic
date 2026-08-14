@@ -4834,6 +4834,35 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       updatedAfter?: Date;
     } = {}
   ): Promise<{ memories: MemoryFile[]; filePaths: string[] }> {
+    // Briefings request only an update lower bound. Reuse a warm full-corpus
+    // cache for that shape instead of scanning every active path again.
+    if (
+      this.hotMemoriesCacheEnabled &&
+      options.updatedAfter !== undefined &&
+      options.maxMemories === undefined &&
+      options.batchSize === undefined
+    ) {
+      const cached = getCachedMemories(
+        this.baseDir,
+        this.getMemoryCorpusVersion(),
+        this.hotCacheKeyId(),
+        this.hotCacheTtlMs()
+      );
+      if (cached !== null) {
+        const updatedAfterMs = options.updatedAfter.getTime();
+        const memories = cached.filter((memory) => {
+          const rawTimestamp = memory.frontmatter.updated ?? memory.frontmatter.created;
+          const timestampMs =
+            rawTimestamp instanceof Date
+              ? rawTimestamp.getTime()
+              : typeof rawTimestamp === "string"
+                ? Date.parse(rawTimestamp)
+                : Number.NaN;
+          return Number.isFinite(timestampMs) && timestampMs >= updatedAfterMs;
+        });
+        return { memories: this.rememberMemorySnapshots(memories), filePaths: memories.map((memory) => memory.path) };
+      }
+    }
     return this.memoryReadStore.readMemoriesWindow(options);
   }
 
