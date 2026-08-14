@@ -99,7 +99,7 @@ function warnCommitNotificationFailure(error: unknown): void {
   log.warn(`support passport commit notification failed: ${error instanceof Error ? error.message : String(error)}`);
 }
 
-function notifyCommitted(callback: (() => void | Promise<void>) | undefined): void {
+export function notifySupportPassportCommitted(callback: (() => void | Promise<void>) | undefined): void {
   try {
     const completion = callback?.();
     if (completion) void Promise.resolve(completion).catch(warnCommitNotificationFailure);
@@ -279,7 +279,7 @@ export class SupportPassportGrantStore {
         if (!(error instanceof OwnerIndexLockLostError) || !committed) throw error;
         finalized = await this.reconcileCreateAfterOwnerIndexLockLoss(committed);
       }
-      notifyCommitted(mutationHooks.onCommitted);
+      notifySupportPassportCommitted(mutationHooks.onCommitted);
       return finalized;
     } catch (error) {
       if (committed) {
@@ -395,7 +395,7 @@ export class SupportPassportGrantStore {
         if (!persisted || !sameGrantState(persisted, revoked)) throw error;
         await this.syncDirectory(this.grantsDir);
       }
-      notifyCommitted(mutationHooks.onCommitted);
+      notifySupportPassportCommitted(mutationHooks.onCommitted);
       return revoked;
     });
   }

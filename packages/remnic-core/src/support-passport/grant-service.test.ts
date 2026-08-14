@@ -687,6 +687,7 @@ test("grant creation revokes its committed link when the owner lock is lost afte
     const card = await createActiveCard(subject);
     const create = subject.grantStore.create.bind(subject.grantStore);
     let committedGrantId = "";
+    let commitNotifications = 0;
     subject.grantStore.create = async (...args) => {
       const created = await create(...args);
       committedGrantId = created.state.grantId;
@@ -699,17 +700,51 @@ test("grant creation revokes its committed link when the owner lock is lost afte
     };
 
     await assert.rejects(
-      subject.grantService.createGrant({
-        principal: "owner:alice",
-        cards: [{ cardId: card.cardId, revision: card.revision }],
-        expiresAt: expiryAfter(subject, 3_600_000),
-      }),
+      subject.grantService.createGrant(
+        {
+          principal: "owner:alice",
+          cards: [{ cardId: card.cardId, revision: card.revision }],
+          expiresAt: expiryAfter(subject, 3_600_000),
+        },
+        {
+          onCommitted: () => {
+            commitNotifications += 1;
+          },
+        }
+      ),
       (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
     );
     assert.ok(committedGrantId);
     const [stored] = await subject.grantStore.listForOwner("alice", "owner:alice");
     assert.equal(stored?.grantId, committedGrantId);
     assert.ok(stored?.revokedAt);
+    assert.equal(commitNotifications, 0);
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("grant creation reports one commit after its final owner check", async () => {
+  const subject = await makeSubject();
+  try {
+    const card = await createActiveCard(subject);
+    let commitNotifications = 0;
+
+    const created = await subject.grantService.createGrant(
+      {
+        principal: "owner:alice",
+        cards: [{ cardId: card.cardId, revision: card.revision }],
+        expiresAt: expiryAfter(subject, 3_600_000),
+      },
+      {
+        onCommitted: () => {
+          commitNotifications += 1;
+        },
+      }
+    );
+
+    assert.equal(created.grant.status, "active");
+    assert.equal(commitNotifications, 1);
   } finally {
     await subject.cleanup();
   }
@@ -1283,10 +1318,7 @@ test("grant creation rechecks its mutation lock after the commit callback", asyn
       (error: unknown) => error instanceof SupportPassportError && error.code === "storage_conflict"
     );
     assert.equal(refreshes, 2);
-    assert.deepEqual(
-      await readdir(path.join(root, "state", "support-passport", "grants")),
-      ["owners"]
-    );
+    assert.deepEqual(await readdir(path.join(root, "state", "support-passport", "grants")), ["owners"]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

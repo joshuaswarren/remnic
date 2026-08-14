@@ -21,7 +21,7 @@ import {
   type SupportPassportRevokeGrantInput,
   SupportPassportRevokeGrantInputSchema,
 } from "./grant-contracts.js";
-import type { SupportPassportGrantStore } from "./grant-store.js";
+import { notifySupportPassportCommitted, type SupportPassportGrantStore } from "./grant-store.js";
 import { requireSupportPassportOwnerLock, withSupportPassportOwnerLock } from "./owner-lock.js";
 
 export interface SupportPassportGrantServiceDependencies {
@@ -71,54 +71,53 @@ export class SupportPassportGrantService {
       owner.storage,
       { namespace: owner.namespace, principal: owner.principal },
       async (ownerLock) => {
-      options.signal?.throwIfAborted();
-      const cardsById = new Map(
-        (await this.readStoredCards(owner.storage)).map((card) => [card.card.cardId, card]),
-      );
-      for (const cardRef of parsed.data.cards) {
-        const stored = cardsById.get(cardRef.cardId);
-        if (
-          !stored ||
-          stored.namespace !== owner.namespace ||
-          stored.owner !== computeSupportPassportOwnerKey(owner.principal) ||
-          stored.card.status !== "active"
-        ) {
-          throw new SupportPassportError("invalid_card_status", "Only approved support cards can be shared.", 409);
+        options.signal?.throwIfAborted();
+        const cardsById = new Map((await this.readStoredCards(owner.storage)).map((card) => [card.card.cardId, card]));
+        for (const cardRef of parsed.data.cards) {
+          const stored = cardsById.get(cardRef.cardId);
+          if (
+            !stored ||
+            stored.namespace !== owner.namespace ||
+            stored.owner !== computeSupportPassportOwnerKey(owner.principal) ||
+            stored.card.status !== "active"
+          ) {
+            throw new SupportPassportError("invalid_card_status", "Only approved support cards can be shared.", 409);
+          }
+          if (stored.card.revision !== cardRef.revision) {
+            throw new SupportPassportError("revision_conflict", "A support card changed after it was selected.", 409);
+          }
+          if (!this.publicCard(stored.card).success) {
+            throw new SupportPassportError("card_data_invalid", "The support card data is invalid.", 500);
+          }
         }
-        if (stored.card.revision !== cardRef.revision) {
-          throw new SupportPassportError("revision_conflict", "A support card changed after it was selected.", 409);
+        const created = await this.grantStore.create(
+          {
+            namespace: owner.namespace,
+            principal: owner.principal,
+            cards: parsed.data.cards,
+            expiresAt: parsed.data.expiresAt,
+            requestedAt,
+          },
+          {
+            beforeCommit: async () => await requireSupportPassportOwnerLock(ownerLock),
+          }
+        );
+        try {
+          await requireSupportPassportOwnerLock(ownerLock);
+        } catch (error) {
+          await this.revokeCommittedGrant(created, owner);
+          throw error;
         }
-        if (!this.publicCard(stored.card).success) {
-          throw new SupportPassportError("card_data_invalid", "The support card data is invalid.", 500);
+        if (options.signal?.aborted) {
+          await this.revokeCommittedGrant(created, owner);
+          options.signal.throwIfAborted();
         }
-      }
-      const created = await this.grantStore.create(
-        {
-          namespace: owner.namespace,
-          principal: owner.principal,
-          cards: parsed.data.cards,
-          expiresAt: parsed.data.expiresAt,
-          requestedAt,
-        },
-        {
-          beforeCommit: async () => await requireSupportPassportOwnerLock(ownerLock),
-          ...(options.onCommitted ? { onCommitted: options.onCommitted } : {}),
-        }
-      );
-      try {
-        await requireSupportPassportOwnerLock(ownerLock);
-      } catch (error) {
-        await this.revokeCommittedGrant(created, owner);
-        throw error;
-      }
-      if (options.signal?.aborted) {
-        await this.revokeCommittedGrant(created, owner);
-        options.signal.throwIfAborted();
-      }
-      return SupportPassportCreatedGrantSchema.parse({
-        grant: this.ownerGrant(created.state),
-        secret: created.secret,
-      });
+        const output = SupportPassportCreatedGrantSchema.parse({
+          grant: this.ownerGrant(created.state),
+          secret: created.secret,
+        });
+        notifySupportPassportCommitted(options.onCommitted);
+        return output;
       }
     );
   }
@@ -143,24 +142,24 @@ export class SupportPassportGrantService {
       owner.storage,
       { namespace: owner.namespace, principal: owner.principal },
       async (ownerLock) => {
-      options.signal?.throwIfAborted();
-      const state = await this.grantStore.revoke(
-        {
-          grantId: parsed.data.grantId,
-          namespace: owner.namespace,
-          principal: owner.principal,
-          expectedStateVersion: parsed.data.expectedStateVersion,
-        },
-        {
-          beforeCommit: async () => {
-            options.signal?.throwIfAborted();
-            await requireSupportPassportOwnerLock(ownerLock);
+        options.signal?.throwIfAborted();
+        const state = await this.grantStore.revoke(
+          {
+            grantId: parsed.data.grantId,
+            namespace: owner.namespace,
+            principal: owner.principal,
+            expectedStateVersion: parsed.data.expectedStateVersion,
           },
-          ...(options.onCommitted ? { onCommitted: options.onCommitted } : {}),
-        }
-      );
-      await requireSupportPassportOwnerLock(ownerLock);
-      return this.ownerGrant(state);
+          {
+            beforeCommit: async () => {
+              options.signal?.throwIfAborted();
+              await requireSupportPassportOwnerLock(ownerLock);
+            },
+            ...(options.onCommitted ? { onCommitted: options.onCommitted } : {}),
+          }
+        );
+        await requireSupportPassportOwnerLock(ownerLock);
+        return this.ownerGrant(state);
       }
     );
   }
@@ -186,56 +185,55 @@ export class SupportPassportGrantService {
       storage,
       { namespace: initialState.namespace, ownerKey: initialState.ownerLockKey },
       async (ownerLock) => {
-      return await this.grantStore.withAuthenticatedGrant(
-        input.grantId,
-        input.secret,
-        async (finalState) => {
-          if (finalState.namespace !== initialState.namespace) {
-            throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
-          }
-          await requireSupportPassportOwnerLock(ownerLock);
-          const currentSnapshot =
-            initialSnapshot.version === this.cardSnapshotVersion(storage) &&
-            this.cardSnapshotIsFresh(initialSnapshot)
-              ? initialSnapshot
-              : await this.readStoredCardSnapshot(storage);
-          const currentCards = this.readGrantCards(currentSnapshot, finalState);
-          await requireSupportPassportOwnerLock(ownerLock);
-          if (JSON.stringify(currentCards) !== JSON.stringify(cards)) {
-            throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
-          }
-          return SupportPassportPublicGuideSchema.parse({
-            schemaVersion: 1,
-            grantId: finalState.grantId,
-            expiresAt: finalState.expiresAt,
-            updatedAt,
-            cards,
-          });
-        },
-        async () => await requireSupportPassportOwnerLock(ownerLock)
-      );
+        return await this.grantStore.withAuthenticatedGrant(
+          input.grantId,
+          input.secret,
+          async (finalState) => {
+            if (finalState.namespace !== initialState.namespace) {
+              throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
+            }
+            await requireSupportPassportOwnerLock(ownerLock);
+            const currentSnapshot =
+              initialSnapshot.version === this.cardSnapshotVersion(storage) && this.cardSnapshotIsFresh(initialSnapshot)
+                ? initialSnapshot
+                : await this.readStoredCardSnapshot(storage);
+            const currentCards = this.readGrantCards(currentSnapshot, finalState);
+            await requireSupportPassportOwnerLock(ownerLock);
+            if (JSON.stringify(currentCards) !== JSON.stringify(cards)) {
+              throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
+            }
+            return SupportPassportPublicGuideSchema.parse({
+              schemaVersion: 1,
+              grantId: finalState.grantId,
+              expiresAt: finalState.expiresAt,
+              updatedAt,
+              cards,
+            });
+          },
+          async () => await requireSupportPassportOwnerLock(ownerLock)
+        );
       }
     );
   }
 
   private readGrantCards(snapshot: SupportPassportCardSnapshot, state: SupportPassportGrantState) {
     return state.cards.map((cardRef) => {
-        const stored = snapshot.cardsById.get(cardRef.cardId);
-        if (
-          !stored ||
-          stored.namespace !== state.namespace ||
-          stored.owner !== state.principalHash ||
-          stored.card.status !== "active" ||
-          stored.card.revision !== cardRef.revision
-        ) {
-          throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
-        }
-        const publicCard = this.publicCard(stored.card);
-        if (!publicCard.success) {
-          throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
-        }
-        return publicCard.data;
-      });
+      const stored = snapshot.cardsById.get(cardRef.cardId);
+      if (
+        !stored ||
+        stored.namespace !== state.namespace ||
+        stored.owner !== state.principalHash ||
+        stored.card.status !== "active" ||
+        stored.card.revision !== cardRef.revision
+      ) {
+        throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
+      }
+      const publicCard = this.publicCard(stored.card);
+      if (!publicCard.success) {
+        throw new SupportPassportError("grant_stale", "The shared support guide has changed.", 410);
+      }
+      return publicCard.data;
+    });
   }
 
   private async readStoredCardSnapshot(storage: StorageManager): Promise<SupportPassportCardSnapshot> {
@@ -256,11 +254,7 @@ export class SupportPassportGrantService {
       this.cardSnapshots.set(storage, snapshot);
       return snapshot;
     }
-    throw new SupportPassportError(
-      "storage_conflict",
-      "The support card list changed during review.",
-      409,
-    );
+    throw new SupportPassportError("storage_conflict", "The support card list changed during review.", 409);
   }
 
   private async readStoredCards(storage: StorageManager): Promise<StoredSupportPassportCard[]> {
