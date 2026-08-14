@@ -83,6 +83,7 @@ export class ConversationIndexCoordinator {
     const lines: string[] = ["## Semantic Recall (Past Conversations)", ""];
     let used = 0;
     for (const r of results) {
+      if (!r?.snippet) continue;
       const body = renderAuthorityBoundContent(
         r.snippet.trim(),
         undefined,

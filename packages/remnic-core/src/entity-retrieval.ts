@@ -618,8 +618,7 @@ async function buildEntityMentionIndex(
   for (const memory of memories) {
     scanned += 1;
     await yieldEntityRecallScanEvery(scanned, abortSignal);
-    const ref = memory.frontmatter.entityRef;
-    const entry = typeof ref === "string" && ref ? entities.get(ref) : undefined;
+    const entry = typeof memory.frontmatter.entityRef === "string" ? entities.get(memory.frontmatter.entityRef) : undefined;
     if (!entry) continue;
     const snippet = await readMemorySnippet(memory);
     if (entry.memorySnippets.includes(snippet)) continue;
@@ -967,9 +966,10 @@ function formatEntityHintSection(
 ): string | null {
   if (candidates.length === 0) return null;
   const lines: string[] = ["## entity_answer_hints", ""];
-  const renderSnippet = (snippet: EntityHintSnippet): string => snippet.kind === "memory"
-    ? renderAuthorityBoundContent(snippet.text, snippet.origin, { enabled: originAuthorityEnabled, untrustedOrigins })
-    : snippet.text;
+  // #1955 review: fact/section snippets lack per-field origin → unknown (least privilege); plumbing is follow-up.
+  const renderSnippet = (snippet: EntityHintSnippet): string =>
+    snippet.kind === "memory" || snippet.kind === "fact" || snippet.kind === "section"
+      ? renderAuthorityBoundContent(snippet.text, snippet.origin, { enabled: originAuthorityEnabled, untrustedOrigins }) : snippet.text;
   for (const { candidate, snippets, uncertainty } of candidates) {
     const hasSummary = Boolean(candidate.entry.summary?.trim());
     const preferredTopSnippets = hasSummary
