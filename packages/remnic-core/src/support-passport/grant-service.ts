@@ -195,7 +195,8 @@ export class SupportPassportGrantService {
           }
           await requireSupportPassportOwnerLock(ownerLock);
           const currentSnapshot =
-            initialSnapshot.version === this.cardSnapshotVersion(storage)
+            initialSnapshot.version === this.cardSnapshotVersion(storage) &&
+            this.cardSnapshotIsFresh(initialSnapshot)
               ? initialSnapshot
               : await this.readStoredCardSnapshot(storage);
           const currentCards = this.readGrantCards(currentSnapshot, finalState);
@@ -241,13 +242,7 @@ export class SupportPassportGrantService {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const before = this.cardSnapshotVersion(storage);
       const cached = this.cardSnapshots.get(storage);
-      const nowMs = this.now().getTime();
-      const cacheIsFresh =
-        cached !== undefined &&
-        Number.isFinite(nowMs) &&
-        nowMs >= cached.validatedAtMs &&
-        nowMs - cached.validatedAtMs <= MAX_CARD_SNAPSHOT_AGE_MS;
-      if (cached?.version === before && cacheIsFresh) return cached;
+      if (cached?.version === before && this.cardSnapshotIsFresh(cached)) return cached;
       const cards = (await storage.readAllMemories())
         .map((memory) => projectSupportPassportCard(memory))
         .filter((card): card is StoredSupportPassportCard => card !== null);
@@ -276,6 +271,15 @@ export class SupportPassportGrantService {
 
   private cardSnapshotVersion(storage: StorageManager): string {
     return `${storage.getCorpusScanVersion()}:${storage.hotCacheKeyId()}`;
+  }
+
+  private cardSnapshotIsFresh(snapshot: SupportPassportCardSnapshot): boolean {
+    const nowMs = this.now().getTime();
+    return (
+      Number.isFinite(nowMs) &&
+      nowMs >= snapshot.validatedAtMs &&
+      nowMs - snapshot.validatedAtMs <= MAX_CARD_SNAPSHOT_AGE_MS
+    );
   }
 
   private async revokeCommittedGrant(

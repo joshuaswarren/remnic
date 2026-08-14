@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import type { StorageManager } from "../index.js";
 import type { MemoryFile } from "../types.js";
-import { computeSupportPassportOwnerKey } from "./card-projection.js";
+import { computeSupportPassportOwnerKey, projectSupportPassportCard } from "./card-projection.js";
+import { SupportPassportError } from "./errors.js";
+import type { SupportPassportGrantState } from "./grant-contracts.js";
 import { SupportPassportGrantService } from "./grant-service.js";
 import type { SupportPassportGrantStore } from "./grant-store.js";
 
@@ -63,4 +67,61 @@ test("card snapshots expire when a direct file edit bypasses corpus version coun
   nowMs += 1_001;
 
   assert.equal((await inspected.readStoredCardSnapshot(storage, "alice", ownerKey)).cardsById.size, 0);
+});
+
+test("guide assembly rechecks snapshot age after owner-lock delay", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-grant-cache-"));
+  try {
+    await mkdir(path.join(root, "state"), { recursive: true });
+    let nowMs = Date.parse("2026-08-11T12:00:00.000Z");
+    let memories = [supportCardMemory()];
+    const projected = projectSupportPassportCard(memories[0]);
+    assert.ok(projected);
+    const state: SupportPassportGrantState = {
+      schemaVersion: 1,
+      stateVersion: 1,
+      grantId: "00000000-0000-4000-8000-000000000001",
+      namespace: "alice",
+      principalHash: computeSupportPassportOwnerKey("owner:alice"),
+      ownerLockKey: "a".repeat(64),
+      secretHash: "b".repeat(64),
+      cards: [{ cardId: projected.card.cardId, revision: projected.card.revision }],
+      createdAt: "2026-08-11T12:00:00.000Z",
+      expiresAt: "2026-08-11T13:00:00.000Z",
+    };
+    const storage = {
+      dir: root,
+      getCorpusScanVersion: () => 1,
+      hotCacheKeyId: () => "stable",
+      readAllMemories: async () => memories,
+    } as unknown as StorageManager;
+    const grantStore = {
+      authenticate: async () => state,
+      withAuthenticatedGrant: async <T>(
+        _grantId: string,
+        _secret: string,
+        task: (current: SupportPassportGrantState) => Promise<T>,
+        beforeReturn?: (current: SupportPassportGrantState) => Promise<void>,
+      ): Promise<T> => {
+        nowMs += 1_001;
+        memories = [];
+        const result = await task(state);
+        await beforeReturn?.(state);
+        return result;
+      },
+    } as unknown as SupportPassportGrantStore;
+    const service = new SupportPassportGrantService({
+      grantStore,
+      resolveOwner: async (principal) => ({ principal, namespace: "alice", storage }),
+      resolveNamespace: async () => storage,
+      now: () => new Date(nowMs),
+    });
+
+    await assert.rejects(
+      service.readGrant({ grantId: state.grantId, secret: "secret" }),
+      (error: unknown) => error instanceof SupportPassportError && error.code === "grant_stale",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
