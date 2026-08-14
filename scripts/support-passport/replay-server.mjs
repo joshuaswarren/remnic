@@ -30,7 +30,7 @@ const stageHtml = `<!doctype html>
       [hidden] { display: none; }
       .demo-data {
         position: absolute;
-        z-index: 4;
+        z-index: 12;
         top: 0;
         left: 0;
         right: 0;
@@ -158,7 +158,7 @@ const stageHtml = `<!doctype html>
   <body>
     <iframe id="ownerFrame" title="What Helps Me owner replay" src="/remnic/ui/what-helps-me/?mode=replay"></iframe>
     <iframe id="helperFrame" title="What Helps Me helper replay" src="about:blank" hidden></iframe>
-    <div class="demo-data" id="demoData" hidden>Demo data <span>no private information</span> provider neutral</div>
+    <div class="demo-data" id="demoData">Demo data <span>no private information</span> provider neutral</div>
     <aside class="lower-third" id="lowerThird" hidden>
       <p class="kicker" id="lowerKicker"></p>
       <p class="headline" id="lowerHeadline"></p>
