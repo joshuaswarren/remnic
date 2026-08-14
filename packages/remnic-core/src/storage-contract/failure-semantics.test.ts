@@ -99,7 +99,7 @@ test("failure-semantics: selected memory snapshots block member writes until eve
     const snapshotPromise = storage.readMemorySnapshotsIfUnchanged([firstSnapshot, secondSnapshot]);
     await secondReadStarted.promise;
     let writeSettled = false;
-    const writePromise = storage.updateMemoryIfUnchanged(firstSnapshot, "Changed source").finally(() => {
+    const writePromise = storage.updateMemory(first.id, "Changed source").finally(() => {
       writeSettled = true;
     });
     await new Promise<void>((resolve) => setImmediate(resolve));
