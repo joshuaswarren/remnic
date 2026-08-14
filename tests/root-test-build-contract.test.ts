@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import test from "node:test";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import test from "node:test";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -25,6 +25,35 @@ test("root test script builds core before running package tests", () => {
     /(?:^|&&|\|\||;)\s*[A-Za-z_][A-Za-z0-9_]*=/,
     "root package scripts should not use POSIX-only inline environment assignment",
   );
+});
+
+test("root build creates the OpenClaw adapter before bundling its public route", () => {
+  const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as {
+    scripts?: Record<string, string>;
+  };
+
+  const buildScript = pkg.scripts?.build ?? "";
+  assert.match(
+    buildScript,
+    /^pnpm --filter @remnic\/core build && pnpm --filter @remnic\/plugin-openclaw build && /,
+  );
+});
+
+test("root development builds and watches the OpenClaw adapter with its public route", () => {
+  const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as {
+    scripts?: Record<string, string>;
+  };
+  const adapterPkg = JSON.parse(
+    readFileSync(join(repoRoot, "packages", "plugin-openclaw", "package.json"), "utf8"),
+  ) as { scripts?: Record<string, string> };
+
+  const devScript = pkg.scripts?.dev ?? "";
+  assert.equal(
+    devScript,
+    "pnpm --filter @remnic/plugin-openclaw build && pnpm --parallel --filter remnic-workspace --filter @remnic/plugin-openclaw run dev:watch",
+  );
+  assert.equal(pkg.scripts?.["dev:watch"], "tsup --watch");
+  assert.equal(adapterPkg.scripts?.["dev:watch"], "tsup --config tsup.config.ts --watch");
 });
 
 test("root test runner applies remnic source conditions and test globs portably", () => {

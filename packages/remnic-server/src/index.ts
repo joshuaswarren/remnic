@@ -25,6 +25,7 @@ import {
   runStartupSearchWarmup,
   type StartupReadinessState,
 } from "./startup-readiness.js";
+import { createSupportPassportServerRuntime } from "./support-passport-runtime.js";
 export { envOverrides };
 export {
   completeStartupReadiness,
@@ -819,7 +820,6 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
 
   // Start the HTTP server immediately so health checks, MCP handshakes,
   // and liveness probes can connect while deferred init is still running.
-  const service = new EngramAccessService(orchestrator);
   const readiness: StartupReadinessState = { ready: false, warmupAttempts: 0, lastError: null, degraded: false };
 
   const authToken = parsedServerConfig.authToken ?? readCompatEnv("REMNIC_AUTH_TOKEN", "ENGRAM_AUTH_TOKEN") ?? "";
@@ -833,8 +833,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
   // Parsed strictly — invalid values abort startup with a precise message.
   const oauthConfig = applyOAuthEnvOverrides((serverConfig as { oauth?: unknown }).oauth);
   const oauthRequestHandler = buildOAuthRequestHandler(oauthConfig);
-
-
+  const supportPassportRuntime = createSupportPassportServerRuntime(orchestrator, config, oauthRequestHandler), { service } = supportPassportRuntime;
   const httpServer = new EngramAccessHttpServer({
     service,
     host: parsedServerConfig.host,
@@ -863,9 +862,9 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
     citationsEnabled: config.citationsEnabled,
     citationsAutoDetect: config.citationsAutoDetect,
     emitLegacyTools: config.emitLegacyTools,
+    externalRequestHandler: supportPassportRuntime.externalRequestHandler,
     ...(oauthConfig.enabled
       ? {
-          externalRequestHandler: oauthRequestHandler,
           resourceMetadataUrl: new URL(
             "/.well-known/oauth-protected-resource/mcp",
             oauthConfig.issuerUrl,
@@ -941,6 +940,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
     stopPromise = (async () => {
       startupSyncAbort.abort();
       readinessAbort.abort();
+      supportPassportRuntime.close();
       orchestrator.abortDeferredInit();
       try {
         await originalStop();

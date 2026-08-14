@@ -58,6 +58,24 @@ interface RecordingApi {
   on: (hook: string, handler: HookHandler, opts?: { timeoutMs?: number }) => void;
 }
 
+test("delegate mode registers the support passport gateway worker as a host service", () => {
+  const api = recordingApi() as RecordingApi & {
+    services: Array<{ id: string }>;
+    registerService(service: { id: string }): void;
+  };
+  api.services = [];
+  api.registerService = (service) => api.services.push(service);
+  registerDelegateRuntime(
+    api,
+    optionsFor(1, {
+      supportPassportModelRoute: { kind: "gateway", invoke: async () => null },
+    }),
+  );
+  assert.deepEqual(api.services.map((service) => service.id), [
+    "openclaw-remnic:support-passport-model",
+  ]);
+});
+
 function recordingApi(): RecordingApi {
   const handlers = new Map<string, HookHandler[]>();
   const hookOpts = new Map<string, unknown>();
@@ -1699,10 +1717,21 @@ test("delegate preserves legacy bindings while the legacy adapter is active", as
     await stub.close();
   }
 });
-test("delegate passive mode registers no hooks", async () => {
-  const api = recordingApi();
-  registerDelegateRuntime(api, optionsFor(1, { passive: true }));
+test("delegate passive mode skips memory hooks but keeps the passport model worker", async () => {
+  const api = recordingApi() as RecordingApi & {
+    services: Array<{ id: string }>;
+    registerService(service: { id: string }): void;
+  };
+  api.services = [];
+  api.registerService = (service) => api.services.push(service);
+  registerDelegateRuntime(api, optionsFor(1, {
+    passive: true,
+    supportPassportModelRoute: { kind: "gateway", invoke: async () => null },
+  }));
   assert.equal(api.handlers.size, 0, "passive slot mode must not register hooks");
+  assert.deepEqual(api.services.map((service) => service.id), [
+    "openclaw-remnic:support-passport-model",
+  ]);
 });
 
 test("delegate honors allowPromptInjection=false but keeps observe/flush", async () => {
@@ -2374,11 +2403,16 @@ test("maybeRegister: invalid bridgeMode logs and falls back to embedded (no thro
   }
 });
 
-test("maybeRegister: passive registration does not poison a later active one", () => {
+test("maybeRegister: passive registration does not poison active hooks or duplicate its passport service", () => {
   const priorEnv = process.env.REMNIC_BRIDGE_MODE;
   process.env.REMNIC_BRIDGE_MODE = "delegate";
   try {
-    const api = recordingApi();
+    const api = recordingApi() as RecordingApi & {
+      services: Array<{ id: string }>;
+      registerService(service: { id: string }): void;
+    };
+    api.services = [];
+    api.registerService = (service) => api.services.push(service);
     const opts = {
       serviceId: "openclaw-remnic",
       configBridgeMode: "delegate",
@@ -2394,13 +2428,18 @@ test("maybeRegister: passive registration does not poison a later active one", (
       shouldSkipRecall: () => false,
       flushOnResetEnabled: true,
       capability: TEST_CAPABILITY,
+      supportPassportModelRoute: { kind: "gateway" as const, invoke: async () => null },
     };
     const healthDeps = { checkHealth: () => true };
     assert.equal(maybeRegisterDelegateRuntime(api, opts, healthDeps), true, "passive handled");
     assert.equal(api.handlers.size, 0, "passive binds no hooks");
+    assert.deepEqual(api.services.map((service) => service.id), [
+      "openclaw-remnic:support-passport-model",
+    ]);
     const active = maybeRegisterDelegateRuntime(api, { ...opts, passive: false }, healthDeps);
     assert.equal(active, true, "later active registration is not deduped away");
     assert.ok((api.handlers.get("agent_end")?.length ?? 0) >= 1, "active registration binds hooks");
+    assert.equal(api.services.length, 1, "the passport model service stays registered once");
   } finally {
     if (priorEnv === undefined) Reflect.deleteProperty(process.env, "REMNIC_BRIDGE_MODE");
     else process.env.REMNIC_BRIDGE_MODE = priorEnv;

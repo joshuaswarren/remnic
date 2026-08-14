@@ -68,6 +68,7 @@ import { isValidResolutionVerb, executeResolution } from "./contradiction/resolu
 import { RelayMissionStoreError } from "./relay/mission.js";
 import { SupportPassportAccessHttpBase } from "./support-passport/access-http-base.js";
 import { serializeInlineScriptValue } from "./inline-script.js";
+import type { SupportPassportExternalRequestHandler } from "./support-passport/public-http.js";
 export interface AccessHttpReadinessState {
   ready: boolean;
   warmupAttempts: number;
@@ -151,11 +152,7 @@ export interface EngramAccessHttpServerOptions {
    * operator-only endpoints without owning token validation.
    * Errors thrown by the handler flow into the existing error handling.
    */
-  externalRequestHandler?: (
-    req: IncomingMessage,
-    res: ServerResponse,
-    ctx: { authorized: boolean },
-  ) => Promise<boolean>;
+  externalRequestHandler?: SupportPassportExternalRequestHandler;
 }
 
 export interface EngramAccessHttpServerStatus {
@@ -408,11 +405,7 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
   private readonly adapterRegistry: AdapterRegistry | null;
   private readonly readiness: () => AccessHttpReadinessState;
   private readonly resourceMetadataUrl?: string;
-  private readonly externalRequestHandler?: (
-    req: IncomingMessage,
-    res: ServerResponse,
-    ctx: { authorized: boolean },
-  ) => Promise<boolean>;
+  private readonly externalRequestHandler?: SupportPassportExternalRequestHandler;
   private readonly writeLimiter: WriteRateLimiter;
   private readonly mcpServer: EngramMcpServer;
   private server: Server | null = null;
@@ -850,9 +843,13 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
       // Operator-only endpoints (OAuth pending/approve/deny) must only pass
       // for unrestricted tokens — a scoped (least-privileged) token must NOT
       // reach operator surfaces (issue #1837).
-      const authorized = this.isAuthorized(req, pathname) &&
-        !isCapabilityRestricted(this.resolveTokenCapabilities(req, pathname));
-      if (await this.externalRequestHandler(req, res, { authorized })) return;
+      const tokenAuthorized = this.isAuthorized(req, pathname);
+      const capabilities = this.resolveTokenCapabilities(req, pathname);
+      const authorized = tokenAuthorized && !isCapabilityRestricted(capabilities);
+      if (await this.externalRequestHandler(req, res, {
+        authorized,
+        tokenAuthorized,
+      })) return;
     }
 
     if (!this.isAuthorized(req, pathname)) {

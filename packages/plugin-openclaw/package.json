@@ -12,6 +12,11 @@
       "types": "./dist/managed-upgrade.d.ts",
       "remnic-source": "./src/managed-upgrade.ts",
       "import": "./dist/managed-upgrade.js"
+    },
+    "./support-passport-model-route": {
+      "types": "./dist/support-passport-model-route.d.ts",
+      "remnic-source": "./src/support-passport-model-route.ts",
+      "import": "./dist/support-passport-model-route.js"
     }
   },
   "files": [
@@ -76,6 +81,7 @@
   },
   "scripts": {
     "build": "tsup --config tsup.config.ts",
+    "dev:watch": "tsup --config tsup.config.ts --watch",
     "check-types": "tsc -p tsconfig.check.json",
     "plugin:inspect": "plugin-inspector check --config plugin-inspector.config.json --no-openclaw",
     "plugin:inspect:runtime": "pnpm run build && PLUGIN_INSPECTOR_EXECUTE_ISOLATED=1 plugin-inspector check --config plugin-inspector.config.json --no-openclaw --runtime --mock-sdk",

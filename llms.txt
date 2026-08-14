@@ -273,6 +273,10 @@ Recalculate the floor from the current date before changing package metadata;
 only raise it when an upstream breaking change makes an older host impossible
 to support.
 
+The August 14, 2026 Support Passport sweep starts at June 15, 2026. The
+existing `>=2026.4.1` installer floor remains more permissive and stays in
+place.
+
 `openclaw.compat.pluginApi` and `openclaw.install.minHostVersion` use one
 `>=2026.4.1` comparator, never a `||` list: OpenClaw's installer splits the
 range on whitespace and AND-evaluates every token (a `||` fails entirely) and

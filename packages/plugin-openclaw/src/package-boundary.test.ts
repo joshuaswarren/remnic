@@ -45,10 +45,16 @@ test("OpenClaw plugin source manifest keeps @remnic/core workspace-linked", asyn
   const manifest = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8")) as {
     dependencies?: Record<string, string>;
     devDependencies?: Record<string, string>;
+    exports?: Record<string, unknown>;
   };
 
   assert.equal(manifest.dependencies?.["@remnic/core"], "workspace:^");
   assert.equal(manifest.devDependencies?.["@remnic/core"], "workspace:^");
+  assert.deepEqual(manifest.exports?.["./support-passport-model-route"], {
+    types: "./dist/support-passport-model-route.d.ts",
+    "remnic-source": "./src/support-passport-model-route.ts",
+    import: "./dist/support-passport-model-route.js",
+  });
 });
 
 test("OpenClaw plugin declares runtime schema dependencies", async () => {

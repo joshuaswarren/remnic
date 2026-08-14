@@ -27,8 +27,36 @@ memory lifecycle.
 
 ## Enable the feature
 
-The feature is off by default. A standalone `remnic-server` install uses this
-configuration:
+The feature is off by default. An OpenClaw install can enable the passport,
+the owner HTTP routes, and gateway model routing together:
+
+```jsonc
+{
+  "plugins": {
+    "entries": {
+      "openclaw-remnic": {
+        "config": {
+          "modelSource": "gateway",
+          "openaiApiKey": false,
+          "supportPassport": { "enabled": true },
+          "agentAccessHttp": {
+            "enabled": true,
+            "host": "127.0.0.1",
+            "port": 4318,
+            "authToken": "${OPENCLAW_REMNIC_ACCESS_TOKEN}",
+            "principal": "passport-owner"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Set `OPENCLAW_REMNIC_ACCESS_TOKEN` to a private bearer token before OpenClaw
+starts. You can use an OpenClaw SecretRef for `authToken` instead.
+
+A standalone `remnic-server` install uses this configuration:
 
 ```jsonc
 {
@@ -55,14 +83,25 @@ that other Remnic tasks use.
 
 | Route | Remnic configuration | What happens |
 |---|---|---|
+| OpenClaw gateway | `modelSource: "gateway"` | `FallbackLlmClient` uses the configured gateway agent or task model chain. |
 | Local model | `modelSource: "plugin"`, `openaiApiKey: false`, and `localLlmEnabled: true` | `LocalLlmClient` uses the configured OpenAI-compatible local endpoint. |
 | Direct OpenAI | `modelSource: "plugin"` and `openaiApiKey` | The existing fallback client uses the official Responses transport. |
 | Compatible remote endpoint | `modelSource: "plugin"`, `openaiBaseUrl`, and `openaiApiKey` | The existing compatible transport uses that endpoint. |
 
 Plugin mode tries the configured local route first. When `localLlmFallback`
-permits fallback, it can continue through configured direct routes. A platform
-adapter can also supply its host-native gateway route. Core does not import a
-host SDK or create another API client.
+permits fallback, it can continue through configured direct and gateway routes.
+Gateway mode uses only the OpenClaw gateway chain.
+
+OpenClaw delegate mode keeps the same gateway route. The standalone daemon
+queues an authenticated, in-memory model job. The OpenClaw plugin runs that
+job through its existing gateway client and returns the result. The bridge
+does not store prompts or add a provider client. It accepts only an
+unrestricted daemon bearer token.
+
+The OpenClaw example above keeps the current `agents` and `models.providers`
+configuration unchanged. The adapter supplies its gateway configuration and
+native provider auth resolvers to Remnic. What Helps Me does not create another
+API client.
 
 Manual cards, approval, sharing, and revocation need no model. Draft and
 question requests return `503 provider_unavailable` when no route can run.

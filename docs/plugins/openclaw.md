@@ -95,7 +95,7 @@ plugin id.
 ## Compatibility Policy
 
 Remnic supports OpenClaw releases from at least the previous 60 days. As of
-June 26, 2026, that window starts on April 27, 2026. `openclaw.compat.pluginApi`
+August 14, 2026, that window starts on June 15, 2026. `openclaw.compat.pluginApi`
 and `openclaw.install.minHostVersion` use the single `>=2026.4.1` comparator the
 OpenClaw installer expects — never a `||` list. OpenClaw's installer
 (`clawhub.ts`) splits the range on whitespace and AND-evaluates every token (so
@@ -109,6 +109,10 @@ intentionally decoupled by resolver (issue #1450). The adapter records
 through `2026.6.10` are admitted by the floor; newly reviewed prereleases
 through `2026.6.11-beta.1` are kept in the reviewed prerelease peer range for
 strict npm peer-dependency resolution.
+
+The Support Passport manifest and gateway route were checked during this
+August 14 sweep. The existing `>=2026.4.1` installer floor remains more
+permissive than the active window, so this change does not raise it.
 
 When OpenClaw adds a new manifest or setup surface, Remnic should add that new
 surface without dropping older metadata that still helps hosts inside the

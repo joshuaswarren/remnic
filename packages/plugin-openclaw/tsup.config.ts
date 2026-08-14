@@ -1,8 +1,13 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  entry: ["src/index.ts", "src/managed-upgrade.ts"],
-  dts: { entry: ["src/managed-upgrade.ts"] },
+  entry: ["src/index.ts", "src/managed-upgrade.ts", "src/support-passport-model-route.ts"],
+  dts: {
+    entry: ["src/managed-upgrade.ts", "src/support-passport-model-route.ts"],
+    compilerOptions: {
+      customConditions: ["remnic-source"],
+    },
+  },
   format: ["esm"],
   target: "es2022",
   platform: "node",
@@ -12,6 +17,8 @@ export default defineConfig({
     "openclaw",
     "openai",
     "@remnic/core",
+    "@remnic/plugin-openclaw/support-passport-model-route",
+    "@remnic/server",
     "@node-rs/argon2",
     "@lancedb/lancedb",
     "meilisearch",

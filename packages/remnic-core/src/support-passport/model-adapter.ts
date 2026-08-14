@@ -17,7 +17,10 @@ import {
   SupportPassportDraftOutputSchema,
 } from "./model-contracts.js";
 
-type ModelMessage = { role: "system" | "user" | "assistant"; content: string };
+export type SupportPassportModelMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+};
 export type SupportPassportModelRouteKind = "local" | "direct" | "gateway";
 
 interface SupportPassportJsonSchema {
@@ -41,7 +44,7 @@ export interface SupportPassportModelRoute {
   kind: SupportPassportModelRouteKind;
   timeoutMs?: number;
   invoke(
-    messages: ModelMessage[],
+    messages: SupportPassportModelMessage[],
     options: {
       temperature: number;
       maxTokens: number;
@@ -99,6 +102,80 @@ export interface SupportPassportModelClients {
   localLlm?: LocalLlmClient;
   gatewayRoute?: SupportPassportModelRoute;
   directLlm?: FallbackLlmClient;
+}
+
+function lastUserPayload(messages: SupportPassportModelMessage[]): Record<string, unknown> | undefined {
+  let content: string | undefined;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "user") {
+      content = messages[index]?.content;
+      break;
+    }
+  }
+  if (!content) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(content);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Rebuild the route's synchronous output check after a provider-neutral model
+ * request crosses a process boundary. The check uses the same schemas and
+ * selected IDs as the in-process adapter.
+ */
+export function acceptsSupportPassportModelResponse(
+  operation: string,
+  messages: SupportPassportModelMessage[],
+  content: string
+): boolean {
+  const payload = lastUserPayload(messages);
+  if (!payload) return false;
+  if (operation === "support-passport-draft") {
+    const sourceNotes = payload.sourceNotes;
+    if (!Array.isArray(sourceNotes)) return false;
+    const allowedIds = new Set(
+      sourceNotes.flatMap((note) => {
+        if (!note || typeof note !== "object" || Array.isArray(note)) return [];
+        const memoryId = (note as Record<string, unknown>).memoryId;
+        return typeof memoryId === "string" ? [memoryId] : [];
+      })
+    );
+    for (const candidate of extractJsonCandidates(content)) {
+      try {
+        const parsed = SupportPassportDraftOutputSchema.safeParse(JSON.parse(candidate));
+        if (
+          parsed.success &&
+          parsed.data.cards.every((card) => card.sourceMemoryIds.every((id) => allowedIds.has(id)))
+        ) {
+          return true;
+        }
+      } catch {}
+    }
+    return false;
+  }
+  if (operation === "support-passport-answer") {
+    const cards = payload.cards;
+    if (!Array.isArray(cards)) return false;
+    const allowedIds = new Set(
+      cards.flatMap((card) => {
+        if (!card || typeof card !== "object" || Array.isArray(card)) return [];
+        const cardId = (card as Record<string, unknown>).cardId;
+        return typeof cardId === "string" ? [cardId] : [];
+      })
+    );
+    for (const candidate of extractJsonCandidates(content)) {
+      try {
+        const parsed = SupportPassportAnswerOutputSchema.safeParse(JSON.parse(candidate));
+        if (parsed.success && parsed.data.citedCardIds.every((id) => allowedIds.has(id))) return true;
+      } catch {}
+    }
+  }
+  return false;
 }
 
 const DRAFT_SYSTEM_PROMPT = [
@@ -393,7 +470,7 @@ export class SupportPassportModelAdapter {
   }
 
   private async runStructured<T>(
-    messages: ModelMessage[],
+    messages: SupportPassportModelMessage[],
     schema: { safeParse(value: unknown): { success: true; data: T } | { success: false } },
     validate: (value: T) => boolean,
     options: {
@@ -479,7 +556,7 @@ export class SupportPassportModelAdapter {
 
   private async invokeRoute(
     route: SupportPassportModelRoute,
-    messages: ModelMessage[],
+    messages: SupportPassportModelMessage[],
     options: {
       temperature: number;
       maxTokens: number;

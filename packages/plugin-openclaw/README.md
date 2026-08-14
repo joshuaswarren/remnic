@@ -44,7 +44,7 @@ launchctl kickstart -k gui/501/ai.openclaw.gateway
 ## Compatibility Policy
 
 Remnic supports OpenClaw releases from at least the previous 60 days. As of
-June 26, 2026, that means releases back to April 27, 2026.
+August 14, 2026, that means releases back to June 15, 2026.
 The package metadata keeps the installer compatibility floor at the single
 `>=2026.4.1` shape OpenClaw setup expects because that older floor is still
 more permissive than the active 60-day requirement.
@@ -74,6 +74,10 @@ peer-dependency resolution.
 When adding newer OpenClaw manifest surfaces, keep older-compatible metadata in
 place for hosts inside that 60-day window unless an upstream breaking change is
 documented and unavoidable.
+
+The August 14 sweep covered the Support Passport manifest and gateway route.
+The existing `>=2026.4.1` installer floor remains more permissive than the
+active window, so this change does not raise it.
 
 ## Benchmarking The OpenClaw Chain
 
