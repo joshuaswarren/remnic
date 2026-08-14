@@ -103,3 +103,54 @@ test("generated batch recovery reads only markers referenced by the requested ow
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("a missing marker hides an approved generated card without blocking manual cards", async () => {
+  StorageManager.clearAllStaticCaches();
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-support-passport-missing-batch-"));
+  const storage = new StorageManager(path.join(root, "shared"));
+  await storage.ensureDirectories();
+  const principal = "owner:alice";
+  const service = new SupportPassportCardService({
+    resolveOwner: async () => ({ principal, namespace: "team", storage }),
+  });
+
+  try {
+    const manual = await service.createManualDraft({
+      principal,
+      title: "Manual support",
+      statement: "Give me time to answer.",
+      category: "communication",
+      reviewBy: "2026-09-01T00:00:00.000Z",
+    });
+    const [generated] = await service.createGeneratedDrafts({
+      principal,
+      cards: [
+        {
+          title: "Generated support",
+          statement: "Tell me before plans change.",
+          category: "transitions",
+          sourceMemoryIds: ["source-1"],
+        },
+      ],
+    });
+    assert.ok(generated);
+    await service.approveCard({
+      principal,
+      cardId: generated.cardId,
+      expectedRevision: generated.revision,
+    });
+
+    const memory = await storage.getMemoryById(generated.cardId);
+    const batchId = memory?.frontmatter.structuredAttributes?.["support-passport-generated-batch-id"];
+    assert.equal(typeof batchId, "string");
+    await rm(path.join(storage.dir, "state", "support-passport", "generated-batches", `${batchId}.json`));
+
+    assert.deepEqual(
+      (await service.listCards({ principal })).map((card) => card.cardId),
+      [manual.cardId],
+    );
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(root, { recursive: true, force: true });
+  }
+});

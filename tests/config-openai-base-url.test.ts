@@ -104,6 +104,15 @@ test("openaiBaseUrl rejects a blank configured URL", () => {
   assert.equal(warnings.length, 0);
 });
 
+test("openaiBaseUrl rejects configured non-string values", () => {
+  for (const openaiBaseUrl of [null, 42, false, {}, []]) {
+    assert.throws(
+      () => parseConfig({ openaiApiKey: "sk-test", openaiBaseUrl }),
+      /openaiBaseUrl must be a string/,
+    );
+  }
+});
+
 test("openaiBaseUrl rejects URL components that alter the request destination", () => {
   const { warnings } = withLoggerWarnings();
   for (const openaiBaseUrl of [

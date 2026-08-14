@@ -285,7 +285,19 @@ export async function recoverSupportPassportGeneratedBatches(
   for (const [batchId, cards] of cardsByBatch) {
     const marker = await readBatchMarker(context.storage, batchId);
     if (marker?.complete === true && sameOwner(marker, context)) continue;
-    if (!marker && cards.length > 0 && cards.every((card) => card.card.status === "rejected")) continue;
+    if (!marker) {
+      let recovered = true;
+      for (const card of cards) {
+        if (card.card.status !== "pending_review") continue;
+        try {
+          if (!(await rejectGeneratedDraft(context, card.card.cardId))) recovered = false;
+        } catch {
+          recovered = false;
+        }
+      }
+      if (recovered) continue;
+      throw new SupportPassportError("storage_conflict", "An incomplete generated draft batch could not recover.", 500);
+    }
     if (
       !(await rollbackSupportPassportGeneratedBatch(
         context,
