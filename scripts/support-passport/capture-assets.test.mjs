@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -50,6 +50,34 @@ test("capture assets publish together after every staged file exists", async () 
   }
 });
 
+test("capture asset backups keep every published file in place until atomic replacement", async () => {
+  const { root, outputDir } = await fixture();
+  try {
+    await captureAssets(
+      outputDir,
+      ASSETS,
+      async (stagingDir) => {
+        for (const assetName of ASSETS) await writeFile(path.join(stagingDir, assetName), `new-${assetName}`);
+      },
+      {
+        copyFile: async (source, destination) => {
+          await copyFile(source, destination);
+          assert.match(await readFile(source, "utf8"), /^old-/);
+        },
+        renameFile: async (source, destination) => {
+          assert.match(await readFile(destination, "utf8"), /^old-/);
+          await rename(source, destination);
+        },
+      }
+    );
+    for (const assetName of ASSETS) {
+      assert.equal(await readFile(path.join(outputDir, assetName), "utf8"), `new-${assetName}`);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("capture asset publication rolls back an atomic replacement failure", async () => {
   const { root, outputDir } = await fixture();
   try {
@@ -64,7 +92,7 @@ test("capture asset publication rolls back an atomic replacement failure", async
         {
           renameFile: async (source, destination) => {
             renameCalls += 1;
-            if (renameCalls === 4) throw new Error("publish failed");
+            if (renameCalls === 2) throw new Error("publish failed");
             await rename(source, destination);
           },
         }
@@ -94,7 +122,7 @@ test("capture asset publication preserves recovery files when rollback fails", a
         {
           renameFile: async (source, destination) => {
             renameCalls += 1;
-            if (renameCalls === 4 || renameCalls === 5) throw new Error("rollback failed");
+            if (renameCalls === 2 || renameCalls === 3) throw new Error("rollback failed");
             await rename(source, destination);
           },
         }
@@ -103,7 +131,7 @@ test("capture asset publication preserves recovery files when rollback fails", a
     );
     const recoveryDir = (await readdir(outputDir)).find((name) => name.startsWith(".capture-"));
     assert.ok(recoveryDir);
-    assert.equal(await readFile(path.join(outputDir, recoveryDir, ".previous", ASSETS[1]), "utf8"), `old-${ASSETS[1]}`);
+    assert.equal(await readFile(path.join(outputDir, recoveryDir, ".previous", ASSETS[0]), "utf8"), `old-${ASSETS[0]}`);
     assert.equal(await readFile(path.join(outputDir, recoveryDir, ASSETS[1]), "utf8"), `new-${ASSETS[1]}`);
   } finally {
     await rm(root, { recursive: true, force: true });
