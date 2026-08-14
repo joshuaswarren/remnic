@@ -349,7 +349,6 @@ export class SupportPassportModelBridge {
         respondJson(res, 400, { error: "invalid_request", code: "invalid_request" });
         return true;
       }
-      this.lastConsumerPollAt = Date.now();
       const controller = new AbortController();
       const abort = (): void => controller.abort();
       req.once("aborted", abort);
@@ -361,6 +360,7 @@ export class SupportPassportModelBridge {
         if (job) this.pending.get(job.id)?.requeue();
         return true;
       }
+      this.lastConsumerPollAt = Date.now();
       if (job) respondJson(res, 200, job);
       else respondNoContent(res);
       return true;

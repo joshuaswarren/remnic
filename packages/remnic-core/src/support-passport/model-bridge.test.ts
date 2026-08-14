@@ -224,3 +224,48 @@ test("an unacknowledged leased job becomes available to another worker", async (
     await server.close();
   }
 });
+
+test("an empty long poll keeps the bridge available during worker handoff", async () => {
+  const bridge = new SupportPassportModelBridge();
+  const server = await startBridgeServer(bridge);
+  const controller = new AbortController();
+  try {
+    const emptyPoll = await fetch(`${server.origin}${SUPPORT_PASSPORT_MODEL_JOB_PATH}`, {
+      method: "POST",
+      headers: { authorization: "Bearer owner-token", "content-type": "application/json" },
+      body: JSON.stringify({ timeoutMs: 1_100 }),
+    });
+    assert.equal(emptyPoll.status, 204);
+
+    const resultPromise = bridge.route.invoke(messages, {
+      temperature: 0,
+      maxTokens: 500,
+      timeoutMs: 5_000,
+      signal: controller.signal,
+      operation: "support-passport-draft",
+      jsonSchema: { name: "drafts", schema: { type: "object" } },
+    });
+    const jobResponse = await fetch(`${server.origin}${SUPPORT_PASSPORT_MODEL_JOB_PATH}`, {
+      method: "POST",
+      headers: { authorization: "Bearer owner-token", "content-type": "application/json" },
+      body: JSON.stringify({ timeoutMs: 0 }),
+    });
+    assert.equal(jobResponse.status, 200);
+    const job = (await jobResponse.json()) as { id: string };
+
+    const completion = await fetch(`${server.origin}${SUPPORT_PASSPORT_MODEL_RESULT_PATH}`, {
+      method: "POST",
+      headers: { authorization: "Bearer owner-token", "content-type": "application/json" },
+      body: JSON.stringify({
+        id: job.id,
+        result: { content: "{}", modelUsed: "gateway/local" },
+      }),
+    });
+    assert.equal(completion.status, 204);
+    assert.deepEqual(await resultPromise, { content: "{}", modelUsed: "gateway/local" });
+  } finally {
+    controller.abort();
+    bridge.close();
+    await server.close();
+  }
+});
