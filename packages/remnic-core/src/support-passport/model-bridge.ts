@@ -13,6 +13,8 @@ export const SUPPORT_PASSPORT_MODEL_JOB_PATH = "/engram/v1/support-passport/inte
 export const SUPPORT_PASSPORT_MODEL_ACK_PATH = "/engram/v1/support-passport/internal/model/jobs/ack";
 export const SUPPORT_PASSPORT_MODEL_RESULT_PATH = "/engram/v1/support-passport/internal/model/jobs/result";
 
+const CONSUMER_HANDOFF_GRACE_MS = 1_000;
+
 const ModelMessageSchema = z
   .object({
     role: z.enum(["system", "user", "assistant"]),
@@ -143,6 +145,7 @@ export class SupportPassportModelBridge {
   private readonly available: string[] = [];
   private readonly waiters: PendingWaiter[] = [];
   private readonly claimed = new Set<string>();
+  private lastConsumerPollAt = 0;
   private closed = false;
 
   constructor(options: SupportPassportModelBridgeOptions = {}) {
@@ -175,7 +178,11 @@ export class SupportPassportModelBridge {
     messages: SupportPassportModelMessage[],
     options: Parameters<SupportPassportModelRoute["invoke"]>[1]
   ): Promise<SupportPassportModelRouteResult | null> {
-    if (this.closed || this.pending.size >= this.maxPendingJobs || options.signal?.aborted) {
+    const consumerAvailable =
+      this.waiters.length > 0 ||
+      this.claimed.size > 0 ||
+      Date.now() - this.lastConsumerPollAt <= CONSUMER_HANDOFF_GRACE_MS;
+    if (!consumerAvailable || this.closed || this.pending.size >= this.maxPendingJobs || options.signal?.aborted) {
       return Promise.resolve(null);
     }
     const parsed = ModelJobSchema.safeParse({
@@ -342,6 +349,7 @@ export class SupportPassportModelBridge {
         respondJson(res, 400, { error: "invalid_request", code: "invalid_request" });
         return true;
       }
+      this.lastConsumerPollAt = Date.now();
       const controller = new AbortController();
       const abort = (): void => controller.abort();
       req.once("aborted", abort);
