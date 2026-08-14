@@ -134,6 +134,74 @@ test("the owner link disappears at its expiry time", async ({ page }, testInfo) 
   await expect(page.getByLabel("Copy this link once")).toHaveValue("");
 });
 
+test("a fast owner clock keeps a server-authorized share link visible", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers owner clock calibration.");
+  await page.addInitScript(() => {
+    const realNow = Date.now.bind(Date);
+    Date.now = () => realNow() + 24 * 60 * 60_000;
+  });
+  const serverNow = Date.now();
+  const card = {
+    cardId: "card-fast-owner-clock",
+    title: "Quiet place",
+    statement: "Offer me a quiet place and time.",
+    category: "environment",
+    status: "active",
+    updatedAt: new Date(serverNow).toISOString(),
+    reviewBy: new Date(serverNow + 24 * 60 * 60_000).toISOString(),
+    revision: "a".repeat(64),
+  };
+  const grant = {
+    grantId: "3b998a98-d48d-4f5c-887c-617af9228847",
+    stateVersion: 1,
+    cards: [{ cardId: card.cardId, revision: card.revision }],
+    createdAt: new Date(serverNow).toISOString(),
+    expiresAt: new Date(serverNow + 60 * 60_000).toISOString(),
+    status: "active",
+  };
+  let created = false;
+  await page.route("**/engram/v1/support-passport/cards", async (route) => {
+    await route.fulfill({
+      status: 200,
+      headers: { date: new Date(serverNow).toUTCString() },
+      contentType: "application/json",
+      body: JSON.stringify({ cards: [card] }),
+    });
+  });
+  await page.route("**/engram/v1/support-passport/grants", async (route) => {
+    if (route.request().method() === "POST") {
+      created = true;
+      await route.fulfill({
+        status: 201,
+        headers: { date: new Date(serverNow).toUTCString() },
+        contentType: "application/json",
+        body: JSON.stringify({
+          grantId: grant.grantId,
+          secret: "s".repeat(43),
+          expiresAt: grant.expiresAt,
+          version: grant.stateVersion,
+        }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      headers: { date: new Date(serverNow).toUTCString() },
+      contentType: "application/json",
+      body: JSON.stringify({ grants: created ? [grant] : [] }),
+    });
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await page.getByLabel("Bearer token").fill("owner-token");
+  await page.getByRole("button", { name: "Open my guide" }).click();
+  await page.locator('input[name="shareCard"]').check();
+  await page.getByRole("button", { name: "Create share link" }).click();
+
+  await expect(page.getByText("Share link ready")).toBeVisible();
+  await expect(page.getByLabel("Copy this link once")).toHaveValue(/#secret=/);
+});
+
 test("the owner note preview preserves API text and binds consent to its revision", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers note preview content.");
 
@@ -274,7 +342,7 @@ test("an owner page clears private state before browser-cache restoration", asyn
         (window as typeof window & { __REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__?: string })
           .__REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN__
     )
-  ).toBe("");
+  ).toBeUndefined();
   expect(
     await page
       .locator("script")
@@ -304,6 +372,83 @@ test("an owner page clears private state before browser-cache restoration", asyn
   await expect(page.locator("#customTimeField")).toBeHidden();
   await expect(page.locator("#customTimeInput")).toHaveValue("");
   await expect(page.getByLabel("Copy this link once")).toHaveValue("");
+});
+
+test("a hidden owner write cannot add an error after reconnect", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers owner lifecycle isolation.");
+  await page.addInitScript(() => {
+    const realFetch = window.fetch.bind(window);
+    Object.assign(window, {
+      __hiddenOwnerWriteAborted: false,
+      __releaseHiddenOwnerWrite: undefined,
+    });
+    window.fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/engram/v1/support-passport/drafts/generate") && init?.method === "POST") {
+        return await new Promise((_resolve, reject) => {
+          init.signal?.addEventListener(
+            "abort",
+            () => Object.assign(window, { __hiddenOwnerWriteAborted: true }),
+            { once: true }
+          );
+          Object.assign(window, {
+            __releaseHiddenOwnerWrite: () => reject(new Error("late hidden owner write failure")),
+          });
+        });
+      }
+      return await realFetch(input, init);
+    };
+  });
+  await page.route("**/engram/v1/support-passport/cards", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ cards: [] }) });
+  });
+  await page.route("**/engram/v1/support-passport/grants", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grants: [] }) });
+  });
+  await page.route("**/engram/v1/support-passport/memories/note-hidden-owner", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        found: true,
+        memory: {
+          id: "note-hidden-owner",
+          content: "Tell me before plans change.",
+          revision: "b".repeat(64),
+        },
+      }),
+    });
+  });
+
+  await page.goto(`${origin}/remnic/ui/what-helps-me/`);
+  await page.getByLabel("Bearer token").fill("owner-token");
+  await page.getByRole("button", { name: "Open my guide" }).click();
+  await page.getByLabel("Memory ID").fill("note-hidden-owner");
+  await page.getByRole("button", { name: "Add selected note" }).click();
+  await page.getByLabel("Send these selected notes to my configured model to draft my cards.").check();
+  await page.getByRole("button", { name: "Draft my support cards" }).click();
+  await expect(page.getByRole("button", { name: "Drafting cards…" })).toBeDisabled();
+
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })));
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as typeof window & { __hiddenOwnerWriteAborted?: boolean }).__hiddenOwnerWriteAborted
+      )
+    )
+    .toBe(true);
+  await page.getByLabel("Bearer token").fill("owner-token");
+  await page.getByRole("button", { name: "Open my guide" }).click();
+  await page.evaluate(() => {
+    const release = (
+      window as typeof window & { __releaseHiddenOwnerWrite?: () => void }
+    ).__releaseHiddenOwnerWrite;
+    release?.();
+  });
+
+  await expect(page.locator("#generateError")).toHaveText("");
+  await expect(page.getByText("late hidden owner write failure")).toHaveCount(0);
+  await expect(page.locator("#ownerView")).toBeVisible();
 });
 
 test("a missing selected memory shows the specific not-found message", async ({ page }, testInfo) => {
@@ -475,7 +620,7 @@ test("a created share link remains visible when its list refresh fails", async (
   expect(grantInput).toEqual({
     cardIds: [card.cardId],
     cardRevisions: [{ cardId: card.cardId, revision: card.revision }],
-    expiresAt: expect.any(String),
+    durationMs: 2 * 60 * 60_000,
   });
   await expect(page.getByText("Share link ready")).toBeVisible();
   await expect(page.getByLabel("Copy this link once")).toHaveValue(
@@ -543,13 +688,25 @@ test("a new share attempt clears the prior link before a later failure", async (
     revision: "b".repeat(64),
   };
   let createCalls = 0;
+  const activeGrant = {
+    grantId: "3b998a98-d48d-4f5c-887c-617af9228847",
+    stateVersion: 1,
+    cards: [{ cardId: card.cardId, revision: card.revision }],
+    createdAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + 2 * 60 * 60_000).toISOString(),
+    status: "active",
+  };
   const secondResponse = Promise.withResolvers<void>();
   await page.route("**/engram/v1/support-passport/cards", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ cards: [card] }) });
   });
   await page.route("**/engram/v1/support-passport/grants", async (route) => {
     if (route.request().method() !== "POST") {
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ grants: [] }) });
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ grants: createCalls > 0 ? [activeGrant] : [] }),
+      });
       return;
     }
     createCalls += 1;
@@ -558,9 +715,9 @@ test("a new share attempt clears the prior link before a later failure", async (
         status: 201,
         contentType: "application/json",
         body: JSON.stringify({
-          grantId: "3b998a98-d48d-4f5c-887c-617af9228847",
+          grantId: activeGrant.grantId,
           secret: "s".repeat(43),
-          expiresAt: new Date(now.getTime() + 2 * 60 * 60_000).toISOString(),
+          expiresAt: activeGrant.expiresAt,
           version: 1,
         }),
       });
@@ -1900,6 +2057,55 @@ test("a restored helper view stays locked without its removed secret", async ({ 
   await expect(page.getByRole("heading", { name: "This helper session ended." })).toBeVisible();
   expect(reads).toBe(1);
   await expect(page.locator(".public-card")).toHaveCount(0);
+});
+
+test("a late helper load failure cannot replace the hidden-page lock", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers helper lifecycle isolation.");
+  await page.addInitScript(() => {
+    const realFetch = window.fetch.bind(window);
+    Object.assign(window, {
+      __hiddenHelperReadAborted: false,
+      __releaseHiddenHelperRead: undefined,
+    });
+    window.fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes("replay-grant-hidden-helper") && (init?.method ?? "GET") === "GET") {
+        return await new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => Object.assign(window, { __hiddenHelperReadAborted: true }),
+            { once: true }
+          );
+          Object.assign(window, {
+            __releaseHiddenHelperRead: () => reject(new Error("late hidden helper read failure")),
+          });
+        });
+      }
+      return await realFetch(input, init);
+    };
+  });
+
+  await page.goto(helperUrl("-hidden-helper").replace("mode=replay&", ""));
+  await expect(page.getByText("Opening the shared guide…")).toBeVisible();
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })));
+  await expect(page.getByRole("heading", { name: "This helper session ended." })).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as typeof window & { __hiddenHelperReadAborted?: boolean }).__hiddenHelperReadAborted
+      )
+    )
+    .toBe(true);
+  await page.evaluate(() => {
+    const release = (
+      window as typeof window & { __releaseHiddenHelperRead?: () => void }
+    ).__releaseHiddenHelperRead;
+    release?.();
+  });
+
+  await expect(page.getByRole("heading", { name: "This helper session ended." })).toBeVisible();
+  await expect(page.getByText("Open the original share link again to view this support passport.")).toBeVisible();
+  await expect(page.getByText("late hidden helper read failure")).toHaveCount(0);
 });
 
 test("helper revalidation backs off after a rate limit", async ({ page }, testInfo) => {

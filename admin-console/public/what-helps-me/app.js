@@ -52,6 +52,7 @@
     helperRevalidationTimer: null,
     helperRevalidationDelayMs: HELPER_REVALIDATION_MS,
     helperLifecyclePaused: false,
+    ownerServerOffsetMs: null,
     pendingCardMutationIds: new Set(),
     pendingGrantRevocationIds: new Set(),
     cardSavePending: false,
@@ -63,6 +64,7 @@
     ownerLifecyclePaused: false,
     ownerRequestControllers: new Set(),
     ownerLoadGeneration: 0,
+    ownerSessionGeneration: 0,
     toastTimer: null,
   };
   initialHelperSecret = "";
@@ -79,7 +81,17 @@
   }
 
   function setError(id, message = "") {
+    if (message === null) return;
+    if (message && (state.ownerLifecyclePaused || state.helperLifecyclePaused)) return;
     byId(id).textContent = message;
+  }
+
+  function ownerNowMs() {
+    return Date.now() + (state.ownerServerOffsetMs ?? 0);
+  }
+
+  function ownerSessionIsCurrent(generation) {
+    return !state.ownerLifecyclePaused && generation === state.ownerSessionGeneration;
   }
 
   function clearDisplayedShareLink() {
@@ -95,7 +107,7 @@
     window.clearTimeout(state.displayedGrantTimer);
     state.displayedGrantTimer = null;
     if (!state.displayedGrant) return;
-    const remainingMs = Date.parse(state.displayedGrant.expiresAt) - Date.now();
+    const remainingMs = Date.parse(state.displayedGrant.expiresAt) - ownerNowMs();
     if (remainingMs <= 0) {
       clearDisplayedShareLink();
       return;
@@ -112,7 +124,7 @@
         (card) => card.cardId === selected.cardId && card.revision === selected.revision && card.status === "active"
       )
     );
-    if (!grant || grant.status !== "active" || Date.parse(grant.expiresAt) <= Date.now() || !cardsStillCurrent) {
+    if (!grant || grant.status !== "active" || Date.parse(grant.expiresAt) <= ownerNowMs() || !cardsStillCurrent) {
       clearDisplayedShareLink();
       return;
     }
@@ -139,6 +151,7 @@
   }
 
   function errorMessage(error, fallback) {
+    if (error === PAGE_HIDDEN_ABORT) return null;
     if (error instanceof Error && error.message.trim()) return error.message;
     return fallback;
   }
@@ -195,6 +208,7 @@
         cache: "no-store",
         signal: controller?.signal ?? options.signal,
       });
+      if ((controller?.signal ?? options.signal)?.reason === PAGE_HIDDEN_ABORT) throw PAGE_HIDDEN_ABORT;
       let payload;
       try {
         payload = await response.json();
@@ -210,13 +224,23 @@
         throw error;
       }
       if (options.owner && state.ownerLifecyclePaused) throw PAGE_HIDDEN_ABORT;
-      if (!options.captureServerTime) return payload;
       const serverNowMs = Date.parse(response.headers.get("date") ?? "");
+      if (options.owner && Number.isFinite(serverNowMs)) {
+        state.ownerServerOffsetMs = serverNowMs - Date.now();
+      }
+      if (!options.captureServerTime) return payload;
       return {
         payload,
         serverOffsetMs: Number.isFinite(serverNowMs) ? serverNowMs - Date.now() : null,
       };
     } catch (error) {
+      if (
+        (controller?.signal ?? options.signal)?.reason === PAGE_HIDDEN_ABORT ||
+        (options.owner && state.ownerLifecyclePaused) ||
+        (options.secret && state.helperLifecyclePaused)
+      ) {
+        throw PAGE_HIDDEN_ABORT;
+      }
       if (!timedOut) throw error;
       const timeoutError = new Error(options.timeoutMessage ?? "The owner request took too long. Try again.");
       timeoutError.code = "request_timeout";
@@ -290,8 +314,8 @@
 
   function showOwner() {
     byId("connectPanel").hidden = true;
-    byId("helperView").remove();
-    byId("lockedView").remove();
+    byId("helperView")?.remove();
+    byId("lockedView")?.remove();
     byId("ownerView").hidden = false;
     byId("viewMarkerText").textContent = replayMode ? "Owner replay" : "Owner view";
   }
@@ -332,6 +356,7 @@
   }
 
   async function mutateCard(card, action, button) {
+    const ownerSessionGeneration = state.ownerSessionGeneration;
     setError("generateError");
     const verbs = { approve: "Approving…", reject: "Rejecting…", withdraw: "Stopping…" };
     const priorLabel = button.textContent;
@@ -366,6 +391,7 @@
           }
           return current ? null : card;
         });
+        if (reconciled.cancelled) return;
         if (!reconciled.matched) {
           setError(
             "generateError",
@@ -388,16 +414,19 @@
       announce(message);
       try {
         if (!ownerStateFresh) await loadOwnerState();
-      } catch {
+      } catch (error) {
+        if (error === PAGE_HIDDEN_ABORT) return;
         const warning = `${message} The card list did not refresh. Refresh the guide before another change.`;
         setError("generateError", warning);
         announce(warning);
       }
     } finally {
-      state.pendingCardMutationIds.delete(card.cardId);
-      button.disabled = false;
-      button.textContent = priorLabel;
-      renderCards();
+      if (ownerSessionIsCurrent(ownerSessionGeneration)) {
+        state.pendingCardMutationIds.delete(card.cardId);
+        button.disabled = false;
+        button.textContent = priorLabel;
+        renderCards();
+      }
     }
   }
 
@@ -498,16 +527,20 @@
   }
 
   async function reconcileOwnerState(match) {
-    if (state.ownerLifecyclePaused) return { matched: false, refreshed: false };
+    const ownerSessionGeneration = state.ownerSessionGeneration;
+    if (!ownerSessionIsCurrent(ownerSessionGeneration)) return { matched: false, refreshed: false, cancelled: true };
     let refreshed = false;
     for (let attempt = 0; attempt < OWNER_RECONCILIATION_ATTEMPTS; attempt += 1) {
-      if (state.ownerLifecyclePaused) return { matched: false, refreshed };
+      if (!ownerSessionIsCurrent(ownerSessionGeneration)) return { matched: false, refreshed, cancelled: true };
       try {
         await loadOwnerState();
+        if (!ownerSessionIsCurrent(ownerSessionGeneration)) return { matched: false, refreshed, cancelled: true };
         refreshed = true;
         const value = match();
         if (value) return { matched: true, value };
-      } catch {}
+      } catch (error) {
+        if (error === PAGE_HIDDEN_ABORT) return { matched: false, refreshed, cancelled: true };
+      }
       if (attempt + 1 < OWNER_RECONCILIATION_ATTEMPTS) {
         await delay(OWNER_RECONCILIATION_DELAY_MS);
       }
@@ -544,6 +577,7 @@
       );
       if (grant.status === "active") {
         const stop = cardButton("Stop sharing", "button-danger", async (event) => {
+          const ownerSessionGeneration = state.ownerSessionGeneration;
           const button = event.currentTarget;
           const priorLabel = button.textContent;
           let ownerStateFresh = false;
@@ -562,6 +596,7 @@
                 const current = state.grants.find((candidate) => candidate.grantId === grant.grantId);
                 return !current || current.status !== "active" ? grant : null;
               });
+              if (reconciled.cancelled) return;
               if (!reconciled.matched) {
                 setError(
                   "shareError",
@@ -578,16 +613,19 @@
             announce(message);
             try {
               if (!ownerStateFresh) await loadOwnerState();
-            } catch {
+            } catch (error) {
+              if (error === PAGE_HIDDEN_ABORT) return;
               const warning = `${message} The share list did not refresh. Refresh the guide before another change.`;
               setError("shareError", warning);
               announce(warning);
             }
           } finally {
-            state.pendingGrantRevocationIds.delete(grant.grantId);
-            button.disabled = false;
-            button.textContent = priorLabel;
-            renderGrants();
+            if (ownerSessionIsCurrent(ownerSessionGeneration)) {
+              state.pendingGrantRevocationIds.delete(grant.grantId);
+              button.disabled = false;
+              button.textContent = priorLabel;
+              renderGrants();
+            }
           }
         });
         stop.disabled = state.pendingGrantRevocationIds.has(grant.grantId);
@@ -651,6 +689,7 @@
   async function saveCard(event) {
     event.preventDefault();
     if (state.cardSavePending) return;
+    const ownerSessionGeneration = state.ownerSessionGeneration;
     setError("cardError");
     const cardId = byId("cardIdInput").value;
     const expectedRevision = byId("cardRevisionInput").value;
@@ -687,6 +726,7 @@
           if (cardId) return null;
           return state.cards.find((card) => !priorCardIds.has(card.cardId) && sameCardDraft(card, input));
         });
+        if (reconciled.cancelled) return;
         if (!reconciled.matched) {
           let message;
           if (cardId) {
@@ -709,14 +749,17 @@
       announce(message);
       try {
         if (!ownerStateFresh) await loadOwnerState();
-      } catch {
+      } catch (error) {
+        if (error === PAGE_HIDDEN_ABORT) return;
         const warning = "The draft was saved, but the card list did not refresh. Refresh the guide before editing it.";
         setError("generateError", warning);
         announce(warning);
       }
     } finally {
-      button.textContent = priorLabel;
-      setCardSavePending(false);
+      if (ownerSessionIsCurrent(ownerSessionGeneration)) {
+        button.textContent = priorLabel;
+        setCardSavePending(false);
+      }
     }
   }
 
@@ -761,6 +804,7 @@
 
   async function generateDrafts() {
     if (state.draftGenerationPending) return;
+    const ownerSessionGeneration = state.ownerSessionGeneration;
     setError("generateError");
     if (state.selectedNotes.length === 0) {
       setError("generateError", "Select at least one note first.");
@@ -796,7 +840,9 @@
         try {
           await loadOwnerState();
           refreshed = true;
-        } catch {}
+        } catch (error) {
+          if (error === PAGE_HIDDEN_ABORT) return;
+        }
         setError(
           "generateError",
           refreshed
@@ -812,14 +858,17 @@
       try {
         await loadOwnerState();
         byId("reviewCards").scrollIntoView({ behavior: SCROLL_BEHAVIOR, block: "start" });
-      } catch {
+      } catch (error) {
+        if (error === PAGE_HIDDEN_ABORT) return;
         const warning = `${message} The card list did not refresh. Refresh the guide before another change.`;
         setError("generateError", warning);
         announce(warning);
       }
     } finally {
-      button.textContent = priorLabel;
-      setDraftGenerationPending(false);
+      if (ownerSessionIsCurrent(ownerSessionGeneration)) {
+        button.textContent = priorLabel;
+        setDraftGenerationPending(false);
+      }
     }
   }
 
@@ -834,6 +883,7 @@
   async function createShare(event) {
     event.preventDefault();
     if (state.shareCreationPending) return;
+    const ownerSessionGeneration = state.ownerSessionGeneration;
     setError("shareError");
     clearDisplayedShareLink();
     const selectedInputs = [...document.querySelectorAll('input[name="shareCard"]:checked')];
@@ -881,7 +931,9 @@
         try {
           await loadOwnerState();
           refreshed = true;
-        } catch {}
+        } catch (error) {
+          if (error === PAGE_HIDDEN_ABORT) return;
+        }
         setError(
           "shareError",
           refreshed
@@ -907,17 +959,20 @@
       byId("newLinkPanel").scrollIntoView({ behavior: SCROLL_BEHAVIOR, block: "nearest" });
       try {
         await loadOwnerState();
-      } catch {
+      } catch (error) {
+        if (error === PAGE_HIDDEN_ABORT) return;
         setError("shareError", "The share link was created, but the share list did not refresh. Use the link above.");
       }
     } finally {
-      setShareCreationPending(false);
-      if (clearSelection) {
-        for (const input of document.querySelectorAll('input[name="shareCard"]')) input.checked = false;
-        updateShareCardChoices();
+      if (ownerSessionIsCurrent(ownerSessionGeneration)) {
+        setShareCreationPending(false);
+        if (clearSelection) {
+          for (const input of document.querySelectorAll('input[name="shareCard"]')) input.checked = false;
+          updateShareCardChoices();
+        }
+        button.disabled = false;
+        button.textContent = priorLabel;
       }
-      button.disabled = false;
-      button.textContent = priorLabel;
     }
   }
 
@@ -938,20 +993,24 @@
     event.preventDefault();
     setError("connectError");
     state.ownerLifecyclePaused = false;
+    const ownerSessionGeneration = state.ownerSessionGeneration;
     state.token = byId("tokenInput").value.trim();
     if (!state.token) return;
     const button = event.currentTarget.querySelector("button");
     try {
       await withBusy(button, "Opening guide…", loadOwnerState);
+      if (!ownerSessionIsCurrent(ownerSessionGeneration)) return;
       showOwner();
       announce("Owner guide loaded.");
     } catch (error) {
+      if (!ownerSessionIsCurrent(ownerSessionGeneration)) return;
       state.token = "";
       setError("connectError", errorMessage(error, "The owner guide did not load."));
     }
   }
 
   function showLocked(error) {
+    if (state.helperLifecyclePaused && error?.code !== "session_ended") return;
     window.clearTimeout(state.helperExpiryTimer);
     state.helperExpiryTimer = null;
     window.clearTimeout(state.helperRevalidationTimer);
@@ -987,6 +1046,7 @@
 
   async function readHelperGuide(signal) {
     const result = await api.readGrant(state.helperGrantId, state.helperSecret, signal);
+    if (state.helperLifecyclePaused) throw PAGE_HIDDEN_ABORT;
     if (replayMode) return model.parsePublicGuide(result);
     if (Number.isFinite(result.serverOffsetMs)) state.helperServerOffsetMs = result.serverOffsetMs;
     return model.parsePublicGuide(result.payload);
@@ -1048,7 +1108,9 @@
     state.helperRevalidationController = controller;
     const timeout = window.setTimeout(() => controller.abort(), HELPER_READ_TIMEOUT_MS);
     try {
-      state.guide = await readHelperGuide(controller.signal);
+      const guide = await readHelperGuide(controller.signal);
+      if (state.helperLifecyclePaused) return;
+      state.guide = guide;
       state.helperRevalidationDelayMs = HELPER_REVALIDATION_MS;
       scheduleHelperExpiry();
     } catch (error) {
@@ -1089,13 +1151,15 @@
     state.helperLoadController = controller;
     const timeout = window.setTimeout(() => controller.abort(), HELPER_READ_TIMEOUT_MS);
     try {
-      state.guide = await readHelperGuide(controller.signal);
+      const guide = await readHelperGuide(controller.signal);
+      if (state.helperLifecyclePaused) return;
+      state.guide = guide;
       renderGuide(state.guide);
       if (!state.guide) return;
       scheduleHelperRevalidation();
       announce(`Support passport loaded with ${state.guide.cards.length} cards.`);
     } catch (error) {
-      if (controller.signal.reason === PAGE_HIDDEN_ABORT) return;
+      if (state.helperLifecyclePaused || error === PAGE_HIDDEN_ABORT || controller.signal.reason === PAGE_HIDDEN_ABORT) return;
       showLocked(error);
     } finally {
       window.clearTimeout(timeout);
@@ -1126,6 +1190,7 @@
       const payload = await withBusy(button, "Checking shared cards…", () =>
         api.askGrant(state.helperGrantId, state.helperSecret, question, controller.signal)
       );
+      if (state.helperLifecyclePaused) return;
       const answer = model.parseAnswer(payload, state.guide);
       byId("answerCopy").textContent = answer.answer;
       const citations = byId("citationList");
@@ -1141,7 +1206,7 @@
       announce("Answer ready with support card citations.");
     } catch (error) {
       if (!state.guide) return;
-      if (controller.signal.reason === PAGE_HIDDEN_ABORT) return;
+      if (state.helperLifecyclePaused || error === PAGE_HIDDEN_ABORT || controller.signal.reason === PAGE_HIDDEN_ABORT) return;
       if (timedOut) {
         setError("questionError", "The question took too long. Try again.");
         return;
@@ -1188,6 +1253,7 @@
         await withBusy(event.currentTarget, "…", loadOwnerState);
         announce("Cards and share links refreshed.");
       } catch (error) {
+        if (error === PAGE_HIDDEN_ABORT) return;
         setError("shareError", errorMessage(error, "The guide did not refresh."));
       }
     });
@@ -1211,9 +1277,11 @@
 
   function clearOwnerSession() {
     state.ownerLifecyclePaused = true;
+    state.ownerSessionGeneration += 1;
     state.ownerLoadGeneration += 1;
     for (const controller of state.ownerRequestControllers) controller.abort(PAGE_HIDDEN_ABORT);
     state.ownerRequestControllers.clear();
+    state.ownerServerOffsetMs = null;
     state.token = "";
     state.cards = [];
     state.grants = [];
@@ -1276,6 +1344,9 @@
 
   function clearHelperSession() {
     state.helperLifecyclePaused = true;
+    state.helperLoadController?.abort(PAGE_HIDDEN_ABORT);
+    state.helperQuestionController?.abort(PAGE_HIDDEN_ABORT);
+    state.helperRevalidationController?.abort(PAGE_HIDDEN_ABORT);
     state.helperSecret = "";
     state.helperServerOffsetMs = null;
     state.helperRevalidationDelayMs = HELPER_REVALIDATION_MS;
