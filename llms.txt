@@ -273,7 +273,7 @@ Recalculate the floor from the current date before changing package metadata;
 only raise it when an upstream breaking change makes an older host impossible
 to support.
 
-The August 13, 2026 Support Passport sweep starts at June 14, 2026. The
+The August 14, 2026 Support Passport sweep starts at June 15, 2026. The
 existing `>=2026.4.1` installer floor remains more permissive and stays in
 place.
 
