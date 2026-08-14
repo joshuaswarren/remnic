@@ -10,6 +10,8 @@ import { SupportPassportError } from "./errors.js";
 const PUBLIC_RATE_LIMIT_MAX_KEYS = 20_000;
 const PUBLIC_AUTH_MAX_IN_FLIGHT_PER_NETWORK = 8;
 const PUBLIC_AUTH_MAX_IN_FLIGHT_TOTAL = 256;
+const PUBLIC_MODEL_MAX_IN_FLIGHT_PER_NETWORK = 8;
+const PUBLIC_MODEL_MAX_IN_FLIGHT_TOTAL = 256;
 
 export const SUPPORT_PASSPORT_PUBLIC_HTTP_ROUTES = [
   {
@@ -137,6 +139,7 @@ class InFlightLimiter {
 
 interface PublicRateLimits {
   authentications: InFlightLimiter;
+  modelCalls: InFlightLimiter;
   grantReads: FixedWindowLimiter;
   networkReads: FixedWindowLimiter;
   networkReadFailures: FixedWindowLimiter;
@@ -153,6 +156,7 @@ export interface SupportPassportPublicHandlerOptions {
 function createRateLimits(now: () => number): PublicRateLimits {
   return {
     authentications: new InFlightLimiter(PUBLIC_AUTH_MAX_IN_FLIGHT_PER_NETWORK, PUBLIC_AUTH_MAX_IN_FLIGHT_TOTAL),
+    modelCalls: new InFlightLimiter(PUBLIC_MODEL_MAX_IN_FLIGHT_PER_NETWORK, PUBLIC_MODEL_MAX_IN_FLIGHT_TOTAL),
     grantReads: new FixedWindowLimiter(60, 60_000, now),
     networkReads: new FixedWindowLimiter(60, 60_000, now),
     networkReadFailures: new FixedWindowLimiter(60, 60_000, now),
@@ -512,7 +516,7 @@ export function buildSupportPassportPublicRequestHandler(
         );
         respondJson(res, 200, guide);
       } else {
-        const releaseAuthentication = rateLimits.authentications.reserve(digest);
+        let releaseAuthentication = rateLimits.authentications.reserve(digest);
         if (!releaseAuthentication) throw new UnreadSupportPassportRequestError(rateLimited());
         try {
           let question: string;
@@ -540,15 +544,23 @@ export function buildSupportPassportPublicRequestHandler(
             rateLimits.grantQuestions,
             rateLimits.networkQuestionFailures
           );
-          const answer = await runPublicOperation(
-            service,
-            "support_passport_grant_ask",
-            { grantId, secret, question },
-            lifecycle.signal
-          );
-          respondJson(res, 200, answer);
-        } finally {
+          const releaseModelCall = rateLimits.modelCalls.reserve(digest);
+          if (!releaseModelCall) throw rateLimited();
           releaseAuthentication();
+          releaseAuthentication = undefined;
+          try {
+            const answer = await runPublicOperation(
+              service,
+              "support_passport_grant_ask",
+              { grantId, secret, question },
+              lifecycle.signal
+            );
+            respondJson(res, 200, answer);
+          } finally {
+            releaseModelCall();
+          }
+        } finally {
+          releaseAuthentication?.();
         }
       }
     } catch (error) {
