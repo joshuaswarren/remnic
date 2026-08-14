@@ -2181,6 +2181,38 @@ test("replay helpers require the same quiet-support intent", async ({ page, cont
   }
 });
 
+test("replay helpers match environment quiet-support cards", async ({ page, context }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-375", "One viewport covers environment support grounding.");
+  await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
+  await page.getByRole("button", { name: "Write a card" }).click();
+  await page.getByLabel("Card title").fill("A quiet place when overwhelmed");
+  await page.getByLabel("What helps me").fill("When I am overwhelmed, offer me a quiet place and time.");
+  await page.getByLabel("Category").selectOption("environment");
+  await page.getByRole("button", { name: "Save draft" }).click();
+  const quietCard = page.locator(".support-card").filter({ hasText: "A quiet place when overwhelmed" });
+  await quietCard.getByRole("button", { name: "Approve" }).click();
+  await page
+    .locator(".card-choice")
+    .filter({ hasText: "A quiet place when overwhelmed" })
+    .locator('input[name="shareCard"]')
+    .check();
+  await page.getByRole("button", { name: "Create share link" }).click();
+  const shareUrl = await page.locator("#shareLinkInput").inputValue();
+
+  const helper = await context.newPage();
+  try {
+    await helper.goto(shareUrl);
+    await helper.getByLabel("Your question").fill("What should I offer when this person is overwhelmed?");
+    await helper.getByRole("button", { name: "Ask from this guide" }).click();
+    await expect(helper.locator("#answerCopy")).toHaveText(
+      "When I am overwhelmed, offer me a quiet place and time."
+    );
+    await expect(helper.locator(".citation")).toContainText("A quiet place when overwhelmed");
+  } finally {
+    await helper.close();
+  }
+});
+
 test("replay helpers require the same transition intent", async ({ page, context }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers transition intent grounding.");
   await page.goto(`${origin}/remnic/ui/what-helps-me/?mode=replay`);
