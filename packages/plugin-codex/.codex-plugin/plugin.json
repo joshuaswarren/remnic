@@ -1,7 +1,7 @@
 {
   "name": "remnic",
   "description": "Universal memory for AI agents — automatic recall, observation, and cross-agent knowledge sharing",
-  "version": "9.54.6",
+  "version": "9.54.7",
   "author": {
     "name": "Joshua Warren",
     "url": "https://github.com/joshuaswarren"
