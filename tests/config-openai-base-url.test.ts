@@ -50,6 +50,19 @@ test("openaiBaseUrl falls back to OPENAI_BASE_URL when not set in config", () =>
   else process.env.OPENAI_BASE_URL = original;
 });
 
+test("gateway-only config ignores an unrelated OPENAI_BASE_URL", () => {
+  const original = process.env.OPENAI_BASE_URL;
+  process.env.OPENAI_BASE_URL = "not-an-http-url";
+  try {
+    const cfg = parseConfig({ modelSource: "gateway" });
+    assert.equal(cfg.modelSource, "gateway");
+    assert.equal(cfg.openaiBaseUrl, undefined);
+  } finally {
+    if (original === undefined) delete process.env.OPENAI_BASE_URL;
+    else process.env.OPENAI_BASE_URL = original;
+  }
+});
+
 test("openaiBaseUrl rejects malformed and unsupported environment values", () => {
   const original = process.env.OPENAI_BASE_URL;
   try {
