@@ -12,6 +12,7 @@ import {
 import { SupportPassportNamespaceSchema } from "./contracts.js";
 import { SupportPassportError } from "./errors.js";
 import {
+  ensurePrivateDirectoryNoFollow,
   ensurePrivateDirectoryTreeNoFollow,
   readPrivateFileNoFollow,
   removePrivateFilesNoFollow,
@@ -75,7 +76,9 @@ function sameOwner(marker: GeneratedBatchMarker, context: GeneratedBatchContext)
 }
 
 async function ensureBatchDirectory(storage: StorageManager): Promise<void> {
-  await ensurePrivateDirectoryTreeNoFollow(batchDirectory(storage), BATCH_ERROR);
+  const directory = batchDirectory(storage);
+  await ensurePrivateDirectoryTreeNoFollow(directory, BATCH_ERROR);
+  await ensurePrivateDirectoryNoFollow(storage.dir, directory, BATCH_ERROR);
 }
 
 export async function readSupportPassportGeneratedBatchMarker(
