@@ -76,6 +76,8 @@ test("the owner reviews one card at a time and controls sharing", async ({ page 
   await expect(page.getByText("Synthetic replay")).toBeVisible();
   await expect(page.getByText("No support cards yet.")).toBeVisible();
   await expect(page.locator(".note-item")).toHaveCount(3);
+  await expect(page.getByLabel("Memory ID")).toHaveAttribute("maxlength", "512");
+  await expect(page.getByLabel("Memory ID")).not.toHaveAttribute("pattern");
   expect(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length }))).toEqual({
     local: 0,
     session: 0,
@@ -1902,11 +1904,9 @@ test("a bad helper link has a clear locked view", async ({ page }, testInfo) => 
   await page.screenshot({ path: testInfo.outputPath(`locked-${testInfo.project.name}.png`), fullPage: true });
 });
 
-test("a fragment helper suppresses owner prefill when the model bundle fails", async ({ page }, testInfo) => {
+test("a fragment helper clears secrets when both app bundles fail", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-375", "One viewport covers bootstrap secret cleanup.");
   const ownerShell = await readFile(path.join(publicDir, "index.html"), "utf8");
-  const pageErrors: string[] = [];
-  page.on("pageerror", (error) => pageErrors.push(error.message));
   await page.route(`${origin}/remnic/ui/what-helps-me/`, async (route) => {
     await route.fulfill({
       status: 200,
@@ -1914,8 +1914,8 @@ test("a fragment helper suppresses owner prefill when the model bundle fails", a
       body: injectOwnerPrefill(ownerShell, "prefilled-owner-token"),
     });
   });
-  await page.route("**/what-helps-me/model.js", async (route) => {
-    await route.fulfill({ status: 404, contentType: "application/javascript", body: "" });
+  await page.route(/\/what-helps-me\/(?:model|app)\.js$/, async (route) => {
+    await route.abort();
   });
 
   await page.goto(`${origin}/remnic/ui/what-helps-me/#secret=${"s".repeat(43)}`);
@@ -1933,7 +1933,6 @@ test("a fragment helper suppresses owner prefill when the model bundle fails", a
       .locator("script")
       .evaluateAll((scripts) => scripts.some((script) => script.textContent?.includes("prefilled-owner-token")))
   ).toBe(false);
-  expect(pageErrors).toContain("What Helps Me model did not load.");
 });
 
 test("a manual owner token clears when the app bundles fail", async ({ page }, testInfo) => {
