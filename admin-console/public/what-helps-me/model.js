@@ -296,13 +296,16 @@
     return /^[A-Za-z0-9_-]{32,256}$/.test(secret) ? secret : "";
   }
 
-  function buildShareUrl(currentUrl, grantId, secret, replay) {
+  function buildShareUrl(currentUrl, grantId, secret, replay, replayChannelId = "") {
     const url = new URL(currentUrl);
     url.pathname = "/remnic/ui/what-helps-me/";
     url.search = "";
     url.hash = "";
     url.searchParams.set("grant", grantId);
-    if (replay) url.searchParams.set("mode", "replay");
+    if (replay) {
+      url.searchParams.set("mode", "replay");
+      url.searchParams.set("replayChannel", replayChannelId);
+    }
     url.hash = `secret=${encodeURIComponent(secret)}`;
     return url.toString();
   }
@@ -373,6 +376,52 @@
     return `${prefix}-${[...bytes].map((value) => value.toString(16).padStart(2, "0")).join("")}`;
   }
 
+  async function replaySecretProof(secret, requestId, grantId) {
+    const key = await globalScope.crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"]
+    );
+    const signature = await globalScope.crypto.subtle.sign(
+      "HMAC",
+      key,
+      new TextEncoder().encode(`${requestId}:${grantId}`)
+    );
+    return [...new Uint8Array(signature)].map((value) => value.toString(16).padStart(2, "0")).join("");
+  }
+
+  function equalReplayProof(left, right) {
+    if (!/^[a-f0-9]{64}$/.test(left) || !/^[a-f0-9]{64}$/.test(right)) return false;
+    let difference = 0;
+    for (let index = 0; index < left.length; index += 1) {
+      difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
+    }
+    return difference === 0;
+  }
+
+  function hasMatchingTransitionIntent(cardText, question) {
+    const intents = [
+      /\bplans?\b/i,
+      /\bschedul(?:e|es|ed|ing)\b/i,
+      /\broutines?\b/i,
+      /\b(?:changes|transitions?|transitioning)\b/i,
+    ];
+    return intents.some((intent) => intent.test(cardText) && intent.test(question));
+  }
+
+  function hasMatchingQuietSupportIntent(cardText, question) {
+    const intents = [
+      /\boverwhelm(?:ed|ing|s)?\b/i,
+      /\bstop(?:s|ped|ping)? speaking\b/i,
+      /\bquiet (?:place|space|room)\b/i,
+      /\b(?:shut(?:s|ting)? down|shutdown)\b/i,
+      /\bsettle(?:s|d|ing)?\b/i,
+    ];
+    return intents.some((intent) => intent.test(cardText) && intent.test(question));
+  }
+
   function createReplayStore(now = () => new Date()) {
     let cards = [];
     let grants = [];
@@ -396,7 +445,9 @@
     }
 
     function publicGuide(grant) {
-      const selected = grant.cards.map((reference) => cards.find((card) => card.cardId === reference.cardId));
+      const selected = grant.cards.map((reference) =>
+        cards.find((card) => card.cardId === reference.cardId && card.revision === reference.revision)
+      );
       if (selected.length === 0 || selected.some((card) => !card || card.status !== "active")) {
         const error = new Error("The shared support guide has changed.");
         error.code = "grant_stale";
@@ -465,29 +516,56 @@
         if (!card) throw new Error("The support card changed after it was loaded.");
         const expected = action === "withdraw" ? "active" : "pending_review";
         if (card.status !== expected) throw new Error(`The support card must have status ${expected}.`);
+        const invalidatedCardIds = [];
         card.status = nextStatus;
         card.updatedAt = now().toISOString();
         card.revision = replayRevision(`${card.cardId}:${card.status}:${card.updatedAt}:${card.statement}`);
+        if (action === "withdraw") invalidatedCardIds.push(card.cardId);
         if (action === "approve" && replacements.has(card.cardId)) {
           const prior = cards.find((candidate) => candidate.cardId === replacements.get(card.cardId));
-          if (prior) prior.status = "superseded";
+          if (prior) {
+            prior.status = "superseded";
+            prior.updatedAt = card.updatedAt;
+            prior.revision = replayRevision(`${prior.cardId}:${prior.status}:${prior.updatedAt}:${prior.statement}`);
+            invalidatedCardIds.push(prior.cardId);
+          }
           replacements.delete(card.cardId);
         }
-        return { card: { ...card } };
+        return { card: { ...card }, invalidatedCardIds };
       },
-      seedSharedGuide(grantId, secret) {
-        cards = REPLAY_DRAFTS.map((draft) => makeCard(draft, "active"));
-        grants = [
-          {
-            grantId,
-            stateVersion: 1,
-            cards: cards.map((card) => ({ cardId: card.cardId, revision: card.revision })),
-            createdAt: now().toISOString(),
-            expiresAt: new Date(now().getTime() + 2 * 60 * 60_000).toISOString(),
-            status: "active",
-          },
-        ];
+      seedSharedGuide(grantId, secret, sharedState) {
+        if (!hasExactKeys(sharedState, ["grant", "cards"])) {
+          throw new Error("The replay share state is invalid.");
+        }
+        const sharedGrant = assertGrant(sharedState.grant);
+        const sharedCards = parseCardList({ cards: sharedState.cards });
+        const cardsById = new Map(sharedCards.map((card) => [card.cardId, card]));
+        if (
+          sharedGrant.grantId !== grantId ||
+          sharedCards.length !== sharedGrant.cards.length ||
+          sharedGrant.cards.some((reference) => cardsById.get(reference.cardId)?.revision !== reference.revision)
+        ) {
+          throw new Error("The replay share state is invalid.");
+        }
+        cards = sharedCards.map((card) => ({ ...card }));
+        grants = [{ ...sharedGrant, cards: sharedGrant.cards.map((card) => ({ ...card })) }];
         secrets.set(grantId, secret);
+      },
+      async exportSharedGuide(grantId, requestId, proof) {
+        const grant = grants.find((candidate) => candidate.grantId === grantId);
+        const secret = secrets.get(grantId);
+        if (!grant || !secret) return { errorCode: "grant_not_found" };
+        const expectedProof = await replaySecretProof(secret, requestId, grantId);
+        if (!equalReplayProof(expectedProof, proof)) return { errorCode: "grant_not_found" };
+        if (grant.status !== "active") return { errorCode: "grant_gone" };
+        const selected = grant.cards.map((reference) =>
+          cards.find((card) => card.cardId === reference.cardId && card.revision === reference.revision)
+        );
+        if (selected.some((card) => !card || card.status !== "active")) return { errorCode: "grant_stale" };
+        return {
+          grant: { ...grant, cards: grant.cards.map((card) => ({ ...card })) },
+          cards: selected.map((card) => ({ ...card })),
+        };
       },
       async createGrant(input) {
         const selected = input.cardIds.map((cardId) => cards.find((card) => card.cardId === cardId));
@@ -549,8 +627,26 @@
       },
       async askGrant(grantId, secret, question) {
         const guide = await this.readGrant(grantId, secret);
-        const quietCard = guide.cards.find((card) => card.category === "communication") || guide.cards[0];
-        if (!quietCard || !/overwhelm|speaking|quiet/i.test(question)) {
+        const transitionCard = guide.cards.find(
+          (card) =>
+            card.category === "transitions" &&
+            hasMatchingTransitionIntent(`${card.title} ${card.statement}`, question)
+        );
+        if (transitionCard) {
+          return {
+            answer: transitionCard.statement,
+            citedCardIds: [transitionCard.cardId],
+            coverage: "grounded",
+          };
+        }
+        const quietCard = guide.cards.find(
+          (card) =>
+            (card.category === "communication" ||
+              card.category === "environment" ||
+              card.category === "regulation") &&
+            hasMatchingQuietSupportIntent(`${card.title} ${card.statement}`, question)
+        );
+        if (!quietCard) {
           return {
             answer: "That is not covered in this person's support guide.",
             citedCardIds: [],
@@ -558,7 +654,7 @@
           };
         }
         return {
-          answer: "Offer a quiet place and time. Give the person space to respond.",
+          answer: quietCard.statement,
           citedCardIds: [quietCard.cardId],
           coverage: "grounded",
         };
@@ -584,5 +680,6 @@
     parseMemoryPreview,
     parsePublicGuide,
     parseSecret,
+    replaySecretProof,
   });
 })(window);

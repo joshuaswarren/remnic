@@ -12,10 +12,18 @@
   const params = new URLSearchParams(window.location.search);
   const replayMode = params.get("mode") === "replay";
   const grantId = params.get("grant") ?? "";
+  const requestedReplayChannelId = params.get("replayChannel") ?? "";
+  const replayChannelId = replayMode
+    ? grantId
+      ? requestedReplayChannelId
+      : crypto.randomUUID()
+    : "";
   let initialHelperSecret = model.parseSecret(initialHash);
   const replayStore = replayMode ? model.createReplayStore() : null;
   const replayChannel =
-    replayMode && "BroadcastChannel" in window ? new BroadcastChannel("remnic-what-helps-me-replay") : null;
+    replayMode && /^[0-9a-f-]{36}$/i.test(replayChannelId) && "BroadcastChannel" in window
+      ? new BroadcastChannel(`remnic-what-helps-me-replay-${replayChannelId}`)
+      : null;
   const HELPER_REVALIDATION_MS = 30_000;
   const HELPER_REVALIDATION_MAX_MS = 5 * 60_000;
   const HELPER_READ_TIMEOUT_MS = 10_000;
@@ -40,6 +48,7 @@
     "missing_link",
     "session_ended",
   ]);
+  const REPLAY_SYNC_TIMEOUT_MS = 2_000;
 
   const state = {
     token: "",
@@ -64,6 +73,7 @@
     cardSavePending: false,
     notePreviewPending: false,
     draftGenerationPending: false,
+    replayInvalidatedCardIds: new Set(),
     shareCreationPending: false,
     shareCreationCardIds: null,
     displayedGrant: null,
@@ -331,6 +341,69 @@
     byId("viewMarkerText").textContent = replayMode ? "Owner replay" : "Owner view";
   }
 
+  async function requestReplaySharedGuide() {
+    if (!replayChannel) return Promise.reject(new Error("The replay share state is unavailable."));
+    const requestId = crypto.randomUUID();
+    const proof = await model.replaySecretProof(state.helperSecret, requestId, state.helperGrantId);
+    return new Promise((resolve, reject) => {
+      const finish = (callback, value) => {
+        window.clearTimeout(timeout);
+        replayChannel.removeEventListener("message", receive);
+        callback(value);
+      };
+      const receive = (event) => {
+        if (event.data?.type === "grant-state" && event.data.requestId === requestId) {
+          if (event.data.snapshot) {
+            finish(resolve, event.data.snapshot);
+            return;
+          }
+          const error = new Error("The replay share state is unavailable.");
+          error.code = event.data.errorCode ?? "grant_not_found";
+          finish(reject, error);
+        }
+      };
+      replayChannel.addEventListener("message", receive);
+      const timeout = window.setTimeout(
+        () => finish(reject, new Error("The replay share state is unavailable.")),
+        REPLAY_SYNC_TIMEOUT_MS
+      );
+      try {
+        replayChannel.postMessage({
+          type: "grant-request",
+          requestId,
+          grantId: state.helperGrantId,
+          proof,
+        });
+      } catch (error) {
+        finish(reject, error);
+      }
+    });
+  }
+
+  function bindReplayOwnerBridge() {
+    if (!replayChannel || !replayStore) return;
+    replayChannel.addEventListener("message", async (event) => {
+      const request = event.data;
+      if (
+        request?.type !== "grant-request" ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(request.requestId) ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(request.grantId) ||
+        !/^[a-f0-9]{64}$/.test(request.proof)
+      ) {
+        return;
+      }
+      const result = await replayStore.exportSharedGuide(request.grantId, request.requestId, request.proof);
+      replayChannel.postMessage({
+        type: "grant-state",
+        requestId: request.requestId,
+        ...(result.errorCode ? { errorCode: result.errorCode } : { snapshot: result }),
+      });
+    });
+    window.addEventListener("pagehide", (event) => {
+      if (!event.persisted) replayChannel.close();
+    });
+  }
+
   function renderSelectedNotes() {
     const list = byId("noteList");
     clear(list);
@@ -380,8 +453,9 @@
     updateShareCardChoices();
     try {
       let ownerStateFresh = false;
+      let invalidatedCardIds = [];
       try {
-        await api.mutateCard(
+        const result = await api.mutateCard(
           card.cardId,
           {
             expectedRevision: card.revision,
@@ -394,6 +468,9 @@
           },
           action
         );
+        if (replayMode && Array.isArray(result?.invalidatedCardIds)) {
+          invalidatedCardIds = result.invalidatedCardIds.filter((cardId) => typeof cardId === "string");
+        }
       } catch (error) {
         if (error?.code !== "request_timeout") {
           setError("generateError", errorMessage(error, "The support card did not change."));
@@ -417,6 +494,9 @@
           return;
         }
         ownerStateFresh = true;
+      }
+      if (invalidatedCardIds.length > 0) {
+        replayChannel?.postMessage({ type: "cards-stale", cardIds: invalidatedCardIds });
       }
       const message =
         action === "approve"
@@ -992,7 +1072,13 @@
         );
         return;
       }
-      const url = model.buildShareUrl(window.location.href, created.grantId, created.secret, replayMode);
+      const url = model.buildShareUrl(
+        window.location.href,
+        created.grantId,
+        created.secret,
+        replayMode,
+        replayChannelId
+      );
       clearSelection = true;
       state.displayedGrant = {
         grantId: created.grantId,
@@ -1222,12 +1308,20 @@
       showLocked(error);
       return;
     }
-    if (replayMode) replayStore.seedSharedGuide(state.helperGrantId, state.helperSecret);
     const controller = new AbortController();
     state.helperLoadController?.abort();
     state.helperLoadController = controller;
     const timeout = window.setTimeout(() => controller.abort(HELPER_READ_TIMEOUT_ABORT), HELPER_READ_TIMEOUT_MS);
     try {
+      if (replayMode) {
+        const sharedState = await requestReplaySharedGuide();
+        if (sharedState.cards.some((card) => state.replayInvalidatedCardIds.has(card.cardId))) {
+          const error = new Error("The shared support guide has changed.");
+          error.code = "grant_stale";
+          throw error;
+        }
+        replayStore.seedSharedGuide(state.helperGrantId, state.helperSecret, sharedState);
+      }
       const guide = await readHelperGuide(controller.signal);
       if (state.helperLifecyclePaused || helperViewGeneration !== state.helperViewGeneration) return;
       state.guide = guide;
@@ -1352,15 +1446,12 @@
         byId("customTimeField").hidden = input.value !== "custom" || !input.checked;
       });
     }
-    window.addEventListener("pagehide", () => {
+    window.addEventListener("pagehide", (event) => {
+      if (replayMode && event.persisted) return;
       clearOwnerSession();
     });
     window.addEventListener("pageshow", (event) => {
-      if (!event.persisted) return;
-      if (replayMode) {
-        window.location.reload();
-        return;
-      }
+      if (!event.persisted || replayMode) return;
       clearOwnerSession();
     });
   }
@@ -1428,6 +1519,19 @@
         const error = new Error("The share link is no longer active.");
         error.code = "grant_gone";
         showLocked(error);
+        return;
+      }
+      if (event.data?.type === "cards-stale" && Array.isArray(event.data.cardIds)) {
+        for (const cardId of event.data.cardIds) state.replayInvalidatedCardIds.add(cardId);
+      }
+      if (
+        event.data?.type === "cards-stale" &&
+        Array.isArray(event.data.cardIds) &&
+        state.guide?.cards.some((card) => state.replayInvalidatedCardIds.has(card.cardId))
+      ) {
+        const error = new Error("The shared support guide has changed.");
+        error.code = "grant_stale";
+        showLocked(error);
       }
     });
     window.addEventListener("pagehide", (event) => {
@@ -1476,6 +1580,7 @@
       renderSelectedNotes();
       await loadOwnerState();
       showOwner();
+      bindReplayOwnerBridge();
       return;
     }
     if (prefill) byId("tokenInput").value = prefill;
