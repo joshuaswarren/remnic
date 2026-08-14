@@ -4,6 +4,7 @@ import {
   SupportPassportCardCategorySchema,
   SupportPassportCardTitleSchema,
   SupportPassportMemoryIdSchema,
+  SupportPassportSourceMemoryIdSchema,
 } from "./contracts.js";
 import { SupportPassportPublicGuideSchema } from "./grant-contracts.js";
 
@@ -14,7 +15,7 @@ export const SupportPassportDraftCardSchema = z
     title: SupportPassportCardTitleSchema,
     statement: z.string().trim().min(1).max(500),
     category: SupportPassportCardCategorySchema,
-    sourceMemoryIds: z.array(SupportPassportMemoryIdSchema).min(1).max(5),
+    sourceMemoryIds: z.array(SupportPassportSourceMemoryIdSchema).min(1).max(5),
   })
   .strict()
   .superRefine((card, ctx) => {
@@ -40,7 +41,7 @@ export const SupportPassportDraftModelInputSchema = z
       .array(
         z
           .object({
-            memoryId: SupportPassportMemoryIdSchema,
+            memoryId: SupportPassportSourceMemoryIdSchema,
             content: z.string().trim().min(1).max(20_000),
           })
           .strict()

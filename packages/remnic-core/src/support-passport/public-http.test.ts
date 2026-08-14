@@ -5,7 +5,10 @@ import test from "node:test";
 
 import { isAbortError } from "../abort-error.js";
 import type { EngramAccessService } from "../access-service.js";
-import { buildSupportPassportPublicRequestHandler } from "./index.js";
+import {
+  type SupportPassportPublicHandlerOptions,
+  buildSupportPassportPublicRequestHandler,
+} from "./index.js";
 
 const SECRET = "s".repeat(43);
 const GUIDE = {
@@ -29,9 +32,10 @@ async function startPublicServer(
   onError: (error: unknown) => void = (error) => {
     throw error;
   },
-  onRequest: () => void = () => {}
+  onRequest: () => void = () => {},
+  handlerOptions: SupportPassportPublicHandlerOptions = {}
 ): Promise<{ server: Server; root: string }> {
-  const handler = buildSupportPassportPublicRequestHandler(service);
+  const handler = buildSupportPassportPublicRequestHandler(service, handlerOptions);
   const server = createServer((req, res) => {
     onRequest();
     void handler(req, res, { authorized: false }).catch((error) => {
@@ -101,7 +105,7 @@ test("a quota slot is reserved before a successful helper read", async () => {
   }
 });
 
-test("long helper answers release authentication capacity after the secret check", async () => {
+test("long helper answers retain authentication capacity through model work", async () => {
   const allAnswersStarted = Promise.withResolvers<void>();
   const releaseAnswers = Promise.withResolvers<void>();
   let answerCalls = 0;
@@ -130,8 +134,8 @@ test("long helper answers release authentication capacity after the secret check
     );
     await allAnswersStarted.promise;
 
-    const read = await fetch(`${root}/engram/v1/support-passport/public/grants/grant-one`, { headers });
-    assert.equal(read.status, 200, "model work must not occupy an authentication slot");
+    const blockedRead = await fetch(`${root}/engram/v1/support-passport/public/grants/grant-one`, { headers });
+    assert.equal(blockedRead.status, 429, "model work must retain its authentication slot");
 
     releaseAnswers.resolve();
     const responses = await Promise.all(asks);
@@ -139,6 +143,8 @@ test("long helper answers release authentication capacity after the secret check
       responses.map((response) => response.status),
       Array(8).fill(200)
     );
+    const admittedRead = await fetch(`${root}/engram/v1/support-passport/public/grants/grant-one`, { headers });
+    assert.equal(admittedRead.status, 200);
   } finally {
     releaseAnswers.resolve();
     await stopServer(server);
@@ -367,6 +373,38 @@ test("forwarded addresses cannot bypass the network failure limit", async () => 
       body: "{}",
     });
     assert.equal(rejected.status, 429);
+  } finally {
+    await stopServer(server);
+  }
+});
+
+test("an explicit trusted proxy separates helper network limits", async () => {
+  const service = {
+    supportPassportReadGrant: async () => GUIDE,
+  } as unknown as EngramAccessService;
+  const { server, root } = await startPublicServer(
+    service,
+    undefined,
+    undefined,
+    { trustedProxyAddresses: ["127.0.0.1"] }
+  );
+  const url = `${root}/engram/v1/support-passport/public/grants/grant-one/ask`;
+  const requestFrom = async (address: string) =>
+    await fetch(url, {
+      method: "POST",
+      headers: {
+        authorization: `SupportPassport ${SECRET}`,
+        "content-type": "application/json",
+        "x-forwarded-for": address,
+      },
+      body: "{}",
+    });
+  try {
+    for (let index = 0; index < 20; index += 1) {
+      assert.equal((await requestFrom("198.51.100.10")).status, 400);
+    }
+    assert.equal((await requestFrom("198.51.100.10")).status, 429);
+    assert.equal((await requestFrom("198.51.100.11")).status, 400);
   } finally {
     await stopServer(server);
   }

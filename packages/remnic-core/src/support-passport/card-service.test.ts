@@ -47,7 +47,7 @@ async function makeSubject() {
   };
 }
 
-async function makeSharedStorageSubject() {
+async function makeSharedStorageSubject(namespaceOverride?: string) {
   StorageManager.clearAllStaticCaches();
   const root = await mkdtemp(path.join(tmpdir(), "remnic-support-passport-shared-"));
   const storage = new StorageManager(path.join(root, "shared"));
@@ -55,8 +55,8 @@ async function makeSharedStorageSubject() {
   const service = new SupportPassportCardService({
     now: () => new Date("2026-08-11T12:00:00.000Z"),
     resolveOwner: async (principal) => {
-      if (principal === "owner:alice") return { principal, namespace: "alice", storage };
-      if (principal === "owner:bob") return { principal, namespace: "bob", storage };
+      if (principal === "owner:alice") return { principal, namespace: namespaceOverride ?? "alice", storage };
+      if (principal === "owner:bob") return { principal, namespace: namespaceOverride ?? "bob", storage };
       throw new Error("unknown test principal");
     },
   });
@@ -344,12 +344,8 @@ test("card operations preserve configured default namespace identities", async (
       reviewBy: OWNER_REVIEW_BY,
     });
     assert.deepEqual(await service.listCards({ principal: "owner:alice" }), [card]);
-    assert.equal(
-      decodeSupportPassportNamespaceAttributes(
-        (await storage.getMemoryById(card.cardId))?.frontmatter.structuredAttributes ?? {},
-      ),
-      namespace
-    );
+    const stored = await storage.getMemoryById(card.cardId);
+    assert.equal(decodeSupportPassportNamespaceAttributes(stored?.frontmatter.structuredAttributes ?? {}), namespace);
   } finally {
     StorageManager.clearAllStaticCaches();
     await rm(root, { recursive: true, force: true });
@@ -841,7 +837,8 @@ test("rejecting a source draft rejects its interrupted hidden replacement", asyn
 });
 
 test("replacement audits retain the card owner scope and omit internal attributes", async () => {
-  const subject = await makeSharedStorageSubject();
+  const namespace = "team]primary\ncare";
+  const subject = await makeSharedStorageSubject(namespace);
   try {
     const draft = await subject.service.createManualDraft({
       principal: "owner:alice",
@@ -883,10 +880,10 @@ test("replacement audits retain the card owner scope and omit internal attribute
     );
     assert.equal(stripAttributesSuffix(audit.content).includes("support-passport-title"), false);
     assert.equal(audit.frontmatter.source, "support-passport");
-    assert.equal(
-      decodeSupportPassportNamespaceAttributes(audit.frontmatter.structuredAttributes ?? {}),
-      "alice"
-    );
+    const auditAttributes = audit.frontmatter.structuredAttributes;
+    assert.ok(auditAttributes);
+    assert.equal(decodeSupportPassportNamespaceAttributes(auditAttributes), namespace);
+    assert.notEqual(auditAttributes["support-passport-namespace"], namespace);
     assert.equal(
       audit.frontmatter.structuredAttributes?.["support-passport-owner"],
       (await subject.storage.getMemoryById(active.cardId))?.frontmatter.structuredAttributes?.["support-passport-owner"]

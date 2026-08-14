@@ -86,6 +86,14 @@ test("card projection rejects duplicate normalized source IDs", () => {
   assert.equal(projectSupportPassportCard(makeMemory({ sourceMemoryIds: "source-1, source-1 " })), null);
 });
 
+test("card projection reads opaque source IDs from core lineage", () => {
+  const memory = makeMemory();
+  memory.frontmatter.lineage = ["Imported memory / café, 1"];
+  delete memory.frontmatter.structuredAttributes?.["support-passport-source-ids"];
+
+  assert.deepEqual(projectSupportPassportCard(memory)?.sourceMemoryIds, ["Imported memory / café, 1"]);
+});
+
 test("card projection rejects superseded status without relying on supersededBy", () => {
   assert.equal(projectSupportPassportCard(makeMemory({ status: "superseded" })), null);
 });

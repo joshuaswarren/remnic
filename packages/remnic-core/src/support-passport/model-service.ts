@@ -12,8 +12,8 @@ import type { SupportPassportOwnerScope } from "./card-state.js";
 import {
   type SupportPassportCard,
   SupportPassportListCardsInputSchema,
-  SupportPassportMemoryIdSchema,
   SupportPassportNamespaceSchema,
+  SupportPassportSourceMemoryIdSchema,
 } from "./contracts.js";
 import { SupportPassportError } from "./errors.js";
 import type { SupportPassportGrantService } from "./grant-service.js";
@@ -28,12 +28,12 @@ import type { SupportPassportAnswerOutput } from "./model-contracts.js";
 const DraftServiceInputSchema = z
   .object({
     principal: z.string().trim().min(1).max(512),
-    sourceMemoryIds: z.array(SupportPassportMemoryIdSchema).min(1).max(20),
+    sourceMemoryIds: z.array(SupportPassportSourceMemoryIdSchema).min(1).max(20),
     sourceMemoryRevisions: z
       .array(
         z
           .object({
-            memoryId: SupportPassportMemoryIdSchema,
+            memoryId: SupportPassportSourceMemoryIdSchema,
             revision: z.string().regex(/^[0-9a-f]{64}$/),
           })
           .strict()

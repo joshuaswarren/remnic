@@ -1,7 +1,11 @@
 import { z } from "zod";
 
 import { defineOperation } from "../access-boundary.js";
-import { SupportPassportCardCategorySchema, SupportPassportMemoryIdSchema } from "./contracts.js";
+import {
+  SupportPassportCardCategorySchema,
+  SupportPassportMemoryIdSchema,
+  SupportPassportSourceMemoryIdSchema,
+} from "./contracts.js";
 import { SupportPassportCreateGrantRequestSchema } from "./grant-contracts.js";
 
 const IsoTimestampSchema = z.string().datetime({ offset: true });
@@ -31,9 +35,9 @@ const ManualDraftSchema = z
 
 const GenerateDraftsSchema = z
   .object({
-    sourceMemoryIds: z.array(SupportPassportMemoryIdSchema).min(1).max(20),
+    sourceMemoryIds: z.array(SupportPassportSourceMemoryIdSchema).min(1).max(20),
     sourceMemoryRevisions: z
-      .array(z.object({ memoryId: SupportPassportMemoryIdSchema, revision: RevisionSchema }).strict())
+      .array(z.object({ memoryId: SupportPassportSourceMemoryIdSchema, revision: RevisionSchema }).strict())
       .min(1)
       .max(20),
     consent: z.literal(true),
@@ -99,7 +103,7 @@ function principal(value: string | undefined): string {
 export const supportPassportMemoryPreviewOperation = defineOperation({
   name: "support_passport_memory_preview",
   description: "Preview one owner memory and bind it to a support-card consent revision.",
-  schema: z.object({ memoryId: SupportPassportMemoryIdSchema }).strict(),
+  schema: z.object({ memoryId: SupportPassportSourceMemoryIdSchema }).strict(),
   handler: async (input, ctx) => ({
     result: await ctx.service.supportPassportPreviewMemory(principal(ctx.authenticatedPrincipal), input.memoryId),
   }),

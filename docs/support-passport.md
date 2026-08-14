@@ -85,6 +85,12 @@ Public responses set `Cache-Control: private, no-store` and
 `Vary: Authorization`. Read and question limits apply to both the grant and a
 SHA-256 network digest. Remnic stores no raw network address.
 
+Remnic ignores forwarded addresses by default. If a reverse proxy serves the
+helper routes, list its exact IP address in
+`supportPassport.trustedProxyAddresses`. The proxy must overwrite or safely
+append `X-Forwarded-For`. Remnic then walks the proxy chain from the trusted
+connection toward the first untrusted client address.
+
 See the [support passport threat model](security/support-passport-threat-model.md)
 for the full boundaries.
 

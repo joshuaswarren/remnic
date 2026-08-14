@@ -60,7 +60,9 @@ export abstract class SupportPassportAccessHttpBase {
   }
 
   protected handleSupportPassportPublicRequest(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
-    this.supportPassportPublicHandler ??= buildSupportPassportPublicRequestHandler(this.service);
+    this.supportPassportPublicHandler ??= buildSupportPassportPublicRequestHandler(this.service, {
+      trustedProxyAddresses: this.service.configRef?.supportPassport?.trustedProxyAddresses ?? [],
+    });
     return this.supportPassportPublicHandler(req, res, { authorized: false });
   }
 
