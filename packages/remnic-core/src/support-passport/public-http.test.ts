@@ -9,6 +9,7 @@ import {
   type SupportPassportPublicHandlerOptions,
   buildSupportPassportPublicRequestHandler,
 } from "./index.js";
+import { normalizeSupportPassportNetworkAddress } from "./public-http.js";
 
 const SECRET = "s".repeat(43);
 const GUIDE = {
@@ -415,6 +416,13 @@ test("an explicit trusted proxy separates helper network limits", async () => {
   } finally {
     await stopServer(server);
   }
+});
+
+test("trusted proxy matching canonicalizes equivalent IPv6 addresses", () => {
+  assert.equal(normalizeSupportPassportNetworkAddress("0:0:0:0:0:0:0:1"), "::1");
+  assert.equal(normalizeSupportPassportNetworkAddress("2001:0DB8:0:0:0:0:0:1"), "2001:db8::1");
+  assert.equal(normalizeSupportPassportNetworkAddress("::ffff:192.0.2.1"), "192.0.2.1");
+  assert.equal(normalizeSupportPassportNetworkAddress("0:0:0:0:0:ffff:c000:201"), "192.0.2.1");
 });
 
 test("a helper disconnect during the question body becomes an abort", async () => {

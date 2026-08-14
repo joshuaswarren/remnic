@@ -275,22 +275,28 @@ async function readGrantWithRateLimits(
   }
 }
 
-function normalizeNetworkAddress(value: string | undefined): string | undefined {
+export function normalizeSupportPassportNetworkAddress(value: string | undefined): string | undefined {
   if (!value) return undefined;
   const address = value.trim().toLowerCase();
-  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(address)?.[1];
-  if (mapped && isIP(mapped) === 4) return mapped;
-  return isIP(address) === 0 ? undefined : address;
+  const family = isIP(address);
+  if (family === 0) return undefined;
+  if (family === 4) return address;
+  const canonical = new URL(`http://[${address}]/`).hostname.slice(1, -1);
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(canonical);
+  if (!mapped) return canonical;
+  const high = Number.parseInt(mapped[1] ?? "", 16);
+  const low = Number.parseInt(mapped[2] ?? "", 16);
+  return `${high >>> 8}.${high & 0xff}.${low >>> 8}.${low & 0xff}`;
 }
 
 function requestNetworkAddress(req: IncomingMessage, trustedProxyAddresses: ReadonlySet<string>): string {
-  const directAddress = normalizeNetworkAddress(req.socket.remoteAddress) ?? "unknown";
+  const directAddress = normalizeSupportPassportNetworkAddress(req.socket.remoteAddress) ?? "unknown";
   if (!trustedProxyAddresses.has(directAddress)) return directAddress;
   const forwarded = req.headers["x-forwarded-for"];
   if (typeof forwarded !== "string") return directAddress;
   const rawAddresses = forwarded.split(",");
   if (rawAddresses.length < 1 || rawAddresses.length > 32) return directAddress;
-  const addresses = rawAddresses.map((address) => normalizeNetworkAddress(address));
+  const addresses = rawAddresses.map((address) => normalizeSupportPassportNetworkAddress(address));
   if (addresses.some((address) => address === undefined)) return directAddress;
   for (let index = addresses.length - 1; index >= 0; index -= 1) {
     const address = addresses[index];
@@ -458,7 +464,7 @@ export function buildSupportPassportPublicRequestHandler(
   const rateLimits = createRateLimits(options.now ?? Date.now);
   const trustedProxyAddresses = new Set(
     (options.trustedProxyAddresses ?? [])
-      .map((address) => normalizeNetworkAddress(address))
+      .map((address) => normalizeSupportPassportNetworkAddress(address))
       .filter((address): address is string => address !== undefined)
   );
   return async (req, res) => {
