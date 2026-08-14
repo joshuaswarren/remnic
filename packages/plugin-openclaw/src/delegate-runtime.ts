@@ -151,6 +151,7 @@ export interface DelegateHookApi extends DelegateCapabilityApi {
   }): void;
 }
 const DELEGATE_BATCH_FLUSH_CACHE_TTL_MS = 30_000;
+const delegatePassportServiceApiServices = new WeakMap<object, Set<string>>();
 
 import {
   getJson,
@@ -250,7 +251,12 @@ export function registerDelegateRuntime(
   const { target, namespace, namespaceBindings } = options;
   const now = options.now ?? Date.now;
   if (options.supportPassportModelRoute) {
-    if (typeof api.registerService !== "function") {
+    const registeredServices = delegatePassportServiceApiServices.get(api);
+    if (registeredServices?.has(options.serviceId)) {
+      log.debug(
+        `delegate register: ${options.serviceId} already has its support passport model service on this api`,
+      );
+    } else if (typeof api.registerService !== "function") {
       log.error(
         `[${options.serviceId}] delegate support passport gateway routing is unavailable: host exposes no service registration surface`,
       );
@@ -262,6 +268,11 @@ export function registerDelegateRuntime(
           route: options.supportPassportModelRoute,
         }),
       );
+      const services = registeredServices ?? new Set<string>();
+      services.add(options.serviceId);
+      if (registeredServices === undefined) {
+        delegatePassportServiceApiServices.set(api, services);
+      }
     }
   }
   if (options.passive) {
