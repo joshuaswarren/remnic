@@ -47,51 +47,136 @@ function estimateTokens(text: string): number {
 
 /**
  * Split text into sentences.
- * Handles common abbreviations and edge cases.
+ *
+ * The scan stays linear and does not use a backtracking regular expression.
+ * ASCII punctuation keeps its old whitespace rule. Unicode terminators also
+ * split when the next sentence starts immediately, as in CJK text.
  */
-function splitSentences(text: string): string[] {
-  // Split on sentence-ending punctuation (. ! ?) that is followed by whitespace
-  // or end of string; the punctuation stays with the sentence.
-  //
-  // Implemented as a single linear scan rather than a regex. Every regex form of
-  // this split is either polynomial (CodeQL js/polynomial-redos) or — once
-  // bounded/anchored to satisfy CodeQL — mishandles long runs or non-boundary
-  // punctuation (a global match silently drops a skipped prefix; a sticky match
-  // stops at the first interior `.` that is not a real boundary, e.g. "v1.2.3"
-  // or "example.com", emitting the whole document as one chunk). A character
-  // scan is O(n), allocation-free, drops nothing, and treats interior
-  // punctuation correctly. Normal prose splits identically to the previous
-  // /[^.!?]*[.!?]+(?:\s+|$)/g form.
-  const sentences: string[] = [];
+const UNICODE_SENTENCE_TERMINATORS = "。．！？؟۔।॥｡…";
+const ASCII_SENTENCE_TERMINATORS = ".!?";
+const CJK_NO_SPACE_TERMINATORS = "。．！？｡";
+const CLOSING_PUNCTUATION = "\"'”’»」』）］】〉》)]}";
+const DIGITS = "0123456789０１２３４５６７８９";
+const SENTENCE_SEGMENTER =
+  typeof Intl.Segmenter === "function"
+    ? new Intl.Segmenter(undefined, { granularity: "sentence" })
+    : undefined;
+
+function isSentenceTerminator(character: string): boolean {
+  return (
+    ASCII_SENTENCE_TERMINATORS.includes(character) ||
+    UNICODE_SENTENCE_TERMINATORS.includes(character)
+  );
+}
+
+function isCjk(character: string): boolean {
+  return /[\u3000-\u9fff\uf900-\ufaff\uac00-\ud7af]/u.test(character);
+}
+
+type SentenceList = string[] & { separators: string[] };
+
+function splitSentencesFallback(text: string): SentenceList {
+  const sentences = [] as unknown as SentenceList;
+  Object.defineProperty(sentences, "separators", {
+    value: [],
+    writable: true,
+  });
   let start = 0;
+  let separator = "";
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
-    if (ch !== "." && ch !== "!" && ch !== "?") continue;
-    // Consume a run of terminators (e.g. "?!", "...").
+    if (!isSentenceTerminator(ch)) continue;
+
     let end = i;
-    while (end + 1 < text.length) {
-      const n = text[end + 1];
-      if (n !== "." && n !== "!" && n !== "?") break;
+    let hasUnicodeTerminator = UNICODE_SENTENCE_TERMINATORS.includes(ch);
+    while (end + 1 < text.length && isSentenceTerminator(text[end + 1])) {
+      end++;
+      hasUnicodeTerminator ||= UNICODE_SENTENCE_TERMINATORS.includes(text[end]);
+    }
+
+    const isFullwidthDecimal =
+      ch === "．" &&
+      DIGITS.includes(text[i - 1] ?? "") &&
+      DIGITS.includes(text[end + 1] ?? "");
+    while (end + 1 < text.length && CLOSING_PUNCTUATION.includes(text[end + 1])) {
       end++;
     }
+
     const after = text[end + 1];
-    // A real boundary only if the terminator run ends the string or is followed
-    // by whitespace. Interior punctuation (no following whitespace) is left in
-    // place and the scan continues.
-    if (after === undefined || /\s/.test(after)) {
+    const boundary =
+      !isFullwidthDecimal &&
+      (hasUnicodeTerminator || after === undefined || /\s/u.test(after));
+    if (boundary) {
       const sentence = text.slice(start, end + 1).trim();
-      if (sentence.length > 0) sentences.push(sentence);
-      start = end + 1;
+      if (sentence.length > 0) {
+        sentences.push(sentence);
+        if (sentences.length > 1) sentences.separators.push(separator);
+      }
+      let nextStart = end + 1;
+      while (nextStart < text.length && /\s/u.test(text[nextStart])) nextStart++;
+      separator = text.slice(end + 1, nextStart);
+      start = nextStart;
     }
     i = end;
   }
-  // Trailing text without a closing terminator.
-  if (start < text.length) {
-    const remaining = text.slice(start).trim();
-    if (remaining.length > 0) sentences.push(remaining);
+
+  const remaining = text.slice(start).trim();
+  if (remaining.length > 0) {
+    sentences.push(remaining);
+    if (sentences.length > 1) sentences.separators.push(separator);
   }
   return sentences;
 }
+export function splitSentences(text: string): string[] {
+  const canUseSegmenter =
+    SENTENCE_SEGMENTER !== undefined &&
+    !/\s/u.test(text) &&
+    [...text].some((character) => UNICODE_SENTENCE_TERMINATORS.includes(character));
+  if (canUseSegmenter) {
+    const segments = Array.from(SENTENCE_SEGMENTER.segment(text), ({ segment }) =>
+      segment.trim(),
+    ).filter((segment) => segment.length > 0) as SentenceList;
+    if (
+      segments.length > 1 &&
+      segments.slice(0, -1).every((segment) =>
+        [...segment].some((character) =>
+          UNICODE_SENTENCE_TERMINATORS.includes(character),
+        ),
+      )
+    ) {
+      Object.defineProperty(segments, "separators", {
+        value: Array(segments.length - 1).fill(""),
+        writable: true,
+      });
+      return segments;
+    }
+  }
+  return splitSentencesFallback(text);
+}
+
+function endsWithoutSpace(text: string): boolean {
+  let index = text.length - 1;
+  while (index >= 0 && CLOSING_PUNCTUATION.includes(text[index])) index--;
+  const terminator = text[index] ?? "";
+  if (CJK_NO_SPACE_TERMINATORS.includes(terminator)) {
+    return isCjk(text[index - 1] ?? "");
+  }
+  return terminator === "…" && isCjk(text[index - 1] ?? "");
+}
+export function joinSentences(sentences: string[]): string {
+  let result = "";
+  const separators = (sentences as Partial<SentenceList>).separators;
+  for (let i = 0; i < sentences.length; i++) {
+    const sentence = sentences[i];
+    if (result.length > 0) {
+      const separator = separators?.[i - 1];
+      result += separator ?? (endsWithoutSpace(result) ? "" : " ");
+    }
+    result += sentence;
+  }
+  return result;
+}
+
 
 /**
  * Chunk content into overlapping segments at sentence boundaries.
@@ -152,7 +237,7 @@ export function chunkContent(
 
     if (atTarget || isLastSentence) {
       // Create chunk from accumulated sentences
-      const chunkContent = currentChunkSentences.join(" ");
+      const chunkContent = joinSentences(currentChunkSentences);
       chunks.push({
         content: chunkContent,
         index: chunkIndex,
@@ -216,14 +301,14 @@ export function reassembleChunks(chunks: string[]): string {
       const prevEnd = prevSentences.slice(-(j + 1));
       const currStart = currSentences.slice(0, j + 1);
 
-      if (prevEnd.join(" ") === currStart.join(" ")) {
+      if (joinSentences(prevEnd) === joinSentences(currStart)) {
         overlapCount = j + 1;
       }
     }
 
     // Add non-overlapping portion
     if (overlapCount > 0 && overlapCount < currSentences.length) {
-      result.push(currSentences.slice(overlapCount).join(" "));
+      result.push(joinSentences(currSentences.slice(overlapCount)));
     } else if (overlapCount === 0) {
       // No detected overlap, add full chunk
       result.push(currChunk);
@@ -231,5 +316,5 @@ export function reassembleChunks(chunks: string[]): string {
     // If overlapCount === currSentences.length, skip (fully contained)
   }
 
-  return result.join(" ");
+  return joinSentences(result);
 }
