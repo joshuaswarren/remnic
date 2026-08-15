@@ -33,14 +33,14 @@ test("injection-suite parses live executor flags", () => {
     "--executor",
     "ollama",
     "--model",
-    "qwen2.5:7b-instruct",
+    "qwen3.8-27b-64k:latest",
     "--base-url",
     "http://127.0.0.1:11434",
   ]);
   assert.ok(!("help" in parsed));
   if ("help" in parsed) return;
   assert.equal(parsed.executor, "ollama");
-  assert.equal(parsed.model, "qwen2.5:7b-instruct");
+  assert.equal(parsed.model, "qwen3.8-27b-64k:latest");
   assert.equal(parsed.baseUrl, "http://127.0.0.1:11434");
 });
 

@@ -31,8 +31,8 @@ Options:
                             ollama = native /api/chat
                             openai-compat = /v1/chat/completions
   --base-url URL            Endpoint (default: http://127.0.0.1:11434)
-  --model NAME              Model id (default: qwen2.5:7b-instruct)
-  --request-timeout-ms N    Per-call timeout (default: 120000)
+  --model NAME              Model id (default: qwen3.8-27b-64k:latest)
+  --request-timeout-ms N    Per-call timeout (default: 300000)
   --out DIR                 New run directory (default: ~/.remnic/bench/results/h5-injection-suite)
   --run DIR                 Existing run directory; implies --resume
   --resume                  Continue an existing run (required if DIR already has run.json)
