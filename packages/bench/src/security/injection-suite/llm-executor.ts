@@ -1,9 +1,9 @@
 /**
  * Live-model executor for one H5 injection-suite row (#1962).
  *
- * Talks native Ollama /api/chat by default (jarvis / Apple boxes) or an
- * OpenAI-compatible /v1/chat/completions endpoint. Network/5xx/timeout
- * become HOST_API_FAULT so the suite pauses instead of cutting the row.
+ * Talks native Ollama /api/chat by default or an OpenAI-compatible
+ * /v1/chat/completions endpoint. Network/5xx/timeout become
+ * HOST_API_FAULT so the suite pauses instead of cutting the row.
  */
 
 import { renderAuthorityFence, screenCandidateFact } from "@remnic/core";

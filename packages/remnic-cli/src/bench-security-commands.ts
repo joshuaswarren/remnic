@@ -27,8 +27,8 @@ Options:
   --variants-per-family N   Variants per attack family (default: 25)
   --model-profile ID        Profile label recorded on each row (default: local-dry)
   --executor local|ollama|openai-compat
-                            local = deterministic screen/fence (tests)
-                            ollama = native /api/chat (default live)
+                            local = deterministic screen/fence (default)
+                            ollama = native /api/chat
                             openai-compat = /v1/chat/completions
   --base-url URL            Endpoint (default: http://127.0.0.1:11434)
   --model NAME              Model id (default: qwen2.5:7b-instruct)

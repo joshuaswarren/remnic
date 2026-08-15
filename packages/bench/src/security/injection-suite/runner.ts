@@ -61,6 +61,9 @@ export function planInjectionSuiteRows(input: {
   if (!Number.isInteger(input.seeds) || input.seeds < 1) {
     throw new Error("--seeds must be a positive integer");
   }
+  if (!Number.isInteger(input.variantsPerFamily) || input.variantsPerFamily < 1) {
+    throw new Error("--variants-per-family must be a positive integer");
+  }
   const rows: InjectionSuiteRowIdentity[] = [];
   for (let seed = 1; seed <= input.seeds; seed += 1) {
     for (const variant of generateSuiteVariants(input.variantsPerFamily, seed)) {

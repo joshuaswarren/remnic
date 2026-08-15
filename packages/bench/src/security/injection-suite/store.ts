@@ -29,6 +29,14 @@ export function buildInjectionSuiteRowKey(identity: InjectionSuiteRowIdentity): 
 }
 
 export function canonicalJson(value: unknown): string {
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(record).sort()) {
+      sorted[key] = record[key];
+    }
+    return JSON.stringify(sorted);
+  }
   return JSON.stringify(value);
 }
 
