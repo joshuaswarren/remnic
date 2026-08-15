@@ -5,6 +5,8 @@
  * Preserves coherent thoughts by never splitting mid-sentence.
  */
 
+import { estimateTokenCount } from "./token-estimate.js";
+
 export interface ChunkingConfig {
   /** Target tokens per chunk (default 200) */
   targetTokens: number;
@@ -36,14 +38,6 @@ export const DEFAULT_CHUNKING_CONFIG: ChunkingConfig = {
   minTokens: 150,
   overlapSentences: 2,
 };
-
-/**
- * Estimate token count for text.
- * Rough approximation: ~4 characters per token for English.
- */
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
 
 /**
  * Split text into sentences.
@@ -104,7 +98,7 @@ export function chunkContent(
   content: string,
   config: ChunkingConfig = DEFAULT_CHUNKING_CONFIG,
 ): ChunkResult {
-  const totalTokens = estimateTokens(content);
+  const totalTokens = estimateTokenCount(content);
 
   // Don't chunk if below minimum threshold
   if (totalTokens < config.minTokens) {
@@ -139,7 +133,7 @@ export function chunkContent(
 
   for (let i = 0; i < sentences.length; i++) {
     const sentence = sentences[i];
-    const sentenceTokens = estimateTokens(sentence);
+    const sentenceTokens = estimateTokenCount(sentence);
 
     // Add sentence to current chunk
     currentChunkSentences.push(sentence);
@@ -156,7 +150,7 @@ export function chunkContent(
       chunks.push({
         content: chunkContent,
         index: chunkIndex,
-        tokenCount: estimateTokens(chunkContent),
+        tokenCount: estimateTokenCount(chunkContent),
       });
       chunkIndex++;
 
@@ -171,7 +165,7 @@ export function chunkContent(
           currentTokens = 0;
         } else {
           currentChunkSentences = currentChunkSentences.slice(-overlapCount);
-          currentTokens = currentChunkSentences.reduce((sum, s) => sum + estimateTokens(s), 0);
+          currentTokens = currentChunkSentences.reduce((sum, s) => sum + estimateTokenCount(s), 0);
         }
       }
     }

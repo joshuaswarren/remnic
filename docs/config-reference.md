@@ -206,9 +206,9 @@ QMD, hot facts, or default recall. See [External wiki search](external-wikis.md)
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `recallBudgetChars` | `maxMemoryTokens * 4` | **Total character budget for assembled recall context.** Controls how much memory context is injected into agent prompts. If unset, falls back to `maxMemoryTokens * 4`. See [Recall Budget Tuning](#recall-budget-tuning) below. |
+| `recallBudgetChars` | `maxMemoryTokens` | **Total character budget for assembled recall context.** Controls how much memory context is injected into agent prompts. If unset, uses a one-code-point-per-token cap derived from `maxMemoryTokens`, which keeps wide-script content within the documented token limit. |
 | `recallProfileMaxRatio` | `0.3` | Maximum fraction of `recallBudgetChars` available to the behavioral profile. The profile truncates at a line boundary so query-specific memory results can claim the remaining budget. Set to `1` to disable the share cap. |
-| `maxMemoryTokens` | `2000` | Legacy token cap. Only used to compute `recallBudgetChars` when that setting is absent. **Prefer setting `recallBudgetChars` directly.** |
+| `maxMemoryTokens` | `2000` | Token cap used to derive `recallBudgetChars` when that setting is absent. **Prefer setting `recallBudgetChars` directly** when you need a custom character cap. |
 | `recallMaxConcurrentPerPrincipal` | `4` | Maximum concurrent recalls executed per principal (issue #1906); recalls beyond the cap queue FIFO. `0` = unlimited; set `1` to restore exact serialization. |
 | `recallSingleFlightEnabled` | `true` | Coalesce identical concurrent recalls for the same principal into a single in-flight execution (issue #1906); each caller still receives its own cloned response. Set `false` to restore per-request execution. |
 | `recallCoreDeadlineMs` | `75000` | **Per-section deadline for optional core recall providers.** `entity-retrieval` and `verbatim-artifacts` scan the memory tree, which can take minutes on a large or network/bind-mounted store; when one exceeds this budget the section is dropped, logged as `timeout(<ms>)` in the recall section metrics, and signalled to stop, while the rest of the recall still returns (issue #2291). Lower it (for example `5000`) when recall is consumed by a **synchronous** prompt-injection hook that cannot wait. `0` disables the bound. **The effective value is capped at 80% of the request budget still remaining when the section starts** — see the note below. |
@@ -258,7 +258,7 @@ QMD, hot facts, or default recall. See [External wiki search](external-wikis.md)
 | `entityActivityLogMaxEntries` | `20` | Max recent activity entries retained per entity |
 | `entityAliasesEnabled` | `true` | Track normalized aliases for entity resolution and merge safety |
 | `entitySummaryEnabled` | `true` | Maintain synthesized entity summaries used by retrieval and tooling |
-| `recallBudgetChars` | `maxMemoryTokens * 4` | Hard cap for total assembled recall context (final safety trim before system prompt injection) |
+| `recallBudgetChars` | `maxMemoryTokens` | Hard cap for total assembled recall context (final safety trim before system prompt injection). When unset, the parser derives this cap from `maxMemoryTokens` with one code point per token. |
 | `recallProfileMaxRatio` | `0.3` | Maximum fraction of the final recall character budget available to the behavioral profile; set to `1` to disable the share cap |
 | `recallPipeline` | `(built-in ordered defaults)` | Ordered section controls for recall assembly, including per-section caps and knobs |
 | `recallDirectAnswerEnabled` | `false` | Opt in to the direct-answer retrieval tier (issue #518). When enabled, the tier runs in observation mode: it annotates recall tier explain data without short-circuiting the QMD path. See [Retrieval Explain](./retrieval-explain.md). |
@@ -328,7 +328,7 @@ The recall budget controls how much context Remnic injects into each agent promp
 
 **How it works (v9.0.66+):** Remnic assembles recall context in pipeline section order (shared-context → profile → entity retrieval → knowledge index → ... → memories → transcripts → summaries). The budget-aware assembler reserves space for the `memories` section so earlier sections cannot fully exhaust the budget. However, the reservation is minimal (heading-sized). If the total budget is too small, earlier sections still crowd out memory content.
 
-**Common pitfall:** The default budget is `maxMemoryTokens * 4` = **8,000 chars**. A typical profile is 4,000–8,000 chars and shared context adds another 4,000–6,000 chars. With these defaults, the `memories` section is still included (it is a protected section), but may be truncated to heading-only (~24 chars) with no actual memory content. The `lastRecall` state file will show successful memory retrieval (non-empty `memoryIds`) but the agent sees only the section heading because the content was truncated during context assembly.
+**Common pitfall:** The default budget is `maxMemoryTokens` = **2,000 chars**. The cap is conservative for English but prevents wide-script recall content from exceeding the documented token limit. Set `recallBudgetChars` explicitly when you need a larger character budget for English-heavy context.
 
 **Recommended values:**
 

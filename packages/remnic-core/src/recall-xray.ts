@@ -19,24 +19,17 @@
 
 import { randomUUID } from "node:crypto";
 
-import {
-  normalizeRetrievedMemoryProvenance,
-  type RetrievedMemoryProvenance,
-} from "./memory-provenance.js";
+import { normalizeRetrievedMemoryProvenance, type RetrievedMemoryProvenance } from "./memory-provenance.js";
+import { estimateTokenCount } from "./token-estimate.js";
 import type { RecallDisclosure, RecallTierExplain } from "./types.js";
 import { isRecallDisclosure } from "./types.js";
 
 /**
- * Estimate token cost of a payload at the rough ~4 chars/token English
- * heuristic.  Non-negative integer; returns 0 for empty / null input.
- * Used by recall surfaces to attach `estimatedTokens` to X-ray results
- * (issue #677 PR 3/4).  Identical to the private heuristic in
- * `chunking.ts`; kept self-contained here so X-ray callers don't pull
- * in chunking internals.
+ * Estimate token cost of a payload for X-ray disclosure accounting.
  */
 export function estimateRecallTokens(text: string | null | undefined): number {
   if (typeof text !== "string" || text.length === 0) return 0;
-  return Math.ceil(text.length / 4);
+  return estimateTokenCount(text);
 }
 
 /**

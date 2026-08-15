@@ -4508,7 +4508,9 @@ function buildRecallPipelineConfig(cfg: Record<string, unknown>): RecallPipeline
       ? Math.max(0, Math.floor(cfg.maxMemoryTokens))
       : 2000;
   const recallBudgetCharsRaw = clampNonNegativeNumber(cfg.recallBudgetChars);
-  const recallBudgetChars = recallBudgetCharsRaw ?? maxMemoryTokens * 4;
+  // Use a one-code-point-per-token cap when no character budget is set. This
+  // keeps maxMemoryTokens safe for CJK and other wide-script recall content.
+  const recallBudgetChars = recallBudgetCharsRaw ?? maxMemoryTokens;
 
   const rawPipeline = cfg.recallPipeline;
   const pipeline = Array.isArray(rawPipeline)

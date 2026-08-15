@@ -1,9 +1,9 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import test from "node:test";
 
 import {
-  renderMemorySummary,
   approximateTokenCount,
+  renderMemorySummary,
   truncateToTokenBudget,
 } from "../src/connectors/codex-materialize.js";
 import type { MemoryFile } from "../src/types.js";
@@ -25,11 +25,11 @@ function makeMemory(content: string, id: string): MemoryFile {
   };
 }
 
-test("approximateTokenCount counts whitespace-separated tokens", () => {
+test("approximateTokenCount uses the shared script-aware estimate", () => {
   assert.equal(approximateTokenCount(""), 0);
   assert.equal(approximateTokenCount("one"), 1);
-  assert.equal(approximateTokenCount("one two three"), 3);
-  assert.equal(approximateTokenCount("  leading  and  trailing  "), 3);
+  assert.equal(approximateTokenCount("one two three"), 4);
+  assert.equal(approximateTokenCount("日本語の記憶"), 6);
 });
 
 test("truncateToTokenBudget leaves small content alone", () => {
@@ -40,7 +40,7 @@ test("truncateToTokenBudget leaves small content alone", () => {
 test("truncateToTokenBudget drops trailing content over budget", () => {
   const text = "one two three four five six seven eight nine ten eleven twelve";
   const result = truncateToTokenBudget(text, 5);
-  assert.ok(approximateTokenCount(result) <= 5 + 1);
+  assert.ok(approximateTokenCount(result) <= 5);
   assert.match(result, /truncated/u);
 });
 

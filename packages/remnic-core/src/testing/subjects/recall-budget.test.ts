@@ -9,7 +9,7 @@
  *
  * The nine rows are realized honestly against the coordinator's REAL behavior —
  * no mocks. Config is built through the production `parseConfig` path so the
- * budget derivation (recallBudgetChars = maxMemoryTokens * 4), section
+ * budget derivation (recallBudgetChars = maxMemoryTokens), section
  * enablement filtering, per-section maxChars caps, and cap-after-filter
  * ordering are all exercised as they ship. Each row asserts one recall-budget
  * contract invariant:
@@ -297,9 +297,9 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         return;
       }
       case "sparse-metadata-with-binding": {
-        // Budget is derived from maxMemoryTokens (recallBudgetChars = tokens*4).
-        assert.equal(config.recallBudgetChars, config.maxMemoryTokens * 4, "budget derives from maxMemoryTokens");
-        assert.equal(budget, config.maxMemoryTokens * 4, "coordinator honors the token-derived budget");
+        // Budget is derived from maxMemoryTokens with a safe one-code-point cap.
+        assert.equal(config.recallBudgetChars, config.maxMemoryTokens, "budget derives from maxMemoryTokens");
+        assert.equal(budget, config.maxMemoryTokens, "coordinator honors the token-derived budget");
         assert.ok(assembled.finalChars <= budget, "section sum stays within the token-derived budget");
         assert.ok(assembled.truncated, "oversized content forces truncation");
         return;

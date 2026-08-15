@@ -5,6 +5,7 @@ import type { TranscriptEntry, Checkpoint, PluginConfig } from "./types.js";
 import { analyzeSessionIntegrity, type SessionIntegrityReport } from "./session-integrity.js";
 import { resolveSafeStoragePath } from "./storage-paths.js";
 import { sessionStoragePaths } from "./session-identity.js";
+import { estimateTokenCount } from "./token-estimate.js";
 
 type DirectorySessionStatus = "missing" | "empty" | "matches" | "occupied";
 type DirectoryOwnershipCacheEntry = {
@@ -76,14 +77,18 @@ export class TranscriptManager {
   private config: PluginConfig;
   private sessionFootprintCache = new Map<
     string,
-    { totalBytes: number; fileBytes: Map<string, number>; fileSizes: Map<string, number> }
+    {
+      totalBytes: number;
+      totalTokens: number;
+      fileBytes: Map<string, number>;
+      fileSizes: Map<string, number>;
+      fileTokens: Map<string, number>;
+    }
   >();
   private directoryOwnershipCache = new Map<string, DirectoryOwnershipCacheEntry>();
 
   /** Default checkpoint TTL in hours */
   private static readonly DEFAULT_CHECKPOINT_TTL_HOURS = 24;
-  /** Approximate characters per token for rough estimation */
-  private static readonly CHARS_PER_TOKEN = 4;
 
   constructor(config: PluginConfig) {
     this.config = config;
@@ -456,14 +461,9 @@ export class TranscriptManager {
   async estimateSessionFootprint(sessionKey: string): Promise<{ bytes: number; tokens: number }> {
     const { dir, alternateDir, legacyDir, readbackDirs } = this.getTranscriptPath(sessionKey);
     let bytes = 0;
+    let tokens = 0;
 
-    // NOTE: this is a best-effort byte ESTIMATE for compaction sizing, not an
-    // exact row count, and is maintained via an incremental per-file cache. A
-    // copied-but-not-trimmed migration window (issue #1496) can transiently
-    // over-estimate by counting a duplicated row in both the primary and a
-    // read-back dir; that self-heals once the migration trims the source. The
-    // exact-once guarantee that matters for callers lives in readRecent /
-    // readToolUse / the summarizer fetch, which dedup by raw line.
+    // Maintain byte and script-aware token estimates in one incremental cache.
     try {
       const files = await this.getSessionStorageFiles(
         this.transcriptsDir,
@@ -476,100 +476,109 @@ export class TranscriptManager {
       if (!cached) {
         const fileBytes = new Map<string, number>();
         const fileSizes = new Map<string, number>();
+        const fileTokens = new Map<string, number>();
         for (const file of files) {
           try {
             const fileInfo = await stat(file.path);
-            const sessionBytes = await this.estimateSessionBytesInFile(
-              file.path,
-              sessionKey,
-            );
-            fileBytes.set(file.cacheKey, sessionBytes);
+            const estimate = await this.estimateSessionBytesInFile(file.path, sessionKey);
+            fileBytes.set(file.cacheKey, estimate.bytes);
+            fileTokens.set(file.cacheKey, estimate.tokens);
             fileSizes.set(file.cacheKey, Math.max(0, fileInfo.size));
-            bytes += sessionBytes;
+            bytes += estimate.bytes;
+            tokens += estimate.tokens;
           } catch {
             // fail-open
           }
         }
-        this.sessionFootprintCache.set(sessionKey, { totalBytes: bytes, fileBytes, fileSizes });
+        this.sessionFootprintCache.set(sessionKey, { totalBytes: bytes, totalTokens: tokens, fileBytes, fileSizes, fileTokens });
       } else {
         bytes = cached.totalBytes;
+        tokens = cached.totalTokens;
         const seen = new Set(files.map((file) => file.cacheKey));
 
-        // Drop removed files from the cached total.
         for (const [cachedFile, cachedSessionBytes] of cached.fileBytes.entries()) {
           if (!seen.has(cachedFile)) {
             bytes -= cachedSessionBytes;
+            tokens -= cached.fileTokens.get(cachedFile) ?? 0;
             cached.fileBytes.delete(cachedFile);
+            cached.fileTokens.delete(cachedFile);
             cached.fileSizes.delete(cachedFile);
           }
         }
 
-        // Read only newly discovered files.
         for (const file of files) {
           if (cached.fileBytes.has(file.cacheKey)) continue;
           try {
             const fileInfo = await stat(file.path);
-            const sessionBytes = await this.estimateSessionBytesInFile(file.path, sessionKey);
-            cached.fileBytes.set(file.cacheKey, sessionBytes);
+            const estimate = await this.estimateSessionBytesInFile(file.path, sessionKey);
+            cached.fileBytes.set(file.cacheKey, estimate.bytes);
+            cached.fileTokens.set(file.cacheKey, estimate.tokens);
             cached.fileSizes.set(file.cacheKey, Math.max(0, fileInfo.size));
-            bytes += sessionBytes;
+            bytes += estimate.bytes;
+            tokens += estimate.tokens;
           } catch {
             // fail-open
           }
         }
 
-        // Recompute any shard whose file size changed. A session can have both
-        // encoded and legacy directories during migration, so path ordering does
-        // not reliably identify the file that can grow.
         for (const file of files) {
           try {
             const fileInfo = await stat(file.path);
             const size = Math.max(0, fileInfo.size);
-            const previousSessionBytes = cached.fileBytes.get(file.cacheKey) ?? 0;
+            const previousEstimate = {
+              bytes: cached.fileBytes.get(file.cacheKey) ?? 0,
+              tokens: cached.fileTokens.get(file.cacheKey) ?? 0,
+            };
             const previousSize = cached.fileSizes.get(file.cacheKey) ?? -1;
             if (size !== previousSize) {
-              const sessionBytes = await this.estimateSessionBytesInFile(file.path, sessionKey);
-              cached.fileBytes.set(file.cacheKey, sessionBytes);
+              const estimate = await this.estimateSessionBytesInFile(file.path, sessionKey);
+              cached.fileBytes.set(file.cacheKey, estimate.bytes);
+              cached.fileTokens.set(file.cacheKey, estimate.tokens);
               cached.fileSizes.set(file.cacheKey, size);
-              bytes += sessionBytes - previousSessionBytes;
+              bytes += estimate.bytes - previousEstimate.bytes;
+              tokens += estimate.tokens - previousEstimate.tokens;
             }
           } catch {
             // fail-open
           }
         }
 
-        if (bytes < 0) bytes = 0;
+        bytes = Math.max(0, bytes);
+        tokens = Math.max(0, tokens);
         cached.totalBytes = bytes;
+        cached.totalTokens = tokens;
       }
     } catch {
       // fail-open
       this.sessionFootprintCache.delete(sessionKey);
     }
 
-    return {
-      bytes,
-      tokens: Math.floor(bytes / TranscriptManager.CHARS_PER_TOKEN),
-    };
+    return { bytes, tokens };
   }
 
-  private async estimateSessionBytesInFile(filePath: string, sessionKey: string): Promise<number> {
+  private async estimateSessionBytesInFile(
+    filePath: string,
+    sessionKey: string,
+  ): Promise<{ bytes: number; tokens: number }> {
     try {
       const raw = await readFile(filePath, "utf-8");
-      let total = 0;
+      let bytes = 0;
+      let tokens = 0;
       for (const line of raw.split("\n")) {
         if (!line.trim()) continue;
         try {
-          const parsed = JSON.parse(line) as { sessionKey?: string };
+          const parsed = JSON.parse(line) as { sessionKey?: string; content?: unknown };
           if (parsed.sessionKey === sessionKey) {
-            total += Buffer.byteLength(`${line}\n`, "utf-8");
+            bytes += Buffer.byteLength(`${line}\n`, "utf-8");
+            if (typeof parsed.content === "string") tokens += estimateTokenCount(parsed.content);
           }
         } catch {
           // fail-open for malformed lines
         }
       }
-      return total;
+      return { bytes, tokens };
     } catch {
-      return 0;
+      return { bytes: 0, tokens: 0 };
     }
   }
 
@@ -1079,7 +1088,7 @@ export class TranscriptManager {
       return "";
     }
 
-    const maxChars = maxTokens * TranscriptManager.CHARS_PER_TOKEN;
+    const maxTokenBudget = Math.max(0, Math.floor(maxTokens));
     const lines: string[] = [];
 
     // Calculate time range for header
@@ -1108,22 +1117,21 @@ export class TranscriptManager {
       formattedEntries.push(`[${timeStr}] ${roleLabel}: ${entry.content}`);
     }
 
-    // Build output, trimming from the beginning if too long
-    // (we want to keep the most recent context)
-    let totalChars = lines.join("\n").length;
+    // Build output, trimming from the beginning if too long.
+    // Keep the most recent context and count it with the shared estimator.
+    let totalTokens = estimateTokenCount(lines.join("\n"));
     const selectedEntries: string[] = [];
 
     for (let i = formattedEntries.length - 1; i >= 0; i--) {
       const entry = formattedEntries[i];
-      const entryChars = entry.length + 1; // +1 for newline
+      const entryTokens = estimateTokenCount(entry);
 
-      if (totalChars + entryChars > maxChars && selectedEntries.length > 0) {
-        // Adding this entry would exceed limit, and we have some entries already
+      if (totalTokens + entryTokens > maxTokenBudget && selectedEntries.length > 0) {
         break;
       }
 
       selectedEntries.unshift(entry);
-      totalChars += entryChars;
+      totalTokens += entryTokens;
     }
 
     lines.push(...selectedEntries);

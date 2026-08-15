@@ -1,10 +1,11 @@
 import type Database from "better-sqlite3";
 import { log } from "../logger.js";
 import {
-  parseMessageParts,
   type LcmMessagePartInput,
   type MessagePartSourceFormat,
+  parseMessageParts,
 } from "../message-parts/index.js";
+import { estimateTokenCount } from "../token-estimate.js";
 
 export interface LcmMessage {
   id: number;
@@ -48,10 +49,8 @@ export interface LcmStructuredRecallMatch {
   score: number;
 }
 
-/** Rough token count: ~4 chars per token. */
-export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
+/** Shared script-aware token estimate used by LCM accounting. */
+export const estimateTokens = estimateTokenCount;
 
 const PUBLIC_LCM_SEARCH_LIMIT = 100;
 

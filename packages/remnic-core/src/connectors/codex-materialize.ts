@@ -28,8 +28,8 @@
  *  - **Idempotent no-ops.** A content hash is written into the sentinel. If
  *    the re-rendered hash matches the previous run, we skip writes entirely.
  *  - **Token budget.** `memory_summary.md` is truncated to fit under the
- *    configured token budget (whitespace-tokenized approximation), leaving
- *    headroom under Codex's 5000-token summary cap.
+ *    configured script-aware token estimate, leaving headroom under Codex's
+ *    5000-token summary cap.
  *
  * Privacy
  * ───────
@@ -47,6 +47,7 @@ import path from "node:path";
 import { log } from "../logger.js";
 import { readEnvVar, resolveHomeDir } from "../runtime/env.js";
 import type { MemoryFile } from "../types.js";
+import { estimateTokenCount } from "../token-estimate.js";
 import { expandTildePath } from "../utils/path.js";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -60,7 +61,7 @@ export interface MaterializeOptions {
   memories: MemoryFile[];
   /** Override `<codex_home>`. Defaults to `$CODEX_HOME` or `~/.codex`. */
   codexHome?: string;
-  /** Maximum whitespace-tokenized size of memory_summary.md. Default 4500. */
+  /** Maximum estimated token size of memory_summary.md. Default 4500. */
   maxSummaryTokens?: number;
   /** Maximum age of rollout_summaries/*.md in days. Default 30. */
   rolloutRetentionDays?: number;
@@ -990,35 +991,22 @@ function trimHyphenEdges(value: string): string {
   while (end > start && value[end - 1] === "-") end -= 1;
   return value.slice(start, end);
 }
-
-/**
- * Whitespace-tokenized approximation used by the budget check. Matches the
- * simple heuristic Codex's usage.rs reporting uses for the "5000 token"
- * memory_summary cap.
- */
+/** Shared script-aware approximation used by the budget check. */
 export function approximateTokenCount(text: string): number {
-  const trimmed = text.trim();
-  if (trimmed.length === 0) return 0;
-  return trimmed.split(/\s+/u).length;
+  return estimateTokenCount(text);
 }
 
 /**
- * Truncate `text` so it fits under `maxTokens` whitespace tokens. We drop
- * trailing lines until we're under the budget and then append an ellipsis
- * marker so downstream readers can see that truncation happened.
+ * Truncate `text` so it fits under `maxTokens`. We drop trailing lines until
+ * under budget, then append a marker so readers can see that truncation occurred.
  */
 export function truncateToTokenBudget(text: string, maxTokens: number): string {
   if (maxTokens <= 0) return "";
   if (approximateTokenCount(text) <= maxTokens) return text;
 
-  // Reserve headroom for the truncation marker so the line-preserving path
-  // can actually fit the marker without flipping to the hard-cut fallback.
-  // Both markers are counted with the same whitespace heuristic the budget
-  // check uses, so the arithmetic stays consistent.
   const lineMarker = "_[truncated for summary budget]_";
   const tailMarker = "[truncated]";
   const lineMarkerTokens = approximateTokenCount(lineMarker);
-  const tailMarkerTokens = approximateTokenCount(tailMarker);
 
   const lines = text.split(/\r?\n/u);
   const lineBudget = Math.max(0, maxTokens - lineMarkerTokens);
@@ -1028,13 +1016,19 @@ export function truncateToTokenBudget(text: string, maxTokens: number): string {
   lines.push(lineMarker);
   let result = lines.join("\n");
 
-  // If a single huge line still blows the budget, hard-cut tokens. Reserve
-  // space for the tail marker's own token count so the final string stays
-  // within maxTokens rather than sneaking over by a few tokens.
   if (approximateTokenCount(result) > maxTokens) {
-    const tokens = result.split(/\s+/u);
-    const keep = Math.max(0, maxTokens - tailMarkerTokens);
-    result = keep > 0 ? `${tokens.slice(0, keep).join(" ")} ${tailMarker}` : tailMarker;
+    const codePoints = [...result];
+    let low = 0;
+    let high = codePoints.length;
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      const prefix = codePoints.slice(0, mid).join("");
+      const candidate = prefix.length > 0 ? `${prefix} ${tailMarker}` : tailMarker;
+      if (approximateTokenCount(candidate) <= maxTokens) low = mid;
+      else high = mid - 1;
+    }
+    const prefix = codePoints.slice(0, low).join("");
+    result = prefix.length > 0 ? `${prefix} ${tailMarker}` : tailMarker;
   }
   return result;
 }

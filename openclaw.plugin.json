@@ -4584,7 +4584,7 @@
       },
       "recallBudgetChars": {
         "type": "number",
-        "description": "Hard character cap for total recall context. Defaults to maxMemoryTokens * 4."
+        "description": "Hard character cap for total recall context. If unset, derives a one-code-point-per-token cap from maxMemoryTokens."
       },
       "recallProfileMaxRatio": {
         "type": "number",

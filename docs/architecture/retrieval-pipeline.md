@@ -114,7 +114,7 @@ When `intentRoutingEnabled` is on, extraction captures `intent.goal`, `intent.ac
 
 ## Context Budget & Assembly
 
-All retrieved content is capped at `recallBudgetChars` before injection. If `recallBudgetChars` is not set, the budget defaults to `maxMemoryTokens * 4` (8,000 chars with the default `maxMemoryTokens` of 2000). **For modern large-context models (200K+ token windows), set `recallBudgetChars` explicitly to 64,000–128,000.**
+All retrieved content is capped at `recallBudgetChars` before injection. If `recallBudgetChars` is not set, the parser derives a one-code-point-per-token cap from `maxMemoryTokens`, which keeps wide-script content within the documented token limit. **For modern large-context models (200K+ token windows), set `recallBudgetChars` explicitly to 64,000–128,000.**
 
 ### Budget-Aware Assembly (v9.0.66+)
 
@@ -177,10 +177,10 @@ With namespaces enabled, retrieval filters candidates to allowed namespaces (loc
 
 | Setting | Default | Notes |
 |---------|---------|-------|
-| `recallBudgetChars` | `maxMemoryTokens * 4` | **Total character budget for recall context. Set this explicitly.** |
+| `recallBudgetChars` | `maxMemoryTokens` | **Total character budget for recall context. Set this explicitly for a custom character cap.** |
 | `recallPlannerEnabled` | `true` | Lightweight request classifier |
 | `recallPlannerMaxQmdResultsMinimal` | `4` | QMD cap in minimal mode |
-| `maxMemoryTokens` | `2000` | Legacy token cap; prefer `recallBudgetChars` |
+| `maxMemoryTokens` | `2000` | Token cap used to derive `recallBudgetChars`; prefer `recallBudgetChars` for custom character limits. |
 | `identityContinuityEnabled` | `false` | Enables identity continuity injection path |
 | `identityInjectionMode` | `recovery_only` | Identity injection behavior (`recovery_only|minimal|full`) |
 | `identityMaxInjectChars` | `1200` | Max characters for identity continuity section |

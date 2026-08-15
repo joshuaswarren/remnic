@@ -131,8 +131,7 @@ When a recall is captured with `xrayCapture: true`, each result in the
 - **`disclosure`** — the depth used to render this result's payload
   (`"chunk"` | `"section"` | `"raw"`).
 - **`estimatedTokens`** — estimated token cost of the payload at that depth
-  (`Math.ceil(payloadText.length / 4)`; the standard ~4 chars/token English
-  heuristic).
+  (the shared NFC-normalized, script-aware heuristic used by recall surfaces).
 
 The X-ray markdown renderer aggregates these into a **"Token spend by
 disclosure"** summary table at the bottom of the results section:

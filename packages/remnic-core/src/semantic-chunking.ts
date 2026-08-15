@@ -6,7 +6,8 @@
  * natural topic boundaries, producing more coherent chunks.
  */
 
-import { chunkContent, type Chunk, type ChunkResult } from "./chunking.js";
+import { type Chunk, type ChunkResult, chunkContent } from "./chunking.js";
+import { estimateTokenCount } from "./token-estimate.js";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -222,14 +223,6 @@ function splitSentences(text: string): string[] {
   return sentences;
 }
 
-// ---------------------------------------------------------------------------
-// Token estimation
-// ---------------------------------------------------------------------------
-
-/** Rough token estimate: ~4 chars per token for English. */
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
 
 // ---------------------------------------------------------------------------
 // Core semantic chunking
@@ -316,7 +309,7 @@ function mergeShortSegments(
 
   for (let i = 0; i < segments.length; i++) {
     buffer = [...buffer, ...segments[i]];
-    const tokenCount = estimateTokens(buffer.join(" "));
+    const tokenCount = estimateTokenCount(buffer.join(" "));
 
     if (tokenCount >= minTokens || i === segments.length - 1) {
       merged.push(buffer);
@@ -396,7 +389,7 @@ export async function semanticChunkContent(
   const sentences = splitSentences(content);
 
   if (sentences.length <= 1) {
-    const tokenCount = estimateTokens(content);
+    const tokenCount = estimateTokenCount(content);
     return {
       chunked: false,
       chunks: [
@@ -413,7 +406,7 @@ export async function semanticChunkContent(
   }
 
   // If total tokens is short enough, return as single chunk
-  const totalTokens = estimateTokens(content);
+  const totalTokens = estimateTokenCount(content);
   if (totalTokens <= cfg.minTokens) {
     return {
       chunked: false,
@@ -512,7 +505,7 @@ export async function semanticChunkContent(
   for (let segIdx = 0; segIdx < segments.length; segIdx++) {
     const segment = segments[segIdx];
     const segText = segment.join(" ");
-    const segTokens = estimateTokens(segText);
+    const segTokens = estimateTokenCount(segText);
 
     if (segTokens > cfg.maxTokens) {
       // Recursive split for oversized segment

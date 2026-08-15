@@ -2010,6 +2010,16 @@
       "remnic-source": "./src/recall-tokenization.ts",
       "import": "./dist/recall-tokenization.js"
     },
+    "./token-estimate": {
+      "types": "./dist/token-estimate.d.ts",
+      "remnic-source": "./src/token-estimate.ts",
+      "import": "./dist/token-estimate.js"
+    },
+    "./token-estimate.js": {
+      "types": "./dist/token-estimate.d.ts",
+      "remnic-source": "./src/token-estimate.ts",
+      "import": "./dist/token-estimate.js"
+    },
     "./recall-xray": {
       "types": "./dist/recall-xray.d.ts",
       "remnic-source": "./src/recall-xray.ts",
