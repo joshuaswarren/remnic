@@ -83,13 +83,27 @@ export class InjectionSuiteClaimLock {
   async release(claim: InjectionSuiteClaim): Promise<void> {
     this.stopHeartbeat(claim.lockPath);
     try {
-      const raw = await readFile(path.join(claim.lockPath, "owner.json"), "utf8");
-      const owner = JSON.parse(raw) as ClaimOwner;
+      const ownerPath = path.join(claim.lockPath, "owner.json");
+      const owner = JSON.parse(await readFile(ownerPath, "utf8")) as ClaimOwner;
       if (owner.ownerToken !== claim.ownerToken) return;
+      await rename(ownerPath, `${ownerPath}.released-${claim.ownerToken}`);
     } catch {
       return;
     }
-    await rm(claim.lockPath, { recursive: true, force: true });
+    const released = `${claim.lockPath}.released-${claim.ownerToken}`;
+    try {
+      await rename(claim.lockPath, released);
+    } catch {
+      return;
+    }
+    await rm(released, { recursive: true, force: true });
+  }
+
+  async assertOwner(claim: InjectionSuiteClaim): Promise<void> {
+    const owner = JSON.parse(await readFile(path.join(claim.lockPath, "owner.json"), "utf8")) as ClaimOwner;
+    if (owner.ownerToken !== claim.ownerToken) {
+      throw new Error(`lost injection-suite claim ${claim.rowKey}`);
+    }
   }
 
   private startHeartbeat(lockPath: string): void {

@@ -11,7 +11,14 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { InjectionSuiteClaimLock } from "./claims.js";
 import { generateFamilyVariants, generateSuiteVariants } from "./generator.js";
-import { completeChat, buildRecallPrompt, InjectionSuiteHostFault } from "./llm-executor.js";
+import {
+  completeChat,
+  buildRecallPrompt,
+  InjectionSuiteHostFault,
+  DEFAULT_OLLAMA_MODEL,
+  DEFAULT_OLLAMA_BASE_URL,
+  DEFAULT_OPENAI_COMPAT_BASE_URL,
+} from "./llm-executor.js";
 import { InjectionSuiteRowStore, buildInjectionSuiteRowKey, defaultSuiteIdentity } from "./store.js";
 import type {
   InjectionSuiteCliInput,
@@ -36,6 +43,7 @@ export function injectionSuiteResumeContractHash(metadata: {
   variantsPerFamily: number;
   executor: string;
   model: string;
+  baseUrl: string;
 }): string {
   return createHash("sha256")
     .update(
@@ -47,9 +55,33 @@ export function injectionSuiteResumeContractHash(metadata: {
         variantsPerFamily: metadata.variantsPerFamily,
         executor: metadata.executor,
         model: metadata.model,
+        baseUrl: metadata.baseUrl,
       }),
     )
     .digest("hex");
+}
+
+export function resolvedExecutorContract(input: InjectionSuiteCliInput): {
+  executor: string;
+  model: string;
+  baseUrl: string;
+} {
+  const executor = input.executor ?? "local";
+  if (executor === "local") {
+    return { executor, model: "", baseUrl: "" };
+  }
+  if (executor === "openai-compat") {
+    return {
+      executor,
+      model: input.model ?? DEFAULT_OLLAMA_MODEL,
+      baseUrl: input.baseUrl ?? DEFAULT_OPENAI_COMPAT_BASE_URL,
+    };
+  }
+  return {
+    executor,
+    model: input.model ?? DEFAULT_OLLAMA_MODEL,
+    baseUrl: input.baseUrl ?? DEFAULT_OLLAMA_BASE_URL,
+  };
 }
 
 export function planInjectionSuiteRows(input: {
@@ -195,15 +227,15 @@ export async function runInjectionSuiteCliCommand(
 ): Promise<InjectionSuiteCliResult> {
   const seeds = Array.from({ length: input.seeds }, (_, index) => index + 1);
   const planned = planInjectionSuiteRows(input);
-  const executor = input.executor ?? "local";
-  const model = input.model ?? "";
+  const contract = resolvedExecutorContract(input);
   const resumeContractHash = injectionSuiteResumeContractHash({
     suiteVersion: INJECTION_SUITE_VERSION,
     modelProfileId: input.modelProfileId,
     seeds,
     variantsPerFamily: input.variantsPerFamily,
-    executor,
-    model,
+    executor: contract.executor,
+    model: contract.model,
+    baseUrl: contract.baseUrl,
   });
   const existing = await readRunMetadata(input.outputDir);
   if (existing && input.resume !== true) {
@@ -245,18 +277,6 @@ export async function runInjectionSuiteCliCommand(
   let skippedBusy = 0;
 
   for (const identity of planned) {
-    const loaded = await store.load(identity);
-    if (loaded.kind === "MALFORMED") {
-      throw new Error(`Malformed injection-suite checkpoint: ${loaded.error.message}`, {
-        cause: loaded.error,
-      });
-    }
-    if (loaded.kind === "VALID" && loaded.checkpoint.terminal) {
-      await ensureEpisode(input.outputDir, loaded.checkpoint.terminal);
-      resumed += 1;
-      continue;
-    }
-
     const claim = await claims.tryClaim(identity);
     if (claim === "busy") {
       skippedBusy += 1;
@@ -264,11 +284,24 @@ export async function runInjectionSuiteCliCommand(
     }
 
     try {
-      const priorTries = loaded.kind === "VALID" ? loaded.checkpoint.tries.length : 0;
+      await claims.assertOwner(claim);
+      const fresh = await store.load(identity);
+      if (fresh.kind === "MALFORMED") {
+        throw new Error(`Malformed injection-suite checkpoint: ${fresh.error.message}`, {
+          cause: fresh.error,
+        });
+      }
+      if (fresh.kind === "VALID" && fresh.checkpoint.terminal) {
+        await ensureEpisode(input.outputDir, fresh.checkpoint.terminal);
+        resumed += 1;
+        continue;
+      }
+      const priorTries = fresh.kind === "VALID" ? fresh.checkpoint.tries.length : 0;
       const variant = variantFor(identity);
       let consecutiveFaultsThisRun = 0;
       let attempt = priorTries + 1;
       while (consecutiveFaultsThisRun < HOST_FAULT_RETRY_LIMIT) {
+        await claims.assertOwner(claim);
         const started = Date.now();
         if (input.faultFirstAttempts !== undefined && attempt <= input.faultFirstAttempts) {
           consecutiveFaultsThisRun += 1;
