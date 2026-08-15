@@ -3411,11 +3411,11 @@ export class RecallInternalCoordinator {
 
     // 1b. Knowledge Index
     if (kiResult?.result) {
-      this.deps.appendRecallSection(
-        sectionBuckets,
-        "knowledge-index",
-        kiResult.result,
-      );
+      // #1955 review: fence parallel Knowledge Index section (copies untrusted entity content without per-field origin).
+      const kiBody = this.securityCapabilities.originAuthority
+        ? renderAuthorityBoundContent(kiResult.result, undefined, { enabled: true, untrustedOrigins: this.deps.config.untrustedOrigins })
+        : kiResult.result;
+      this.deps.appendRecallSection(sectionBuckets, "knowledge-index", kiBody);
       log.debug(
         `Knowledge Index: ${kiResult.result.split("\n").length - 4} entities, ${kiResult.result.length} chars${kiResult.cached ? " (cached)" : ""}`,
       );

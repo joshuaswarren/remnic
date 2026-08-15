@@ -2461,6 +2461,7 @@ export class ExtractionPersistCoordinator {
                 intentActionType: inferredIntent?.actionType,
                 intentEntityTypes: inferredIntent?.entityTypes,
                 ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
+                ...(origin ? { origin } : {}),
                 ...(factToolScoped ? { toolScoped: true as const } : {}),
               });
             }
@@ -2780,6 +2781,7 @@ export class ExtractionPersistCoordinator {
             intentActionType: inferredIntent?.actionType,
             intentEntityTypes: inferredIntent?.entityTypes,
             ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
+            ...(origin ? { origin } : {}),
             ...(factToolScoped ? { toolScoped: true as const } : {}),
           });
         }
@@ -2864,9 +2866,7 @@ export class ExtractionPersistCoordinator {
         log.warn(`persistExtraction: entity write failed: ${err}`);
       }
     }
-
-    // Persist entity relationships (v7.0). #1955 review: source/label/target
-    // recall via entity hints, so the joined triple passes the screen first.
+    // Persist entity relationships (v7.0). #1955 review: source/label/target are screened.
     if (
       resolveRecallEnhancementCapabilities(this.deps.config).entityRelationships &&
       Array.isArray(result.relationships)

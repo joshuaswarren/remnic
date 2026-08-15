@@ -4158,7 +4158,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       intentGoal?: string;
       intentActionType?: string;
       intentEntityTypes?: string[];
-      sourceConnector?: string;
+      sourceConnector?: string; origin?: string;
       toolScoped?: true;
     } = {}
   ): Promise<string> {
@@ -4185,6 +4185,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       intentActionType: options.intentActionType,
       intentEntityTypes: options.intentEntityTypes,
       ...(options.sourceConnector ? { sourceConnector: options.sourceConnector } : {}),
+      ...(options.origin ? { origin: parseOriginClass(options.origin) } : {}),
       ...(options.toolScoped ? { toolScoped: true as const } : {}),
     };
 

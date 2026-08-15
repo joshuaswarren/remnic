@@ -74,7 +74,7 @@ function memoryStorage(memories: MemoryFile[]): AuditMemoryStorage {
   return {
     readAllMemories: async () => memories,
     readMemoryByPath: async (p: string) => memories.find((m) => m.path === p) ?? null,
-    writeMemoryFrontmatter: async (memory, patch) => {
+    writeMemoryFrontmatterIfUnchanged: async (memory, patch) => {
       Object.assign(memory.frontmatter, patch);
       return true;
     },

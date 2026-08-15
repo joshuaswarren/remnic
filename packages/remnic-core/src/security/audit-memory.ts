@@ -20,8 +20,8 @@ export interface AuditMemoryStorage {
   readAllMemories(): Promise<MemoryFile[]>;
   readAllColdMemories?: () => Promise<MemoryFile[]>;
   readMemoryByPath(filePath: string): Promise<MemoryFile | null>;
-  writeMemoryFrontmatter(
-    memory: MemoryFile,
+  writeMemoryFrontmatterIfUnchanged(
+    expected: MemoryFile,
     patch: Partial<MemoryFrontmatter>,
     lifecycle?: {
       actor?: string;
@@ -269,7 +269,7 @@ export async function auditMemoryStore(options: AuditMemoryStoreOptions): Promis
       const memory = await storage.readMemoryByPath(staleMemory.path);
       if (!memory || !isActive(memory, options.memoryDir)) continue;
       if (qInfo.injection && !qInfo.burst && !screenCandidateFact(memory.content).quarantine) continue;
-      const changed = await storage.writeMemoryFrontmatter(memory, {
+      const changed = await storage.writeMemoryFrontmatterIfUnchanged(memory, {
         status: "pending_review",
         updated: now,
       }, {

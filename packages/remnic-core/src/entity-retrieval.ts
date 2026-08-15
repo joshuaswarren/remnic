@@ -970,8 +970,10 @@ function formatEntityHintSection(
   // without per-field origin — fence as unknown (least privilege; plumbing #2397).
   const renderSnippet = (snippet: EntityHintSnippet): string => snippet.kind !== "native"
     ? renderAuthorityBoundContent(snippet.text, snippet.origin, { enabled: originAuthorityEnabled, untrustedOrigins }) : snippet.text;
-  const renderField = (field: string): string => originAuthorityEnabled
-    ? renderAuthorityBoundContent(field, undefined, { enabled: originAuthorityEnabled, untrustedOrigins }) : field;
+  // (see comment above)
+  // #1955 review: inline fields (names/types/aliases/targets) cannot carry the
+  // multi-line block fence without collapsing the hint list structure —
+  // per-field origin plumbing is tracked in #2397.
   for (const { candidate, snippets, uncertainty } of candidates) {
     const hasSummary = Boolean(candidate.entry.summary?.trim());
     const preferredTopSnippets = hasSummary
@@ -1020,8 +1022,8 @@ function formatEntityHintSection(
       }
     }
     const topSnippetTexts = new Set(topSnippets.map((snippet) => normalizeEntityText(snippet.text)));
-    lines.push(`- target: ${renderField(candidate.entry.name)} (${renderField(candidate.entry.type)})`);
-    lines.push(`- resolution: ${candidate.source === "recent_turn" ? "carried forward from recent turns via alias" : "matched alias"} "${renderField(candidate.alias)}"${candidate.source === "recent_turn" ? "" : " in the query"}`);
+    lines.push(`- target: ${candidate.entry.name} (${candidate.entry.type})`);
+    lines.push(`- resolution: ${candidate.source === "recent_turn" ? "carried forward from recent turns via alias" : "matched alias"} "${candidate.alias}"${candidate.source === "recent_turn" ? "" : " in the query"}`);
     if (uncertainty) lines.push(`- uncertainty: ${uncertainty}`);
     if (topSnippets.length > 0) {
       lines.push("- likely answer:");
@@ -1040,7 +1042,7 @@ function formatEntityHintSection(
         }
       }
     }
-    const related = candidate.entry.relationships.slice(0, maxRelatedEntities).map((relationship) => renderField(relationship.target));
+    const related = candidate.entry.relationships.slice(0, maxRelatedEntities).map((relationship) => relationship.target);
     if (related.length > 0) {
       lines.push(`- related entities: ${related.join(", ")}`);
     }
