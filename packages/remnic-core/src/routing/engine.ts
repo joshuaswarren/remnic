@@ -43,8 +43,11 @@ const DEFAULT_CATEGORIES: readonly MemoryCategory[] = [
 ] as const;
 
 function normalizeNamespace(namespace: string): string {
-  return namespace.trim();
+  return namespace.normalize("NFC");
 }
+
+const SAFE_ROUTE_NAMESPACE_CHARS = /^[\p{L}\p{M}\p{N}._-]+$/u;
+
 
 export function isLikelyUnsafeRegex(pattern: string): boolean {
   const value = pattern.trim();
@@ -65,11 +68,14 @@ export function isLikelyUnsafeRegex(pattern: string): boolean {
 
 export function isSafeRouteNamespace(namespace: string): boolean {
   const value = normalizeNamespace(namespace);
+  // The route limit is 64 Unicode code points. On-disk identity tokens may
+  // exceed 64 characters because namespaceIdentityToken hex-encodes UTF-8.
   if (value.length === 0) return false;
+  if (Array.from(value).length > 64) return false;
   if (value === ".") return false;
   if (value.includes("/") || value.includes("\\")) return false;
   if (value.includes("..")) return false;
-  return /^[A-Za-z0-9._-]{1,64}$/.test(value);
+  return SAFE_ROUTE_NAMESPACE_CHARS.test(value);
 }
 
 export function validateRouteTarget(target: RouteTarget | null | undefined, options?: RoutingEngineOptions): {

@@ -1,5 +1,5 @@
 export function normalizeNamespaceIdentity(namespace: string | null | undefined): string {
-  return namespace?.trim() ?? "";
+  return namespace?.trim().normalize("NFC") ?? "";
 }
 
 export function namespaceIdentityToken(namespace: string): string {
