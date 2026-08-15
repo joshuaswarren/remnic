@@ -643,7 +643,7 @@ export async function promoteSemanticRuleFromMemory(options: {
     // Sealed-envelope write (issue #1989 PR4): rule content and tags are
     // derived from stored/LLM data — salvage; drops are warn-logged.
     const ruleEnvelope = composeMemoryEnvelope(
-      { content, category: "rule", confidence, tags: candidateBase.tags },
+      { content, category: "rule", confidence, tags: candidateBase.tags, origin: sourceMemory.frontmatter.origin },
       { source: "semantic-rule-promotion" },
       { salvage: true },
     );

@@ -133,6 +133,7 @@ import {
   formatProcedureStatsText,
   parseXrayCliOptions,
   renderXray,
+  runAuditMemoryCliCommand, formatAuditMemoryReport,
   OFFLINE_SYNC_APPLY_MAX_BODY_BYTES,
   OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES,
   OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES,
@@ -217,6 +218,7 @@ import {
   loadBenchModule,
   tryLoadBenchModule,
 } from "./optional-bench.js";
+import { cmdSecurity } from "./cmd-security.js";
 import {
   LAUNCHD_LABEL,
   LAUNCHD_LABEL_CANDIDATES,
@@ -416,6 +418,7 @@ type CommandName =
   | "import-lossless-claw"
   | "action-confidence"
   | "xray"
+  | "security"
   | "wearables"
   | "meetings"
   | "external-wiki"
@@ -12789,14 +12792,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       break;
 
     case "xray":
-      // `remnic xray "<query>"` — recall with X-ray capture and print
-      // the unified snapshot (issue #570 / PR #636 Codex P2).  The
-      // plugin-runtime path registers the same surface via
-      // `registerCli` in `@remnic/core/cli.ts`; this case wires the
-      // standalone `remnic` binary so documented usage actually works.
+      // `remnic xray "<query>"` — X-ray capture + snapshot print (issue #570).
+      // Plugin-runtime registers the same surface; standalone wiring here.
       await cmdXray(rest);
       break;
 
+    case "security":
+      // `remnic security audit-memory` — #1955; standalone wiring (plugin path in core).
+      await cmdSecurity(rest);
+      break;
     case "doctor":
       await cmdDoctor();
       break;
