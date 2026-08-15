@@ -2866,24 +2866,24 @@ export class ExtractionPersistCoordinator {
       }
     }
 
-    // Persist entity relationships (v7.0)
+    // Persist entity relationships (v7.0). #1955 review: source/label/target
+    // recall via entity hints, so the joined triple passes the screen first.
     if (
       resolveRecallEnhancementCapabilities(this.deps.config).entityRelationships &&
       Array.isArray(result.relationships)
     ) {
       for (const rel of result.relationships.slice(0, 5)) {
         if (!rel.source || !rel.target || !rel.label) continue;
+        const relScreen = screenPersistStrings([`${rel.source}\n${rel.label}\n${rel.target}`], entityScreenOn);
+        if (relScreen.warning) {
+          log.warn(`persistExtraction(relationship): ${relScreen.warning}`);
+          continue;
+        }
         try {
           // Add bidirectional relationship
-          await storage.addEntityRelationship(rel.source, {
-            target: rel.target,
-            label: rel.label,
-          });
+          await storage.addEntityRelationship(rel.source, { target: rel.target, label: rel.label });
           recordDurableNonFactWrite();
-          await storage.addEntityRelationship(rel.target, {
-            target: rel.source,
-            label: `${rel.label} (reverse)`,
-          });
+          await storage.addEntityRelationship(rel.target, { target: rel.source, label: `${rel.label} (reverse)` });
           recordDurableNonFactWrite();
         } catch (err) {
           log.debug(`relationship persist failed: ${err}`);
