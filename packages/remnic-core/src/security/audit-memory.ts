@@ -213,11 +213,11 @@ export async function auditMemoryStore(options: AuditMemoryStoreOptions): Promis
     (memory) => isActive(memory, options.memoryDir) && isInWindow(memory, since),
   );
   const findings: AuditMemoryFinding[] = [];
-  const quarantineIds = new Set<string>();
+  const quarantinePaths = new Map<string, { injection: boolean; burst: boolean }>();
 
   for (const memory of activeMemories) {
     const screened = screenCandidateFact(memory.content);
-    if (screened.quarantine === true) quarantineIds.add(memory.frontmatter.id);
+    if (screened.quarantine === true) quarantinePaths.set(memory.path, { injection: true, burst: false });
     for (const screenFinding of screened.findings) {
       findings.push({
         memoryId: memory.frontmatter.id,
@@ -244,7 +244,9 @@ export async function auditMemoryStore(options: AuditMemoryStoreOptions): Promis
   for (const [lineage, group] of groups) {
     if (!anomalousLineages.has(lineage)) continue;
     for (const memory of group) {
-      quarantineIds.add(memory.frontmatter.id);
+      const q = quarantinePaths.get(memory.path) ?? { injection: false, burst: false };
+      q.burst = true;
+      quarantinePaths.set(memory.path, q);
       findings.push({
         memoryId: memory.frontmatter.id,
         category: "write-burst",
@@ -257,15 +259,16 @@ export async function auditMemoryStore(options: AuditMemoryStoreOptions): Promis
 
   const quarantinedMemoryIds: string[] = [];
   if (options.quarantine) {
-    const flaggedIds = quarantineIds;
     const now = (options.now ?? new Date()).toISOString();
     for (const staleMemory of activeMemories) {
-      if (!flaggedIds.has(staleMemory.frontmatter.id)) continue;
+      const qInfo = quarantinePaths.get(staleMemory.path);
+      if (!qInfo) continue;
       // #1955 review: the stale snapshot from readAllMemories can be old enough
       // that intermediate gateway writes would be lost if rewritten blindly. Fetch
       // the live record first.
       const memory = await storage.readMemoryByPath(staleMemory.path);
-      if (!memory) continue;
+      if (!memory || !isActive(memory, options.memoryDir)) continue;
+      if (qInfo.injection && !qInfo.burst && !screenCandidateFact(memory.content).quarantine) continue;
       const changed = await storage.writeMemoryFrontmatter(memory, {
         status: "pending_review",
         updated: now,

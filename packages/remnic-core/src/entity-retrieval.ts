@@ -970,6 +970,8 @@ function formatEntityHintSection(
   // without per-field origin — fence as unknown (least privilege; plumbing #2397).
   const renderSnippet = (snippet: EntityHintSnippet): string => snippet.kind !== "native"
     ? renderAuthorityBoundContent(snippet.text, snippet.origin, { enabled: originAuthorityEnabled, untrustedOrigins }) : snippet.text;
+  const renderField = (field: string): string => originAuthorityEnabled
+    ? renderAuthorityBoundContent(field, undefined, { enabled: originAuthorityEnabled, untrustedOrigins }) : field;
   for (const { candidate, snippets, uncertainty } of candidates) {
     const hasSummary = Boolean(candidate.entry.summary?.trim());
     const preferredTopSnippets = hasSummary
@@ -1018,12 +1020,8 @@ function formatEntityHintSection(
       }
     }
     const topSnippetTexts = new Set(topSnippets.map((snippet) => normalizeEntityText(snippet.text)));
-    lines.push(`- target: ${candidate.entry.name} (${candidate.entry.type})`);
-    if (candidate.source === "recent_turn") {
-      lines.push(`- resolution: carried forward from recent turns via alias "${candidate.alias}"`);
-    } else {
-      lines.push(`- resolution: matched alias "${candidate.alias}" in the query`);
-    }
+    lines.push(`- target: ${renderField(candidate.entry.name)} (${renderField(candidate.entry.type)})`);
+    lines.push(`- resolution: ${candidate.source === "recent_turn" ? "carried forward from recent turns via alias" : "matched alias"} "${renderField(candidate.alias)}"`);
     if (uncertainty) lines.push(`- uncertainty: ${uncertainty}`);
     if (topSnippets.length > 0) {
       lines.push("- likely answer:");
@@ -1042,7 +1040,7 @@ function formatEntityHintSection(
         }
       }
     }
-    const related = candidate.entry.relationships.slice(0, maxRelatedEntities).map((relationship) => relationship.target);
+    const related = candidate.entry.relationships.slice(0, maxRelatedEntities).map((relationship) => renderField(relationship.target));
     if (related.length > 0) {
       lines.push(`- related entities: ${related.join(", ")}`);
     }
