@@ -2,6 +2,8 @@
 
 Native [Claude Code](https://docs.claude.com/en/docs/claude-code) plugin for [Remnic](https://github.com/joshuaswarren/remnic) memory. Wires Claude Code's session hooks, MCP server, skills, and the `memory-review` agent into a running Remnic daemon so every Claude Code session gets persistent long-term memory automatically.
 
+Website: <https://remnic.ai> - Source: <https://github.com/joshuaswarren/remnic> - Docs: <https://remnic.ai/guides/>
+
 ## Install
 
 Three discrete steps. None is automated for you end-to-end today; each writes to a different place.
@@ -120,3 +122,4 @@ The plugin is intentionally data-only so Claude Code's plugin loader can manage 
 ## License
 
 MIT. See the root [LICENSE](https://github.com/joshuaswarren/remnic/blob/main/LICENSE) file.
+

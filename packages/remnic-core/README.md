@@ -2,6 +2,8 @@
 
 Framework-agnostic memory and context engine for user-aware agents. Orchestration, storage, extraction, search, and trust zones -- inspectable and local by default.
 
+Website: <https://remnic.ai> - Source: <https://github.com/joshuaswarren/remnic> - Docs: <https://remnic.ai/guides/>
+
 Part of [Remnic](https://github.com/joshuaswarren/remnic), open-source memory and context for user-aware agents.
 
 ## Install
@@ -46,3 +48,4 @@ The core includes a fallback LLM client that resolves providers from your gatewa
 ## License
 
 MIT
+
