@@ -246,7 +246,7 @@ There is a useful split in AI memory between **memory backends** (extract facts,
 
 ## How Remnic compares
 
-Remnic is the only option that is local-first, free, and multi-host at the same time.
+Most alternatives trade away at least one of local-first storage, a free license, or multi-host support; Remnic combines all three in one package.
 
 | Option | Hosting | Price | Agent coverage | Storage |
 |---|---|---|---|---|
