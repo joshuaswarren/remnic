@@ -2,6 +2,8 @@
 
 Native [OpenAI Codex CLI](https://github.com/openai/codex) plugin for [Remnic](https://github.com/joshuaswarren/remnic) memory. Wires Codex's session hooks, MCP server, skills, and memory-extension into a running Remnic daemon so every Codex session gets persistent long-term memory automatically.
 
+Website: <https://remnic.ai> - Source: <https://github.com/joshuaswarren/remnic> - Docs: <https://remnic.ai/guides/>
+
 ## Install
 
 Three discrete steps. None is automated end-to-end today; each writes to a different place.
@@ -171,3 +173,4 @@ If you're an AI agent scaffolding a Codex integration: **do not** hand-edit `~/.
 ## License
 
 MIT. See the root [LICENSE](https://github.com/joshuaswarren/remnic/blob/main/LICENSE) file.
+

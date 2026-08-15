@@ -2,6 +2,8 @@
 
 Standalone Remnic memory and context server -- HTTP and MCP interfaces without requiring OpenClaw.
 
+Website: <https://remnic.ai> - Source: <https://github.com/joshuaswarren/remnic> - Docs: <https://remnic.ai/guides/>
+
 Part of [Remnic](https://github.com/joshuaswarren/remnic), open-source memory and context for user-aware agents.
 
 ## Install
@@ -71,3 +73,4 @@ await server.stop();
 ## License
 
 MIT
+
