@@ -2114,6 +2114,7 @@ grep "\[engram\]" ~/.openclaw/logs/gateway.log
 50. **Use canonical validation script names** — the root package exposes `check:ratchets` (plural) and `check-types`; `@remnic/core` exposes only `check-types`. Neither defines a `typecheck` script. Verify `package.json` before invoking scripts. Twenty fleet notes in one week came from guessed names.
 51. **Use Biome for formatting** — the root package pins `@biomejs/biome` 1.9.4. Prettier is not installed anywhere in the workspace: `pnpm exec prettier` fails, and `npx prettier` may download Prettier and prompt for confirmation — use the pinned Biome binary instead. Do not run whole-file formatting on baseline-unformatted legacy files; format changed lines only. Six incidents caused whole-file churn.
 52. **Keep napkins per worktree** — copy or create `.claude/napkin.md` in every worktree. Per-worktree napkins prevent concurrent writer clobbering.
+- **GitHub PR review-comment API routes (agent-notes: 2026-08-14):** read a review comment with `repos/{owner}/{repo}/pulls/comments/{comment_id}` (no PR number in the path); reply with `repos/{owner}/{repo}/pulls/{pull_number}/comments/{comment_id}/replies` (PR number required). The owner is `joshuaswarren` — read it from `git remote -v`, never guess. Five route-guessing failures on 2026-08-13/14.
 
 ## Sealed memory-write envelope (issue #1989)
 
