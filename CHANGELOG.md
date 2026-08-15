@@ -4,10 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.56.0] — 2026-08-15
+
 ### Added
 
 - `remnic bench security injection-suite` runs the H5 injection suite with per-row checkpoints, multi-host claim leases, host-fault pause, and local/ollama/openai-compat executors (`#1962`). Does not start the live factorial.
-
 
 ## [v9.49.1] — 2026-08-09
 
