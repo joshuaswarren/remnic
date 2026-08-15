@@ -248,17 +248,17 @@ There is a useful split in AI memory between **memory backends** (extract facts,
 
 Remnic is the only option that is local-first, free, and multi-host at the same time.
 
-| Option | Local-first | Free / open source | Multi-host | Storage |
+| Option | Hosting | Price | Agent coverage | Storage |
 |---|---|---|---|---|
-| Remnic | Yes - plain markdown on your disk | MIT, free forever | 10+ native integrations plus any MCP client | Markdown + YAML, rebuildable index |
-| mem0 | Cloud-biased (self-host possible) | Paid cloud; OSS core | SDK / API | Vectors / database |
-| Zep (Graphiti) | Cloud + self-host graph database | Paid cloud | SDK / API | Graph database |
-| Letta (MemGPT) | Self-host server | OSS | API | Database-backed |
-| Supermemory | Hosted | Paid | API | Hosted |
-| MemPalace | Yes | Yes | Single host | Local |
-| ChatGPT memory | No - cloud | Subscription | Single tool | Opaque |
+| Remnic | Local-first | Free (MIT) | Native plugins for Claude Code, Codex CLI, Pi, OpenClaw, Hermes, plus any MCP client | Markdown + YAML, rebuildable index |
+| mem0 | Cloud / self-host | Freemium | SDK / API | Vectors / database |
+| Letta (MemGPT) | Cloud / self-host | Freemium | API | Database-backed |
+| Zep (Graphiti) | Cloud / self-host | Freemium | SDK / API | Graph database |
+| Supermemory | Cloud | Paid | API | Hosting handled by the service |
+| MemPalace | Local | Free | Single host | Local |
+| ChatGPT memory | Cloud | Bundled | Single tool | Opaque |
 
-Per-competitor teardowns and import paths: [remnic.ai/compare](https://remnic.ai/compare). One-command migration from mem0, Supermemory, ChatGPT, Claude, and Gemini: [remnic.ai/import](https://remnic.ai/import).
+Hosting and price labels mirror the canonical matrix at [remnic.ai/compare](https://remnic.ai/compare), which also carries the per-competitor teardowns. Importers for mem0, Supermemory, ChatGPT, Claude, and Gemini: [remnic.ai/import](https://remnic.ai/import).
 
 ## Quick start
 
