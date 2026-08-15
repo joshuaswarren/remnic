@@ -1878,6 +1878,7 @@ import {
   printStoredBenchResultSummary,
 } from "./bench-output-printer.js";
 import { cmdBenchCoding } from "./bench-coding-commands.js";
+import { cmdBenchSecurity } from "./bench-security-commands.js";
 import { runBenchResearchCommand } from "./bench-research-commands.js";
 import { getBenchUsageText } from "./bench-usage.js";
 
@@ -10506,9 +10507,8 @@ async function cmdLegacyBenchmark(action: string, rest: string[], json: boolean)
 
 async function cmdBench(rest: string[]): Promise<void> {
   if (rest[0] === "coding") return cmdBenchCoding(rest.slice(1));
-  // Procedural ablation subcommand (issue #567 PR 1/5). Routed before the
-  // standard bench dispatcher because `procedural-ablation` is an ad-hoc
-  // harness, not a registered benchmark catalogue entry.
+  if (rest[0] === "security") return cmdBenchSecurity(rest.slice(1));
+  // Procedural ablation (#567): ad-hoc harness, not a catalogue entry.
   if (rest[0] === "procedural-ablation") {
     await cmdBenchProceduralAblation(rest.slice(1));
     return;

@@ -787,6 +787,27 @@ export type {
   MitigatedTargetConfig,
 } from "./security/extraction-attack/index.js";
 
+export {
+  executeLocalRow,
+  generateFamilyVariants,
+  generateSuiteVariants,
+  injectionSuiteResumeContractHash,
+  planInjectionSuiteRows,
+  runInjectionSuiteCliCommand,
+  HOST_FAULT_RETRY_LIMIT,
+  INJECTION_SUITE_ARMS,
+  INJECTION_SUITE_FAMILIES,
+  INJECTION_SUITE_VERSION,
+} from "./security/injection-suite/index.js";
+export type {
+  InjectionSuiteArm,
+  InjectionSuiteCliInput,
+  InjectionSuiteCliResult,
+  InjectionSuiteEpisodeRow,
+  InjectionSuiteFamily,
+  InjectionSuiteRowIdentity,
+} from "./security/injection-suite/index.js";
+
 // ---------------------------------------------------------------------------
 // Coding-graph benchmark harness (issue #1557): deterministic synthetic repo
 // generator, metric runner, and regression gate. Reached via the optional

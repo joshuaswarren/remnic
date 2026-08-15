@@ -4,8 +4,8 @@
  */
 
 export function getBenchUsageText(): string {
-  return `Usage: remnic bench <list|run|published|datasets|runs|compare|results|baseline|export|publish|ui|providers|judge-calibrate|attribute|drift-gen|coding> [options] [benchmark...]
-       remnic benchmark <list|run|published|datasets|runs|compare|results|baseline|export|publish|ui|providers|judge-calibrate|check|report|attribute|drift-gen|coding> [options] [benchmark...]
+  return `Usage: remnic bench <list|run|published|datasets|runs|compare|results|baseline|export|publish|ui|providers|judge-calibrate|attribute|drift-gen|coding|security> [options] [benchmark...]
+       remnic benchmark <list|run|published|datasets|runs|compare|results|baseline|export|publish|ui|providers|judge-calibrate|check|report|attribute|drift-gen|coding|security> [options] [benchmark...]
 
 Commands:
   list                     List published benchmark packs
@@ -43,6 +43,8 @@ Commands:
   coding                   H6 synthetic coding benchmark commands
                            Run \`remnic bench coding --help\` for repo generation,
                            repeated-failure runs, resume, and offline stats replay
+  security                 H5 injection-suite runner (resume/pause/--limit)
+                           Run \`remnic bench security --help\`
   check                    Legacy latency regression gate (compatibility)
   attribute --run <id> [--results-dir <path>] [--memory-dir <path>] [--threshold <value>]
                            [--qmd <path> --collection <name>]
