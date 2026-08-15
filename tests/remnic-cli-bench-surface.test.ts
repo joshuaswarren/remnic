@@ -37,7 +37,7 @@ test("remnic CLI source wires the new bench command and keeps benchmark as an al
   assert.match(source, /await cmdBench\(rest\);/);
   assert.match(
     source,
-    /remnic bench <list\|run\|published\|datasets\|runs\|compare\|results\|baseline\|export\|publish\|ui\|providers\|judge-calibrate\|attribute\|drift-gen\|coding>/
+    /remnic bench <list\|run\|published\|datasets\|runs\|compare\|results\|baseline\|export\|publish\|ui\|providers\|judge-calibrate\|attribute\|drift-gen\|coding\|security>/
   );
   assert.match(source, /benchmark is kept as a compatibility alias/i);
 });
@@ -389,7 +389,7 @@ test("bench providers discovery is exposed as a package-backed CLI surface", asy
   assert.match(source, /\bdiscoverAllProviders\b/);
   assert.match(
     usageSource,
-    /Usage: remnic bench <list\|run\|published\|datasets\|runs\|compare\|results\|baseline\|export\|publish\|ui\|providers\|judge-calibrate\|attribute\|drift-gen\|coding>/,
+    /Usage: remnic bench <list\|run\|published\|datasets\|runs\|compare\|results\|baseline\|export\|publish\|ui\|providers\|judge-calibrate\|attribute\|drift-gen\|coding\|security>/,
   );
   assert.match(usageSource, /remnic bench providers discover/);
   assert.match(source, /async function discoverBenchProviders\(parsed: ParsedBenchArgs\): Promise<void>/);

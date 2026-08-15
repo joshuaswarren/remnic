@@ -13507,9 +13507,9 @@ Usage:
   remnic extensions <list|show|validate|reload>  Manage memory extensions
   remnic space <list|switch|create|delete|push|pull|share|promote|audit>  Manage spaces
     create accepts --parent <id> to set parent-child relationship
-  remnic bench <list|run|published|datasets|runs|compare|results|baseline|export|publish|ui|providers|judge-calibrate|attribute|drift-gen|coding> [benchmark...] [--quick] [--all] [--dataset-dir <path>] [--results-dir <path>] [--baselines-dir <path>] [--threshold <value>] [--detail] [--format <json|csv|html>] [--output <path>] [--target remnic-ai] [--json]
+  remnic bench <list|run|published|datasets|runs|compare|results|baseline|export|publish|ui|providers|judge-calibrate|attribute|drift-gen|coding|security> [benchmark...] [--quick] [--all] [--dataset-dir <path>] [--results-dir <path>] [--baselines-dir <path>] [--threshold <value>] [--detail] [--format <json|csv|html>] [--output <path>] [--target remnic-ai] [--json]
     benchmark is kept as a compatibility alias. check/report remain under that alias.
-  remnic benchmark <list|run|datasets|runs|compare|results|baseline|export|publish|ui|providers|check|report|attribute|drift-gen|coding> [queries...] [--explain] [--baseline=<path>] [--report=<path>]
+  remnic benchmark <list|run|datasets|runs|compare|results|baseline|export|publish|ui|providers|check|report|attribute|drift-gen|coding|security> [queries...] [--explain] [--baseline=<path>] [--report=<path>]
   remnic briefing [--since <window>] [--focus <filter>] [--save] [--format markdown|json]
     Daily context briefing. Windows: yesterday, today, NNh, NNd, NNw.
     Focus: person:<name>, project:<name>, topic:<name>.
