@@ -4,10 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.57.0] — 2026-08-15
+
 ### Changed
 
 - H5 injection-suite live executor default model is now `qwen3.8-27b-64k:latest` with a 300s request timeout (`#1962`).
-
 
 ## [v9.56.0] — 2026-08-15
 
