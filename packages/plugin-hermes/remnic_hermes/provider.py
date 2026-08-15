@@ -718,7 +718,7 @@ class RemnicMemoryProvider(HermesMemoryProvider):  # type: ignore[misc]
             "dryRun": {"type": "boolean"},
             "sessionKey": {"type": "string"},
             "content": {"type": "string"},
-            "category": {"type": "string"},
+            "category": _MEMORY_CATEGORY,
             "confidence": {"type": "number"},
             "namespace": _NAMESPACE,
             "tags": _STRING_ARRAY,
