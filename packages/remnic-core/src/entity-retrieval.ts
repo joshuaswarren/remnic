@@ -1021,7 +1021,7 @@ function formatEntityHintSection(
     }
     const topSnippetTexts = new Set(topSnippets.map((snippet) => normalizeEntityText(snippet.text)));
     lines.push(`- target: ${renderField(candidate.entry.name)} (${renderField(candidate.entry.type)})`);
-    lines.push(`- resolution: ${candidate.source === "recent_turn" ? "carried forward from recent turns via alias" : "matched alias"} "${renderField(candidate.alias)}"`);
+    lines.push(`- resolution: ${candidate.source === "recent_turn" ? "carried forward from recent turns via alias" : "matched alias"} "${renderField(candidate.alias)}"${candidate.source === "recent_turn" ? "" : " in the query"}`);
     if (uncertainty) lines.push(`- uncertainty: ${uncertainty}`);
     if (topSnippets.length > 0) {
       lines.push("- likely answer:");
