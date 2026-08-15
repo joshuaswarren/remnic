@@ -2847,9 +2847,8 @@ export class ExtractionPersistCoordinator {
       try {
         const screened = screenEntityForIndex(entity, entityScreenOn);
         if (!screened) continue;
-        if (screened.withheldRules.length > 0) {
-          log.warn(`persistExtraction: injection screen withheld ${screened.withheldRules.length} entity field(s) for "${screened.name}" [${screened.withheldRules.join(", ")}]`);
-        }
+        if (screened.withheldRules.length > 0) log.warn(`persistExtraction: injection screen withheld ${screened.withheldRules.length} entity field(s) for "${screened.name}" [${screened.withheldRules.join(", ")}]`);
+        if (screened.withheld) continue;
         const id = await storage.writeEntity(screened.name, screened.type, screened.facts, {
           source: screened.source,
           timestamp: sourceContext?.validAt,
@@ -2874,13 +2873,13 @@ export class ExtractionPersistCoordinator {
     ) {
       for (const rel of result.relationships.slice(0, 5)) {
         if (!rel.source || !rel.target || !rel.label) continue;
-        const relScreen = screenPersistStrings([`${rel.source}\n${rel.label}\n${rel.target}`], entityScreenOn);
+        const relScreen = screenPersistStrings([`${rel.source}\n${rel.label}\n${rel.target}`,
+          `${rel.target}\n${rel.label} (reverse)\n${rel.source}`], entityScreenOn);
         if (relScreen.warning) {
           log.warn(`persistExtraction(relationship): ${relScreen.warning}`);
           continue;
         }
         try {
-          // Add bidirectional relationship
           await storage.addEntityRelationship(rel.source, { target: rel.target, label: rel.label });
           recordDurableNonFactWrite();
           await storage.addEntityRelationship(rel.target, { target: rel.source, label: `${rel.label} (reverse)` });
@@ -2932,17 +2931,18 @@ export class ExtractionPersistCoordinator {
       }
     }
 
-    // Persist identity reflection. This writes durable namespace-local state, so
-    // an identity-ONLY extraction (no facts/entities/profile/questions) still
-    // counts as a durable non-fact write for the catalog touch below (NIIly).
-    // Only count it when the write actually succeeds (best-effort write); the
-    // touch is recorded AFTER this so a rolled-back/failed write never touches.
+    // Persist identity reflection (screened — #1955): durable namespace-local
+    // state; identity-ONLY extraction still counts as durable non-fact (NIIly).
     if (resolveRecallEnhancementCapabilities(this.deps.config).identity && result.identityReflection) {
-      try {
-        await storage.appendIdentityReflection(result.identityReflection);
-        recordDurableNonFactWrite();
-      } catch (err) {
-        log.debug(`identity reflection write failed: ${err}`);
+      const idScreen = screenPersistStrings([result.identityReflection], entityScreenOn);
+      if (idScreen.warning) log.warn(`persistExtraction(identity): ${idScreen.warning}`);
+      else {
+        try {
+          await storage.appendIdentityReflection(result.identityReflection);
+          recordDurableNonFactWrite();
+        } catch (err) {
+          log.debug(`identity reflection write failed: ${err}`);
+        }
       }
     }
 

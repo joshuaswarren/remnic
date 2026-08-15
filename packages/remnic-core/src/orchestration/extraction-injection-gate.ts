@@ -92,6 +92,8 @@ export interface ScreenedEntityWrite {
   facts: string[];
   structuredSections?: EntityStructuredSection[];
   withheldRules: string[];
+  /** True when the entity NAME itself was flagged — callers must not index it. */
+  withheld: boolean;
 }
 
 /**
@@ -105,6 +107,9 @@ export function screenEntityForIndex(entity: unknown, enabled: boolean): Screene
   const name = record?.name;
   const type = record?.type;
   if (typeof name !== "string" || !name.trim() || typeof type !== "string" || !type.trim()) return null;
+  // #1955 review: the raw name is emitted as the entity target outside the
+  // snippet fence — a flagged name withholds the whole entity from the index.
+  const nameScreen = withholdScreenedStrings([name], enabled);
   const factScreen = withholdScreenedStrings(Array.isArray(record?.facts) ? record.facts : [], enabled);
   const rawSections: EntityStructuredSection[] | undefined = Array.isArray(record?.structuredSections)
     ? (record.structuredSections as EntityStructuredSection[])
@@ -123,9 +128,11 @@ export function screenEntityForIndex(entity: unknown, enabled: boolean): Screene
         ? { structuredSections: rawSections }
         : {}),
     withheldRules: [
+      ...nameScreen.withheldRules,
       ...factScreen.withheldRules,
       ...(sectionScreens ?? []).flatMap(({ screen }) => screen.withheldRules),
     ],
+    withheld: nameScreen.withheldRules.length > 0,
   };
 }
 
