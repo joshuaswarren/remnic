@@ -1,3 +1,5 @@
+import { classifyExtractionOrigin, type ExtractionSourceContext } from "./extraction-origin-context.js";
+import { evaluateInjectionScreen, screenEntityForIndex, screenPersistStrings } from "./extraction-injection-gate.js";
 /**
  * Extraction persistence coordinator (issue #1526, seam 16).
  *
@@ -26,9 +28,8 @@ import {
   resolvePresentationCapabilities,
   resolveNamespaceCapabilities,
   resolveRecallEnhancementCapabilities,
-  resolveConversationContextCapabilities,
   resolveRecallAuxiliaryCapabilities,
-  type GraphConstructionCapabilitySet,
+  resolveConversationContextCapabilities, resolveSecurityCapabilities, type GraphConstructionCapabilitySet,
   type MemoryLifecycleCapabilitySet,
 } from "../capabilities.js";
 import { coerceBool } from "../connectors/coerce.js";
@@ -132,7 +133,7 @@ export class ExtractionPersistCoordinator {
     result: ExtractionResult,
     storage: StorageManager,
     threadIdForExtraction?: string | null,
-    sourceContext?: { sessionKey?: string; principal?: string; validAt?: string; sourceConnector?: string },
+    sourceContext?: ExtractionSourceContext,
     baseNamespace?: string,
     scopeProfileWritePlan?: ResolvedScopeProfilePlan | null,
     /** Verbatim source turn text the facts were extracted from (faithfulness gate #1576). */
@@ -337,7 +338,7 @@ export class ExtractionPersistCoordinator {
     // (pre-judge + write-loop) so no new scattered config.*Enabled read is
     // introduced (ratchet scatteredConfigFlagReads; see #1523).
     const namespacesEnabled = resolveNamespaceCapabilities(this.deps.config).namespaces;
-    const sourceConnector = sourceContext?.sourceConnector; // #2183 tool-scope guard input
+    const sourceConnector = sourceContext?.sourceConnector; const origin = classifyExtractionOrigin(sourceContext);
     const promoteMemoryToProfileTargets = async (options: {
       sourceStorage: StorageManager;
       category: string;
@@ -400,7 +401,7 @@ export class ExtractionPersistCoordinator {
             {
               content: citedContent,
               category: options.category as MemoryCategory,
-              confidence: options.confidence,
+              origin, confidence: options.confidence,
               tags: withReservedMarkerTag(options.tags, `${target.target}-promotion`),
               entityRef: options.entityRef,
               structuredAttributes: options.structuredAttributes,
@@ -643,7 +644,7 @@ export class ExtractionPersistCoordinator {
           {
             content: citedContent,
             category: options.category as MemoryCategory,
-            confidence: options.confidence,
+            origin, confidence: options.confidence,
             tags: withReservedMarkerTag(options.tags, "shared-promotion"),
             entityRef: options.entityRef,
             structuredAttributes: options.structuredAttributes,
@@ -1622,6 +1623,7 @@ export class ExtractionPersistCoordinator {
         entityRef: fact.entityRef,
         validAt: biTemporal?.validFrom ?? sourceContext?.validAt,
       };
+      const { status: injectionScreenStatus, tags: injectionScreenTags } = evaluateInjectionScreen({ content: fact.content, category: writeCategory, structuredAttributes: fact.structuredAttributes, procedureSteps: fact.procedureSteps }, resolveSecurityCapabilities(this.deps.config).injectionScreen);
       // #1669 redaction-rule gate: consult BOTH source and target namespace
       // rules before any write. A never-store pattern registered under the
       // source namespace must survive scope-routing to a different target
@@ -1724,7 +1726,7 @@ export class ExtractionPersistCoordinator {
           exactDuplicate = false;
         }
       }
-      if (exactDuplicate) {
+      if (exactDuplicate && injectionScreenStatus !== "pending_review") {
         // #1671 — before short-circuiting, backfill bi-temporal bounds
         // onto the existing source-namespace copy if it lacks bounds the
         // incoming fact now carries (re-extraction with a resolved invalidAt).
@@ -1809,8 +1811,7 @@ export class ExtractionPersistCoordinator {
         dedupedCount++;
         continue;
       }
-
-      if (writeCategory === "procedure" && this.deps.config.procedural?.enabled !== true) {
+      if (writeCategory === "procedure" && this.deps.config.procedural?.enabled !== true && injectionScreenStatus !== "pending_review") {
         log.debug("persistExtraction: skip procedure memory (procedural.enabled is false)");
         continue;
       }
@@ -1824,6 +1825,7 @@ export class ExtractionPersistCoordinator {
       // gate, trivial turn-level chatter ("hi", "k", heartbeat pings) gets
       // persisted as a fact memory and dilutes the store.
       if (
+        injectionScreenStatus !== "pending_review" &&
         !isAboveImportanceThreshold(
           importance.level,
           this.deps.config.extractionMinImportanceLevel,
@@ -1851,7 +1853,7 @@ export class ExtractionPersistCoordinator {
       // extraction pass. The judge module tracks how many times the same
       // content has been deferred and converts to reject at the configured
       // cap, so the orchestrator only needs to skip the write here.
-      if (judgeVerdictsByFactIndex) {
+      if (judgeVerdictsByFactIndex && injectionScreenStatus !== "pending_review") {
         const verdict = judgeVerdictsByFactIndex.get(factLoopIndex);
         if (verdict && !verdict.durable) {
           const verdictKind = getVerdictKind(verdict);
@@ -1878,7 +1880,7 @@ export class ExtractionPersistCoordinator {
       // Procedure extraction gate (issue #519): ≥2 steps + trigger phrasing.
       // Runs even when extractionJudgeEnabled is false (durability judge is unrelated).
       // Never tied to extractionJudgeShadow — that flag is only for the LLM durability judge.
-      if (writeCategory === "procedure") {
+      if (writeCategory === "procedure" && injectionScreenStatus !== "pending_review") {
         const procGate = validateProcedureExtraction({
           content: fact.content,
           procedureSteps: fact.procedureSteps,
@@ -1918,7 +1920,7 @@ export class ExtractionPersistCoordinator {
         fact.requireSpansPending === true
           ? ("pending_review" as const)
           : undefined;
-      const faithfulnessEnforceStatus = faithfulnessGateStatus ?? requireSpansPendingStatus;
+      const faithfulnessEnforceStatus = faithfulnessGateStatus ?? requireSpansPendingStatus ?? injectionScreenStatus;
 
       // Issue #373 — write-time semantic similarity guard. Hook runs after
       // the exact content-hash miss and the importance gate so that:
@@ -1939,7 +1941,7 @@ export class ExtractionPersistCoordinator {
       // a high-similarity update/correction is linked as a superseding
       // contradiction rather than silently dropped.
       let pendingSemanticSkip: (SemanticDedupDecision & { action: "skip" }) | null = null;
-      if (resolvePipelineProcessingCapabilities(this.deps.config).semanticDedup) {
+      if (resolvePipelineProcessingCapabilities(this.deps.config).semanticDedup && injectionScreenStatus !== "pending_review") {
         let semanticDecision: SemanticDedupDecision;
         // UUI2: skip embedding lookup for the rest of this batch once we know
         // the backend is unavailable. The flag is reset per-batch (set to false
@@ -2189,8 +2191,8 @@ export class ExtractionPersistCoordinator {
             {
               content: citedChunkedContent,
               category: writeCategory,
-              confidence: fact.confidence,
-              tags: withReservedMarkerTag(fact.tags, "chunked"),
+              origin, confidence: fact.confidence,
+              tags: withReservedMarkerTag([...fact.tags, ...injectionScreenTags], "chunked"),
               entityRef: fact.entityRef,
               structuredAttributes: fact.structuredAttributes,
               validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt,
@@ -2302,7 +2304,7 @@ export class ExtractionPersistCoordinator {
                   // the verified span (chatgpt-codex-connector thread Ocvmo).
                   ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
                   ...(fact.provenance ? { provenance: fact.provenance } : {}),
-                  ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
+                  ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}), ...(origin ? { origin } : {}),
                   ...(factToolScoped ? { toolScoped: true as const } : {}),
                 },
               );
@@ -2459,6 +2461,7 @@ export class ExtractionPersistCoordinator {
                 intentActionType: inferredIntent?.actionType,
                 intentEntityTypes: inferredIntent?.entityTypes,
                 ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
+                ...(origin ? { origin } : {}),
                 ...(factToolScoped ? { toolScoped: true as const } : {}),
               });
             }
@@ -2568,8 +2571,8 @@ export class ExtractionPersistCoordinator {
         {
           content: citedFactContent,
           category: writeCategory,
-          confidence: fact.confidence,
-          tags: fact.tags,
+          origin, confidence: fact.confidence,
+          tags: [...fact.tags, ...injectionScreenTags],
           entityRef:
             typeof (fact as any).entityRef === "string"
               ? (fact as any).entityRef
@@ -2778,6 +2781,7 @@ export class ExtractionPersistCoordinator {
             intentActionType: inferredIntent?.actionType,
             intentEntityTypes: inferredIntent?.entityTypes,
             ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
+            ...(origin ? { origin } : {}),
             ...(factToolScoped ? { toolScoped: true as const } : {}),
           });
         }
@@ -2838,29 +2842,21 @@ export class ExtractionPersistCoordinator {
       durableNonFactTouchRecorded = true;
       touchBaseNonFactNamespace();
     };
+    // #1955 review: entity fields recall via entity hints — screened before
+    // entering the index (screenEntityForIndex); withheld fields are logged.
+    const entityScreenOn = resolveSecurityCapabilities(this.deps.config).injectionScreen;
     for (const entity of entities) {
       try {
-        const name = (entity as any)?.name;
-        const type = (entity as any)?.type;
-        if (
-          typeof name !== "string" ||
-          !name.trim() ||
-          typeof type !== "string" ||
-          !type.trim()
-        ) {
-          continue;
-        }
-        const safeFacts = Array.isArray((entity as any)?.facts)
-          ? (entity as any).facts.filter((f: any) => typeof f === "string")
-          : [];
-          const id = await storage.writeEntity(name, type, safeFacts, {
-            source: typeof (entity as any)?.source === "string" ? (entity as any).source : "extraction",
-            timestamp: sourceContext?.validAt,
-            sessionKey: sourceContext?.sessionKey,
-            principal: sourceContext?.principal,
-            structuredSections: Array.isArray((entity as any)?.structuredSections)
-            ? (entity as any).structuredSections
-            : undefined,
+        const screened = screenEntityForIndex(entity, entityScreenOn);
+        if (!screened) continue;
+        if (screened.withheldRules.length > 0) log.warn(`persistExtraction: injection screen withheld ${screened.withheldRules.length} entity field(s) for "${screened.name}" [${screened.withheldRules.join(", ")}]`);
+        if (screened.withheld) continue;
+        const id = await storage.writeEntity(screened.name, screened.type, screened.facts, {
+          source: screened.source,
+          timestamp: sourceContext?.validAt,
+          sessionKey: sourceContext?.sessionKey,
+          principal: sourceContext?.principal,
+          structuredSections: screened.structuredSections,
         });
         if (id) {
           trackPersistedId(storage, id);
@@ -2870,25 +2866,23 @@ export class ExtractionPersistCoordinator {
         log.warn(`persistExtraction: entity write failed: ${err}`);
       }
     }
-
-    // Persist entity relationships (v7.0)
+    // Persist entity relationships (v7.0). #1955 review: source/label/target are screened.
     if (
       resolveRecallEnhancementCapabilities(this.deps.config).entityRelationships &&
       Array.isArray(result.relationships)
     ) {
       for (const rel of result.relationships.slice(0, 5)) {
         if (!rel.source || !rel.target || !rel.label) continue;
+        const relScreen = screenPersistStrings([`${rel.source}\n${rel.label}\n${rel.target}`,
+          `${rel.target}\n${rel.label} (reverse)\n${rel.source}`], entityScreenOn);
+        if (relScreen.warning) {
+          log.warn(`persistExtraction(relationship): ${relScreen.warning}`);
+          continue;
+        }
         try {
-          // Add bidirectional relationship
-          await storage.addEntityRelationship(rel.source, {
-            target: rel.target,
-            label: rel.label,
-          });
+          await storage.addEntityRelationship(rel.source, { target: rel.target, label: rel.label });
           recordDurableNonFactWrite();
-          await storage.addEntityRelationship(rel.target, {
-            target: rel.source,
-            label: `${rel.label} (reverse)`,
-          });
+          await storage.addEntityRelationship(rel.target, { target: rel.source, label: `${rel.label} (reverse)` });
           recordDurableNonFactWrite();
         } catch (err) {
           log.debug(`relationship persist failed: ${err}`);
@@ -2915,14 +2909,21 @@ export class ExtractionPersistCoordinator {
         }
       }
     }
-
-    if (profileUpdates.length > 0) {
-      await storage.appendToProfile(profileUpdates);
+    // #1955 review: profile + questions render verbatim into model context —
+    // screened; questions screen question+context JOINED (routing: #2397).
+    const profileScreen = screenPersistStrings(profileUpdates, entityScreenOn);
+    if (profileScreen.warning) log.warn(`persistExtraction(profile): ${profileScreen.warning}`);
+    if (profileScreen.kept.length > 0) {
+      await storage.appendToProfile(profileScreen.kept);
       recordDurableNonFactWrite();
     }
 
-    // Persist questions
     for (const q of questions) {
+      const qScreen = screenPersistStrings([`${q.question}\n${q.context ?? ""}`], entityScreenOn);
+      if (qScreen.warning) {
+        log.warn(`persistExtraction(question): ${qScreen.warning}`);
+        continue;
+      }
       const id = await storage.writeQuestion(q.question, q.context, q.priority);
       if (id) {
         trackPersistedId(storage, id);
@@ -2930,17 +2931,18 @@ export class ExtractionPersistCoordinator {
       }
     }
 
-    // Persist identity reflection. This writes durable namespace-local state, so
-    // an identity-ONLY extraction (no facts/entities/profile/questions) still
-    // counts as a durable non-fact write for the catalog touch below (NIIly).
-    // Only count it when the write actually succeeds (best-effort write); the
-    // touch is recorded AFTER this so a rolled-back/failed write never touches.
+    // Persist identity reflection (screened — #1955): durable namespace-local
+    // state; identity-ONLY extraction still counts as durable non-fact (NIIly).
     if (resolveRecallEnhancementCapabilities(this.deps.config).identity && result.identityReflection) {
-      try {
-        await storage.appendIdentityReflection(result.identityReflection);
-        recordDurableNonFactWrite();
-      } catch (err) {
-        log.debug(`identity reflection write failed: ${err}`);
+      const idScreen = screenPersistStrings([result.identityReflection], entityScreenOn);
+      if (idScreen.warning) log.warn(`persistExtraction(identity): ${idScreen.warning}`);
+      else {
+        try {
+          await storage.appendIdentityReflection(result.identityReflection);
+          recordDurableNonFactWrite();
+        } catch (err) {
+          log.debug(`identity reflection write failed: ${err}`);
+        }
       }
     }
 

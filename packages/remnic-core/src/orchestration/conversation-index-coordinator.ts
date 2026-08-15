@@ -19,7 +19,8 @@
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 
-import { resolveIndexingCapabilities } from "../capabilities.js";
+import { resolveIndexingCapabilities, resolveSecurityCapabilities } from "../capabilities.js";
+import { renderAuthorityBoundContent } from "../recall-context-composition.js";
 import { cleanupConversationChunks } from "../conversation-index/cleanup.js";
 import { chunkTranscriptEntries } from "../conversation-index/chunker.js";
 import type { ConversationChunk } from "../conversation-index/chunker.js";
@@ -42,6 +43,7 @@ import type { PluginConfig } from "../types.js";
  */
 export class ConversationIndexCoordinator {
   private readonly config: PluginConfig;
+  private readonly originAuthorityEnabled: boolean;
   private readonly getTranscript: () => TranscriptManager;
   private readonly getBackend: () => ConversationIndexBackend | undefined;
   private readonly indexDir: string;
@@ -54,6 +56,7 @@ export class ConversationIndexCoordinator {
     indexDir: string;
   }) {
     this.config = options.config;
+    this.originAuthorityEnabled = resolveSecurityCapabilities(this.config).originAuthority;
     this.getTranscript = options.getTranscript;
     this.getBackend = options.getBackend;
     this.indexDir = options.indexDir;
@@ -81,10 +84,18 @@ export class ConversationIndexCoordinator {
     let used = 0;
     for (const r of results) {
       if (!r?.snippet) continue;
+      const body = renderAuthorityBoundContent(
+        r.snippet.trim(),
+        undefined,
+        {
+          enabled: this.originAuthorityEnabled,
+          untrustedOrigins: this.config.untrustedOrigins,
+        },
+      );
       const chunk =
         `### ${r.path}\n` +
         `Score: ${r.score.toFixed(3)}\n\n` +
-        `${r.snippet.trim()}\n`;
+        `${body}\n`;
       if (used + chunk.length > maxChars) break;
       lines.push(chunk);
       used += chunk.length;

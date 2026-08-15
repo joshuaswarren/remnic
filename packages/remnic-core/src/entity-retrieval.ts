@@ -1,4 +1,5 @@
 import { resolveNamespaceCapabilities } from "./capabilities.js";
+import { renderAuthorityBoundContent } from "./recall-context-composition.js";
 import { createHash } from "node:crypto";
 import { sanitizeMemoryContent } from "./sanitize.js";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -44,7 +45,7 @@ type EntityMentionIndexEntry = {
   relationships: Array<{ target: string; label: string }>;
   activity: Array<{ date: string; note: string }>;
   factCount: number;
-  memorySnippets: string[];
+  memorySnippets: string[]; memorySnippetOrigins?: Array<string | undefined>;
   nativeChunks: Array<{
     chunkId: string;
     title: string;
@@ -72,9 +73,8 @@ type EntityCandidate = {
 type EntityHintSnippet = {
   text: string;
   score: number;
-  kind: "summary" | "fact" | "section" | "relationship" | "activity" | "memory" | "native";
+  kind: "summary" | "fact" | "section" | "relationship" | "activity" | "memory" | "native"; origin?: string;
 };
-
 export interface BuildEntityRecallSectionOptions {
   config: PluginConfig;
   storage: StorageManager;
@@ -87,6 +87,7 @@ export interface BuildEntityRecallSectionOptions {
   maxRelatedEntities: number;
   maxChars: number;
   transcriptEntries: TranscriptEntry[];
+  originAuthorityEnabled?: boolean; untrustedOrigins?: readonly string[];
   /**
    * Cancels the build at its next checkpoint (issue #2291).  Entity recall reads
    * every entity and memory file across the recalled namespaces, which is
@@ -617,16 +618,13 @@ async function buildEntityMentionIndex(
   for (const memory of memories) {
     scanned += 1;
     await yieldEntityRecallScanEvery(scanned, abortSignal);
-    const entityRef = typeof memory.frontmatter.entityRef === "string" ? memory.frontmatter.entityRef : "";
-    if (!entityRef) continue;
-    const entry = entities.get(entityRef);
+    const entry = typeof memory.frontmatter.entityRef === "string" ? entities.get(memory.frontmatter.entityRef) : undefined;
     if (!entry) continue;
     const snippet = await readMemorySnippet(memory);
-    if (!entry.memorySnippets.includes(snippet)) {
-      entry.memorySnippets.push(snippet);
-    }
+    if (entry.memorySnippets.includes(snippet)) continue;
+    entry.memorySnippets.push(snippet);
+    entry.memorySnippetOrigins = [...(entry.memorySnippetOrigins ?? []), memory.frontmatter.origin];
   }
-
   // Each remaining phase is another synchronous pass over the whole index
   // (alias map, native-chunk merge, sort, two full serializations). Yield between
   // them so a section deadline can fire between passes instead of only after all
@@ -908,12 +906,8 @@ async function buildHintSnippets(
       });
     }
 
-    for (const memorySnippet of entry.memorySnippets.slice(0, Math.min(maxSupportingFacts, 4))) {
-      snippets.push({
-        text: memorySnippet,
-        score: 5,
-        kind: "memory",
-      });
+    for (const [index, memorySnippet] of entry.memorySnippets.slice(0, Math.min(maxSupportingFacts, 4)).entries()) {
+      snippets.push({ text: memorySnippet, score: 5, kind: "memory", origin: entry.memorySnippetOrigins?.[index] });
     }
 
     for (const chunk of entry.nativeChunks) {
@@ -968,9 +962,18 @@ function formatEntityHintSection(
   mode: EntityQueryMode,
   maxRelatedEntities: number,
   maxChars: number,
+  originAuthorityEnabled: boolean, untrustedOrigins: readonly string[],
 ): string | null {
   if (candidates.length === 0) return null;
   const lines: string[] = ["## entity_answer_hints", ""];
+  // #1955 review: non-native snippet kinds may embed extraction-written content
+  // without per-field origin — fence as unknown (least privilege; plumbing #2397).
+  const renderSnippet = (snippet: EntityHintSnippet): string => snippet.kind !== "native"
+    ? renderAuthorityBoundContent(snippet.text, snippet.origin, { enabled: originAuthorityEnabled, untrustedOrigins }) : snippet.text;
+  // (see comment above)
+  // #1955 review: inline fields (names/types/aliases/targets) cannot carry the
+  // multi-line block fence without collapsing the hint list structure —
+  // per-field origin plumbing is tracked in #2397.
   for (const { candidate, snippets, uncertainty } of candidates) {
     const hasSummary = Boolean(candidate.entry.summary?.trim());
     const preferredTopSnippets = hasSummary
@@ -1020,16 +1023,12 @@ function formatEntityHintSection(
     }
     const topSnippetTexts = new Set(topSnippets.map((snippet) => normalizeEntityText(snippet.text)));
     lines.push(`- target: ${candidate.entry.name} (${candidate.entry.type})`);
-    if (candidate.source === "recent_turn") {
-      lines.push(`- resolution: carried forward from recent turns via alias "${candidate.alias}"`);
-    } else {
-      lines.push(`- resolution: matched alias "${candidate.alias}" in the query`);
-    }
+    lines.push(`- resolution: ${candidate.source === "recent_turn" ? "carried forward from recent turns via alias" : "matched alias"} "${candidate.alias}"${candidate.source === "recent_turn" ? "" : " in the query"}`);
     if (uncertainty) lines.push(`- uncertainty: ${uncertainty}`);
     if (topSnippets.length > 0) {
       lines.push("- likely answer:");
       for (const snippet of topSnippets) {
-        lines.push(`  - ${snippet.text}`);
+        lines.push(`  - ${renderSnippet(snippet)}`);
       }
     }
     if (mode !== "direct") {
@@ -1039,7 +1038,7 @@ function formatEntityHintSection(
       if (fallbackTimeline.length > 0) {
         lines.push("- recent timeline:");
         for (const snippet of fallbackTimeline) {
-          lines.push(`  - ${snippet.text}`);
+          lines.push(`  - ${renderSnippet(snippet)}`);
         }
       }
     }
@@ -1172,7 +1171,15 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
     }),
   );
 
-  const section = formatEntityHintSection(enriched, queryTokens, mode, options.maxRelatedEntities, options.maxChars);
+  const section = formatEntityHintSection(
+    enriched,
+    queryTokens,
+    mode,
+    options.maxRelatedEntities,
+    options.maxChars,
+    options.originAuthorityEnabled === true,
+    options.untrustedOrigins ?? [],
+  );
   // `entityRecallSectionAbsent` so a cancelled build is not recorded as a
   // successful section that simply found no entities.
   if (!section) return entityRecallSectionAbsent(options.abortSignal);

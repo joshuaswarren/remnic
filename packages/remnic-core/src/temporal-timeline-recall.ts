@@ -1,3 +1,4 @@
+import { renderAuthorityBoundContent } from "./recall-context-composition.js";
 import type { MemoryFile } from "./types.js";
 
 export interface TemporalTimelineRecallItem {
@@ -14,6 +15,8 @@ export interface TemporalTimelineRecallOptions {
   maxChars: number;
   maxItems: number;
   title?: string;
+  originAuthorityEnabled?: boolean;
+  untrustedOrigins?: readonly string[];
 }
 
 const QUERY_STOPWORDS = new Set([
@@ -105,7 +108,15 @@ export function buildTemporalTimelineRecallSection(
       item.observedAt ? `observed=${item.observedAt}` : "",
       item.sessionKey ? `session=${item.sessionKey}` : "",
     ].filter(Boolean).join(", ");
-    lines.push(`- [${provenance}] ${item.memory.content.trim()}`);
+    const content = renderAuthorityBoundContent(
+      item.memory.content.trim(),
+      item.memory.frontmatter.origin,
+      {
+        enabled: options.originAuthorityEnabled === true,
+        untrustedOrigins: options.untrustedOrigins ?? [],
+      },
+    );
+    lines.push(`- [${provenance}] ${content}`);
   }
   return clip(lines.join("\n"), maxChars);
 }

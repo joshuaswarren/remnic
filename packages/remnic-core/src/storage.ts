@@ -235,6 +235,7 @@ import { inferMemoryStatus, isArchivedMemoryPath, toMemoryPathRel } from "./memo
 import { normalizeProjectionPreview, normalizeProjectionTags } from "./memory-projection-format.js";
 import { isSupportPassportPrivateMemory } from "./support-passport/card-projection.js";
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
+import { parseOriginClass } from "./security/origin-authority.js";
 import {
   composeMemoryEnvelope,
   isSealedMemoryEnvelope,
@@ -317,6 +318,7 @@ function serializeFrontmatter(fm: MemoryFrontmatter): string {
     `confidenceTier: ${fm.confidenceTier}`,
     `tags: [${fm.tags.map((t) => `"${t}"`).join(", ")}]`,
   ];
+  if (fm.origin) lines.push(`origin: ${/^[A-Za-z0-9:_.*-]+$/.test(fm.origin) ? fm.origin : JSON.stringify(fm.origin)}`);
   if (fm.entityRef) lines.push(`entityRef: ${fm.entityRef}`);
   if (fm.sourceConnector) {
     // YAML-injection guard (review thread QMPsP): emit unquoted for
@@ -859,6 +861,7 @@ export function parseFrontmatter(raw: string): { frontmatter: MemoryFrontmatter;
       confidenceTier: (fm.confidenceTier as ConfidenceTier) || confidenceTier(conf),
       tags,
       entityRef: fm.entityRef || undefined,
+      origin: fm.origin !== undefined ? parseOriginClass(decodeYamlScalar(fm.origin)) : undefined,
       sourceConnector: fm.sourceConnector ? decodeYamlScalar(fm.sourceConnector) || undefined : undefined,
       toolScoped: fm.toolScoped === "true" ? true : undefined,
       supersedes: fm.supersedes || undefined,
@@ -1717,6 +1720,7 @@ export interface WriteMemoryOptions {
    */
   sources?: ProvenanceSource[];
   provenance?: "verified" | "unverified" | "none";
+  origin?: string;
   sourceConnector?: string;
   toolScoped?: true;
 }
@@ -1727,7 +1731,7 @@ export interface WriteMemoryOptions {
  */
 export type SealedWriteExtras = Omit<
   WriteMemoryOptions,
-  "confidence" | "tags" | "entityRef" | "source" | "expiresAt" | "validAt" | "structuredAttributes" | "sourceConnector"
+  "confidence" | "tags" | "entityRef" | "source" | "expiresAt" | "validAt" | "structuredAttributes" | "sourceConnector" | "origin"
 >;
 
 export class StorageManager extends TombstoneBlockedCaptureIndexHost {
@@ -3767,6 +3771,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (options.sourceConnector !== undefined) {
       fm.sourceConnector = options.sourceConnector;
     }
+    if (options.origin !== undefined) fm.origin = parseOriginClass(options.origin);
 
     // Assemble the persisted body (attribute-suffix enrichment + combined
     // sanitize) via the SHARED helper — the sealed-envelope composer uses the
@@ -4153,7 +4158,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       intentGoal?: string;
       intentActionType?: string;
       intentEntityTypes?: string[];
-      sourceConnector?: string;
+      sourceConnector?: string; origin?: string;
       toolScoped?: true;
     } = {}
   ): Promise<string> {
@@ -4180,6 +4185,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       intentActionType: options.intentActionType,
       intentEntityTypes: options.intentEntityTypes,
       ...(options.sourceConnector ? { sourceConnector: options.sourceConnector } : {}),
+      ...(options.origin ? { origin: parseOriginClass(options.origin) } : {}),
       ...(options.toolScoped ? { toolScoped: true as const } : {}),
     };
 
@@ -6811,6 +6817,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       observedAt?: string;
       eventTimeSource?: "extracted" | "assumed";
       sourceConnector?: string;
+      origin?: string;
       toolScoped?: true;
     } = {}
   ): Promise<string> {
@@ -6859,6 +6866,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       ...(options.sources ? { sources: options.sources } : {}),
       ...(options.provenance ? { provenance: options.provenance } : {}),
       ...(options.sourceConnector ? { sourceConnector: options.sourceConnector } : {}),
+      ...(options.origin ? { origin: parseOriginClass(options.origin) } : {}),
       ...(options.toolScoped ||
       withholdToolScopedFromSharedNamespace({
         content: sanitized.text,

@@ -415,6 +415,7 @@ export class NamespaceReadFanoutCoordinator {
         path: memory.path,
         score,
         snippet: memory.content.slice(0, 400).replace(/\n/g, " "),
+        origin: memory.frontmatter.origin,
         transport: "scoped_prefilter",
       });
     }

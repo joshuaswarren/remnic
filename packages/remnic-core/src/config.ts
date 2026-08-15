@@ -55,6 +55,7 @@ import {
   parseQmdSubprocessStrategy,
   parseQmdSupportedVersion,
 } from "./config-qmd.js";
+import { parseSecurityConfig } from "./config-security.js";
 import {
   resolveEmitLegacyTools,
   resolveNamespaceCatalogEnabled,
@@ -356,7 +357,6 @@ function resolveBooleanConfig(
   }
   return coerced;
 }
-
 
 function resolvePositiveIntegerConfig(
   value: unknown,
@@ -1554,6 +1554,7 @@ export function parseConfig(
     model,
     reasoningEffort,
     triggerMode,
+    ...parseSecurityConfig(cfg, rawOperatorConfig),
     bufferMaxTurns:
       typeof cfg.bufferMaxTurns === "number" ? cfg.bufferMaxTurns : 5,
     bufferMaxMinutes:

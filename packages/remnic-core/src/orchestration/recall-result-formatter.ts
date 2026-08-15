@@ -19,8 +19,9 @@
 
 import { buildHandleIndexForResults } from "../recall-handles.js";
 import path from "node:path";
+import { renderAuthorityBoundContent } from "../recall-context-composition.js";
 import { renderEpistemicHedge } from "../trust-score.js";
-import { resolveIdentityContinuityCapabilities } from "../capabilities.js";
+import { resolveIdentityContinuityCapabilities, resolveSecurityCapabilities } from "../capabilities.js";
 import type { StorageManager } from "../index.js";
 import type { ObjectiveStateSearchResult } from "../objective-state.js";
 import type { CausalTrajectorySearchResult } from "../causal-trajectory.js";
@@ -201,7 +202,10 @@ export function displaySafeRecallSnapshot<
  * rendering (memory handles, epistemic hedges, identity injection mode).
  */
 export class RecallResultFormatter {
-  constructor(private readonly config: PluginConfig) {}
+  private readonly originAuthorityEnabled: boolean;
+  constructor(private readonly config: PluginConfig) {
+    this.originAuthorityEnabled = resolveSecurityCapabilities(config).originAuthority;
+  }
 
   // ── QMD results (memory handles + epistemic hedge) ──────────────────────
 
@@ -221,9 +225,17 @@ export class RecallResultFormatter {
       trustByPath !== undefined;
     const hedgeMap = renderHedge ? trustByPath : null;
     const entries = results.map((r, i) => {
-      const snippet = r.snippet
+      const snippetBody = r.snippet
         ? r.snippet.slice(0, 500).replace(/\n/g, " ")
         : "(no preview)";
+      const snippet = renderAuthorityBoundContent(
+        snippetBody,
+        r.origin,
+        {
+          enabled: this.originAuthorityEnabled,
+          untrustedOrigins: this.config.untrustedOrigins,
+        },
+      );
       const displayPath = displayResultPath(r.path, this.config.memoryDir, r.namespace);
       const source = typeof r.line === "number" ? `${displayPath}:${r.line}` : displayPath;
       const head = `[${i + 1}] ${source} (score: ${r.score.toFixed(3)})\n${snippet}`;
@@ -342,9 +354,19 @@ export class RecallResultFormatter {
           `${node.kind}/${node.abstractionLevel}`,
           node.sessionKey,
         ].join(" | ");
+        // #1955 review: node title/summary copy active source-memory content;
+        // harmonic nodes carry no per-node origin yet, so fence as unknown
+        // (least privilege) when origin authority is on (plumbing: #2397).
+        // Flag-off keeps the original two-slot shape byte-identical.
+        const bodyParts = this.originAuthorityEnabled
+          ? [renderAuthorityBoundContent(
+              [node.title, node.summary].filter(Boolean).join("\n"),
+              undefined,
+              { enabled: true, untrustedOrigins: this.config.untrustedOrigins },
+            )]
+          : [node.title, node.summary];
         const details = [
-          node.title,
-          node.summary,
+          ...bodyParts,
           `scores: node=${nodeScore.toFixed(1)} anchor=${anchorScore.toFixed(1)}`,
         ];
         if (matchedAnchors.length > 0) {
@@ -428,7 +450,14 @@ export class RecallResultFormatter {
           verificationStatus,
           `confidence:${effectiveConfidence.toFixed(2)}`,
         ].join(" | ");
-        const details = [rule.content, `source memory: ${sourceMemoryId}`];
+        // #1955 review: the rule body derives from a source memory whose
+        // origin is not copied onto the rule — fence via the rule's own
+        // frontmatter origin (missing → unknown, least privilege) when on.
+        const ruleBody = renderAuthorityBoundContent(rule.content, rule.frontmatter.origin, {
+          enabled: this.originAuthorityEnabled,
+          untrustedOrigins: this.config.untrustedOrigins,
+        });
+        const details = [ruleBody, `source memory: ${sourceMemoryId}`];
         if (matchedFields.length > 0) {
           details.push(`matched: ${matchedFields.join(", ")}`);
         }

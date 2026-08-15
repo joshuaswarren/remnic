@@ -59,6 +59,8 @@ export interface MemoryWriteInput {
   validAt?: string;
   /** Connector identity that produced this write (issue #1852). */
   sourceConnector?: string;
+  /** Origin class stamped at creation time (issue #1955). */
+  origin?: string;
   /** Human-readable provenance note. */
   sourceReason?: string;
 }
@@ -181,6 +183,7 @@ export interface SealedMemoryEnvelope {
   readonly ttl: string | undefined;
   readonly validAt: string | undefined;
   readonly sourceConnector: string | undefined;
+  readonly origin: string | undefined;
   readonly sourceReason: string | undefined;
   readonly source: string;
   /** ISO timestamp the envelope was composed (from ctx.now). */
@@ -466,6 +469,7 @@ export function composeMemoryEnvelope(
     ttl: normalizeOptionalString("ttl", input.ttl, hygiene),
     validAt,
     sourceConnector: normalizeOptionalString("sourceConnector", input.sourceConnector, hygiene),
+    origin: normalizeOptionalString("origin", input.origin, hygiene),
     sourceReason: normalizeOptionalString("sourceReason", input.sourceReason, hygiene),
     source: ctx.source.trim(),
     composedAt: now.toISOString(),
@@ -581,6 +585,7 @@ export function isSealedMemoryEnvelope(value: unknown): value is SealedMemoryEnv
         ...(v.ttl !== undefined ? { ttl: v.ttl } : {}),
         ...(v.validAt !== undefined ? { validAt: v.validAt } : {}),
         ...(v.sourceConnector !== undefined ? { sourceConnector: v.sourceConnector } : {}),
+        ...(v.origin !== undefined ? { origin: v.origin } : {}),
         ...(v.sourceReason !== undefined ? { sourceReason: v.sourceReason } : {}),
       },
       { source: v.source, now: () => new Date(v.composedAt as string) },
@@ -612,6 +617,7 @@ export function isSealedMemoryEnvelope(value: unknown): value is SealedMemoryEnv
     rebuilt.ttl === v.ttl &&
     rebuilt.validAt === v.validAt &&
     rebuilt.sourceConnector === v.sourceConnector &&
+    rebuilt.origin === v.origin &&
     rebuilt.sourceReason === v.sourceReason &&
     sameArray(rebuilt.tags, v.tags as string[]) &&
     sameArray(rebuilt.sanitizeViolations, v.sanitizeViolations as string[]) &&
@@ -651,6 +657,7 @@ export function sealedWriteToLegacyArgs(
       // unvalidated connector provenance past the sealed envelope when the
       // envelope had none.
       sourceConnector: envelope.sourceConnector,
+      origin: envelope.origin,
     },
   };
 }
@@ -686,6 +693,8 @@ export const FINGERPRINT_EXEMPT_FIELDS = [
   // slightly different confidence are the same write for dedup purposes.
   "confidence",
   // Free-text provenance note; carries no identity.
+  // Origin is provenance metadata, not write identity (#1955).
+  "origin",
   "sourceReason",
 ] as const satisfies readonly (keyof MemoryWriteInput)[];
 

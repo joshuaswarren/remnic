@@ -3424,6 +3424,29 @@
         "default": false,
         "description": "Enable deterministic provenance trust scoring for trust-zone records as the first poisoning-defense surface."
       },
+      "originAuthorityEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Fence recall-rendered content from untrusted origins as data-only (issue #1955). Origin metadata is always recorded; this flag gates only the recall-time fence."
+      },
+      "injectionScreenEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Screen candidate facts with deterministic injection rules and queue findings for review (issue #1955)."
+      },
+      "untrustedOrigins": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1
+        },
+        "default": [
+          "tool_output",
+          "import:*",
+          "unknown"
+        ],
+        "description": "Origin classes that receive the recall authority fence (issue #1955)."
+      },
       "memoryReconstructionEnabled": {
         "type": "boolean",
         "default": false,
@@ -7387,6 +7410,21 @@
       "label": "Memory Poisoning Defense",
       "advanced": true,
       "help": "Enable provenance trust scoring in trust-zone status output as the first poisoning-defense signal."
+    },
+    "originAuthorityEnabled": {
+      "label": "Origin Authority",
+      "advanced": true,
+      "help": "Fence recall-rendered content from untrusted origins as data-only (issue #1955). Origin metadata is always recorded; this flag gates only the recall-time fence."
+    },
+    "injectionScreenEnabled": {
+      "label": "Injection Screen",
+      "advanced": true,
+      "help": "Screen candidate facts with deterministic rules and queue findings for review (issue #1955)."
+    },
+    "untrustedOrigins": {
+      "label": "Untrusted Origins",
+      "advanced": true,
+      "help": "Origin classes that receive the recall authority fence (issue #1955)."
     },
     "memoryRedTeamBenchEnabled": {
       "label": "Memory Red-Team Benchmarks",

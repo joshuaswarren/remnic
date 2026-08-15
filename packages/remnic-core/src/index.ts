@@ -389,8 +389,9 @@ export {
   type TrustZoneRecordKind,
   type TrustZoneSourceClass,
 } from "./trust-zones.js";
-
-// ---------------------------------------------------------------------------
+export { DEFAULT_UNTRUSTED_ORIGINS, classifyOrigin, isUntrustedOrigin, parseOriginClass, renderAuthorityFence, type OriginClass } from "./security/origin-authority.js";
+export { INJECTION_SCREEN_THRESHOLD, screenCandidateFact, type InjectionScreenFinding, type InjectionScreenResult } from "./security/injection-screen.js";
+export { auditMemoryStore, formatAuditMemoryReport, type AuditMemoryReport } from "./security/audit-memory.js";
 // Access layer (HTTP + MCP + schema validation)
 // ---------------------------------------------------------------------------
 
@@ -1204,10 +1205,7 @@ export {
   type ProcessBatchResult,
 } from "./bulk-import/index.js";
 
-export {
-  runBulkImportCliCommand,
-  type BulkImportCliCommandOptions,
-} from "./cli.js";
+export { runAuditMemoryCliCommand, runBulkImportCliCommand, type BulkImportCliCommandOptions } from "./cli.js";
 
 // ---------------------------------------------------------------------------
 // Wearable transcript subsystem (Limitless / Bee / Omi connectors).

@@ -31,6 +31,67 @@ function withIsolatedConnectorsDir<T>(
     rmSync(root, { recursive: true, force: true });
   }
 }
+test("parseConfig memory-poisoning hardening defaults and validation (#1955)", () => {
+  const previousOrigin = process.env.REMNIC_ORIGIN_AUTHORITY_ENABLED;
+  const previousInjection = process.env.REMNIC_INJECTION_SCREEN_ENABLED;
+  const previousOrigins = process.env.REMNIC_UNTRUSTED_ORIGINS;
+  delete process.env.REMNIC_ORIGIN_AUTHORITY_ENABLED;
+  delete process.env.REMNIC_INJECTION_SCREEN_ENABLED;
+  delete process.env.REMNIC_UNTRUSTED_ORIGINS;
+  try {
+    const defaults = parseConfig({});
+    assert.equal(defaults.originAuthorityEnabled, false);
+    assert.equal(defaults.injectionScreenEnabled, true);
+    assert.deepEqual(defaults.untrustedOrigins, ["tool_output", "import:*", "unknown"]);
+
+    const configured = parseConfig({
+      originAuthorityEnabled: "true",
+      injectionScreenEnabled: "off",
+      untrustedOrigins: [" connector:calendar ", "unknown", ""],
+    });
+    assert.equal(configured.originAuthorityEnabled, true);
+    assert.equal(configured.injectionScreenEnabled, false);
+    assert.deepEqual(configured.untrustedOrigins, ["connector:calendar", "unknown"]);
+
+    process.env.REMNIC_ORIGIN_AUTHORITY_ENABLED = "yes";
+    process.env.REMNIC_INJECTION_SCREEN_ENABLED = "0";
+    process.env.REMNIC_UNTRUSTED_ORIGINS = "connector:calendar, import:legacy, unknown";
+    const fromEnv = parseConfig({});
+    assert.equal(fromEnv.originAuthorityEnabled, true);
+    assert.equal(fromEnv.injectionScreenEnabled, false);
+    assert.deepEqual(fromEnv.untrustedOrigins, ["connector:calendar", "import:legacy", "unknown"]);
+    const envWithSchemaDefaults = parseConfig(
+      {
+        originAuthorityEnabled: false,
+        injectionScreenEnabled: true,
+        untrustedOrigins: ["tool_output", "import:*", "unknown"],
+      },
+      {},
+    );
+    assert.equal(envWithSchemaDefaults.originAuthorityEnabled, true);
+    assert.equal(envWithSchemaDefaults.injectionScreenEnabled, false);
+    assert.deepEqual(
+      envWithSchemaDefaults.untrustedOrigins,
+      ["connector:calendar", "import:legacy", "unknown"],
+    );
+
+    assert.throws(
+      () => parseConfig({ originAuthorityEnabled: "maybe" }),
+      /originAuthorityEnabled must be a boolean-like value/,
+    );
+    assert.throws(
+      () => parseConfig({ untrustedOrigins: "unknown" }),
+      /untrustedOrigins must be an array of strings/,
+    );
+  } finally {
+    if (previousOrigin === undefined) delete process.env.REMNIC_ORIGIN_AUTHORITY_ENABLED;
+    else process.env.REMNIC_ORIGIN_AUTHORITY_ENABLED = previousOrigin;
+    if (previousInjection === undefined) delete process.env.REMNIC_INJECTION_SCREEN_ENABLED;
+    else process.env.REMNIC_INJECTION_SCREEN_ENABLED = previousInjection;
+    if (previousOrigins === undefined) delete process.env.REMNIC_UNTRUSTED_ORIGINS;
+    else process.env.REMNIC_UNTRUSTED_ORIGINS = previousOrigins;
+  }
+});
 
 test("parseConfig emitLegacyTools sticky-legacy default (issue #1550)", () => {
   // Fresh install (no legacy connector entries): canonical-only surface.
