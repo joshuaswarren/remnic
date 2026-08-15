@@ -19,6 +19,7 @@ export interface AuditMemoryFinding {
 export interface AuditMemoryStorage {
   readAllMemories(): Promise<MemoryFile[]>;
   readAllColdMemories?: () => Promise<MemoryFile[]>;
+  readMemoryByPath(filePath: string): Promise<MemoryFile | null>;
   writeMemoryFrontmatter(
     memory: MemoryFile,
     patch: Partial<MemoryFrontmatter>,
@@ -258,8 +259,13 @@ export async function auditMemoryStore(options: AuditMemoryStoreOptions): Promis
   if (options.quarantine) {
     const flaggedIds = quarantineIds;
     const now = (options.now ?? new Date()).toISOString();
-    for (const memory of activeMemories) {
-      if (!flaggedIds.has(memory.frontmatter.id)) continue;
+    for (const staleMemory of activeMemories) {
+      if (!flaggedIds.has(staleMemory.frontmatter.id)) continue;
+      // #1955 review: the stale snapshot from readAllMemories can be old enough
+      // that intermediate gateway writes would be lost if rewritten blindly. Fetch
+      // the live record first.
+      const memory = await storage.readMemoryByPath(staleMemory.path);
+      if (!memory) continue;
       const changed = await storage.writeMemoryFrontmatter(memory, {
         status: "pending_review",
         updated: now,

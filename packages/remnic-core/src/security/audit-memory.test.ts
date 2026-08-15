@@ -73,6 +73,7 @@ async function writeMemoryFixture(memory: MemoryFile): Promise<void> {
 function memoryStorage(memories: MemoryFile[]): AuditMemoryStorage {
   return {
     readAllMemories: async () => memories,
+    readMemoryByPath: async (p: string) => memories.find((m) => m.path === p) ?? null,
     writeMemoryFrontmatter: async (memory, patch) => {
       Object.assign(memory.frontmatter, patch);
       return true;
