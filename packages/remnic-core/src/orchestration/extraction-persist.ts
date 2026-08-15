@@ -1,5 +1,5 @@
 import { classifyExtractionOrigin, type ExtractionSourceContext } from "./extraction-origin-context.js";
-import { evaluateInjectionScreen, screenEntityForIndex } from "./extraction-injection-gate.js";
+import { evaluateInjectionScreen, screenEntityForIndex, withholdScreenedStrings } from "./extraction-injection-gate.js";
 /**
  * Extraction persistence coordinator (issue #1526, seam 16).
  *
@@ -2917,8 +2917,14 @@ export class ExtractionPersistCoordinator {
       recordDurableNonFactWrite();
     }
 
-    // Persist questions
+    // Persist questions (#1955 review: q.question/q.context reach curiosity
+    // context, so flagged questions are withheld; routing follow-up #2397).
     for (const q of questions) {
+      const qScreen = withholdScreenedStrings([q.question, q.context ?? ""], entityScreenOn);
+      if (qScreen.withheldRules.length > 0) {
+        log.warn(`persistExtraction: injection screen withheld question [${qScreen.withheldRules.join(", ")}]`);
+        continue;
+      }
       const id = await storage.writeQuestion(q.question, q.context, q.priority);
       if (id) {
         trackPersistedId(storage, id);
