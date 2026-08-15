@@ -2,12 +2,12 @@
  * Multi-host row claims for the H5 injection suite (#1962).
  *
  * mkdir(2) lock + owner.json + heartbeat. A live foreign claim means
- * skip the row (another box is working it). An expired claim is
- * reclaimed. Pause/resume still owns the checkpoint file.
+ * skip the row. Expired / incomplete locks are renamed aside before
+ * a new mkdir, so two reclaimers cannot both become owners.
  */
 
 import { hostname } from "node:os";
-import { mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { InjectionSuiteRowIdentity } from "./types.js";
@@ -82,6 +82,13 @@ export class InjectionSuiteClaimLock {
 
   async release(claim: InjectionSuiteClaim): Promise<void> {
     this.stopHeartbeat(claim.lockPath);
+    try {
+      const raw = await readFile(path.join(claim.lockPath, "owner.json"), "utf8");
+      const owner = JSON.parse(raw) as ClaimOwner;
+      if (owner.ownerToken !== claim.ownerToken) return;
+    } catch {
+      return;
+    }
     await rm(claim.lockPath, { recursive: true, force: true });
   }
 
@@ -101,17 +108,28 @@ export class InjectionSuiteClaimLock {
   }
 
   private async reclaimIfExpired(lockPath: string): Promise<boolean> {
+    const ownerPath = path.join(lockPath, "owner.json");
+    let leaseMs = this.leaseMs;
+    let stampMs: number;
     try {
-      const ownerRaw = await readFile(path.join(lockPath, "owner.json"), "utf8");
-      const owner = JSON.parse(ownerRaw) as ClaimOwner;
-      const stamp = await stat(path.join(lockPath, "owner.json"));
-      const ageMs = Date.now() - stamp.mtimeMs;
-      const leaseMs = typeof owner.leaseMs === "number" && owner.leaseMs > 0 ? owner.leaseMs : this.leaseMs;
-      if (ageMs < leaseMs) return false;
-      await rm(lockPath, { recursive: true, force: true });
-      return true;
+      const owner = JSON.parse(await readFile(ownerPath, "utf8")) as ClaimOwner;
+      if (typeof owner.leaseMs === "number" && owner.leaseMs > 0) leaseMs = owner.leaseMs;
+      stampMs = (await stat(ownerPath)).mtimeMs;
+    } catch {
+      try {
+        stampMs = (await stat(lockPath)).mtimeMs;
+      } catch {
+        return false;
+      }
+    }
+    if (Date.now() - stampMs < leaseMs) return false;
+    const stalePath = `${lockPath}.stale-${randomUUID()}`;
+    try {
+      await rename(lockPath, stalePath);
     } catch {
       return false;
     }
+    await rm(stalePath, { recursive: true, force: true });
+    return true;
   }
 }

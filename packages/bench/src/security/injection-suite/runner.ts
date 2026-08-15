@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { InjectionSuiteClaimLock } from "./claims.js";
-import { generateSuiteVariants } from "./generator.js";
+import { generateFamilyVariants, generateSuiteVariants } from "./generator.js";
 import { completeChat, buildRecallPrompt, InjectionSuiteHostFault } from "./llm-executor.js";
 import { InjectionSuiteRowStore, buildInjectionSuiteRowKey, defaultSuiteIdentity } from "./store.js";
 import type {
@@ -34,6 +34,8 @@ export function injectionSuiteResumeContractHash(metadata: {
   modelProfileId: string;
   seeds: readonly number[];
   variantsPerFamily: number;
+  executor: string;
+  model: string;
 }): string {
   return createHash("sha256")
     .update(
@@ -43,6 +45,8 @@ export function injectionSuiteResumeContractHash(metadata: {
         modelProfileId: metadata.modelProfileId,
         seeds: metadata.seeds,
         variantsPerFamily: metadata.variantsPerFamily,
+        executor: metadata.executor,
+        model: metadata.model,
       }),
     )
     .digest("hex");
@@ -83,11 +87,17 @@ export function planInjectionSuiteRows(input: {
 }
 
 function variantFor(identity: InjectionSuiteRowIdentity): InjectionSuiteVariant {
-  const match = generateSuiteVariants(64, identity.seed).find(
-    (variant) => variant.variantId === identity.variantId && variant.family === identity.family,
-  );
-  if (!match) throw new Error(`unknown variant ${identity.variantId}`);
-  return match;
+  const match = /^(.+)-(\d+)$/.exec(identity.variantId);
+  const index = match ? Number(match[2]) : Number.NaN;
+  if (!match || match[1] !== identity.family || !Number.isInteger(index) || index < 1) {
+    throw new Error(`unknown variant ${identity.variantId}`);
+  }
+  const generated = generateFamilyVariants(identity.family, index, identity.seed);
+  const variant = generated[index - 1];
+  if (!variant || variant.variantId !== identity.variantId) {
+    throw new Error(`unknown variant ${identity.variantId}`);
+  }
+  return variant;
 }
 
 export function executeLocalRow(
@@ -167,16 +177,30 @@ async function appendEpisode(outputDir: string, row: InjectionSuiteEpisodeRow): 
   await writeFile(path.join(outputDir, "episodes.jsonl"), `${JSON.stringify(row)}\n`, { flag: "a" });
 }
 
+async function ensureEpisode(outputDir: string, row: InjectionSuiteEpisodeRow): Promise<void> {
+  try {
+    const existing = await readFile(path.join(outputDir, "episodes.jsonl"), "utf8");
+    if (existing.includes(row.rowKey)) return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  await appendEpisode(outputDir, row);
+}
+
 export async function runInjectionSuiteCliCommand(
   input: InjectionSuiteCliInput,
 ): Promise<InjectionSuiteCliResult> {
   const seeds = Array.from({ length: input.seeds }, (_, index) => index + 1);
   const planned = planInjectionSuiteRows(input);
+  const executor = input.executor ?? "local";
+  const model = input.model ?? "";
   const resumeContractHash = injectionSuiteResumeContractHash({
     suiteVersion: INJECTION_SUITE_VERSION,
     modelProfileId: input.modelProfileId,
     seeds,
     variantsPerFamily: input.variantsPerFamily,
+    executor,
+    model,
   });
   const existing = await readRunMetadata(input.outputDir);
   if (existing && input.resume !== true) {
@@ -197,7 +221,18 @@ export async function runInjectionSuiteCliCommand(
       variantsPerFamily: input.variantsPerFamily,
       limit: input.limit ?? null,
     };
-    await writeFile(path.join(input.outputDir, "run.json"), `${JSON.stringify(metadata, null, 2)}\n`);
+    try {
+      await writeFile(path.join(input.outputDir, "run.json"), `${JSON.stringify(metadata, null, 2)}\n`, {
+        flag: "wx",
+      });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const winner = await readRunMetadata(input.outputDir);
+      if (!winner) throw new Error(`run.json appeared then vanished at ${input.outputDir}`);
+      if (winner.resumeContractHash !== resumeContractHash) {
+        throw new Error("resume contract hash drifted; refusing to continue this run");
+      }
+    }
   }
 
   const store = new InjectionSuiteRowStore(input.outputDir);
@@ -214,6 +249,7 @@ export async function runInjectionSuiteCliCommand(
       });
     }
     if (loaded.kind === "VALID" && loaded.checkpoint.terminal) {
+      await ensureEpisode(input.outputDir, loaded.checkpoint.terminal);
       resumed += 1;
       continue;
     }

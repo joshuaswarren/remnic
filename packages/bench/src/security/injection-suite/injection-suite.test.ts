@@ -235,6 +235,55 @@ test("quarantine arm drops a screened payload before the model is called", () =>
   assert.equal(buildRecallPrompt(identity, variant), "dropped");
 });
 
+test("resume contract includes executor and model", async () => {
+  const outputDir = await mkdtemp(path.join(tmpdir(), "h5-exec-"));
+  try {
+    const first = await runInjectionSuiteCliCommand({
+      seeds: 1,
+      variantsPerFamily: 1,
+      modelProfileId: "local-dry",
+      outputDir,
+      limit: 1,
+      executor: "local",
+    });
+    assert.equal(first.exitCode, 0);
+    await assert.rejects(
+      () =>
+        runInjectionSuiteCliCommand({
+          seeds: 1,
+          variantsPerFamily: 1,
+          modelProfileId: "local-dry",
+          outputDir,
+          limit: 1,
+          resume: true,
+          executor: "ollama",
+          model: "qwen2.5:7b-instruct",
+        }),
+      /resume contract hash drifted/,
+    );
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("plan and execute accept variants-per-family above 64", async () => {
+  const outputDir = await mkdtemp(path.join(tmpdir(), "h5-hi-"));
+  try {
+    const result = await runInjectionSuiteCliCommand({
+      seeds: 1,
+      variantsPerFamily: 65,
+      modelProfileId: "local-dry",
+      outputDir,
+      limit: 1,
+    });
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.completed, 1);
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+
 test("dead ollama endpoint pauses instead of cutting the row", async () => {
   const outputDir = await mkdtemp(path.join(tmpdir(), "h5-dead-"));
   try {
