@@ -25,6 +25,32 @@ test("injection-suite --run implies resume", () => {
   assert.equal(parsed.outputDir, "/tmp/h5-run");
 });
 
+test("injection-suite parses live executor flags", () => {
+  const parsed = parseBenchSecurityArgs([
+    "injection-suite",
+    "--seeds",
+    "1",
+    "--executor",
+    "ollama",
+    "--model",
+    "qwen2.5:7b-instruct",
+    "--base-url",
+    "http://127.0.0.1:11434",
+  ]);
+  assert.ok(!("help" in parsed));
+  if ("help" in parsed) return;
+  assert.equal(parsed.executor, "ollama");
+  assert.equal(parsed.model, "qwen2.5:7b-instruct");
+  assert.equal(parsed.baseUrl, "http://127.0.0.1:11434");
+});
+
+test("unknown executor is rejected", () => {
+  assert.throws(
+    () => parseBenchSecurityArgs(["injection-suite", "--seeds", "1", "--executor", "runpod"]),
+    /--executor must be/,
+  );
+});
+
 test("unknown security subcommand is rejected", () => {
   assert.throws(() => parseBenchSecurityArgs(["nope"]), /unknown bench security subcommand/);
 });

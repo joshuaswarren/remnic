@@ -87,6 +87,10 @@ export interface InjectionSuiteCliInput {
   limit?: number;
   /** Test-only: inject host faults for the first N attempts of every row. */
   faultFirstAttempts?: number;
+  executor?: "local" | "ollama" | "openai-compat";
+  baseUrl?: string;
+  model?: string;
+  requestTimeoutMs?: number;
 }
 
 export interface InjectionSuiteCliResult {

@@ -19,14 +19,20 @@ const DEFAULT_OUTPUT_DIR = path.join(
 
 export const BENCH_SECURITY_USAGE = `Usage: remnic bench security injection-suite --seeds N [options]
 
-H5 injection-suite runner. Thin local executor only — does not start the
-live-model experiment. Resume, host-fault pause, and --limit are wired
-the same way H6 learned the hard way (issue #1963 / PR #2312).
+H5 injection-suite runner. Resume, host-fault pause, multi-host claim
+leases, and --limit follow the H6 contract (issue #1963 / PR #2312).
 
 Options:
   --seeds N                 Positive seed count (required)
   --variants-per-family N   Variants per attack family (default: 25)
   --model-profile ID        Profile label recorded on each row (default: local-dry)
+  --executor local|ollama|openai-compat
+                            local = deterministic screen/fence (tests)
+                            ollama = native /api/chat (default live)
+                            openai-compat = /v1/chat/completions
+  --base-url URL            Endpoint (default: http://127.0.0.1:11434)
+  --model NAME              Model id (default: qwen2.5:7b-instruct)
+  --request-timeout-ms N    Per-call timeout (default: 120000)
   --out DIR                 New run directory (default: ~/.remnic/bench/results/h5-injection-suite)
   --run DIR                 Existing run directory; implies --resume
   --resume                  Continue an existing run (required if DIR already has run.json)
@@ -40,6 +46,10 @@ interface InjectionSuiteCommand {
   outputDir: string;
   resume: boolean;
   limit?: number;
+  executor: "local" | "ollama" | "openai-compat";
+  baseUrl?: string;
+  model?: string;
+  requestTimeoutMs?: number;
 }
 
 function parsePositiveInteger(raw: string | undefined, flag: string): number {
@@ -62,9 +72,13 @@ export function parseBenchSecurityArgs(args: readonly string[]): InjectionSuiteC
   let outputDir = DEFAULT_OUTPUT_DIR;
   let resume = false;
   let limit: number | undefined;
+  let executor: InjectionSuiteCommand["executor"] = "local";
+  let baseUrl: string | undefined;
+  let model: string | undefined;
+  let requestTimeoutMs: number | undefined;
 
   for (let index = 1; index < args.length; index += 1) {
-    const flag = args[index]!;
+    const flag = args[index] ?? "";
     const next = args[index + 1];
     if (flag === "--seeds") {
       seeds = parsePositiveInteger(next, "--seeds");
@@ -75,6 +89,23 @@ export function parseBenchSecurityArgs(args: readonly string[]): InjectionSuiteC
     } else if (flag === "--model-profile") {
       if (next === undefined || next.startsWith("-")) throw new Error("missing value for --model-profile");
       modelProfileId = next;
+      index += 1;
+    } else if (flag === "--executor") {
+      if (next !== "local" && next !== "ollama" && next !== "openai-compat") {
+        throw new Error("--executor must be local, ollama, or openai-compat");
+      }
+      executor = next;
+      index += 1;
+    } else if (flag === "--base-url") {
+      if (next === undefined || next.startsWith("-")) throw new Error("missing value for --base-url");
+      baseUrl = next;
+      index += 1;
+    } else if (flag === "--model") {
+      if (next === undefined || next.startsWith("-")) throw new Error("missing value for --model");
+      model = next;
+      index += 1;
+    } else if (flag === "--request-timeout-ms") {
+      requestTimeoutMs = parsePositiveInteger(next, "--request-timeout-ms");
       index += 1;
     } else if (flag === "--out") {
       if (next === undefined || next.startsWith("-")) throw new Error("missing value for --out");
@@ -102,7 +133,11 @@ export function parseBenchSecurityArgs(args: readonly string[]): InjectionSuiteC
     modelProfileId,
     outputDir,
     resume,
+    executor,
     ...(limit === undefined ? {} : { limit }),
+    ...(baseUrl === undefined ? {} : { baseUrl }),
+    ...(model === undefined ? {} : { model }),
+    ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }),
   };
 }
 
@@ -123,8 +158,12 @@ export async function cmdBenchSecurity(args: readonly string[]): Promise<void> {
       variantsPerFamily: parsed.variantsPerFamily,
       modelProfileId: parsed.modelProfileId,
       outputDir: parsed.outputDir,
+      executor: parsed.executor,
       ...(parsed.resume ? { resume: true } : {}),
       ...(parsed.limit === undefined ? {} : { limit: parsed.limit }),
+      ...(parsed.baseUrl === undefined ? {} : { baseUrl: parsed.baseUrl }),
+      ...(parsed.model === undefined ? {} : { model: parsed.model }),
+      ...(parsed.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: parsed.requestTimeoutMs }),
     });
     if (result.exitCode === 0) console.log(result.output);
     else console.error(result.output);

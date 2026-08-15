@@ -1,9 +1,8 @@
 /**
  * Per-row checkpoint store for the H5 injection suite (#1962).
  *
- * Smaller than the H6 store: single-writer, no claim leases. Keeps the
- * lessons that actually burned H6 pilots — terminal immutability,
- * malformed-checkpoint fail-closed, and durable JSON on every try.
+ * Terminal immutability, malformed-checkpoint fail-closed, durable JSON
+ * on every try. Multi-host exclusion lives in claims.ts (mkdir lease).
  */
 
 import { createHash } from "node:crypto";

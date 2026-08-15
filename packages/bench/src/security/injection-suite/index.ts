@@ -11,6 +11,13 @@ export {
   buildInjectionSuiteRowKey,
   defaultSuiteIdentity,
 } from "./store.js";
+export { InjectionSuiteClaimLock } from "./claims.js";
+export {
+  buildRecallPrompt,
+  completeChat,
+  InjectionSuiteHostFault,
+} from "./llm-executor.js";
+export type { InjectionSuiteExecutorKind, InjectionSuiteLlmOptions } from "./llm-executor.js";
 export type {
   InjectionSuiteArm,
   InjectionSuiteCheckpoint,

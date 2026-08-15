@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { InjectionSuiteClaimLock } from "./claims.js";
 import { generateSuiteVariants } from "./generator.js";
+import { buildRecallPrompt } from "./llm-executor.js";
 import {
   planInjectionSuiteRows,
   runInjectionSuiteCliCommand,
 } from "./runner.js";
-import { InjectionSuiteRowStore } from "./store.js";
+import { InjectionSuiteRowStore, buildInjectionSuiteRowKey, defaultSuiteIdentity } from "./store.js";
 import { HOST_FAULT_RETRY_LIMIT } from "./types.js";
 
 test("generator emits four families with CANARY-e2e tokens", () => {
@@ -171,6 +173,84 @@ test("terminal rows are immutable", async () => {
         }),
       /terminal and immutable/,
     );
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("claim lock skips a live foreign owner and reclaims an expired one", async () => {
+  const outputDir = await mkdtemp(path.join(tmpdir(), "h5-claim-"));
+  try {
+    const identity = defaultSuiteIdentity({
+      family: "minja",
+      variantId: "minja-01",
+      seed: 1,
+      arm: "none",
+      modelProfileId: "local-dry",
+    });
+    const checkpointsDir = path.join(outputDir, "checkpoints");
+    const live = new InjectionSuiteClaimLock(checkpointsDir);
+    const first = await live.tryClaim(identity);
+    assert.notEqual(first, "busy");
+    if (first === "busy") return;
+    const peer = new InjectionSuiteClaimLock(checkpointsDir);
+    assert.equal(await peer.tryClaim(identity), "busy");
+    await live.release(first);
+
+    const rowKey = buildInjectionSuiteRowKey(identity);
+    const lockPath = path.join(checkpointsDir, `${rowKey}.lock`);
+    await mkdir(lockPath, { recursive: true });
+    await writeFile(
+      path.join(lockPath, "owner.json"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        rowKey,
+        ownerToken: "stale",
+        host: "other",
+        pid: 1,
+        leaseMs: 1,
+        claimedAt: "1970-01-01T00:00:00.000Z",
+      })}\n`,
+    );
+    await utimes(path.join(lockPath, "owner.json"), new Date(0), new Date(0));
+    const taken = await peer.tryClaim(identity);
+    assert.notEqual(taken, "busy");
+    if (taken === "busy") return;
+    await peer.release(taken);
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("quarantine arm drops a screened payload before the model is called", () => {
+  const identity = defaultSuiteIdentity({
+    family: "minja",
+    variantId: "minja-01",
+    seed: 1,
+    arm: "quarantine",
+    modelProfileId: "local-dry",
+  });
+  const variant = generateSuiteVariants(1, 1)[0];
+  assert.ok(variant);
+  assert.equal(buildRecallPrompt(identity, variant), "dropped");
+});
+
+test("dead ollama endpoint pauses instead of cutting the row", async () => {
+  const outputDir = await mkdtemp(path.join(tmpdir(), "h5-dead-"));
+  try {
+    const result = await runInjectionSuiteCliCommand({
+      seeds: 1,
+      variantsPerFamily: 1,
+      modelProfileId: "local-dry",
+      outputDir,
+      limit: 1,
+      executor: "ollama",
+      baseUrl: "http://127.0.0.1:1",
+      requestTimeoutMs: 250,
+    });
+    assert.equal(result.exitCode, 2);
+    assert.equal(result.paused, true);
+    assert.match(result.output, /PAUSED/);
   } finally {
     await rm(outputDir, { recursive: true, force: true });
   }
