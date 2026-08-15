@@ -128,3 +128,20 @@ export function screenEntityForIndex(entity: unknown, enabled: boolean): Screene
     ],
   };
 }
+
+/**
+ * Screen a batch of persist-bound strings and preformat the withheld warning
+ * (#1955): keeps persist call sites within their file-size ratchet.
+ */
+export function screenPersistStrings(
+  values: readonly string[],
+  enabled: boolean,
+): { kept: string[]; warning?: string } {
+  const screen = withholdScreenedStrings(values, enabled);
+  return {
+    kept: screen.kept,
+    ...(screen.withheldRules.length > 0
+      ? { warning: `injection screen withheld ${values.length - screen.kept.length} candidate(s) [${screen.withheldRules.join(", ")}]` }
+      : {}),
+  };
+}

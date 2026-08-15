@@ -1,5 +1,5 @@
 import { classifyExtractionOrigin, type ExtractionSourceContext } from "./extraction-origin-context.js";
-import { evaluateInjectionScreen, screenEntityForIndex, withholdScreenedStrings } from "./extraction-injection-gate.js";
+import { evaluateInjectionScreen, screenEntityForIndex, screenPersistStrings } from "./extraction-injection-gate.js";
 /**
  * Extraction persistence coordinator (issue #1526, seam 16).
  *
@@ -2840,9 +2840,8 @@ export class ExtractionPersistCoordinator {
       durableNonFactTouchRecorded = true;
       touchBaseNonFactNamespace();
     };
-    // #1955 review: entity-derived fields are recallable via entity hints, so
-    // they pass the injection screen (screenEntityForIndex) before entering
-    // the entity index; withheld fields are logged with their rules.
+    // #1955 review: entity fields recall via entity hints — screened before
+    // entering the index (screenEntityForIndex); withheld fields are logged.
     const entityScreenOn = resolveSecurityCapabilities(this.deps.config).injectionScreen;
     for (const entity of entities) {
       try {
@@ -2911,18 +2910,19 @@ export class ExtractionPersistCoordinator {
         }
       }
     }
-
-    if (profileUpdates.length > 0) {
-      await storage.appendToProfile(profileUpdates);
+    // #1955 review: profile + questions render verbatim into model context —
+    // screened; questions screen question+context JOINED (routing: #2397).
+    const profileScreen = screenPersistStrings(profileUpdates, entityScreenOn);
+    if (profileScreen.warning) log.warn(`persistExtraction(profile): ${profileScreen.warning}`);
+    if (profileScreen.kept.length > 0) {
+      await storage.appendToProfile(profileScreen.kept);
       recordDurableNonFactWrite();
     }
 
-    // Persist questions (#1955 review: q.question/q.context reach curiosity
-    // context, so flagged questions are withheld; routing follow-up #2397).
     for (const q of questions) {
-      const qScreen = withholdScreenedStrings([q.question, q.context ?? ""], entityScreenOn);
-      if (qScreen.withheldRules.length > 0) {
-        log.warn(`persistExtraction: injection screen withheld question [${qScreen.withheldRules.join(", ")}]`);
+      const qScreen = screenPersistStrings([`${q.question}\n${q.context ?? ""}`], entityScreenOn);
+      if (qScreen.warning) {
+        log.warn(`persistExtraction(question): ${qScreen.warning}`);
         continue;
       }
       const id = await storage.writeQuestion(q.question, q.context, q.priority);
