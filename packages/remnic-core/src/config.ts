@@ -2472,6 +2472,7 @@ export function parseConfig(
     memoryPoisoningDefenseEnabled: cfg.memoryPoisoningDefenseEnabled === true,
     memoryRedTeamBenchEnabled: cfg.memoryRedTeamBenchEnabled === true,
     harmonicRetrievalEnabled: cfg.harmonicRetrievalEnabled === true,
+    episodicContextEnabled: cfg.episodicContextEnabled === true,
     abstractionAnchorsEnabled: cfg.abstractionAnchorsEnabled === true,
     verifiedRecallEnabled: cfg.verifiedRecallEnabled === true,
     semanticRulePromotionEnabled: cfg.semanticRulePromotionEnabled === true,
@@ -4430,6 +4431,13 @@ function buildDefaultRecallPipeline(cfg: Record<string, unknown>): RecallSection
         typeof cfg.qmdMaxResults === "number"
           ? Math.max(0, Math.floor(cfg.qmdMaxResults))
           : 8,
+    },
+    {
+      id: "episodic-context",
+      enabled: cfg.episodicContextEnabled === true,
+      maxResults: 2,
+      maxTurns: 8,
+      maxChars: 2400,
     },
     {
       id: "compression-guidelines",

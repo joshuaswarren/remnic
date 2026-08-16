@@ -105,7 +105,7 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "abstractionAnchorsEnabled": {
+    "abstractionAnchorsEnabled": {
         "type": "boolean",
         "default": false,
         "description": "Enable typed cue-anchor indexing for abstraction nodes and expose it through cue-anchor status tooling."
@@ -2153,6 +2153,11 @@
         "type": "boolean",
         "default": false,
         "description": "Enable HiMem episode/note classification (v8.0 Phase 2B). Tags each extracted memory as 'episode' (time-specific event) or 'note' (stable belief/preference). Disabled by default."
+      },
+      "episodicContextEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Inject episode-grouped raw source turns for the top recalled facts (issue #2331). Reads the structured `sources` provenance of recalled facts, resolves it to LCM archive turn ranges, and appends a compact `Source Episodes` section within the existing recall budget. Facts without structured provenance are skipped."
       },
       "evalHarnessEnabled": {
         "type": "boolean",
