@@ -12,7 +12,6 @@ import {
   readUnitAuthToken,
   type BridgeConfig,
   type DaemonAuthToken,
-  type DaemonAuthTokenSource,
   type DelegateDaemonTarget,
 } from "./bridge.js";
 
@@ -26,28 +25,32 @@ import {
  * not 401 every delegated route until the gateway restarts too.
  */
 export function daemonTargetFor(bridge: BridgeConfig): DelegateDaemonTarget {
-  const invalidatedSources = new Set<DaemonAuthTokenSource>();
+  const invalidatedCredentials = new Set<string>();
+  const invalidated = (token: string): boolean =>
+    invalidatedCredentials.has(`daemon configuration\0${token}`);
   return {
     host: bridge.daemonHost,
     port: bridge.daemonPort,
     invalidateAuthToken: (auth: DaemonAuthToken) => {
-      invalidatedSources.add(auth.source);
+      invalidatedCredentials.add(`${auth.source}\0${auth.token}`);
     },
     resolveAuthToken: () => {
       if (
         bridge.daemonAuthTokenOverride !== undefined &&
-        !invalidatedSources.has("daemon configuration")
+        !invalidated(bridge.daemonAuthTokenOverride)
       ) {
         // A unit-supplied credential is re-read from its unit — including its
         // drop-ins and `EnvironmentFile=`.
         const unit =
           bridge.daemonAuthUnit === undefined ? undefined : readUnitAuthToken(bridge.daemonAuthUnit);
-        if (unit?.readable === true && unit.token !== undefined) {
+        if (unit?.readable === true && unit.token !== undefined && !invalidated(unit.token)) {
           return { token: unit.token, source: "daemon configuration" };
         }
         // A unit that is no longer READABLE proves nothing, so the value the
-        // probe authenticated with is still the best guess.
-        if (unit === undefined || unit.readable === false) {
+        if (
+          (unit === undefined || unit.readable === false) &&
+          !invalidated(bridge.daemonAuthTokenOverride)
+        ) {
           return { token: bridge.daemonAuthTokenOverride, source: "daemon configuration" };
         }
         // Readable and deliberately carrying no token: the daemon has fallen
@@ -58,22 +61,21 @@ export function daemonTargetFor(bridge: BridgeConfig): DelegateDaemonTarget {
         // under another account and would keep 401ing after the restart.
         if (bridge.daemonConfigPath !== undefined) {
           const configToken = readDaemonConfigAuthToken(bridge.daemonConfigPath);
-          if (configToken !== undefined) {
+          if (configToken !== undefined && !invalidated(configToken)) {
             return { token: configToken, source: "daemon configuration" };
           }
         }
       }
       if (
         bridge.daemonAuthPrefersConfig &&
-        bridge.daemonConfigPath !== undefined &&
-        !invalidatedSources.has("daemon configuration")
+        bridge.daemonConfigPath !== undefined
       ) {
         const configToken = readDaemonConfigAuthToken(bridge.daemonConfigPath);
-        if (configToken !== undefined) {
+        if (configToken !== undefined && !invalidated(configToken)) {
           return { token: configToken, source: "daemon configuration" };
         }
       }
-      return loadDaemonAuth(bridge.daemonConfigPath, invalidatedSources);
+      return loadDaemonAuth(bridge.daemonConfigPath, invalidatedCredentials);
     },
   };
 }

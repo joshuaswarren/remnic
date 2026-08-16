@@ -1030,10 +1030,15 @@ function isOpenClawTokenEntry(value: unknown): value is { token: string } {
   );
 }
 
+const daemonAuthKey = (source: DaemonAuthTokenSource, token: string): string =>
+  `${source}\0${token}`;
+
 export function loadDaemonAuth(
   configPath?: string,
-  excludedSources?: ReadonlySet<DaemonAuthTokenSource>,
+  excludedSources?: ReadonlySet<string>,
 ): DaemonAuthToken {
+  const excluded = (source: DaemonAuthTokenSource, token: string): boolean =>
+    excludedSources?.has(source) === true || excludedSources?.has(daemonAuthKey(source, token)) === true;
   const environmentTokens = [
     ["OPENCLAW_REMNIC_ACCESS_TOKEN", readEnv("OPENCLAW_REMNIC_ACCESS_TOKEN")],
     ["REMNIC_AUTH_TOKEN", readEnv("REMNIC_AUTH_TOKEN")],
@@ -1041,7 +1046,7 @@ export function loadDaemonAuth(
     ["ENGRAM_AUTH_TOKEN", readEnv("ENGRAM_AUTH_TOKEN")],
   ] as const;
   for (const [source, token] of environmentTokens) {
-    if (token && !excludedSources?.has(source)) return { token, source };
+    if (token && !excluded(source, token)) return { token, source };
   }
 
   const tokenStores = [
@@ -1057,7 +1062,7 @@ export function loadDaemonAuth(
       if (
         typeof openClawToken === "string" &&
         openClawToken.length > 0 &&
-        !excludedSources?.has(tokenStore.source)
+        !excluded(tokenStore.source, openClawToken)
       ) {
         return { token: openClawToken, source: tokenStore.source };
       }
@@ -1068,7 +1073,7 @@ export function loadDaemonAuth(
         typeof store.openclaw === "string" &&
         store.openclaw.length > 0 &&
         (store.openclaw.startsWith("remnic_") || store.openclaw.startsWith("engram_")) &&
-        !excludedSources?.has(tokenStore.source)
+        !excluded(tokenStore.source, store.openclaw)
       ) {
         return { token: store.openclaw, source: tokenStore.source };
       }
@@ -1087,7 +1092,7 @@ export function loadDaemonAuth(
       if (
         typeof token === "string" &&
         token.length > 0 &&
-        !excludedSources?.has("daemon configuration")
+        !excluded("daemon configuration", token)
       ) {
         return { token, source: "daemon configuration" };
       }
@@ -1162,16 +1167,21 @@ export async function checkDaemonHealthDetailed(
         req.end();
       });
 
-    let livenessStatus = await probe(LIVENESS_PATH, auth.token);
-    if (livenessStatus === 401 || livenessStatus === 403) {
-      if (fallbackAuth?.token && fallbackAuth.token !== auth.token) {
+    const probeWithFallback = async (requestPath: string): Promise<number | undefined> => {
+      let status = await probe(requestPath, auth.token);
+      if ((status === 401 || status === 403) && fallbackAuth?.token && fallbackAuth.token !== auth.token) {
         auth = fallbackAuth;
-        livenessStatus = await probe(LIVENESS_PATH, auth.token);
+        status = await probe(requestPath, auth.token);
       }
-    }
+      return status;
+    };
+    const livenessStatus = await probeWithFallback(LIVENESS_PATH);
     if (livenessStatus === 200) return { ok: true };
     if (livenessStatus !== 404) return classifyDaemonHealthStatus(livenessStatus, auth.source);
-    return classifyDaemonHealthStatus(await probe(LEGACY_HEALTH_PATH, auth.token), auth.source);
+    return classifyDaemonHealthStatus(
+      await probeWithFallback(LEGACY_HEALTH_PATH),
+      auth.source,
+    );
   } catch {
     return { ok: false, failure: "network" };
   }

@@ -58,13 +58,16 @@ async function fetchWithAuthRetry(
   timeoutMs: number,
   init: RequestInit = {},
 ): Promise<{ response: Response; auth: DaemonAuthToken }> {
+  const deadline = Date.now() + timeoutMs;
   const request = async (auth: DaemonAuthToken): Promise<Response> => {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) throw new Error("daemon request deadline exceeded");
     const headers = new Headers(init.headers);
     if (auth.token) headers.set("Authorization", `Bearer ${auth.token}`);
     return fetch(daemonUrl(target, pathname), {
       ...init,
       headers,
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: AbortSignal.timeout(remainingMs),
     });
   };
   const auth = target.resolveAuthToken();
