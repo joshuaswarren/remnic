@@ -15,6 +15,21 @@ branch=$2
 base=${3:-HEAD}
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 repo_root=$(git -C "$script_dir" rev-parse --show-toplevel)
+git_common_dir=$(git -C "$repo_root" rev-parse --git-common-dir)
+if [[ $git_common_dir != /* ]]; then
+  git_common_dir=$repo_root/$git_common_dir
+fi
+git_common_dir=$(cd -- "$git_common_dir" && pwd -P)
+# Serialize helper invocations so ownership checks cannot race another helper.
+lock_path=$git_common_dir/dev-worktree.lock
+if ! mkdir -- "$lock_path" 2>/dev/null; then
+  printf 'Another worktree quickstart is already running for this repository.\n' >&2
+  exit 1
+fi
+release_lock() {
+  rmdir -- "$lock_path" >/dev/null 2>&1 || true
+}
+trap release_lock EXIT
 
 if [[ $worktree_arg = /* ]]; then
   worktree_path=$worktree_arg
@@ -52,6 +67,10 @@ worktree_registered() {
   done < <(git -C "$repo_root" worktree list --porcelain)
   return 1
 }
+if worktree_registered; then
+  printf 'Refusing to clobber registered worktree path: %s\n' "$worktree_path" >&2
+  exit 1
+fi
 
 worktree_owned() {
   local line current_path=
@@ -64,16 +83,35 @@ worktree_owned() {
   return 1
 }
 
+branch_has_worktree() {
+  local line
+  while IFS= read -r line; do
+    if [[ $line == "branch refs/heads/$branch" ]]; then
+      return 0
+    fi
+  done < <(git -C "$repo_root" worktree list --porcelain)
+  return 1
+}
+
 worktree_registered_before=0
 if worktree_registered; then
   worktree_registered_before=1
 fi
-cleanup_armed=1
+branch_existed_before=0
+if git -C "$repo_root" show-ref --verify --quiet "refs/heads/$branch"; then
+  branch_existed_before=1
+fi
 cleanup() {
-  if (( cleanup_armed && ! worktree_registered_before )) && worktree_owned; then
-    git -C "$repo_root" worktree remove --force "$worktree_path" >/dev/null 2>&1 || true
-    git -C "$repo_root" branch -D -- "$branch" >/dev/null 2>&1 || true
+  if (( ! worktree_registered_before )); then
+    if worktree_owned; then
+      if git -C "$repo_root" worktree remove --force "$worktree_path" >/dev/null 2>&1; then
+        git -C "$repo_root" branch -D -- "$branch" >/dev/null 2>&1 || true
+      fi
+    elif (( ! branch_existed_before )) && ! branch_has_worktree; then
+      git -C "$repo_root" branch -D -- "$branch" >/dev/null 2>&1 || true
+    fi
   fi
+  release_lock
 }
 trap cleanup EXIT
 
@@ -98,6 +136,7 @@ if ! (
   exit 1
 fi
 
+release_lock
 trap - EXIT
 printf '\nWorktree ready: %s\n' "$worktree_path"
 printf 'Next steps:\n'

@@ -119,6 +119,32 @@ test("cleans up when worktree creation fails after creating its branch", () => {
     rmSync(fixture.root, { recursive: true, force: true });
   }
 });
+test("refuses a registered worktree whose directory is missing", () => {
+  const fixture = createFakeNpm();
+  const worktreePath = path.join(fixture.root, "registered-worktree");
+  const existingBranch = `test/dev-worktree-${process.pid}-registered`;
+  const requestedBranch = `test/dev-worktree-${process.pid}-registered-retry`;
+  execFileSync("git", ["-C", repoRoot, "worktree", "add", "-b", existingBranch, worktreePath, "HEAD"]);
+  rmSync(worktreePath, { recursive: true, force: true });
+
+  try {
+    const result = runScript([worktreePath, requestedBranch, "HEAD"], {
+      DEV_WORKTREE_TEST_LOG: fixture.log,
+      PATH: `${fixture.bin}${path.delimiter}${process.env.PATH ?? ""}`,
+    });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /registered worktree path/);
+    assert.notEqual(
+      spawnSync("git", ["-C", repoRoot, "show-ref", "--verify", `refs/heads/${requestedBranch}`]).status,
+      0
+    );
+  } finally {
+    execFileSync("git", ["-C", repoRoot, "worktree", "remove", "--force", worktreePath], { stdio: "ignore" });
+    cleanupWorktree(worktreePath, existingBranch);
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
 
 test("resolves a relative worktree path from the invoking checkout", () => {
   const fixture = createFakeNpm();
