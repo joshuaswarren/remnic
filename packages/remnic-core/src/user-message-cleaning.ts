@@ -23,8 +23,11 @@ export function cleanUserMessageWithPattern(
   let cleaned = content;
   // Remove structured host-injected memory wrappers wherever the platform
   // emits them; free-form markdown stripping below is intentionally anchored.
+  // The opening tag admits only whitespace-led attributes (or an immediate
+  // close) so repeated `<supermemory-context` literals cannot drive
+  // polynomial backtracking (CodeQL redos rule).
   cleaned = cleaned.replace(
-    /<supermemory-context[^>]*>[\s\S]*?<\/supermemory-context>\s*/gi,
+    /<supermemory-context(?:\s[^>]*)?>[\s\S]*?<\/supermemory-context>\s*/gi,
     "",
   );
 

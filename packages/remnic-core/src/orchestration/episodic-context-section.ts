@@ -153,8 +153,17 @@ export async function appendEpisodicContextSection(
         maxTurnsPerEpisode: maxTurns,
         locateQuote: async (quote, sessionKey) => {
           for (const sessionId of candidateSessionIds(sessionKey)) {
-            const hits = await engine.searchContextFull(quote, 1, sessionId);
-            if (hits.length > 0) return hits[0]!.turn_index;
+            try {
+              const hits = await engine.searchContextFull(quote, 1, sessionId);
+              if (hits.length > 0) return hits[0]!.turn_index;
+            } catch (err) {
+              // One failing session read must not sink the fallback; try the
+              // next candidate (fail-open per candidate).
+              log.debug(
+                `episodic-context: quote search failed for session ${sessionId}`,
+                err,
+              );
+            }
           }
           return null;
         },
@@ -174,14 +183,23 @@ export async function appendEpisodicContextSection(
         if (signal.aborted) break;
         let rows: LcmMessage[] = [];
         for (const sessionId of candidateSessionIds(window.sessionKey)) {
-          const fetched = await engine.getTurnRange(
-            sessionId,
-            window.fromTurn,
-            window.toTurn - 1,
-          );
-          if (fetched.length > 0) {
-            rows = fetched;
-            break;
+          try {
+            const fetched = await engine.getTurnRange(
+              sessionId,
+              window.fromTurn,
+              window.toTurn - 1,
+            );
+            if (fetched.length > 0) {
+              rows = fetched;
+              break;
+            }
+          } catch (err) {
+            // A failing session read skips that candidate only; the window
+            // is dropped when every candidate fails (fail-open).
+            log.debug(
+              `episodic-context: turn-range read failed for session ${sessionId}`,
+              err,
+            );
           }
         }
         if (rows.length === 0) continue;

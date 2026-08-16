@@ -7440,10 +7440,6 @@
       "label": "Harmonic Retrieval",
       "help": "Enable harmonic retrieval blending over abstraction nodes and cue anchors, including recall-section assembly and harmonic-search diagnostics."
     },
-    "episodicContextEnabled": {
-      "label": "Episodic Context",
-      "help": "Inject episode-grouped raw source turns for the top recalled facts as a compact Source Episodes section."
-    },
     "abstractionAnchorsEnabled": {
       "label": "Abstraction Anchors",
       "advanced": true,

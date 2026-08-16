@@ -4916,11 +4916,30 @@ export class RecallInternalCoordinator {
     });
     // Episodic context (#2331): opt-in raw-turn episodes for the top recalled
     // facts; flag off is a no-op so recall output stays byte-identical.
-    await appendEpisodicContextSection(this.deps, {
-      sectionBuckets, recalledMemoryPaths, recalledMemoryNamespaces, scopePlan, namespacesEnabled,
-      enrichmentSectionDeadlineMs, recallOuterTimeoutMs, recallStart,
-      recordMetric: recordRecallSectionMetric, abortSignal: options.abortSignal,
-    });
+    // Namespaces must be index-aligned with recalledMemoryPaths here — every
+    // recall branch populates xrayRecalledResults from the same array it
+    // mapped paths from, so per-path namespaces derive from those results
+    // (the assembly-time assignment below runs after this section).
+    const episodicNamespaceByPath = new Map<string, string | undefined>();
+    for (const result of xrayRecalledResults) {
+      if (result.path) episodicNamespaceByPath.set(result.path, result.namespace);
+    }
+    const episodicMemoryNamespaces = recalledMemoryPaths.map((memoryPath) =>
+      episodicNamespaceByPath.get(memoryPath),
+    );
+    // The section is advisory context: an archive error degrades the
+    // section, never the recall (fail-open).
+    try {
+      await appendEpisodicContextSection(this.deps, {
+        sectionBuckets, recalledMemoryPaths,
+        recalledMemoryNamespaces: episodicMemoryNamespaces,
+        scopePlan, namespacesEnabled,
+        enrichmentSectionDeadlineMs, recallOuterTimeoutMs, recallStart,
+        recordMetric: recordRecallSectionMetric, abortSignal: options.abortSignal,
+      });
+    } catch (err) {
+      log.debug("episodic-context: section degraded after error", err);
+    }
     const recallBudgetChars = this.deps.getRecallBudgetChars(options.budgetCharsOverride);
     const assembledRecall = this.deps.assembleRecallSections(
       sectionBuckets, contextBudgetForFooter(recallBudgetChars, curiosityFooter),

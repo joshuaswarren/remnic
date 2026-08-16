@@ -407,9 +407,15 @@ export class RecallResultFormatter {
       const header =
         `### Episode: ${shortKey} turns ${episode.fromTurn}-${episode.toTurn - 1} ` +
         `(supports [${episode.memoryIds.join(", ")}])`;
-      const lines = episode.turns.map(
-        (turn) => `${turn.role}: ${turn.content}`,
-      );
+      const lines = episode.turns.map((turn) => {
+        // Archived conversation turns carry no origin: least-privilege
+        // fencing applies when origin authority is enabled (issue #2331).
+        const content = renderAuthorityBoundContent(turn.content, undefined, {
+          enabled: this.originAuthorityEnabled,
+          untrustedOrigins: this.config.untrustedOrigins,
+        });
+        return `${turn.role}: ${content}`;
+      });
       return [header, ...lines].join("\n");
     });
     return `## Source Episodes\n\n${blocks.join("\n\n")}`;

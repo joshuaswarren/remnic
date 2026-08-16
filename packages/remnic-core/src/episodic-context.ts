@@ -97,7 +97,7 @@ function mergeDrafts(drafts: DraftWindow[], maxTurnsPerEpisode: number): Episode
   }
 
   const windows: EpisodeWindow[] = [];
-  for (const [sessionKey, sessionDrafts] of bySession) {
+  for (const [, sessionDrafts] of bySession) {
     // Sort by fromTurn, then toTurn, so a shuffle cannot change merge results.
     sessionDrafts.sort(
       (a, b) => a.fromTurn - b.fromTurn || a.toTurn - b.toTurn,
@@ -159,12 +159,14 @@ export function compareEpisodeWindows(
   left: EpisodeWindow,
   right: EpisodeWindow,
 ): number {
+  const leftIds = left.memoryIds.join("\u{0}");
+  const rightIds = right.memoryIds.join("\u{0}");
   return (
     left.factRank - right.factRank ||
     (left.sessionKey < right.sessionKey ? -1 : left.sessionKey > right.sessionKey ? 1 : 0) ||
     left.fromTurn - right.fromTurn ||
     left.toTurn - right.toTurn ||
-    (left.memoryIds < right.memoryIds ? -1 : left.memoryIds > right.memoryIds ? 1 : 0)
+    (leftIds < rightIds ? -1 : leftIds > rightIds ? 1 : 0)
   );
 }
 
