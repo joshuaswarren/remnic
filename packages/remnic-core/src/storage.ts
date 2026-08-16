@@ -1445,7 +1445,6 @@ export function serializeEntityFile(entity: EntityFile, entitySchemas?: PluginCo
   const synthesisStructuredFactCount = entity.synthesisStructuredFactCount;
   const synthesisStructuredFactDigest = entity.synthesisStructuredFactDigest?.trim() || "";
   const synthesisVersion = entity.synthesisVersion ?? (synthesis ? 1 : 0);
-
   const lines: string[] = [
     "---",
     `created: ${created}`,
@@ -1511,7 +1510,6 @@ export function serializeEntityFile(entity: EntityFile, entitySchemas?: PluginCo
     }
     lines.push("");
   }
-
   // Activity (optional)
   if (entity.activity.length > 0) {
     lines.push("## Activity", "");
