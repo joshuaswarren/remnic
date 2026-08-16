@@ -66,8 +66,10 @@ PR_NUMBER=""
 TIMEOUT=1800
 INTERVAL=30
 REVIEWER_TIMEOUT=""
-JSON_OUTPUT=false
+REVIEWER_TIMER_HEAD=""
+REVIEWER_WAIT_START=""
 REPO="${REMNIC_REPO:-joshuaswarren/remnic}"
+JSON_OUTPUT=false
 usage() {
   printf 'Usage: scripts/pr-wait-settled.sh <pr-number> [--timeout S] [--interval S] [--reviewer-timeout S] [--json]\n' >&2
 }
@@ -135,9 +137,10 @@ record_reviewer_negative() {
 
 reviewer_timeout_reached() {
   [[ -n "$REVIEWER_TIMEOUT" ]] || return 1
-  local now elapsed
+  local now elapsed start
   now="$(date +%s.%N)"
-  elapsed="$(awk -v now="$now" -v start="$start_time" 'BEGIN { print now - start }')"
+  start="${REVIEWER_WAIT_START:-$start_time}"
+  elapsed="$(awk -v now="$now" -v start="$start" 'BEGIN { print now - start }')"
   awk -v elapsed="$elapsed" -v timeout="$REVIEWER_TIMEOUT" 'BEGIN { exit !(elapsed >= timeout) }'
 }
 
@@ -264,6 +267,10 @@ fetch_and_evaluate() {
     API_ERRORS+=("head")
     append_item "api:head"
     return
+  fi
+  if [[ "$REVIEWER_TIMER_HEAD" != "$HEAD_SHA" ]]; then
+    REVIEWER_TIMER_HEAD="$HEAD_SHA"
+    REVIEWER_WAIT_START="$(date +%s.%N)"
   fi
   local pr_meta
   if pr_meta=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json author,files --jq 'if (.author.login == "dependabot[bot]" and (.files | length) > 0 and all(.files[]; (.path // "" | split("/")[-1]) as $base | ["package.json", "package-lock.json", "pnpm-lock.yaml", "requirements.txt"] | index($base) != null)) then "true" else "false" end' 2>/dev/null); then
