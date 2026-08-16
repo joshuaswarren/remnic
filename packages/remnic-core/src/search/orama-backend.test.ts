@@ -166,3 +166,69 @@ test("Orama English-only corpora are not re-indexed when the tokenizer version a
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("Orama downgrades persisted CJK indexes when segmentation is disabled (issue #2187)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-orama-downgrade-"));
+  try {
+    await writeMemoryFact(
+      root,
+      "japanese-fact.md",
+      "---\nid: mem-japanese-fact\n---\n東京都庁の所在地は新宿区にある。",
+    );
+
+    // Phase 1: index with CJK segmentation on (marker "english+cjk-v1").
+    const cjkBackend = await createBackend(root, path.join(root, "orama-db"), true);
+    assert.equal(
+      (await cjkBackend.bm25Search("東京都庁の所在地")).some((r) => r.docid === "mem-japanese-fact"),
+      true,
+      "CJK tokenizer must match Japanese phrases before the downgrade",
+    );
+
+    // Phase 2: reopen with segmentation disabled and NO update() call — the
+    // persisted CJK marker alone must trigger the stock re-index.
+    const downgraded = await createBackend(root, path.join(root, "orama-db"), false, {
+      update: false,
+    });
+    assert.equal(
+      (await downgraded.bm25Search("東京都庁の所在地")).some((r) => r.docid === "mem-japanese-fact"),
+      false,
+      "stock tokenizer must not match Japanese phrases after the downgrade",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Orama rebuild gate inspects every indexed string field, not only content (issue #2187)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-orama-pathfield-"));
+  try {
+    // The only non-Latin text is the FILENAME, which lands in the indexed
+    // path field; the body is pure English.
+    await writeMemoryFact(
+      root,
+      "東京-fact.md",
+      "---\nid: mem-path-only\n---\nAn English body with no non-Latin characters.",
+    );
+
+    // Phase 1: pre-CJK stock index — the CJK filename never becomes a term.
+    const legacyBackend = await createBackend(root, path.join(root, "orama-db"), false);
+    assert.equal(
+      (await legacyBackend.bm25Search("東京")).some((r) => r.docid === "mem-path-only"),
+      false,
+      "stock tokenizer must not match the CJK filename",
+    );
+
+    // Phase 2: reopen with segmentation on and NO update() call — the
+    // path field alone must gate the in-place re-index.
+    const rebuilt = await createBackend(root, path.join(root, "orama-db"), true, {
+      update: false,
+    });
+    assert.equal(
+      (await rebuilt.bm25Search("東京")).some((r) => r.docid === "mem-path-only"),
+      true,
+      "non-Latin text in the path field must gate the rebuild",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

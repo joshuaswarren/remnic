@@ -140,6 +140,11 @@ export class OramaBackend implements SearchBackend {
     }
   }
 
+  /**
+   * Full-text (FTS) search only. With the stock tokenizer this cannot match
+   * space-free CJK/Thai text lexically — hybrid or vector search provides
+   * the fallback for those scripts (issue #2187).
+   */
   async bm25Search(query: string, collection?: string, maxResults?: number, execution?: SearchExecutionOptions): Promise<SearchResult[]> {
     if (isSearchAborted(execution)) return [];
     const db = await this.ensureDbForCollection(collection ?? this.collection);
@@ -480,13 +485,21 @@ export class OramaBackend implements SearchBackend {
    * no re-indexing — only the version marker is rewritten for them.
    */
   private async applyTokenizerVersion(db: any, collection: string): Promise<any> {
-    if (!this.cjkSegmentationEnabled) return db;
     const persistedLanguage =
       db?.tokenizer?.language && typeof db.tokenizer.language === "string"
         ? db.tokenizer.language
         : "";
-    db.tokenizer = createCjkCapableTokenizer(this.oramaModule);
-    if (persistedLanguage === ORAMA_CJK_TOKENIZER_LANGUAGE) return db;
+    if (this.cjkSegmentationEnabled) {
+      db.tokenizer = createCjkCapableTokenizer(this.oramaModule);
+      if (persistedLanguage === ORAMA_CJK_TOKENIZER_LANGUAGE) return db;
+    } else {
+      // Segmentation disabled: a database persisted under the CJK tokenizer
+      // keeps its CJK terms unless it is re-indexed under the stock one, so
+      // downgrade it instead of returning it unchanged (issue #2187 round 2).
+      if (persistedLanguage !== ORAMA_CJK_TOKENIZER_LANGUAGE) return db;
+      db.tokenizer = this.oramaModule.components.tokenizer.createTokenizer({ language: "english" });
+    }
+
 
     try {
       const { search: oramaSearch, count, update: oramaUpdate } = this.oramaModule;
@@ -499,8 +512,14 @@ export class OramaBackend implements SearchBackend {
       const hits = allHits.hits ?? [];
       const hasNonLegacyContent = hits.some((hit: any) => {
         const doc = this.getStoredDocument(db, hit);
-        const content = typeof doc.content === "string" ? doc.content : "";
-        return containsNonLegacyTokenizerChars(content);
+        // Orama full-text queries every string field by default, so every
+        // indexed string field gates the rebuild — non-Latin text that only
+        // rides in snippet/path/id would otherwise keep stale terms
+        // (issue #2187 review round 2).
+        for (const field of [doc.content, doc.snippet, doc.path, doc.id, doc.vectorProvider]) {
+          if (typeof field === "string" && containsNonLegacyTokenizerChars(field)) return true;
+        }
+        return false;
       });
       if (hasNonLegacyContent) {
         // Re-index every document in place (Orama update is remove+insert,
