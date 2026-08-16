@@ -106,6 +106,7 @@ done
 OWNER="${REPO%%/*}"
 NAME="${REPO##*/}"
 declare -A REVIEWER_NEUTRAL_EVIDENCE=()
+declare -A REVIEWER_NEGATIVE_EVIDENCE=()
 
 record_reviewer_neutral() {
   local login="$1" evidence="$2" group
@@ -114,6 +115,18 @@ record_reviewer_neutral() {
       *"|${login}|"*)
         REVIEWER_PRESENT["$group"]=1
         REVIEWER_NEUTRAL_EVIDENCE["$group"]="$evidence"
+        return 0
+        ;;
+    esac
+  done
+}
+
+record_reviewer_negative() {
+  local login="$1" verdict="$2" group
+  for group in "${REVIEWER_GROUPS[@]}"; do
+    case "|${group}|" in
+      *"|${login}|"*)
+        REVIEWER_NEGATIVE_EVIDENCE["$group"]="$verdict"
         return 0
         ;;
     esac
@@ -158,13 +171,19 @@ append_item() {
   OUTSTANDING+=("$1")
 }
 print_reviewer_neutral_evidence() {
-  [[ "$JSON_OUTPUT" == true ]] && return
-  local group evidence
+  local stream=1 group evidence
+  [[ "${1:-}" == timeout || "$JSON_OUTPUT" == true ]] && stream=2
   for group in "${REVIEWER_GROUPS[@]}"; do
     evidence="${REVIEWER_NEUTRAL_EVIDENCE[$group]:-}"
     [[ -n "$evidence" ]] || continue
     if [[ "$evidence" == reviewer\ timeout\ after* ]]; then
-      printf 'reviewer neutral (warning): %s; evidence: %s\n' "${group%%|*}" "$evidence"
+      if [[ "$stream" == 2 ]]; then
+        printf 'reviewer neutral (warning): %s; evidence: %s\n' "${group%%|*}" "$evidence" >&2
+      else
+        printf 'reviewer neutral (warning): %s; evidence: %s\n' "${group%%|*}" "$evidence"
+      fi
+    elif [[ "$stream" == 2 ]]; then
+      printf 'reviewer neutral: %s; evidence: %s\n' "${group%%|*}" "$evidence" >&2
     else
       printf 'reviewer neutral: %s; evidence: %s\n' "${group%%|*}" "$evidence"
     fi
@@ -214,7 +233,21 @@ record_reviewer() {
   local group
   for group in "${REVIEWER_GROUPS[@]}"; do
     case "|${group}|" in
-      *"|${login}|"*) REVIEWER_PRESENT["$group"]=1; return 0 ;;
+      *"|${login}|"*)
+        REVIEWER_PRESENT["$group"]=1
+        REVIEWER_NEUTRAL_EVIDENCE["$group"]=""
+        return 0
+        ;;
+    esac
+  done
+}
+
+record_reviewer_approval() {
+  local login="$1" group
+  record_reviewer "$login"
+  for group in "${REVIEWER_GROUPS[@]}"; do
+    case "|${group}|" in
+      *"|${login}|"*) REVIEWER_NEGATIVE_EVIDENCE["$group"]=""; return 0 ;;
     esac
   done
 }
@@ -223,6 +256,7 @@ fetch_and_evaluate() {
   OUTSTANDING=()
   declare -A REVIEWER_PRESENT=()
   REVIEWER_NEUTRAL_EVIDENCE=()
+  REVIEWER_NEGATIVE_EVIDENCE=()
   API_ERRORS=()
   HEAD_VISIBLE_AT=""
   SKIP_CURSOR=false
@@ -296,7 +330,9 @@ fetch_and_evaluate() {
         if [[ "$state" == "APPROVED" ||
           ( "$state" == "COMMENTED" &&
             "$body" =~ [Nn]o[[:space:]]+(major[[:space:]]+)?issues|[Aa]pproved|[Ll]ooks[[:space:]]+good ) ]]; then
-          record_reviewer "$login"
+          record_reviewer_approval "$login"
+        elif [[ "$state" == "CHANGES_REQUESTED" ]]; then
+          record_reviewer_negative "$login" "$state"
         elif [[ "$state" == "COMMENTED" && -z "$body" ]]; then
           record_reviewer_neutral "$login" "empty review body"
         elif [[ "$state" == "COMMENTED" && "$body" == "Review rate limited" ]]; then
@@ -367,6 +403,10 @@ fetch_and_evaluate() {
   for group in "${REVIEWER_GROUPS[@]}"; do
     [[ "$SKIP_CURSOR" == true && "$group" == "${REVIEWER_GROUPS[0]}" ]] && continue
     [[ "${REVIEWER_PRESENT[$group]:-0}" == 1 ]] && continue
+    if [[ -n "${REVIEWER_NEGATIVE_EVIDENCE[$group]:-}" ]]; then
+      append_item "reviewer:${group%%|*}(${REVIEWER_NEGATIVE_EVIDENCE[$group]})"
+      continue
+    fi
     if [[ "$reviewer_timeout_expired" == true ]]; then
       REVIEWER_PRESENT["$group"]=1
       REVIEWER_NEUTRAL_EVIDENCE["$group"]="reviewer timeout after ${REVIEWER_TIMEOUT}s"
@@ -398,7 +438,7 @@ while true; do
   elapsed="$(awk -v now="$now" -v start="$start_time" 'BEGIN { print now - start }')"
   if awk -v elapsed="$elapsed" -v timeout="$TIMEOUT" 'BEGIN { exit !(elapsed >= timeout) }'; then
     outstanding_json="$(printf '%s\n' "${OUTSTANDING[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')"
-    print_reviewer_neutral_evidence
+    print_reviewer_neutral_evidence timeout
     json_summary timeout "$HEAD_SHA" "$outstanding_json"
     exit 1
   fi

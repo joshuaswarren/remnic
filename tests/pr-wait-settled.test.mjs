@@ -42,7 +42,7 @@ if [[ "$1 $2" == "pr checks" ]]; then
   exit 0
 fi
 if [[ "$1 $2" == "api graphql" ]]; then
-  printf '2\\t%s\\tfalse\\t\\n' "$([[ "$GH_STUB_SCENARIO" == unresolved-thread ]] && echo 1 || echo 0)"
+  printf '2\\t%s\\tfalse\\t\\n' "$([[ "$GH_STUB_SCENARIO" == unresolved-thread || "$GH_STUB_SCENARIO" == rate-limited-unresolved ]] && echo 1 || echo 0)"
   exit 0
 fi
 if [[ "$1 $2" == "api repos/example/repo/pulls/7/reviews" ]]; then
@@ -54,7 +54,7 @@ if [[ "$1 $2" == "api repos/example/repo/pulls/7/reviews" ]]; then
         printf 'chatgpt-codex-connector[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
       fi
       ;;
-    rate-limited-review)
+    rate-limited-review|rate-limited-unresolved)
       printf 'cursor[bot]\\t%s\\tCOMMENTED\\tReview rate limited\\n' '${headSha}'
       printf 'coderabbitai[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
       printf 'chatgpt-codex-connector[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
@@ -70,6 +70,11 @@ if [[ "$1 $2" == "api repos/example/repo/pulls/7/reviews" ]]; then
     pending-review)
       printf 'cursor[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
       printf 'coderabbitai[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
+      ;;
+    negative-review)
+      printf 'cursor[bot]\\t%s\\tCHANGES_REQUESTED\\n' '${headSha}'
+      printf 'coderabbitai[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
+      printf 'chatgpt-codex-connector[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
       ;;
   esac
   exit 0
@@ -163,6 +168,32 @@ test("wait downgrades a pending reviewer after reviewer timeout", async () => {
     assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
     assert.match(result.stdout, /reviewer timeout/i);
     assert.match(result.stdout, /warning/i);
+  });
+});
+test("wait keeps an explicit negative reviewer verdict blocking", async () => {
+  await withGhStub("negative-review", async (env) => {
+    const result = runWait(env, [
+      "--timeout",
+      "0",
+      "--reviewer-timeout",
+      "0",
+      "--interval",
+      "0",
+      "--json",
+    ]);
+    assert.notEqual(result.status, 0);
+    const summary = JSON.parse(result.stdout);
+    assert.match(summary.outstanding.join(" "), /CHANGES_REQUESTED/);
+  });
+});
+
+test("wait keeps timeout JSON valid while printing neutral evidence", async () => {
+  await withGhStub("rate-limited-unresolved", async (env) => {
+    const result = runWait(env, ["--timeout", "0", "--interval", "0"]);
+    assert.notEqual(result.status, 0);
+    const summary = JSON.parse(result.stdout);
+    assert.match(summary.outstanding.join(" "), /thread/i);
+    assert.match(result.stderr, /Review rate limited/);
   });
 });
 
