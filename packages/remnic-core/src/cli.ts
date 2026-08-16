@@ -12,6 +12,7 @@ import { resolveNamespaceCapabilities,
 import { ThreadingManager } from "./threading.js";
 import { bumpMemoryCorpusVersionForDir } from "./memory-corpus-version.js";
 import { utcDayRange } from "./transcript.js";
+import { padEndDisplay, truncateGraphemeSafe } from "./whitespace.js";
 import { runWearablesCliCommand } from "./wearables/cli.js";
 import { registerMeetingsCommands } from "./cli/meetings-commands.js";
 import { registerResearchStatusCommands } from "./cli/research-status-commands.js";
@@ -5672,7 +5673,7 @@ export function registerCli(
               console.log(`  raw excerpts (${r.rawExcerpts.length}):`);
               for (const ex of r.rawExcerpts) {
                 console.log(
-                  `    [turn ${ex.turnIndex}, ${ex.role}] ${ex.content.slice(0, 200)}`,
+                  `    [turn ${ex.turnIndex}, ${ex.role}] ${truncateGraphemeSafe(ex.content, 200)}`,
                 );
               }
             }
@@ -7614,7 +7615,7 @@ export function registerCli(
               console.log(`  ${r.path} (score: ${r.score.toFixed(3)})`);
               if (r.snippet) {
                 console.log(
-                  `    ${r.snippet.slice(0, 150).replace(/\n/g, " ")}`,
+                  `    ${truncateGraphemeSafe(r.snippet, 150).replace(/\n/g, " ")}`,
                 );
               }
               console.log();
@@ -7640,7 +7641,7 @@ export function registerCli(
             console.log(`\n=== Text Search Fallback: "${query}" (${matches.length} results) ===\n`);
             console.log(`QMD status: ${qmdStatus}\n`);
             for (const m of matches.slice(0, maxResults)) {
-              console.log(`  [${m.frontmatter.category}] ${m.content.slice(0, 120)}`);
+              console.log(`  [${m.frontmatter.category}] ${truncateGraphemeSafe(m.content, 120)}`);
             }
           }
         });
@@ -7783,12 +7784,12 @@ export function registerCli(
             for (const cluster of result.clusters) {
               console.log(`\n  Category: ${cluster.category} (${cluster.memories.length} memories, overlap=${cluster.overlapScore.toFixed(2)})`);
               for (const m of cluster.memories) {
-                const preview = m.content.length > 80 ? m.content.slice(0, 80) + "..." : m.content;
+                const preview = m.content.length > 80 ? `${truncateGraphemeSafe(m.content, 80)}...` : m.content;
                 console.log(`    - ${m.frontmatter.id}: ${preview}`);
               }
               if (cluster.canonicalContent) {
                 const preview = cluster.canonicalContent.length > 120
-                  ? cluster.canonicalContent.slice(0, 120) + "..."
+                  ? `${truncateGraphemeSafe(cluster.canonicalContent, 120)}...`
                   : cluster.canonicalContent;
                 console.log(`    → Canonical: ${preview}`);
               }
@@ -8018,7 +8019,7 @@ export function registerCli(
             const lastAccessed = m.frontmatter.lastAccessed
               ? new Date(m.frontmatter.lastAccessed).toLocaleDateString()
               : "unknown";
-            console.log(`  ${m.frontmatter.accessCount}x  [${m.frontmatter.category}] ${m.content.slice(0, 80)}`);
+            console.log(`  ${m.frontmatter.accessCount}x  [${m.frontmatter.category}] ${truncateGraphemeSafe(m.content, 80)}`);
             console.log(`       Last accessed: ${lastAccessed}  ID: ${m.frontmatter.id}`);
             console.log();
           }
@@ -8071,7 +8072,7 @@ export function registerCli(
           console.log("\n=== Importance Distribution ===\n");
           for (const [level, count] of Object.entries(levelCounts)) {
             const bar = "█".repeat(Math.min(count, 50));
-            console.log(`  ${level.padEnd(10)} ${count.toString().padStart(4)} ${bar}`);
+            console.log(`  ${padEndDisplay(level, 10)} ${count.toString().padStart(4)} ${bar}`);
           }
           console.log(`\n  Total scored: ${withImportance.length} / ${memories.length} memories\n`);
 
@@ -8104,7 +8105,7 @@ export function registerCli(
             console.log(
               `  ${imp.score.toFixed(2)} [${imp.level}] [${m.frontmatter.category}]`,
             );
-            console.log(`    ${m.content.slice(0, 100)}`);
+            console.log(`    ${truncateGraphemeSafe(m.content, 100)}`);
             if (imp.keywords.length > 0) {
               console.log(`    Keywords: ${imp.keywords.join(", ")}`);
             }
@@ -8131,7 +8132,7 @@ export function registerCli(
 
           for (const topic of topics.slice(0, top)) {
             const bar = "█".repeat(Math.min(Math.round(topic.score * 10), 30));
-            console.log(`  ${topic.term.padEnd(20)} ${topic.score.toFixed(3)} (${topic.count}x) ${bar}`);
+            console.log(`  ${padEndDisplay(topic.term, 20)} ${topic.score.toFixed(3)} (${topic.count}x) ${bar}`);
           }
         });
 
@@ -8163,7 +8164,7 @@ export function registerCli(
             console.log(`    Time range: ${summary.timeRangeStart.slice(0, 10)} to ${summary.timeRangeEnd.slice(0, 10)}`);
             console.log(`    Source memories: ${summary.sourceEpisodeIds.length}`);
             console.log(`    Key facts: ${summary.keyFacts.length}`);
-            console.log(`\n    Summary: ${summary.summaryText.slice(0, 200)}...`);
+            console.log(`\n    Summary: ${truncateGraphemeSafe(summary.summaryText, 200)}...`);
             console.log();
           }
         });
@@ -8255,13 +8256,13 @@ export function registerCli(
             const parent = memories.find((m) => m.frontmatter.id === parentId);
             console.log(`\n=== Chunks for ${parentId} ===\n`);
             if (parent) {
-              console.log(`Parent: ${parent.content.slice(0, 100)}...`);
+              console.log(`Parent: ${truncateGraphemeSafe(parent.content, 100)}...`);
               console.log();
             }
 
             for (const chunk of chunks) {
               console.log(
-                `  [${(chunk.frontmatter.chunkIndex ?? 0) + 1}/${chunk.frontmatter.chunkTotal}] ${chunk.content.slice(0, 80)}...`,
+                `  [${(chunk.frontmatter.chunkIndex ?? 0) + 1}/${chunk.frontmatter.chunkTotal}] ${truncateGraphemeSafe(chunk.content, 80)}...`,
               );
             }
             return;
@@ -9408,7 +9409,7 @@ function formatTranscript(entries: TranscriptEntry[]): string {
   return entries
     .map((e) => {
       const time = e.timestamp.slice(11, 16); // HH:MM
-      return `[${time}] ${e.role}: ${e.content.slice(0, 200)}${e.content.length > 200 ? "..." : ""}`;
+      return `[${time}] ${e.role}: ${truncateGraphemeSafe(e.content, 200)}${e.content.length > 200 ? "..." : ""}`;
     })
     .join("\n");
 }

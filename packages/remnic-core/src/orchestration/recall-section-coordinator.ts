@@ -19,6 +19,7 @@
 
 import type { LastRecallBudgetSummary } from "../recall-state.js";
 import { estimateTokenCount } from "../token-estimate.js";
+import { graphemeUnits, truncateGraphemeSafe } from "../whitespace.js";
 import type { PluginConfig, RecallSectionConfig } from "../types.js";
 
 export interface RecallSectionAppendOptions {
@@ -145,7 +146,7 @@ export class RecallSectionCoordinator {
       finalContent =
         sectionId === "profile"
           ? this.truncateProfileToBoundary(finalContent, maxChars)
-          : `${finalContent.slice(0, maxChars)}\n\n...(trimmed)\n`;
+          : `${truncateGraphemeSafe(finalContent, maxChars)}\n\n...(trimmed)\n`;
     }
     if (finalContent.length === 0) return false;
     const existing = sectionBuckets.get(sectionId) ?? [];
@@ -174,11 +175,16 @@ export class RecallSectionCoordinator {
     const contentLimit = maxChars - suffix.length;
     if (contentLimit <= 0) {
       const boundary = content.lastIndexOf("\n", maxChars);
-      return content.slice(0, boundary > 0 ? boundary : maxChars).trimEnd();
+      const clipped = boundary > 0
+        ? content.slice(0, boundary)
+        : truncateGraphemeSafe(content, maxChars);
+      return clipped.trimEnd();
     }
     const boundary = content.lastIndexOf("\n", contentLimit);
-    const end = boundary > 0 ? boundary : contentLimit;
-    return `${content.slice(0, end).trimEnd()}${suffix}`;
+    const clipped = boundary > 0
+      ? content.slice(0, boundary)
+      : truncateGraphemeSafe(content, contentLimit);
+    return `${clipped.trimEnd()}${suffix}`;
   }
   truncateRecallSectionToBudget(
     content: string,
@@ -191,20 +197,20 @@ export class RecallSectionCoordinator {
       content.length <= maxChars
         ? content
         : maxChars <= suffix.length
-          ? content.slice(0, maxChars)
-          : `${content.slice(0, maxChars - suffix.length)}${suffix}`;
+          ? truncateGraphemeSafe(content, maxChars)
+          : `${truncateGraphemeSafe(content, maxChars - suffix.length)}${suffix}`;
     if (maxTokens === undefined || estimateTokenCount(charBounded) <= maxTokens) {
       return charBounded;
     }
     const markerFits =
       maxChars > suffix.length && estimateTokenCount(suffix) <= maxTokens;
-    const tokenSource = content.length > maxChars ? content.slice(0, maxChars) : content;
-    const codePoints = [...tokenSource];
+    const tokenSource = content.length > maxChars ? truncateGraphemeSafe(content, maxChars) : content;
+    const units = graphemeUnits(tokenSource);
     let low = 0;
-    let high = codePoints.length;
+    let high = units.length;
     while (low < high) {
       const mid = Math.ceil((low + high) / 2);
-      const prefix = codePoints.slice(0, mid).join("");
+      const prefix = units.slice(0, mid).join("");
       const candidate = markerFits ? `${prefix}${suffix}` : prefix;
       if (candidate.length <= maxChars && estimateTokenCount(candidate) <= maxTokens) {
         low = mid;
@@ -214,19 +220,19 @@ export class RecallSectionCoordinator {
     }
     if (markerFits && low === 0) {
       low = 0;
-      high = codePoints.length;
+      high = units.length;
       while (low < high) {
         const mid = Math.ceil((low + high) / 2);
-        const prefix = codePoints.slice(0, mid).join("");
+        const prefix = units.slice(0, mid).join("");
         if (prefix.length <= maxChars && estimateTokenCount(prefix) <= maxTokens) {
           low = mid;
         } else {
           high = mid - 1;
         }
       }
-      return codePoints.slice(0, low).join("");
+      return units.slice(0, low).join("");
     }
-    const prefix = codePoints.slice(0, low).join("");
+    const prefix = units.slice(0, low).join("");
     return markerFits ? `${prefix}${suffix}` : prefix;
   }
 

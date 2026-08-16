@@ -11,6 +11,8 @@
  *
  */
 
+export { collapseWhitespace, displayWidth, graphemeUnits, padEndDisplay, truncateCodePointSafe, truncateGraphemeSafe } from "./whitespace.js";
+
 // ---------------------------------------------------------------------------
 // Plugin entry resolution
 // ---------------------------------------------------------------------------
@@ -1446,10 +1448,7 @@ export {
 
 // Coding-graph engine contract (#1551 PR1), implemented by optional @remnic/coding-graph.
 
-export {
-  CODING_GRAPH_ENGINE_VERSION,
-  TIER_1_LANGUAGES,
-} from "./coding/coding-graph-types.js";
+export { CODING_GRAPH_ENGINE_VERSION, TIER_1_LANGUAGES } from "./coding/coding-graph-types.js";
 
 export type {
   CodingGraphEngine,
