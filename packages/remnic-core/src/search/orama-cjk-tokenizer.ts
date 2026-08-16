@@ -45,14 +45,18 @@ export function isSpaceFreeScriptChar(char: string): boolean {
 }
 
 /**
- * True when the value contains characters the stock English tokenizer treats
- * as separators — i.e. tokenization differs from the stock tokenizer (CJK/
- * Thai n-grams, whole words for other non-ASCII scripts). `OramaBackend` uses
- * this to decide whether a stale pre-CJK index needs re-indexing on upgrade.
+ * True when tokenizing the value differs from the stock English tokenizer —
+ * i.e. the value contains characters outside the stock keep-set that this
+ * tokenizer still indexes as token material: word characters (whole-word
+ * non-ASCII scripts), combining marks (attached to runs), and space-free
+ * scripts (CJK/Thai n-grams). Symbols and punctuation that are separators in
+ * BOTH tokenizers do not count. `OramaBackend` uses this to decide whether a
+ * stale pre-CJK index needs re-indexing on upgrade.
  */
 export function containsNonLegacyTokenizerChars(value: string): boolean {
   for (const ch of value) {
-    if (!LEGACY_TOKENIZER_CHAR.test(ch) && !WHITESPACE_CHAR.test(ch) && !COMBINING_MARK.test(ch)) {
+    if (LEGACY_TOKENIZER_CHAR.test(ch) || WHITESPACE_CHAR.test(ch)) continue;
+    if (WORD_CHAR.test(ch) || COMBINING_MARK.test(ch) || isSpaceFreeScriptChar(ch)) {
       return true;
     }
   }
@@ -75,7 +79,7 @@ export function createCjkCapableTokenizer(oramaModule: OramaTokenizerComponents)
   const base = oramaModule.components.tokenizer.createTokenizer({ language: "english" });
 
   const tokenize = (raw: string, _language?: string, prop?: string, withCache?: boolean): string[] => {
-    if (typeof raw !== "string") return [raw];
+    if (typeof raw !== "string") return [];
     const normalized = raw.normalize("NFC");
 
     if (!containsNonLegacyTokenizerChars(normalized)) {

@@ -4,6 +4,7 @@ import test from "node:test";
 import * as orama from "@orama/orama";
 
 import {
+  containsNonLegacyTokenizerChars,
   createCjkCapableTokenizer,
   isSpaceFreeScriptChar,
   ORAMA_CJK_TOKENIZER_LANGUAGE,
@@ -85,4 +86,23 @@ test("isSpaceFreeScriptChar covers CJK and Thai only", () => {
   assert.equal(isSpaceFreeScriptChar("ก"), true);
   assert.equal(isSpaceFreeScriptChar("사"), false);
   assert.equal(isSpaceFreeScriptChar("a"), false);
+});
+
+test("CJK tokenizer returns no tokens for non-string input", () => {
+  assert.deepEqual(tokenizer.tokenize(undefined as unknown as string), []);
+  assert.deepEqual(tokenizer.tokenize(null as unknown as string), []);
+  assert.deepEqual(tokenizer.tokenize(42 as unknown as string), []);
+});
+
+test("rebuild gate flags only tokenization-changing characters", () => {
+  // Word material outside the stock keep-set changes tokens (whole words,
+  // n-grams, attached marks) — the gate must flag it.
+  assert.equal(containsNonLegacyTokenizerChars("naïve"), true);
+  assert.equal(containsNonLegacyTokenizerChars("東京都庁"), true);
+  assert.equal(containsNonLegacyTokenizerChars("사용자"), true);
+  assert.equal(containsNonLegacyTokenizerChars("cafe\u0301"), true);
+  // Separators in BOTH tokenizers — punctuation and symbols — leave the
+  // stock token stream unchanged, so no re-index is warranted.
+  assert.equal(containsNonLegacyTokenizerChars("plain — text „quoted” · done"), false);
+  assert.equal(containsNonLegacyTokenizerChars("Nebula-472 deploy (prod)"), false);
 });
