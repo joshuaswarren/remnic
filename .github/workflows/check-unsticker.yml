@@ -6,8 +6,8 @@ name: Check Unsticker
 #    no workflow trigger for thread resolution (`pull_request_review_thread`
 #    is webhook-only). Resolving the last open thread therefore leaves the
 #    guard stuck on its previous failing run until an unrelated event or a
-#    manual rerun. This sweeper reruns the guard when its latest run failed
-#    but the PR now has zero unresolved (non-CodeQL) threads.
+#    manual rerun. This sweeper reruns failed guard suites when at least one
+#    failed suite remains and the PR has zero unresolved (non-CodeQL) threads.
 #
 # 2. A branch ruleset treats a required `ai-reviewers` context as non-passing
 #    when ANY check suite on the head carries a terminally `cancelled` (or a
@@ -23,6 +23,9 @@ name: Check Unsticker
 # Loop safety: the guard is only rerun when threads are verifiably resolved
 # (a rerun then passes), and the gate is only rerun from `cancelled` (a rerun
 # concludes success or failure, both terminal for this sweeper).
+
+# The five-minute sweep replaces manual dispatch after thread resolution.
+# Manual dispatch remains available for immediate recovery.
 
 on:
   schedule:
@@ -62,10 +65,16 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
 
+            // Reuse tested decision helpers so stale-red detection cannot drift
+            // from the unit-tested scheduler behavior.
+            const { pathToFileURL } = require('node:url');
+            const { latestFailedGuardRuns, planGuardReruns } = await import(
+              pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/check-unsticker.mjs`).href
+            );
+
             // Reuse the tested dedup module rather than a third inline mirror, so
             // the unsticker's rerun decision cannot drift from the guard's own
             // effective unresolved-thread math (issue #1994).
-            const { pathToFileURL } = require('node:url');
             const { dedupeThreads, hasGateReply, REVIEW_DEDUP_CONFIG, NON_DEDUP_AUTHOR_LOGINS } = await import(
               pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/review-dedup.mjs`).href
             );
@@ -246,17 +255,18 @@ jobs:
               const headSha = pull.head.sha;
               const label = `PR #${pull.number}`;
 
-              // Case 1: guard suite(s) failed but threads are now resolved.
-              // The ruleset requires the latest attempt of EVERY suite on the
-              // head to pass, so ALL failed suites are rerun, not just the
-              // newest (#1610 postmortem). Guard runs have no concurrency
-              // group, so parallel reruns are safe.
-              const guardRuns = (await runsFor('review-thread-guard.yml', headSha, pull.number))
-                .filter((run) => run.status === 'completed' && run.conclusion === 'failure');
-              if (guardRuns.length > 0) {
+              // Case 1: rerun guard suites only for the exact stale-red state:
+              // at least one guard suite failed and effective unresolved threads are zero.
+              // The ruleset requires every failed suite on the head to pass.
+              // Rerun all failed suites once that state is confirmed.
+              // Guard runs have no concurrency group, so parallel reruns are safe.
+              const guardRuns = await runsFor('review-thread-guard.yml', headSha, pull.number);
+              const latestFailed = latestFailedGuardRuns(guardRuns);
+              if (latestFailed.length > 0) {
                 const unresolved = await effectiveUnresolvedCount(pull.number);
-                if (unresolved === 0) {
-                  for (const run of guardRuns) {
+                const reruns = planGuardReruns(guardRuns, unresolved);
+                if (reruns.length > 0) {
+                  for (const run of reruns) {
                     await rerun(run, `${label} review-thread guard`);
                   }
                 } else {

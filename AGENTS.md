@@ -213,10 +213,13 @@ Reference workflow:
 
 The `ai-reviewers` (AI Review Gate) required check is **coalescing, not
 force-cancelling** — `concurrency.cancel-in-progress: false` plus a head-SHA
-self-supersession exit in its poll loop. `unresolved-review-threads` (Review
-Thread Guard) intentionally has **no** concurrency group: `check-unsticker`
-reruns every failed guard suite and GitHub's single-pending concurrency would
-cancel those reruns. Work with this, not against it:
+self-supersession exit in its poll loop. `unresolved-review-threads`
+(Review Thread Guard) intentionally has **no** concurrency group: GitHub's
+single-pending concurrency would cancel reruns. The `check-unsticker` workflow
+runs every five minutes and keeps manual dispatch. For each open PR, it exits
+before the GraphQL thread lookup unless at least one guard suite failed. It
+reruns all failed guard suites only when zero effective unresolved threads
+remain. Work with this, not against it:
 
 1. Do not push per-fix. Every push re-triggers the gates; the AI gate coalesces
    to the latest and self-supersedes when the head advances, so only the settled

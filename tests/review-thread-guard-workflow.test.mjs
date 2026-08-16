@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { parse } from "yaml";
 
 const REPO_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const readRepoFile = (relativePath) => readFileSync(path.join(REPO_ROOT, relativePath), "utf8");
@@ -67,6 +68,23 @@ test("check-unsticker uses the shared dedup evaluator and complete thread fields
   assert.match(workflow, /\bisOutdated\b/);
   assert.match(workflow, /\bstartDiffSide\b/);
   assert.match(workflow, /hasGateReply\(t\) \|\| resolvedById\.get\(rec\.canonicalId\) === true/);
+});
+
+test("check-unsticker only reruns failed guard suites when threads are resolved", () => {
+  const workflow = readRepoFile(".github/workflows/check-unsticker.yml");
+  assert.match(workflow, /latestFailedGuardRuns\(guardRuns\)/);
+  assert.match(workflow, /planGuardReruns\(guardRuns, unresolved\)/);
+  assert.match(workflow, /effective unresolved threads are zero/);
+});
+
+test("scheduled check-unsticker runs at most one scheduler instance", () => {
+  const workflow = readRepoFile(".github/workflows/check-unsticker.yml");
+  const config = parse(workflow);
+  assert.deepEqual(config.on.schedule, [{ cron: "*/5 * * * *" }]);
+  assert.deepEqual(config.concurrency, {
+    group: "check-unsticker",
+    "cancel-in-progress": false,
+  });
 });
 
 test("review-thread guard posts duplicate audit replies only in enforce mode", () => {
