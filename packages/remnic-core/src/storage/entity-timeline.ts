@@ -301,16 +301,17 @@ export function normalizeStructuredSectionFactsWithOrigins(
 ): Pick<EntityStructuredSection, "facts" | "factOrigins"> {
   const normalizedFacts: string[] = [];
   const origins: Array<string | undefined> = [];
-  const seen = new Set<string>();
+  const seen = new Map<string, number>();
   for (const [index, fact] of facts.entries()) {
     const normalized = normalizeEntitySectionFact(fact);
     if (!normalized) continue;
-    const existingIndex = normalizedFacts.indexOf(normalized);
+    const existingIndex = seen.get(normalized) ?? -1;
     const origin = factOrigins?.[index] ?? defaultOrigin;
     if (existingIndex >= 0) {
       if (origins[existingIndex] !== origin) origins[existingIndex] = undefined;
       continue;
     }
+    seen.set(normalized, normalizedFacts.length);
     normalizedFacts.push(normalized);
     origins.push(origin);
   }
