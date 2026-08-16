@@ -74,6 +74,17 @@ export async function discoverPackages(repoRoot) {
   return packages.sort((left, right) => left.dir.localeCompare(right.dir));
 }
 
+function isDocumentationFile(filePath) {
+  const normalized = normalizePath(filePath);
+  return (
+    normalized === "README.md" ||
+    normalized === "CHANGELOG.md" ||
+    normalized.startsWith("docs/") ||
+    normalized.startsWith(".changeset/") ||
+    /^packages\/[^/]+\/README\.md$/.test(normalized)
+  );
+}
+
 function packageForFile(filePath, packages) {
   const normalized = normalizePath(filePath);
   return packages.find((pkg) => normalized === pkg.dir || normalized.startsWith(`${pkg.dir}/`));
@@ -86,7 +97,7 @@ export function inferTouchedPackages(changedFiles, packages) {
 
   for (const file of changedFiles) {
     const normalized = normalizePath(file);
-    if (normalized.endsWith(".md") || normalized.startsWith("docs/") || normalized.startsWith(".changeset/")) {
+    if (isDocumentationFile(normalized)) {
       continue;
     }
     const packageMatch = packageForFile(normalized, packages);
@@ -98,6 +109,13 @@ export function inferTouchedPackages(changedFiles, packages) {
       } else {
         touched.set(packageMatch.dir, packageMatch);
       }
+      continue;
+    }
+
+    if (normalized.startsWith("src/")) {
+      const openclaw = packages.find((pkg) => pkg.dir === "packages/plugin-openclaw");
+      if (openclaw && !openclaw.private) touched.set(openclaw.dir, openclaw);
+      else if (openclaw) skipped.set(openclaw.dir, openclaw);
       continue;
     }
 
@@ -138,7 +156,10 @@ function splitLines(output) {
 export function changedWorkingTreeFiles(repoRoot, options = {}) {
   const git = options.git ?? runGit;
   const baseRef = options.baseRef ?? process.env.PREFLIGHT_BASE_REF ?? DEFAULT_BASE_REF;
-  const mergeBase = tryGit(repoRoot, ["merge-base", "HEAD", baseRef], git) ?? "HEAD~1";
+  const mergeBase = tryGit(repoRoot, ["merge-base", "HEAD", baseRef], git);
+  if (!mergeBase) {
+    throw new Error(`Unable to resolve merge-base for ${baseRef}. Fetch the base or pass --base <ref>.`);
+  }
   const tracked = tryGit(repoRoot, ["diff", "--name-only", mergeBase, "--"], git) ?? "";
   const untracked = tryGit(repoRoot, ["ls-files", "--others", "--exclude-standard"], git) ?? "";
   return [...new Set([...splitLines(tracked), ...splitLines(untracked)])].sort();

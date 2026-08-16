@@ -70,6 +70,23 @@ test("package documentation-only changes emit nothing", () => {
   assert.deepEqual(result.published, []);
   assert.deepEqual(result.python, []);
 });
+test("published skill markdown is treated as package code", () => {
+  const result = inferTouchedPackages(["packages/plugin-openclaw/skills/recall/SKILL.md"], packages);
+
+  assert.deepEqual(
+    result.published.map((pkg) => pkg.name),
+    ["@remnic/plugin-openclaw"]
+  );
+});
+
+test("root OpenClaw compatibility sources map to the published plugin", () => {
+  const result = inferTouchedPackages(["src/openclaw-entry.ts"], packages);
+
+  assert.deepEqual(
+    result.published.map((pkg) => pkg.name),
+    ["@remnic/plugin-openclaw"]
+  );
+});
 
 test("working-tree diff collection uses stubbed git output from the merge-base", () => {
   const calls = [];
@@ -90,6 +107,17 @@ test("working-tree diff collection uses stubbed git output from the merge-base",
     ["diff", "--name-only", "base-sha", "--"],
     ["ls-files", "--others", "--exclude-standard"],
   ]);
+});
+test("working-tree diff collection rejects an unavailable merge-base", () => {
+  const git = (_repoRoot, args) => {
+    if (args[0] === "merge-base") return null;
+    throw new Error(`unexpected git call: ${args.join(" ")}`);
+  };
+
+  assert.throws(
+    () => changedWorkingTreeFiles("/repo", { baseRef: "main", git }),
+    /Unable to resolve merge-base for main/
+  );
 });
 
 test("private packages are skipped", () => {

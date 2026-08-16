@@ -35,3 +35,16 @@ test("preflight stays silent for documentation-only changes", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "");
 });
+test("preflight warns for shipped skill markdown without a changeset", () => {
+  const result = check("packages/plugin-openclaw/skills/recall/SKILL.md");
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /WARNING: code changes detected without a changeset/);
+});
+
+test("preflight stays silent for release-only root manifests", () => {
+  const result = check("openclaw.plugin.json", "packages/plugin-openclaw/package.json");
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "");
+});
