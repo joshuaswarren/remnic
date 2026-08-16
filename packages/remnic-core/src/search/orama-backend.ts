@@ -13,8 +13,8 @@ import {
  import { scanMemoryDir } from "./document-scanner.js";
  import { isSearchAborted, throwIfSearchAborted } from "./abort.js";
 import {
+  containsNonLegacyTokenizerChars,
   createCjkCapableTokenizer,
-  isSpaceFreeScriptChar,
   ORAMA_CJK_TOKENIZER_LANGUAGE,
 } from "./orama-cjk-tokenizer.js";
  
@@ -475,9 +475,9 @@ export class OramaBackend implements SearchBackend {
    * full-text index when it predates CJK tokenization. Orama persists
    * `tokenizer.language` with the index, so a marker other than
    * `ORAMA_CJK_TOKENIZER_LANGUAGE` identifies an index whose terms were
-   * produced by the stock English tokenizer. English-only corpora need no
-   * re-indexing — the CJK tokenizer emits identical tokens for legacy Latin
-   * content — so only the version marker is rewritten for them.
+   * produced by the stock English tokenizer. Corpora whose content the stock
+   * tokenizer and this tokenizer treat identically (pure legacy Latin) need
+   * no re-indexing — only the version marker is rewritten for them.
    */
   private async applyTokenizerVersion(db: any, collection: string): Promise<any> {
     if (!this.cjkSegmentationEnabled) return db;
@@ -497,30 +497,38 @@ export class OramaBackend implements SearchBackend {
       }
       const allHits = await oramaSearch(db, { term: "", limit: existingCount + 100 });
       const hits = allHits.hits ?? [];
-      const hasSpaceFreeContent = hits.some((hit: any) => {
+      const hasNonLegacyContent = hits.some((hit: any) => {
         const doc = this.getStoredDocument(db, hit);
         const content = typeof doc.content === "string" ? doc.content : "";
-        return [...content].some(isSpaceFreeScriptChar);
+        return containsNonLegacyTokenizerChars(content);
       });
-      if (hasSpaceFreeContent) {
+      if (hasNonLegacyContent) {
         // Re-index every document in place (Orama update is remove+insert,
-        // so content is re-tokenized; vectors are carried through).
+        // so content is re-tokenized; vectors are carried through). A single
+        // failing document must not block the rest of the corpus: it keeps
+        // its pre-upgrade terms, which is no worse than before the upgrade.
         for (const hit of hits) {
-          const doc = this.getStoredDocument(db, hit);
-          const vector = this.getStoredVector(db, hit, doc);
-          await oramaUpdate(db, hit.id, {
-            id: typeof doc.id === "string" && doc.id.length > 0 ? doc.id : String(hit.id),
-            path: typeof doc.path === "string" ? doc.path : "",
-            content: typeof doc.content === "string" ? doc.content : "",
-            snippet:
-              typeof doc.snippet === "string"
-                ? doc.snippet
-                : typeof doc.content === "string"
-                  ? doc.content.slice(0, 200)
-                  : "",
-            vectorProvider: typeof doc.vectorProvider === "string" ? doc.vectorProvider : "",
-            vector: vector ?? this.zeroVector(),
-          });
+          try {
+            const doc = this.getStoredDocument(db, hit);
+            const vector = this.getStoredVector(db, hit, doc);
+            await oramaUpdate(db, hit.id, {
+              id: typeof doc.id === "string" && doc.id.length > 0 ? doc.id : String(hit.id),
+              path: typeof doc.path === "string" ? doc.path : "",
+              content: typeof doc.content === "string" ? doc.content : "",
+              snippet:
+                typeof doc.snippet === "string"
+                  ? doc.snippet
+                  : typeof doc.content === "string"
+                    ? doc.content.slice(0, 200)
+                    : "",
+              vectorProvider: typeof doc.vectorProvider === "string" ? doc.vectorProvider : "",
+              vector: vector ?? this.zeroVector(),
+            });
+          } catch (docErr) {
+            log.debug(
+              `OramaBackend tokenizer-version re-index skipped document ${hit.id} in ${collection}: ${docErr}`,
+            );
+          }
         }
       }
       await this.persistDbForCollection(db, collection);

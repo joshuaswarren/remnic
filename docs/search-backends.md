@@ -467,12 +467,14 @@ Orama indexes CJK/Thai runs as character n-grams (single characters plus
 2–4 character grams), reusing the same segmentation strategy as the
 query-side recall tokenizer, so index terms and query terms agree. Latin
 content tokenizes exactly as before, so existing English indexes stay
-term-compatible.
+term-compatible. Other non-ASCII scripts (Hangul, Cyrillic, Greek, Arabic,
+...) are indexed as whole words in addition to any stock English tokens.
 
 The tokenization version is persisted inside each `.msp` index file. When
 Orama loads an index written by an older Remnic version, it rebuilds the
 full-text side of that index in place (vectors are preserved) the first time
-the file is opened — no operator action needed. English-only corpora are not
+the file is opened — no operator action needed. Corpora whose content
+tokenizes identically under both tokenizers (pure legacy Latin) are not
 re-indexed; only the version marker is rewritten.
 
 To restore the pre-#2187 stock English tokenizer:

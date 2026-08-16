@@ -25,6 +25,7 @@ async function createBackend(
   memoryDir: string,
   dbPath: string,
   cjkSegmentationEnabled?: boolean,
+  options: { update?: boolean } = {},
 ): Promise<OramaBackend> {
   const backend = new OramaBackend({
     dbPath,
@@ -35,7 +36,9 @@ async function createBackend(
     cjkSegmentationEnabled,
   });
   assert.equal(await backend.probe(), true);
-  await backend.update();
+  if (options.update !== false) {
+    await backend.update();
+  }
   return backend;
 }
 
@@ -97,6 +100,11 @@ test("Orama CJK tokenizer rebuilds stale pre-CJK indexes on first open (issue #2
     );
     await writeMemoryFact(
       root,
+      "russian-fact.md",
+      "---\nid: mem-russian-fact\n---\nПравительство Токио находится в Синдзюку.",
+    );
+    await writeMemoryFact(
+      root,
       "english-fact.md",
       "---\nid: mem-english-fact\n---\nNebula-472 deploy finished in production.",
     );
@@ -112,11 +120,18 @@ test("Orama CJK tokenizer rebuilds stale pre-CJK indexes on first open (issue #2
     const legacyEnglish = await legacyBackend.bm25Search("Nebula-472 deploy");
     assert.equal(legacyEnglish.some((r) => r.docid === "mem-english-fact"), true);
 
-    // Phase 2: reopen with CJK segmentation on — the stale marker triggers an
-    // in-place rebuild without any update() call.
-    const rebuiltBackend = await createBackend(root, path.join(root, "orama-db"), true);
+    // Phase 2: reopen with CJK segmentation on and NO update() call — the
+    // stale marker alone must trigger the in-place rebuild during probe().
+    const rebuiltBackend = await createBackend(root, path.join(root, "orama-db"), true, {
+      update: false,
+    });
     const rebuiltJapanese = await rebuiltBackend.bm25Search("東京都庁の所在地");
     assert.equal(rebuiltJapanese.some((r) => r.docid === "mem-japanese-fact"), true);
+
+    // Non-CJK non-Latin scripts are re-indexed too (whole-word terms), not
+    // just CJK/Thai.
+    const rebuiltRussian = await rebuiltBackend.bm25Search("Правительство Токио");
+    assert.equal(rebuiltRussian.some((r) => r.docid === "mem-russian-fact"), true);
 
     // English-corpus behavior is unchanged by the rebuild.
     const rebuiltEnglish = await rebuiltBackend.bm25Search("Nebula-472 deploy");

@@ -45,6 +45,21 @@ export function isSpaceFreeScriptChar(char: string): boolean {
 }
 
 /**
+ * True when the value contains characters the stock English tokenizer treats
+ * as separators — i.e. tokenization differs from the stock tokenizer (CJK/
+ * Thai n-grams, whole words for other non-ASCII scripts). `OramaBackend` uses
+ * this to decide whether a stale pre-CJK index needs re-indexing on upgrade.
+ */
+export function containsNonLegacyTokenizerChars(value: string): boolean {
+  for (const ch of value) {
+    if (!LEGACY_TOKENIZER_CHAR.test(ch) && !WHITESPACE_CHAR.test(ch) && !COMBINING_MARK.test(ch)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Orama tokenizer component that segments space-free scripts (CJK, Thai).
  *
  * - CJK/Thai runs expand to the same n-gram set the recall query-side
@@ -52,7 +67,9 @@ export function isSpaceFreeScriptChar(char: string): boolean {
  *   query-side tokens agree.
  * - Other non-Latin scripts (Hangul, Cyrillic, Greek, Arabic, ...) are kept
  *   as whole words instead of being dropped by the English splitter.
- * - Legacy Latin content tokenizes exactly like the stock English tokenizer.
+ * - Legacy Latin content tokenizes exactly like the stock English tokenizer;
+ *   content with other characters keeps every stock token and additionally
+ *   indexes non-ASCII words whole (e.g. "über" adds "über" beside "ber").
  */
 export function createCjkCapableTokenizer(oramaModule: OramaTokenizerComponents): OramaTokenizer {
   const base = oramaModule.components.tokenizer.createTokenizer({ language: "english" });
@@ -61,14 +78,7 @@ export function createCjkCapableTokenizer(oramaModule: OramaTokenizerComponents)
     if (typeof raw !== "string") return [raw];
     const normalized = raw.normalize("NFC");
 
-    let needsUnicodePath = false;
-    for (const ch of normalized) {
-      if (!LEGACY_TOKENIZER_CHAR.test(ch) && !WHITESPACE_CHAR.test(ch) && !COMBINING_MARK.test(ch)) {
-        needsUnicodePath = true;
-        break;
-      }
-    }
-    if (!needsUnicodePath) {
+    if (!containsNonLegacyTokenizerChars(normalized)) {
       return base.tokenize(normalized, "english", prop, withCache);
     }
 
