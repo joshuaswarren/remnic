@@ -9,7 +9,7 @@ import { openLcmDatabase, ensureLcmStateDir } from "../src/lcm/schema.js";
 import { LcmArchive, estimateTokens } from "../src/lcm/archive.js";
 import { LcmDag } from "../src/lcm/dag.js";
 import { LcmSummarizer, type SummarizeFn } from "../src/lcm/summarizer.js";
-import { estimateTokenCount } from "../packages/remnic-core/src/token-estimate.js";
+import { estimateTokenCount } from "@remnic/core/token-estimate";
 import { assembleCompressedHistory } from "../src/lcm/recall.js";
 
 function createTempDir(): string {

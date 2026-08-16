@@ -720,8 +720,9 @@ test("expandContext preserves the final message at the smallest positive budget"
     path.join(os.tmpdir(), "engram-lcm-expand-minimum-budget-"),
   );
 
+  let engine: LcmEngine | undefined;
   try {
-    const engine = new LcmEngine(
+    engine = new LcmEngine(
       createPluginConfig(memoryDir),
       async () => "summary",
     );
@@ -750,6 +751,7 @@ test("expandContext preserves the final message at the smallest positive budget"
       expanded.reduce((sum, message) => sum + estimateTokenCount(message.content), 0) <= 1,
     );
   } finally {
+    engine?.close();
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
