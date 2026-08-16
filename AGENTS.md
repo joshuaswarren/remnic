@@ -229,8 +229,10 @@ Set command deadlines before you start long checks:
 | --- | ---: |
 | `npm run preflight:quick` | 900s |
 | `npm run test:entity-hardening` | 900s |
+| `npm run test:file <path>` | 300s |
 | Full test suites | 1800s |
 | Builds | 1800s |
+Use `npm run test:file <path>` for targeted testing without running the full root suite.
 
 Merge with `gh pr merge <number> --squash`. Do not add `--delete-branch` when
 `main` is checked out in another worktree. Delete the remote branch explicitly:
