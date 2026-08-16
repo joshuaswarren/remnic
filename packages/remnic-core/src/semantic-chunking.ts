@@ -6,7 +6,13 @@
  * natural topic boundaries, producing more coherent chunks.
  */
 
-import { chunkContent, type Chunk, type ChunkResult } from "./chunking.js";
+import {
+  chunkContent,
+  joinSentences,
+  splitSentences,
+  type Chunk,
+  type ChunkResult,
+} from "./chunking.js";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -177,50 +183,6 @@ export function findLocalMinima(
 }
 
 // ---------------------------------------------------------------------------
-// Sentence tokenizer
-// ---------------------------------------------------------------------------
-
-/**
- * Split text into sentences at punctuation boundaries.
- * Preserves punctuation with the preceding sentence.
- */
-function splitSentences(text: string): string[] {
-  // Linear character scan instead of a regex. Every regex form of this split is
-  // either polynomial (CodeQL js/polynomial-redos) or — once bounded/anchored to
-  // satisfy CodeQL — mishandles long runs or interior punctuation (a global
-  // match drops a skipped prefix; a sticky match stops at the first non-boundary
-  // `.`, e.g. "v1.2.3" / "example.com", returning the whole document as one
-  // sentence and bypassing chunking). The scan is O(n), drops nothing, and
-  // handles interior punctuation correctly; normal prose splits identically to
-  // the previous /[^.!?]*[.!?]+(?:\s+|$)/g form.
-  const sentences: string[] = [];
-  let start = 0;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (ch !== "." && ch !== "!" && ch !== "?") continue;
-    let end = i;
-    while (end + 1 < text.length) {
-      const n = text[end + 1];
-      if (n !== "." && n !== "!" && n !== "?") break;
-      end++;
-    }
-    const after = text[end + 1];
-    // A real boundary only if the terminator run ends the string or is followed
-    // by whitespace. Interior punctuation (no following whitespace) is left in
-    // place and the scan continues.
-    if (after === undefined || /\s/.test(after)) {
-      const sentence = text.slice(start, end + 1).trim();
-      if (sentence.length > 0) sentences.push(sentence);
-      start = end + 1;
-    }
-    i = end;
-  }
-  if (start < text.length) {
-    const remaining = text.slice(start).trim();
-    if (remaining.length > 0) sentences.push(remaining);
-  }
-  return sentences;
-}
 
 // ---------------------------------------------------------------------------
 // Token estimation
@@ -316,7 +278,7 @@ function mergeShortSegments(
 
   for (let i = 0; i < segments.length; i++) {
     buffer = [...buffer, ...segments[i]];
-    const tokenCount = estimateTokens(buffer.join(" "));
+    const tokenCount = estimateTokens(joinSentences(buffer));
 
     if (tokenCount >= minTokens || i === segments.length - 1) {
       merged.push(buffer);
@@ -344,7 +306,7 @@ function splitLongSegment(
   maxTokens: number,
   targetTokens: number,
 ): SemanticChunk[] {
-  const text = segment.join(" ");
+  const text = joinSentences(segment);
   // Cap targetTokens to maxTokens so recursive splitting never produces
   // segments larger than the configured maximum (Finding 2, PR #420).
   const cappedTarget = Math.min(targetTokens, maxTokens);
@@ -511,7 +473,7 @@ export async function semanticChunkContent(
 
   for (let segIdx = 0; segIdx < segments.length; segIdx++) {
     const segment = segments[segIdx];
-    const segText = segment.join(" ");
+    const segText = joinSentences(segment);
     const segTokens = estimateTokens(segText);
 
     if (segTokens > cfg.maxTokens) {
