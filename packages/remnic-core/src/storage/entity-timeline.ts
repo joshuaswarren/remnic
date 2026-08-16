@@ -284,10 +284,15 @@ export function normalizeStructuredSectionFactsWithOrigins(
   const seen = new Set<string>();
   for (const [index, fact] of facts.entries()) {
     const normalized = normalizeEntitySectionFact(fact);
-    if (!normalized || seen.has(normalized)) continue;
-    seen.add(normalized);
+    if (!normalized) continue;
+    const existingIndex = normalizedFacts.indexOf(normalized);
+    const origin = factOrigins?.[index] ?? defaultOrigin;
+    if (existingIndex >= 0) {
+      if (origins[existingIndex] !== origin) origins[existingIndex] = undefined;
+      continue;
+    }
     normalizedFacts.push(normalized);
-    origins.push(factOrigins?.[index] ?? defaultOrigin);
+    origins.push(origin);
   }
   return {
     facts: normalizedFacts,
@@ -355,9 +360,11 @@ function parseEntityStructuredSectionFacts(
     }
     if (line.startsWith("- ")) {
       flushCurrentBlock();
-      const parsed = parseEntityTimelineBullet(line.slice(2).trim(), "");
-      currentBlock = [parsed?.text ?? line.slice(2).trim()];
-      currentOrigin = parsed?.origin;
+      const bullet = line.slice(2).trim();
+      const end = bullet.startsWith("[origin=") ? findEntityTimelineTokenEnd(bullet) : -1;
+      const token = end >= 0 ? bullet.slice(8, end) : "";
+      currentBlock = [end >= 0 ? bullet.slice(end + 1).trimStart() : bullet];
+      currentOrigin = end >= 0 ? unescapeEntityTimelineMetadataValue(token) : undefined;
       continue;
     }
     currentBlock.push(line);

@@ -37,10 +37,13 @@ export function buildOriginStructuredSections(
 ): EntityOriginStructuredSection[] {
   return sections
     .map((section) => {
-      const entries = recallFacts(section).map((text) => ({
-        text,
-        origin: section.factOrigins?.[section.facts.indexOf(text)],
-      }));
+      const entries = recallFacts(section).map((text) => {
+        const sourceIndex = section.facts.indexOf(text);
+        const beliefIndex = sourceIndex >= 0
+          ? sourceIndex
+          : section.facts.findIndex((fact) => fact.endsWith(`; ${text}`));
+        return { text, origin: section.factOrigins?.[beliefIndex] };
+      });
       const result = sanitizeOriginatedFacts(entries, sanitize, compact, false);
       return {
         key: section.key,

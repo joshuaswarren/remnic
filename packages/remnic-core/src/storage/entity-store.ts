@@ -307,9 +307,11 @@ export class EntityStore {
         });
         continue;
       }
+      const existingOrigins = existingSection.facts.map((_, index) => existingSection.factOrigins?.[index]);
+      const incomingOrigins = normalized.facts.map((_, index) => normalized.factOrigins?.[index]);
       const merged = normalizeStructuredSectionFactsWithOrigins(
         [...existingSection.facts, ...normalized.facts],
-        [...(existingSection.factOrigins ?? []), ...(normalized.factOrigins ?? [])],
+        [...existingOrigins, ...incomingOrigins],
       );
       existingSection.facts = merged.facts;
       existingSection.factOrigins = merged.factOrigins;
