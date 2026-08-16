@@ -232,6 +232,7 @@ Set command deadlines before you start long checks:
 | `npm run test:file <path>` | 300s |
 | Full test suites | 1800s |
 | Builds | 1800s |
+
 Use `npm run test:file <path>` for targeted testing without running the full root suite.
 
 Merge with `gh pr merge <number> --squash`. Do not add `--delete-branch` when

@@ -1,11 +1,16 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { ensurePackageBuild } from "./build-staleness.mjs";
 import { appendNodeOption } from "./root-test-runner-env.mjs";
+import {
+  loadNativeManifest,
+  partitionNativeDependent,
+  probeBetterSqlite3,
+} from "./root-test-runner-lib.mjs";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -55,6 +60,34 @@ ensurePackageBuild(
     join(repoRoot, "packages", "bench", "tsconfig.json"),
   ],
 );
+let filesToRun = files;
+let nativeProbe = probeBetterSqlite3(repoRoot);
+if (!nativeProbe.ok) {
+  console.warn(`[test-file] better-sqlite3 binding unavailable: ${nativeProbe.reason}`);
+  const heal = spawnSync(process.execPath, [join(repoRoot, "scripts", "ensure-better-sqlite3.mjs")], {
+    cwd: repoRoot,
+    stdio: "inherit",
+    env: process.env,
+  });
+  if (heal.status === 0) nativeProbe = probeBetterSqlite3(repoRoot);
+}
+
+if (!nativeProbe.ok) {
+  if (process.env.REMNIC_REQUIRE_NATIVE_TESTS === "1") {
+    console.error(
+      `[test-file] ERROR: better-sqlite3 binding unavailable (${nativeProbe.reason}) and ` +
+        "REMNIC_REQUIRE_NATIVE_TESTS=1 forbids skipping native-dependent tests.",
+    );
+    process.exit(1);
+  }
+  const manifest = loadNativeManifest(join(repoRoot, "scripts", "native-dependent-tests.json"));
+  const relativeFiles = files.map((file) => relative(repoRoot, file).split(sep).join("/"));
+  const selectedManifest = manifest.files.filter((entry) => relativeFiles.includes(entry));
+  const { run, excluded } = partitionNativeDependent(relativeFiles, selectedManifest);
+  filesToRun = files.filter((_, index) => run.includes(relativeFiles[index]));
+  for (const file of excluded) console.warn(`[test-file] SKIP ${file}`);
+  if (filesToRun.length === 0) process.exit(0);
+}
 
 const testRunScratchDir = mkdtempSync(join(tmpdir(), "rt-"));
 let testRunScratchCleaned = false;
@@ -84,7 +117,7 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
 const tsxBin = process.platform === "win32" ? "tsx.cmd" : "tsx";
 const workspaceBinDir = join(repoRoot, "node_modules", ".bin");
 const result = await new Promise((resolve) => {
-  testProcess = spawn(tsxBin, ["--test", ...runnerArgs, ...files], {
+  testProcess = spawn(tsxBin, ["--test", ...runnerArgs, ...filesToRun], {
     cwd: repoRoot,
     env: {
       ...process.env,
@@ -95,6 +128,7 @@ const result = await new Promise((resolve) => {
       TEMP: testRunScratchDir,
     },
     stdio: "inherit",
+    shell: process.platform === "win32",
   });
   testProcess.on("error", (error) => resolve({ error }));
   testProcess.on("close", (status, signal) => resolve({ status, signal }));
@@ -106,8 +140,7 @@ if (result.error) {
 }
 
 if (result.signal) {
-  process.removeAllListeners(result.signal);
-  process.kill(process.pid, result.signal);
+  process.exitCode = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }[result.signal] ?? 1;
+} else {
+  process.exitCode = result.status ?? 1;
 }
-
-process.exit(result.status ?? 1);
