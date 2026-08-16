@@ -14,26 +14,66 @@
 /** Never-matching header pattern for callers with no platform envelope. */
 const NO_PLATFORM_HEADER = /$a/;
 
-export type UserMessageCleaner = (content: string) => string;
+const WRAPPER_OPEN = "<supermemory-context";
+const WRAPPER_CLOSE = "</supermemory-context>";
+const WRAPPER_MAX_ATTRIBUTE_CHARS = 256;
+
+function isWhitespaceCode(code: number): boolean {
+  return code === 32 || (code >= 9 && code <= 13);
+}
+
+/**
+ * Remove `<supermemory-context …>…</supermemory-context>` wrappers. A
+ * single left-to-right scan with string searches — no regex on uncontrolled
+ * input — so adversarial repeats of the tag literal stay linear (CodeQL
+ * redos rule, issue #2331 review). Malformed or oversized tag heads are
+ * treated as plain text, and an unterminated wrapper preserves the rest.
+ */
+function stripMemoryWrappers(content: string): string {
+  let out = "";
+  let cursor = 0;
+  for (;;) {
+    const open = content.indexOf(WRAPPER_OPEN, cursor);
+    if (open === -1) return out + content.slice(cursor);
+    const headEnd = content.indexOf(">", open);
+    if (headEnd === -1) return out + content.slice(cursor);
+    const head = content.slice(open + WRAPPER_OPEN.length, headEnd);
+    const headIsPlain =
+      head.length > 0 &&
+      (head.length > WRAPPER_MAX_ATTRIBUTE_CHARS + 1 || headIsNotAttributeRun(head));
+    if (head !== "" && headIsPlain) {
+      // Not a wrapper open tag: keep the literal and continue after it.
+      out += content.slice(cursor, open + WRAPPER_OPEN.length);
+      cursor = open + WRAPPER_OPEN.length;
+      continue;
+    }
+    const close = content.indexOf(WRAPPER_CLOSE, headEnd);
+    if (close === -1) return out + content.slice(cursor);
+    let after = close + WRAPPER_CLOSE.length;
+    while (after < content.length && isWhitespaceCode(content.charCodeAt(after))) {
+      after += 1;
+    }
+    cursor = after;
+  }
+}
+
+/** True when the tag-head text cannot be a whitespace-led attribute run. */
+function headIsNotAttributeRun(head: string): boolean {
+  if (head.charCodeAt(0) !== 32 && !(head.charCodeAt(0) >= 9 && head.charCodeAt(0) <= 13)) {
+    return true;
+  }
+  for (let index = 0; index < head.length; index += 1) {
+    const code = head.charCodeAt(index);
+    if (code === 60 || code === 62) return true;
+  }
+  return false;
+}
 
 export function cleanUserMessageWithPattern(
   content: string,
   platformHeaderPattern: RegExp,
 ): string {
-  let cleaned = content;
-  // Remove structured host-injected memory wrappers wherever the platform
-  // emits them; free-form markdown stripping below is intentionally anchored.
-  // Every quantifier is bounded — the attribute run (256 chars, no angle
-  // brackets) and the wrapper content (64 KiB) — so repeated
-  // `<supermemory-context` literals cannot drive polynomial backtracking on
-  // any input: per start position the scan cost is constant-bounded
-  // (CodeQL redos rule). Wrappers larger than the bound are host bugs, not
-  // user content, and are preserved as plain text.
-  cleaned = cleaned.replace(
-    /<supermemory-context(?:\s[^<>]{0,256})?>[\s\S]{0,65536}?<\/supermemory-context>\s*/gi,
-    "",
-  );
-
+  let cleaned = stripMemoryWrappers(content);
   const platformHeader = cleaned.match(platformHeaderPattern);
   const hasPlatformHeader = platformHeader !== null;
   if (platformHeader) {
