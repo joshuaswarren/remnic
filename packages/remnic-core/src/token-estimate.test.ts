@@ -32,3 +32,7 @@ test("counts unlisted letters and regional indicators conservatively", () => {
   assert.equal(estimateTokenCount("ქართული"), 7);
   assert.equal(estimateTokenCount("🇺🇸🇬🇧"), 4);
 });
+
+test("counts non-ASCII punctuation with token-dense text", () => {
+  assert.equal(estimateTokenCount("日。日。日。日。"), 8);
+});
