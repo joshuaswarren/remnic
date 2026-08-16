@@ -577,7 +577,7 @@ export class LcmEngine {
     const lastMsg = messages[messages.length - 1];
     const reservedLastTokens = Math.min(
       estimateTokenCount(lastMsg.content),
-      Math.floor(tokenBudget * 0.3),
+      Math.max(1, Math.floor(tokenBudget * 0.3)),
     );
     let remainingTokens = tokenBudget - reservedLastTokens;
 

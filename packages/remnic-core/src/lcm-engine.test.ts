@@ -715,6 +715,44 @@ test("expandContext applies token budgets to wide-script messages", async () => 
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+test("expandContext preserves the final message at the smallest positive budget", async () => {
+  const memoryDir = await mkdtemp(
+    path.join(os.tmpdir(), "engram-lcm-expand-minimum-budget-"),
+  );
+
+  try {
+    const engine = new LcmEngine(
+      createPluginConfig(memoryDir),
+      async () => "summary",
+    );
+    await engine.ensureInitialized();
+
+    const db = openLcmDatabase(memoryDir);
+    try {
+      const archive = new LcmArchive(db);
+      archive.appendMessages("session-minimum-budget", [
+        { turnIndex: 1, role: "user", content: "first message" },
+        { turnIndex: 2, role: "assistant", content: "最後のメッセージ" },
+      ]);
+    } finally {
+      db.close();
+    }
+
+    const expanded = await engine.expandContext(
+      "session-minimum-budget",
+      1,
+      2,
+      1,
+    );
+
+    assert.equal(expanded.at(-1)?.turn_index, 2);
+    assert.ok(
+      expanded.reduce((sum, message) => sum + estimateTokenCount(message.content), 0) <= 1,
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
 
 test("assembleRecallWithTrace preserves text and reports selected summary metadata", async () => {
   const memoryDir = await mkdtemp(
