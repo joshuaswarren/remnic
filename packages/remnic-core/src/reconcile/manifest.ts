@@ -23,6 +23,13 @@ export interface ReconcileMemoryIdentity {
   id: string;
   category: string;
   contentHash: string;
+  /**
+   * Recovered current-normalizer identities for a record whose persisted hash
+   * is ambiguous under the legacy normalizer (issue #2367). The persisted
+   * hash stays primary; these participate in duplicate bucketing so a
+   * replica carrying the current form of the same fact still collapses.
+   */
+  contentHashAliases?: readonly string[];
   normalizerVersion?: number;
   status: MemoryStatus;
 }
@@ -88,16 +95,32 @@ function parsedMemoryIdentity(
   const legacyMatch = [...candidates].reverse().find(
     (content) => computeLegacyContentHash(content) === storedHash
   );
-  const contentHash = currentMatch
-    ? ContentHashIndex.computeHash(currentMatch)
-    : legacyMatch
-      ? ContentHashIndex.computeHash(legacyMatch)
-      : storedHash ?? bodyHash;
+  let contentHash: string;
+  let contentHashAliases: string[] | undefined;
+  if (currentMatch) {
+    contentHash = ContentHashIndex.computeHash(currentMatch);
+  } else if (legacyMatch && normalizeLegacyContent(legacyMatch).length > 0) {
+    // A non-empty legacy equality is ambiguous (issue #2367): the persisted
+    // hash may be an explicit contentHashSource identity that merely collides
+    // with the body's ASCII skeleton under the lossy legacy normalizer, and
+    // nothing in the record proves which it is. Keep the persisted hash as
+    // the primary identity and expose the recovered current identity as an
+    // alias so replicas carrying either form still collapse.
+    contentHash = storedHash ?? bodyHash;
+    const recovered = ContentHashIndex.computeHash(legacyMatch);
+    if (recovered !== contentHash) contentHashAliases = [recovered];
+  } else {
+    // An EMPTY legacy skeleton identifies nothing (every non-ASCII body maps
+    // to it), so preserving it would collapse unrelated records. Recovering
+    // the current identity here is repair, not replacement.
+    contentHash = legacyMatch ? ContentHashIndex.computeHash(legacyMatch) : storedHash ?? bodyHash;
+  }
 
   return {
     id: parsed.frontmatter.id,
     category: parsed.frontmatter.category,
     contentHash,
+    ...(contentHashAliases ? { contentHashAliases } : {}),
     normalizerVersion: CONTENT_HASH_NORMALIZER_VERSION,
     status: inferMemoryStatus(parsed.frontmatter, filePath),
   };
@@ -168,7 +191,7 @@ function activeFactByPath(manifest: ReconcileManifest | undefined): Map<string, 
 }
 
 function memoryIdentityHashes(memory: ReconcileMemoryIdentity): string[] {
-  return [memory.contentHash];
+  return [memory.contentHash, ...(memory.contentHashAliases ?? [])];
 }
 
 function contentHashRows(

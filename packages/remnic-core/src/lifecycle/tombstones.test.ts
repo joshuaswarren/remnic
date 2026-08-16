@@ -829,6 +829,93 @@ describe("TombstoneStore — revocation supersedes tombstone", () => {
   });
 });
 
+describe("TombstoneStore — rebuild identity preservation (issue #2367)", () => {
+  it("does not displace an explicit contentHashSource that collides with a CJK body under the legacy normalizer", async () => {
+    const env = await makeStore("default");
+    // Two distinct CJK-only strings collide under the lossy legacy
+    // normalizer (both skeletons are empty), so a persisted legacy hash of
+    // the source numerically equals the legacy hash of the body.
+    const source = "利用者は紅茶を好む。";
+    const body = "利用者は珈琲を好む。";
+    const unrelated = "利用者は抹茶を好む。";
+    const persistedHash = computeLegacyContentHash(source);
+    assert.equal(persistedHash, computeLegacyContentHash(body));
+    assert.notEqual(computeHash(source), computeHash(body));
+
+    await env.store.rebuild([
+      {
+        memoryId: "fact-cjk-override",
+        rawContent: body,
+        contentHash: persistedHash,
+        reason: "correction",
+        createdBy: "user_correction",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    ]);
+
+    const entry = env.store.snapshot().find((e) => e.kind === "tombstone");
+    assert.ok(entry);
+    assert.equal(entry.contentHash, persistedHash);
+    assert.equal(entry.currentContentHashAlias, computeHash(body));
+    // The body stays blocked through the alias; unrelated CJK bodies do not.
+    assert.equal(
+      env.store.lookup({ namespace: "default", contentHash: computeHash(body) })?.matchedTier,
+      "exact",
+    );
+    assert.equal(
+      env.store.lookup({ namespace: "default", contentHash: computeHash(unrelated) }),
+      null,
+    );
+  });
+
+  it("preserves a persisted hash whose ASCII skeleton collides with an accented body", async () => {
+    const env = await makeStore("default");
+    const body = "The user prefers café.";
+    await env.store.rebuild([
+      {
+        memoryId: "fact-accented-override",
+        rawContent: body,
+        contentHash: computeLegacyContentHash(body),
+        reason: "correction",
+        createdBy: "user_correction",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    ]);
+    const entry = env.store.snapshot().find((e) => e.kind === "tombstone");
+    assert.ok(entry);
+    // The legacy equality is ambiguous (the skeleton "the user prefers caf"
+    // is shared with distinct strings), so the persisted identity is kept and
+    // the current body hash rides along as the alias.
+    assert.equal(entry.contentHash, computeLegacyContentHash(body));
+    assert.equal(entry.currentContentHashAlias, computeHash(body));
+    assert.equal(
+      env.store.lookup({ namespace: "default", contentHash: computeHash(body) })?.matchedTier,
+      "exact",
+    );
+  });
+
+  it("keeps a single identity when the persisted hash already equals the current body hash", async () => {
+    const env = await makeStore("default");
+    const body = "The cache uses Redis.";
+    await env.store.rebuild([
+      {
+        memoryId: "fact-unambiguous",
+        rawContent: body,
+        contentHash: computeLegacyContentHash(body),
+        reason: "correction",
+        createdBy: "user_correction",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    ]);
+    const entry = env.store.snapshot().find((e) => e.kind === "tombstone");
+    assert.ok(entry);
+    // Pure-ASCII body: legacy and current normalizers agree, so the legacy
+    // hash equals the current hash and there is nothing to preserve.
+    assert.equal(entry.contentHash, computeHash(body));
+    assert.equal(entry.currentContentHashAlias, undefined);
+  });
+});
+
 describe("TombstoneStore — rebuild equivalence", () => {
   it("rebuild from a fixture corpus reproduces identical lookup decisions", async () => {
     const env = await makeStore("default");

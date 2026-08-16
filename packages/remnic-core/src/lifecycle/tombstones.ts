@@ -41,7 +41,7 @@
 // ---------------------------------------------------------------------------
 
 import { serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
-import { computeLegacyContentHash } from "../content-hash.js";
+import { computeLegacyContentHash, isUnambiguousLegacyContentHash } from "../content-hash.js";
 
 /** Why a tombstone was emitted. */
 export type TombstoneReason =
@@ -896,10 +896,19 @@ export class TombstoneStore {
           const currentHash = this.options.hashContent(m.rawContent);
           const currentNormalizedText = this.options.normalizeText(m.rawContent);
           const persistedHash = m.contentHash;
+          // A persisted hash equal to the body's LEGACY hash only proves the
+          // record predates the Unicode normalizer when that legacy hash is
+          // unambiguous. When the legacy normalizer is lossy for this body
+          // (CJK-only text, or any body whose ASCII skeleton collides with a
+          // distinct contentHashSource), the equality cannot distinguish "old
+          // body hash" from "explicit source identity" — replacing the
+          // persisted hash would displace a live identity (issue #2367).
+          // Preserving keeps BOTH keys: contentHash stays the persisted
+          // identity and currentContentHashAlias still blocks the body.
           const preserveOverride =
             persistedHash !== undefined &&
             persistedHash !== currentHash &&
-            persistedHash !== computeLegacyContentHash(m.rawContent);
+            !isUnambiguousLegacyContentHash(m.rawContent, persistedHash, currentNormalizedText);
           return {
             id:
               existingBySource.get(`${m.memoryId}\u{0000}${m.supersessionKey ?? ""}`) ??
