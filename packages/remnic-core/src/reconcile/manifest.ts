@@ -18,6 +18,15 @@ import {
 export const RECONCILE_MANIFEST_FORMAT = "remnic-reconcile-manifest";
 export const RECONCILE_MANIFEST_SCHEMA_VERSION = 1;
 const CONTENT_HASH_NORMALIZER_VERSION = 4;
+/**
+ * Version of the identity-resolution LOGIC (alias recovery, candidate
+ * ordering), independent of the content normalizer: a cached manifest entry
+ * written before an identity-resolution change carries an older value and is
+ * reparsed even when its normalizerVersion still matches (issue #2367
+ * review round 2). Bump when parsedMemoryIdentity's output shape or
+ * semantics change.
+ */
+const IDENTITY_RESOLUTION_VERSION = 2;
 
 export interface ReconcileMemoryIdentity {
   id: string;
@@ -30,7 +39,9 @@ export interface ReconcileMemoryIdentity {
    * replica carrying the current form of the same fact still collapses.
    */
   contentHashAliases?: readonly string[];
+  /** See IDENTITY_RESOLUTION_VERSION; absent on pre-versioning cache entries. */
   normalizerVersion?: number;
+  identityResolutionVersion?: number;
   status: MemoryStatus;
 }
 
@@ -122,6 +133,7 @@ function parsedMemoryIdentity(
     contentHash,
     ...(contentHashAliases ? { contentHashAliases } : {}),
     normalizerVersion: CONTENT_HASH_NORMALIZER_VERSION,
+    identityResolutionVersion: IDENTITY_RESOLUTION_VERSION,
     status: inferMemoryStatus(parsed.frontmatter, filePath),
   };
 }
@@ -159,7 +171,8 @@ export async function buildReconcileManifest(options: BuildReconcileManifestOpti
     if (
       cached?.sha256.toLowerCase() === file.sha256.toLowerCase() &&
       (cached.memory === undefined ||
-        cached.memory.normalizerVersion === CONTENT_HASH_NORMALIZER_VERSION)
+        (cached.memory.normalizerVersion === CONTENT_HASH_NORMALIZER_VERSION &&
+          cached.memory.identityResolutionVersion === IDENTITY_RESOLUTION_VERSION))
     ) {
       files.push({ ...file, ...(cached.memory ? { memory: cached.memory } : {}) });
       continue;

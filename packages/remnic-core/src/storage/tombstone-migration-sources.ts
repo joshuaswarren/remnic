@@ -43,35 +43,44 @@ export function createTombstoneMigrationSourceContents(
     sourceContentsByIdPromise = undefined;
   };
   return async (sourceMemoryIds) => {
-    dropCachesIfLedgerChanged();
-    const requested = new Set(sourceMemoryIds);
-    const sourcePaths = await (sourcePathsPromise ??= deps.collectTombstoneMigrationPaths());
-    const directPaths = sourcePaths.filter((filePath) =>
-      requested.has(path.basename(filePath, ".md"))
-    );
-    const contents = new Map<string, readonly string[]>();
-    for (const memory of await deps.readParsedMemoriesFromPaths(directPaths, 50)) {
-      const id = memory.frontmatter.id;
-      if (requested.has(id) && !contents.has(id)) {
-        contents.set(id, deps.storedContentIdentityCandidates(memory.content));
-      }
-    }
-    if (contents.size === requested.size) return contents;
-    sourceContentsByIdPromise ??= (async () => {
-      const allContents = new Map<string, readonly string[]>();
-      for (const memory of await deps.readParsedMemoriesFromPaths(sourcePaths, 50)) {
+    for (;;) {
+      dropCachesIfLedgerChanged();
+      // In-flight fills are bound to the ledger revision they started
+      // against: if the ledger advances while a fill awaits, restart
+      // against the fresh revision instead of publishing a cache built
+      // from a stale path snapshot (issue #2367 review round 2).
+      const revision = ledgerMtimeMs;
+      const requested = new Set(sourceMemoryIds);
+      const sourcePaths = await (sourcePathsPromise ??= deps.collectTombstoneMigrationPaths());
+      if (ledgerMtimeMs !== revision) continue;
+      const directPaths = sourcePaths.filter((filePath) =>
+        requested.has(path.basename(filePath, ".md"))
+      );
+      const contents = new Map<string, readonly string[]>();
+      for (const memory of await deps.readParsedMemoriesFromPaths(directPaths, 50)) {
         const id = memory.frontmatter.id;
-        if (!allContents.has(id)) {
-          allContents.set(id, deps.storedContentIdentityCandidates(memory.content));
+        if (requested.has(id) && !contents.has(id)) {
+          contents.set(id, deps.storedContentIdentityCandidates(memory.content));
         }
       }
-      return allContents;
-    })();
-    const allContents = await sourceContentsByIdPromise;
-    for (const id of requested) {
-      const content = allContents.get(id);
-      if (content !== undefined) contents.set(id, content);
+      if (contents.size === requested.size) return contents;
+      const fill = (sourceContentsByIdPromise ??= (async () => {
+        const allContents = new Map<string, readonly string[]>();
+        for (const memory of await deps.readParsedMemoriesFromPaths(sourcePaths, 50)) {
+          const id = memory.frontmatter.id;
+          if (!allContents.has(id)) {
+            allContents.set(id, deps.storedContentIdentityCandidates(memory.content));
+          }
+        }
+        return allContents;
+      })());
+      const allContents = await fill;
+      if (ledgerMtimeMs !== revision) continue;
+      for (const id of requested) {
+        const content = allContents.get(id);
+        if (content !== undefined) contents.set(id, content);
+      }
+      return contents;
     }
-    return contents;
   };
 }

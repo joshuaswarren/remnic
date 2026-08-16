@@ -50,6 +50,7 @@ test("reconcile manifest keeps file identity separate from canonical semantic id
     category: "fact",
     contentHash: semanticHash,
     normalizerVersion: 4,
+    identityResolutionVersion: 2,
     status: "active",
   });
 });
@@ -107,6 +108,42 @@ test("reconcile manifest reparses cached pre-version identities after Unicode mi
     manifest.files[0]?.memory?.contentHash,
     legacyHash,
   );
+  assert.deepEqual(manifest.files[0]?.memory?.contentHashAliases, [
+    ContentHashIndex.computeHash(content),
+  ]);
+});
+
+test("reconcile manifest reparses cached identities lacking the identity-resolution version", async () => {
+  const content = "The user prefers café.";
+  const legacyHash = computeLegacyContentHash(content);
+  const serialized = memoryFile({ id: "legacy-identity-version", content, contentHash: legacyHash });
+  const file = { path: "facts/legacy-identity-version.md", sha256: fileHash(serialized) };
+  let reads = 0;
+
+  const manifest = await buildReconcileManifest({
+    files: [file],
+    parseMemory: parseFrontmatter,
+    readFile: async () => {
+      reads += 1;
+      return serialized;
+    },
+    // Same normalizerVersion, but written before identity-resolution
+    // versioning existed: the entry carries no aliases and must NOT be
+    // reused (issue #2367 review round 2).
+    cachedFiles: [{
+      ...file,
+      memory: {
+        id: "legacy-identity-version",
+        category: "fact",
+        contentHash: legacyHash,
+        normalizerVersion: 4,
+        status: "active",
+      },
+    }],
+  });
+
+  assert.equal(reads, 1);
+  assert.equal(manifest.files[0]?.memory?.identityResolutionVersion, 2);
   assert.deepEqual(manifest.files[0]?.memory?.contentHashAliases, [
     ContentHashIndex.computeHash(content),
   ]);
