@@ -47,6 +47,18 @@ test("formatForRecall returns no content for zero or undersized budgets", () => 
   assert.equal(manager.formatForRecall(entries, 0), "");
   assert.equal(manager.formatForRecall(entries, 10), "");
 });
+test("formatForRecall does not fall back to stale older entries", () => {
+  const manager = new TranscriptManager(makeConfig("/tmp/remnic-transcript-newest-budget"));
+  const entries = [
+    entryAt("2026-06-29T12:00:00.000Z", "agent:test-agent:main", "older"),
+    {
+      ...entryAt("2026-06-29T12:00:00.000Z", "agent:test-agent:main", "newest"),
+      content: "日本語".repeat(100),
+    },
+  ];
+
+  assert.equal(manager.formatForRecall(entries, 23), "");
+});
 /**
  * Freeze `new Date()` / `Date.now()` to a fixed instant for the duration of `fn`.
  *

@@ -1118,7 +1118,7 @@ export class TranscriptManager {
       const candidate = [...lines, entry, ...selectedEntries, ""].join("\n");
       if (estimateTokenCount(candidate) > maxTokenBudget) {
         if (selectedEntries.length > 0) break;
-        continue;
+        return "";
       }
 
       selectedEntries.unshift(entry);
