@@ -84,7 +84,10 @@ test("seeds worktree discipline when the source napkin is absent", () => {
   const branch = `test/dev-worktree-${process.pid}-fresh-napkin`;
   const sourceNapkin = path.join(repoRoot, ".claude", "napkin.md");
   const backupNapkin = `${sourceNapkin}.test-backup`;
-  renameSync(sourceNapkin, backupNapkin);
+  const sourceNapkinExisted = existsSync(sourceNapkin);
+  if (sourceNapkinExisted) {
+    renameSync(sourceNapkin, backupNapkin);
+  }
 
   try {
     const result = runScript([worktreePath, branch, "HEAD"], {
@@ -96,9 +99,14 @@ test("seeds worktree discipline when the source napkin is absent", () => {
     assert.ok(readFileSync(path.join(worktreePath, ".claude", "napkin.md"), "utf8").includes(`## Worktree Discipline\n${worktreeDiscipline}`));
     assert.ok(result.stdout.includes(`Worktree discipline: ${worktreeDiscipline}`));
   } finally {
-    cleanupWorktree(worktreePath, branch);
-    renameSync(backupNapkin, sourceNapkin);
-    rmSync(fixture.root, { recursive: true, force: true });
+    try {
+      cleanupWorktree(worktreePath, branch);
+    } finally {
+      if (sourceNapkinExisted) {
+        renameSync(backupNapkin, sourceNapkin);
+      }
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
   }
 });
 
