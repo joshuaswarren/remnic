@@ -122,6 +122,29 @@ test("built-in markers elide a Korean span through conversation end", () => {
   assert.equal(result.droppedSegments, 1);
 });
 
+test("built-in start markers cover every documented language", () => {
+  const expected = [
+    "off the record",
+    "fuera de registro",
+    "extraoficialmente",
+    "fora de registro",
+    "fora do registro",
+    "hors micro",
+    "nicht fürs protokoll",
+    "nicht für das protokoll",
+    "fuori registro",
+    "オフレコ",
+    "오프더레코드",
+    "不要记录",
+    "не для протокола",
+    "بدون تسجيل",
+  ];
+  for (const phrase of expected) {
+    const result = applyOffTheRecord(conversation([phrase, "Private detail."]));
+    assert.equal(result.droppedSegments, 1, `marker did not match: ${phrase}`);
+  }
+});
+
 test("configured markers extend the built-in phrases", () => {
   const markers = compileOffTheRecordMarkers({
     start: ["poza protokołem"],
@@ -179,6 +202,27 @@ test("a Latin marker phrase never matches inside a longer word", () => {
   );
   assert.equal(result.droppedSegments, 0);
   assert.equal(result.conversation.segments.length, 2);
+});
+test("a Latin marker matches before an attached Hangul particle", () => {
+  const result = applyOffTheRecord(
+    conversation(["Keep this off the record입니다", "Private detail."]),
+  );
+  assert.equal(result.droppedSegments, 1);
+  assert.equal(result.conversation.segments[0]?.text, "[off the record — segment elided]");
+});
+
+test("a Latin marker matches before attached Japanese text", () => {
+  const result = applyOffTheRecord(
+    conversation(["Keep this off the recordです", "Private detail."]),
+  );
+  assert.equal(result.droppedSegments, 1);
+});
+
+test("a Latin marker matches before attached Han text", () => {
+  const result = applyOffTheRecord(
+    conversation(["Keep this off the record不要", "Private detail."]),
+  );
+  assert.equal(result.droppedSegments, 1);
 });
 
 test("an Arabic marker does not match inside a longer Arabic word", () => {

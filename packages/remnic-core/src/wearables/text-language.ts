@@ -18,25 +18,93 @@ export type ScriptHint =
   | "cyrillic";
 
 /**
- * Whether a phrase edge needs a word boundary is decided per EDGE and per
- * script, because scripts attach material at different ends.
+ * Word boundaries depend on both sides of a phrase edge. Most documented
+ * scripts use spaces or word-like runs consistently, but mixed-script text
+ * can attach a phrase to a word in the adjacent script. Keep this table
+ * directional: it describes the phrase edge first, then adjacent text.
  *
- * Leading edge: guarded for every script that spaces its words, so a
- * marker cannot match at the tail of a longer word — Korean `기록` must
- * not fire inside `신기록`, Arabic `خاص` must not fire inside `أشخاص`.
- * Arabic and Hebrew additionally write single-letter proclitics (`و`,
- * `ف`, `ב`, `ל`) with no space, so their guard admits ONE such letter
- * when that letter itself starts a word: `وبدون تسجيل` still reaches the
- * built-in `بدون تسجيل`.
- *
- * Trailing edge: guarded for the space-delimited scripts, so `بدون تسجيل`
- * does not match inside `بدون تسجيلات`. Hangul is excluded — Korean
- * particles attach to the END of a word, and guarding there would stop
- * `기록을` from matching `기록`.
- *
- * Han and Kana running text has no boundary at either end: requiring one
- * is the bug that made every non-Latin marker unreachable.
+ * Unknown pairs do not get a boundary. The privacy feature must prefer a
+ * match over silently retaining a marked span when script data is uncertain.
  */
+type BoundaryScript =
+  | "latin"
+  | "cyrillic"
+  | "greek"
+  | "arabic"
+  | "hebrew"
+  | "hangul"
+  | "han"
+  | "kana"
+  | "number"
+  | "mark"
+  | "other";
+
+const SCRIPT_SOURCES: Record<BoundaryScript, string> = {
+  latin: "\\p{Script=Latin}",
+  cyrillic: "\\p{Script=Cyrillic}",
+  greek: "\\p{Script=Greek}",
+  arabic: "\\p{Script=Arabic}",
+  hebrew: "\\p{Script=Hebrew}",
+  hangul: "\\p{Script=Hangul}",
+  han: "\\p{Script=Han}",
+  kana: "\\p{Script=Hiragana}\\p{Script=Katakana}",
+  number: "\\p{N}",
+  mark: "\\p{M}",
+  other: "",
+};
+
+const WORD_SCRIPTS: readonly BoundaryScript[] = [
+  "latin",
+  "cyrillic",
+  "greek",
+  "arabic",
+  "hebrew",
+  "hangul",
+  "han",
+  "kana",
+  "number",
+  "mark",
+];
+
+const SCRIPT_PAIRS_THAT_MAY_ABUT_INSIDE_WORD: Record<string, true> = {
+  "latin:hangul": true,
+  "latin:han": true,
+  "latin:kana": true,
+};
+
+function scriptOfCharacter(character: string): BoundaryScript {
+  if (/\p{M}/u.test(character)) return "mark";
+  if (/\p{N}/u.test(character)) return "number";
+  if (/\p{Script=Latin}/u.test(character)) return "latin";
+  if (/\p{Script=Cyrillic}/u.test(character)) return "cyrillic";
+  if (/\p{Script=Greek}/u.test(character)) return "greek";
+  if (/\p{Script=Arabic}/u.test(character)) return "arabic";
+  if (/\p{Script=Hebrew}/u.test(character)) return "hebrew";
+  if (/\p{Script=Hangul}/u.test(character)) return "hangul";
+  if (/\p{Script=Han}/u.test(character)) return "han";
+  if (/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(character)) {
+    return "kana";
+  }
+  return "other";
+}
+
+function boundaryCharacterClass(edge: BoundaryScript): string {
+  return WORD_SCRIPTS.filter(
+    (adjacent) => !SCRIPT_PAIRS_THAT_MAY_ABUT_INSIDE_WORD[`${edge}:${adjacent}`],
+  )
+    .map((adjacent) => SCRIPT_SOURCES[adjacent])
+    .join("");
+}
+
+function boundaryLookbehindFor(edge: BoundaryScript): string {
+  return `(?<![${boundaryCharacterClass(edge)}])`;
+}
+
+function boundaryLookaheadFor(edge: BoundaryScript): string {
+  return `(?![${boundaryCharacterClass(edge)}])`;
+}
+
+/** Phrase edge scripts that use conventional word guards. */
 const PREFIXABLE_EDGE_CHAR =
   /[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Arabic}\p{Script=Hebrew}\p{Script=Hangul}\p{N}]/u;
 const SUFFIXABLE_EDGE_CHAR =
@@ -56,7 +124,6 @@ const PROCLITIC_LETTERS = "وفبكلسהוכלמשב";
  * prefix and elide a span nobody marked.
  */
 const BOUNDARY_LOOKBEHIND = "(?<![\\p{L}\\p{M}\\p{N}])";
-const BOUNDARY_LOOKAHEAD = "(?![\\p{L}\\p{M}\\p{N}])";
 /** Word start, or exactly one word-initial proclitic before the phrase. */
 const PROCLITIC_LOOKBEHIND = `(?:${BOUNDARY_LOOKBEHIND}|(?<=${BOUNDARY_LOOKBEHIND}[${PROCLITIC_LETTERS}]))`;
 
@@ -107,8 +174,8 @@ function escapeRegExp(value: string): string {
  * no usable phrase remains.
  *
  * Internal whitespace matches any whitespace run, so a transcript that
- * breaks a phrase across a line still matches. Letter boundaries are
- * added per edge, and only when that edge is a space-delimited script.
+ * breaks a phrase across a line still matches. Boundaries use the phrase
+ * edge and adjacent-script pair. An attachable pair omits that boundary.
  */
 export function buildPhraseMatcher(
   phrases: readonly string[],
@@ -134,10 +201,11 @@ export function buildPhraseMatcher(
     const lead = PROCLITIC_EDGE_CHAR.test(first)
       ? PROCLITIC_LOOKBEHIND
       : PREFIXABLE_EDGE_CHAR.test(first)
-        ? BOUNDARY_LOOKBEHIND
+        ? boundaryLookbehindFor(scriptOfCharacter(first))
         : "";
-    const tail = SUFFIXABLE_EDGE_CHAR.test(characters[characters.length - 1])
-      ? BOUNDARY_LOOKAHEAD
+    const last = characters[characters.length - 1];
+    const tail = SUFFIXABLE_EDGE_CHAR.test(last)
+      ? boundaryLookaheadFor(scriptOfCharacter(last))
       : "";
     parts.push(`${lead}${body}${tail}`);
   }
