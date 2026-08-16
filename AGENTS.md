@@ -206,6 +206,7 @@ These rules are the default workflow for all agents and contributors.
    - Do not call a PR clean if the latest positive AI verdict targets an older commit.
    - A merge-ready PR needs green checks, zero unresolved review threads, and a fresh positive AI verdict on the current head.
    - Use `scripts/pr-wait-settled.sh <pr-number>` to block until the current head has terminal required checks, current reviewer results, and zero unresolved threads.
+   - Exact `Review rate limited` and empty-body results count as terminal neutral evidence. Pending reviewers remain blocking unless `--reviewer-timeout S` is set; expiry downgrades them to neutral with a warning.
 
 Reference workflow:
 `docs/ops/pr-review-hardening-playbook.md`
