@@ -14,15 +14,21 @@ function run(args) {
   });
 }
 
-test("runs one root test file and forwards tsx arguments", () => {
+test("runs one root test file", () => {
+  const result = run(["tests/root-test-runner-lib.test.mjs"]);
+
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+});
+
+test("forwards tsx arguments after the separator", () => {
   const result = run([
     "tests/root-test-runner-lib.test.mjs",
     "--",
     "--test-name-pattern",
-    "selectTestPatterns with no groups",
+    "[",
   ]);
 
-  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.notEqual(result.status, 0);
 });
 
 test("reports a missing test file and exits non-zero", () => {

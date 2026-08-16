@@ -31,7 +31,7 @@ const files = fileArgs.map((fileArg) => {
 
 const tsxBin = process.platform === "win32" ? "tsx.cmd" : "tsx";
 const workspaceBinDir = join(repoRoot, "node_modules", ".bin");
-const result = spawnSync(tsxBin, ["--test", ...files, ...runnerArgs], {
+const result = spawnSync(tsxBin, ["--test", ...runnerArgs, ...files], {
   cwd: repoRoot,
   env: {
     ...process.env,
