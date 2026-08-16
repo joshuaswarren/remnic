@@ -1420,10 +1420,12 @@ export function serializeEntityFile(entity: EntityFile, entitySchemas?: PluginCo
   const structuredSections = sortStructuredSectionsBySchema(
     entity.type,
     (entity.structuredSections ?? [])
-      .map((section) => ({
-        ...section,
-        ...normalizeStructuredSectionFactsWithOrigins(section.facts, section.factOrigins),
-      }))
+      .map((section) => {
+        const normalized = normalizeStructuredSectionFactsWithOrigins(section.facts, section.factOrigins);
+        const result = { ...section, ...normalized };
+        if (normalized.factOrigins === undefined) delete result.factOrigins;
+        return result;
+      })
       .filter((section) => section.facts.length > 0),
     entitySchemas
   );
