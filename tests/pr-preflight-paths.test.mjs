@@ -44,8 +44,32 @@ function gateStatus(path) {
 
 for (const path of guardedPaths) {
   const result = gateStatus(path);
+
   assert.equal(result.status, 0, `expected entity hardening for ${path}: ${result.stderr}`);
 }
+function packageScope(files) {
+  return spawnSync("bash", [preflightScript, "--print-quick-package-scope"], {
+    cwd: rootDir,
+    encoding: "utf8",
+    env: { ...process.env, PREFLIGHT_CHANGED_FILES: files },
+  });
+}
+
+const affectedScope = packageScope("packages/remnic-cli/src/index.ts\nREADME.md");
+assert.equal(affectedScope.status, 0, affectedScope.stderr);
+assert.match(affectedScope.stdout, /Quick package scope: affected packages/);
+assert.match(affectedScope.stdout, /Checked packages: remnic-cli/);
+assert.match(affectedScope.stdout, /Skipped packages:.*remnic-core/);
+
+const rootConfigScope = packageScope("tsconfig.json");
+assert.equal(rootConfigScope.status, 0, rootConfigScope.stderr);
+assert.match(rootConfigScope.stdout, /Quick package scope: all packages/);
+assert.match(rootConfigScope.stdout, /Checked packages:.*remnic-cli/);
+assert.match(rootConfigScope.stdout, /Skipped packages:\s*$/m);
+
+const emptyScope = packageScope("");
+assert.equal(emptyScope.status, 0, emptyScope.stderr);
+assert.match(emptyScope.stdout, /Quick package scope: all packages/);
 
 for (const path of excludedPaths) {
   const result = gateStatus(path);
