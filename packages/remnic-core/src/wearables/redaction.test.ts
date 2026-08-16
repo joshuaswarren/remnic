@@ -218,6 +218,12 @@ test("a Latin marker matches before attached Japanese text", () => {
   assert.equal(result.droppedSegments, 1);
 });
 
+test("a Latin marker matches before attached Han text", () => {
+  const result = applyOffTheRecord(
+    conversation(["Keep this off the record不要", "Private detail."]),
+  );
+  assert.equal(result.droppedSegments, 1);
+});
 
 test("an Arabic marker does not match inside a longer Arabic word", () => {
   assert.equal(
