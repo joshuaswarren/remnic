@@ -256,11 +256,11 @@ export function unescapeEntityTimelineMetadataValue(value: string): string {
   return result;
 }
 export function escapeEntityTimelineText(value: string): string {
-  return /^\\?\[(?:remnic-origin=|remnic-meta-v1\])/i.test(value) ? `\\${value}` : value;
+  return /^\\*\[(?:remnic-origin=|remnic-meta-v1\])/i.test(value) ? `\\${value}` : value;
 }
 
 export function unescapeEntityTimelineText(value: string): string {
-  return /^\\{1,2}\[(?:remnic-origin=|remnic-meta-v1\])/i.test(value) ? value.slice(1) : value;
+  return /^\\+\[(?:remnic-origin=|remnic-meta-v1\])/i.test(value) ? value.slice(1) : value;
 }
 
 export function serializeEntityTimelineEntry(entry: EntityTimelineEntry): string {
@@ -383,17 +383,17 @@ function parseEntityStructuredSectionFacts(
       const bullet = line.slice(2).trim();
       const metadataPrefix = `[${ENTITY_TIMELINE_METADATA_MARKER}] `;
       const hasMarker = bullet.startsWith(metadataPrefix);
-      const originStart = hasMarker ? metadataPrefix.length : 0;
-      const escapedOrigin = bullet.startsWith("\\[remnic-origin=", originStart);
-      const originPrefix = bullet.startsWith("[remnic-origin=", originStart);
-      const originEnd = !escapedOrigin && originPrefix
-        ? findEntityTimelineTokenEnd(bullet.slice(originStart)) + originStart
+      const originStart = metadataPrefix.length;
+      const originPrefix = hasMarker && bullet.startsWith("[remnic-origin=", originStart);
+      const originEndOffset = originPrefix
+        ? findEntityTimelineTokenEnd(bullet.slice(originStart))
         : -1;
+      const originEnd = originEndOffset >= 0 ? originEndOffset + originStart : -1;
       const token = originEnd >= 0 ? bullet.slice(originStart + 15, originEnd) : "";
       currentBlock = [originEnd >= 0
         ? bullet.slice(originEnd + 1).trimStart()
-        : unescapeEntityTimelineText(bullet)];
-      currentOrigin = originEnd >= 0 && hasMarker
+        : unescapeEntityTimelineText(hasMarker ? bullet.slice(metadataPrefix.length) : bullet)];
+      currentOrigin = originEnd >= 0
         ? unescapeEntityTimelineMetadataValue(token)
         : undefined;
       continue;

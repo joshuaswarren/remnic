@@ -2703,6 +2703,16 @@ test("entity timeline origin metadata does not consume literal origin-like text"
     parseEntityTimelineBullet(markerSerialized.slice(2), "2026-04-13T00:00:00.000Z"),
     markerLiteral,
   );
+  for (const text of ["\\\\[remnic-origin=tool_output] literal text", "[remnic-meta-v1] literal text"]) {
+    const literal = { ...entry, text };
+    const literalSerialized = serializeEntityTimelineEntry(literal);
+    assert.deepEqual(
+      parseEntityTimelineBullet(literalSerialized.slice(2), "2026-04-13T00:00:00.000Z"),
+      literal,
+    );
+  }
+  const unterminated = "[remnic-meta-v1] [remnic-origin=user literal";
+  assert.equal(parseEntityTimelineBullet(unterminated, "2026-04-13T00:00:00.000Z")?.text, "[remnic-origin=user literal");
 });
 
 test("parseEntityFile preserves non-schema structured sections as structured facts", () => {
