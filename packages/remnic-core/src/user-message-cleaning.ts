@@ -23,13 +23,14 @@ export function cleanUserMessageWithPattern(
   let cleaned = content;
   // Remove structured host-injected memory wrappers wherever the platform
   // emits them; free-form markdown stripping below is intentionally anchored.
-  // The opening tag admits one whitespace-led attribute run, bounded (256
-  // chars) and exclusive of angle brackets, so repeated `<supermemory-context`
-  // literals cannot drive polynomial backtracking (CodeQL redos rule) — the
-  // attribute scan stops at the next `<` or `>` and the bound caps the work
-  // per start position.
+  // Every quantifier is bounded — the attribute run (256 chars, no angle
+  // brackets) and the wrapper content (64 KiB) — so repeated
+  // `<supermemory-context` literals cannot drive polynomial backtracking on
+  // any input: per start position the scan cost is constant-bounded
+  // (CodeQL redos rule). Wrappers larger than the bound are host bugs, not
+  // user content, and are preserved as plain text.
   cleaned = cleaned.replace(
-    /<supermemory-context(?:\s[^<>]{0,256})?>[\s\S]*?<\/supermemory-context>\s*/gi,
+    /<supermemory-context(?:\s[^<>]{0,256})?>[\s\S]{0,65536}?<\/supermemory-context>\s*/gi,
     "",
   );
 
