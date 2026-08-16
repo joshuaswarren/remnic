@@ -142,11 +142,28 @@ volumes:
 
 ## Authentication
 
-All topologies require a bearer token. Set it via:
+All topologies require a bearer token. Standalone server configuration uses
+this precedence:
 
-1. `--token` CLI flag
-2. `OPENCLAW_REMNIC_ACCESS_TOKEN` / `OPENCLAW_ENGRAM_ACCESS_TOKEN` environment variable
-3. `agentAccessHttp.authToken` in `openclaw.json`
+1. The `--token` CLI flag.
+2. The `REMNIC_AUTH_TOKEN` environment variable.
+3. The server `authToken` configuration value.
+
+OpenClaw delegate mode resolves the daemon credential with this precedence:
+
+1. `OPENCLAW_REMNIC_ACCESS_TOKEN`
+2. `REMNIC_AUTH_TOKEN`
+3. `OPENCLAW_ENGRAM_ACCESS_TOKEN` (legacy name)
+4. `ENGRAM_AUTH_TOKEN` (legacy name)
+5. The OpenClaw entry in `~/.remnic/tokens.json`
+6. The OpenClaw entry in `~/.engram/tokens.json` (legacy store)
+7. `server.authToken` in the daemon config file for the selected endpoint
+
+The first non-empty value wins. An environment variable wins over a config
+file, even when the config file has a newer token. After a daemon returns HTTP
+401, delegate mode retries once after it excludes the rejected credential.
+This lets a rotated config token replace a stale exported environment value
+without restarting the session.
 
 Clients must send `Authorization: Bearer <token>` with every request.
 
