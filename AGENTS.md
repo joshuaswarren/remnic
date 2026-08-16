@@ -209,6 +209,43 @@ These rules are the default workflow for all agents and contributors.
 
 Reference workflow:
 `docs/ops/pr-review-hardening-playbook.md`
+## Agent / automation contributors
+
+Use `scripts/dev-worktree.sh <worktree-path> <branch> [base]` to create an
+isolated, installed worktree with a core type-check smoke check.
+
+Run pnpm through the pinned package manager:
+
+```bash
+npm exec --yes pnpm@10.32.1 -- <command>
+```
+
+Set command deadlines before you start long checks:
+
+| Command | Timeout |
+| --- | ---: |
+| `npm run preflight:quick` | 900s |
+| `npm run test:entity-hardening` | 900s |
+| Full test suites | 1800s |
+| Builds | 1800s |
+
+Merge with `gh pr merge <number> --squash`. Do not add `--delete-branch` when
+`main` is checked out in another worktree. Delete the remote branch explicitly:
+
+```bash
+git push origin --delete <branch>
+```
+
+When review threads remain, resolve every thread, including outdated threads.
+If `unresolved-review-threads` stays red, dispatch the check-unsticker workflow:
+
+```bash
+gh workflow run check-unsticker.yml
+```
+
+Wait for the guard to run again, then confirm that the current pull request has
+no unresolved threads and all required checks pass.
+
 
 ## CI Review-Gate Scheduling (Read Before Iterating on a PR)
 
