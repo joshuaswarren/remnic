@@ -1721,7 +1721,7 @@ export class NamespaceCatalog {
     // sourced from their tokenized dir so a later legacy-named `readdir` entry
     // cannot overwrite the tokenized record (and vice-versa: a tokenized entry
     // always wins over a previously-set legacy one).
-    const scannedFromTokenized = new Set<string>();
+    const scannedFromTokenized = new Map<string, number>();
 
     for (const entry of entries) {
       const token = entry.name;
@@ -1841,11 +1841,12 @@ export class NamespaceCatalog {
       // is the on-disk dir name; it is the tokenized dir iff it equals the
       // namespace's identity token. If we already recorded this namespace from
       // its tokenized dir, a later legacy-named entry must not clobber it.
-      const isTokenizedEntry = token === namespaceIdentityToken(decoded) || token === namespaceIdentityLegacyToken(decoded.normalize("NFD"));
-      if (rebuilt.has(decoded) && scannedFromTokenized.has(decoded) && !isTokenizedEntry) {
-        continue;
-      }
-      if (isTokenizedEntry) scannedFromTokenized.add(decoded);
+      const canonicalToken = namespaceIdentityToken(decoded);
+      const legacyToken = namespaceIdentityLegacyToken(decoded.normalize("NFD"));
+      const tokenKind = token === canonicalToken ? 2 : token === legacyToken ? 1 : 0;
+      const priorTokenKind = scannedFromTokenized.get(decoded) ?? 0;
+      if (rebuilt.has(decoded) && priorTokenKind > tokenKind) continue;
+      if (tokenKind > 0) scannedFromTokenized.set(decoded, tokenKind);
 
       const prior = existing.get(decoded);
       rebuilt.set(

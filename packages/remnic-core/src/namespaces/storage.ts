@@ -174,15 +174,26 @@ export async function resolveDefaultNamespaceRoot(config: PluginConfig): Promise
   const legacyTokenHasData =
     (await exists(legacyTokenNsDir)) &&
     (await hasAnyNamespaceStorageMarker(legacyTokenNsDir, { includeRuntimeState: true }));
+  const legacyHasData =
+    (await exists(legacyNsDir)) &&
+    (await hasAnyNamespaceStorageMarker(legacyNsDir, { includeRuntimeState: true }));
+  const legacyNfdHasData =
+    legacyNfdNsDir !== legacyNsDir &&
+    (await exists(legacyNfdNsDir)) &&
+    (await hasAnyNamespaceStorageMarker(legacyNfdNsDir, { includeRuntimeState: true }));
   const nsDir = tokenizedHasData
     ? tokenizedNsDir
     : legacyTokenHasData
       ? legacyTokenNsDir
-      : (await exists(legacyNsDir))
+      : legacyHasData
         ? legacyNsDir
-        : legacyNfdNsDir !== legacyNsDir && (await exists(legacyNfdNsDir))
+        : legacyNfdHasData
           ? legacyNfdNsDir
-          : tokenizedNsDir;
+          : (await exists(legacyNsDir))
+            ? legacyNsDir
+            : legacyNfdNsDir !== legacyNsDir && (await exists(legacyNfdNsDir))
+              ? legacyNfdNsDir
+              : tokenizedNsDir;
   return (await exists(nsDir)) && !(await hasAnyLegacyData(config.memoryDir))
     ? nsDir
     : config.memoryDir;
@@ -210,17 +221,25 @@ export async function resolveNamespaceStorageRoot(
     return resolveDefaultNamespaceRoot(config);
   }
   const normalized = normalizeNamespaceIdentity(namespace);
-  const legacyRoot = resolveNamespaceDir(config.memoryDir, normalized);
+  const legacyExactNamespace = namespace.trim();
   const legacyNfdNamespace = normalized.normalize("NFD");
-  const legacyNfdRoot = legacyNfdNamespace === normalized
-    ? null
-    : resolveNamespaceDir(config.memoryDir, legacyNfdNamespace);
+  const legacyRoot = resolveNamespaceDir(config.memoryDir, normalized);
+  const legacyExactRoot =
+    legacyExactNamespace !== normalized && isSafeRouteNamespace(legacyExactNamespace)
+      ? resolveNamespaceDir(config.memoryDir, legacyExactNamespace)
+      : null;
+  const legacyNfdRoot =
+    legacyNfdNamespace !== normalized
+      ? resolveNamespaceDir(config.memoryDir, legacyNfdNamespace)
+      : null;
   const tokenizedRoot = resolveNamespaceDir(config.memoryDir, namespaceIdentityToken(normalized));
-  const legacyTokenRoot = resolveNamespaceDir(
-    config.memoryDir,
+  const legacyTokenRoots = [
+    namespaceIdentityLegacyToken(legacyExactNamespace),
     namespaceIdentityLegacyToken(legacyNfdNamespace),
-  );
-  for (const candidate of [tokenizedRoot, legacyTokenRoot]) {
+  ]
+    .filter((token, index, tokens) => tokens.indexOf(token) === index)
+    .map((token) => resolveNamespaceDir(config.memoryDir, token));
+  for (const candidate of [tokenizedRoot, ...legacyTokenRoots]) {
     if (
       (await exists(candidate)) &&
       (await hasAnyNamespaceStorageMarker(candidate, { includeRuntimeState: true }))
@@ -228,8 +247,9 @@ export async function resolveNamespaceStorageRoot(
       return candidate;
     }
   }
-  if (await exists(legacyRoot)) return legacyRoot;
-  if (legacyNfdRoot && (await exists(legacyNfdRoot))) return legacyNfdRoot;
+  for (const candidate of [legacyRoot, legacyExactRoot, legacyNfdRoot]) {
+    if (candidate && (await exists(candidate))) return candidate;
+  }
   return tokenizedRoot;
 }
 
