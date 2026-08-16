@@ -143,16 +143,18 @@ export function changedWorkingTreeFiles(repoRoot, options = {}) {
   return [...new Set([...splitLines(tracked), ...splitLines(untracked)])].sort();
 }
 
-function printNotes(result) {
+export function renderNotes(result) {
+  const notes = [];
   for (const pkg of result.python) {
-    console.error(
+    notes.push(
       `changeset-stub: ${pkg.name} is Python-published; no npm changeset emitted. ` +
-        "Update packages/plugin-hermes/pyproject.toml and plugin.yaml release metadata instead.",
+        `Update ${pkg.dir}/pyproject.toml and ${pkg.dir}/plugin.yaml release metadata instead.`,
     );
   }
   for (const pkg of result.skipped) {
-    console.error(`changeset-stub: skipped unpublished/private package ${pkg.name} (${pkg.dir}).`);
+    notes.push(`changeset-stub: skipped unpublished/private package ${pkg.name} (${pkg.dir}).`);
   }
+  return notes.length > 0 ? `${notes.join("\n")}\n` : "";
 }
 
 export function parseArgs(argv) {
@@ -201,7 +203,7 @@ async function main() {
   }
 
   const result = await inferChangeset(args.repoRoot, { baseRef: args.baseRef });
-  printNotes(result);
+  process.stderr.write(renderNotes(result));
   process.stdout.write(result.markdown);
 }
 

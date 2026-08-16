@@ -4,6 +4,7 @@ import {
   changedWorkingTreeFiles,
   inferChangeset,
   inferTouchedPackages,
+  renderNotes,
 } from "../scripts/changeset-stub.mjs";
 
 const packages = [
@@ -34,11 +35,13 @@ test("changeset stub lists every touched published package", () => {
   assert.deepEqual(result.published.map((pkg) => pkg.name), ["@remnic/cli", "@remnic/core"]);
 });
 
-test("Python-only changes emit no npm changeset and retain an explanation target", () => {
+test("Python-only changes emit no npm changeset and print the release metadata explanation", () => {
   const result = inferTouchedPackages(["packages/plugin-hermes/remnic_hermes/provider.py"], packages);
 
   assert.deepEqual(result.published, []);
   assert.deepEqual(result.python.map((pkg) => pkg.name), ["remnic-hermes"]);
+  assert.match(renderNotes(result), /Python-published; no npm changeset emitted/);
+  assert.match(renderNotes(result), /packages\/plugin-hermes\/pyproject\.toml/);
 });
 
 test("documentation-only changes emit nothing", async () => {
