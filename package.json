@@ -998,6 +998,7 @@
     "check-types": "node scripts/pnpm.mjs --filter @remnic/core build && tsc --noEmit && node scripts/pnpm.mjs --recursive --if-present --filter=\"./packages/*\" run check-types && node scripts/check-test-types.mjs",
     "check-config-contract": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx scripts/validate-config-contract.ts",
     "test": "node scripts/pnpm.mjs --filter @remnic/core build && node scripts/run-root-tests.mjs",
+    "test:file": "node scripts/test-file.mjs",
     "test:openclaw-scenarios": "node scripts/with-source-conditions.mjs node scripts/pnpm.mjs exec tsx --test tests/openclaw-adapter-scenarios.test.ts",
     "test:openclaw-privacy": "node scripts/with-source-conditions.mjs node scripts/pnpm.mjs exec tsx --test tests/openclaw-hook-privacy.test.ts",
     "test:entity-hardening": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx --test tests/intent.test.ts tests/recall-no-recall-short-circuit.test.ts tests/orchestrator-path-filter.test.ts tests/orchestrator-characterization.test.ts tests/artifact-cache.test.ts tests/memory-cache.test.ts tests/entity-retrieval.test.ts tests/entity-synthesis-storage.test.ts tests/entity-synthesis-orchestrator.test.ts tests/config-recall-pipeline.test.ts tests/entity-contamination.test.ts tests/entity-alias-isolation.test.ts tests/cache-invalidation-coherence.test.ts",
