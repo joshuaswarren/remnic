@@ -1,3 +1,4 @@
+import { namespaceIdentityToken } from "../namespaces/identity.js";
 import type { MemoryCategory } from "../types.js";
 
 export type RoutePatternType = "regex" | "keyword";
@@ -48,7 +49,6 @@ function normalizeNamespace(namespace: string): string {
 
 const SAFE_ROUTE_NAMESPACE_CHARS = /^[\p{L}\p{M}\p{N}._-]+$/u;
 
-
 export function isLikelyUnsafeRegex(pattern: string): boolean {
   const value = pattern.trim();
   if (value.length === 0) return true;
@@ -70,8 +70,11 @@ export function isSafeRouteNamespace(namespace: string): boolean {
   const value = normalizeNamespace(namespace);
   // The route limit is 64 Unicode code points. On-disk identity tokens may
   // exceed 64 characters because namespaceIdentityToken hex-encodes UTF-8.
+  // A route can use at most 64 code points, but the reversible on-disk token
+  // must also fit one filesystem component (255 characters).
   if (value.length === 0) return false;
   if (Array.from(value).length > 64) return false;
+  if (namespaceIdentityToken(value).length > 255) return false;
   if (value === ".") return false;
   if (value.includes("/") || value.includes("\\")) return false;
   if (value.includes("..")) return false;
@@ -89,7 +92,7 @@ export function validateRouteTarget(target: RouteTarget | null | undefined, opti
 
   const allowedCategories = new Set(options?.allowedCategories ?? DEFAULT_CATEGORIES);
   const allowedNamespaces = options?.allowedNamespaces
-    ? new Set(options.allowedNamespaces.map((v) => v.trim()).filter((v) => v.length > 0))
+    ? new Set(options.allowedNamespaces.map((v) => normalizeNamespace(v)).filter((v) => v.length > 0))
     : null;
 
   const normalized: RouteTarget = {};

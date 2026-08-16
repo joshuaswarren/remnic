@@ -7,10 +7,15 @@ test("isSafeRouteNamespace accepts Unicode letters and NFC-normalizes before val
   assert.equal(isSafeRouteNamespace("项目"), true);
   assert.equal(isSafeRouteNamespace("Cafe\u0301"), true);
   assert.equal(isSafeRouteNamespace("a1._-"), true);
-  assert.equal(isSafeRouteNamespace("界".repeat(64)), true);
-  assert.equal(isSafeRouteNamespace("界".repeat(65)), false);
+  assert.equal(isSafeRouteNamespace("a".repeat(64)), true);
+  assert.equal(isSafeRouteNamespace("a".repeat(65)), false);
+  assert.equal(isSafeRouteNamespace("界".repeat(42)), true);
+  assert.equal(isSafeRouteNamespace("界".repeat(43)), false);
 
-  const target = validateRouteTarget({ namespace: "Cafe\u0301" });
+  const target = validateRouteTarget(
+    { namespace: "Cafe\u0301" },
+    { allowedNamespaces: ["Café"] },
+  );
   assert.deepEqual(target, {
     ok: true,
     target: { namespace: "Café" },
