@@ -168,6 +168,27 @@ test("v4 shared context manager bootstraps structure and writes outputs", async 
   assert.match(raw, /kind: agent_output/);
   assert.match(raw, /Hello world/);
 });
+test("shared context reads reject an already-aborted signal", async () => {
+  const memoryDir = tmpDir("engram-sc-abort");
+  const sharedDir = tmpDir("engram-shared-abort");
+  await mkdir(memoryDir, { recursive: true });
+
+  const manager = new SharedContextManager(minimalConfig(memoryDir, sharedDir));
+  await manager.ensureStructure();
+  const controller = new AbortController();
+  controller.abort();
+
+  for (const read of [
+    manager.readPriorities.bind(manager),
+    manager.readLatestRoundtable.bind(manager),
+    manager.readLatestCrossSignals.bind(manager),
+  ]) {
+    await assert.rejects(
+      read(controller.signal),
+      (error: unknown) => error instanceof Error && error.name === "AbortError",
+    );
+  }
+});
 
 test("shared context output path encodes agent ids that contain traversal", async () => {
   const memoryDir = tmpDir("engram-sc-mem");

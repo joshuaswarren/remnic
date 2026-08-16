@@ -746,9 +746,9 @@ export class RecallInternalCoordinator {
         return null;
       const t0 = Date.now();
       const [priorities, roundtable, crossSignals] = await Promise.all([
-        this.deps.sharedContext.readPriorities(),
-        this.deps.sharedContext.readLatestRoundtable(),
-        this.deps.sharedContext.readLatestCrossSignals(),
+        this.deps.sharedContext.readPriorities(options.abortSignal),
+        this.deps.sharedContext.readLatestRoundtable(options.abortSignal),
+        this.deps.sharedContext.readLatestCrossSignals(options.abortSignal),
       ]);
       const max = Math.max(500, this.deps.config.sharedContextMaxInjectChars);
       const capSection = (
