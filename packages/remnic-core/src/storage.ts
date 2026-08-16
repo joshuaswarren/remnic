@@ -185,6 +185,7 @@ import {
   collectStructuredSectionFacts,
   compareEntityTimestamps,
   compileEntityFacts,
+  ENTITY_TIMELINE_METADATA_MARKER,
   escapeEntityTimelineMetadataValue,
   escapeEntityTimelineText,
   isEntitySynthesisStale,
@@ -1496,7 +1497,9 @@ export function serializeEntityFile(entity: EntityFile, entitySchemas?: PluginCo
     lines.push(`## ${section.title}`, "");
     for (const [index, fact] of section.facts.entries()) {
       const origin = section.factOrigins?.[index];
-      const prefix = origin ? `[remnic-origin=${escapeEntityTimelineMetadataValue(origin)}] ` : "";
+      const prefix = origin
+        ? `[${ENTITY_TIMELINE_METADATA_MARKER}] [remnic-origin=${escapeEntityTimelineMetadataValue(origin)}] `
+        : "";
       lines.push(`- ${prefix}${escapeEntityTimelineText(fact)}`);
     }
     lines.push("");

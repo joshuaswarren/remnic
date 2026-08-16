@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto";
 import { matchEntitySchemaSection, normalizeEntityStructuredSection } from "../entity-schema.js";
 import type { EntityFile, EntityStructuredSection, EntityTimelineEntry, PluginConfig } from "../types.js";
+export const ENTITY_TIMELINE_METADATA_MARKER = "remnic-meta-v1";
 
 export function parseEntityTimelineBullet(bullet: string, fallbackTimestamp: string): EntityTimelineEntry | null {
   const trimmed = bullet.trim();
@@ -17,6 +18,7 @@ export function parseEntityTimelineBullet(bullet: string, fallbackTimestamp: str
     text: "",
   };
   const consumedMetadataSegments: string[] = [];
+  let metadataMarkerSeen = false;
   let literalSingleSourceSegment: string | undefined;
 
   if (!trimmed.startsWith("[")) {
@@ -42,6 +44,13 @@ export function parseEntityTimelineBullet(bullet: string, fallbackTimestamp: str
     if (end === -1) break;
     const rawSegment = rest.slice(0, end + 1);
     const token = rest.slice(1, end).trim();
+    const nextRest = rest.slice(end + 1).trimStart();
+    if (token === ENTITY_TIMELINE_METADATA_MARKER) {
+      metadataMarkerSeen = true;
+      consumedMetadataSegments.push(rawSegment);
+      rest = nextRest;
+      continue;
+    }
     const equalsIdx = token.indexOf("=");
     if (equalsIdx === -1) {
       if (rest === trimmed) {
@@ -53,7 +62,10 @@ export function parseEntityTimelineBullet(bullet: string, fallbackTimestamp: str
     const key = token.slice(0, equalsIdx).trim().toLowerCase();
     const value = unescapeEntityTimelineMetadataValue(token.slice(equalsIdx + 1).trim());
     if (!value) break;
-    const nextRest = rest.slice(end + 1).trimStart();
+    if (key === "remnic-origin" && !metadataMarkerSeen) {
+      entry.text = rest.trim();
+      return entry.text ? entry : null;
+    }
     switch (key) {
       case "source_meta":
         entry.source = value;
@@ -267,6 +279,7 @@ export function serializeEntityTimelineEntry(entry: EntityTimelineEntry): string
     tokens.push(`[principal=${escapeEntityTimelineMetadataValue(entry.principal)}]`);
   }
   if (entry.origin) {
+    tokens.push(`[${ENTITY_TIMELINE_METADATA_MARKER}]`);
     tokens.push(`[remnic-origin=${escapeEntityTimelineMetadataValue(entry.origin)}]`);
   }
   const serializedMetadata = tokens.length > 0 ? `${tokens.join(" ")} ` : "";
@@ -368,24 +381,28 @@ function parseEntityStructuredSectionFacts(
     if (line.startsWith("- ")) {
       flushCurrentBlock();
       const bullet = line.slice(2).trim();
-      const escapedOrigin = bullet.startsWith("\\[remnic-origin=");
-      const end = !escapedOrigin && bullet.startsWith("[remnic-origin=")
-        ? findEntityTimelineTokenEnd(bullet)
+      const metadataPrefix = `[${ENTITY_TIMELINE_METADATA_MARKER}] `;
+      const hasMarker = bullet.startsWith(metadataPrefix);
+      const originStart = hasMarker ? metadataPrefix.length : 0;
+      const escapedOrigin = bullet.startsWith("\\[remnic-origin=", originStart);
+      const originPrefix = bullet.startsWith("[remnic-origin=", originStart);
+      const originEnd = !escapedOrigin && originPrefix
+        ? findEntityTimelineTokenEnd(bullet.slice(originStart)) + originStart
         : -1;
-      const token = end >= 0 ? bullet.slice(15, end) : "";
-      currentBlock = [end >= 0
-        ? bullet.slice(end + 1).trimStart()
+      const token = originEnd >= 0 ? bullet.slice(originStart + 15, originEnd) : "";
+      currentBlock = [originEnd >= 0
+        ? bullet.slice(originEnd + 1).trimStart()
         : unescapeEntityTimelineText(bullet)];
-      currentOrigin = end >= 0 ? unescapeEntityTimelineMetadataValue(token) : undefined;
+      currentOrigin = originEnd >= 0 && hasMarker
+        ? unescapeEntityTimelineMetadataValue(token)
+        : undefined;
       continue;
     }
     currentBlock.push(line);
   }
-
   flushCurrentBlock();
   return normalizeStructuredSectionFactsWithOrigins(facts, factOrigins);
 }
-
 function looksLikeStructuredSectionFactList(lines: string[]): boolean {
   const firstNonBlank = lines.find((line) => line.trim().length > 0)?.trim() ?? "";
   return firstNonBlank.startsWith("- ");

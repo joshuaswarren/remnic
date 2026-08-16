@@ -3734,12 +3734,12 @@ test("mergeFragmentedEntities preserves structured sections from fragments", asy
       "",
       "## Beliefs",
       "",
-      "- [remnic-origin=user] Small teams move faster than committees.",
+      "- [remnic-meta-v1] [remnic-origin=user] Small teams move faster than committees.",
       "",
       "## Timeline",
       "",
       "- [2026-04-13T10:05:00.000Z] Fragment A evidence",
-      "",
+      "- [remnic-meta-v1] [remnic-origin=tool_output] Roadmaps should stay legible to the team.",
     ].join("\n");
     const fragmentB = [
       "---",
@@ -3754,7 +3754,7 @@ test("mergeFragmentedEntities preserves structured sections from fragments", asy
       "",
       "## Beliefs",
       "",
-      "- [remnic-origin=tool_output] Roadmaps should stay legible to the team.",
+      "- [remnic-meta-v1] [remnic-origin=tool_output] Roadmaps should stay legible to the team.",
       "",
       "## Communication Style",
       "",
