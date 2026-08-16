@@ -21,7 +21,10 @@ test("changeset stub emits the touched published package", async () => {
     changedFiles: ["packages/remnic-core/src/index.ts"],
   });
 
-  assert.deepEqual(result.published.map((pkg) => pkg.name), ["@remnic/core"]);
+  assert.deepEqual(
+    result.published.map((pkg) => pkg.name),
+    ["@remnic/core"]
+  );
   assert.match(result.markdown, /"@remnic\/core": patch/);
   assert.match(result.markdown, /TODO:/);
 });
@@ -29,17 +32,23 @@ test("changeset stub emits the touched published package", async () => {
 test("changeset stub lists every touched published package", () => {
   const result = inferTouchedPackages(
     ["packages/remnic-cli/src/cli.ts", "packages/remnic-core/src/index.ts"],
-    packages,
+    packages
   );
 
-  assert.deepEqual(result.published.map((pkg) => pkg.name), ["@remnic/cli", "@remnic/core"]);
+  assert.deepEqual(
+    result.published.map((pkg) => pkg.name),
+    ["@remnic/cli", "@remnic/core"]
+  );
 });
 
 test("Python-only changes emit no npm changeset and print the release metadata explanation", () => {
   const result = inferTouchedPackages(["packages/plugin-hermes/remnic_hermes/provider.py"], packages);
 
   assert.deepEqual(result.published, []);
-  assert.deepEqual(result.python.map((pkg) => pkg.name), ["remnic-hermes"]);
+  assert.deepEqual(
+    result.python.map((pkg) => pkg.name),
+    ["remnic-hermes"]
+  );
   assert.match(renderNotes(result), /Python-published; no npm changeset emitted/);
   assert.match(renderNotes(result), /packages\/plugin-hermes\/pyproject\.toml/);
 });
@@ -80,5 +89,8 @@ test("private packages are skipped", () => {
   const result = inferTouchedPackages(["packages/bench-ui/src/main.ts"], packages);
 
   assert.deepEqual(result.published, []);
-  assert.deepEqual(result.skipped.map((pkg) => pkg.name), ["@remnic/bench-ui"]);
+  assert.deepEqual(
+    result.skipped.map((pkg) => pkg.name),
+    ["@remnic/bench-ui"]
+  );
 });

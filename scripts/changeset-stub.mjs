@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { readdir, readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -76,9 +76,7 @@ export async function discoverPackages(repoRoot) {
 
 function packageForFile(filePath, packages) {
   const normalized = normalizePath(filePath);
-  return packages.find(
-    (pkg) => normalized === pkg.dir || normalized.startsWith(`${pkg.dir}/`),
-  );
+  return packages.find((pkg) => normalized === pkg.dir || normalized.startsWith(`${pkg.dir}/`));
 }
 
 export function inferTouchedPackages(changedFiles, packages) {
@@ -148,7 +146,7 @@ export function renderNotes(result) {
   for (const pkg of result.python) {
     notes.push(
       `changeset-stub: ${pkg.name} is Python-published; no npm changeset emitted. ` +
-        `Update ${pkg.dir}/pyproject.toml and ${pkg.dir}/plugin.yaml release metadata instead.`,
+        `Update ${pkg.dir}/pyproject.toml and ${pkg.dir}/plugin.yaml release metadata instead.`
     );
   }
   for (const pkg of result.skipped) {
