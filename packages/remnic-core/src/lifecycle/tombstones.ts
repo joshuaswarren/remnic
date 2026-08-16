@@ -909,13 +909,23 @@ export class TombstoneStore {
           // hash would displace a live identity (issue #2367). Preserving
           // keeps BOTH keys: contentHash stays the persisted identity and
           // currentContentHashAlias still blocks the body.
-          // An EMPTY legacy skeleton is excluded: every non-ASCII-only body
-          // maps to it, so it identifies nothing and would collide unrelated
-          // tombstones on one exact-tier key. Repair those rows instead.
+
+          // Repair only when the persisted hash provably identifies THIS
+          // body's stale legacy hash: either the unambiguous case (legacy and
+          // current normalizations agree), or the empty-skeleton case — every
+          // non-ASCII-only body normalizes to the empty legacy skeleton, so a
+          // persisted hash equal to hash("") is the shared non-identifying
+          // legacy body hash and publishing it on the exact tier would
+          // collide unrelated tombstones. Any OTHER persisted hash on an
+          // empty-skeleton body is a distinct explicit identity (e.g.
+          // contentHashSource) and must be preserved.
+          const legacyBodyHash = computeLegacyContentHash(m.rawContent);
+          const repairEmptySkeleton =
+            normalizeLegacyContent(m.rawContent).length === 0 && persistedHash === legacyBodyHash;
           const preserveOverride =
             persistedHash !== undefined &&
             persistedHash !== currentHash &&
-            normalizeLegacyContent(m.rawContent).length > 0 &&
+            !repairEmptySkeleton &&
             !isUnambiguousLegacyContentHash(m.rawContent, persistedHash, currentNormalizedText);
           return {
             id:

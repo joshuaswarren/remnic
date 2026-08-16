@@ -851,7 +851,7 @@ describe("TombstoneStore — rebuild identity preservation (issue #2367)", () =>
         contentHash: persistedHash,
         reason: "correction",
         createdBy: "user_correction",
-        createdAt: "2026-01-01T:00:00:00.000Z",
+        createdAt: "2026-01-01T00:00:00.000Z",
       },
     ]);
 
@@ -873,6 +873,45 @@ describe("TombstoneStore — rebuild identity preservation (issue #2367)", () =>
     assert.equal(
       env.store.lookup({ namespace: "default", contentHash: computeLegacyContentHash(unrelated) }),
       null,
+    );
+  });
+
+  it("preserves an explicit identity hash on an empty-skeleton body instead of repairing it", async () => {
+    const env = await makeStore("default");
+    // A CJK-only body normalizes to an empty legacy skeleton, but the
+    // persisted hash here is a DISTINCT explicit contentHashSource — it does
+    // not equal the body's legacy hash, so it identifies an external source,
+    // not the body. Rebuild must keep it (plus the body alias), not replace
+    // it with the current body hash.
+    const body = "利用者は紅茶を好む。";
+    const source = "canonical://source/fact-cjk-explicit";
+    const explicitHash = computeHash(source);
+    assert.notEqual(explicitHash, computeLegacyContentHash(body));
+    assert.notEqual(explicitHash, computeHash(body));
+
+    await env.store.rebuild([
+      {
+        memoryId: "fact-cjk-explicit",
+        rawContent: body,
+        contentHash: explicitHash,
+        reason: "correction",
+        createdBy: "user_correction",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    ]);
+
+    const entry = env.store.snapshot().find((e) => e.kind === "tombstone");
+    assert.ok(entry);
+    assert.equal(entry.contentHash, explicitHash);
+    assert.equal(entry.currentContentHashAlias, computeHash(body));
+    // The explicit identity and the body are both blocked.
+    assert.equal(
+      env.store.lookup({ namespace: "default", contentHash: explicitHash })?.matchedTier,
+      "exact",
+    );
+    assert.equal(
+      env.store.lookup({ namespace: "default", contentHash: computeHash(body) })?.matchedTier,
+      "exact",
     );
   });
 
