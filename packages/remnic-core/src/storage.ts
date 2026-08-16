@@ -1464,14 +1464,12 @@ export function serializeEntityFile(entity: EntityFile, entitySchemas?: PluginCo
     `**Updated:** ${updated}`,
     "",
   ];
-
   if ((entity.preSectionLines ?? []).length > 0) {
     lines.push(...(entity.preSectionLines ?? []));
     if (entity.preSectionLines?.[entity.preSectionLines.length - 1] !== "") {
       lines.push("");
     }
   }
-
   lines.push("## Synthesis", "");
   if (synthesis) {
     lines.push(synthesis);
@@ -1485,7 +1483,6 @@ export function serializeEntityFile(entity: EntityFile, entitySchemas?: PluginCo
     }
     lines.push("");
   }
-
   if (legacyFacts.length > 0) {
     lines.push("## Facts", "");
     for (const fact of legacyFacts) {
@@ -1504,7 +1501,6 @@ export function serializeEntityFile(entity: EntityFile, entitySchemas?: PluginCo
     }
     lines.push("");
   }
-
   // Connected to (optional)
   if (entity.relationships.length > 0) {
     lines.push("## Connected to", "");

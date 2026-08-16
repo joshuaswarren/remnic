@@ -340,7 +340,6 @@ async function resolveEntityIndexStorages(
   ) {
     return [storage];
   }
-
   const storages: StorageManager[] = [];
   const seenDirs = new Set<string>();
   for (const namespace of uniqueStrings(recallNamespaces)) {
@@ -354,10 +353,8 @@ async function resolveEntityIndexStorages(
       continue;
     }
   }
-
   return storages.length > 0 ? storages : [storage];
 }
-
 function entityIndexStatePath(storage: StorageManager): string {
   return path.join(storage.dir, "state", "entity-mention-index.json");
 }
@@ -373,8 +370,6 @@ async function readEntityIndexState(storage: StorageManager): Promise<EntityMent
     return null;
   }
 }
-
-
 async function readCurrentPersistedEntityIndex(
   storage: StorageManager,
   config: PluginConfig,
@@ -396,7 +391,6 @@ async function readCurrentPersistedEntityIndex(
   return index;
 }
 const namespaceEntityIndexCache = new Map<string, EntityMentionIndex>();
-const MAX_NAMESPACE_ENTITY_INDEX_CACHE_ENTRIES = 32;
 
 function nativeEntityIndexRevision(chunks: NativeKnowledgeChunk[]): string {
   const projection = chunks.map((chunk) => [
@@ -410,7 +404,6 @@ function nativeEntityIndexRevision(chunks: NativeKnowledgeChunk[]): string {
   ]);
   return createHash("sha256").update(JSON.stringify(projection)).digest("hex");
 }
-
 function namespaceEntityIndexCacheKey(
   storages: StorageManager[],
   recallNamespaces: string[],
@@ -430,7 +423,6 @@ function namespaceEntityIndexCacheKey(
     .join("\u001f");
   return `${namespaceKey}\u001e${storageKey}\u001e${nativeRevision}`;
 }
-
 function rememberNamespaceEntityIndex(key: string, index: EntityMentionIndex): void {
   if (namespaceEntityIndexCache.size >= MAX_NAMESPACE_ENTITY_INDEX_CACHE_ENTRIES) {
     const oldestKey = namespaceEntityIndexCache.keys().next().value;
