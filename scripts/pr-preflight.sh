@@ -59,11 +59,16 @@ package_dependents() {
     while (expanded) {
       expanded = false;
       for (const [directory, packageJson] of packages) {
+        const peerDependencies = Object.fromEntries(
+          Object.entries(packageJson.peerDependencies ?? {}).filter(
+            ([name]) => packageJson.peerDependenciesMeta?.[name]?.optional !== true,
+          ),
+        );
         const dependencies = {
           ...packageJson.dependencies,
           ...packageJson.devDependencies,
           ...packageJson.optionalDependencies,
-          ...packageJson.peerDependencies,
+          ...peerDependencies,
         };
         if (
           Object.keys(dependencies ?? {}).some((name) => {
