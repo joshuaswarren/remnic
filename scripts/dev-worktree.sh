@@ -43,17 +43,23 @@ if [[ $base == -* ]] || ! git -C "$repo_root" rev-parse --verify --quiet "$base^
   printf 'Base ref not found: %s\n' "$base" >&2
   exit 1
 fi
-worktree_added=0
+branch_existed_before=0
+if git -C "$repo_root" show-ref --verify --quiet "refs/heads/$branch"; then
+  branch_existed_before=1
+fi
+worktree_added=1
 cleanup() {
-  if (( worktree_added )) && git -C "$repo_root" worktree remove --force "$worktree_path" >/dev/null 2>&1; then
-    git -C "$repo_root" branch -D -- "$branch" >/dev/null 2>&1 || true
+  if (( worktree_added )); then
+    git -C "$repo_root" worktree remove --force "$worktree_path" >/dev/null 2>&1 || true
+    if (( ! branch_existed_before )); then
+      git -C "$repo_root" branch -D -- "$branch" >/dev/null 2>&1 || true
+    fi
   fi
 }
 trap cleanup EXIT
 
 printf 'Creating worktree at %s from %s on branch %s\n' "$worktree_path" "$base" "$branch"
 git -C "$repo_root" worktree add -b "$branch" "$worktree_path" "$base"
-worktree_added=1
 
 printf 'Installing packages with pnpm@10.32.1\n'
 if ! (

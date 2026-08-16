@@ -93,6 +93,32 @@ test("removes the worktree when package installation fails", () => {
     rmSync(fixture.root, { recursive: true, force: true });
   }
 });
+test("cleans up when worktree creation fails after creating its branch", () => {
+  const fixture = createFakeNpm();
+  const worktreePath = path.join(fixture.root, "failed-checkout");
+  const branch = `test/dev-worktree-${process.pid}-failed-checkout`;
+  const hooksPath = path.join(fixture.root, "hooks");
+  mkdirSync(hooksPath);
+  const postCheckout = path.join(hooksPath, "post-checkout");
+  writeFileSync(postCheckout, "#!/bin/sh\nexit 7\n");
+  chmodSync(postCheckout, 0o755);
+
+  try {
+    const result = runScript([worktreePath, branch, "HEAD"], {
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "core.hooksPath",
+      GIT_CONFIG_VALUE_0: hooksPath,
+      PATH: `${fixture.bin}${path.delimiter}${process.env.PATH ?? ""}`,
+    });
+
+    assert.notEqual(result.status, 0);
+    assert.equal(existsSync(worktreePath), false);
+    assert.notEqual(spawnSync("git", ["-C", repoRoot, "show-ref", "--verify", `refs/heads/${branch}`]).status, 0);
+  } finally {
+    cleanupWorktree(worktreePath, branch);
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
 
 test("resolves a relative worktree path from the invoking checkout", () => {
   const fixture = createFakeNpm();
