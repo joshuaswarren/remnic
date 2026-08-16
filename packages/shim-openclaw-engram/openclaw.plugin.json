@@ -891,7 +891,7 @@
         "type": "number",
         "minimum": 0,
         "default": 4500,
-        "description": "Whitespace-token cap for Codex memory summary materialization."
+        "description": "Script-aware estimated-token cap for Codex memory summary materialization."
       },
       "codexMaterializeMemories": {
         "type": "boolean",

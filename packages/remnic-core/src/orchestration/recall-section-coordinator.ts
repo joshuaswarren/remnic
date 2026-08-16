@@ -198,10 +198,7 @@ export class RecallSectionCoordinator {
     }
     const markerFits =
       maxChars > suffix.length && estimateTokenCount(suffix) <= maxTokens;
-    const tokenSource =
-      markerFits && content.length > maxChars
-        ? charBounded.slice(0, -suffix.length)
-        : charBounded;
+    const tokenSource = content.length > maxChars ? content.slice(0, maxChars) : content;
     const codePoints = [...tokenSource];
     let low = 0;
     let high = codePoints.length;

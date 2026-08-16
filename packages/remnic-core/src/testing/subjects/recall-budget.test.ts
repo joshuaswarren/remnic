@@ -381,11 +381,14 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         assert.ok(markerOnlyBudget.length > 0, "a marker-only budget keeps useful content");
         assert.doesNotMatch(markerOnlyBudget, /\.\.\.\(memory context trimmed\)$/);
         assert.ok(estimateTokenCount(markerOnlyBudget) <= markerBudget);
+        const wideScriptTrimmed = coordinator.truncateRecallSectionToBudget("日".repeat(100), 30, markerBudget);
+        assert.equal([...wideScriptTrimmed].length, 8, "wide-script fallback uses the available character room");
+        assert.ok(estimateTokenCount(wideScriptTrimmed) <= markerBudget);
+        assert.doesNotMatch(wideScriptTrimmed, /\.\.\.\(memory context trimmed\)$/);
         const emojiTrimmed = coordinator.truncateRecallSectionToBudget("😀".repeat(30), 60, 29);
         assert.ok(emojiTrimmed.length <= 60, "astral text stays within the UTF-16 character cap");
         assert.ok(estimateTokenCount(emojiTrimmed) <= 29, "astral text stays within the token cap");
         assert.match(emojiTrimmed, /\.\.\.\(memory context trimmed\)$/);
-        // A budget-skipped section reports as a debug-level "skip" metric — the
         // QoS accounting that flags a section dropped for the budget deadline.
         const skipMetric = formatRecallSectionMetric({
           section: "memories",
