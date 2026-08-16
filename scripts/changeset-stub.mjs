@@ -205,7 +205,7 @@ async function main() {
   process.stdout.write(result.markdown);
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
     console.error(`changeset-stub: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;
