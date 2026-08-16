@@ -136,6 +136,20 @@ test("displayWidth: CJK wide, fullwidth, halfwidth, marks, and emoji", () => {
   assert.equal(displayWidth("中日 memo"), 9, "2+2+1+4");
 });
 
+test("displayWidth: emoji sequences measure as one two-cell grapheme", () => {
+  assert.equal(displayWidth("👨‍👩‍👧‍👦"), 2, "ZWJ family emoji is one cluster");
+  assert.equal(displayWidth("🇯🇵"), 2, "regional-indicator flag is one cluster");
+  assert.equal(displayWidth("👍🏽"), 2, "skin-tone modifier joins the cluster");
+  assert.equal(displayWidth("❤️"), 2, "VS16 requests emoji presentation");
+  assert.equal(displayWidth("1️⃣"), 2, "keycap sequence is one cluster");
+  assert.equal(displayWidth("👨‍👩‍👧‍👦 文"), 5, "clusters compose: 2 + 1 + 2");
+  assert.equal(
+    padEndDisplay("👨‍👩‍👧‍👦", 6),
+    "👨‍👩‍👧‍👦" + " ".repeat(4),
+    "emoji rows pad by display width, not code units",
+  );
+});
+
 test("padEndDisplay: CJK rows align to one computed width", () => {
   assert.equal(padEndDisplay("abc", 6), "abc   ");
   assert.equal(padEndDisplay("abc", 2), "abc", "narrow target never truncates");

@@ -50,7 +50,9 @@ export function graphemeUnits(value: string): string[] {
 }
 
 const COMBINING_MARK = /\p{M}/u;
+const FORMAT_CHAR = /\p{Cf}/u;
 const EMOJI_PRESENTATION = /\p{Emoji_Presentation}/u;
+const EMOJI_PRESENTATION_SELECTOR = "\uFE0F";
 
 // ponytail: pragmatic East_Asian_Width Wide/Fullwidth subset - contiguous
 // block ranges plus the emoji presentation planes. Sparse exceptions inside
@@ -78,7 +80,6 @@ const WIDE_CODE_POINT_RANGES: ReadonlyArray<readonly [number, number]> = [
 ];
 
 function isWideGlyph(glyph: string): boolean {
-  if (EMOJI_PRESENTATION.test(glyph)) return true;
   const codePoint = glyph.codePointAt(0)!;
   let low = 0;
   let high = WIDE_CODE_POINT_RANGES.length - 1;
@@ -94,15 +95,28 @@ function isWideGlyph(glyph: string): boolean {
 
 /**
  * Terminal cell width: East_Asian_Width Wide/Fullwidth glyphs count as 2,
- * combining marks as 0, everything else as 1.
+ * combining marks and format characters (ZWJ, variation selectors) as 0,
+ * everything else as 1. A grapheme cluster with emoji presentation - ZWJ
+ * sequences, flags, skin-tone modifiers - occupies two cells.
  */
 export function displayWidth(value: string): number {
   let width = 0;
-  for (const glyph of value) {
-    if (COMBINING_MARK.test(glyph)) continue;
-    width += isWideGlyph(glyph) ? 2 : 1;
+  for (const cluster of graphemeUnits(value)) {
+    width += graphemeClusterWidth(cluster);
   }
   return width;
+}
+
+function graphemeClusterWidth(cluster: string): number {
+  if (cluster.includes(EMOJI_PRESENTATION_SELECTOR)) return 2;
+  let emojiCluster = false;
+  let width = 0;
+  for (const glyph of cluster) {
+    if (COMBINING_MARK.test(glyph) || FORMAT_CHAR.test(glyph)) continue;
+    if (EMOJI_PRESENTATION.test(glyph)) emojiCluster = true;
+    width += isWideGlyph(glyph) ? 2 : 1;
+  }
+  return emojiCluster ? 2 : width;
 }
 
 /**
