@@ -34,7 +34,7 @@ if [[ -e $worktree_path || -L $worktree_path ]]; then
   exit 1
 fi
 
-if [[ $branch == -* ]] || ! git -C "$repo_root" check-ref-format --branch "$branch" >/dev/null 2>&1; then
+if [[ $branch == -* || $branch == @\{-*\} ]] || ! git -C "$repo_root" check-ref-format --branch "$branch" >/dev/null 2>&1; then
   printf 'Invalid branch name: %s\n' "$branch" >&2
   exit 1
 fi

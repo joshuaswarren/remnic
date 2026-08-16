@@ -180,3 +180,21 @@ test("rejects an unknown base ref before creating a worktree", () => {
     rmSync(fixture.root, { recursive: true, force: true });
   }
 });
+test("rejects checkout shorthand branch names", () => {
+  const fixture = createFakeNpm();
+  const worktreePath = path.join(fixture.root, "checkout-shorthand");
+
+  try {
+    const result = runScript([worktreePath, "@{-1}", "HEAD"], {
+      DEV_WORKTREE_TEST_LOG: fixture.log,
+      PATH: `${fixture.bin}${path.delimiter}${process.env.PATH ?? ""}`,
+    });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Invalid branch name/);
+    assert.equal(existsSync(worktreePath), false);
+    assert.equal(existsSync(fixture.log), false);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
