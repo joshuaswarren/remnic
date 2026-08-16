@@ -359,22 +359,23 @@ export class RecallSectionCoordinator {
       const separatorTokens = selected.size > 0 ? estimateTokenCount(separator) : 0;
       const availableTokens = tokenBudget - usedTokens - separatorTokens;
       const sectionMaxChars = this.getRecallSectionMaxChars(id);
-      const reservesFirstMemory =
-        memoryIndex > allocationOrder.indexOf(id) &&
-        firstAtomicMemoryReserve !== undefined;
+      const reservedMemory =
+        memoryIndex > allocationOrder.indexOf(id)
+          ? firstAtomicMemoryReserve
+          : undefined;
       const memoryReserveSeparatorChars = separator.length;
       const memoryReserveSeparatorTokens = estimateTokenCount(separator);
-      const memoryReserve = reservesFirstMemory
-        ? firstAtomicMemoryReserve.chars + memoryReserveSeparatorChars
+      const memoryReserve = reservedMemory
+        ? reservedMemory.chars + memoryReserveSeparatorChars
         : 0;
       const availableAfterMemoryReserve = available - memoryReserve;
       const allocatedSectionAvailable =
         typeof sectionMaxChars === "number"
           ? Math.min(availableAfterMemoryReserve, sectionMaxChars)
           : availableAfterMemoryReserve;
-      const availableAfterMemoryReserveTokens = reservesFirstMemory
+      const availableAfterMemoryReserveTokens = reservedMemory
         ? availableTokens -
-          firstAtomicMemoryReserve.tokens -
+          reservedMemory.tokens -
           memoryReserveSeparatorTokens
         : availableTokens;
       const allocatedTokenAvailable = availableAfterMemoryReserveTokens;
