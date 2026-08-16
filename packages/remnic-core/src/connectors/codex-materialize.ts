@@ -1006,6 +1006,7 @@ export function truncateToTokenBudget(text: string, maxTokens: number): string {
 
   const lineMarker = "_[truncated for summary budget]_";
   const tailMarker = "[truncated]";
+  if (approximateTokenCount(tailMarker) > maxTokens) return "";
   const lineMarkerTokens = approximateTokenCount(lineMarker);
 
   const lines = text.split(/\r?\n/u);

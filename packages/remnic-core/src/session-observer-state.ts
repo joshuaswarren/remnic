@@ -14,7 +14,7 @@ interface SessionObserverCursor {
 }
 
 interface SessionObserverPersistedState {
-  version: 1;
+  version: 2;
   sessions: Record<string, SessionObserverCursor>;
 }
 
@@ -134,7 +134,7 @@ export class SessionObserverState {
     try {
       const raw = await readFile(this.statePath, "utf-8");
       const parsed = JSON.parse(raw) as SessionObserverPersistedState;
-      if (parsed?.version !== 1 || !parsed.sessions || typeof parsed.sessions !== "object") {
+      if (parsed?.version !== 2 || !parsed.sessions || typeof parsed.sessions !== "object") {
         return null;
       }
       return parsed;
@@ -246,7 +246,7 @@ export class SessionObserverState {
     for (const [key, value] of sessionsMap.entries()) {
       sessions[key] = value;
     }
-    const payload: SessionObserverPersistedState = { version: 1, sessions };
+    const payload: SessionObserverPersistedState = { version: 2, sessions };
     await mkdir(path.dirname(this.statePath), { recursive: true });
     await writeFile(this.statePath, JSON.stringify(payload, null, 2), "utf-8");
   }

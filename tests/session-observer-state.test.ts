@@ -136,6 +136,49 @@ test("session observer persists non-threshold and debounced updates", async () =
   }
 });
 
+test("session observer resets legacy token cursors after estimator migration", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "engram-session-observer-token-migration-"));
+  try {
+    const stateDir = path.join(dir, "state");
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(
+      path.join(stateDir, "session-observer-state.json"),
+      JSON.stringify({
+        version: 1,
+        sessions: {
+          "agent:generalist:main": {
+            sessionKey: "agent:generalist:main",
+            cursorBytes: 10_000,
+            cursorTokens: 2_500,
+            lastObservedAt: "2026-02-25T00:00:00.000Z",
+          },
+        },
+      }),
+    );
+
+    const observer = new SessionObserverState({
+      memoryDir: dir,
+      debounceMs: 60_000,
+      bands: [{ maxBytes: 100_000, triggerDeltaBytes: 500, triggerDeltaTokens: 100 }],
+    });
+    await observer.load();
+    const decision = await observer.observe({
+      sessionKey: "agent:generalist:main",
+      totalBytes: 100,
+      totalTokens: 20,
+      observedAt: "2026-02-25T00:01:00.000Z",
+    });
+
+    assert.equal(decision.reason, "baseline");
+    const persisted = JSON.parse(await readFile(path.join(stateDir, "session-observer-state.json"), "utf-8")) as {
+      version: number;
+    };
+    assert.equal(persisted.version, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("session observer save merges shared state across instances", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "engram-session-observer-merge-"));
   try {

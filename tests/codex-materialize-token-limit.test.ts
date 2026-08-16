@@ -44,6 +44,13 @@ test("truncateToTokenBudget drops trailing content over budget", () => {
   assert.match(result, /truncated/u);
 });
 
+test("truncateToTokenBudget fits markers within tiny budgets", () => {
+  for (const budget of [1, 2]) {
+    const result = truncateToTokenBudget("日本語の長い要約", budget);
+    assert.ok(approximateTokenCount(result) <= budget);
+  }
+});
+
 test("renderMemorySummary stays under the configured token budget", () => {
   // Create a lot of long synthetic memories so the base rendering blows the
   // budget without truncation.
