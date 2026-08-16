@@ -92,7 +92,7 @@ export function validateRouteTarget(target: RouteTarget | null | undefined, opti
 
   const allowedCategories = new Set(options?.allowedCategories ?? DEFAULT_CATEGORIES);
   const allowedNamespaces = options?.allowedNamespaces
-    ? new Set(options.allowedNamespaces.map((v) => normalizeNamespace(v)).filter((v) => v.length > 0))
+    ? new Set(options.allowedNamespaces.map((v) => normalizeNamespace(v.trim())).filter((v) => v.length > 0))
     : null;
 
   const normalized: RouteTarget = {};

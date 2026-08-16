@@ -108,11 +108,12 @@ export function isNamespacePolicyCovered(namespace: string, config: PluginConfig
 export function defaultNamespaceForPrincipal(principal: string | undefined, config: PluginConfig): string {
   if (!resolveNamespaceCapabilities(config).namespaces) return config.defaultNamespace;
   if (!principal) return config.defaultNamespace;
-  const exists = config.namespacePolicies.some(
+  const policy = config.namespacePolicies.find(
     (p) => normalizeNamespaceIdentity(p.name) === normalizeNamespaceIdentity(principal),
   );
-  return exists ? principal : config.defaultNamespace;
+  return policy ? normalizeNamespaceIdentity(policy.name) : config.defaultNamespace;
 }
+
 export function recallNamespacesForPrincipal(principal: string | undefined, config: PluginConfig): string[] {
   const out: string[] = [];
   if (!resolveNamespaceCapabilities(config).namespaces) return [config.defaultNamespace];

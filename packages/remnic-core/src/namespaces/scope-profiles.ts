@@ -12,7 +12,12 @@ import type {
   ScopeProfilePromotionTarget,
   ScopeTeamConfig,
 } from "../types.js";
-import { canReadNamespace, canWriteNamespace, defaultNamespaceForPrincipal } from "./principal.js";
+import {
+  canReadNamespace,
+  canWriteNamespace,
+  defaultNamespaceForPrincipal,
+} from "./principal.js";
+import { normalizeNamespaceIdentity } from "./identity.js";
 
 type ScopeProfileCodingOverlay = Pick<CodingNamespaceOverlay, "namespace" | "readFallbacks">;
 
@@ -65,19 +70,28 @@ function principalListed(list: string[], principal: string | undefined): boolean
 }
 
 function derivedScopeProfileSelfNamespace(principal: string | undefined, config: PluginConfig): string | null {
-  if (!principal || principal === config.defaultNamespace || principal === config.sharedNamespace) return null;
+  if (
+    !principal ||
+    normalizeNamespaceIdentity(principal) === normalizeNamespaceIdentity(config.defaultNamespace) ||
+    normalizeNamespaceIdentity(principal) === normalizeNamespaceIdentity(config.sharedNamespace)
+  ) {
+    return null;
+  }
   if (isSafeRouteNamespace(principal)) return principal;
   return "principal-" + createHash("sha256").update(principal).digest("hex").slice(0, 54);
 }
 
 function scopeProfileSelfNamespace(principal: string | undefined, config: PluginConfig): string {
   const existing = defaultNamespaceForPrincipal(principal, config);
-  if (existing !== config.defaultNamespace) return existing;
+  if (normalizeNamespaceIdentity(existing) !== normalizeNamespaceIdentity(config.defaultNamespace)) return existing;
   return derivedScopeProfileSelfNamespace(principal, config) ?? existing;
 }
 
 function hasExplicitNamespacePolicy(namespace: string, config: PluginConfig): boolean {
-  return (config.namespacePolicies ?? []).some((policy) => policy.name === namespace);
+  const identity = normalizeNamespaceIdentity(namespace);
+  return (config.namespacePolicies ?? []).some(
+    (policy) => normalizeNamespaceIdentity(policy.name) === identity,
+  );
 }
 
 function isScopeProfileImplicitSelfNamespace(
@@ -88,9 +102,9 @@ function isScopeProfileImplicitSelfNamespace(
   const derived = derivedScopeProfileSelfNamespace(principal, config);
   return Boolean(
     derived &&
-      namespace === derived &&
-      namespace !== config.defaultNamespace &&
-      namespace !== config.sharedNamespace &&
+      normalizeNamespaceIdentity(namespace) === normalizeNamespaceIdentity(derived) &&
+      normalizeNamespaceIdentity(namespace) !== normalizeNamespaceIdentity(config.defaultNamespace) &&
+      normalizeNamespaceIdentity(namespace) !== normalizeNamespaceIdentity(config.sharedNamespace) &&
       isSafeRouteNamespace(namespace) &&
       !hasExplicitNamespacePolicy(namespace, config),
   );
@@ -297,16 +311,24 @@ function resolveLayer(params: {
   const userProjectBase = namespace.endsWith(userProjectSuffix)
     ? namespace.slice(0, -userProjectSuffix.length)
     : "";
+  const userProjectBaseIdentity = normalizeNamespaceIdentity(userProjectBase);
+  const defaultIdentity = normalizeNamespaceIdentity(config.defaultNamespace);
+  const sharedIdentity = normalizeNamespaceIdentity(config.sharedNamespace);
+  const namespaceIdentity = normalizeNamespaceIdentity(namespace);
   const dynamicUserProjectCollision =
     userProjectBase.length > 0 &&
-    (userProjectBase === config.defaultNamespace ||
-      userProjectBase === config.sharedNamespace ||
-      (config.namespacePolicies ?? []).some((policy) => policy.name === userProjectBase));
+    (userProjectBaseIdentity === defaultIdentity ||
+      userProjectBaseIdentity === sharedIdentity ||
+      (config.namespacePolicies ?? []).some(
+        (policy) => normalizeNamespaceIdentity(policy.name) === userProjectBaseIdentity,
+      ));
   const protectedNamespace =
-    namespace === config.defaultNamespace ||
-    namespace === config.sharedNamespace ||
+    namespaceIdentity === defaultIdentity ||
+    namespaceIdentity === sharedIdentity ||
     dynamicUserProjectCollision ||
-    (config.namespacePolicies ?? []).some((policy) => policy.name === namespace);
+    (config.namespacePolicies ?? []).some(
+      (policy) => normalizeNamespaceIdentity(policy.name) === namespaceIdentity,
+    );
   const policyReadable = !protectedNamespace || canReadNamespace(principal, namespace, config);
   const policyWritable = !protectedNamespace || canWriteNamespace(principal, namespace, config);
   const policyBlocked = protectedNamespace && (!policyReadable || !policyWritable);

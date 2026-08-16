@@ -7,7 +7,7 @@ import test from "node:test";
 import type { PluginConfig } from "../types.js";
 import { NamespaceCatalog } from "./catalog.js";
 import { namespaceIdentityFromToken, namespaceIdentityLegacyToken, namespaceIdentityToken } from "./identity.js";
-import { resolveNamespaceStorageRoot } from "./storage.js";
+import { resolveDefaultNamespaceRoot, resolveNamespaceStorageRoot } from "./storage.js";
 
 function makeConfig(memoryDir: string): PluginConfig {
   return {
@@ -35,7 +35,13 @@ test("Unicode namespaces decode from disk and list in stable order", async () =>
     const legacyToken = namespaceIdentityLegacyToken(nfd);
     assert.equal(namespaceIdentityFromToken(legacyToken), "Café");
     await mkdir(path.join(memoryDir, "namespaces", legacyToken, "facts"), { recursive: true });
-    assert.equal(await resolveNamespaceStorageRoot(config, "Café"), path.join(memoryDir, "namespaces", legacyToken));
+    assert.equal(
+      await resolveNamespaceStorageRoot(config, "Café"),
+      path.join(memoryDir, "namespaces", legacyToken),
+    );
+    const rebuilt = await catalog.rebuildFromDisk({ dryRun: true });
+    const legacyRecord = rebuilt.records.find((record) => record.namespace === "Café");
+    assert.equal(legacyRecord?.storageDir, path.join(memoryDir, "namespaces", legacyToken));
     await catalog.markWrite(cjk, { discoveredBy: "write" });
     await catalog.markWrite(ascii, { discoveredBy: "write" });
 
@@ -46,6 +52,19 @@ test("Unicode namespaces decode from disk and list in stable order", async () =>
       second.map((record) => record.namespace)
     );
     assert.ok(first.some((record) => record.namespace === cjk));
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("default Unicode namespace resolves legacy NFD roots", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-unicode-default-"));
+  try {
+    const config = { ...makeConfig(memoryDir), defaultNamespace: "Café" };
+    const nfd = config.defaultNamespace.normalize("NFD");
+    const nfdRoot = path.join(memoryDir, "namespaces", nfd);
+    await mkdir(path.join(nfdRoot, "facts"), { recursive: true });
+    assert.equal(await resolveDefaultNamespaceRoot(config), nfdRoot);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

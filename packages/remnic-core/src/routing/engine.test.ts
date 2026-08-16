@@ -17,6 +17,10 @@ test("isSafeRouteNamespace accepts Unicode letters and NFC-normalizes before val
     ok: true,
     target: { namespace: "Café" },
   });
+  assert.equal(
+    validateRouteTarget({ namespace: "Café" }, { allowedNamespaces: [" Café "] }).ok,
+    true,
+  );
 });
 
 test("isSafeRouteNamespace rejects traversal, controls, bidi overrides, and edge whitespace", () => {

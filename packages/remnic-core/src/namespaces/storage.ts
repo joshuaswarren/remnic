@@ -157,19 +157,32 @@ export async function resolveDefaultNamespaceRoot(config: PluginConfig): Promise
   // back to memoryDir/tokenized. `namespaceIdentityToken` already normalizes
   // internally, so the tokenized path is unaffected.
   const defaultIdentity = normalizeNamespaceIdentity(config.defaultNamespace);
+  const defaultNfdIdentity = defaultIdentity.normalize("NFD");
   const legacyNsDir = resolveNamespaceDir(config.memoryDir, defaultIdentity);
+  const legacyNfdNsDir = resolveNamespaceDir(config.memoryDir, defaultNfdIdentity);
   const tokenizedNsDir = resolveNamespaceDir(
     config.memoryDir,
-    namespaceIdentityToken(config.defaultNamespace),
+    namespaceIdentityToken(defaultIdentity),
+  );
+  const legacyTokenNsDir = resolveNamespaceDir(
+    config.memoryDir,
+    namespaceIdentityLegacyToken(defaultNfdIdentity),
   );
   const tokenizedHasData =
     (await exists(tokenizedNsDir)) &&
     (await hasAnyNamespaceStorageMarker(tokenizedNsDir, { includeRuntimeState: true }));
+  const legacyTokenHasData =
+    (await exists(legacyTokenNsDir)) &&
+    (await hasAnyNamespaceStorageMarker(legacyTokenNsDir, { includeRuntimeState: true }));
   const nsDir = tokenizedHasData
     ? tokenizedNsDir
-    : (await exists(legacyNsDir))
-      ? legacyNsDir
-      : tokenizedNsDir;
+    : legacyTokenHasData
+      ? legacyTokenNsDir
+      : (await exists(legacyNsDir))
+        ? legacyNsDir
+        : legacyNfdNsDir !== legacyNsDir && (await exists(legacyNfdNsDir))
+          ? legacyNfdNsDir
+          : tokenizedNsDir;
   return (await exists(nsDir)) && !(await hasAnyLegacyData(config.memoryDir))
     ? nsDir
     : config.memoryDir;
