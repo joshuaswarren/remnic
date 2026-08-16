@@ -3,6 +3,7 @@ import { existsSync, statSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendNodeOption } from "./root-test-runner-env.mjs";
+import { ensurePackageBuild } from "./build-staleness.mjs";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -28,6 +29,17 @@ const files = fileArgs.map((fileArg) => {
   }
   return filePath;
 });
+ensurePackageBuild(
+  repoRoot,
+  "@remnic/bench",
+  join(repoRoot, "packages", "bench", "dist", "index.js"),
+  [
+    join(repoRoot, "packages", "bench", "src"),
+    join(repoRoot, "packages", "bench", "package.json"),
+    join(repoRoot, "packages", "bench", "tsup.config.ts"),
+    join(repoRoot, "packages", "bench", "tsconfig.json"),
+  ],
+);
 
 const tsxBin = process.platform === "win32" ? "tsx.cmd" : "tsx";
 const workspaceBinDir = join(repoRoot, "node_modules", ".bin");
