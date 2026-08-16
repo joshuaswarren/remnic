@@ -131,17 +131,22 @@ if git -C "$repo_root" show-ref --verify --quiet "refs/heads/$branch"; then
   printf 'Refusing to clobber existing branch: %s\n' "$branch" >&2
   exit 1
 fi
+branch_created=0
 cleanup() {
   if (( ! worktree_registered_before )); then
     if worktree_owned_at "$worktree_path"; then
       if git -C "$repo_root" worktree remove --force "$worktree_path" >/dev/null 2>&1; then
-        git -C "$repo_root" branch -D -- "$branch" >/dev/null 2>&1 || true
+        if (( branch_created )); then
+          git -C "$repo_root" branch -D -- "$branch" >/dev/null 2>&1 || true
+        fi
       fi
     elif worktree_owned_at "$staging_path"; then
       if git -C "$repo_root" worktree remove --force "$staging_path" >/dev/null 2>&1; then
-        git -C "$repo_root" branch -D -- "$branch" >/dev/null 2>&1 || true
+        if (( branch_created )); then
+          git -C "$repo_root" branch -D -- "$branch" >/dev/null 2>&1 || true
+        fi
       fi
-    elif (( ! branch_existed_before )) && ! branch_has_worktree; then
+    elif (( branch_created )) && ! branch_has_worktree; then
       git -C "$repo_root" branch -D -- "$branch" >/dev/null 2>&1 || true
     fi
   fi
@@ -152,6 +157,7 @@ if ! git -C "$repo_root" branch "$branch" "$base" >/dev/null; then
   printf 'Could not create branch: %s\n' "$branch" >&2
   exit 1
 fi
+branch_created=1
 
 printf 'Creating worktree at %s from %s on branch %s\n' "$worktree_path" "$base" "$branch"
 git -C "$repo_root" worktree add "$staging_path" "$branch"
