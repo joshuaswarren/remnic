@@ -331,7 +331,7 @@ fetch_and_evaluate() {
           ( "$state" == "COMMENTED" &&
             "$body" =~ [Nn]o[[:space:]]+(major[[:space:]]+)?issues|[Aa]pproved|[Ll]ooks[[:space:]]+good ) ]]; then
           record_reviewer_approval "$login"
-        elif [[ "$state" == "CHANGES_REQUESTED" ]]; then
+        elif [[ "$state" == "CHANGES_REQUESTED" || "$state" == "DISMISSED" ]]; then
           record_reviewer_negative "$login" "$state"
         elif [[ "$state" == "COMMENTED" && -z "$body" ]]; then
           record_reviewer_neutral "$login" "empty review body"
@@ -425,10 +425,10 @@ while true; do
       [[ "$latest_head" != "$HEAD_SHA" ]]; then
       continue
     fi
+    print_reviewer_neutral_evidence
     if [[ "$JSON_OUTPUT" == true ]]; then
       json_summary settled "$HEAD_SHA" '[]'
     else
-      print_reviewer_neutral_evidence
       printf 'settled: PR #%s head %s; checks terminal, reviewers reported, 0 unresolved threads\n' "$PR_NUMBER" "$HEAD_SHA"
     fi
     exit 0

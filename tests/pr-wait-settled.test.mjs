@@ -76,6 +76,11 @@ if [[ "$1 $2" == "api repos/example/repo/pulls/7/reviews" ]]; then
       printf 'coderabbitai[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
       printf 'chatgpt-codex-connector[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
       ;;
+    dismissed-review)
+      printf 'cursor[bot]\\t%s\\tDISMISSED\\n' '${headSha}'
+      printf 'coderabbitai[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
+      printf 'chatgpt-codex-connector[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
+      ;;
     neutral-then-approved)
       printf 'cursor[bot]\\t%s\\tCOMMENTED\\tReview rate limited\\n' '${headSha}'
       printf 'cursor[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
@@ -152,6 +157,14 @@ test("wait treats a rate-limited review as terminal neutral", async () => {
     assert.match(result.stdout, /Review rate limited/);
   });
 });
+test("wait prints neutral evidence in settled JSON mode", async () => {
+  await withGhStub("rate-limited-review", async (env) => {
+    const result = runWait(env, ["--timeout", "0", "--interval", "0", "--json"]);
+    assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
+    JSON.parse(result.stdout);
+    assert.match(result.stderr, /Review rate limited/);
+  });
+});
 
 test("wait clears neutral evidence after a later approval", async () => {
   await withGhStub("neutral-then-approved", async (env) => {
@@ -198,6 +211,22 @@ test("wait keeps an explicit negative reviewer verdict blocking", async () => {
     assert.notEqual(result.status, 0);
     const summary = JSON.parse(result.stdout);
     assert.match(summary.outstanding.join(" "), /CHANGES_REQUESTED/);
+  });
+});
+test("wait keeps a dismissed reviewer verdict blocking", async () => {
+  await withGhStub("dismissed-review", async (env) => {
+    const result = runWait(env, [
+      "--timeout",
+      "0",
+      "--reviewer-timeout",
+      "0",
+      "--interval",
+      "0",
+      "--json",
+    ]);
+    assert.notEqual(result.status, 0);
+    const summary = JSON.parse(result.stdout);
+    assert.match(summary.outstanding.join(" "), /DISMISSED/);
   });
 });
 
