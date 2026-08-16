@@ -7,6 +7,7 @@ import test from "node:test";
 import { LcmArchive } from "./lcm/archive.js";
 import { LcmEngine, extractLcmConfig } from "./lcm/engine.js";
 import { openLcmDatabase } from "./lcm/schema.js";
+import { estimateTokenCount } from "./token-estimate.js";
 import type { PluginConfig } from "./types.js";
 
 function createPluginConfig(memoryDir: string): PluginConfig {
@@ -661,16 +662,55 @@ test("expandContext preserves first, middle, and last row identity when truncate
         session_id: "session-truncated",
         turn_index: 2,
         role: "assistant",
-        content: "BBBBBB",
+        content: "BBBBBBBB",
       },
       {
         id: last.id,
         session_id: "session-truncated",
         turn_index: 4,
         role: "assistant",
-        content: "DDDDDD",
+        content: "DDDD",
       },
     ]);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+test("expandContext applies token budgets to wide-script messages", async () => {
+  const memoryDir = await mkdtemp(
+    path.join(os.tmpdir(), "engram-lcm-expand-wide-script-"),
+  );
+
+  try {
+    const engine = new LcmEngine(
+      createPluginConfig(memoryDir),
+      async () => "summary",
+    );
+    await engine.ensureInitialized();
+
+    const db = openLcmDatabase(memoryDir);
+    try {
+      const archive = new LcmArchive(db);
+      archive.appendMessages("session-wide-script", [
+        { turnIndex: 1, role: "user", content: "日本語".repeat(40) },
+        { turnIndex: 2, role: "assistant", content: "日本語".repeat(40) },
+        { turnIndex: 3, role: "user", content: "日本語".repeat(40) },
+      ]);
+    } finally {
+      db.close();
+    }
+
+    const expanded = await engine.expandContext(
+      "session-wide-script",
+      1,
+      3,
+      10,
+    );
+
+    assert.ok(
+      expanded.reduce((sum, message) => sum + estimateTokenCount(message.content), 0) <= 10,
+    );
+    assert.ok(expanded.every((message) => message.content.length < 40));
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

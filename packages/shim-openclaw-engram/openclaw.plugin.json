@@ -4584,7 +4584,7 @@
       },
       "recallBudgetChars": {
         "type": "number",
-        "description": "Hard character cap for total recall context. If unset, derives a one-code-point-per-token cap from maxMemoryTokens."
+        "description": "Hard character headroom for total recall context. Defaults to maxMemoryTokens * 4 for Latin-script capacity; recall assembly also enforces maxMemoryTokens with the shared script-aware estimator."
       },
       "recallProfileMaxRatio": {
         "type": "number",

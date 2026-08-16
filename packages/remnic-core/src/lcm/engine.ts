@@ -10,8 +10,8 @@ import {
 } from "./recall.js";
 import { LcmWorkQueue, type LcmObserveMessage } from "./queue.js";
 import type { PluginConfig } from "../types.js";
+import { estimateTokenCount } from "../token-estimate.js";
 import { log } from "../logger.js";
-
 export interface LcmEngineConfig {
   enabled: boolean;
   leafBatchSize: number;
@@ -556,12 +556,14 @@ export class LcmEngine {
     const messages = this.archive!.getMessages(normalizedSessionId, fromTurn, toTurn);
     if (messages.length === 0) return [];
 
-    // Enforce token budget — keep first and last, truncate middle
-    const maxChars = maxTokens * 4;
-    let totalChars = 0;
-    for (const m of messages) totalChars += m.content.length;
-
-    if (totalChars <= maxChars) {
+    // Enforce the token budget while keeping the existing first/last shape.
+    const tokenBudget = Math.max(0, Math.floor(maxTokens));
+    if (tokenBudget === 0) return [];
+    const totalTokens = messages.reduce(
+      (sum, message) => sum + estimateTokenCount(message.content),
+      0,
+    );
+    if (totalTokens <= tokenBudget) {
       return messages.map((m) => ({
         id: m.id,
         session_id: m.session_id,
@@ -571,44 +573,47 @@ export class LcmEngine {
       }));
     }
 
-    // Keep first and last messages, truncate from middle
     const result: LcmExpandedMessage[] = [];
-    let budget = maxChars;
-
-    // Reserve space for the last message
     const lastMsg = messages[messages.length - 1];
-    const lastMsgChars = Math.min(
-      lastMsg.content.length,
-      Math.floor(maxChars * 0.3),
+    const reservedLastTokens = Math.min(
+      estimateTokenCount(lastMsg.content),
+      Math.floor(tokenBudget * 0.3),
     );
-    budget -= lastMsgChars;
+    let remainingTokens = tokenBudget - reservedLastTokens;
 
-    // Add messages from the beginning
     for (let i = 0; i < messages.length - 1; i++) {
-      if (budget <= 0) break;
-      const m = messages[i];
-      const truncated = m.content.slice(0, budget);
+      if (remainingTokens <= 0) break;
+      const content = truncateToTokenBudget(
+        messages[i].content,
+        remainingTokens,
+      );
+      if (!content) continue;
       result.push({
-        id: m.id,
-        session_id: m.session_id,
-        turn_index: m.turn_index,
-        role: m.role,
-        content: truncated,
+        id: messages[i].id,
+        session_id: messages[i].session_id,
+        turn_index: messages[i].turn_index,
+        role: messages[i].role,
+        content,
       });
-      budget -= truncated.length;
+      remainingTokens -= estimateTokenCount(content);
     }
 
-    // Always append the last message
-    result.push({
-      id: lastMsg.id,
-      session_id: lastMsg.session_id,
-      turn_index: lastMsg.turn_index,
-      role: lastMsg.role,
-      content: lastMsg.content.slice(0, lastMsgChars + Math.max(0, budget)),
-    });
-
+    const lastContent = truncateToTokenBudget(
+      lastMsg.content,
+      reservedLastTokens + remainingTokens,
+    );
+    if (lastContent) {
+      result.push({
+        id: lastMsg.id,
+        session_id: lastMsg.session_id,
+        turn_index: lastMsg.turn_index,
+        role: lastMsg.role,
+        content: lastContent,
+      });
+    }
     return result;
   }
+
 
   /** Get statistics about the LCM archive. */
   async getStats(sessionId?: string): Promise<{
@@ -690,4 +695,20 @@ export class LcmEngine {
     this.observeQueue = null;
     this.initPromise = null;
   }
+}
+function truncateToTokenBudget(text: string, maxTokens: number): string {
+  if (maxTokens <= 0) return "";
+  if (estimateTokenCount(text) <= maxTokens) return text;
+  const codePoints = [...text];
+  let low = 0;
+  let high = codePoints.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (estimateTokenCount(codePoints.slice(0, mid).join("")) <= maxTokens) {
+      low = mid;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return codePoints.slice(0, low).join("");
 }
