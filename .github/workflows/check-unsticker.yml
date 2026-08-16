@@ -6,8 +6,8 @@ name: Check Unsticker
 #    no workflow trigger for thread resolution (`pull_request_review_thread`
 #    is webhook-only). Resolving the last open thread therefore leaves the
 #    guard stuck on its previous failing run until an unrelated event or a
-#    manual rerun. This sweeper reruns the guard when its latest run failed
-#    but the PR now has zero unresolved (non-CodeQL) threads.
+#    manual rerun. This sweeper reruns failed guard suites when at least one
+#    failed suite remains and the PR has zero unresolved (non-CodeQL) threads.
 #
 # 2. A branch ruleset treats a required `ai-reviewers` context as non-passing
 #    when ANY check suite on the head carries a terminally `cancelled` (or a
@@ -256,9 +256,9 @@ jobs:
               const label = `PR #${pull.number}`;
 
               // Case 1: rerun guard suites only for the exact stale-red state:
-              // its latest run failed and effective unresolved threads are zero.
-              // The ruleset requires every failed suite on the head to pass, so
-              // rerun all failed suites once that state is confirmed (#1610).
+              // at least one guard suite failed and effective unresolved threads are zero.
+              // The ruleset requires every failed suite on the head to pass.
+              // Rerun all failed suites once that state is confirmed.
               // Guard runs have no concurrency group, so parallel reruns are safe.
               const guardRuns = await runsFor('review-thread-guard.yml', headSha, pull.number);
               const latestFailed = latestFailedGuardRuns(guardRuns);

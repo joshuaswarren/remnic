@@ -69,7 +69,7 @@ test("check-unsticker uses the shared dedup evaluator and complete thread fields
   assert.match(workflow, /hasGateReply\(t\) \|\| resolvedById\.get\(rec\.canonicalId\) === true/);
 });
 
-test("check-unsticker only reruns the guard when its latest run failed", () => {
+test("check-unsticker only reruns failed guard suites when threads are resolved", () => {
   const workflow = readRepoFile(".github/workflows/check-unsticker.yml");
   assert.match(workflow, /latestFailedGuardRuns\(guardRuns\)/);
   assert.match(workflow, /effective unresolved threads are zero/);

@@ -10,8 +10,19 @@ const run = (createdAt, conclusion, status = "completed", id = createdAt) => ({
 });
 
 test("green guard exits without a rerun or thread lookup", () => {
-  const runs = [run("2026-08-16T00:00:00Z", "failure"), run("2026-08-16T00:05:00Z", "success")];
+  const runs = [run("2026-08-16T00:05:00Z", "success")];
   assert.deepEqual(planGuardReruns(runs, 0), []);
+});
+
+test("an older failed guard suite remains eligible after a newer success", () => {
+  const runs = [
+    run("2026-08-16T00:00:00Z", "failure", "completed", 1),
+    run("2026-08-16T00:05:00Z", "success", "completed", 2),
+  ];
+  assert.deepEqual(
+    planGuardReruns(runs, 0).map((candidate) => candidate.id),
+    [1]
+  );
 });
 
 test("failed guard with resolved threads reruns failed suites", () => {
@@ -30,7 +41,10 @@ test("failed guard with open threads does not rerun", () => {
   assert.deepEqual(planGuardReruns(runs, 2), []);
 });
 
-test("an active latest guard run does not rerun an older failure", () => {
+test("an active latest guard run does not hide an older failed suite", () => {
   const runs = [run("2026-08-16T00:00:00Z", "failure"), run("2026-08-16T00:05:00Z", "", "in_progress")];
-  assert.deepEqual(planGuardReruns(runs, 0), []);
+  assert.deepEqual(
+    planGuardReruns(runs, 0).map((candidate) => candidate.id),
+    ["2026-08-16T00:00:00Z"]
+  );
 });
