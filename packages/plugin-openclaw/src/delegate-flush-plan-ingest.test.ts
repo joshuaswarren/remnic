@@ -126,6 +126,16 @@ function optionsFor(port: number, workspaceDir: string, serviceId: string) {
 
 async function startObserveServer(onObserve: (content: string) => Promise<void> | void): Promise<ObserveServer> {
   const server = http.createServer((request, response) => {
+    const validRequest =
+      request.method === "POST" &&
+      request.url === "/engram/v1/observe" &&
+      request.headers.authorization === "Bearer test-token" &&
+      request.headers["content-type"] === "application/json";
+    if (!validRequest) {
+      response.statusCode = 400;
+      response.end();
+      return;
+    }
     let raw = "";
     request.setEncoding("utf8");
     request.on("data", (chunk) => {
@@ -134,9 +144,22 @@ async function startObserveServer(onObserve: (content: string) => Promise<void> 
     request.on("end", () => {
       void (async () => {
         const body = JSON.parse(raw) as {
-          messages?: Array<{ content?: string }>;
+          sessionKey?: unknown;
+          messages?: unknown;
         };
-        await onObserve(body.messages?.[0]?.content ?? "");
+        const message =
+          Array.isArray(body.messages) &&
+          body.messages.length === 1 &&
+          typeof body.messages[0] === "object" &&
+          body.messages[0] !== null
+            ? (body.messages[0] as { content?: unknown })
+            : undefined;
+        if (body.sessionKey !== "test-session" || typeof message?.content !== "string") {
+          response.statusCode = 400;
+          response.end();
+          return;
+        }
+        await onObserve(message.content);
         response.statusCode = 200;
         response.setHeader("content-type", "application/json");
         response.end(JSON.stringify({ ok: true }));
