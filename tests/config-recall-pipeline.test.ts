@@ -7,7 +7,7 @@ import { Orchestrator } from "../src/orchestrator.js";
 test("parseConfig sets recall pipeline defaults", () => {
   const cfg = parseConfig({ openaiApiKey: "sk-test" });
 
-  assert.equal(cfg.recallBudgetChars, cfg.maxMemoryTokens);
+  assert.equal(cfg.recallBudgetChars, cfg.maxMemoryTokens * 4);
   assert.ok(Array.isArray(cfg.recallPipeline));
   assert.ok(cfg.recallPipeline.length > 0);
 

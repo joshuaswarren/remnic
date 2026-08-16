@@ -17,6 +17,6 @@ test("recall derived budget keeps Japanese injection within maxMemoryTokens", ()
   const assembled = coordinator.assembleRecallSections(buckets);
   const injected = assembled.sections.join("\n\n---\n\n");
 
-  assert.equal(config.recallBudgetChars, config.maxMemoryTokens);
+  assert.equal(config.recallBudgetChars, config.maxMemoryTokens * 4);
   assert.ok(estimateTokenCount(injected) <= config.maxMemoryTokens);
 });

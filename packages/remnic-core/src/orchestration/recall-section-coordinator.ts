@@ -17,8 +17,9 @@
  * TierMigrationCoordinator accessor pattern.
  */
 
-import type { PluginConfig, RecallSectionConfig } from "../types.js";
 import type { LastRecallBudgetSummary } from "../recall-state.js";
+import { estimateTokenCount } from "../token-estimate.js";
+import type { PluginConfig, RecallSectionConfig } from "../types.js";
 
 export interface RecallSectionAppendOptions {
   atomic?: boolean;
@@ -179,18 +180,31 @@ export class RecallSectionCoordinator {
     const end = boundary > 0 ? boundary : contentLimit;
     return `${content.slice(0, end).trimEnd()}${suffix}`;
   }
-
   truncateRecallSectionToBudget(
     content: string,
     maxChars: number,
+    maxTokens?: number,
   ): string {
-    if (maxChars <= 0) return "";
-    if (content.length <= maxChars) return content;
+    if (maxChars <= 0 || maxTokens === 0) return "";
     const suffix = "\n\n...(memory context trimmed)";
-    if (maxChars <= suffix.length) {
-      return content.slice(0, maxChars);
+    const charBounded =
+      content.length <= maxChars
+        ? content
+        : maxChars <= suffix.length
+          ? content.slice(0, maxChars)
+          : `${content.slice(0, maxChars - suffix.length)}${suffix}`;
+    if (maxTokens === undefined || estimateTokenCount(charBounded) <= maxTokens) {
+      return charBounded;
     }
-    return `${content.slice(0, maxChars - suffix.length)}${suffix}`;
+    const codePoints = [...charBounded];
+    let low = 0;
+    let high = codePoints.length;
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      if (estimateTokenCount(codePoints.slice(0, mid).join("")) <= maxTokens) low = mid;
+      else high = mid - 1;
+    }
+    return codePoints.slice(0, low).join("");
   }
 
 
@@ -280,6 +294,7 @@ export class RecallSectionCoordinator {
     }
 
     const budget = this.getRecallBudgetChars(budgetOverride);
+    const tokenBudget = Math.max(0, Math.floor(this.getConfig().maxMemoryTokens));
     const candidateMemoryChunks =
       orderedSections
         .find((section) => section.id === "memories")
@@ -319,10 +334,22 @@ export class RecallSectionCoordinator {
         break;
       }
     }
+    let firstAtomicMemoryReserveTokens = 0;
+    for (const chunk of memorySection?.chunks ?? []) {
+      if (
+        chunk.atomic &&
+        chunk.content.length <= memoryAllocationBudget &&
+        estimateTokenCount(chunk.content) <= tokenBudget
+      ) {
+        firstAtomicMemoryReserveTokens = estimateTokenCount(chunk.content);
+        break;
+      }
+    }
     const includedMemoryIds: string[] = [];
     const includedMemoryPaths: string[] = [];
     const includedMemoryNamespaces: Array<string | undefined> = [];
     let usedChars = 0;
+    let usedTokens = 0;
     let truncated = false;
     const selected = new Map<string, string>();
 
@@ -331,6 +358,8 @@ export class RecallSectionCoordinator {
       if (!section || selected.has(id)) continue;
       const separatorChars = selected.size > 0 ? separator.length : 0;
       const available = budget - usedChars - separatorChars;
+      const separatorTokens = selected.size > 0 ? estimateTokenCount(separator) : 0;
+      const availableTokens = tokenBudget - usedTokens - separatorTokens;
       const sectionMaxChars = this.getRecallSectionMaxChars(id);
       const reservesFirstMemory =
         memoryIndex > allocationOrder.indexOf(id) &&
@@ -343,7 +372,13 @@ export class RecallSectionCoordinator {
         typeof sectionMaxChars === "number"
           ? Math.min(availableAfterMemoryReserve, sectionMaxChars)
           : availableAfterMemoryReserve;
-      if (allocatedSectionAvailable <= 0) {
+      const availableAfterMemoryReserveTokens =
+        availableTokens -
+        (reservesFirstMemory
+          ? firstAtomicMemoryReserveTokens + separatorTokens
+          : 0);
+      const allocatedTokenAvailable = availableAfterMemoryReserveTokens;
+      if (allocatedSectionAvailable <= 0 || allocatedTokenAvailable <= 0) {
         truncated = true;
         continue;
       }
@@ -372,13 +407,11 @@ export class RecallSectionCoordinator {
                 Math.min(profileLimit, allocatedSectionAvailable),
               )
             : content;
-        finalContent =
-          id === "profile"
-            ? boundedContent
-            : this.truncateRecallSectionToBudget(
-                boundedContent,
-                allocatedSectionAvailable,
-              );
+        finalContent = this.truncateRecallSectionToBudget(
+          boundedContent,
+          allocatedSectionAvailable,
+          allocatedTokenAvailable,
+        );
         if (!finalContent) {
           truncated = true;
           continue;
@@ -400,7 +433,10 @@ export class RecallSectionCoordinator {
             const candidate = rendered
               ? `${rendered}\n\n${chunk.content}`
               : chunk.content;
-            if (candidate.length <= allocatedSectionAvailable) {
+            if (
+              candidate.length <= allocatedSectionAvailable &&
+              estimateTokenCount(candidate) <= allocatedTokenAvailable
+            ) {
               rendered = candidate;
               includedLeadingContent = true;
             } else {
@@ -412,12 +448,16 @@ export class RecallSectionCoordinator {
           const candidate = rendered
             ? `${rendered}\n\n${chunk.content}`
             : chunk.content;
-          if (candidate.length > allocatedSectionAvailable) {
+          if (
+            candidate.length > allocatedSectionAvailable ||
+            estimateTokenCount(candidate) > allocatedTokenAvailable
+          ) {
             if (
               chunk.atomic &&
               includedAtomicCount === 0 &&
               includedLeadingContent &&
-              chunk.content.length <= allocatedSectionAvailable
+              chunk.content.length <= allocatedSectionAvailable &&
+              estimateTokenCount(chunk.content) <= allocatedTokenAvailable
             ) {
               rendered = chunk.content;
               includedLeadingContent = false;
@@ -435,7 +475,8 @@ export class RecallSectionCoordinator {
               !chunk.atomic &&
               includedAtomicCount === 0 &&
               includedLeadingContent &&
-              chunk.content.length <= allocatedSectionAvailable
+              chunk.content.length <= allocatedSectionAvailable &&
+              estimateTokenCount(chunk.content) <= allocatedTokenAvailable
             ) {
               rendered = chunk.content;
               includedLeadingContent = false;
@@ -479,6 +520,7 @@ export class RecallSectionCoordinator {
       }
       selected.set(id, finalContent);
       usedChars += separatorChars + finalContent.length;
+      usedTokens += separatorTokens + estimateTokenCount(finalContent);
     }
 
     const sections: string[] = [];

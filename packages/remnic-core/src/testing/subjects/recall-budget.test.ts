@@ -297,10 +297,10 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         return;
       }
       case "sparse-metadata-with-binding": {
-        // Budget is derived from maxMemoryTokens with a safe one-code-point cap.
-        assert.equal(config.recallBudgetChars, config.maxMemoryTokens, "budget derives from maxMemoryTokens");
-        assert.equal(budget, config.maxMemoryTokens, "coordinator honors the token-derived budget");
-        assert.ok(assembled.finalChars <= budget, "section sum stays within the token-derived budget");
+        // Budget keeps Latin-script headroom and token-aware assembly caps wide scripts.
+        assert.equal(config.recallBudgetChars, config.maxMemoryTokens * 4, "budget derives from maxMemoryTokens");
+        assert.ok(budget <= config.maxMemoryTokens * 4, "coordinator honors the character budget");
+        assert.ok(assembled.finalChars <= budget, "section sum stays within the character budget");
         assert.ok(assembled.truncated, "oversized content forces truncation");
         return;
       }
