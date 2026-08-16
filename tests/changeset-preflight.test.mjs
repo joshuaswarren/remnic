@@ -48,3 +48,16 @@ test("preflight stays silent for release-only root manifests", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "");
 });
+test("preflight stays silent for private packages and root tooling", () => {
+  const result = check("packages/bench-ui/src/main.ts", "scripts/changeset-stub.mjs", "tests/changeset-stub.test.mjs");
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "");
+});
+
+test("preflight stays silent for agent instructions", () => {
+  const result = check("src/AGENTS.md", "AGENTS.md", "CONTRIBUTING.md");
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "");
+});

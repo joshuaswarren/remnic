@@ -63,6 +63,21 @@ if [[ "$MODE" == "--check-entity-hardening-path" ]]; then
   exit
 fi
 
+changeset_code_file() {
+  local file="$1"
+  case "$file" in
+    src/*) return 0 ;;
+    packages/*/*)
+      local package_name="${file#packages/}"
+      package_name="${package_name%%/*}"
+      local manifest="packages/${package_name}/package.json"
+      [[ -f "$manifest" ]] || return 1
+      node -e 'const fs = require("node:fs"); const pkg = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); process.exit(pkg.private === true ? 1 : 0)' "$manifest"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 changeset_warning_needed() {
   local files="$1"
   local has_code=0
@@ -71,9 +86,9 @@ changeset_warning_needed() {
     [[ -z "$file" ]] && continue
     case "$file" in
       .changeset/*.md) has_changeset=1 ;;
-      .changeset/*|README.md|CHANGELOG.md|docs/*|packages/*/README.md) ;;
+      .changeset/*|README.md|CHANGELOG.md|CONTRIBUTING.md|AGENTS.md|*/README.md|*/AGENTS.md|*/CONTRIBUTING.md|docs/*) ;;
       package.json|pnpm-lock.yaml|openclaw.plugin.json|packages/*/package.json|packages/*/openclaw.plugin.json|packages/*/.claude-plugin/plugin.json|packages/*/.codex-plugin/plugin.json) ;;
-      *) has_code=1 ;;
+      *) changeset_code_file "$file" && has_code=1 ;;
     esac
   done <<< "$files"
   [[ "$has_code" -eq 1 && "$has_changeset" -eq 0 ]]

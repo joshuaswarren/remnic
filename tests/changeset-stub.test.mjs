@@ -88,6 +88,12 @@ test("root OpenClaw compatibility sources map to the published plugin", () => {
   );
 });
 
+test("root documentation remains documentation-only", () => {
+  const result = inferTouchedPackages(["src/AGENTS.md", "CONTRIBUTING.md"], packages);
+
+  assert.deepEqual(result.published, []);
+  assert.deepEqual(result.python, []);
+});
 test("working-tree diff collection uses stubbed git output from the merge-base", () => {
   const calls = [];
   const git = (_repoRoot, args) => {

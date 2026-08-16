@@ -76,13 +76,16 @@ export async function discoverPackages(repoRoot) {
 
 function isDocumentationFile(filePath) {
   const normalized = normalizePath(filePath);
-  return (
-    normalized === "README.md" ||
-    normalized === "CHANGELOG.md" ||
-    normalized.startsWith("docs/") ||
-    normalized.startsWith(".changeset/") ||
-    /^packages\/[^/]+\/README\.md$/.test(normalized)
-  );
+  if (normalized.startsWith("docs/") || normalized.startsWith(".changeset/")) {
+    return true;
+  }
+  if (!normalized.endsWith(".md")) {
+    return false;
+  }
+  if (!normalized.startsWith("packages/")) {
+    return true;
+  }
+  return /\/(README|AGENTS|CONTRIBUTING)\.md$/.test(normalized);
 }
 
 function packageForFile(filePath, packages) {
