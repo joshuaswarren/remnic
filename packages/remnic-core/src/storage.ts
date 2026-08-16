@@ -1495,7 +1495,7 @@ export function serializeEntityFile(entity: EntityFile, entitySchemas?: PluginCo
     lines.push(`## ${section.title}`, "");
     for (const [index, fact] of section.facts.entries()) {
       const origin = section.factOrigins?.[index];
-      const prefix = origin ? `[origin=${escapeEntityTimelineMetadataValue(origin)}] ` : "";
+      const prefix = origin ? `[remnic-origin=${escapeEntityTimelineMetadataValue(origin)}] ` : "";
       lines.push(`- ${prefix}${fact}`);
     }
     lines.push("");

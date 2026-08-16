@@ -816,9 +816,8 @@ export class EntityStore {
           }
         }
 
-        // Deduplicate timeline entries and derive facts from the timeline.
-        const timelineKeys = new Set<string>();
-        mergedEntity.timeline = mergedEntity.timeline.filter((entry) => {
+        const timelineByKey = new Map<string, (typeof mergedEntity.timeline)[number]>();
+        for (const entry of mergedEntity.timeline) {
           const key = JSON.stringify([
             entry.timestamp,
             entry.source ?? "",
@@ -826,10 +825,14 @@ export class EntityStore {
             entry.principal ?? "",
             entry.text,
           ]);
-          if (timelineKeys.has(key)) return false;
-          timelineKeys.add(key);
-          return true;
-        });
+          const existing = timelineByKey.get(key);
+          if (!existing) {
+            timelineByKey.set(key, entry);
+          } else if (existing.origin !== entry.origin) {
+            existing.origin = undefined;
+          }
+        }
+        mergedEntity.timeline = [...timelineByKey.values()];
         // Deduplicate relationships by target+label
         const relKeys = new Set<string>();
         mergedEntity.relationships = mergedEntity.relationships.filter((r) => {

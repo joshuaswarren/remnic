@@ -78,7 +78,7 @@ export function parseEntityTimelineBullet(bullet: string, fallbackTimestamp: str
       case "principal":
         entry.principal = value;
         break;
-      case "origin":
+      case "remnic-origin":
         entry.origin = value;
         break;
       default:
@@ -260,7 +260,7 @@ export function serializeEntityTimelineEntry(entry: EntityTimelineEntry): string
     tokens.push(`[principal=${escapeEntityTimelineMetadataValue(entry.principal)}]`);
   }
   if (entry.origin) {
-    tokens.push(`[origin=${escapeEntityTimelineMetadataValue(entry.origin)}]`);
+    tokens.push(`[remnic-origin=${escapeEntityTimelineMetadataValue(entry.origin)}]`);
   }
   const serializedMetadata = tokens.length > 0 ? `${tokens.join(" ")} ` : "";
   return `- ${serializedMetadata}${entry.text}`.trimEnd();
@@ -361,8 +361,8 @@ function parseEntityStructuredSectionFacts(
     if (line.startsWith("- ")) {
       flushCurrentBlock();
       const bullet = line.slice(2).trim();
-      const end = bullet.startsWith("[origin=") ? findEntityTimelineTokenEnd(bullet) : -1;
-      const token = end >= 0 ? bullet.slice(8, end) : "";
+      const end = bullet.startsWith("[remnic-origin=") ? findEntityTimelineTokenEnd(bullet) : -1;
+      const token = end >= 0 ? bullet.slice(15, end) : "";
       currentBlock = [end >= 0 ? bullet.slice(end + 1).trimStart() : bullet];
       currentOrigin = end >= 0 ? unescapeEntityTimelineMetadataValue(token) : undefined;
       continue;
@@ -411,9 +411,11 @@ export function partitionEntityStructuredSections(
     }
     const existing = structuredSectionIndex.get(normalizedSection.key);
     if (existing) {
+      const existingOrigins = existing.facts.map((_, index) => existing.factOrigins?.[index]);
+      const incomingOrigins = parsedFacts.facts.map((_, index) => parsedFacts.factOrigins?.[index]);
       const merged = normalizeStructuredSectionFactsWithOrigins(
         [...existing.facts, ...parsedFacts.facts],
-        [...(existing.factOrigins ?? []), ...(parsedFacts.factOrigins ?? [])],
+        [...existingOrigins, ...incomingOrigins],
       );
       existing.facts = merged.facts;
       existing.factOrigins = merged.factOrigins;
