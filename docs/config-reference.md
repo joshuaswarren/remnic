@@ -328,7 +328,7 @@ The recall budget controls how much context Remnic injects into each agent promp
 
 **How it works (v9.0.66+):** Remnic assembles recall context in pipeline section order (shared-context → profile → entity retrieval → knowledge index → ... → memories → transcripts → summaries). The budget-aware assembler reserves space for the `memories` section so earlier sections cannot fully exhaust the budget. However, the reservation is minimal (heading-sized). If the total budget is too small, earlier sections still crowd out memory content.
 
-**Common pitfall:** The default budget is `maxMemoryTokens` = **2,000 chars**. The cap is conservative for English but prevents wide-script recall content from exceeding the documented token limit. Set `recallBudgetChars` explicitly when you need a larger character budget for English-heavy context.
+**Common pitfall:** The default character budget is `maxMemoryTokens * 4` = **8,000 chars**. Recall assembly also enforces the separate `maxMemoryTokens` cap with the shared script-aware estimator, so wide-script content uses its full token allowance. Set `recallBudgetChars` explicitly when you need a larger character budget for English-heavy context.
 
 **Recommended values:**
 

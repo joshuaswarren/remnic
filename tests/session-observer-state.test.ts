@@ -164,16 +164,23 @@ test("session observer resets legacy token cursors after estimator migration", a
     await observer.load();
     const decision = await observer.observe({
       sessionKey: "agent:generalist:main",
-      totalBytes: 100,
-      totalTokens: 20,
+      totalBytes: 10_100,
+      totalTokens: 2_600,
       observedAt: "2026-02-25T00:01:00.000Z",
     });
 
     assert.equal(decision.reason, "baseline");
     const persisted = JSON.parse(await readFile(path.join(stateDir, "session-observer-state.json"), "utf-8")) as {
       version: number;
+      sessions: Record<string, { cursorBytes: number; cursorTokens: number }>;
     };
     assert.equal(persisted.version, 2);
+    assert.deepEqual(persisted.sessions["agent:generalist:main"], {
+      sessionKey: "agent:generalist:main",
+      cursorBytes: 10_100,
+      cursorTokens: 2_600,
+      lastObservedAt: "2026-02-25T00:01:00.000Z",
+    });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
