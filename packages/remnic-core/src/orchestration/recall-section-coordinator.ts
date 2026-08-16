@@ -215,7 +215,20 @@ export class RecallSectionCoordinator {
         high = mid - 1;
       }
     }
-    if (markerFits && low === 0) return "";
+    if (markerFits && low === 0) {
+      low = 0;
+      high = codePoints.length;
+      while (low < high) {
+        const mid = Math.ceil((low + high) / 2);
+        const prefix = codePoints.slice(0, mid).join("");
+        if (prefix.length <= maxChars && estimateTokenCount(prefix) <= maxTokens) {
+          low = mid;
+        } else {
+          high = mid - 1;
+        }
+      }
+      return codePoints.slice(0, low).join("");
+    }
     const prefix = codePoints.slice(0, low).join("");
     return markerFits ? `${prefix}${suffix}` : prefix;
   }
