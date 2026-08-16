@@ -328,20 +328,21 @@ The recall budget controls how much context Remnic injects into each agent promp
 
 **How it works (v9.0.66+):** Remnic assembles recall context in pipeline section order (shared-context → profile → entity retrieval → knowledge index → ... → memories → transcripts → summaries). The budget-aware assembler reserves space for the `memories` section so earlier sections cannot fully exhaust the budget. However, the reservation is minimal (heading-sized). If the total budget is too small, earlier sections still crowd out memory content.
 
-**Common pitfall:** The default character budget is `maxMemoryTokens * 4` = **8,000 chars**. Recall assembly also enforces the separate `maxMemoryTokens` cap with the shared script-aware estimator, so wide-script content uses its full token allowance. Set `recallBudgetChars` explicitly when you need a larger character budget for English-heavy context.
+**Common pitfall:** The default character budget is `maxMemoryTokens * 4` = **8,000 chars**. Recall assembly also enforces the separate `maxMemoryTokens` cap with the shared script-aware estimator, so wide-script content uses its full token allowance. Set both `recallBudgetChars` and `maxMemoryTokens` when you need a larger budget for English-heavy context.
 
 **Recommended values:**
 
-| Model context window | Suggested `recallBudgetChars` | Reasoning |
-|---------------------|-------------------------------|-----------|
-| 8K–16K tokens | `16000` | Tight budget; consider capping profile via `recallPipeline` |
-| 32K–128K tokens | `32000`–`64000` | Room for all sections including memories |
-| 200K+ tokens (Claude Opus/Sonnet, GPT-5) | `64000`–`128000` | Generous budget; 16K–32K tokens is a small fraction of context |
+| Model context window | Suggested `maxMemoryTokens` | Suggested `recallBudgetChars` | Reasoning |
+|---------------------|-----------------------------|-------------------------------|-----------|
+| 8K–16K tokens | `4000` | `16000` | Tight budget; consider capping profile via `recallPipeline` |
+| 32K–128K tokens | `8000`–`16000` | `32000`–`64000` | Room for all sections including memories |
+| 200K+ tokens (Claude Opus/Sonnet, GPT-5) | `16000`–`32000` | `64000`–`128000` | Generous budget; 16K–32K tokens is a small fraction of context |
 
 **Example config for large-context models:**
 
 ```jsonc
 {
+  "maxMemoryTokens": 16000,
   "recallBudgetChars": 64000
 }
 ```

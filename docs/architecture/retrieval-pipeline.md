@@ -142,7 +142,7 @@ Sections are assembled in pipeline order. The assembler tracks cumulative charac
 | 21 | `compounding` | off by default | variable |
 | 22 | `questions` | off by default | variable |
 
-**Common pitfall:** With the default budget of 8,000 chars, profile (~7,500 chars) and shared context (~4,000 chars) together consume the entire budget. The `memories` section is protected and always included, but under tight budgets it may be truncated to heading-only (~24 chars) with no actual memory content. Memories are still retrieved (visible in `lastRecall` state), but the agent sees only the section heading. See [Recall Budget Tuning](../config-reference.md#recall-budget-tuning) for sizing guidance.
+**Common pitfall:** With the default budget of 8,000 chars and 2,000 estimated tokens, profile (~7,500 chars) and shared context (~4,000 chars) together consume the character budget. The `memories` section is protected and always included, but under tight budgets it may be truncated to heading-only (~24 chars) with no actual memory content. Memories are still retrieved (visible in `lastRecall` state), but the agent sees only the section heading. Set both `recallBudgetChars` and `maxMemoryTokens` for a larger context budget. See [Recall Budget Tuning](../config-reference.md#recall-budget-tuning) for sizing guidance.
 
 Identity continuity section behavior:
 - `recovery_only`: inject only when prompt has explicit recovery/continuity intent.
