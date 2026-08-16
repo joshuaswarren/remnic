@@ -205,6 +205,7 @@ These rules are the default workflow for all agents and contributors.
 5. Treat external AI review as stale unless it matches the current head.
    - Do not call a PR clean if the latest positive AI verdict targets an older commit.
    - A merge-ready PR needs green checks, zero unresolved review threads, and a fresh positive AI verdict on the current head.
+   - Use `scripts/pr-wait-settled.sh <pr-number>` to block until the current head has terminal required checks, current reviewer results, and zero unresolved threads.
 
 Reference workflow:
 `docs/ops/pr-review-hardening-playbook.md`
