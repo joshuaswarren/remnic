@@ -327,21 +327,19 @@ export class RecallSectionCoordinator {
     const memoryIndex = allocationOrder.indexOf("memories");
     const memoryBudget = this.getRecallSectionMaxChars("memories") ?? budget;
     const memoryAllocationBudget = Math.min(budget, memoryBudget);
-    let firstAtomicMemoryReserveChars = 0;
+    let firstAtomicMemoryReserve:
+      | { chars: number; tokens: number }
+      | undefined;
     for (const chunk of memorySection?.chunks ?? []) {
-      if (chunk.atomic && chunk.content.length <= memoryAllocationBudget) {
-        firstAtomicMemoryReserveChars = chunk.content.length;
-        break;
+      if (!chunk.atomic || chunk.content.length > memoryAllocationBudget) {
+        continue;
       }
-    }
-    let firstAtomicMemoryReserveTokens = 0;
-    for (const chunk of memorySection?.chunks ?? []) {
-      if (
-        chunk.atomic &&
-        chunk.content.length <= memoryAllocationBudget &&
-        estimateTokenCount(chunk.content) <= tokenBudget
-      ) {
-        firstAtomicMemoryReserveTokens = estimateTokenCount(chunk.content);
+      const tokens = estimateTokenCount(chunk.content);
+      if (tokens <= tokenBudget) {
+        firstAtomicMemoryReserve = {
+          chars: chunk.content.length,
+          tokens,
+        };
         break;
       }
     }
@@ -363,20 +361,22 @@ export class RecallSectionCoordinator {
       const sectionMaxChars = this.getRecallSectionMaxChars(id);
       const reservesFirstMemory =
         memoryIndex > allocationOrder.indexOf(id) &&
-        firstAtomicMemoryReserveChars > 0;
+        firstAtomicMemoryReserve !== undefined;
+      const memoryReserveSeparatorChars = separator.length;
+      const memoryReserveSeparatorTokens = estimateTokenCount(separator);
       const memoryReserve = reservesFirstMemory
-        ? firstAtomicMemoryReserveChars + separator.length
+        ? firstAtomicMemoryReserve.chars + memoryReserveSeparatorChars
         : 0;
       const availableAfterMemoryReserve = available - memoryReserve;
       const allocatedSectionAvailable =
         typeof sectionMaxChars === "number"
           ? Math.min(availableAfterMemoryReserve, sectionMaxChars)
           : availableAfterMemoryReserve;
-      const availableAfterMemoryReserveTokens =
-        availableTokens -
-        (reservesFirstMemory
-          ? firstAtomicMemoryReserveTokens + separatorTokens
-          : 0);
+      const availableAfterMemoryReserveTokens = reservesFirstMemory
+        ? availableTokens -
+          firstAtomicMemoryReserve.tokens -
+          memoryReserveSeparatorTokens
+        : availableTokens;
       const allocatedTokenAvailable = availableAfterMemoryReserveTokens;
       if (allocatedSectionAvailable <= 0 || allocatedTokenAvailable <= 0) {
         truncated = true;
