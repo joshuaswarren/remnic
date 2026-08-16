@@ -36,6 +36,9 @@ while ! mkdir -- "$lock_path" 2>/dev/null; do
   fi
   stale_lock_path=$lock_path.stale.$$
   if ! mv -- "$lock_path" "$stale_lock_path" 2>/dev/null; then
+    if [[ ! -e $lock_path ]]; then
+      continue
+    fi
     printf 'Could not reclaim the previous worktree quickstart lock.\n' >&2
     exit 1
   fi
