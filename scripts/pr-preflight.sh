@@ -41,11 +41,53 @@ all_package_dirs() {
   '
 }
 
+package_dependents() {
+  QUICK_SCOPE_SEEDS="$1" node -e '
+    const { existsSync, readFileSync, readdirSync } = require("node:fs");
+    const packages = new Map();
+    const namesByPackage = new Map();
+    for (const directory of readdirSync("packages").sort()) {
+      const packagePath = `packages/${directory}/package.json`;
+      if (!existsSync(packagePath)) continue;
+      const packageJson = JSON.parse(readFileSync(packagePath, "utf8"));
+      packages.set(directory, packageJson);
+      namesByPackage.set(packageJson.name, directory);
+    }
+
+    const selected = new Set((process.env.QUICK_SCOPE_SEEDS ?? "").split("\n").filter(Boolean));
+    let expanded = true;
+    while (expanded) {
+      expanded = false;
+      for (const [directory, packageJson] of packages) {
+        const dependencies = {
+          ...packageJson.dependencies,
+          ...packageJson.devDependencies,
+          ...packageJson.optionalDependencies,
+          ...packageJson.peerDependencies,
+        };
+        if (
+          Object.keys(dependencies ?? {}).some((name) => {
+            const dependencyDirectory = namesByPackage.get(name);
+            return dependencyDirectory !== undefined && selected.has(dependencyDirectory);
+          }) &&
+          !selected.has(directory)
+        ) {
+          selected.add(directory);
+          expanded = true;
+        }
+      }
+    }
+    for (const directory of [...selected].sort()) console.log(directory);
+  '
+}
+
 quick_package_scope() {
   local files
   local scope_all=0
   local package_name
   local package_dir
+  local scope_seeds
+  local expanded_scope
   local -a all_packages=()
   local -a checked_packages=()
   local -a skipped_packages=()
@@ -65,6 +107,12 @@ quick_package_scope() {
         checked_packages+=("$package_name")
       fi
     done < <(printf '%s\n' "$files" | sed -n 's#^packages/\([^/]*\)\(/.*\)\?$#\1#p' | sort -u)
+
+    if ((${#checked_packages[@]} > 0)); then
+      scope_seeds="$(printf '%s\n' "${checked_packages[@]}")"
+      expanded_scope="$(package_dependents "$scope_seeds")"
+      mapfile -t checked_packages <<< "$expanded_scope"
+    fi
   fi
 
   if ((scope_all)); then
@@ -94,13 +142,17 @@ quick_changed_files() {
 
   if git rev-parse --verify "$base_ref" >/dev/null 2>&1; then
     merge_base="$(git merge-base HEAD "$base_ref")" || return 1
-    git diff --name-only "$merge_base"...HEAD
-    return
+    git diff --name-only "$merge_base"...HEAD || return 1
+    git diff --name-only || return 1
+    git diff --name-only --cached || return 1
+    return 0
   fi
 
   if git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
-    git diff --name-only HEAD~1...HEAD
-    return
+    git diff --name-only HEAD~1...HEAD || return 1
+    git diff --name-only || return 1
+    git diff --name-only --cached || return 1
+    return 0
   fi
 
   return 1
@@ -133,7 +185,7 @@ run_quick_type_checks() {
 
   # Root type-checking and the core build remain prerequisites for package checks.
   run pnpm --filter @remnic/core build
-  run tsc --noEmit
+  run pnpm exec tsc --noEmit
   if ((${#QUICK_SCOPE_CHECKED[@]} > 0)); then
     local -a package_filters=()
     local package_name

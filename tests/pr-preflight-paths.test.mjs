@@ -61,6 +61,11 @@ assert.match(affectedScope.stdout, /Quick package scope: affected packages/);
 assert.match(affectedScope.stdout, /Checked packages: remnic-cli/);
 assert.match(affectedScope.stdout, /Skipped packages:.*remnic-core/);
 
+const coreScope = packageScope("packages/remnic-core/src/index.ts");
+assert.equal(coreScope.status, 0, coreScope.stderr);
+assert.match(coreScope.stdout, /Checked packages:.*plugin-openclaw/);
+assert.match(coreScope.stdout, /Skipped packages:.*bench-ui/);
+
 const rootConfigScope = packageScope("tsconfig.json");
 assert.equal(rootConfigScope.status, 0, rootConfigScope.stderr);
 assert.match(rootConfigScope.stdout, /Quick package scope: all packages/);
