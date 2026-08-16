@@ -36,7 +36,8 @@ while ! mkdir -- "$lock_path" 2>/dev/null; do
   fi
   stale_lock_path=$lock_path.stale.$$
   if ! mv -- "$lock_path" "$stale_lock_path" 2>/dev/null; then
-    continue
+    printf 'Could not reclaim the previous worktree quickstart lock.\n' >&2
+    exit 1
   fi
   if ! rm -f -- "$stale_lock_path/pid" || ! rmdir -- "$stale_lock_path" 2>/dev/null; then
     printf 'Could not reclaim the previous worktree quickstart lock.\n' >&2
@@ -127,10 +128,6 @@ if git -C "$repo_root" show-ref --verify --quiet "refs/heads/$branch"; then
   printf 'Refusing to clobber existing branch: %s\n' "$branch" >&2
   exit 1
 fi
-if ! git -C "$repo_root" branch "$branch" "$base" >/dev/null; then
-  printf 'Could not create branch: %s\n' "$branch" >&2
-  exit 1
-fi
 cleanup() {
   if (( ! worktree_registered_before )); then
     if worktree_owned_at "$worktree_path"; then
@@ -148,6 +145,10 @@ cleanup() {
   release_lock
 }
 trap cleanup EXIT
+if ! git -C "$repo_root" branch "$branch" "$base" >/dev/null; then
+  printf 'Could not create branch: %s\n' "$branch" >&2
+  exit 1
+fi
 
 printf 'Creating worktree at %s from %s on branch %s\n' "$worktree_path" "$base" "$branch"
 git -C "$repo_root" worktree add "$staging_path" "$branch"
