@@ -163,8 +163,11 @@ printf 'Creating worktree at %s from %s on branch %s\n' "$worktree_path" "$base"
 git -C "$repo_root" worktree add "$staging_path" "$branch"
 git -C "$repo_root" worktree move "$staging_path" "$worktree_path"
 mkdir -p -- "$worktree_path/.claude"
+worktree_discipline='Verify `pwd` before every write; use absolute paths rooted at this worktree; NEVER write to the main checkout or sibling worktrees; agent file tools may ignore cwd.'
 if [[ -f $repo_root/.claude/napkin.md ]]; then
   cp -- "$repo_root/.claude/napkin.md" "$worktree_path/.claude/napkin.md"
+  chmod u+rw -- "$worktree_path/.claude/napkin.md"
+  printf '\n## Worktree Discipline\n%s\n' "$worktree_discipline" >>"$worktree_path/.claude/napkin.md"
 else
   printf '%s\n' \
     '# Napkin' \
@@ -179,7 +182,10 @@ else
     '' \
     '## Patterns That Do Not Work' \
     '' \
-    '## Domain Notes' >"$worktree_path/.claude/napkin.md"
+    '## Domain Notes' \
+    '' \
+    '## Worktree Discipline' \
+    "$worktree_discipline" >"$worktree_path/.claude/napkin.md"
 fi
 
 printf 'Installing packages with pnpm@10.32.1\n'
@@ -207,3 +213,4 @@ printf 'Next steps:\n'
 printf '  cd %q\n' "$worktree_path"
 printf '  git status\n'
 printf '  git push -u origin %q\n' "$branch"
+printf 'Worktree discipline: %s\n' "$worktree_discipline"
