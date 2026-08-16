@@ -79,9 +79,11 @@ if [[ "$1 $2" == "api repos/example/repo/issues/7/comments" ]]; then
   exit 0
 fi
 if [[ "$1 $2" == "api repos/example/repo/commits/${headSha}/check-runs" ]]; then
+  if [[ "$GH_STUB_SCENARIO" == skipped-reviewer ]]; then
+    printf 'Cursor Bugbot\\tcursor\\tcompleted\\tskipped\\t%s\\n' '${headSha}'
+  fi
   exit 0
 fi
-echo "unexpected gh invocation: $*" >&2
 exit 2
 `
   );
@@ -157,5 +159,13 @@ test("wait accepts a fresh Codex positive reaction", async () => {
   await withGhStub("codex-reaction", async (env) => {
     const result = runWait(env, ["--timeout", "0", "--json"]);
     assert.equal(result.status, 0, result.stderr);
+  });
+});
+
+test("wait does not count a skipped reviewer check", async () => {
+  await withGhStub("skipped-reviewer", async (env) => {
+    const result = runWait(env, ["--timeout", "0", "--json"]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout, /cursor-bugbot/);
   });
 });

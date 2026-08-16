@@ -176,11 +176,14 @@ fetch_and_evaluate() {
     append_item "api:issue-comments"
   else
     while IFS=$'\t' read -r login body; do
-      if [[ "$login" == "chatgpt-codex-connector[bot]" || "$login" == "chatgpt-codex-connector" ]] &&
-        [[ "$body" =~ [Rr]eviewed[[:space:]]+commit[^[:xdigit:]]+([[:xdigit:]]{7,40}) ]] &&
+      if [[ "$body" =~ [Rr]eviewed[[:space:]]+commit[^[:xdigit:]]+([[:xdigit:]]{7,40}) ]] &&
         is_current_sha "${BASH_REMATCH[1]}" &&
         [[ "$body" =~ [Dd]idn.t[[:space:]]+find|[Nn]o[[:space:]]+(major[[:space:]]+)?issues|[Aa]pproved|[Ll]ooks[[:space:]]+good ]]; then
-        record_reviewer "$login"
+        case "$login" in
+          cursor[bot]|cursor-bugbot[bot]|cursor|cursor-bugbot|chatgpt-codex-connector[bot]|chatgpt-codex-connector)
+            record_reviewer "$login"
+            ;;
+        esac
       fi
     done <<< "$issue_comments_raw"
   fi
@@ -210,7 +213,7 @@ fetch_and_evaluate() {
       [[ "$run_sha" == "$HEAD_SHA" ]] || continue
       [[ "$run_status" == "completed" ]] || continue
       case "$conclusion" in
-        success|neutral|skipped) record_reviewer "$app_slug" ;;
+        success|neutral) record_reviewer "$app_slug" ;;
       esac
     done <<< "$check_runs_raw"
   fi
