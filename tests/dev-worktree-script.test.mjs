@@ -183,9 +183,10 @@ test("rejects an unknown base ref before creating a worktree", () => {
 test("rejects checkout shorthand branch names", () => {
   const fixture = createFakeNpm();
   const worktreePath = path.join(fixture.root, "checkout-shorthand");
+  const branch = "@{-1}";
 
   try {
-    const result = runScript([worktreePath, "@{-1}", "HEAD"], {
+    const result = runScript([worktreePath, branch, "HEAD"], {
       DEV_WORKTREE_TEST_LOG: fixture.log,
       PATH: `${fixture.bin}${path.delimiter}${process.env.PATH ?? ""}`,
     });

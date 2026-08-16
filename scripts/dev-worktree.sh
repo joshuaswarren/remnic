@@ -43,17 +43,36 @@ if [[ $base == -* ]] || ! git -C "$repo_root" rev-parse --verify --quiet "$base^
   printf 'Base ref not found: %s\n' "$base" >&2
   exit 1
 fi
-branch_existed_before=0
-if git -C "$repo_root" show-ref --verify --quiet "refs/heads/$branch"; then
-  branch_existed_before=1
-fi
-worktree_added=1
-cleanup() {
-  if (( worktree_added )); then
-    git -C "$repo_root" worktree remove --force "$worktree_path" >/dev/null 2>&1 || true
-    if (( ! branch_existed_before )); then
-      git -C "$repo_root" branch -D -- "$branch" >/dev/null 2>&1 || true
+worktree_registered() {
+  local line
+  while IFS= read -r line; do
+    if [[ $line == "worktree $worktree_path" ]]; then
+      return 0
     fi
+  done < <(git -C "$repo_root" worktree list --porcelain)
+  return 1
+}
+
+worktree_owned() {
+  local line current_path=
+  while IFS= read -r line; do
+    case $line in
+      "worktree "*) current_path=${line#worktree } ;;
+      "branch "*) [[ $current_path == "$worktree_path" && $line == "branch refs/heads/$branch" ]] && return 0 ;;
+    esac
+  done < <(git -C "$repo_root" worktree list --porcelain)
+  return 1
+}
+
+worktree_registered_before=0
+if worktree_registered; then
+  worktree_registered_before=1
+fi
+cleanup_armed=1
+cleanup() {
+  if (( cleanup_armed && ! worktree_registered_before )) && worktree_owned; then
+    git -C "$repo_root" worktree remove --force "$worktree_path" >/dev/null 2>&1 || true
+    git -C "$repo_root" branch -D -- "$branch" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
