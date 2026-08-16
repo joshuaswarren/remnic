@@ -53,8 +53,42 @@ function stripMemoryWrappers(content: string): string {
     while (after < content.length && isWhitespaceCode(content.charCodeAt(after))) {
       after += 1;
     }
+    // Keep everything before the wrapper; only the wrapper (plus its
+    // trailing whitespace) is removed.
+    out += content.slice(cursor, open);
     cursor = after;
   }
+}
+
+/**
+ * Remove a trailing `[message_id: …]` marker (with surrounding whitespace)
+ * using a single right-anchored string scan — no regex on uncontrolled
+ * input (CodeQL redos rule). Returns null when no marker terminates the
+ * content, leaving the caller's string untouched.
+ */
+function stripTrailingMessageId(content: string): string | null {
+  const marker = "[message_id:";
+  const start = content.lastIndexOf(marker);
+  if (start === -1) return null;
+  let index = start + marker.length;
+  while (index < content.length && isWhitespaceCode(content.charCodeAt(index))) {
+    index += 1;
+  }
+  const idStart = index;
+  while (index < content.length && content.charCodeAt(index) !== 93 /* ] */) {
+    index += 1;
+  }
+  if (index === idStart || index === content.length) return null;
+  index += 1; // past the closing bracket
+  while (index < content.length && isWhitespaceCode(content.charCodeAt(index))) {
+    index += 1;
+  }
+  if (index !== content.length) return null;
+  let boundary = start;
+  while (boundary > 0 && isWhitespaceCode(content.charCodeAt(boundary - 1))) {
+    boundary -= 1;
+  }
+  return content.slice(0, boundary);
 }
 
 /** True when the tag-head text cannot be a whitespace-led attribute run. */
@@ -88,7 +122,7 @@ export function cleanUserMessageWithPattern(
   );
 
   if (hasPlatformHeader) {
-    cleaned = cleaned.replace(/\s*\[message_id:\s*[^\]]+\]\s*$/i, "");
+    cleaned = stripTrailingMessageId(cleaned) ?? cleaned;
   }
   return cleaned.trim();
 }

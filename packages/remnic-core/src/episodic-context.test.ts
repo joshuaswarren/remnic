@@ -255,3 +255,12 @@ test("cleanArchivedUserMessage strips an injected memory-context preamble (shipp
     "Reminder:\n## Memory Context (Remnic)\nthis is my own note";
   assert.equal(cleanArchivedUserMessage(userAuthored), userAuthored);
 });
+
+test("cleanArchivedUserMessage preserves text before and between wrappers (round 4 regression)", () => {
+  const mixed =
+    "keep this <supermemory-context>first</supermemory-context> and this <supermemory-context k=\"v\">second</supermemory-context> end";
+  assert.equal(
+    cleanArchivedUserMessage(mixed),
+    "keep this and this end",
+  );
+});
