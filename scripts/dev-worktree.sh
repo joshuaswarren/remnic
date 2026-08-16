@@ -11,6 +11,10 @@ if (( $# < 2 || $# > 3 )); then
 fi
 
 worktree_arg=$1
+if [[ $worktree_arg == *$'\n'* || $worktree_arg == *$'\r'* ]]; then
+  printf 'Worktree path cannot contain a line break.\n' >&2
+  exit 1
+fi
 branch=$2
 base=${3:-HEAD}
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
@@ -21,22 +25,24 @@ if [[ $git_common_dir != /* ]]; then
 fi
 git_common_dir=$(cd -- "$git_common_dir" && pwd -P)
 lock_path=$git_common_dir/dev-worktree.lock
-if ! mkdir -- "$lock_path" 2>/dev/null; then
+while ! mkdir -- "$lock_path" 2>/dev/null; do
   owner_pid=
   if [[ -r $lock_path/pid ]]; then
-    IFS= read -r owner_pid <"$lock_path/pid"
+    IFS= read -r owner_pid <"$lock_path/pid" || true
   fi
-  if [[ $owner_pid =~ ^[0-9]+$ ]] && ! kill -0 "$owner_pid" 2>/dev/null; then
-    rm -f -- "$lock_path/pid"
-    if ! rmdir -- "$lock_path" || ! mkdir -- "$lock_path" 2>/dev/null; then
-      printf 'Could not reclaim the previous worktree quickstart lock.\n' >&2
-      exit 1
-    fi
-  else
+  if [[ $owner_pid =~ ^[0-9]+$ ]] && kill -0 "$owner_pid" 2>/dev/null; then
     printf 'Another worktree quickstart is already running for this repository.\n' >&2
     exit 1
   fi
-fi
+  stale_lock_path=$lock_path.stale.$$
+  if ! mv -- "$lock_path" "$stale_lock_path" 2>/dev/null; then
+    continue
+  fi
+  if ! rm -f -- "$stale_lock_path/pid" || ! rmdir -- "$stale_lock_path" 2>/dev/null; then
+    printf 'Could not reclaim the previous worktree quickstart lock.\n' >&2
+    exit 1
+  fi
+done
 printf '%s\n' "$$" >"$lock_path/pid"
 release_lock() {
   rm -f -- "$lock_path/pid"
