@@ -64,6 +64,13 @@ test("documentation-only changes emit nothing", async () => {
   assert.deepEqual(result.python, []);
 });
 
+test("package documentation-only changes emit nothing", () => {
+  const result = inferTouchedPackages(["packages/remnic-core/README.md"], packages);
+
+  assert.deepEqual(result.published, []);
+  assert.deepEqual(result.python, []);
+});
+
 test("working-tree diff collection uses stubbed git output from the merge-base", () => {
   const calls = [];
   const git = (_repoRoot, args) => {

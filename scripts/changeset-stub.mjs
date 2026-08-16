@@ -86,6 +86,9 @@ export function inferTouchedPackages(changedFiles, packages) {
 
   for (const file of changedFiles) {
     const normalized = normalizePath(file);
+    if (normalized.endsWith(".md") || normalized.startsWith("docs/") || normalized.startsWith(".changeset/")) {
+      continue;
+    }
     const packageMatch = packageForFile(normalized, packages);
     if (packageMatch) {
       if (packageMatch.kind === "python") {
