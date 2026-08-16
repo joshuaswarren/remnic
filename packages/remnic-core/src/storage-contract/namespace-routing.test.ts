@@ -19,7 +19,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { makeStorage, makeNamespaceRouter, resetStaticCaches } from "./harness.js";
-import { resolveNamespaceStorageRoot } from "../namespaces/storage.js";
+import { NamespaceStorageRouter, resolveNamespaceStorageRoot } from "../namespaces/storage.js";
 import { namespaceIdentityToken } from "../namespaces/identity.js";
 import { getCachedMemories } from "../memory-cache.js";
 
@@ -154,6 +154,23 @@ test("namespace-routing: hotMemoriesCacheEnabled=false propagates to namespace c
       null,
       "namespace child honors the disabled gate and never caches the corpus",
     );
+  } finally {
+    await cleanup();
+  }
+});
+
+test("namespace-routing: CJK namespace round-trips through storage", async () => {
+  const { router, memoryDir, config, cleanup } = await makeNamespaceRouter();
+  try {
+    const namespace = "项目";
+    const token = namespaceIdentityToken(namespace);
+    const writer = await router.storageFor(namespace);
+    const written = await writer.writeMemory("fact", "CJK namespace fact");
+    assert.equal(writer.dir, path.join(memoryDir, "namespaces", token));
+
+    const reader = await new NamespaceStorageRouter(config).storageFor(namespace);
+    assert.equal(reader.dir, writer.dir);
+    assert.equal((await reader.getMemoryById(written.id))?.content, "CJK namespace fact");
   } finally {
     await cleanup();
   }

@@ -41,7 +41,9 @@ import {
 } from "../namespaces/principal.js";
 import {
   namespaceIdentityFromToken,
+  namespaceIdentityLegacyToken,
   namespaceIdentityToken,
+  normalizeNamespaceIdentity,
 } from "../namespaces/identity.js";
 import path from "node:path";
 import {
@@ -359,7 +361,7 @@ export function getConfiguredNamespaces(config: PluginConfig): string[] {
         config.sharedNamespace,
         ...config.namespacePolicies.map((policy) => policy.name),
       ]
-        .map((value) => value.trim())
+        .map((value) => normalizeNamespaceIdentity(value))
         .filter(Boolean),
     ),
   );
@@ -430,7 +432,11 @@ export function resolveNamespaceFromStorageDir(
     if (hintedNamespace) return hintedNamespace;
   }
   const decoded = namespaceIdentityFromToken(dirName);
-  if (decoded && namespaceIdentityToken(decoded) === dirName) {
+  if (
+    decoded &&
+    (namespaceIdentityToken(decoded) === dirName ||
+      namespaceIdentityLegacyToken(decoded.normalize("NFD")) === dirName)
+  ) {
     return decoded;
   }
   return dirName;
