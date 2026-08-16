@@ -108,8 +108,8 @@ test("working-tree diff collection uses stubbed git output from the merge-base",
   const git = (_repoRoot, args) => {
     calls.push(args);
     if (args[0] === "merge-base") return "base-sha";
-    if (args[0] === "diff") return "packages/remnic-core/src/index.ts\n";
-    if (args[0] === "ls-files") return "packages/remnic-cli/src/cli.ts\n";
+    if (args[0] === "diff") return "packages/remnic-core/src/index.ts\0";
+    if (args[0] === "ls-files") return "packages/remnic-cli/src/cli.ts\0";
     throw new Error(`unexpected git call: ${args.join(" ")}`);
   };
 
@@ -119,8 +119,8 @@ test("working-tree diff collection uses stubbed git output from the merge-base",
   ]);
   assert.deepEqual(calls, [
     ["merge-base", "HEAD", "main"],
-    ["diff", "--name-only", "--no-renames", "base-sha", "--"],
-    ["ls-files", "--others", "--exclude-standard"],
+    ["diff", "--name-only", "--no-renames", "-z", "base-sha", "--"],
+    ["ls-files", "--others", "--exclude-standard", "-z"],
   ]);
 });
 
@@ -128,7 +128,7 @@ test("working-tree diff collection preserves both sides of a rename", () => {
   const git = (_repoRoot, args) => {
     if (args[0] === "merge-base") return "base-sha";
     if (args[0] === "diff") {
-      return "packages/remnic-core/src/old.ts\npackages/remnic-cli/src/new.ts\n";
+      return "packages/remnic-core/src/é.ts\0packages/remnic-cli/src/new.ts\0";
     }
     if (args[0] === "ls-files") return "";
     throw new Error(`unexpected git call: ${args.join(" ")}`);
@@ -136,7 +136,7 @@ test("working-tree diff collection preserves both sides of a rename", () => {
 
   assert.deepEqual(changedWorkingTreeFiles("/repo", { baseRef: "main", git }), [
     "packages/remnic-cli/src/new.ts",
-    "packages/remnic-core/src/old.ts",
+    "packages/remnic-core/src/é.ts",
   ]);
 });
 

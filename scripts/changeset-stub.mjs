@@ -151,9 +151,9 @@ export function renderChangeset(packages) {
   return `---\n${frontmatter}\n---\n\nTODO: Summarize the user-visible changes for ${names}.\n`;
 }
 
-function splitLines(output) {
+function splitLines(output, separator = /\r?\n/) {
   return output
-    .split(/\r?\n/)
+    .split(separator)
     .map((line) => line.trim())
     .filter(Boolean)
     .map(normalizePath);
@@ -166,9 +166,9 @@ export function changedWorkingTreeFiles(repoRoot, options = {}) {
   if (!mergeBase) {
     throw new Error(`Unable to resolve merge-base for ${baseRef}. Fetch the base or pass --base <ref>.`);
   }
-  const tracked = tryGit(repoRoot, ["diff", "--name-only", "--no-renames", mergeBase, "--"], git) ?? "";
-  const untracked = tryGit(repoRoot, ["ls-files", "--others", "--exclude-standard"], git) ?? "";
-  return [...new Set([...splitLines(tracked), ...splitLines(untracked)])].sort();
+  const tracked = tryGit(repoRoot, ["diff", "--name-only", "--no-renames", "-z", mergeBase, "--"], git) ?? "";
+  const untracked = tryGit(repoRoot, ["ls-files", "--others", "--exclude-standard", "-z"], git) ?? "";
+  return [...new Set([...splitLines(tracked, "\0"), ...splitLines(untracked, "\0")])].sort();
 }
 
 export function renderNotes(result) {
