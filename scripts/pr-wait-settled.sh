@@ -65,10 +65,11 @@ gh() {
 PR_NUMBER=""
 TIMEOUT=1800
 INTERVAL=30
+REVIEWER_TIMEOUT=""
 JSON_OUTPUT=false
 REPO="${REMNIC_REPO:-joshuaswarren/remnic}"
 usage() {
-  printf 'Usage: scripts/pr-wait-settled.sh <pr-number> [--timeout S] [--interval S] [--json]\n' >&2
+  printf 'Usage: scripts/pr-wait-settled.sh <pr-number> [--timeout S] [--interval S] [--reviewer-timeout S] [--json]\n' >&2
 }
 
 if [[ $# -lt 1 ]]; then
@@ -85,6 +86,12 @@ while [[ $# -gt 0 ]]; do
       if [[ "$1" == "--timeout" ]]; then TIMEOUT="$2"; else INTERVAL="$2"; fi
       shift 2
       ;;
+    --reviewer-timeout)
+      [[ $# -ge 2 ]] || { usage; exit 2; }
+      [[ "$2" =~ ^[0-9]+([.][0-9]+)?$ ]] || { printf 'Invalid %s value: %s\n' "$1" "$2" >&2; exit 2; }
+      REVIEWER_TIMEOUT="$2"
+      shift 2
+      ;;
     --json)
       JSON_OUTPUT=true
       shift
@@ -98,6 +105,29 @@ done
 
 OWNER="${REPO%%/*}"
 NAME="${REPO##*/}"
+declare -A REVIEWER_NEUTRAL_EVIDENCE=()
+
+record_reviewer_neutral() {
+  local login="$1" evidence="$2" group
+  for group in "${REVIEWER_GROUPS[@]}"; do
+    case "|${group}|" in
+      *"|${login}|"*)
+        REVIEWER_PRESENT["$group"]=1
+        REVIEWER_NEUTRAL_EVIDENCE["$group"]="$evidence"
+        return 0
+        ;;
+    esac
+  done
+}
+
+reviewer_timeout_reached() {
+  [[ -n "$REVIEWER_TIMEOUT" ]] || return 1
+  local now elapsed
+  now="$(date +%s.%N)"
+  elapsed="$(awk -v now="$now" -v start="$start_time" 'BEGIN { print now - start }')"
+  awk -v elapsed="$elapsed" -v timeout="$REVIEWER_TIMEOUT" 'BEGIN { exit !(elapsed >= timeout) }'
+}
+
 # These groups are the aliases configured by review-round-dispatch.yml. Kilo is
 # not listed because this repository has no Kilo workflow or required group.
 REVIEWER_GROUPS=(
@@ -127,6 +157,21 @@ json_summary() {
 append_item() {
   OUTSTANDING+=("$1")
 }
+print_reviewer_neutral_evidence() {
+  [[ "$JSON_OUTPUT" == true ]] && return
+  local group evidence
+  for group in "${REVIEWER_GROUPS[@]}"; do
+    evidence="${REVIEWER_NEUTRAL_EVIDENCE[$group]:-}"
+    [[ -n "$evidence" ]] || continue
+    if [[ "$evidence" == reviewer\ timeout\ after* ]]; then
+      printf 'reviewer neutral (warning): %s; evidence: %s\n' "${group%%|*}" "$evidence"
+    else
+      printf 'reviewer neutral: %s; evidence: %s\n' "${group%%|*}" "$evidence"
+    fi
+  done
+}
+
+
 
 fetch_threads() {
   local after="" page total unresolved has_next end_cursor
@@ -177,6 +222,7 @@ record_reviewer() {
 fetch_and_evaluate() {
   OUTSTANDING=()
   declare -A REVIEWER_PRESENT=()
+  REVIEWER_NEUTRAL_EVIDENCE=()
   API_ERRORS=()
   HEAD_VISIBLE_AT=""
   SKIP_CURSOR=false
@@ -246,11 +292,16 @@ fetch_and_evaluate() {
     append_item "api:reviews"
   else
     while IFS=$'\t' read -r login commit state body; do
-      if is_current_sha "$commit" &&
-        [[ "$state" == "APPROVED" ||
+      if is_current_sha "$commit"; then
+        if [[ "$state" == "APPROVED" ||
           ( "$state" == "COMMENTED" &&
             "$body" =~ [Nn]o[[:space:]]+(major[[:space:]]+)?issues|[Aa]pproved|[Ll]ooks[[:space:]]+good ) ]]; then
-        record_reviewer "$login"
+          record_reviewer "$login"
+        elif [[ "$state" == "COMMENTED" && -z "$body" ]]; then
+          record_reviewer_neutral "$login" "empty review body"
+        elif [[ "$state" == "COMMENTED" && "$body" == "Review rate limited" ]]; then
+          record_reviewer_neutral "$login" "$body"
+        fi
       fi
     done <<< "$reviews_raw"
   fi
@@ -309,10 +360,19 @@ fetch_and_evaluate() {
     append_item "review-threads:${THREAD_UNRESOLVED}-unresolved"
   fi
 
-  local group
+  local reviewer_timeout_expired=false group
+  if reviewer_timeout_reached; then
+    reviewer_timeout_expired=true
+  fi
   for group in "${REVIEWER_GROUPS[@]}"; do
     [[ "$SKIP_CURSOR" == true && "$group" == "${REVIEWER_GROUPS[0]}" ]] && continue
-    [[ "${REVIEWER_PRESENT[$group]:-0}" == 1 ]] || append_item "reviewer:${group%%|*}"
+    [[ "${REVIEWER_PRESENT[$group]:-0}" == 1 ]] && continue
+    if [[ "$reviewer_timeout_expired" == true ]]; then
+      REVIEWER_PRESENT["$group"]=1
+      REVIEWER_NEUTRAL_EVIDENCE["$group"]="reviewer timeout after ${REVIEWER_TIMEOUT}s"
+    else
+      append_item "reviewer:${group%%|*}"
+    fi
   done
 }
 
@@ -328,6 +388,7 @@ while true; do
     if [[ "$JSON_OUTPUT" == true ]]; then
       json_summary settled "$HEAD_SHA" '[]'
     else
+      print_reviewer_neutral_evidence
       printf 'settled: PR #%s head %s; checks terminal, reviewers reported, 0 unresolved threads\n' "$PR_NUMBER" "$HEAD_SHA"
     fi
     exit 0
@@ -337,6 +398,7 @@ while true; do
   elapsed="$(awk -v now="$now" -v start="$start_time" 'BEGIN { print now - start }')"
   if awk -v elapsed="$elapsed" -v timeout="$TIMEOUT" 'BEGIN { exit !(elapsed >= timeout) }'; then
     outstanding_json="$(printf '%s\n' "${OUTSTANDING[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')"
+    print_reviewer_neutral_evidence
     json_summary timeout "$HEAD_SHA" "$outstanding_json"
     exit 1
   fi

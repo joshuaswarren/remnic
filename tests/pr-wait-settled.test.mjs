@@ -54,8 +54,22 @@ if [[ "$1 $2" == "api repos/example/repo/pulls/7/reviews" ]]; then
         printf 'chatgpt-codex-connector[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
       fi
       ;;
+    rate-limited-review)
+      printf 'cursor[bot]\\t%s\\tCOMMENTED\\tReview rate limited\\n' '${headSha}'
+      printf 'coderabbitai[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
+      printf 'chatgpt-codex-connector[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
+      ;;
+    empty-body-review)
+      printf 'cursor[bot]\\t%s\\tCOMMENTED\\t\\n' '${headSha}'
+      printf 'coderabbitai[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
+      printf 'chatgpt-codex-connector[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
+      ;;
     missing-bot)
       printf 'cursor[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
+      ;;
+    pending-review)
+      printf 'cursor[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
+      printf 'coderabbitai[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
       ;;
   esac
   exit 0
@@ -118,6 +132,46 @@ test("wait settles a fully reviewed PR", async () => {
     const summary = JSON.parse(result.stdout);
     assert.equal(summary.head, headSha);
     assert.deepEqual(summary.outstanding, []);
+  });
+});
+test("wait treats a rate-limited review as terminal neutral", async () => {
+  await withGhStub("rate-limited-review", async (env) => {
+    const result = runWait(env, ["--timeout", "0", "--interval", "0"]);
+    assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
+    assert.match(result.stdout, /Review rate limited/);
+  });
+});
+
+test("wait treats an empty-body review as terminal neutral", async () => {
+  await withGhStub("empty-body-review", async (env) => {
+    const result = runWait(env, ["--timeout", "0", "--interval", "0"]);
+    assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
+    assert.match(result.stdout, /empty review body/);
+  });
+});
+
+test("wait downgrades a pending reviewer after reviewer timeout", async () => {
+  await withGhStub("pending-review", async (env) => {
+    const result = runWait(env, [
+      "--timeout",
+      "0",
+      "--reviewer-timeout",
+      "0",
+      "--interval",
+      "0",
+    ]);
+    assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
+    assert.match(result.stdout, /reviewer timeout/i);
+    assert.match(result.stdout, /warning/i);
+  });
+});
+
+test("wait keeps a pending reviewer without reviewer-timeout", async () => {
+  await withGhStub("pending-review", async (env) => {
+    const result = runWait(env, ["--timeout", "0", "--interval", "0", "--json"]);
+    assert.notEqual(result.status, 0);
+    const summary = JSON.parse(result.stdout);
+    assert.match(summary.outstanding.join(" "), /codex/i);
   });
 });
 
