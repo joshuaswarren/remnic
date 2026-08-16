@@ -19,6 +19,10 @@ test("normalizes composed characters before counting code points", () => {
   assert.equal(estimateTokenCount("e\u0301e\u0301e\u0301e\u0301"), 1);
 });
 
+test("counts Thai combining marks in wide-script text", () => {
+  assert.equal(estimateTokenCount("ที่"), 3);
+});
+
 test("counts astral code points once", () => {
   assert.equal(estimateTokenCount("😀😀😀😀"), 1);
 });
