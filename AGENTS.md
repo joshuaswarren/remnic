@@ -214,11 +214,13 @@ Reference workflow:
 Use `scripts/dev-worktree.sh <worktree-path> <branch> [base]` to create an
 isolated, installed worktree with a core type-check smoke check.
 
-Run pnpm through the pinned package manager:
+Run pnpm through the pinned package manager wrapper:
 
 ```bash
-npm exec --yes pnpm@10.32.1 -- <command>
+node scripts/pnpm.mjs <command>
 ```
+
+The launcher uses `scripts/pnpm.sh` on POSIX and `npm exec --yes pnpm@10.32.1` on Windows.
 
 Set command deadlines before you start long checks:
 

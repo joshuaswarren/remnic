@@ -72,7 +72,7 @@ describe("root CLI package boundaries", () => {
       scripts?: { build?: string };
     };
     const buildScript = manifest.scripts?.build ?? "";
-    const coreBuild = "pnpm --filter @remnic/core build";
+    const coreBuild = "node scripts/pnpm.mjs --filter @remnic/core build";
     const rootBundle = "tsup";
 
     assert.ok(

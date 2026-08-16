@@ -13,7 +13,7 @@ test("root test script builds core before running package tests", () => {
   };
 
   const testScript = pkg.scripts?.test ?? "";
-  assert.match(testScript, /^pnpm --filter @remnic\/core build && /);
+  assert.match(testScript, /^node scripts\/pnpm\.mjs --filter @remnic\/core build && /);
   assert.match(testScript, /node scripts\/run-root-tests\.mjs/);
   assert.doesNotMatch(
     testScript,
@@ -35,7 +35,7 @@ test("root build creates the OpenClaw adapter before bundling its public route",
   const buildScript = pkg.scripts?.build ?? "";
   assert.match(
     buildScript,
-    /^pnpm --filter @remnic\/core build && pnpm --filter @remnic\/plugin-openclaw build && /,
+    /^node scripts\/pnpm\.mjs --filter @remnic\/core build && node scripts\/pnpm\.mjs --filter @remnic\/plugin-openclaw build && /,
   );
 });
 
@@ -50,7 +50,7 @@ test("root development builds and watches the OpenClaw adapter with its public r
   const devScript = pkg.scripts?.dev ?? "";
   assert.equal(
     devScript,
-    "pnpm --filter @remnic/plugin-openclaw build && pnpm --parallel --filter remnic-workspace --filter @remnic/plugin-openclaw run dev:watch",
+    "node scripts/pnpm.mjs --filter @remnic/plugin-openclaw build && node scripts/pnpm.mjs --parallel --filter remnic-workspace --filter @remnic/plugin-openclaw run dev:watch",
   );
   assert.equal(pkg.scripts?.["dev:watch"], "tsup --watch");
   assert.equal(adapterPkg.scripts?.["dev:watch"], "tsup --config tsup.config.ts --watch");
