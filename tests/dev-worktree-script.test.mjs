@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const scriptPath = path.join(repoRoot, "scripts", "dev-worktree.sh");
+const worktreeDiscipline =
+  "Verify `pwd` before every write; use absolute paths rooted at this worktree; NEVER write to the main checkout or sibling worktrees; agent file tools may ignore cwd.";
 
 function git(...args) {
   return execFileSync("git", ["-C", repoRoot, ...args], { encoding: "utf8" }).trim();
@@ -62,6 +64,9 @@ test("creates an installed worktree and runs the smoke check at an absolute path
     assert.equal(result.status, 0, result.stderr);
     assert.equal(git("-C", worktreePath, "branch", "--show-current"), branch);
     assert.equal(existsSync(path.join(worktreePath, ".claude", "napkin.md")), true);
+    const napkin = readFileSync(path.join(worktreePath, ".claude", "napkin.md"), "utf8");
+    assert.ok(napkin.includes(`## Worktree Discipline\n${worktreeDiscipline}`));
+    assert.ok(result.stdout.includes(`Worktree discipline: ${worktreeDiscipline}`));
     assert.match(result.stdout, /Worktree ready/);
     assert.match(result.stdout, new RegExp(`Next steps[\\s\\S]*${branch}`));
     const calls = readFileSync(fixture.log, "utf8");
@@ -69,6 +74,30 @@ test("creates an installed worktree and runs the smoke check at an absolute path
     assert.match(calls, /exec --yes pnpm@10\.32\.1 -- --filter @remnic\/core run check-types/);
   } finally {
     cleanupWorktree(worktreePath, branch);
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("seeds worktree discipline when the source napkin is absent", () => {
+  const fixture = createFakeNpm();
+  const worktreePath = path.join(fixture.root, "fresh-napkin-worktree");
+  const branch = `test/dev-worktree-${process.pid}-fresh-napkin`;
+  const sourceNapkin = path.join(repoRoot, ".claude", "napkin.md");
+  const backupNapkin = `${sourceNapkin}.test-backup`;
+  renameSync(sourceNapkin, backupNapkin);
+
+  try {
+    const result = runScript([worktreePath, branch, "HEAD"], {
+      DEV_WORKTREE_TEST_LOG: fixture.log,
+      PATH: `${fixture.bin}${path.delimiter}${process.env.PATH ?? ""}`,
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(readFileSync(path.join(worktreePath, ".claude", "napkin.md"), "utf8").includes(`## Worktree Discipline\n${worktreeDiscipline}`));
+    assert.ok(result.stdout.includes(`Worktree discipline: ${worktreeDiscipline}`));
+  } finally {
+    cleanupWorktree(worktreePath, branch);
+    renameSync(backupNapkin, sourceNapkin);
     rmSync(fixture.root, { recursive: true, force: true });
   }
 });
