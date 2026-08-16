@@ -256,11 +256,11 @@ export function unescapeEntityTimelineMetadataValue(value: string): string {
   return result;
 }
 export function escapeEntityTimelineText(value: string): string {
-  return /^\\?\[remnic-origin=/i.test(value) ? `\\${value}` : value;
+  return /^\\?\[(?:remnic-origin=|remnic-meta-v1\])/i.test(value) ? `\\${value}` : value;
 }
 
 export function unescapeEntityTimelineText(value: string): string {
-  return /^\\{1,2}\[remnic-origin=/i.test(value) ? value.slice(1) : value;
+  return /^\\{1,2}\[(?:remnic-origin=|remnic-meta-v1\])/i.test(value) ? value.slice(1) : value;
 }
 
 export function serializeEntityTimelineEntry(entry: EntityTimelineEntry): string {
