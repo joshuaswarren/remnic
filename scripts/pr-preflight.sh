@@ -86,7 +86,7 @@ changeset_warning_needed() {
     [[ -z "$file" ]] && continue
     case "$file" in
       .changeset/*.md) has_changeset=1 ;;
-      .changeset/*|README.md|CHANGELOG.md|CONTRIBUTING.md|AGENTS.md|*/README.md|*/AGENTS.md|*/CONTRIBUTING.md|docs/*) ;;
+      .changeset/*|README.md|CHANGELOG.md|CONTRIBUTING.md|AGENTS.md|*/README.md|*/AGENTS.md|*/CONTRIBUTING.md|*/CHANGELOG.md|docs/*) ;;
       package.json|pnpm-lock.yaml|openclaw.plugin.json|packages/*/package.json|packages/*/openclaw.plugin.json|packages/*/.claude-plugin/plugin.json|packages/*/.codex-plugin/plugin.json) ;;
       *) changeset_code_file "$file" && has_code=1 ;;
     esac

@@ -41,6 +41,12 @@ test("preflight warns for shipped skill markdown without a changeset", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /WARNING: code changes detected without a changeset/);
 });
+test("preflight warns for non-documentation source markdown", () => {
+  const result = check("src/runtime-notes.md");
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /WARNING: code changes detected without a changeset/);
+});
 
 test("preflight stays silent for release-only root manifests", () => {
   const result = check("openclaw.plugin.json", "packages/plugin-openclaw/package.json");

@@ -82,10 +82,13 @@ function isDocumentationFile(filePath) {
   if (!normalized.endsWith(".md")) {
     return false;
   }
+  if (normalized.startsWith("src/")) {
+    return /\/(README|AGENTS|CONTRIBUTING|CHANGELOG)\.md$/.test(normalized);
+  }
   if (!normalized.startsWith("packages/")) {
     return true;
   }
-  return /\/(README|AGENTS|CONTRIBUTING)\.md$/.test(normalized);
+  return /\/(README|AGENTS|CONTRIBUTING|CHANGELOG)\.md$/.test(normalized);
 }
 
 function packageForFile(filePath, packages) {
@@ -163,7 +166,7 @@ export function changedWorkingTreeFiles(repoRoot, options = {}) {
   if (!mergeBase) {
     throw new Error(`Unable to resolve merge-base for ${baseRef}. Fetch the base or pass --base <ref>.`);
   }
-  const tracked = tryGit(repoRoot, ["diff", "--name-only", mergeBase, "--"], git) ?? "";
+  const tracked = tryGit(repoRoot, ["diff", "--name-only", "--no-renames", mergeBase, "--"], git) ?? "";
   const untracked = tryGit(repoRoot, ["ls-files", "--others", "--exclude-standard"], git) ?? "";
   return [...new Set([...splitLines(tracked), ...splitLines(untracked)])].sort();
 }

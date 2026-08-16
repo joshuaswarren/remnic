@@ -89,10 +89,19 @@ test("root OpenClaw compatibility sources map to the published plugin", () => {
 });
 
 test("root documentation remains documentation-only", () => {
-  const result = inferTouchedPackages(["src/AGENTS.md", "CONTRIBUTING.md"], packages);
+  const result = inferTouchedPackages(["src/AGENTS.md", "src/README.md", "CONTRIBUTING.md"], packages);
 
   assert.deepEqual(result.published, []);
   assert.deepEqual(result.python, []);
+});
+
+test("source markdown remains release-bearing unless it is a known doc file", () => {
+  const result = inferTouchedPackages(["src/runtime-notes.md"], packages);
+
+  assert.deepEqual(
+    result.published.map((pkg) => pkg.name),
+    ["@remnic/plugin-openclaw"]
+  );
 });
 test("working-tree diff collection uses stubbed git output from the merge-base", () => {
   const calls = [];
@@ -110,10 +119,27 @@ test("working-tree diff collection uses stubbed git output from the merge-base",
   ]);
   assert.deepEqual(calls, [
     ["merge-base", "HEAD", "main"],
-    ["diff", "--name-only", "base-sha", "--"],
+    ["diff", "--name-only", "--no-renames", "base-sha", "--"],
     ["ls-files", "--others", "--exclude-standard"],
   ]);
 });
+
+test("working-tree diff collection preserves both sides of a rename", () => {
+  const git = (_repoRoot, args) => {
+    if (args[0] === "merge-base") return "base-sha";
+    if (args[0] === "diff") {
+      return "packages/remnic-core/src/old.ts\npackages/remnic-cli/src/new.ts\n";
+    }
+    if (args[0] === "ls-files") return "";
+    throw new Error(`unexpected git call: ${args.join(" ")}`);
+  };
+
+  assert.deepEqual(changedWorkingTreeFiles("/repo", { baseRef: "main", git }), [
+    "packages/remnic-cli/src/new.ts",
+    "packages/remnic-core/src/old.ts",
+  ]);
+});
+
 test("working-tree diff collection rejects an unavailable merge-base", () => {
   const git = (_repoRoot, args) => {
     if (args[0] === "merge-base") return null;
