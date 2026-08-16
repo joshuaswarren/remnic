@@ -87,7 +87,7 @@ test("removes the worktree when package installation fails", () => {
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /Package install failed; removed worktree/);
     assert.equal(existsSync(worktreePath), false);
-    assert.equal(spawnSync("git", ["-C", repoRoot, "show-ref", "--verify", `refs/heads/${branch}`]).status, 0);
+    assert.notEqual(spawnSync("git", ["-C", repoRoot, "show-ref", "--verify", `refs/heads/${branch}`]).status, 0);
   } finally {
     cleanupWorktree(worktreePath, branch);
     rmSync(fixture.root, { recursive: true, force: true });

@@ -21,8 +21,14 @@ if [[ $worktree_arg = /* ]]; then
 else
   worktree_path=$PWD/$worktree_arg
 fi
-worktree_path=$(realpath -m -- "$worktree_path")
-
+worktree_parent=$(dirname -- "$worktree_path")
+worktree_name=$(basename -- "$worktree_path")
+if [[ -e $worktree_path || -L $worktree_path ]]; then
+  printf 'Refusing to clobber existing path: %s\n' "$worktree_path" >&2
+  exit 1
+fi
+mkdir -p -- "$worktree_parent"
+worktree_path="$(cd -- "$worktree_parent" && pwd -P)/$worktree_name"
 if [[ -e $worktree_path || -L $worktree_path ]]; then
   printf 'Refusing to clobber existing path: %s\n' "$worktree_path" >&2
   exit 1
@@ -37,11 +43,10 @@ if [[ $base == -* ]] || ! git -C "$repo_root" rev-parse --verify --quiet "$base^
   printf 'Base ref not found: %s\n' "$base" >&2
   exit 1
 fi
-mkdir -p -- "$(dirname -- "$worktree_path")"
 worktree_added=0
 cleanup() {
-  if (( worktree_added )); then
-    git -C "$repo_root" worktree remove --force "$worktree_path" >/dev/null 2>&1 || true
+  if (( worktree_added )) && git -C "$repo_root" worktree remove --force "$worktree_path" >/dev/null 2>&1; then
+    git -C "$repo_root" branch -D -- "$branch" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
