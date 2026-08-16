@@ -166,6 +166,7 @@ mkdir -p -- "$worktree_path/.claude"
 worktree_discipline='Verify `pwd` before every write; use absolute paths rooted at this worktree; NEVER write to the main checkout or sibling worktrees; agent file tools may ignore cwd.'
 if [[ -f $repo_root/.claude/napkin.md ]]; then
   cp -- "$repo_root/.claude/napkin.md" "$worktree_path/.claude/napkin.md"
+  chmod u+rw -- "$worktree_path/.claude/napkin.md"
   printf '\n## Worktree Discipline\n%s\n' "$worktree_discipline" >>"$worktree_path/.claude/napkin.md"
 else
   printf '%s\n' \

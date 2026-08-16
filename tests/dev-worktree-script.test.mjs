@@ -93,7 +93,7 @@ test("seeds worktree discipline when the source napkin is absent", () => {
   execFileSync("git", ["-C", isolatedRoot, "add", "README.md"]);
   execFileSync(
     "git",
-    ["-C", isolatedRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"],
+    ["-C", isolatedRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-m", "initial"],
     { stdio: "ignore" }
   );
 
