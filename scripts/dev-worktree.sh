@@ -61,6 +61,11 @@ if [[ -e $worktree_path || -L $worktree_path ]]; then
   printf 'Refusing to clobber existing path: %s\n' "$worktree_path" >&2
   exit 1
 fi
+staging_path=$worktree_path.remnic-setup-$$
+if [[ -e $staging_path || -L $staging_path ]]; then
+  printf 'Temporary setup path already exists: %s\n' "$staging_path" >&2
+  exit 1
+fi
 
 if [[ $branch == -* || $branch == @\{-*\} ]] || ! git -C "$repo_root" check-ref-format --branch "$branch" >/dev/null 2>&1; then
   printf 'Invalid branch name: %s\n' "$branch" >&2
@@ -84,13 +89,13 @@ if worktree_registered; then
   printf 'Refusing to clobber registered worktree path: %s\n' "$worktree_path" >&2
   exit 1
 fi
-
-worktree_owned() {
+worktree_owned_at() {
+  local expected_path=$1
   local line current_path=
   while IFS= read -r line; do
     case $line in
       "worktree "*) current_path=${line#worktree } ;;
-      "branch "*) [[ $current_path == "$worktree_path" && $line == "branch refs/heads/$branch" ]] && return 0 ;;
+      "branch "*) [[ $current_path == "$expected_path" && $line == "branch refs/heads/$branch" ]] && return 0 ;;
     esac
   done < <(git -C "$repo_root" worktree list --porcelain)
   return 1
@@ -122,8 +127,12 @@ if ! git -C "$repo_root" branch "$branch" "$base" >/dev/null; then
 fi
 cleanup() {
   if (( ! worktree_registered_before )); then
-    if worktree_owned; then
+    if worktree_owned_at "$worktree_path"; then
       if git -C "$repo_root" worktree remove --force "$worktree_path" >/dev/null 2>&1; then
+        git -C "$repo_root" branch -D -- "$branch" >/dev/null 2>&1 || true
+      fi
+    elif worktree_owned_at "$staging_path"; then
+      if git -C "$repo_root" worktree remove --force "$staging_path" >/dev/null 2>&1; then
         git -C "$repo_root" branch -D -- "$branch" >/dev/null 2>&1 || true
       fi
     elif (( ! branch_existed_before )) && ! branch_has_worktree; then
@@ -135,7 +144,8 @@ cleanup() {
 trap cleanup EXIT
 
 printf 'Creating worktree at %s from %s on branch %s\n' "$worktree_path" "$base" "$branch"
-git -C "$repo_root" worktree add "$worktree_path" "$branch"
+git -C "$repo_root" worktree add "$staging_path" "$branch"
+git -C "$repo_root" worktree move "$staging_path" "$worktree_path"
 mkdir -p -- "$worktree_path/.claude"
 if [[ -f $repo_root/.claude/napkin.md ]]; then
   cp -- "$repo_root/.claude/napkin.md" "$worktree_path/.claude/napkin.md"
