@@ -18,6 +18,7 @@ function createFakeNpm() {
     '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$REMNIC_PNPM_TEST_LOG"\n',
   );
   chmodSync(path.join(bin, "npm"), 0o755);
+  symlinkSync(process.execPath, path.join(bin, "node"));
   symlinkSync(
     spawnSync("bash", ["-c", "command -v bash"], { encoding: "utf8" }).stdout.trim(),
     path.join(bin, "bash"),

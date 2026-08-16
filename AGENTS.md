@@ -217,10 +217,10 @@ isolated, installed worktree with a core type-check smoke check.
 Run pnpm through the pinned package manager wrapper:
 
 ```bash
-bash scripts/pnpm.sh <command>
+node scripts/pnpm.mjs <command>
 ```
 
-The wrapper runs `npm exec --yes pnpm@10.32.1`, so a global pnpm install is not required.
+The launcher uses `scripts/pnpm.sh` on POSIX and `npm exec --yes pnpm@10.32.1` on Windows.
 
 Set command deadlines before you start long checks:
 

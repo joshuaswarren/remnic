@@ -12,13 +12,13 @@ test("prepack runs the type gate before building package artifacts", () => {
   };
 
   const prepack = pkg.scripts?.prepack ?? "";
-  const typeGateIndex = prepack.indexOf("pnpm run check-types");
-  const buildIndex = prepack.indexOf("pnpm run build");
+  const typeGateIndex = prepack.indexOf("node scripts/pnpm.mjs run check-types");
+  const buildIndex = prepack.indexOf("node scripts/pnpm.mjs run build");
 
   assert.notEqual(typeGateIndex, -1, "prepack must include the repository type gate");
   assert.notEqual(buildIndex, -1, "prepack must build package artifacts");
   assert.ok(typeGateIndex < buildIndex, "prepack must typecheck before building artifacts");
-  assert.doesNotMatch(prepack, /\bnpm run build\b/, "prepack should use pnpm consistently");
+  assert.doesNotMatch(prepack, /\bnpm run build\b/, "prepack should use the pinned wrapper consistently");
 });
 
 test("release smoke coverage verifies build artifacts after the build", () => {
@@ -27,7 +27,7 @@ test("release smoke coverage verifies build artifacts after the build", () => {
   };
   const releaseSmoke = pkg.scripts?.["test:release-smoke"] ?? "";
 
-  assert.match(releaseSmoke, /pnpm run build/);
+  assert.match(releaseSmoke, /node scripts\/pnpm\.mjs run build/);
   assert.match(releaseSmoke, /node scripts\/check-release-artifacts\.mjs/);
 
   const smokeScript = readFileSync(join(repoRoot, "scripts", "check-release-artifacts.mjs"), "utf8");
