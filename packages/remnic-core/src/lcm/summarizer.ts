@@ -1,8 +1,9 @@
 import { log } from "../logger.js";
-import type { LcmArchive, LcmMessage } from "./archive.js";
-import { LcmDag } from "./dag.js";
-import { estimateTokens } from "./archive.js";
+import { estimateTokenCount } from "../token-estimate.js";
 import { looksLikeMechanicalTelemetryTranscript } from "../telemetry-transcript.js";
+import type { LcmArchive, LcmMessage } from "./archive.js";
+import { estimateTokens } from "./archive.js";
+import type { LcmDag } from "./dag.js";
 
 /** Generate a ULID-like ID (timestamp + random). */
 function generateNodeId(): string {
@@ -199,23 +200,17 @@ export class LcmSummarizer {
 
 /** Deterministic truncation: first and last sentence, plus middle truncation. */
 function deterministicTruncate(text: string, maxTokens: number): string {
-  const maxChars = maxTokens * 4;
-  if (text.length <= maxChars) return text;
+  if (maxTokens <= 0 || estimateTokenCount(text) <= maxTokens) return text;
 
+  const maxChars = maxTokens * 4;
   const sentences = text.split(/(?<=[.!?])\s+/).filter((s) => s.length > 0);
-  if (sentences.length <= 2) {
-    return text.slice(0, maxChars);
-  }
+  if (sentences.length <= 2) return clampToTokenBudget(text, maxTokens);
 
   const first = sentences[0];
   const last = sentences[sentences.length - 1];
   const budget = maxChars - first.length - last.length - 20;
+  if (budget <= 0) return clampToTokenBudget(text, maxTokens);
 
-  if (budget <= 0) {
-    return text.slice(0, maxChars);
-  }
-
-  // Fill from the beginning until budget runs out
   const middle: string[] = [];
   let used = 0;
   for (let i = 1; i < sentences.length - 1; i++) {
@@ -224,7 +219,22 @@ function deterministicTruncate(text: string, maxTokens: number): string {
     used += sentences[i].length;
   }
 
-  return `${first} ${middle.join(" ")}${middle.length < sentences.length - 2 ? " [...] " : " "}${last}`;
+  return clampToTokenBudget(
+    `${first} ${middle.join(" ")}${middle.length < sentences.length - 2 ? " [...] " : " "}${last}`,
+    maxTokens,
+  );
+}
+
+function clampToTokenBudget(text: string, maxTokens: number): string {
+  const codePoints = [...text];
+  let low = 0;
+  let high = codePoints.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (estimateTokenCount(codePoints.slice(0, mid).join("")) <= maxTokens) low = mid;
+    else high = mid - 1;
+  }
+  return codePoints.slice(0, low).join("");
 }
 
 function chunkArray<T>(arr: T[], size: number): T[][] {

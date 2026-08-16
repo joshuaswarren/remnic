@@ -9,6 +9,7 @@ import { openLcmDatabase, ensureLcmStateDir } from "../src/lcm/schema.js";
 import { LcmArchive, estimateTokens } from "../src/lcm/archive.js";
 import { LcmDag } from "../src/lcm/dag.js";
 import { LcmSummarizer, type SummarizeFn } from "../src/lcm/summarizer.js";
+import { estimateTokenCount } from "../packages/remnic-core/src/token-estimate.js";
 import { assembleCompressedHistory } from "../src/lcm/recall.js";
 
 function createTempDir(): string {
@@ -415,7 +416,12 @@ test("LcmSummarizer creates leaf nodes from unsummarized messages", async () => 
 
     // Insert 8 messages (matches default leafBatchSize)
     for (let i = 0; i < 8; i++) {
-      archive.appendMessage("session-1", i, i % 2 === 0 ? "user" : "assistant", `Message ${i}`);
+      archive.appendMessage(
+        "session-1",
+        i,
+        i % 2 === 0 ? "user" : "assistant",
+        `日本語の長い要約メッセージ ${i} `.repeat(10),
+      );
     }
 
     // Use deterministic summarizer (returns input as-is, simulating level-2 fallback)
@@ -424,7 +430,7 @@ test("LcmSummarizer creates leaf nodes from unsummarized messages", async () => 
       leafBatchSize: 8,
       rollupFanIn: 4,
       maxDepth: 5,
-      deterministicMaxTokens: 512,
+      deterministicMaxTokens: 8,
       telemetryPrefilterEnabled: false,
     });
 
@@ -436,6 +442,7 @@ test("LcmSummarizer creates leaf nodes from unsummarized messages", async () => 
     assert.equal(nodes[0].msg_start, 0);
     assert.equal(nodes[0].msg_end, 7);
     assert.equal(nodes[0].escalation, 2, "should use deterministic fallback when LLM returns null");
+    assert.ok(estimateTokenCount(nodes[0].summary_text) <= 8);
 
     db.close();
   } finally {
