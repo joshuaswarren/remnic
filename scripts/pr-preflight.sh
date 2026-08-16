@@ -97,7 +97,7 @@ quick_package_scope() {
     scope_all=1
   elif [[ -z "$files" ]]; then
     scope_all=1
-  elif printf '%s\n' "$files" | grep -Eq '^(tsconfig[^/]*|package\.json|pnpm-lock\.yaml)$'; then
+  elif printf '%s\n' "$files" | grep -Eq '^(tsconfig[^/]*|package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml)$'; then
     scope_all=1
   else
     while IFS= read -r package_name; do

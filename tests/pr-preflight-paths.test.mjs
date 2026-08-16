@@ -72,6 +72,10 @@ assert.match(rootConfigScope.stdout, /Quick package scope: all packages/);
 assert.match(rootConfigScope.stdout, /Checked packages:.*remnic-cli/);
 assert.match(rootConfigScope.stdout, /Skipped packages:\s*$/m);
 
+const workspaceConfigScope = packageScope("pnpm-workspace.yaml");
+assert.equal(workspaceConfigScope.status, 0, workspaceConfigScope.stderr);
+assert.match(workspaceConfigScope.stdout, /Quick package scope: all packages/);
+
 const emptyScope = packageScope("");
 assert.equal(emptyScope.status, 0, emptyScope.stderr);
 assert.match(emptyScope.stdout, /Quick package scope: all packages/);
