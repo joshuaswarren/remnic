@@ -4,7 +4,7 @@ export interface NormalizeRecallTokenOptions {
 
 const DEFAULT_RECALL_STOP_WORDS = ["the", "and", "for", "with", "from", "into", "that", "this", "why", "did"];
 
-function isUnsegmentableRecallChar(char: string): boolean {
+export function isUnsegmentableRecallChar(char: string): boolean {
   if (char === "ー" || char === "ｰ") return true;
   return /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(char);
 }
@@ -24,21 +24,27 @@ function shouldKeepRecallToken(token: string, minTokenLength: number, stopWords:
   return token.length >= 2 && hasNonAsciiCodepoint && /\p{L}/u.test(token);
 }
 
-function addUnsegmentableRecallSegment(tokens: Set<string>, segment: string, stopWords: Set<string>): void {
+export function expandUnsegmentableRecallNGrams(segment: string): string[] {
   const chars = [...segment].filter((ch) => /[\p{L}\p{N}\p{M}]/u.test(ch) || isUnsegmentableRecallChar(ch));
+  const tokens: string[] = [];
   for (const ch of chars) {
-    if (!stopWords.has(ch)) tokens.add(ch);
+    tokens.push(ch);
   }
   for (const size of [2, 3, 4]) {
     if (chars.length < size) continue;
     for (let index = 0; index <= chars.length - size; index += 1) {
-      const token = chars.slice(index, index + size).join("");
-      if (!stopWords.has(token)) tokens.add(token);
+      tokens.push(chars.slice(index, index + size).join(""));
     }
   }
-  const whole = chars.join("");
-  if (whole.length > 3 && !stopWords.has(whole)) {
-    tokens.add(whole);
+  if (chars.length > 3) {
+    tokens.push(chars.join(""));
+  }
+  return tokens;
+}
+
+function addUnsegmentableRecallSegment(tokens: Set<string>, segment: string, stopWords: Set<string>): void {
+  for (const token of expandUnsegmentableRecallNGrams(segment)) {
+    if (!stopWords.has(token)) tokens.add(token);
   }
 }
 

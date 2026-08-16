@@ -297,6 +297,7 @@ That's all you need. Remnic handles database creation, document indexing, and pe
 |---------|---------|-------------|
 | `oramaDbPath` | `{memoryDir}/orama` | Database storage directory |
 | `oramaEmbeddingDimension` | `1536` | Vector dimension (match your embedding model) |
+| `oramaCjkSegmentation` | `true` | Segment space-free scripts (CJK/Thai) into character n-grams in the lexical index (issue #2187). Set `false` to restore the stock English-only tokenizer. |
 
 ### Embedding Support
 
@@ -344,6 +345,7 @@ LanceDB is an embedded vector database with native Apache Arrow bindings. It exc
 - Requires native bindings (`@lancedb/lancedb`) — may need compilation on some platforms
 - Best choice for collections with 10,000+ memories where vector search speed matters
 - Embedding configuration is the same as Orama (shared `EmbedHelper`)
+- The FTS index uses tantivy's default tokenizer, which cannot segment space-free scripts (CJK/Thai) — lexical recall over those scripts is near zero. Non-English recall on this backend rides on the vector tier (see [Non-English content](#non-english-content)).
 
 ## Meilisearch
 
@@ -445,7 +447,55 @@ Switching backends is a config-only change. Your memory files are always plain m
 
 Embedded backends (Orama, LanceDB) will automatically index your existing memory files on the next update cycle.
 
+## Non-English Content
+
+Space-free scripts — Japanese, Chinese, Thai — have no word boundaries for a
+term-based lexical index to split on. Backends differ in how (or whether) they
+segment them (issue #2187):
+
+| Backend | CJK/Thai lexical segmentation | Behavior |
+|---------|------------------------------|----------|
+| **QMD** | Depends on the QMD binary's tokenizer | Check `qmd doctor` for language support |
+| **Orama** | Yes — character n-grams via `oramaCjkSegmentation` (default on) | Japanese/Chinese/Thai phrase queries match lexically, with or without embeddings. Other non-Latin scripts (Hangul, Cyrillic, Greek, Arabic, ...) are indexed as whole words. |
+| **LanceDB** | No | The FTS index uses tantivy's default tokenizer, which cannot segment space-free scripts. Non-English lexical recall is near zero; the vector tier carries recall. |
+| **Meilisearch** | Yes — natively via charabia | Server-side segmentation; nothing to configure in Remnic. |
+| **Remote** | Depends on the remote service | Consult the service's tokenizer documentation. |
+
+### Orama CJK/Thai segmentation
+
+Orama indexes CJK/Thai runs as character n-grams (single characters plus
+2–4 character grams), reusing the same segmentation strategy as the
+query-side recall tokenizer, so index terms and query terms agree. Latin
+content tokenizes exactly as before, so existing English indexes stay
+term-compatible. Other non-ASCII scripts (Hangul, Cyrillic, Greek, Arabic,
+...) are indexed as whole words in addition to any stock English tokens.
+
+The tokenization version is persisted inside each `.msp` index file. When
+Orama loads an index written by an older Remnic version, it rebuilds the
+full-text side of that index in place (vectors are preserved) the first time
+the file is opened — no operator action needed. Corpora whose content
+tokenizes identically under both tokenizers (pure legacy Latin) are not
+re-indexed; only the version marker is rewritten.
+
+To restore the pre-#2187 stock English tokenizer:
+
+```jsonc
+{
+  "searchBackend": "orama",
+  "oramaCjkSegmentation": false
+}
+```
+
+### Cross-script recall rides on embeddings
+
+Whatever the backend, matching a query in one script against memories written
+in another (Japanese query against English memories, or the reverse) is a
+semantic task that the lexical tier cannot perform — it depends on the
+embedding model's multilingual coverage. Configure an embedding provider
+(see the Orama and LanceDB embedding sections) for cross-script recall.
+
 ## Global Search
+
 
 All backends support `searchGlobal()`, which searches across all collections (not just the default one). This is used by Remnic's cross-collection recall when hot/cold tiering or conversation indexing is enabled.
 

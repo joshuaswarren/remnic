@@ -9,17 +9,28 @@ import {
   type SearchQueryOptions,
   type SearchResult,
 } from "./port.js";
-import type { EmbedHelper, EmbedProviderIdentity, EmbedWithProviderResult } from "./embed-helper.js";
-import { scanMemoryDir } from "./document-scanner.js";
-import { isSearchAborted, throwIfSearchAborted } from "./abort.js";
+ import type { EmbedHelper, EmbedProviderIdentity, EmbedWithProviderResult } from "./embed-helper.js";
+ import { scanMemoryDir } from "./document-scanner.js";
+ import { isSearchAborted, throwIfSearchAborted } from "./abort.js";
+import {
+  containsNonLegacyTokenizerChars,
+  createCjkCapableTokenizer,
+  ORAMA_CJK_TOKENIZER_LANGUAGE,
+} from "./orama-cjk-tokenizer.js";
+ 
+ export interface OramaBackendOptions {
+   dbPath: string;
+   collection: string;
+   embedHelper: EmbedHelper;
+   memoryDir: string;
+   embeddingDimension: number;
+  /**
+   * Segment space-free scripts (CJK/Thai) in the lexical index. Default
+   * `true`; `false` restores the stock English-only tokenizer (issue #2187).
+   */
+  cjkSegmentationEnabled?: boolean;
+ }
 
-export interface OramaBackendOptions {
-  dbPath: string;
-  collection: string;
-  embedHelper: EmbedHelper;
-  memoryDir: string;
-  embeddingDimension: number;
-}
 
 const ORAMA_COLLECTION_FILENAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
@@ -57,6 +68,7 @@ export class OramaBackend implements SearchBackend {
   private readonly embedHelper: EmbedHelper;
   private readonly memoryDir: string;
   private readonly embeddingDimension: number;
+  private readonly cjkSegmentationEnabled: boolean;
   private available = false;
   private db: any = null;
   private oramaModule: any = null;
@@ -72,6 +84,7 @@ export class OramaBackend implements SearchBackend {
     this.embedHelper = opts.embedHelper;
     this.memoryDir = opts.memoryDir;
     this.embeddingDimension = opts.embeddingDimension;
+    this.cjkSegmentationEnabled = opts.cjkSegmentationEnabled !== false;
   }
 
   async probe(): Promise<boolean> {
@@ -127,6 +140,11 @@ export class OramaBackend implements SearchBackend {
     }
   }
 
+  /**
+   * Full-text (FTS) search only. With the stock tokenizer this cannot match
+   * space-free CJK/Thai text lexically — hybrid or vector search provides
+   * the fallback for those scripts (issue #2187).
+   */
   async bm25Search(query: string, collection?: string, maxResults?: number, execution?: SearchExecutionOptions): Promise<SearchResult[]> {
     if (isSearchAborted(execution)) return [];
     const db = await this.ensureDbForCollection(collection ?? this.collection);
@@ -403,8 +421,11 @@ export class OramaBackend implements SearchBackend {
       return this.db;
     }
 
-    this.db = await this.migrateLegacyVectorProviderSchema(
-      await this.persistModule.restore("json", raw),
+    this.db = await this.applyTokenizerVersion(
+      await this.migrateLegacyVectorProviderSchema(
+        await this.persistModule.restore("json", raw),
+        this.collection,
+      ),
       this.collection,
     );
     return this.db;
@@ -426,8 +447,11 @@ export class OramaBackend implements SearchBackend {
       return await this.createDb();
     }
 
-    return await this.migrateLegacyVectorProviderSchema(
-      await this.persistModule.restore("json", raw),
+    return await this.applyTokenizerVersion(
+      await this.migrateLegacyVectorProviderSchema(
+        await this.persistModule.restore("json", raw),
+        collection,
+      ),
       collection,
     );
   }
@@ -442,7 +466,95 @@ export class OramaBackend implements SearchBackend {
       vectorProvider: "string",
       vector: `vector[${this.embeddingDimension}]`,
     };
-    return await create({ schema });
+    if (!this.cjkSegmentationEnabled) {
+      return await create({ schema });
+    }
+    return await create({
+      schema,
+      components: { tokenizer: createCjkCapableTokenizer(this.oramaModule) },
+    });
+  }
+
+  /**
+   * Attach the CJK-capable tokenizer to a restored index and rebuild the
+   * full-text index when it predates CJK tokenization. Orama persists
+   * `tokenizer.language` with the index, so a marker other than
+   * `ORAMA_CJK_TOKENIZER_LANGUAGE` identifies an index whose terms were
+   * produced by the stock English tokenizer. Corpora whose content the stock
+   * tokenizer and this tokenizer treat identically (pure legacy Latin) need
+   * no re-indexing — only the version marker is rewritten for them.
+   */
+  private async applyTokenizerVersion(db: any, collection: string): Promise<any> {
+    const persistedLanguage =
+      db?.tokenizer?.language && typeof db.tokenizer.language === "string"
+        ? db.tokenizer.language
+        : "";
+    if (this.cjkSegmentationEnabled) {
+      db.tokenizer = createCjkCapableTokenizer(this.oramaModule);
+      if (persistedLanguage === ORAMA_CJK_TOKENIZER_LANGUAGE) return db;
+    } else {
+      // Segmentation disabled: a database persisted under the CJK tokenizer
+      // keeps its CJK terms unless it is re-indexed under the stock one, so
+      // downgrade it instead of returning it unchanged (issue #2187 round 2).
+      if (persistedLanguage !== ORAMA_CJK_TOKENIZER_LANGUAGE) return db;
+      db.tokenizer = this.oramaModule.components.tokenizer.createTokenizer({ language: "english" });
+    }
+
+
+    try {
+      const { search: oramaSearch, count, update: oramaUpdate } = this.oramaModule;
+      const existingCount = await count(db);
+      if (existingCount === 0) {
+        await this.persistDbForCollection(db, collection);
+        return db;
+      }
+      const allHits = await oramaSearch(db, { term: "", limit: existingCount + 100 });
+      const hits = allHits.hits ?? [];
+      const hasNonLegacyContent = hits.some((hit: any) => {
+        const doc = this.getStoredDocument(db, hit);
+        // Orama full-text queries every string field by default, so every
+        // indexed string field gates the rebuild — non-Latin text that only
+        // rides in snippet/path/id would otherwise keep stale terms
+        // (issue #2187 review round 2).
+        for (const field of [doc.content, doc.snippet, doc.path, doc.id, doc.vectorProvider]) {
+          if (typeof field === "string" && containsNonLegacyTokenizerChars(field)) return true;
+        }
+        return false;
+      });
+      if (hasNonLegacyContent) {
+        // Re-index every document in place (Orama update is remove+insert,
+        // so content is re-tokenized; vectors are carried through). A single
+        // failing document must not block the rest of the corpus: it keeps
+        // its pre-upgrade terms, which is no worse than before the upgrade.
+        for (const hit of hits) {
+          try {
+            const doc = this.getStoredDocument(db, hit);
+            const vector = this.getStoredVector(db, hit, doc);
+            await oramaUpdate(db, hit.id, {
+              id: typeof doc.id === "string" && doc.id.length > 0 ? doc.id : String(hit.id),
+              path: typeof doc.path === "string" ? doc.path : "",
+              content: typeof doc.content === "string" ? doc.content : "",
+              snippet:
+                typeof doc.snippet === "string"
+                  ? doc.snippet
+                  : typeof doc.content === "string"
+                    ? doc.content.slice(0, 200)
+                    : "",
+              vectorProvider: typeof doc.vectorProvider === "string" ? doc.vectorProvider : "",
+              vector: vector ?? this.zeroVector(),
+            });
+          } catch (docErr) {
+            log.debug(
+              `OramaBackend tokenizer-version re-index skipped document ${hit.id} in ${collection}: ${docErr}`,
+            );
+          }
+        }
+      }
+      await this.persistDbForCollection(db, collection);
+    } catch (err) {
+      log.debug(`OramaBackend tokenizer-version rebuild for ${collection} failed: ${err}`);
+    }
+    return db;
   }
 
   private async migrateLegacyVectorProviderSchema(db: any, collection: string): Promise<any> {
@@ -526,8 +638,11 @@ export class OramaBackend implements SearchBackend {
       await this.ensureModules();
       const raw = await readFile(filePath, "utf-8");
       const collection = path.basename(filePath, ".msp");
-      return await this.migrateLegacyVectorProviderSchema(
-        await this.persistModule.restore("json", raw),
+      return await this.applyTokenizerVersion(
+        await this.migrateLegacyVectorProviderSchema(
+          await this.persistModule.restore("json", raw),
+          collection,
+        ),
         collection,
       );
     } catch (err) {

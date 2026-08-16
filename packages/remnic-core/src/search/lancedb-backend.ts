@@ -221,12 +221,8 @@ export class LanceDbBackend implements SearchBackend {
         rows.length > 0 && rows.every((row) => row.vectorProvider === embeddingProviderIdentity),
       );
       if (isSearchAborted(execution)) return;
-      // Create FTS index on content column
-      try {
-        await table.createIndex("content", { config: this.lanceIndex.fts() });
-      } catch {
-        // FTS index creation may fail on some platforms — degrade gracefully
-      }
+      // FTS index on the content column.
+      await this.createFtsIndex(table);
       if (collection === this.collection) this.table = table;
     } catch (err) {
       log.debug(`LanceDbBackend update failed: ${err}`);
@@ -365,11 +361,7 @@ export class LanceDbBackend implements SearchBackend {
       vectorProvider: "",
     };
     const newTable = await db.createTable(collection, [emptyRow]);
-    try {
-      await newTable.createIndex("content", { config: this.lanceIndex.fts() });
-    } catch {
-      // FTS index creation may fail — degrade gracefully
-    }
+    await this.createFtsIndex(newTable);
     try {
       await newTable.delete("docid = '__placeholder__'");
     } catch {
@@ -424,11 +416,7 @@ export class LanceDbBackend implements SearchBackend {
     };
     this.table = await db.createTable(this.collection, [emptyRow]);
     // Create FTS index on content column
-    try {
-      await this.table.createIndex("content", { config: this.lanceIndex.fts() });
-    } catch {
-      // FTS index creation may fail — degrade gracefully
-    }
+    await this.createFtsIndex(this.table);
     // Remove placeholder row
     try {
       await this.table.delete("docid = '__placeholder__'");
@@ -436,6 +424,26 @@ export class LanceDbBackend implements SearchBackend {
       // May fail if delete isn't supported on empty-ish tables
     }
     return this.table;
+  }
+
+  /**
+   * Create the FTS index on the content column with the default tokenizer.
+   *
+   * Known limitation (issue #2187): tantivy's default tokenizer does not
+   * segment space-free scripts (CJK/Thai), so lexical recall over those
+   * scripts is near zero here. LanceDB's `baseTokenizer: "ngram"` option is
+   * not script-aware — it would n-gram English content too, degrading
+   * precision and bloating the index — so no CJK-capable configuration is
+   * available in the current @lancedb/lancedb API. Non-English lexical recall
+   * on this backend rides on the vector tier instead. See
+   * docs/search-backends.md ("Non-English content").
+   */
+  private async createFtsIndex(table: any): Promise<void> {
+    try {
+      await table.createIndex("content", { config: this.lanceIndex.fts() });
+    } catch {
+      // FTS index creation may fail on some platforms — degrade gracefully
+    }
   }
 
   private async searchTable(
