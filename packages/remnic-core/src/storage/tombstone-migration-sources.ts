@@ -63,6 +63,10 @@ export function createTombstoneMigrationSourceContents(
           contents.set(id, deps.storedContentIdentityCandidates(memory.content));
         }
       }
+      // Re-check after the direct-path read too: a concurrent drop during
+      // that await must not let this call publish a fill built from the
+      // stale snapshot into the freshly cleared slot (issue #2367 round 3).
+      if (ledgerMtimeMs !== revision) continue;
       if (contents.size === requested.size) return contents;
       const fill = (sourceContentsByIdPromise ??= (async () => {
         const allContents = new Map<string, readonly string[]>();
