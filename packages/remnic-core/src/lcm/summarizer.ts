@@ -212,6 +212,7 @@ function deterministicTruncate(text: string, maxTokens: number): string {
 
   const base = render([], false);
   if (estimateTokenCount(base) > maxTokens) return clampToTokenBudget(text, maxTokens);
+  if (estimateTokenCount(render([], true)) > maxTokens) return base;
 
   const middle: string[] = [];
   for (let i = 1; i < sentences.length - 1; i++) {

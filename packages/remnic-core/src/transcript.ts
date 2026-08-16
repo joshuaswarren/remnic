@@ -1108,19 +1108,16 @@ export class TranscriptManager {
       formattedEntries.push(`[${timeStr}] ${roleLabel}: ${entry.content}`);
     }
 
-    let totalTokens = estimateTokenCount(lines.join("\n"));
     const selectedEntries: string[] = [];
 
     for (let i = formattedEntries.length - 1; i >= 0; i--) {
       const entry = formattedEntries[i];
-      const entryTokens = estimateTokenCount(entry);
-
-      if (totalTokens + entryTokens > maxTokenBudget && selectedEntries.length > 0) {
+      const candidate = [...lines, entry, ...selectedEntries, ""].join("\n");
+      if (estimateTokenCount(candidate) > maxTokenBudget && selectedEntries.length > 0) {
         break;
       }
 
       selectedEntries.unshift(entry);
-      totalTokens += entryTokens;
     }
 
     lines.push(...selectedEntries);
