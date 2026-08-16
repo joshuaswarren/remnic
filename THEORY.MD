@@ -1,55 +1,85 @@
-# Theory: Automatic Review-Gate Recovery
+# Theory: Wearable Privacy Beyond English
 
 ## Problem
 
-GitHub has no pull request event for review-thread resolution.
+An always-on recorder captures speech in the wearer's own language.
 
-The required `unresolved-review-threads` check can stay red after the last thread closes.
+The transcript pipeline treated every language as English.
 
-Manual workflow dispatch restores the check, but it delays merge readiness.
+The off-the-record feature matched three English words. A wearer who spoke
+Japanese, Korean, Chinese, Arabic, or Russian got no elision at all.
+
+Filler stripping matched English tokens. Non-English transcripts kept every
+filler.
+
+A privacy control that silently does nothing is worse than one documented as
+absent. The wearer believes the span is protected. It is not.
 
 ## Operating theory
 
-The check-unsticker already owns stale required-check recovery.
+Two separate defects share one root cause: both features assumed that words are
+separated by spaces and written in Latin script.
 
-A short schedule can detect this state without changing guard semantics.
+A word boundary is a property of a script, not of text. Japanese, Chinese, and
+Kana runs have no boundary character. A regular expression that requires one
+can never match inside them.
 
-Each sweep lists open pull requests and inspects the latest guard workflow run.
+So boundary handling is decided per phrase edge. A phrase that starts or ends
+with a Latin, Cyrillic, Greek, or numeric character gets a letter boundary. Any
+other edge gets none.
 
-A green or active latest run requires no thread lookup and no rerun.
-
-A failed latest run needs a GraphQL thread count.
-
-The sweep reruns failed guard suites only when effective unresolved threads equal zero.
-
-The guard keeps no concurrency group because every failed suite needs a rerun.
-
-The scheduler owns one concurrency group and never force-cancels its own run.
+This single rule makes one matcher correct for every script.
 
 ## Strategy
 
-Keep manual dispatch unchanged for immediate recovery.
+Built-in phrases cover a documented language set. Operators add more. Nothing
+is hard-coded to one deployment.
 
-Reuse the shared dedup evaluator for effective thread counts.
+Start phrases and end phrases carry different risk. A start phrase that fires
+wrongly elides real speech. An end phrase that fires wrongly leaks protected
+speech.
 
-Keep stale-red selection in a small tested module.
+So the end list is shorter than the start list. A start phrase with no matching
+end phrase elides through the end of the conversation. That is the fail-closed
+direction.
 
-Use the five-minute schedule as the automatic path.
+Filler tokens divide the same way. Space-delimited scripts use whole-token
+matching. Japanese and Chinese fillers are removed inline, so each inline entry
+must be unambiguous on its own. The elongated hesitation forms qualify. A bare
+Japanese demonstrative does not, because it carries meaning.
 
-## Failure boundaries
+Operator tokens apply to every script. Routing them by script hint would drop a
+token the operator deliberately added.
 
-Open threads block reruns because the guard result would remain red.
+## Silence is the failure mode
 
-A newer green run suppresses older failed-run reruns.
+Config parsing rejects every unusable value loudly. A blank phrase, an
+over-long phrase, or a non-array throws with the exact key path.
 
-An active latest run suppresses older failed-run reruns.
+Turning the built-in phrases off while the feature stays enabled and no start
+phrase is configured also throws. That combination would leave the gate on and
+match nothing, which recreates the original defect.
 
-Rerun failures are warnings, not sweep-wide failures.
+The documented escape hatch is `offTheRecordEnabled: false`.
+
+## What stays language-dependent
+
+Built-in identifier redaction covers US formats only. Other national formats
+need operator patterns.
+
+Repeat-collapse and the low-quality heuristic still use space-delimited
+signals.
+
+Both limits are stated in the documentation. They are known gaps, not silent
+ones.
 
 ## Verification state
 
-Unit tests cover green, resolved-thread, open-thread, and active-run cases.
+The 231-test wearables suite passes.
 
-Workflow tests cover the schedule, scheduler concurrency, and latest-run gate.
+The workspace type check passes.
 
-The repository scheduling note documents automatic and manual paths.
+The config contract validates, and the stale `wearables` grandfather entry is
+pruned.
+
+The line ratchet passes.
