@@ -10,12 +10,16 @@ import { normalizeEntityText, resolveRequestedEntitySectionKeys } from "./entity
 import type { EntityStructuredSection, MemoryFile, PluginConfig, TranscriptEntry } from "./types.js";
 import { containsPhrase } from "./entity-retrieval-boundaries.js";
 import {
+  buildOriginStructuredSections,
+  sanitizeOriginatedFacts,
+  type EntityOriginStructuredSection,
+} from "./entity-origin-fields.js";
+import {
   checkEntityRecallAbort,
   entityRecallSectionAbsent,
   yieldEntityRecallScan,
   yieldEntityRecallScanEvery,
 } from "./entity-recall-cancellation.js";
-
 const ENTITY_INDEX_VERSION = 3;
 const RECENT_TRANSCRIPT_LOOKBACK_HOURS = 24;
 const INSTRUCTION_LIKE_RE = /\b(always|never|must|should|remember to|do not|don't|process|workflow|template|checklist|instruction)\b/i;
@@ -23,24 +27,24 @@ const METADATA_WRAPPER_RE = /^(source|context|metadata|notes?):/i;
 const ENTITY_PRONOUN_RE = /\b(he|him|his|she|her|they|them|their|it|its)\b/i;
 const BELIEF_LEDGER_SECTION_KEY = "belief_ledger";
 const BELIEF_LEDGER_FACT_RE = /^claim=([^;]+);\s*status=([^;]+);\s*updatedAt=([^;]+);\s*(.+)$/;
-
 type EntityQueryMode = "direct" | "timeline" | "follow_up";
-
 type EntityMentionIndexEntry = {
   canonicalId: string;
   name: string;
   type: string;
-  aliases: string[];
   summary?: string;
+  aliases: string[];
   facts: string[];
   timelineFacts: string[];
-  structuredSections: EntityStructuredSection[];
+  timelineFactOrigins?: Array<string | undefined>;
+  structuredSections: EntityOriginStructuredSection[];
   timeline: Array<{
     timestamp: string;
     text: string;
     source?: string;
     sessionKey?: string;
     principal?: string;
+    origin?: string;
   }>;
   relationships: Array<{ target: string; label: string }>;
   activity: Array<{ date: string; note: string }>;
@@ -55,21 +59,18 @@ type EntityMentionIndexEntry = {
     derivedDate?: string;
   }>;
 };
-
 type EntityMentionIndex = {
   version: number;
   updatedAt: string;
   entityStatusVersion?: number;
   entities: EntityMentionIndexEntry[];
 };
-
 type EntityCandidate = {
   entry: EntityMentionIndexEntry;
   alias: string;
   score: number;
   source: "query" | "recent_turn";
 };
-
 type EntityHintSnippet = {
   text: string;
   score: number;
@@ -96,21 +97,17 @@ export interface BuildEntityRecallSectionOptions {
    */
   abortSignal?: AbortSignal;
 }
-
 function tokenize(value: string): string[] {
   return normalizeEntityText(value).split(/\s+/).filter((token) => token.length >= 2);
 }
-
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))];
 }
-
 function compactLine(value: string, maxLength: number = 220): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (normalized.length <= maxLength) return normalized;
   return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 }
-
 function dedupeHintSnippetsByText(snippets: EntityHintSnippet[]): EntityHintSnippet[] {
   const seen = new Set<string>();
   const result: EntityHintSnippet[] = [];
@@ -122,11 +119,9 @@ function dedupeHintSnippetsByText(snippets: EntityHintSnippet[]): EntityHintSnip
   }
   return result;
 }
-
 function isBeliefLedgerSection(section: Pick<EntityStructuredSection, "key">): boolean {
   return normalizeEntityText(section.key).replace(/\s+/g, "_") === BELIEF_LEDGER_SECTION_KEY;
 }
-
 function beliefLedgerFactKeys(sections: EntityStructuredSection[]): Set<string> {
   const keys = new Set<string>();
   for (const section of sections) {
@@ -137,12 +132,10 @@ function beliefLedgerFactKeys(sections: EntityStructuredSection[]): Set<string> 
   }
   return keys;
 }
-
 function recallFactsForStructuredSection(section: EntityStructuredSection): string[] {
   if (!isBeliefLedgerSection(section)) return section.facts;
   return currentActiveBeliefLedgerFactTexts(section.facts);
 }
-
 function currentActiveBeliefLedgerFactTexts(facts: string[]): string[] {
   const byClaim = new Map<string, { status: string; updatedAtMs: number; texts: string[] }>();
   for (const fact of facts) {
@@ -175,13 +168,11 @@ function currentActiveBeliefLedgerFactTexts(facts: string[]): string[] {
   }
   return result;
 }
-
 function relationLine(entry: EntityMentionIndexEntry, relationship: { target: string; label: string }): string {
   const normalizedLabel = relationship.label.replace(/\s+/g, " ").trim();
   if (normalizedLabel.length === 0) return `${entry.name} is connected to ${relationship.target}`;
   return `${entry.name} ${normalizedLabel} ${relationship.target}`;
 }
-
 function detectEntityQueryMode(query: string): EntityQueryMode | null {
   const normalized = normalizeEntityText(query);
   if (!normalized) return null;
@@ -211,7 +202,6 @@ function detectEntityQueryMode(query: string): EntityQueryMode | null {
   }
   return null;
 }
-
 function scoreAliasMatch(query: string, alias: string): number {
   const normalizedQuery = normalizeEntityText(query);
   const normalizedAlias = normalizeEntityText(alias);
@@ -246,7 +236,6 @@ function scoreAliasMatch(query: string, alias: string): number {
   }
   return overlap;
 }
-
 /**
  * Tokens that look like type prefixes / generic role identifiers and
  * therefore should not, on their own, count as evidence that a
@@ -264,15 +253,12 @@ const ALIAS_AFFIX_TOKENS = new Set<string>([
   "place", "places", "tool", "tools", "service", "services",
   "system", "systems", "agent", "agents", "bot", "bots",
 ]);
-
 function isAliasAffixToken(token: string): boolean {
   return ALIAS_AFFIX_TOKENS.has(token);
 }
-
 function isLikelyInstructionLike(value: string): boolean {
   return INSTRUCTION_LIKE_RE.test(value) || METADATA_WRAPPER_RE.test(value);
 }
-
 function sanitizeEntityFact(fact: string): string {
   const sanitized = sanitizeMemoryContent(fact);
   const clean = sanitized.text.trim();
@@ -280,7 +266,6 @@ function sanitizeEntityFact(fact: string): string {
   if (INSTRUCTION_LIKE_RE.test(clean) && clean.length > 100) return "";
   return clean;
 }
-
 function scoreHintSnippet(snippet: EntityHintSnippet, queryTokens: string[]): EntityHintSnippet | null {
   const normalized = normalizeEntityText(snippet.text);
   if (!normalized) return null;
@@ -294,7 +279,6 @@ function scoreHintSnippet(snippet: EntityHintSnippet, queryTokens: string[]): En
   if (scored.text.length <= 160) scored.score += 1;
   return scored.score > 0 ? scored : null;
 }
-
 function sortTimelineEntriesDesc(
   left: EntityMentionIndexEntry["timeline"][number],
   right: EntityMentionIndexEntry["timeline"][number],
@@ -305,7 +289,6 @@ function sortTimelineEntriesDesc(
   }
   return right.text.localeCompare(left.text);
 }
-
 function jaccardSimilarity(a: string, b: string): number {
   const aTokens = new Set(tokenize(a));
   const bTokens = new Set(tokenize(b));
@@ -317,7 +300,6 @@ function jaccardSimilarity(a: string, b: string): number {
   const union = new Set([...aTokens, ...bTokens]).size;
   return union === 0 ? 0 : intersection / union;
 }
-
 function buildAliasIndex(entries: EntityMentionIndexEntry[]): Map<string, EntityMentionIndexEntry[]> {
   const index = new Map<string, EntityMentionIndexEntry[]>();
   for (const entry of entries) {
@@ -330,7 +312,6 @@ function buildAliasIndex(entries: EntityMentionIndexEntry[]): Map<string, Entity
   }
   return index;
 }
-
 async function readNativeChunks(
   config: PluginConfig,
   recallNamespaces?: string[],
@@ -344,7 +325,6 @@ async function readNativeChunks(
     defaultNamespace: config.defaultNamespace,
   }).catch(() => []);
 }
-
 async function resolveEntityIndexStorages(
   storage: StorageManager,
   config: PluginConfig,
@@ -585,10 +565,18 @@ async function buildEntityMentionIndex(
       .filter(Boolean)
       .filter((fact) => !rawBeliefLedgerFactKeys.has(normalizeEntityText(fact)))
       .map((fact) => compactLine(fact, 180));
-    const sanitizedTimelineFacts = entity.timeline
-      .map((entry) => sanitizeEntityFact(entry.text))
-      .filter(Boolean)
-      .map((fact) => compactLine(fact, 180));
+    const { facts: timelineFacts, origins: timelineFactOrigins } = sanitizeOriginatedFacts(
+      entity.timeline,
+      sanitizeEntityFact,
+      compactLine,
+      true,
+    );
+    const structuredSections = buildOriginStructuredSections(
+      rawStructuredSections,
+      recallFactsForStructuredSection,
+      sanitizeEntityFact,
+      compactLine,
+    );
     entities.set(canonicalId, {
       canonicalId,
       name: entity.name,
@@ -596,15 +584,9 @@ async function buildEntityMentionIndex(
       aliases: uniqueStrings(entity.aliases),
       summary: entity.synthesis?.trim() || entity.summary?.trim() || undefined,
       facts: sanitizedFacts,
-      timelineFacts: uniqueStrings(sanitizedTimelineFacts),
-      structuredSections: rawStructuredSections.map((section) => ({
-        key: section.key,
-        title: section.title,
-        facts: recallFactsForStructuredSection(section)
-          .map((fact) => sanitizeEntityFact(fact))
-          .filter(Boolean)
-          .map((fact) => compactLine(fact, 180)),
-      })).filter((section) => section.facts.length > 0),
+      timelineFacts,
+      ...(timelineFactOrigins.some((origin) => origin !== undefined) ? { timelineFactOrigins } : {}),
+      structuredSections,
       timeline: entity.timeline.map((entry) => ({ ...entry })),
       relationships: entity.relationships.map((relationship) => ({ ...relationship })),
       activity: entity.activity.map((activity) => ({ ...activity })),
@@ -857,20 +839,29 @@ async function buildHintSnippets(
   if (entry.summary) {
     snippets.push({ text: compactLine(entry.summary, 180), score: 10, kind: "summary" });
   }
-
   if (requestedSectionKeys.size > 0) {
     for (const section of entry.structuredSections) {
       if (!requestedSectionKeys.has(normalizeEntityText(section.key).replace(/\s+/g, "_"))) continue;
-      for (const fact of section.facts) {
-        snippets.push({ text: fact, score: mode === "direct" ? 8 : 9, kind: "section" });
+      for (const [index, fact] of section.facts.entries()) {
+        snippets.push({
+          text: fact,
+          score: mode === "direct" ? 8 : 9,
+          kind: "section",
+          origin: section.factOrigins?.[index],
+        });
       }
     }
   } else {
-    for (const fact of entry.timelineFacts) {
-      snippets.push({ text: fact, score: mode === "direct" ? 6 : 7, kind: "fact" });
+    for (const [index, fact] of entry.timelineFacts.entries()) {
+      snippets.push({
+        text: fact,
+        score: mode === "direct" ? 6 : 7,
+        kind: "fact",
+        origin: entry.timelineFactOrigins?.[index],
+      });
     }
     for (const section of entry.structuredSections) {
-      for (const fact of section.facts) {
+      for (const [index, fact] of section.facts.entries()) {
         const normalizedFact = normalizeEntityText(fact);
         const hasNonAliasQueryOverlap = queryTokens.some((token) =>
           !aliasTokens.has(token) && normalizedFact.includes(token)
@@ -878,7 +869,12 @@ async function buildHintSnippets(
         if (entry.timelineFacts.length > 0 && !hasNonAliasQueryOverlap) {
           continue;
         }
-        snippets.push({ text: fact, score: mode === "direct" ? 6 : 7, kind: "fact" });
+        snippets.push({
+          text: fact,
+          score: mode === "direct" ? 6 : 7,
+          kind: "fact",
+          origin: section.factOrigins?.[index],
+        });
       }
     }
     if (entry.timelineFacts.length === 0 && entry.structuredSections.length === 0) {
@@ -987,13 +983,17 @@ function formatEntityHintSection(
         (candidate.entry.timeline ?? [])
           .slice()
           .sort(sortTimelineEntriesDesc)
-          .map((entry) => sanitizeEntityFact(entry.text))
-          .filter(Boolean)
-          .map((text) => scoreHintSnippet({
-            text: compactLine(text, 180),
-            score: 7,
-            kind: "activity" as const,
-          }, queryTokens))
+          .map((entry) => {
+            const text = sanitizeEntityFact(entry.text);
+            return text
+              ? scoreHintSnippet({
+                text: compactLine(text, 180),
+                score: 7,
+                kind: "activity" as const,
+                origin: entry.origin,
+              }, queryTokens)
+              : null;
+          })
           .filter((snippet): snippet is EntityHintSnippet => snippet !== null)
           .filter((snippet) => !seedExcludedTexts.has(normalizeEntityText(snippet.text))),
       ).slice(0, 2);

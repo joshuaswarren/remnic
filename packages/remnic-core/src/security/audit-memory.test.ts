@@ -14,6 +14,7 @@ type MemoryOptions = {
   pathPrefix?: string;
   source?: string;
   sourceConnector?: string;
+  timestamp?: string;
 };
 
 function makeMemory(
@@ -23,7 +24,7 @@ function makeMemory(
   content: string,
   options: MemoryOptions = {},
 ): MemoryFile {
-  const timestamp = "2026-08-14T12:00:00.000Z";
+  const timestamp = options.timestamp ?? "2026-08-14T12:00:00.000Z";
   const frontmatter = {
     id,
     category: "fact",
@@ -231,6 +232,28 @@ test("auditMemoryStore uses a leave-one-out burst baseline", async () => {
       report.findings.filter((finding) => finding.category === "write-burst").length,
       12,
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("auditMemoryStore includes memories exactly at --since and excludes earlier ones", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-audit-memory-boundary-"));
+  try {
+    const cutoff = "2026-08-14T12:00:00.000Z";
+    const before = makeMemory(root, "before", "session-before", "Before cutoff", {
+      timestamp: "2026-08-14T11:59:59.999Z",
+    });
+    const atCutoff = makeMemory(root, "at-cutoff", "session-at-cutoff", "At cutoff", {
+      timestamp: cutoff,
+    });
+    const report = await auditMemoryStore({
+      memoryDir: root,
+      storage: memoryStorage([before, atCutoff]),
+      since: cutoff,
+    });
+    assert.equal(report.activeMemories, 1);
+    assert.deepEqual([...new Set(report.findings.map((finding) => finding.memoryId))], []);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

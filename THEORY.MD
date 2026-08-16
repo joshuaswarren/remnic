@@ -1,85 +1,51 @@
-# Theory: Wearable Privacy Beyond English
+# Theory: Preserve authority through derived entity fields
 
 ## Problem
 
-An always-on recorder captures speech in the wearer's own language.
+Entity recall copies facts and structured-section values from entity files into model context.
 
-The transcript pipeline treated every language as English.
+Memory writes already record extraction origins, but entity writes dropped that origin.
 
-The off-the-record feature matched three English words. A wearer who spoke
-Japanese, Korean, Chinese, Arabic, or Russian got no elision at all.
+Authority-aware recall therefore treated every entity field as `unknown`.
 
-Filler stripping matched English tokens. Non-English transcripts kept every
-filler.
-
-A privacy control that silently does nothing is worse than one documented as
-absent. The wearer believes the span is protected. It is not.
+That default protects against untrusted content but also fences user-derived facts.
 
 ## Operating theory
 
-Two separate defects share one root cause: both features assumed that words are
-separated by spaces and written in Latin script.
+Origin is field provenance, not only record provenance.
 
-A word boundary is a property of a script, not of text. Japanese, Chinese, and
-Kana runs have no boundary character. A regular expression that requires one
-can never match inside them.
+Each entity timeline entry and structured-section fact must retain the origin of the write batch.
 
-So boundary handling is decided per phrase edge. A phrase that starts or ends
-with a Latin, Cyrillic, Greek, or numeric character gets a letter boundary. Any
-other edge gets none.
+Missing or conflicting origin stays absent and renders as `unknown`.
 
-This single rule makes one matcher correct for every script.
+This preserves least privilege while allowing trusted user fields to remain readable.
 
 ## Strategy
 
-Built-in phrases cover a documented language set. Operators add more. Nothing
-is hard-coded to one deployment.
+Carry the classified extraction origin through `StorageManager.writeEntity` and `EntityStore`.
 
-Start phrases and end phrases carry different risk. A start phrase that fires
-wrongly elides real speech. An end phrase that fires wrongly leaks protected
-speech.
+Persist timeline origins as escaped metadata.
 
-So the end list is shorter than the start list. A start phrase with no matching
-end phrase elides through the end of the conversation. That is the fail-closed
-direction.
+Persist structured-section origins as escaped per-fact metadata.
 
-Filler tokens divide the same way. Space-delimited scripts use whole-token
-matching. Japanese and Chinese fillers are removed inline, so each inline entry
-must be unambiguous on its own. The elongated hesitation forms qualify. A bare
-Japanese demonstrative does not, because it carries meaning.
+Build the entity recall index with parallel origin arrays and pass each origin to the shared authority renderer.
 
-Operator tokens apply to every script. Routing them by script hint would drop a
-token the operator deliberately added.
+When equal text has different origins, drop the origin rather than selecting the more trusted value.
 
-## Silence is the failure mode
+## Audit boundary
 
-Config parsing rejects every unusable value loudly. A blank phrase, an
-over-long phrase, or a non-array throws with the exact key path.
+The audit cutoff is inclusive.
 
-Turning the built-in phrases off while the feature stays enabled and no start
-phrase is configured also throws. That combination would leave the gate on and
-match nothing, which recreates the original defect.
+A memory at the exact `--since` timestamp belongs to the reported window.
 
-The documented escape hatch is `offTheRecordEnabled: false`.
+A memory before that timestamp does not.
 
-## What stays language-dependent
-
-Built-in identifier redaction covers US formats only. Other national formats
-need operator patterns.
-
-Repeat-collapse and the low-quality heuristic still use space-delimited
-signals.
-
-Both limits are stated in the documentation. They are known gaps, not silent
-ones.
+The boundary test uses a one-millisecond separation to guard both cases.
 
 ## Verification state
 
-The 231-test wearables suite passes.
+Core type checking passes.
 
-The workspace type check passes.
+The entity hardening gate passes all 339 tests.
 
-The config contract validates, and the stale `wearables` grandfather entry is
-pruned.
-
-The line ratchet passes.
+Authority and audit regression tests pass all 13 tests.

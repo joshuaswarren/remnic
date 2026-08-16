@@ -40,11 +40,12 @@ import {
   countEntityStructuredFacts,
   fingerprintEntityStructuredFacts,
   normalizeEntityName as normalizeEntityNameShared,
-  normalizeStructuredSectionFacts,
+  normalizeStructuredSectionFactsWithOrigins,
   parseEntityFile,
   serializeEntityFile,
   StorageManager,
 } from "../storage.js";
+import { parseOriginClass } from "../security/origin-authority.js";
 
 export interface EntityStoreDeps {
   /** Live class object of the host instance — shared static caches (see storage.ts storageManagerClass). */
@@ -204,6 +205,7 @@ export class EntityStore {
       source?: string;
       sessionKey?: string;
       principal?: string;
+      origin?: string;
       structuredSections?: EntityStructuredSection[];
     } = {},
   ): Promise<string> {
@@ -223,6 +225,7 @@ export class EntityStore {
       source?: string;
       sessionKey?: string;
       principal?: string;
+      origin?: string;
       structuredSections?: EntityStructuredSection[];
     } = {},
   ): Promise<string> {
@@ -283,26 +286,33 @@ export class EntityStore {
     const source = options.source?.trim() || undefined;
     const sessionKey = options.sessionKey?.trim() || undefined;
     const principal = options.principal?.trim() || undefined;
+    const origin = options.origin?.trim() ? parseOriginClass(options.origin) : undefined;
     const structuredSectionMap = new Map(
       (entity.structuredSections ?? []).map((section) => [section.key, {
         ...section,
         facts: [...section.facts],
+        ...(section.factOrigins ? { factOrigins: [...section.factOrigins] } : {}),
       }]),
     );
     for (const section of options.structuredSections ?? []) {
       const normalizedSection = normalizeEntityStructuredSection(type, section, this.deps.entitySchemas);
-      const normalizedFacts = normalizeStructuredSectionFacts(section.facts);
-      if (normalizedFacts.length === 0) continue;
+      const normalized = normalizeStructuredSectionFactsWithOrigins(section.facts, section.factOrigins, origin);
+      if (normalized.facts.length === 0) continue;
       const existingSection = structuredSectionMap.get(normalizedSection.key);
       if (!existingSection) {
         structuredSectionMap.set(normalizedSection.key, {
           key: normalizedSection.key,
           title: normalizedSection.title,
-          facts: normalizedFacts,
+          ...normalized,
         });
         continue;
       }
-      existingSection.facts = normalizeStructuredSectionFacts([...existingSection.facts, ...normalizedFacts]);
+      const merged = normalizeStructuredSectionFactsWithOrigins(
+        [...existingSection.facts, ...normalized.facts],
+        [...(existingSection.factOrigins ?? []), ...(normalized.factOrigins ?? [])],
+      );
+      existingSection.facts = merged.facts;
+      existingSection.factOrigins = merged.factOrigins;
       if (!existingSection.title.trim() && normalizedSection.title.trim()) {
         existingSection.title = normalizedSection.title;
       }
@@ -314,6 +324,7 @@ export class EntityStore {
         ...(source ? { source } : {}),
         ...(sessionKey ? { sessionKey } : {}),
         ...(principal ? { principal } : {}),
+        ...(origin ? { origin } : {}),
       };
       const alreadyPresent = entity.timeline.some((entry) =>
         entry.timestamp === nextEntry.timestamp
@@ -321,6 +332,7 @@ export class EntityStore {
         && entry.source === nextEntry.source
         && entry.sessionKey === nextEntry.sessionKey
         && entry.principal === nextEntry.principal
+        && entry.origin === nextEntry.origin
       );
       if (alreadyPresent) continue;
       entity.timeline.push(nextEntry);

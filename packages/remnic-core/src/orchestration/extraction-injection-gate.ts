@@ -123,7 +123,16 @@ export function screenEntityForIndex(entity: unknown, enabled: boolean): Screene
     source: typeof record?.source === "string" ? record.source : "extraction",
     facts: factScreen.kept,
     ...(sectionScreens
-      ? { structuredSections: sectionScreens.map(({ section, screen }) => ({ ...section, facts: screen.kept })) }
+      ? {
+        structuredSections: sectionScreens.map(({ section, screen }) => {
+          const factOrigins = screen.kept.map((fact) => section.factOrigins?.[section.facts.indexOf(fact)]);
+          return {
+            ...section,
+            facts: screen.kept,
+            ...(factOrigins.some((origin) => origin !== undefined) ? { factOrigins } : {}),
+          };
+        }),
+      }
       : rawSections
         ? { structuredSections: rawSections }
         : {}),

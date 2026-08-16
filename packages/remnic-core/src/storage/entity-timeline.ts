@@ -78,6 +78,9 @@ export function parseEntityTimelineBullet(bullet: string, fallbackTimestamp: str
       case "principal":
         entry.principal = value;
         break;
+      case "origin":
+        entry.origin = value;
+        break;
       default:
         entry.text = rest.trim();
         return entry.text ? entry : null;
@@ -241,7 +244,6 @@ export function unescapeEntityTimelineMetadataValue(value: string): string {
   }
   return result;
 }
-
 export function serializeEntityTimelineEntry(entry: EntityTimelineEntry): string {
   const tokens: string[] = [];
   if (entry.timestamp.trim().length > 0) {
@@ -257,6 +259,9 @@ export function serializeEntityTimelineEntry(entry: EntityTimelineEntry): string
   if (entry.principal) {
     tokens.push(`[principal=${escapeEntityTimelineMetadataValue(entry.principal)}]`);
   }
+  if (entry.origin) {
+    tokens.push(`[origin=${escapeEntityTimelineMetadataValue(entry.origin)}]`);
+  }
   const serializedMetadata = tokens.length > 0 ? `${tokens.join(" ")} ` : "";
   return `- ${serializedMetadata}${entry.text}`.trimEnd();
 }
@@ -269,6 +274,26 @@ export function normalizeEntitySectionFact(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
+export function normalizeStructuredSectionFactsWithOrigins(
+  facts: string[],
+  factOrigins?: Array<string | undefined>,
+  defaultOrigin?: string,
+): Pick<EntityStructuredSection, "facts" | "factOrigins"> {
+  const normalizedFacts: string[] = [];
+  const origins: Array<string | undefined> = [];
+  const seen = new Set<string>();
+  for (const [index, fact] of facts.entries()) {
+    const normalized = normalizeEntitySectionFact(fact);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    normalizedFacts.push(normalized);
+    origins.push(factOrigins?.[index] ?? defaultOrigin);
+  }
+  return {
+    facts: normalizedFacts,
+    ...(origins.some((origin) => origin !== undefined) ? { factOrigins: origins } : {}),
+  };
+}
 export function normalizeStructuredSectionFacts(facts: string[]): string[] {
   return [...new Set(facts.map((fact) => normalizeEntitySectionFact(fact)).filter((fact) => fact.length > 0))];
 }
@@ -304,14 +329,22 @@ export function compileEntityFacts(
   return facts;
 }
 
-function parseEntityStructuredSectionFacts(lines: string[]): string[] {
+function parseEntityStructuredSectionFacts(
+  lines: string[],
+): Pick<EntityStructuredSection, "facts" | "factOrigins"> {
   const facts: string[] = [];
+  const factOrigins: Array<string | undefined> = [];
   let currentBlock: string[] = [];
+  let currentOrigin: string | undefined;
 
   const flushCurrentBlock = (): void => {
     const normalized = normalizeEntitySectionFact(currentBlock.join(" "));
-    if (normalized.length > 0) facts.push(normalized);
+    if (normalized.length > 0) {
+      facts.push(normalized);
+      factOrigins.push(currentOrigin);
+    }
     currentBlock = [];
+    currentOrigin = undefined;
   };
 
   for (const rawLine of lines) {
@@ -322,14 +355,16 @@ function parseEntityStructuredSectionFacts(lines: string[]): string[] {
     }
     if (line.startsWith("- ")) {
       flushCurrentBlock();
-      currentBlock = [line.slice(2).trim()];
+      const parsed = parseEntityTimelineBullet(line.slice(2).trim(), "");
+      currentBlock = [parsed?.text ?? line.slice(2).trim()];
+      currentOrigin = parsed?.origin;
       continue;
     }
     currentBlock.push(line);
   }
 
   flushCurrentBlock();
-  return [...new Set(facts)];
+  return normalizeStructuredSectionFactsWithOrigins(facts, factOrigins);
 }
 
 function looksLikeStructuredSectionFactList(lines: string[]): boolean {
@@ -355,27 +390,33 @@ export function partitionEntityStructuredSections(
       remainingExtraSections.push(section);
       continue;
     }
-    const facts = parseEntityStructuredSectionFacts(section.lines);
-    if (!matchedSection && facts.length === 0) {
+    const parsedFacts = parseEntityStructuredSectionFacts(section.lines);
+    if (!matchedSection && parsedFacts.facts.length === 0) {
       remainingExtraSections.push(section);
       continue;
     }
     const normalizedSection = matchedSection
       ? { key: matchedSection.key, title: matchedSection.title }
       : normalizeEntityStructuredSection(entityType, { key: section.title, title: section.title }, entitySchemas);
-    if (facts.length === 0) {
+    if (parsedFacts.facts.length === 0) {
       remainingExtraSections.push(section);
       continue;
     }
     const existing = structuredSectionIndex.get(normalizedSection.key);
     if (existing) {
-      existing.facts = normalizeStructuredSectionFacts([...existing.facts, ...facts]);
+      const merged = normalizeStructuredSectionFactsWithOrigins(
+        [...existing.facts, ...parsedFacts.facts],
+        [...(existing.factOrigins ?? []), ...(parsedFacts.factOrigins ?? [])],
+      );
+      existing.facts = merged.facts;
+      existing.factOrigins = merged.factOrigins;
       continue;
     }
     const structuredSection: EntityStructuredSection = {
       key: normalizedSection.key,
       title: normalizedSection.title,
-      facts: normalizeStructuredSectionFacts(facts),
+      facts: parsedFacts.facts,
+      ...(parsedFacts.factOrigins ? { factOrigins: parsedFacts.factOrigins } : {}),
     };
     structuredSections.push(structuredSection);
     structuredSectionIndex.set(normalizedSection.key, structuredSection);
