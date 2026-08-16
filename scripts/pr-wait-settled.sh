@@ -3,12 +3,70 @@ set -euo pipefail
 
 # Wait for a PR head to finish all checks, reviewer activity, and review threads.
 # Reviewer aliases mirror .github/workflows/review-round-dispatch.yml.
+# Resolve the real gh binary when a tool-manager wrapper appears first on PATH.
+resolve_mise_gh() {
+  local candidate
+  command -v mise >/dev/null 2>&1 || return 1
+  candidate="$(mise which gh 2>/dev/null || true)"
+  [[ -x "$candidate" ]] || return 1
+  printf '%s\n' "$candidate"
+}
+
+resolve_gh() {
+  if [[ -n "${REMNIC_GH_BIN:-}" ]]; then
+    printf '%s\n' "$REMNIC_GH_BIN"
+    return
+  fi
+  local candidate kind source
+  while IFS= read -r candidate; do
+    [[ -x "$candidate" ]] || continue
+    case "$candidate" in
+      */shims/gh)
+        resolve_mise_gh && return
+        continue
+        ;;
+    esac
+    kind="$(file -b "$candidate" 2>/dev/null || true)"
+    if [[ "$kind" == *script* || "$kind" == *text* ]]; then
+      source="$(sed -n '1,8p' "$candidate" 2>/dev/null || true)"
+      if [[ "$source" == *mise* ]]; then
+        resolve_mise_gh && return
+        continue
+      fi
+    fi
+    printf '%s\n' "$candidate"
+    return
+  done < <(type -P -a gh 2>/dev/null | awk '!seen[$0]++')
+  command -v gh
+}
+
+strip_gh_banner() {
+  awk '
+    !started && $0 ~ /^[[:space:]]*mise[[:space:]].*config[.]toml[[:space:]]+tools:[[:space:]]+gh@[^[:space:]]+[[:space:]]*$/ { next }
+    { started = 1; print }
+  '
+}
+
+strip_leading_non_json() {
+  awk '
+    !started {
+      if ($0 ~ /^[[:space:]]*[\[{]/) started = 1
+      else next
+    }
+    { print }
+  '
+}
+
+GH_BIN="$(resolve_gh)"
+gh() {
+  "$GH_BIN" "$@" 2> >(strip_gh_banner >&2) | strip_gh_banner
+}
+
 PR_NUMBER=""
 TIMEOUT=1800
 INTERVAL=30
 JSON_OUTPUT=false
 REPO="${REMNIC_REPO:-joshuaswarren/remnic}"
-
 usage() {
   printf 'Usage: scripts/pr-wait-settled.sh <pr-number> [--timeout S] [--interval S] [--json]\n' >&2
 }
@@ -128,15 +186,33 @@ fetch_and_evaluate() {
     return
   fi
   local pr_meta
-  if pr_meta=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json author,files 2>/dev/null); then
-    if [[ "$(jq -r 'if (.author.login == "dependabot[bot]" and (.files | length) > 0 and all(.files[]; (.path // "" | split("/")[-1]) as $base | ["package.json", "package-lock.json", "pnpm-lock.yaml", "requirements.txt"] | index($base) != null)) then "true" else "false" end' <<< "$pr_meta")" == true ]]; then
+  if pr_meta=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json author,files --jq 'if (.author.login == "dependabot[bot]" and (.files | length) > 0 and all(.files[]; (.path // "" | split("/")[-1]) as $base | ["package.json", "package-lock.json", "pnpm-lock.yaml", "requirements.txt"] | index($base) != null)) then "true" else "false" end' 2>/dev/null); then
+    if [[ "$pr_meta" == true ]]; then
       SKIP_CURSOR=true
     fi
   fi
-
   local checks_raw reviews_raw issue_comments_raw check_runs_raw
-  checks_raw="$(gh pr checks "$PR_NUMBER" --repo "$REPO" --required --json name,state 2>/dev/null || true)"
-  if [[ -z "$checks_raw" ]]; then
+
+  local checks_status=0
+  checks_raw="$(gh pr checks "$PR_NUMBER" --repo "$REPO" --required --json name,state --jq 'if length == 0 then "__NO_REQUIRED_CHECKS__" else .[] | [.name, (.state // "unknown")] | @tsv end' 2>&1)" || checks_status=$?
+  if (( checks_status != 0 )); then
+    if [[ "$checks_raw" == *"checks reported"* ]]; then
+      checks_raw="__NO_REQUIRED_CHECKS__"
+    elif [[ "$checks_raw" != *$'\t'* && "$checks_raw" != [\[]* ]]; then
+      API_ERRORS+=("checks")
+      append_item "api:checks"
+      checks_raw="__CHECKS_API_ERROR__"
+    fi
+  fi
+  if (( checks_status != 0 )) && [[ "$checks_raw" != *$'\t'* && "$checks_raw" == [\[]* ]] &&
+    ! printf '%s\n' "$checks_raw" | strip_leading_non_json | jq -e 'type == "array"' >/dev/null 2>&1; then
+    API_ERRORS+=("checks")
+    append_item "api:checks"
+    checks_raw="__CHECKS_API_ERROR__"
+  fi
+  if [[ "$checks_raw" == "__CHECKS_API_ERROR__" || "$checks_raw" == "__NO_REQUIRED_CHECKS__" || "$checks_raw" == "[]" ]]; then
+    :
+  elif [[ -z "$checks_raw" ]]; then
     API_ERRORS+=("checks")
     append_item "api:checks"
   else
@@ -144,7 +220,15 @@ fetch_and_evaluate() {
     while IFS=$'\t' read -r check_name check_state; do
       [[ -n "$check_name" ]] || continue
       CHECK_STATES["$check_name"]+="${check_state^^}"$'\n'
-    done < <(jq -r '.[] | [.name, (.state // "unknown")] | @tsv' <<< "$checks_raw")
+    done < <(
+      if [[ "$checks_raw" == *$'\t'* ]]; then
+        printf '%s\n' "$checks_raw"
+      elif [[ "$checks_raw" == [\[]* ]]; then
+        printf '%s\n' "$checks_raw" | strip_leading_non_json | jq -r '.[] | [.name, (.state // "unknown")] | @tsv'
+      else
+        printf '%s\n' "$checks_raw"
+      fi
+    )
     for check_name in "${!CHECK_STATES[@]}"; do
       local has_pass=false first_state=""
       while IFS= read -r check_state; do
