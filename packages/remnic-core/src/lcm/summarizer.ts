@@ -1,6 +1,6 @@
 import { log } from "../logger.js";
-import { estimateTokenCount } from "../token-estimate.js";
 import { looksLikeMechanicalTelemetryTranscript } from "../telemetry-transcript.js";
+import { estimateTokenCount } from "../token-estimate.js";
 import type { LcmArchive, LcmMessage } from "./archive.js";
 import { estimateTokens } from "./archive.js";
 import type { LcmDag } from "./dag.js";
@@ -202,27 +202,27 @@ export class LcmSummarizer {
 function deterministicTruncate(text: string, maxTokens: number): string {
   if (maxTokens <= 0 || estimateTokenCount(text) <= maxTokens) return text;
 
-  const maxChars = maxTokens * 4;
   const sentences = text.split(/(?<=[.!?])\s+/).filter((s) => s.length > 0);
   if (sentences.length <= 2) return clampToTokenBudget(text, maxTokens);
 
   const first = sentences[0];
   const last = sentences[sentences.length - 1];
-  const budget = maxChars - first.length - last.length - 20;
-  if (budget <= 0) return clampToTokenBudget(text, maxTokens);
+  const render = (middle: string[], truncated: boolean): string =>
+    `${first} ${middle.join(" ")}${truncated ? " [...] " : " "}${last}`;
+
+  const base = render([], false);
+  if (estimateTokenCount(base) > maxTokens) return clampToTokenBudget(text, maxTokens);
 
   const middle: string[] = [];
-  let used = 0;
   for (let i = 1; i < sentences.length - 1; i++) {
-    if (used + sentences[i].length > budget) break;
+    const candidate = [...middle, sentences[i]];
+    const truncated = i < sentences.length - 2;
+    if (estimateTokenCount(render(candidate, truncated)) > maxTokens) break;
     middle.push(sentences[i]);
-    used += sentences[i].length;
   }
 
-  return clampToTokenBudget(
-    `${first} ${middle.join(" ")}${middle.length < sentences.length - 2 ? " [...] " : " "}${last}`,
-    maxTokens,
-  );
+  const truncated = middle.length < sentences.length - 2;
+  return clampToTokenBudget(render(middle, truncated), maxTokens);
 }
 
 function clampToTokenBudget(text: string, maxTokens: number): string {
