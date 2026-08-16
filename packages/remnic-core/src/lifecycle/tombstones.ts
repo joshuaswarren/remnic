@@ -41,7 +41,11 @@
 // ---------------------------------------------------------------------------
 
 import { serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
-import { computeLegacyContentHash } from "../content-hash.js";
+import {
+  computeLegacyContentHash,
+  isUnambiguousLegacyContentHash,
+  normalizeLegacyContent,
+} from "../content-hash.js";
 
 /** Why a tombstone was emitted. */
 export type TombstoneReason =
@@ -896,10 +900,33 @@ export class TombstoneStore {
           const currentHash = this.options.hashContent(m.rawContent);
           const currentNormalizedText = this.options.normalizeText(m.rawContent);
           const persistedHash = m.contentHash;
+          // A persisted hash equal to the body's LEGACY hash only proves the
+          // record predates the Unicode normalizer when that legacy hash is
+          // unambiguous. When the legacy normalizer is lossy for this body
+          // (any body whose ASCII skeleton collides with a distinct
+          // contentHashSource), the equality cannot distinguish "old body
+          // hash" from "explicit source identity" — replacing the persisted
+          // hash would displace a live identity (issue #2367). Preserving
+          // keeps BOTH keys: contentHash stays the persisted identity and
+          // currentContentHashAlias still blocks the body.
+
+          // Repair only when the persisted hash provably identifies THIS
+          // body's stale legacy hash: either the unambiguous case (legacy and
+          // current normalizations agree), or the empty-skeleton case — every
+          // non-ASCII-only body normalizes to the empty legacy skeleton, so a
+          // persisted hash equal to hash("") is the shared non-identifying
+          // legacy body hash and publishing it on the exact tier would
+          // collide unrelated tombstones. Any OTHER persisted hash on an
+          // empty-skeleton body is a distinct explicit identity (e.g.
+          // contentHashSource) and must be preserved.
+          const legacyBodyHash = computeLegacyContentHash(m.rawContent);
+          const repairEmptySkeleton =
+            normalizeLegacyContent(m.rawContent).length === 0 && persistedHash === legacyBodyHash;
           const preserveOverride =
             persistedHash !== undefined &&
             persistedHash !== currentHash &&
-            persistedHash !== computeLegacyContentHash(m.rawContent);
+            !repairEmptySkeleton &&
+            !isUnambiguousLegacyContentHash(m.rawContent, persistedHash, currentNormalizedText);
           return {
             id:
               existingBySource.get(`${m.memoryId}\u{0000}${m.supersessionKey ?? ""}`) ??

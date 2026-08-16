@@ -26,6 +26,7 @@ import { resolveSafeStoragePath } from "./storage-paths.js";
 import { log } from "./logger.js";
 import { createMemorySnapshot } from "./memory-snapshot.js";
 import { assertMemoryFrontmatterId, warnProjectionFallback } from "./storage-guards.js";
+import { createTombstoneMigrationSourceContents } from "./storage/tombstone-migration-sources.js";
 import { MemoryReadStore, readWindowedMemories, type WindowedMemoryReadOptions, type WindowedMemoryReadResult } from "./storage/memory-read-store.js";
 import { hasSupersessionAudit } from "./storage/supersession-audit.js";
 import { runCommittedInvalidation } from "./storage/committed-invalidation.js";
@@ -3016,46 +3017,24 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   }
 
   private buildTombstoneStore(): TombstoneStore {
-    let sourcePathsPromise: Promise<string[]> | undefined;
-    let sourceContentsByIdPromise: Promise<Map<string, readonly string[]>> | undefined;
     const options: TombstoneStoreOptions = {
       enabled: this.tombstonesConfig.enabled,
       semanticMatch: this.tombstonesConfig.semanticMatch,
       semanticThreshold: this.tombstonesConfig.semanticThreshold,
       hashContent: ContentHashIndex.computeHash,
       normalizeText: ContentHashIndex.normalizeContent,
-      sourceContentsForMemoryIds: async (sourceMemoryIds) => {
-        const requested = new Set(sourceMemoryIds);
-        const sourcePaths = await (sourcePathsPromise ??=
-          this.memoryReadStore.collectTombstoneMigrationPaths());
-        const directPaths = sourcePaths.filter((filePath) =>
-          requested.has(path.basename(filePath, ".md"))
-        );
-        const contents = new Map<string, readonly string[]>();
-        for (const memory of await this.readParsedMemoriesFromPaths(directPaths, 50)) {
-          const id = memory.frontmatter.id;
-          if (requested.has(id) && !contents.has(id)) {
-            contents.set(id, this.storedContentIdentityCandidates(memory.content));
-          }
-        }
-        if (contents.size === requested.size) return contents;
-        sourceContentsByIdPromise ??= (async () => {
-          const allContents = new Map<string, readonly string[]>();
-          for (const memory of await this.readParsedMemoriesFromPaths(sourcePaths, 50)) {
-            const id = memory.frontmatter.id;
-            if (!allContents.has(id)) {
-              allContents.set(id, this.storedContentIdentityCandidates(memory.content));
-            }
-          }
-          return allContents;
-        })();
-        const allContents = await sourceContentsByIdPromise;
-        for (const id of requested) {
-          const content = allContents.get(id);
-          if (content !== undefined) contents.set(id, content);
-        }
-        return contents;
-      },
+      // Corpus-path + source-content caches are scoped to one ledger revision
+      // so a peer-appended legacy row is verified on the next staleness reload
+      // (issue #2367). Implementation lives in storage/tombstone-migration-sources.ts.
+      sourceContentsForMemoryIds: createTombstoneMigrationSourceContents({
+        tombstonesPath: () => this.tombstonesPath,
+        collectTombstoneMigrationPaths: () =>
+          this.memoryReadStore.collectTombstoneMigrationPaths(),
+        readParsedMemoriesFromPaths: (filePaths, batchSize) =>
+          this.readParsedMemoriesFromPaths(filePaths, batchSize),
+        storedContentIdentityCandidates: (content) =>
+          this.storedContentIdentityCandidates(content),
+      }),
     };
     const io: TombstoneFileIo = {
       read: (filePath) => this.readStorageSecureFile(filePath),

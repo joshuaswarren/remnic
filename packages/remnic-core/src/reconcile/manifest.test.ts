@@ -50,6 +50,7 @@ test("reconcile manifest keeps file identity separate from canonical semantic id
     category: "fact",
     contentHash: semanticHash,
     normalizerVersion: 4,
+    identityResolutionVersion: 2,
     status: "active",
   });
 });
@@ -100,11 +101,52 @@ test("reconcile manifest reparses cached pre-version identities after Unicode mi
   });
 
   assert.equal(reads, 1);
+  // The café body is lossy under the legacy normalizer, so the persisted
+  // legacy hash stays primary and the recovered current identity rides along
+  // as an alias (issue #2367).
   assert.equal(
     manifest.files[0]?.memory?.contentHash,
-    ContentHashIndex.computeHash(content),
+    legacyHash,
   );
-  assert.equal("contentHashAliases" in (manifest.files[0]?.memory ?? {}), false);
+  assert.deepEqual(manifest.files[0]?.memory?.contentHashAliases, [
+    ContentHashIndex.computeHash(content),
+  ]);
+});
+
+test("reconcile manifest reparses cached identities lacking the identity-resolution version", async () => {
+  const content = "The user prefers café.";
+  const legacyHash = computeLegacyContentHash(content);
+  const serialized = memoryFile({ id: "legacy-identity-version", content, contentHash: legacyHash });
+  const file = { path: "facts/legacy-identity-version.md", sha256: fileHash(serialized) };
+  let reads = 0;
+
+  const manifest = await buildReconcileManifest({
+    files: [file],
+    parseMemory: parseFrontmatter,
+    readFile: async () => {
+      reads += 1;
+      return serialized;
+    },
+    // Same normalizerVersion, but written before identity-resolution
+    // versioning existed: the entry carries no aliases and must NOT be
+    // reused (issue #2367 review round 2).
+    cachedFiles: [{
+      ...file,
+      memory: {
+        id: "legacy-identity-version",
+        category: "fact",
+        contentHash: legacyHash,
+        normalizerVersion: 4,
+        status: "active",
+      },
+    }],
+  });
+
+  assert.equal(reads, 1);
+  assert.equal(manifest.files[0]?.memory?.identityResolutionVersion, 2);
+  assert.deepEqual(manifest.files[0]?.memory?.contentHashAliases, [
+    ContentHashIndex.computeHash(content),
+  ]);
 });
 
 test("reconcile manifest replaces a pure-CJK legacy identity with its current hash", async () => {
@@ -146,7 +188,10 @@ test("reconcile manifest recovers a raw hash source beneath citation and attribu
     readFile: async () => serialized,
   });
 
-  assert.equal(manifest.files[0]?.memory?.contentHash, ContentHashIndex.computeHash(content));
+  assert.equal(manifest.files[0]?.memory?.contentHash, computeLegacyContentHash(content));
+  assert.deepEqual(manifest.files[0]?.memory?.contentHashAliases, [
+    ContentHashIndex.computeHash(content),
+  ]);
 });
 
 test("reconcile manifest recovers raw identity beneath a configured citation", async () => {
@@ -169,7 +214,91 @@ test("reconcile manifest recovers raw identity beneath a configured citation", a
     citationTemplate,
   });
 
-  assert.equal(manifest.files[0]?.memory?.contentHash, ContentHashIndex.computeHash(content));
+  assert.equal(manifest.files[0]?.memory?.contentHash, computeLegacyContentHash(content));
+  assert.deepEqual(manifest.files[0]?.memory?.contentHashAliases, [
+    ContentHashIndex.computeHash(content),
+  ]);
+});
+
+test("reconcile manifest prefers a persisted explicit hash over a colliding legacy body hash (issue #2367)", async () => {
+  // Source `caf` with body `café`: hash("caf") numerically equals the legacy
+  // hash of the stored body, but it is the fact's explicit contentHashSource
+  // identity written by the current normalizer. The legacy candidate match
+  // must not replace it.
+  const source = "caf";
+  const body = "café";
+  const persistedHash = ContentHashIndex.computeHash(source);
+  assert.equal(persistedHash, computeLegacyContentHash(body));
+  const serialized = memoryFile({ id: "explicit-source", content: body, contentHash: persistedHash });
+  const manifest = await buildReconcileManifest({
+    files: [{ path: "facts/explicit-source.md", sha256: fileHash(serialized) }],
+    parseMemory: parseFrontmatter,
+    readFile: async () => serialized,
+  });
+
+  assert.equal(manifest.files[0]?.memory?.contentHash, persistedHash);
+  assert.notEqual(manifest.files[0]?.memory?.contentHash, ContentHashIndex.computeHash(body));
+  assert.deepEqual(manifest.files[0]?.memory?.contentHashAliases, [
+    ContentHashIndex.computeHash(body),
+  ]);
+});
+
+test("reconcile collapse matches an explicit-source replica through the persisted hash (issue #2367)", async () => {
+  const source = "caf";
+  const persistedHash = ContentHashIndex.computeHash(source);
+  const localSerialized = memoryFile({ id: "explicit-local", content: "café", contentHash: persistedHash });
+  const peerSerialized = memoryFile({ id: "explicit-peer", content: source, contentHash: persistedHash });
+  const localFile = { path: "facts/explicit-local.md", sha256: fileHash(localSerialized) };
+  const peerFile = { path: "facts/explicit-peer.md", sha256: fileHash(peerSerialized) };
+  const build = async (file: typeof localFile, raw: string) =>
+    await buildReconcileManifest({
+      files: [file],
+      parseMemory: parseFrontmatter,
+      readFile: async () => raw,
+    });
+  const local = await build(localFile, localSerialized);
+  const peer = await build(peerFile, peerSerialized);
+  const plan = planReconciliation([{ namespace: "default", local: [localFile], peer: [peerFile] }]);
+
+  const collapsed = collapseActiveFactDuplicates(
+    plan,
+    new Map([["default", local]]),
+    new Map([["default", peer]]),
+  );
+
+  assert.equal(collapsed.converged, true);
+  assert.equal(collapsed.entries.length, 1);
+  assert.equal(collapsed.entries[0]?.reason, "semantic_duplicate");
+});
+
+test("reconcile manifest does not collapse distinct pure-CJK legacy facts through the empty skeleton (issue #2367)", async () => {
+  const first = "利用者は紅茶を好む。";
+  const second = "利用者は珈琲を好む。";
+  assert.equal(computeLegacyContentHash(first), computeLegacyContentHash(second));
+  const build = async (id: string, content: string) => {
+    const serialized = memoryFile({ id, content, contentHash: computeLegacyContentHash(content) });
+    const file = { path: `facts/${id}.md`, sha256: fileHash(serialized) };
+    const manifest = await buildReconcileManifest({
+      files: [file],
+      parseMemory: parseFrontmatter,
+      readFile: async () => serialized,
+    });
+    return { file, manifest };
+  };
+  const a = await build("legacy-cjk-first", first);
+  const b = await build("legacy-cjk-second", second);
+  const plan = planReconciliation([
+    { namespace: "default", local: [a.file], peer: [b.file] },
+  ]);
+
+  const collapsed = collapseActiveFactDuplicates(
+    plan,
+    new Map([["default", a.manifest]]),
+    new Map([["default", b.manifest]]),
+  );
+
+  assert.equal(collapsed.converged, false);
+  assert.equal(collapsed.entries.length, 2);
 });
 
 test("reconcile manifest does not add a legacy alias to a current Unicode identity", async () => {

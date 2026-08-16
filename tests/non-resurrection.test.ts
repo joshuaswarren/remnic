@@ -20,7 +20,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { StorageManager } from "../src/storage.ts";
 import { computeSupersessionKey } from "../packages/remnic-core/src/temporal-supersession.ts";
 import { computeLegacyContentHash, normalizeLegacyContent } from "../packages/remnic-core/src/content-hash.ts";
@@ -503,6 +503,79 @@ test("legacy migration resolves retired source content from archive storage", as
 
     assert.equal(result.tombstoneBlocked, true);
     assertBlocked(await readBack(restarted, result.id), "exact");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("issue #2367: a legacy row appended after store construction is verified without restart", async () => {
+  const { storage, dir } = await makeStorage();
+  const ledgerPath = path.join(dir, "state", "tombstones.jsonl");
+  const peerContent = "The user prefers tea.";
+  try {
+    // First migration pass: an unresolvable pre-upgrade row forces the store
+    // to snapshot the corpus paths while the corpus is still empty. A
+    // read-only probe keeps the store cached (a memory write would reset it).
+    await writeFile(
+      ledgerPath,
+      `${JSON.stringify({
+        id: "tomb-2367-ghost",
+        kind: "tombstone",
+        reason: "correction",
+        createdBy: "user_correction",
+        sourceMemoryId: "fact-ghost",
+        contentHash: computeLegacyContentHash("ghost body"),
+        normalizedText: normalizeLegacyContent("ghost body"),
+        namespace: NAMESPACE,
+        createdAt: "2026-08-15T00:00:00.000Z",
+      })}\n`,
+      "utf8",
+    );
+    assert.equal(await storage.hasExactTombstone({ sourceMemoryId: "fact-ghost" }), true);
+
+    // Coarse mtime so the peer append below is guaranteed to move it even on
+    // filesystems with coarse timestamp granularity.
+    const coarse = new Date(Date.now() - 60_000);
+    await utimes(ledgerPath, coarse, coarse);
+
+    // Peer process: creates a memory in the legacy format and retires it.
+    const peerId = "fact-2367-peer";
+    await writeFile(
+      path.join(dir, "facts", `${peerId}.md`),
+      ["---", `id: ${peerId}`, "category: fact", "---", "", peerContent].join("\n"),
+      "utf8",
+    );
+    await writeFile(
+      ledgerPath,
+      `${JSON.stringify({
+        id: "tomb-2367-peer",
+        kind: "tombstone",
+        reason: "correction",
+        createdBy: "user_correction",
+        sourceMemoryId: peerId,
+        contentHash: computeLegacyContentHash(peerContent),
+        normalizedText: normalizeLegacyContent(peerContent),
+        namespace: NAMESPACE,
+        createdAt: "2026-08-15T00:01:00.000Z",
+      })}\n`,
+      { flag: "a" },
+    );
+
+    // Same process, no restart: the staleness reload must resolve the new row
+    // against a FRESH corpus snapshot, not the one cached before the peer
+    // append — otherwise the row stays unverified and the retired fact
+    // resurrects active.
+    const write = await storage.writeMemory("fact", peerContent, { source: "extraction" });
+    assert.equal(write.tombstoneBlocked, true);
+    assertBlocked(await readBack(storage, write.id), "exact");
+    const migrated = await readFile(ledgerPath, "utf8");
+    const peerRow = migrated.split("\n").find((line) => line.includes(peerId));
+    assert.ok(peerRow, "peer row must survive migration");
+    const peerEntry = JSON.parse(peerRow) as { contentHash: string; normalizerVersion?: number };
+    // Pure-ASCII body: the verified current hash equals the legacy hash, and
+    // the row is published at normalizerVersion 2.
+    assert.equal(peerEntry.contentHash, computeLegacyContentHash(peerContent));
+    assert.equal(peerEntry.normalizerVersion, 2);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

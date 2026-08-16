@@ -53,10 +53,31 @@ function parseMemory(value: unknown): ReconcileMemoryIdentity | undefined {
   if (typeof memory.status !== "string" || !MEMORY_STATUSES.has(memory.status as MemoryStatus)) {
     throw new Error("peer manifest memory metadata had invalid status");
   }
+  const contentHash = memory.contentHash.toLowerCase();
+  let contentHashAliases: string[] | undefined;
+  if (memory.contentHashAliases !== undefined) {
+    if (
+      !Array.isArray(memory.contentHashAliases) ||
+      memory.contentHashAliases.some(
+        (alias) => typeof alias !== "string" || !SHA256_PATTERN.test(alias),
+      )
+    ) {
+      throw new Error("peer manifest memory metadata had invalid contentHashAliases");
+    }
+    const deduped = [
+      ...new Set(
+        memory.contentHashAliases
+          .map((alias) => (alias as string).toLowerCase())
+          .filter((alias) => alias !== contentHash),
+      ),
+    ];
+    if (deduped.length > 0) contentHashAliases = deduped;
+  }
   return {
     id: memory.id,
     category: memory.category,
-    contentHash: memory.contentHash.toLowerCase(),
+    contentHash,
+    ...(contentHashAliases === undefined ? {} : { contentHashAliases }),
     status: memory.status as MemoryStatus,
   };
 }
