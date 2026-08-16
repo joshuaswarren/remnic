@@ -122,8 +122,11 @@ export function screenEntityForIndex(entity: unknown, enabled: boolean): Screene
     ...(sectionScreens
       ? {
         structuredSections: sectionScreens.map(({ section, screen }) => {
+          let nextFactIndex = 0;
           const factOrigins = screen.kept.map((fact) => {
-            const origin = section.factOrigins?.[section.facts.indexOf(fact)];
+            const factIndex = section.facts.indexOf(fact, nextFactIndex);
+            nextFactIndex = factIndex + 1;
+            const origin = section.factOrigins?.[factIndex];
             return origin === undefined ? undefined : parseOriginClass(origin);
           });
           return {

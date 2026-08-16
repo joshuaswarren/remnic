@@ -391,7 +391,7 @@ function parseEntityStructuredSectionFacts(
       const originEnd = originEndOffset >= 0 ? originEndOffset + originStart : -1;
       const token = originEnd >= 0 ? bullet.slice(originStart + 15, originEnd) : "";
       currentBlock = [originEnd >= 0
-        ? bullet.slice(originEnd + 1).trimStart()
+        ? unescapeEntityTimelineText(bullet.slice(originEnd + 1).trimStart())
         : unescapeEntityTimelineText(hasMarker ? bullet.slice(metadataPrefix.length) : bullet)];
       currentOrigin = originEnd >= 0
         ? unescapeEntityTimelineMetadataValue(token)
