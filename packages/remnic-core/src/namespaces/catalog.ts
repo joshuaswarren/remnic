@@ -1722,7 +1722,6 @@ export class NamespaceCatalog {
     // cannot overwrite the tokenized record (and vice-versa: a tokenized entry
     // always wins over a previously-set legacy one).
     const scannedFromTokenized = new Map<string, number>();
-
     for (const entry of entries) {
       const token = entry.name;
       const fullPath = path.join(namespacesDir, token);
