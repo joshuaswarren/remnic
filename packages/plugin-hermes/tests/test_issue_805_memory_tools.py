@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -103,6 +105,19 @@ class FakeContext:
         self.tools[name] = {"schema": schema, "handler": handler}
 
 
+def _canonical_memory_categories() -> list[str]:
+    config_source = (
+        Path(__file__).resolve().parents[3] / "packages" / "remnic-core" / "src" / "config.ts"
+    ).read_text(encoding="utf-8")
+    match = re.search(
+        r"export const VALID_MEMORY_CATEGORIES = new Set\(\[(.*?)\]\);",
+        config_source,
+        re.DOTALL,
+    )
+    assert match is not None
+    return re.findall(r"""["']([^"']+)["']""", match.group(1))
+
+
 def test_issue_805_tools_are_registered_with_primary_and_legacy_names() -> None:
     ctx = FakeContext()
 
@@ -131,10 +146,35 @@ def test_issue_805_tools_are_registered_with_primary_and_legacy_names() -> None:
     assert ctx.tools["engram_memory_store"]["schema"]["name"] == "engram_memory_store"
     assert ctx.tools["remnic_store"]["handler"] is not ctx.tools["remnic_memory_store"]["handler"]
     assert ctx.tools["remnic_memory_store"]["schema"]["parameters"]["properties"]["category"] == {
-        "type": "string"
+        "type": "string",
+        "enum": [
+            "fact",
+            "preference",
+            "correction",
+            "entity",
+            "decision",
+            "relationship",
+            "principle",
+            "commitment",
+            "moment",
+            "skill",
+            "rule",
+            "procedure",
+            "reasoning_trace",
+        ],
     }
     assert ctx.tools["remnic_memory_promote"]["schema"]["parameters"]["required"] == ["memoryId"]
     assert ctx.tools["remnic_memory_outcome"]["schema"]["parameters"]["required"] == [
         "memoryId",
         "outcome",
     ]
+
+
+def test_issue_2392_memory_store_category_schema_matches_runtime_enum() -> None:
+    ctx = FakeContext()
+
+    register(ctx)
+
+    category_schema = ctx.tools["remnic_memory_store"]["schema"]["parameters"]["properties"]["category"]
+
+    assert category_schema["enum"] == _canonical_memory_categories()
