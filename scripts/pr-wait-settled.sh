@@ -255,6 +255,20 @@ record_reviewer_approval() {
   done
 }
 
+reset_reviewer() {
+  local login="$1" group
+  for group in "${REVIEWER_GROUPS[@]}"; do
+    case "|${group}|" in
+      *"|${login}|"*)
+        REVIEWER_PRESENT["$group"]=0
+        REVIEWER_NEUTRAL_EVIDENCE["$group"]=""
+        REVIEWER_NEGATIVE_EVIDENCE["$group"]=""
+        return 0
+        ;;
+    esac
+  done
+}
+
 fetch_and_evaluate() {
   OUTSTANDING=()
   declare -A REVIEWER_PRESENT=()
@@ -344,6 +358,8 @@ fetch_and_evaluate() {
           record_reviewer_neutral "$login" "empty review body"
         elif [[ "$state" == "COMMENTED" && "$body" == "Review rate limited" ]]; then
           record_reviewer_neutral "$login" "$body"
+        elif [[ "$state" == "COMMENTED" ]]; then
+          reset_reviewer "$login"
         fi
       fi
     done <<< "$reviews_raw"

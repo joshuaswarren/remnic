@@ -81,6 +81,12 @@ if [[ "$1 $2" == "api repos/example/repo/pulls/7/reviews" ]]; then
       printf 'coderabbitai[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
       printf 'chatgpt-codex-connector[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
       ;;
+    neutral-then-commented)
+      printf 'cursor[bot]\\t%s\\tCOMMENTED\\tReview rate limited\\n' '${headSha}'
+      printf 'cursor[bot]\\t%s\\tCOMMENTED\\tNeeds more work\\n' '${headSha}'
+      printf 'coderabbitai[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
+      printf 'chatgpt-codex-connector[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
+      ;;
     neutral-then-approved)
       printf 'cursor[bot]\\t%s\\tCOMMENTED\\tReview rate limited\\n' '${headSha}'
       printf 'cursor[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
@@ -171,6 +177,14 @@ test("wait clears neutral evidence after a later approval", async () => {
     const result = runWait(env, ["--timeout", "0", "--interval", "0"]);
     assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
     assert.doesNotMatch(result.stdout, /reviewer neutral/i);
+  });
+});
+test("wait keeps a later ordinary comment pending", async () => {
+  await withGhStub("neutral-then-commented", async (env) => {
+    const result = runWait(env, ["--timeout", "0", "--interval", "0", "--json"]);
+    assert.notEqual(result.status, 0);
+    const summary = JSON.parse(result.stdout);
+    assert.match(summary.outstanding.join(" "), /cursor-bugbot/);
   });
 });
 
