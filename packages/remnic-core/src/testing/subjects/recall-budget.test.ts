@@ -28,6 +28,7 @@ import assert from "node:assert/strict";
 
 import { parseConfig } from "../../config.js";
 import { RecallSectionCoordinator } from "../../orchestration/recall-section-coordinator.js";
+import { estimateTokenCount } from "../../token-estimate.js";
 import { createRecallSectionMetricRecorder, formatRecallSectionMetric } from "../../recall-qos.js";
 import { reorderRecallResultsWithMmr } from "../../recall-mmr.js";
 import { applyRuntimeRetrievalPolicy, expandQuery } from "../../retrieval.js";
@@ -372,6 +373,9 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         // truncateRecallSectionToBudget respects a hard per-section budget too.
         const truncated = coordinator.truncateRecallSectionToBudget(body("m", 200), 50);
         assert.equal(truncated.length, 50, "budget-aware truncation lands exactly on the per-section limit");
+        const tokenTrimmed = coordinator.truncateRecallSectionToBudget("x".repeat(200), 200, 20);
+        assert.match(tokenTrimmed, /\.\.\.\(memory context trimmed\)$/);
+        assert.ok(estimateTokenCount(tokenTrimmed) <= 20, "token-aware truncation keeps its marker inside the cap");
         // A budget-skipped section reports as a debug-level "skip" metric — the
         // QoS accounting that flags a section dropped for the budget deadline.
         const skipMetric = formatRecallSectionMetric({

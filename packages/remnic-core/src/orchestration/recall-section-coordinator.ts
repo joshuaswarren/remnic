@@ -196,15 +196,25 @@ export class RecallSectionCoordinator {
     if (maxTokens === undefined || estimateTokenCount(charBounded) <= maxTokens) {
       return charBounded;
     }
-    const codePoints = [...charBounded];
+    const markerFits =
+      maxChars > suffix.length && estimateTokenCount(suffix) <= maxTokens;
+    const tokenSource = markerFits
+      ? [...(charBounded.endsWith(suffix) ? charBounded.slice(0, -suffix.length) : charBounded)]
+          .slice(0, maxChars - suffix.length)
+          .join("")
+      : charBounded;
+    const codePoints = [...tokenSource];
     let low = 0;
     let high = codePoints.length;
     while (low < high) {
       const mid = Math.ceil((low + high) / 2);
-      if (estimateTokenCount(codePoints.slice(0, mid).join("")) <= maxTokens) low = mid;
+      const candidate = codePoints.slice(0, mid).join("");
+      const bounded = markerFits ? `${candidate}${suffix}` : candidate;
+      if (estimateTokenCount(bounded) <= maxTokens) low = mid;
       else high = mid - 1;
     }
-    return codePoints.slice(0, low).join("");
+    const prefix = codePoints.slice(0, low).join("");
+    return markerFits ? `${prefix}${suffix}` : prefix;
   }
 
 
