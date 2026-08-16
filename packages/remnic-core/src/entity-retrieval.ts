@@ -391,6 +391,7 @@ async function readCurrentPersistedEntityIndex(
   return index;
 }
 const namespaceEntityIndexCache = new Map<string, EntityMentionIndex>();
+const MAX_NAMESPACE_ENTITY_INDEX_CACHE_ENTRIES = 32;
 
 function nativeEntityIndexRevision(chunks: NativeKnowledgeChunk[]): string {
   const projection = chunks.map((chunk) => [

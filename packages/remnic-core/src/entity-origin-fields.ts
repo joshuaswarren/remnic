@@ -15,12 +15,14 @@ export function sanitizeOriginatedFacts(
   deduplicate: boolean,
 ): SanitizedFacts {
   const result: SanitizedFacts = { facts: [], origins: [] };
+  const indexes = new Map<string, number>();
   for (const entry of entries) {
     const clean = sanitize(entry.text);
     if (!clean) continue;
     const fact = compact(clean, 180);
-    const index = deduplicate ? result.facts.indexOf(fact) : -1;
+    const index = deduplicate ? indexes.get(fact) ?? -1 : -1;
     if (index < 0) {
+      indexes.set(fact, result.facts.length);
       result.facts.push(fact);
       result.origins.push(entry.origin);
     } else if (result.origins[index] !== entry.origin) {
