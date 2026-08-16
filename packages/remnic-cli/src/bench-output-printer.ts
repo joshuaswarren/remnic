@@ -1,3 +1,5 @@
+import { padEndDisplay } from "@remnic/core";
+
 import type { ComparisonResult } from "@remnic/bench";
 
 type BenchSummaryTask = {
@@ -48,7 +50,7 @@ export function printBenchPackageSummary(
   console.log(`Tasks: ${result.results.tasks.length}`);
   console.log(`Mean query latency: ${result.cost.meanQueryLatencyMs.toFixed(1)}ms`);
   for (const [metric, aggregate] of Object.entries(result.results.aggregates).sort()) {
-    console.log(`  ${metric.padEnd(20)} ${aggregate.mean.toFixed(4)}`);
+    console.log(`  ${padEndDisplay(metric, 20)} ${aggregate.mean.toFixed(4)}`);
   }
   console.log(`${outputLabel}: ${outputPath}`);
 }
@@ -105,7 +107,7 @@ export function printBenchComparisonSummary(
         : "-Infinity%";
     const direction = delta.delta >= 0 ? "+" : "";
     console.log(
-      `  ${metric.padEnd(18)} ${delta.baseline.toFixed(4)} -> ${delta.candidate.toFixed(4)} (${direction}${delta.delta.toFixed(4)}, ${percent}, d=${delta.effectSize.cohensD.toFixed(3)} ${delta.effectSize.interpretation})`,
+      `  ${padEndDisplay(metric, 18)} ${delta.baseline.toFixed(4)} -> ${delta.candidate.toFixed(4)} (${direction}${delta.delta.toFixed(4)}, ${percent}, d=${delta.effectSize.cohensD.toFixed(3)} ${delta.effectSize.interpretation})`,
     );
     if (delta.ciOnDelta) {
       console.log(

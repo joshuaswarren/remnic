@@ -8,12 +8,9 @@ import { collectNativeKnowledgeChunks, type NativeKnowledgeChunk } from "./nativ
 import { compareEntityTimestamps, normalizeEntityName, type StorageManager } from "./storage.js";
 import { normalizeEntityText, resolveRequestedEntitySectionKeys } from "./entity-schema.js";
 import type { EntityStructuredSection, MemoryFile, PluginConfig, TranscriptEntry } from "./types.js";
+import { truncateGraphemeSafe } from "./whitespace.js";
 import { containsPhrase } from "./entity-retrieval-boundaries.js";
-import {
-  buildOriginStructuredSections,
-  sanitizeOriginatedFacts,
-  type EntityOriginStructuredSection,
-} from "./entity-origin-fields.js";
+import { buildOriginStructuredSections, sanitizeOriginatedFacts, type EntityOriginStructuredSection } from "./entity-origin-fields.js";
 import {
   checkEntityRecallAbort,
   entityRecallSectionAbsent,
@@ -106,7 +103,7 @@ function uniqueStrings(values: string[]): string[] {
 function compactLine(value: string, maxLength: number = 220): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (normalized.length <= maxLength) return normalized;
-  return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+  return `${truncateGraphemeSafe(normalized, maxLength - 1).trimEnd()}…`;
 }
 function dedupeHintSnippetsByText(snippets: EntityHintSnippet[]): EntityHintSnippet[] {
   const deduped = new Map<string, EntityHintSnippet>();
@@ -1052,7 +1049,7 @@ function formatEntityHintSection(
 
   let result = lines.join("\n");
   if (result.length > maxChars) {
-    result = `${result.slice(0, Math.max(0, maxChars - 15)).trimEnd()}\n\n...(trimmed)\n`;
+    result = `${truncateGraphemeSafe(result, Math.max(0, maxChars - 15)).trimEnd()}\n\n...(trimmed)\n`;
   }
   return result.trim().length > 0 ? result.trimEnd() : null;
 }
