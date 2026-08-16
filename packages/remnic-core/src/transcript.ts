@@ -1080,6 +1080,9 @@ export class TranscriptManager {
     }
 
     const maxTokenBudget = Math.max(0, Math.floor(maxTokens));
+    if (maxTokenBudget === 0) {
+      return "";
+    }
     const lines: string[] = [];
 
     // Calculate time range for header
@@ -1094,6 +1097,9 @@ export class TranscriptManager {
       lines.push(`## Recent Conversation (last ${hoursDiff} hour${hoursDiff === 1 ? "" : "s"})`);
     }
     lines.push("");
+    if (estimateTokenCount(lines.join("\n")) > maxTokenBudget) {
+      return "";
+    }
 
     // Format each entry
     const formattedEntries: string[] = [];
@@ -1113,8 +1119,9 @@ export class TranscriptManager {
     for (let i = formattedEntries.length - 1; i >= 0; i--) {
       const entry = formattedEntries[i];
       const candidate = [...lines, entry, ...selectedEntries, ""].join("\n");
-      if (estimateTokenCount(candidate) > maxTokenBudget && selectedEntries.length > 0) {
-        break;
+      if (estimateTokenCount(candidate) > maxTokenBudget) {
+        if (selectedEntries.length > 0) break;
+        continue;
       }
 
       selectedEntries.unshift(entry);

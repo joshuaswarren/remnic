@@ -35,6 +35,18 @@ test("formatForRecall counts transcript separators inside its token budget", () 
 
   assert.ok(estimateTokenCount(formatted) <= 23);
 });
+test("formatForRecall returns no content for zero or undersized budgets", () => {
+  const manager = new TranscriptManager(makeConfig("/tmp/remnic-transcript-small-budget"));
+  const entries = [
+    {
+      ...entryAt("2026-06-29T12:00:00.000Z", "agent:test-agent:main", "oversized"),
+      content: "日本語".repeat(100),
+    },
+  ];
+
+  assert.equal(manager.formatForRecall(entries, 0), "");
+  assert.equal(manager.formatForRecall(entries, 5), "");
+});
 /**
  * Freeze `new Date()` / `Date.now()` to a fixed instant for the duration of `fn`.
  *
