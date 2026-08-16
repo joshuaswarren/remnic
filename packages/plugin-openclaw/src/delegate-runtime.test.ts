@@ -16,6 +16,7 @@ import {
   type MaybeRegisterDelegateDeps,
 } from "./delegate-runtime.js";
 import { loadDaemonAuth, resolveBridgeMode } from "./bridge.js";
+import { getJson } from "./delegate-http.js";
 import { ingestFlushPlanNotes } from "./delegate-flush-plan-ingest.js";
 import {
   SESSION_NAMESPACE_BINDING_MAX_ENTRIES,
@@ -2565,6 +2566,54 @@ test("delegate runtime reloads a rotated daemon token without re-registering hoo
     );
   }
 });
+test("delegate retries a TRIGGER_REAUTHENTICATION response after token rotation", async () => {
+  let currentToken = "stale-token";
+  let attempts = 0;
+  const server = http.createServer((req, res) => {
+    attempts += 1;
+    res.setHeader("content-type", "application/json");
+    if (req.headers.authorization !== "Bearer fresh-token") {
+      currentToken = "fresh-token";
+      res.writeHead(401);
+      res.end(
+        JSON.stringify({
+          error_code: "UNAUTHORIZED",
+          action: "TRIGGER_REAUTHENTICATION",
+        }),
+      );
+      return;
+    }
+    res.end(JSON.stringify({ context: "same-session recovery" }));
+  });
+  const listening = Promise.withResolvers<void>();
+  server.listen(0, "127.0.0.1", listening.resolve);
+  await listening.promise;
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  try {
+    const response = await getJson(
+      {
+        host: "127.0.0.1",
+        port: address.port,
+        resolveAuthToken: () => ({
+          token: currentToken,
+          source: "OPENCLAW_REMNIC_ACCESS_TOKEN",
+        }),
+      },
+      "reauth-test",
+      "/engram/v1/recall",
+      1_000,
+    );
+    assert.equal(response.status, 200);
+    assert.equal(response.body?.context, "same-session recovery");
+    assert.equal(attempts, 2);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
 
 test("delegate daemon auth failures log one sanitized error per route and status", async (t) => {
   const errors: string[] = [];

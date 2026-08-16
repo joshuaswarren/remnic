@@ -8,6 +8,7 @@
 
 import {
   daemonUrl,
+  type DaemonAuthToken,
   type DaemonAuthTokenSource,
   type DelegateDaemonTarget,
 } from "./bridge.js";
@@ -44,14 +45,50 @@ async function noteRefusal(
 }
 
 /**
+ * Retry one unauthorized request after resolving the credential again.
+ *
+ * OpenClaw can rotate a connector token while a session remains active. A
+ * single retry lets a resolver that observed that rotation recover the
+ * current request, including `TRIGGER_REAUTHENTICATION`, without re-registering
+ * the session hooks. A network failure still rejects from `fetch`.
+ */
+async function fetchWithAuthRetry(
+  target: DelegateDaemonTarget,
+  pathname: string,
+  timeoutMs: number,
+  init: RequestInit = {},
+): Promise<{ response: Response; auth: DaemonAuthToken }> {
+  const deadline = Date.now() + timeoutMs;
+  const request = async (auth: DaemonAuthToken): Promise<Response> => {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) throw new Error("daemon request deadline exceeded");
+    const headers = new Headers(init.headers);
+    if (auth.token) headers.set("Authorization", `Bearer ${auth.token}`);
+    return fetch(daemonUrl(target, pathname), {
+      ...init,
+      headers,
+      signal: AbortSignal.timeout(remainingMs),
+    });
+  };
+  const auth = target.resolveAuthToken();
+  const response = await request(auth);
+  if (response.status !== 401) return { response, auth };
+
+  await response.body?.cancel();
+  target.invalidateAuthToken?.(auth);
+  const refreshedAuth = target.resolveAuthToken();
+  if (refreshedAuth.token === auth.token) return { response, auth };
+  return { response: await request(refreshedAuth), auth: refreshedAuth };
+}
+
+/**
  * POST that reports the daemon's status instead of collapsing it.
  *
  * `postJson` below cannot tell a caller WHY a request failed: 401/403
- * become `null` and every other non-2xx throws. A client that adapts to
- * the daemon's body limit needs the difference, because halving the
- * payload fixes a 413 and does nothing for a refused credential
- * (issue #2303). Transport failures still reject — only HTTP responses
- * are reported.
+ * become `null` and every other non-2xx throws. A client that adapts to the
+ * daemon's body limit needs the difference, because halving the payload fixes
+ * a 413 and does nothing for a refused credential (issue #2303). Transport
+ * failures still reject — only HTTP responses are reported.
  */
 export async function postJsonWithStatus(
   target: DelegateDaemonTarget,
@@ -60,18 +97,15 @@ export async function postJsonWithStatus(
   body: Record<string, unknown>,
   timeoutMs: number,
 ): Promise<DelegateJsonResponse> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  const auth = target.resolveAuthToken();
-  if (auth.token) headers.Authorization = `Bearer ${auth.token}`;
-  const res = await fetch(daemonUrl(target, pathname), {
+  const { response: res, auth } = await fetchWithAuthRetry(target, pathname, timeoutMs, {
     method: "POST",
-    headers,
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!res.ok) return noteRefusal(res, serviceId, pathname, auth.source);
   return { status: res.status, body: await readJsonObject(res) };
 }
+
 
 /**
  * Legacy contract kept for every existing delegate route: `null` on an
@@ -91,20 +125,13 @@ export async function postJson(
   }
   return response.body;
 }
-
 export async function getJson(
   target: DelegateDaemonTarget,
   serviceId: string,
   pathname: string,
   timeoutMs: number,
 ): Promise<DelegateJsonResponse> {
-  const headers: Record<string, string> = {};
-  const auth = target.resolveAuthToken();
-  if (auth.token) headers.Authorization = `Bearer ${auth.token}`;
-  const res = await fetch(daemonUrl(target, pathname), {
-    headers,
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+  const { response: res, auth } = await fetchWithAuthRetry(target, pathname, timeoutMs);
   if (!res.ok) return noteRefusal(res, serviceId, pathname, auth.source);
   return { status: res.status, body: await readJsonObject(res) };
 }

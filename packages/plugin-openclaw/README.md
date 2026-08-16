@@ -2,6 +2,8 @@
 
 OpenClaw plugin for Remnic memory and context. The package bundles the OpenClaw adapter plus the Remnic core runtime so it can run without a separate Remnic service; the adapter registers OpenClaw hooks/tools and delegates memory behavior to [`@remnic/core`](https://www.npmjs.com/package/@remnic/core).
 
+Website: <https://remnic.ai> - Source: <https://github.com/joshuaswarren/remnic> - Docs: <https://remnic.ai/guides/>
+
 Part of [Remnic](https://github.com/joshuaswarren/remnic), open-source memory and context for user-aware agents.
 
 ## Install
@@ -538,3 +540,4 @@ If you're not using OpenClaw, use [`@remnic/cli`](https://www.npmjs.com/package/
 ## License
 
 MIT
+

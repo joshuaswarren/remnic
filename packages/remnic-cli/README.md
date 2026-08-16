@@ -2,6 +2,8 @@
 
 CLI for Remnic memory and context -- init, query, daemon management, connectors, curation, and more.
 
+Website: <https://remnic.ai> - Source: <https://github.com/joshuaswarren/remnic> - Docs: <https://remnic.ai/guides/>
+
 Part of [Remnic](https://github.com/joshuaswarren/remnic), open-source memory and context for user-aware agents.
 
 ## Install
@@ -117,3 +119,4 @@ All agents share the same memory store.
 ## License
 
 MIT
+

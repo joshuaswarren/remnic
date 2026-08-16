@@ -139,6 +139,8 @@ export interface DelegateDaemonTarget {
   host: string;
   port: number;
   resolveAuthToken: () => DaemonAuthToken;
+  /** Drop a credential after a 401 so the next resolver call can fall back. */
+  invalidateAuthToken?: (auth: DaemonAuthToken) => void;
 }
 
 /** Base URL for a daemon route, bracketing a bare IPv6 literal host. */
@@ -159,6 +161,15 @@ const DEFAULT_PORT = 4318;
 const LIVENESS_PATH = "/engram/v1/live";
 const LEGACY_HEALTH_PATH = "/engram/v1/health";
 export const DEFAULT_DAEMON_HEALTH_TIMEOUT_MS = 10_000;
+
+export type DaemonHealthFailure = "auth" | "network" | "http";
+
+export interface DaemonHealthResult {
+  readonly ok: boolean;
+  readonly failure?: DaemonHealthFailure;
+  readonly status?: number;
+  readonly tokenSource?: DaemonAuthTokenSource;
+}
 
 /**
  * Validate a caller-supplied probe budget, in the same range the config
@@ -356,12 +367,6 @@ function coerceDaemonPort(value: unknown): number | undefined {
 
 const DAEMON_CAPTURE_BYTES = 1_024;
 
-/**
- * Run one blocking daemon probe on a worker thread. `register()` is
- * synchronous, so this is the only way to consult the daemon before deciding
- * how to register. When `captureField` is set, the probe targets the detailed
- * health route and returns that field's string value from the response body.
- */
 function probeDaemonSync(options: {
   host: string;
   port: number;
@@ -373,9 +378,21 @@ function probeDaemonSync(options: {
   configPath?: string;
   /** A unit-supplied credential, which outranks the config's. */
   authToken?: string;
-}): { ok: boolean; captured?: string; rejectedAuth?: boolean } {
+}): {
+  ok: boolean;
+  captured?: string;
+  rejectedAuth?: boolean;
+  failure?: "auth" | "network" | "http";
+  authSource?: DaemonAuthTokenSource;
+} {
+  const auth =
+    options.authToken === undefined
+      ? loadDaemonAuth(options.configPath)
+      : { token: options.authToken, source: "daemon configuration" as const };
   const { host, port, timeoutMs } = options;
-  if (!host || !Number.isInteger(port) || port <= 0 || port > 65535) return { ok: false };
+  if (!host || !Number.isInteger(port) || port <= 0 || port > 65535) {
+    return { ok: false, failure: "network" };
+  }
   const deadline = Date.now() + timeoutMs;
 
   let worker: Worker | undefined;
@@ -393,7 +410,7 @@ function probeDaemonSync(options: {
         port,
         path: options.path,
         fallbackPath: options.fallbackPath,
-        token: options.authToken ?? loadDaemonAuth(options.configPath).token,
+        token: auth.token,
         deadline,
         state,
         ...(capture ? { capture, captureField: options.captureField } : {}),
@@ -404,13 +421,17 @@ function probeDaemonSync(options: {
     Atomics.wait(view, 0, 0, Math.max(0, deadline - Date.now()));
     const status = Atomics.load(view, 0);
     if (status === 0) void worker.terminate();
-    if (status !== 1) return { ok: false, ...(status === 3 ? { rejectedAuth: true } : {}) };
+    if (status !== 1) {
+      const failure = status === 3 ? "auth" : status === 4 ? "http" : "network";
+      return {
+        ok: false,
+        failure,
+        ...(status === 3 ? { rejectedAuth: true, authSource: auth.source } : {}),
+      };
+    }
     if (!capture) return { ok: true };
     const length = new DataView(capture).getUint32(0);
     if (length === 0) return { ok: true };
-    // A value that did not fit is UNKNOWN, never a truncated path: a shortened
-    // memoryDir would read as a different corpus and start a second
-    // orchestrator beside the daemon on the very same files.
     if (length > capture.byteLength - 4) return { ok: true };
     return { ok: true, captured: new TextDecoder().decode(new Uint8Array(capture, 4, length)) };
   } catch {
@@ -436,22 +457,19 @@ export function checkDaemonHealthSync(
   }).ok;
 }
 
-/**
- * Read the memoryDir a healthy daemon is serving. Returns `undefined` for the
- * directory when the daemon answers but does not report one (an older build,
- * or a token without health access), which callers must treat as "unknown" —
- * never as a match.
- */
 export function readDaemonMemoryDirSync(
   host: string,
   port: number,
   timeoutMs = DEFAULT_DAEMON_HEALTH_TIMEOUT_MS,
   configPath?: string,
   authToken?: string,
-): { healthy: boolean; memoryDir?: string; rejectedAuth?: boolean } {
-  // A non-finite budget survives `Math.max(0, deadline - Date.now())` and
-  // reaches `Atomics.wait` as an UNBOUNDED wait, hanging the caller's main
-  // thread instead of failing the probe.
+): {
+  healthy: boolean;
+  memoryDir?: string;
+  rejectedAuth?: boolean;
+  failure?: "auth" | "network" | "http";
+  authSource?: DaemonAuthTokenSource;
+} {
   assertProbeBudget(timeoutMs);
   const probe = probeDaemonSync({
     host,
@@ -466,9 +484,9 @@ export function readDaemonMemoryDirSync(
   return {
     healthy: probe.ok,
     memoryDir: probe.captured,
-    // Present only when true, so the result shape is unchanged for callers
-    // that compare it structurally.
+    ...(probe.failure === undefined ? {} : { failure: probe.failure }),
     ...(probe.rejectedAuth === true ? { rejectedAuth: true } : {}),
+    ...(probe.authSource === undefined ? {} : { authSource: probe.authSource }),
   };
 }
 
@@ -835,7 +853,13 @@ export function detectDaemonBridgeMode(options: {
       }
     }
     if (!health.healthy) {
-      options.onSkip?.(`no healthy daemon at ${daemonHost}:${daemonPort}`);
+      const reason =
+        health.failure === "auth"
+          ? `daemon authentication failed at ${daemonHost}:${daemonPort} using ${health.authSource ?? "the configured credential"}`
+          : health.failure === "http"
+            ? `daemon health at ${daemonHost}:${daemonPort} returned an HTTP error; no healthy daemon`
+            : `daemon network probe failed at ${daemonHost}:${daemonPort}; no healthy daemon`;
+      options.onSkip?.(reason);
       continue;
     }
     if (health.memoryDir === undefined) {
@@ -988,11 +1012,7 @@ export function readDaemonConfigAuthToken(configPath: string): string | undefine
   return readServerBlock(configPath)?.authToken;
 }
 
-/** The one config file explicit resolution took host and port from. */
 function selectedDaemonConfigPath(): string | undefined {
-  // The SAME file `readDaemonServerConfig` resolves the endpoint from, which
-  // is the one the daemon itself selected — so the credential is always bound
-  // to the config that describes the endpoint being dialed.
   for (const candidate of configPathCandidates()) {
     if (readServerBlock(candidate) !== undefined) return candidate;
   }
@@ -1010,25 +1030,15 @@ function isOpenClawTokenEntry(value: unknown): value is { token: string } {
   );
 }
 
-/**
- * Load daemon credentials from the environment, standard token stores, or
- * daemon configuration. Shared by health and delegate requests.
- *
- * Environment precedence is primary-before-legacy (AGENTS.md §9): both current
- * names outrank both pre-rename aliases. A migrated deployment commonly still
- * exports `OPENCLAW_ENGRAM_ACCESS_TOKEN` from an old shell profile or unit
- * file; if that stale value outranked the `REMNIC_AUTH_TOKEN` the daemon is
- * actually running with, every request would 401 and the reported `source`
- * would point the operator at the wrong variable (issue #2286).
- *
- * `configPath` binds the config-file tier to ONE file. Candidate endpoints are
- * discovered per config, and two configs can carry different
- * `server.authToken` values — resolving credentials independently would send
- * the first config's token to a daemon that came from the second, which
- * answers 401 and leaves `auto` embedded beside it. Env and token stores are
- * daemon-independent and keep their precedence.
- */
-export function loadDaemonAuth(configPath?: string): DaemonAuthToken {
+const daemonAuthKey = (source: DaemonAuthTokenSource, token: string): string =>
+  `${source}\0${token}`;
+
+export function loadDaemonAuth(
+  configPath?: string,
+  excludedSources?: ReadonlySet<string>,
+): DaemonAuthToken {
+  const excluded = (source: DaemonAuthTokenSource, token: string): boolean =>
+    excludedSources?.has(source) === true || excludedSources?.has(daemonAuthKey(source, token)) === true;
   const environmentTokens = [
     ["OPENCLAW_REMNIC_ACCESS_TOKEN", readEnv("OPENCLAW_REMNIC_ACCESS_TOKEN")],
     ["REMNIC_AUTH_TOKEN", readEnv("REMNIC_AUTH_TOKEN")],
@@ -1036,7 +1046,7 @@ export function loadDaemonAuth(configPath?: string): DaemonAuthToken {
     ["ENGRAM_AUTH_TOKEN", readEnv("ENGRAM_AUTH_TOKEN")],
   ] as const;
   for (const [source, token] of environmentTokens) {
-    if (token) return { token, source };
+    if (token && !excluded(source, token)) return { token, source };
   }
 
   const tokenStores = [
@@ -1049,7 +1059,11 @@ export function loadDaemonAuth(configPath?: string): DaemonAuthToken {
       const store = JSON.parse(fs.readFileSync(tokenStore.path, "utf8"));
       const tokens = Array.isArray(store.tokens) ? store.tokens : [];
       const openClawToken = tokens.find(isOpenClawTokenEntry)?.token;
-      if (typeof openClawToken === "string" && openClawToken.length > 0) {
+      if (
+        typeof openClawToken === "string" &&
+        openClawToken.length > 0 &&
+        !excluded(tokenStore.source, openClawToken)
+      ) {
         return { token: openClawToken, source: tokenStore.source };
       }
       if (
@@ -1058,7 +1072,8 @@ export function loadDaemonAuth(configPath?: string): DaemonAuthToken {
         "openclaw" in store &&
         typeof store.openclaw === "string" &&
         store.openclaw.length > 0 &&
-        (store.openclaw.startsWith("remnic_") || store.openclaw.startsWith("engram_"))
+        (store.openclaw.startsWith("remnic_") || store.openclaw.startsWith("engram_")) &&
+        !excluded(tokenStore.source, store.openclaw)
       ) {
         return { token: store.openclaw, source: tokenStore.source };
       }
@@ -1074,7 +1089,11 @@ export function loadDaemonAuth(configPath?: string): DaemonAuthToken {
       const raw: unknown = JSON.parse(fs.readFileSync(candidate, "utf8"));
       const server = (raw as { server?: { authToken?: unknown } } | null)?.server;
       const token = server?.authToken;
-      if (typeof token === "string" && token.length > 0) {
+      if (
+        typeof token === "string" &&
+        token.length > 0 &&
+        !excluded("daemon configuration", token)
+      ) {
         return { token, source: "daemon configuration" };
       }
     } catch {
@@ -1089,24 +1108,36 @@ export function loadDaemonAuth(configPath?: string): DaemonAuthToken {
   return { token: "", source: "no configured token" };
 }
 
-/**
- * Check whether the standalone daemon is available for delegated requests.
- * Falls back to detailed health when the daemon predates the liveness route.
- */
-export async function checkDaemonHealth(
+function classifyDaemonHealthStatus(
+  status: number | undefined,
+  tokenSource: DaemonAuthTokenSource,
+): DaemonHealthResult {
+  if (status === 200) return { ok: true };
+  if (status === 401 || status === 403) {
+    return { ok: false, failure: "auth", status, tokenSource };
+  }
+  if (status === undefined) return { ok: false, failure: "network" };
+  return { ok: false, failure: "http", status };
+}
+
+export async function checkDaemonHealthDetailed(
   host: string,
   port: number,
   timeoutMs = DEFAULT_DAEMON_HEALTH_TIMEOUT_MS,
-): Promise<boolean> {
-  if (!host || !Number.isInteger(port) || port <= 0 || port > 65535) return false;
+): Promise<DaemonHealthResult> {
+  if (!host || !Number.isInteger(port) || port <= 0 || port > 65535) {
+    return { ok: false, failure: "network" };
+  }
   const deadline = Date.now() + timeoutMs;
   try {
     const { request } = await import("node:http");
-    const token = loadDaemonAuth().token;
-    const headers: Record<string, string> = {};
-    if (token) headers["Authorization"] = `Bearer ${token}`;
+    let auth = loadDaemonAuth();
+    const fallbackAuth =
+      auth.token === ""
+        ? undefined
+        : loadDaemonAuth(undefined, new Set<DaemonAuthTokenSource>([auth.source]));
 
-    const probe = (requestPath: string): Promise<number | undefined> =>
+    const probe = (requestPath: string, token: string): Promise<number | undefined> =>
       new Promise((resolve) => {
         const remainingMs = deadline - Date.now();
         if (remainingMs <= 0) {
@@ -1119,6 +1150,8 @@ export async function checkDaemonHealth(
           settled = true;
           resolve(statusCode);
         };
+        const headers: Record<string, string> = {};
+        if (token) headers.Authorization = `Bearer ${token}`;
         const req = request(
           { hostname: host, port, path: requestPath, method: "GET", timeout: remainingMs, headers },
           (res) => {
@@ -1134,11 +1167,34 @@ export async function checkDaemonHealth(
         req.end();
       });
 
-    const livenessStatus = await probe(LIVENESS_PATH);
-    if (livenessStatus === 200) return true;
-    if (livenessStatus !== 404) return false;
-    return await probe(LEGACY_HEALTH_PATH) === 200;
+    const probeWithFallback = async (requestPath: string): Promise<number | undefined> => {
+      let status = await probe(requestPath, auth.token);
+      if ((status === 401 || status === 403) && fallbackAuth?.token && fallbackAuth.token !== auth.token) {
+        auth = fallbackAuth;
+        status = await probe(requestPath, auth.token);
+      }
+      return status;
+    };
+    const livenessStatus = await probeWithFallback(LIVENESS_PATH);
+    if (livenessStatus === 200) return { ok: true };
+    if (livenessStatus !== 404) return classifyDaemonHealthStatus(livenessStatus, auth.source);
+    return classifyDaemonHealthStatus(
+      await probeWithFallback(LEGACY_HEALTH_PATH),
+      auth.source,
+    );
   } catch {
-    return false;
+    return { ok: false, failure: "network" };
   }
+}
+
+/**
+ * Check whether the standalone daemon is available for delegated requests.
+ * Falls back to detailed health when the daemon predates the liveness route.
+ */
+export async function checkDaemonHealth(
+  host: string,
+  port: number,
+  timeoutMs = DEFAULT_DAEMON_HEALTH_TIMEOUT_MS,
+): Promise<boolean> {
+  return (await checkDaemonHealthDetailed(host, port, timeoutMs)).ok;
 }

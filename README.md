@@ -6,6 +6,8 @@
 
 Open-source, local-first memory and context for AI agents. One memory store, every agent.
 
+Website: **[remnic.ai](https://remnic.ai)** - guide library, comparisons, benchmarks, and changelog.
+
 - **Your files, your machine.** Every memory is a plain markdown file with YAML frontmatter on your disk. No database, no cloud dependency, no subscription. `cat`, `grep`, edit, and version-control your memory with the tools you already use.
 - **One memory across every tool.** OpenClaw, Claude Code, Codex CLI, Cursor, ChatGPT (developer mode), Hermes, Replit, Pi, omp, and any MCP client read and write the same store. Tell one agent a preference; every agent knows it.
 - **Automatic extraction and recall.** Remnic watches conversations, distills durable knowledge, and injects the right context back when it is needed.
@@ -241,6 +243,23 @@ There is a useful split in AI memory between **memory backends** (extract facts,
 | Built-in agent memory that does not scale | Hybrid search, lifecycle management, namespaces, and governance |
 | Third-party memory services that cost money and hold your data | Everything stays local: your filesystem, your rules |
 
+
+## How Remnic compares
+
+Most alternatives trade away at least one of local-first storage, a free license, or multi-host support; Remnic combines all three in one package.
+
+| Option | Hosting | Price | Agent coverage | Storage |
+|---|---|---|---|---|
+| Remnic | Local-first | Free (MIT) | Native plugins for Claude Code, Codex CLI, Pi, OpenClaw, Hermes, plus any MCP client | Markdown + YAML, rebuildable index |
+| mem0 | Cloud / self-host | Freemium | SDK / API | Vectors / database |
+| Letta (MemGPT) | Cloud / self-host | Freemium | API | Database-backed |
+| Zep (Graphiti) | Cloud / self-host | Freemium | SDK / API | Graph database |
+| Supermemory | Cloud | Paid | API | Hosting handled by the service |
+| MemPalace | Local | Free | Single host | Local |
+| ChatGPT memory | Cloud | Bundled | Single tool | Opaque |
+
+Hosting and price labels mirror the canonical matrix at [remnic.ai/compare](https://remnic.ai/compare), which also carries the per-competitor teardowns. Importers for mem0, Supermemory, ChatGPT, Claude, and Gemini: [remnic.ai/import](https://remnic.ai/import).
+
 ## Quick start
 
 ### Prerequisites
@@ -471,6 +490,8 @@ The complete, organized docs hub lives at **[docs/README.md](docs/README.md)**. 
 - **Configure:** [Config reference](docs/config-reference.md) - [Search backends](docs/search-backends.md) - [Local LLM](docs/guides/local-llm.md) - [Cost control](docs/guides/cost-control.md)
 - **Operate:** [Operations](docs/operations.md) - [Retention policy](docs/retention-policy.md) - [Import / export](docs/import-export.md) - [Standalone server](docs/guides/standalone-server.md)
 - **Internals:** [Architecture overview](docs/architecture/overview.md) - [Retrieval pipeline](docs/architecture/retrieval-pipeline.md) - [Memory lifecycle](docs/architecture/memory-lifecycle.md) - [HTTP + MCP API](docs/api.md)
+
+The website publishes the [guide library](https://remnic.ai/guides) (what is AI agent memory, MCP memory servers, Claude Code memory), the [comparison pages](https://remnic.ai/compare), the [benchmarks report](https://remnic.ai/benchmarks), and the [changelog](https://remnic.ai/changelog).
 
 ## FAQ
 

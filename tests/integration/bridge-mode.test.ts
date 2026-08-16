@@ -190,6 +190,40 @@ test("checkDaemonHealth returns false when nothing is listening", async () => {
   assert.equal(healthy, false);
 });
 
+test("checkDaemonHealthDetailed classifies auth and network failures separately", async () => {
+  const { checkDaemonHealthDetailed } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
+  const authNames = ["OPENCLAW_REMNIC_ACCESS_TOKEN", "REMNIC_AUTH_TOKEN", "OPENCLAW_ENGRAM_ACCESS_TOKEN", "ENGRAM_AUTH_TOKEN"];
+  const previousAuth = new Map(authNames.map((name) => [name, process.env[name]]));
+  for (const name of authNames) delete process.env[name];
+  process.env.REMNIC_AUTH_TOKEN = "health-test-token";
+  const server = createServer((_req, res) => {
+    res.writeHead(401, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "unauthorized" }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  try {
+    assert.deepEqual(await checkDaemonHealthDetailed("127.0.0.1", address.port, PROBE_BUDGET_MS), {
+      ok: false,
+      failure: "auth",
+      status: 401,
+      tokenSource: "REMNIC_AUTH_TOKEN",
+    });
+    assert.deepEqual(await checkDaemonHealthDetailed("127.0.0.1", 49999, PROBE_BUDGET_MS), {
+      ok: false,
+      failure: "network",
+    });
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    for (const name of authNames) {
+      const previous = previousAuth.get(name);
+      if (previous === undefined) delete process.env[name];
+      else process.env[name] = previous;
+    }
+  }
+});
+
 test("daemon health timeout default exceeds the server diagnostic deadline", async () => {
   const { DEFAULT_DAEMON_HEALTH_TIMEOUT_MS } = await import(
     path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts")
