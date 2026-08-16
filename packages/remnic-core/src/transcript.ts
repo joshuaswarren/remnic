@@ -1080,11 +1080,8 @@ export class TranscriptManager {
     }
 
     const maxTokenBudget = Math.max(0, Math.floor(maxTokens));
-    if (maxTokenBudget === 0) {
-      return "";
-    }
+    if (maxTokenBudget === 0) return "";
     const lines: string[] = [];
-
     // Calculate time range for header
     const firstEntry = new Date(entries[0].timestamp);
     const lastEntry = new Date(entries[entries.length - 1].timestamp);
@@ -1126,6 +1123,7 @@ export class TranscriptManager {
 
       selectedEntries.unshift(entry);
     }
+    if (selectedEntries.length === 0) return "";
 
     lines.push(...selectedEntries);
     lines.push(""); // Trailing newline

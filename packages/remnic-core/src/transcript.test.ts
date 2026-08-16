@@ -45,7 +45,7 @@ test("formatForRecall returns no content for zero or undersized budgets", () => 
   ];
 
   assert.equal(manager.formatForRecall(entries, 0), "");
-  assert.equal(manager.formatForRecall(entries, 5), "");
+  assert.equal(manager.formatForRecall(entries, 10), "");
 });
 /**
  * Freeze `new Date()` / `Date.now()` to a fixed instant for the duration of `fn`.
