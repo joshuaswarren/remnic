@@ -376,6 +376,16 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         const tokenTrimmed = coordinator.truncateRecallSectionToBudget("x".repeat(200), 200, 20);
         assert.match(tokenTrimmed, /\.\.\.\(memory context trimmed\)$/);
         assert.ok(estimateTokenCount(tokenTrimmed) <= 20, "token-aware truncation keeps its marker inside the cap");
+        const markerBudget = estimateTokenCount("\n\n...(memory context trimmed)");
+        assert.equal(
+          coordinator.truncateRecallSectionToBudget("日本語".repeat(100), 200, markerBudget),
+          "",
+          "a marker-only token result is omitted",
+        );
+        const emojiTrimmed = coordinator.truncateRecallSectionToBudget("😀".repeat(30), 60, 29);
+        assert.ok(emojiTrimmed.length <= 60, "astral text stays within the UTF-16 character cap");
+        assert.ok(estimateTokenCount(emojiTrimmed) <= 29, "astral text stays within the token cap");
+        assert.match(emojiTrimmed, /\.\.\.\(memory context trimmed\)$/);
         // A budget-skipped section reports as a debug-level "skip" metric — the
         // QoS accounting that flags a section dropped for the budget deadline.
         const skipMetric = formatRecallSectionMetric({
