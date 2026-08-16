@@ -27,3 +27,8 @@ test("counts token-dense Indic code points and emoji", () => {
   assert.equal(estimateTokenCount("नमस्ते"), 6);
   assert.equal(estimateTokenCount("😀😀😀😀"), 4);
 });
+
+test("counts unlisted letters and regional indicators conservatively", () => {
+  assert.equal(estimateTokenCount("ქართული"), 7);
+  assert.equal(estimateTokenCount("🇺🇸🇬🇧"), 4);
+});
