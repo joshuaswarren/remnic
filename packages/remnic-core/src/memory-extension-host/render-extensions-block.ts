@@ -6,15 +6,9 @@
  * truncates with a footer listing omitted extensions when over budget.
  */
 
+import { estimateTokenCount } from "../token-estimate.js";
 import { REMNIC_EXTENSIONS_TOTAL_TOKEN_LIMIT } from "./host-discovery.js";
 import type { DiscoveredExtension } from "./types.js";
-
-/**
- * Approximate token count using the 4 chars per token heuristic.
- */
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
 
 /**
  * Render a markdown block containing extension instructions for injection
@@ -36,14 +30,14 @@ extension produces or curates.
 `;
 
   let budget = REMNIC_EXTENSIONS_TOTAL_TOKEN_LIMIT;
-  budget -= estimateTokens(header);
+  budget -= estimateTokenCount(header);
 
   const inlined: string[] = [];
   const omitted: string[] = [];
 
   for (const ext of extensions) {
     const block = `### remnic-extension/${ext.name}\n\`\`\`\n${ext.instructions}\n\`\`\`\n\n`;
-    const cost = estimateTokens(block);
+    const cost = estimateTokenCount(block);
     if (cost <= budget) {
       inlined.push(block);
       budget -= cost;

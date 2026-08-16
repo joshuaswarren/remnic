@@ -189,7 +189,7 @@ Every knob is exposed via plugin config so users have maximum control:
 |---|---|---|
 | `codexMaterializeMemories` | `true` | Master switch — set `false` to disable all materialization. |
 | `codexMaterializeNamespace` | `"auto"` | Namespace to materialize. `"auto"` derives it from the connector context. |
-| `codexMaterializeMaxSummaryTokens` | `4500` | Whitespace-tokenized cap for `memory_summary.md`. |
+| `codexMaterializeMaxSummaryTokens` | `4500` | Script-aware estimated-token cap for `memory_summary.md`. |
 | `codexMaterializeRolloutRetentionDays` | `30` | Prune rollout summaries older than this window. |
 | `codexMaterializeOnConsolidation` | `true` | Run after semantic/causal consolidation completes. |
 | `codexMaterializeOnSessionEnd` | `true` | Run from the plugin-codex session-end hook. |

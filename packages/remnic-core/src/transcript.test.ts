@@ -1,8 +1,9 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp } from "node:fs/promises";
+import test from "node:test";
+import { estimateTokenCount } from "./token-estimate.js";
 import { TranscriptManager } from "./transcript.js";
 import type { PluginConfig, TranscriptEntry } from "./types.js";
 
@@ -24,6 +25,40 @@ function entryAt(timestamp: string, sessionKey: string, turnId: string): Transcr
   return { timestamp, role: "user", content: `turn ${turnId}`, sessionKey, turnId };
 }
 
+test("formatForRecall counts transcript separators inside its token budget", () => {
+  const manager = new TranscriptManager(makeConfig("/tmp/remnic-transcript-format-test"));
+  const entries = ["one", "two", "three"].map((turnId) =>
+    entryAt("2026-06-29T12:00:00.000Z", "agent:test-agent:main", turnId)
+  );
+
+  const formatted = manager.formatForRecall(entries, 23);
+
+  assert.ok(estimateTokenCount(formatted) <= 23);
+});
+test("formatForRecall returns no content for zero or undersized budgets", () => {
+  const manager = new TranscriptManager(makeConfig("/tmp/remnic-transcript-small-budget"));
+  const entries = [
+    {
+      ...entryAt("2026-06-29T12:00:00.000Z", "agent:test-agent:main", "oversized"),
+      content: "日本語".repeat(100),
+    },
+  ];
+
+  assert.equal(manager.formatForRecall(entries, 0), "");
+  assert.equal(manager.formatForRecall(entries, 10), "");
+});
+test("formatForRecall does not fall back to stale older entries", () => {
+  const manager = new TranscriptManager(makeConfig("/tmp/remnic-transcript-newest-budget"));
+  const entries = [
+    entryAt("2026-06-29T12:00:00.000Z", "agent:test-agent:main", "older"),
+    {
+      ...entryAt("2026-06-29T12:00:00.000Z", "agent:test-agent:main", "newest"),
+      content: "日本語".repeat(100),
+    },
+  ];
+
+  assert.equal(manager.formatForRecall(entries, 23), "");
+});
 /**
  * Freeze `new Date()` / `Date.now()` to a fixed instant for the duration of `fn`.
  *
@@ -50,7 +85,7 @@ async function withFrozenNow<T>(now: Date, fn: () => Promise<T>): Promise<T> {
           args[3] as number,
           args[4] as number,
           args[5] as number,
-          args[6] as number,
+          args[6] as number
         );
       }
     }

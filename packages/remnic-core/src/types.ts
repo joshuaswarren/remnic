@@ -2269,7 +2269,7 @@ export interface PluginConfig extends BoundedJsonlStateConfig, SecurityConfig {
   codexMaterializeMemories: boolean;
   /** Namespace to materialize; "auto" derives from the connector context. Default "auto". */
   codexMaterializeNamespace: string;
-  /** Max whitespace-tokenized size of memory_summary.md. Default 4500. */
+  /** Max estimated-token size of memory_summary.md. Default 4500. */
   codexMaterializeMaxSummaryTokens: number;
   /** Max age in days for rollout_summaries/*.md before pruning. Default 30. */
   codexMaterializeRolloutRetentionDays: number;

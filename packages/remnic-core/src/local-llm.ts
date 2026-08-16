@@ -1,4 +1,5 @@
 import { log } from "./logger.js";
+import { estimateTokenCount } from "./token-estimate.js";
 import type { PluginConfig } from "./types.js";
 import fs from "node:fs";
 import os from "node:os";
@@ -1431,18 +1432,15 @@ export class LocalLlmClient {
 
     return await this.runChatCompletionRequest(messages, options);
   }
-
   /**
-   * Estimate tokens when local LLM doesn't return usage stats
-   * Rough estimate: 1 token ≈ 4 characters
+   * Estimate tokens when local LLM does not return usage stats.
    */
   private estimateTokens(
     messages: Array<{ role: string; content: string }>,
     response: string
   ): { promptTokens: number; completionTokens: number; totalTokens: number } {
-    const promptChars = messages.reduce((sum, m) => sum + m.content.length, 0);
-    const promptTokens = Math.ceil(promptChars / 4);
-    const completionTokens = Math.ceil(response.length / 4);
+    const promptTokens = messages.reduce((sum, message) => sum + estimateTokenCount(message.content), 0);
+    const completionTokens = estimateTokenCount(response);
 
     return {
       promptTokens,

@@ -4508,6 +4508,8 @@ function buildRecallPipelineConfig(cfg: Record<string, unknown>): RecallPipeline
       ? Math.max(0, Math.floor(cfg.maxMemoryTokens))
       : 2000;
   const recallBudgetCharsRaw = clampNonNegativeNumber(cfg.recallBudgetChars);
+  // Keep four characters per token as Latin-script headroom. Assemblers enforce
+  // maxMemoryTokens with the shared script-aware estimator.
   const recallBudgetChars = recallBudgetCharsRaw ?? maxMemoryTokens * 4;
 
   const rawPipeline = cfg.recallPipeline;

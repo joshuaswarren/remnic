@@ -9,7 +9,7 @@
  *
  * The nine rows are realized honestly against the coordinator's REAL behavior —
  * no mocks. Config is built through the production `parseConfig` path so the
- * budget derivation (recallBudgetChars = maxMemoryTokens * 4), section
+ * budget derivation (recallBudgetChars = maxMemoryTokens), section
  * enablement filtering, per-section maxChars caps, and cap-after-filter
  * ordering are all exercised as they ship. Each row asserts one recall-budget
  * contract invariant:
@@ -28,6 +28,7 @@ import assert from "node:assert/strict";
 
 import { parseConfig } from "../../config.js";
 import { RecallSectionCoordinator } from "../../orchestration/recall-section-coordinator.js";
+import { estimateTokenCount } from "../../token-estimate.js";
 import { createRecallSectionMetricRecorder, formatRecallSectionMetric } from "../../recall-qos.js";
 import { reorderRecallResultsWithMmr } from "../../recall-mmr.js";
 import { applyRuntimeRetrievalPolicy, expandQuery } from "../../retrieval.js";
@@ -297,10 +298,10 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         return;
       }
       case "sparse-metadata-with-binding": {
-        // Budget is derived from maxMemoryTokens (recallBudgetChars = tokens*4).
+        // Budget keeps Latin-script headroom and token-aware assembly caps wide scripts.
         assert.equal(config.recallBudgetChars, config.maxMemoryTokens * 4, "budget derives from maxMemoryTokens");
-        assert.equal(budget, config.maxMemoryTokens * 4, "coordinator honors the token-derived budget");
-        assert.ok(assembled.finalChars <= budget, "section sum stays within the token-derived budget");
+        assert.ok(budget <= config.maxMemoryTokens * 4, "coordinator honors the character budget");
+        assert.ok(assembled.finalChars <= budget, "section sum stays within the character budget");
         assert.ok(assembled.truncated, "oversized content forces truncation");
         return;
       }
@@ -372,7 +373,22 @@ const subject: LifecycleSubject<RecallBudgetState> = {
         // truncateRecallSectionToBudget respects a hard per-section budget too.
         const truncated = coordinator.truncateRecallSectionToBudget(body("m", 200), 50);
         assert.equal(truncated.length, 50, "budget-aware truncation lands exactly on the per-section limit");
-        // A budget-skipped section reports as a debug-level "skip" metric — the
+        const tokenTrimmed = coordinator.truncateRecallSectionToBudget("x".repeat(200), 200, 20);
+        assert.match(tokenTrimmed, /\.\.\.\(memory context trimmed\)$/);
+        assert.ok(estimateTokenCount(tokenTrimmed) <= 20, "token-aware truncation keeps its marker inside the cap");
+        const markerBudget = estimateTokenCount("\n\n...(memory context trimmed)");
+        const markerOnlyBudget = coordinator.truncateRecallSectionToBudget("日本語".repeat(100), 200, markerBudget);
+        assert.ok(markerOnlyBudget.length > 0, "a marker-only budget keeps useful content");
+        assert.doesNotMatch(markerOnlyBudget, /\.\.\.\(memory context trimmed\)$/);
+        assert.ok(estimateTokenCount(markerOnlyBudget) <= markerBudget);
+        const wideScriptTrimmed = coordinator.truncateRecallSectionToBudget("日".repeat(100), 30, markerBudget);
+        assert.equal([...wideScriptTrimmed].length, 8, "wide-script fallback uses the available character room");
+        assert.ok(estimateTokenCount(wideScriptTrimmed) <= markerBudget);
+        assert.doesNotMatch(wideScriptTrimmed, /\.\.\.\(memory context trimmed\)$/);
+        const emojiTrimmed = coordinator.truncateRecallSectionToBudget("😀".repeat(30), 60, 29);
+        assert.ok(emojiTrimmed.length <= 60, "astral text stays within the UTF-16 character cap");
+        assert.ok(estimateTokenCount(emojiTrimmed) <= 29, "astral text stays within the token cap");
+        assert.match(emojiTrimmed, /\.\.\.\(memory context trimmed\)$/);
         // QoS accounting that flags a section dropped for the budget deadline.
         const skipMetric = formatRecallSectionMetric({
           section: "memories",

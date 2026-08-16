@@ -114,11 +114,11 @@ When `intentRoutingEnabled` is on, extraction captures `intent.goal`, `intent.ac
 
 ## Context Budget & Assembly
 
-All retrieved content is capped at `recallBudgetChars` before injection. If `recallBudgetChars` is not set, the budget defaults to `maxMemoryTokens * 4` (8,000 chars with the default `maxMemoryTokens` of 2000). **For modern large-context models (200K+ token windows), set `recallBudgetChars` explicitly to 64,000–128,000.**
+All retrieved content is capped at `recallBudgetChars` before injection. If `recallBudgetChars` is not set, the parser derives four characters per `maxMemoryTokens` token for Latin-script headroom. The assembler also enforces `maxMemoryTokens` with the shared script-aware estimator, so wide-script content stays within the token limit. **For modern large-context models (200K+ token windows), set `recallBudgetChars` explicitly to 64,000–128,000.**
 
 ### Budget-Aware Assembly (v9.0.66+)
 
-Sections are assembled in pipeline order. The assembler tracks cumulative character usage and reserves space for protected sections (currently `memories`). Each non-protected section receives `budget - usedChars - reservedChars` available characters. If a section exceeds its available space, it is truncated or omitted.
+Sections are assembled in pipeline order. The assembler tracks cumulative character and estimated-token usage and reserves space for protected sections (currently `memories`). Each non-protected section receives the remaining character and token budget. If a section exceeds either limit, it is truncated or omitted.
 
 **Default pipeline order:**
 
@@ -142,7 +142,7 @@ Sections are assembled in pipeline order. The assembler tracks cumulative charac
 | 21 | `compounding` | off by default | variable |
 | 22 | `questions` | off by default | variable |
 
-**Common pitfall:** With the default budget of 8,000 chars, profile (~7,500 chars) and shared context (~4,000 chars) together consume the entire budget. The `memories` section is protected and always included, but under tight budgets it may be truncated to heading-only (~24 chars) with no actual memory content. Memories are still retrieved (visible in `lastRecall` state), but the agent sees only the section heading. See [Recall Budget Tuning](../config-reference.md#recall-budget-tuning) for sizing guidance.
+**Common pitfall:** With the default budget of 8,000 chars and 2,000 estimated tokens, profile (~7,500 chars) and shared context (~4,000 chars) together consume the character budget. The `memories` section is protected and always included, but under tight budgets it may be truncated to heading-only (~24 chars) with no actual memory content. Memories are still retrieved (visible in `lastRecall` state), but the agent sees only the section heading. Set both `recallBudgetChars` and `maxMemoryTokens` for a larger context budget. See [Recall Budget Tuning](../config-reference.md#recall-budget-tuning) for sizing guidance.
 
 Identity continuity section behavior:
 - `recovery_only`: inject only when prompt has explicit recovery/continuity intent.
@@ -177,10 +177,10 @@ With namespaces enabled, retrieval filters candidates to allowed namespaces (loc
 
 | Setting | Default | Notes |
 |---------|---------|-------|
-| `recallBudgetChars` | `maxMemoryTokens * 4` | **Total character budget for recall context. Set this explicitly.** |
+| `recallBudgetChars` | `maxMemoryTokens * 4` | **Character headroom for recall context. Set this explicitly for a custom character cap. Recall assembly also enforces `maxMemoryTokens` with the shared script-aware estimator.** |
 | `recallPlannerEnabled` | `true` | Lightweight request classifier |
 | `recallPlannerMaxQmdResultsMinimal` | `4` | QMD cap in minimal mode |
-| `maxMemoryTokens` | `2000` | Legacy token cap; prefer `recallBudgetChars` |
+| `maxMemoryTokens` | `2000` | Token cap enforced during recall assembly and used to derive `recallBudgetChars`; prefer `recallBudgetChars` for custom character limits. |
 | `identityContinuityEnabled` | `false` | Enables identity continuity injection path |
 | `identityInjectionMode` | `recovery_only` | Identity injection behavior (`recovery_only|minimal|full`) |
 | `identityMaxInjectChars` | `1200` | Max characters for identity continuity section |

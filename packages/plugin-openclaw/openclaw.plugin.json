@@ -891,7 +891,7 @@
         "type": "number",
         "minimum": 0,
         "default": 4500,
-        "description": "Whitespace-token cap for Codex memory summary materialization."
+        "description": "Script-aware estimated-token cap for Codex memory summary materialization."
       },
       "codexMaterializeMemories": {
         "type": "boolean",
@@ -4584,7 +4584,7 @@
       },
       "recallBudgetChars": {
         "type": "number",
-        "description": "Hard character cap for total recall context. Defaults to maxMemoryTokens * 4."
+        "description": "Hard character headroom for total recall context. Defaults to maxMemoryTokens * 4 for Latin-script capacity; recall assembly also enforces maxMemoryTokens with the shared script-aware estimator."
       },
       "recallProfileMaxRatio": {
         "type": "number",
