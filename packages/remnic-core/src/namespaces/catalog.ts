@@ -19,12 +19,7 @@ import {
   withHeldFileLock,
 } from "../utils/serialize-mutations.js";
 import { isSafeRouteNamespace } from "../routing/engine.js";
-import {
-  namespaceIdentityFromToken,
-  namespaceIdentityLegacyToken,
-  namespaceIdentityToken,
-  normalizeNamespaceIdentity,
-} from "./identity.js";
+import { namespaceIdentityFromToken, namespaceIdentityLegacyToken, namespaceIdentityToken, normalizeNamespaceIdentity } from "./identity.js";
 import { resolveDefaultNamespaceRoot, resolveNamespaceStorageRoot } from "./storage.js";
 import { ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
 
@@ -1803,10 +1798,7 @@ export class NamespaceCatalog {
       const tokenDecoded = literalOwnsRoot ? null : namespaceIdentityFromToken(token);
       const rawDecoded = tokenDecoded && tokenDecoded.length > 0 ? tokenDecoded : token;
       const decoded = normalizeNamespaceIdentity(rawDecoded);
-      if (
-        decoded.length === 0 ||
-        (rawDecoded !== decoded && rawDecoded.normalize("NFC") !== decoded)
-      ) {
+      if (decoded.length === 0 || (rawDecoded !== decoded && rawDecoded.normalize("NFC") !== decoded)) {
         skipped.push({ token, reason: "unsafe", detail: rawDecoded });
         continue;
       }
@@ -1849,9 +1841,7 @@ export class NamespaceCatalog {
       // is the on-disk dir name; it is the tokenized dir iff it equals the
       // namespace's identity token. If we already recorded this namespace from
       // its tokenized dir, a later legacy-named entry must not clobber it.
-      const isTokenizedEntry =
-        token === namespaceIdentityToken(decoded) ||
-        token === namespaceIdentityLegacyToken(decoded.normalize("NFD"));
+      const isTokenizedEntry = token === namespaceIdentityToken(decoded) || token === namespaceIdentityLegacyToken(decoded.normalize("NFD"));
       if (rebuilt.has(decoded) && scannedFromTokenized.has(decoded) && !isTokenizedEntry) {
         continue;
       }
