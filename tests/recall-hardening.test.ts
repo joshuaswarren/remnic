@@ -582,6 +582,70 @@ test("recallInternal aborts while phase-one preamble promises are still pending"
     release?.();
   }
 });
+test("recallInternal forwards abort to each phase-one shared-context read", async () => {
+  const orchestrator = await makeOrchestrator("engram-recall-phase-one-cancel-");
+  const callerAbortController = new AbortController();
+  type SharedContextReadSurface = {
+    readPriorities: (signal?: AbortSignal) => Promise<string>;
+    readLatestRoundtable: (signal?: AbortSignal) => Promise<string>;
+    readLatestCrossSignals: (signal?: AbortSignal) => Promise<string>;
+  };
+  type RecallInternalHarness = {
+    isRecallSectionEnabled: (id: string) => boolean;
+    sharedContext: SharedContextReadSurface;
+    recallInternal: (
+      prompt: string,
+      sessionKey: string,
+      options: { mode: "full"; abortSignal: AbortSignal },
+    ) => Promise<unknown>;
+  };
+  const harness = orchestrator as unknown as RecallInternalHarness;
+  harness.isRecallSectionEnabled = (id: string) => id === "shared-context";
+
+  let readsStarted = 0;
+  let readsCancelled = 0;
+  let resolveReadsStarted: (() => void) | null = null;
+  const allReadsStarted = new Promise<void>((resolve) => {
+    resolveReadsStarted = resolve;
+  });
+  const cancelledRead = (signal?: AbortSignal): Promise<string> =>
+    new Promise<string>((_resolve, reject) => {
+      assert.ok(signal);
+      readsStarted += 1;
+      if (readsStarted === 3) resolveReadsStarted?.();
+      signal.addEventListener(
+        "abort",
+        () => {
+          readsCancelled += 1;
+          reject(signal.reason);
+        },
+        { once: true },
+      );
+    });
+  harness.sharedContext = {
+    readPriorities: cancelledRead,
+    readLatestRoundtable: cancelledRead,
+    readLatestCrossSignals: cancelledRead,
+  };
+
+  const recallPromise = harness.recallInternal(
+    "phase one cancellation test",
+    "agent:test:phase-one-cancel",
+    {
+      mode: "full",
+      abortSignal: callerAbortController.signal,
+    },
+  );
+
+  await allReadsStarted;
+  callerAbortController.abort();
+
+  await assert.rejects(
+    recallPromise,
+    (err: unknown) => err instanceof Error && err.name === "AbortError",
+  );
+  assert.equal(readsCancelled, 3);
+});
 
 test("recallInternal does not launch phase-one preamble work for an already-aborted signal", async () => {
   const orchestrator = await makeOrchestrator(

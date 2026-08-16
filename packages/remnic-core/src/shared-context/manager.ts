@@ -6,6 +6,7 @@ import { log } from "../logger.js";
 import type { PluginConfig } from "../types.js";
 import { expandTildePath } from "../utils/path.js";
 import { resolveConversationContextCapabilities } from "../capabilities.js";
+import { throwIfAborted } from "../abort-error.js";
 
 export const SharedFeedbackEntrySchema = z.object({
   agent: z.string().min(1),
@@ -497,38 +498,52 @@ export class SharedContextManager {
     }
   }
 
-  async readPriorities(): Promise<string> {
+  async readPriorities(signal?: AbortSignal): Promise<string> {
+    throwIfAborted(signal, "shared context priorities read aborted");
     try {
-      return await readFile(this.prioritiesPath, "utf-8");
+      const content = await readFile(this.prioritiesPath, { encoding: "utf-8", signal });
+      throwIfAborted(signal, "shared context priorities read aborted");
+      return content;
     } catch {
+      throwIfAborted(signal, "shared context priorities read aborted");
       return "";
     }
   }
 
-  async readLatestRoundtable(): Promise<string> {
+  async readLatestRoundtable(signal?: AbortSignal): Promise<string> {
+    throwIfAborted(signal, "shared context roundtable read aborted");
     try {
       const files = (await readdir(this.roundtableDir))
         .filter((f) => f.endsWith(".md"))
         .sort()
         .reverse();
+      throwIfAborted(signal, "shared context roundtable read aborted");
       const fp = files[0] ? path.join(this.roundtableDir, files[0]) : null;
       if (!fp) return "";
-      return await readFile(fp, "utf-8");
+      const content = await readFile(fp, { encoding: "utf-8", signal });
+      throwIfAborted(signal, "shared context roundtable read aborted");
+      return content;
     } catch {
+      throwIfAborted(signal, "shared context roundtable read aborted");
       return "";
     }
   }
 
-  async readLatestCrossSignals(): Promise<string> {
+  async readLatestCrossSignals(signal?: AbortSignal): Promise<string> {
+    throwIfAborted(signal, "shared context cross-signals read aborted");
     try {
       const files = (await readdir(this.crossSignalsDir))
         .filter((f) => f.endsWith(".md"))
         .sort()
         .reverse();
+      throwIfAborted(signal, "shared context cross-signals read aborted");
       const fp = files[0] ? path.join(this.crossSignalsDir, files[0]) : null;
       if (!fp) return "";
-      return await readFile(fp, "utf-8");
+      const content = await readFile(fp, { encoding: "utf-8", signal });
+      throwIfAborted(signal, "shared context cross-signals read aborted");
+      return content;
     } catch {
+      throwIfAborted(signal, "shared context cross-signals read aborted");
       return "";
     }
   }
