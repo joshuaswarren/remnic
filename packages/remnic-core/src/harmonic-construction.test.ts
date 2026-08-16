@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { appendFile, mkdir, mkdtemp, open, readFile, rm, stat, unlink, utimes, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, open, readdir, readFile, rm, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+  HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY,
   getAbstractionNodeStoreStatus,
   upsertAbstractionNode,
   upsertAbstractionNodes,
@@ -26,12 +27,14 @@ import {
   deriveHarmonicRecords,
   normalizeCueAnchorInputs,
 } from "./harmonic-construction.js";
-import { searchHarmonicRetrieval } from "./harmonic-retrieval.js";
+import { searchHarmonicRetrieval, type HarmonicRetrievalResult } from "./harmonic-retrieval.js";
 import { readJsonFile, withJsonStoreMutationLock } from "./json-store.js";
 import {
   filterHarmonicEntityMentions,
   persistConstructedHarmonicRecords,
 } from "./orchestration/harmonic-construction-persist.js";
+import { compareDeterministicStrings } from "./deterministic-order.js";
+import { stripAttributesSuffix } from "./structured-attributes.js";
 import { Orchestrator } from "./orchestrator.js";
 import { ExtractedFactSchema, ExtractionResultSchema } from "./schemas.js";
 import type { ExtractionResult, MemoryFile } from "./types.js";
@@ -1253,6 +1256,188 @@ test("harmonic anchors stay scoped to projected active sources in a mixed episod
       activeResults.some((result) =>
         result.matchedAnchors.some((anchor) => anchor.anchorValue === "Orion surviving transport")
       )
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+async function persistRecencyFixture(memoryDir: string): Promise<{
+  storageDir: string;
+  persistedIds: string[];
+  contentById: Map<string, string>;
+}> {
+  const config = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    embeddingFallbackEnabled: false,
+    chunkingEnabled: false,
+    harmonicRetrievalEnabled: true,
+    abstractionAnchorsEnabled: false,
+  });
+  const orchestrator = new Orchestrator(config) as unknown as PersistenceHarness;
+  const storage = await orchestrator.getStorage("default");
+  await storage.ensureDirectories();
+  const contents = [
+    "Atlas fact zero of the oldest insertion pair.",
+    "Atlas fact one of the oldest insertion pair.",
+    "Atlas fact two at the middle insertion time.",
+    "Atlas fact three of the newest insertion pair.",
+    "Atlas fact four of the newest insertion pair.",
+  ];
+  const { persistedIds } = await orchestrator.persistExtraction(
+    {
+      facts: contents.map((content) => ({
+        category: "fact",
+        content,
+        confidence: 0.99,
+        tags: ["atlas"],
+        entityRef: "atlas-project",
+        cueAnchors: [],
+      })),
+      entities: [{ name: "atlas-project", type: "company", facts: [] }],
+      profileUpdates: [],
+      questions: [],
+      relationships: [],
+      episodeTitle: "Atlas insertion ordering",
+    },
+    storage,
+    null,
+    { sessionKey: "session:harmonic-recency" }
+  );
+  const expectedContents = new Set(contents);
+  const contentById = new Map<string, string>();
+  const factIds: string[] = [];
+  for (const persistedId of persistedIds) {
+    const memory = await storage.getMemoryById(persistedId);
+    if (!memory) continue;
+    const content = memory.frontmatter.structuredAttributes
+      ? stripAttributesSuffix(memory.content)
+      : memory.content;
+    if (!expectedContents.has(content)) continue;
+    factIds.push(persistedId);
+    contentById.set(persistedId, content);
+  }
+  assert.equal(factIds.length, 5, `expected the five fact memories, got ${persistedIds.length} persisted`);
+  return { storageDir: storage.dir, persistedIds: factIds, contentById };
+}
+
+async function rewriteTopicInsertedAt(
+  storageDir: string,
+  insertedAtById: Record<string, string> | null,
+  recordedAt?: string
+): Promise<void> {
+  const nodesDir = path.join(storageDir, "state", "abstraction-nodes", "nodes");
+  for (const dayEntry of await readdir(nodesDir, { withFileTypes: true })) {
+    if (!dayEntry.isDirectory()) continue;
+    for (const entryName of await readdir(path.join(nodesDir, dayEntry.name))) {
+      if (!entryName.endsWith(".json")) continue;
+      const filePath = path.join(nodesDir, dayEntry.name, entryName);
+      const node = JSON.parse(await readFile(filePath, "utf8")) as Record<string, unknown>;
+      if (node.kind !== "topic") continue;
+      const metadata = { ...(node.metadata as Record<string, string>) };
+      if (insertedAtById === null) {
+        delete metadata[HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY];
+      } else {
+        metadata[HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY] = JSON.stringify(insertedAtById);
+      }
+      await writeFile(
+        filePath,
+        `${JSON.stringify({ ...node, metadata, ...(recordedAt ? { recordedAt } : {}) }, null, 2)}\n`
+      );
+    }
+  }
+}
+
+async function findProjectedTopic(
+  storageDir: string
+): Promise<HarmonicRetrievalResult | undefined> {
+  const results = await searchHarmonicRetrieval({
+    memoryDir: storageDir,
+    query: "atlas",
+    maxResults: 5,
+    anchorsEnabled: false,
+  });
+  return results.find((result) => result.node.kind === "topic");
+}
+
+test("harmonic projection orders sources newest-first with deterministic tiebreak", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-harmonic-recency-"));
+  try {
+    const { storageDir, persistedIds, contentById } = await persistRecencyFixture(memoryDir);
+    const ascendingIds = [...persistedIds].sort(compareDeterministicStrings);
+    const [first, second, third, fourth, fifth] = ascendingIds.map((memoryId) => memoryId);
+    assert.ok(first && second && third && fourth && fifth);
+    const oldest = "2026-01-01T00:00:00.000Z";
+    const middle = "2026-02-01T00:00:00.000Z";
+    const newest = "2026-03-01T00:00:00.000Z";
+    const insertedAtByRank = [oldest, oldest, middle, newest, newest];
+    await rewriteTopicInsertedAt(
+      storageDir,
+      Object.fromEntries(ascendingIds.map((memoryId, index) => [memoryId, insertedAtByRank[index]]))
+    );
+
+    const topic = await findProjectedTopic(storageDir);
+    assert.ok(topic, "topic node must stay retrievable");
+    assert.deepEqual(topic.node.sourceMemoryIds, [fourth, fifth, third, first, second]);
+    assert.equal(topic.node.title, contentById.get(fourth));
+    assert.equal(
+      topic.node.summary,
+      [fourth, fifth, third].map((memoryId) => contentById.get(memoryId)).join("; ")
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("harmonic projection keeps ascending id order for equal or missing insertion timestamps", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-harmonic-recency-equal-"));
+  try {
+    const { storageDir, persistedIds, contentById } = await persistRecencyFixture(memoryDir);
+    const ascendingIds = [...persistedIds].sort(compareDeterministicStrings);
+    const [first, second, third, fourth, fifth] = ascendingIds.map((memoryId) => memoryId);
+    assert.ok(first && second && third && fourth && fifth);
+    const expectedSummary = [first, second, third]
+      .map((memoryId) => contentById.get(memoryId))
+      .join("; ");
+
+    await rewriteTopicInsertedAt(
+      storageDir,
+      Object.fromEntries(ascendingIds.map((memoryId) => [memoryId, "2026-01-01T00:00:00.000Z"]))
+    );
+    let topic = await findProjectedTopic(storageDir);
+    assert.ok(topic);
+    assert.deepEqual(topic.node.sourceMemoryIds, ascendingIds);
+    assert.equal(topic.node.title, contentById.get(first));
+    assert.equal(topic.node.summary, expectedSummary);
+
+    await rewriteTopicInsertedAt(storageDir, null);
+    topic = await findProjectedTopic(storageDir);
+    assert.ok(topic);
+    assert.deepEqual(topic.node.sourceMemoryIds, ascendingIds);
+    assert.equal(topic.node.title, contentById.get(first));
+    assert.equal(topic.node.summary, expectedSummary);
+
+    await rewriteTopicInsertedAt(
+      storageDir,
+      {
+        [first]: "not-a-timestamp",
+        [second]: "2026-01-01T00:00:00.000Z",
+        [third]: "2026-02-01T00:00:00.000Z",
+        [fourth]: "definitely not a date",
+        [fifth]: "2026-03-01T00:00:00.000Z",
+      },
+      "2026-06-01T00:00:00.000Z"
+    );
+    topic = await findProjectedTopic(storageDir);
+    assert.ok(topic);
+    assert.deepEqual(topic.node.sourceMemoryIds, [first, fourth, fifth, third, second]);
+    assert.equal(topic.node.title, contentById.get(first));
+    assert.equal(
+      topic.node.summary,
+      [first, fourth, fifth].map((memoryId) => contentById.get(memoryId)).join("; ")
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });

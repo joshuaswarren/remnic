@@ -13,6 +13,7 @@ import { compareDeterministicStrings } from "./deterministic-order.js";
 import { countRecallTokenOverlap, normalizeRecallTokens } from "./recall-tokenization.js";
 import { stripAttributesSuffix } from "./structured-attributes.js";
 import { isValidityExpiredNow } from "./temporal-validity.js";
+import { isRecord } from "./store-contract.js";
 import type { MemoryFile } from "./types.js";
 
 type SourceMemoryMap = Map<string, MemoryFile>;
@@ -42,6 +43,22 @@ async function readSourceMemories(options: {
   return sourceMemories;
 }
 
+function parseSourceMemoryInsertedAt(node: AbstractionNode): Map<string, string> {
+  const insertedAtById = new Map<string, string>();
+  const insertedAtRaw = node.metadata?.[HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY];
+  if (!insertedAtRaw) return insertedAtById;
+  try {
+    const parsed = JSON.parse(insertedAtRaw) as unknown;
+    if (!isRecord(parsed)) return insertedAtById;
+    for (const [memoryId, value] of Object.entries(parsed)) {
+      if (typeof value === "string") insertedAtById.set(memoryId, value);
+    }
+  } catch {
+    // Malformed insertion metadata leaves ordering on the recordedAt fallback.
+  }
+  return insertedAtById;
+}
+
 function projectSourceBackedNode(
   node: AbstractionNode,
   sourceMemories: SourceMemoryMap,
@@ -62,6 +79,19 @@ function projectSourceBackedNode(
   });
   if (activeSourceMemoryIds.length === 0) return null;
 
+ // Newest-first source order keeps the projected title and summary on the most
+ // recently inserted facts. Equal or missing timestamps fall back to ascending
+ // id order, which matches the stored sourceMemoryIds order.
+ const insertedAtById = parseSourceMemoryInsertedAt(node);
+ const insertedAtMs = (memoryId: string): number => {
+   const parsedMs = Date.parse(insertedAtById.get(memoryId) ?? "");
+   return Number.isFinite(parsedMs) ? parsedMs : Date.parse(node.recordedAt);
+ };
+ activeSourceMemoryIds.sort(
+   (left, right) =>
+     insertedAtMs(right) - insertedAtMs(left) || compareDeterministicStrings(left, right)
+ );
+
   const activeMemories = activeSourceMemoryIds.flatMap((memoryId) => {
     const memory = sourceMemories.get(memoryId);
     return memory ? [memory] : [];
@@ -69,40 +99,32 @@ function projectSourceBackedNode(
   const activeContents = activeMemories.map((memory) =>
     memory.frontmatter.structuredAttributes ? stripAttributesSuffix(memory.content) : memory.content
   );
-  let metadata: Record<string, string> | undefined;
-  const insertedAtRaw = node.metadata?.[HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY];
-  if (insertedAtRaw) {
-    try {
-      const insertedAt = JSON.parse(insertedAtRaw) as Record<string, unknown>;
-      const activeInsertedAt = activeSourceMemoryIds.flatMap((memoryId) => {
-        const value = insertedAt[memoryId];
-        return typeof value === "string" ? [[memoryId, value] as const] : [];
-      });
-      if (activeInsertedAt.length > 0) {
-        metadata = {
-          [HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY]: JSON.stringify(Object.fromEntries(activeInsertedAt)),
-        };
-      }
-    } catch {
-      metadata = undefined;
-    }
+ let metadata: Record<string, string> | undefined;
+ const activeInsertedAt = activeSourceMemoryIds.flatMap((memoryId) => {
+   const value = insertedAtById.get(memoryId);
+   return typeof value === "string" ? [[memoryId, value] as const] : [];
+ });
+ if (activeInsertedAt.length > 0) {
+   metadata = {
+     [HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY]: JSON.stringify(Object.fromEntries(activeInsertedAt)),
+   };
   }
 
-  return {
-    ...node,
-    sourceMemoryIds: activeSourceMemoryIds,
-    title: activeContents[0]?.slice(0, 80) ?? node.title,
-    summary: activeContents.slice(0, 3).join("; ").slice(0, 400),
-    tags: [...new Set(activeMemories.flatMap((memory) => memory.frontmatter.tags))].sort(compareDeterministicStrings),
-    entityRefs: [
-      ...new Set(
-        activeMemories.flatMap((memory) =>
-          typeof memory.frontmatter.entityRef === "string" ? [memory.frontmatter.entityRef] : []
-        )
-      ),
-    ].sort(compareDeterministicStrings),
-    metadata,
-  };
+ return {
+   ...node,
+   sourceMemoryIds: activeSourceMemoryIds,
+   title: activeContents[0]?.slice(0, 80) ?? node.title,
+   summary: activeContents.slice(0, 3).join("; ").slice(0, 400),
+   tags: [...new Set(activeMemories.flatMap((memory) => memory.frontmatter.tags))].sort(compareDeterministicStrings),
+   entityRefs: [
+     ...new Set(
+       activeMemories.flatMap((memory) =>
+         typeof memory.frontmatter.entityRef === "string" ? [memory.frontmatter.entityRef] : []
+       )
+     ),
+   ].sort(compareDeterministicStrings),
+   metadata,
+ };
 }
 
 function anchorMatchesProjectedNode(
