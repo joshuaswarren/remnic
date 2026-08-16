@@ -173,17 +173,13 @@ test("readDaemonMemoryDirSync survives a malformed health body", async () => {
 });
 
 test("readDaemonMemoryDirSync reports unhealthy for a non-200 daemon", async () => {
-  // A 401/403 is unhealthy AND flagged as an auth rejection, which is what
-  // licenses the candidate walk to retry a different bound credential. A
-  // readiness stall or a dead socket carries no flag, because no token fixes
-  // those.
   const rejecting = await startHealthStub({ error: "unauthorized" }, 401);
   try {
-    assert.deepEqual(readDaemonMemoryDirSync("127.0.0.1", rejecting.port, 5_000), {
-      healthy: false,
-      memoryDir: undefined,
-      rejectedAuth: true,
-    });
+    const health = readDaemonMemoryDirSync("127.0.0.1", rejecting.port, 5_000);
+    assert.equal(health.healthy, false);
+    assert.equal(health.failure, "auth");
+    assert.equal(health.rejectedAuth, true);
+    assert.equal(typeof health.authSource, "string");
   } finally {
     await rejecting.close();
   }
@@ -192,9 +188,25 @@ test("readDaemonMemoryDirSync reports unhealthy for a non-200 daemon", async () 
     assert.deepEqual(readDaemonMemoryDirSync("127.0.0.1", broken.port, 5_000), {
       healthy: false,
       memoryDir: undefined,
+      failure: "http",
     });
   } finally {
     await broken.close();
+  }
+});
+
+test("auto detection classifies HTTP 401 as an authentication failure", async () => {
+  const rejecting = await startHealthStub({ error: "unauthorized" }, 401);
+  try {
+    const skipped: string[] = [];
+    const result = withDaemonEnv(rejecting.port, () =>
+      detectDaemonBridgeMode({ memoryDir: MEMORY_DIR, onSkip: (reason) => skipped.push(reason) }),
+    );
+    assert.equal(result.mode, "embedded");
+    assert.match(skipped.join("\n"), /authentication/i);
+    assert.doesNotMatch(skipped.join("\n"), /unreachable/i);
+  } finally {
+    await rejecting.close();
   }
 });
 
@@ -202,10 +214,12 @@ test("readDaemonMemoryDirSync rejects an unroutable port without probing", () =>
   assert.deepEqual(readDaemonMemoryDirSync("127.0.0.1", 0, 500), {
     healthy: false,
     memoryDir: undefined,
+    failure: "network",
   });
   assert.deepEqual(readDaemonMemoryDirSync("", 4318, 500), {
     healthy: false,
     memoryDir: undefined,
+    failure: "network",
   });
 });
 
@@ -2217,7 +2231,7 @@ test("a health body that dies after the headers fails fast, not at the deadline"
     const started = Date.now();
     const health = readDaemonMemoryDirSync("127.0.0.1", stub.port, budgetMs);
     const elapsed = Date.now() - started;
-    assert.deepEqual(health, { healthy: false, memoryDir: undefined });
+    assert.deepEqual(health, { healthy: false, memoryDir: undefined, failure: "network" });
     assert.ok(
       elapsed < budgetMs / 2,
       `probe returned in ${elapsed}ms, well inside its ${budgetMs}ms budget`,
@@ -2553,6 +2567,51 @@ test("a removed unit token falls through instead of replaying a dead credential"
     else process.env.HOME = priorHome;
     if (priorToken === undefined) delete process.env.REMNIC_AUTH_TOKEN;
     else process.env.REMNIC_AUTH_TOKEN = priorToken;
+    await rm(home, { recursive: true, force: true });
+  }
+});
+test("a rejected legacy environment token falls back to the daemon config", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-token-rotation-"));
+  const configPath = path.join(home, ".config", "remnic", "config.json");
+  const authNames = [
+    "OPENCLAW_REMNIC_ACCESS_TOKEN",
+    "REMNIC_AUTH_TOKEN",
+    "OPENCLAW_ENGRAM_ACCESS_TOKEN",
+    "ENGRAM_AUTH_TOKEN",
+  ] as const;
+  const previous = new Map(authNames.map((name) => [name, process.env[name]]));
+  try {
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(
+      configPath,
+      JSON.stringify({ server: { authToken: "rotated-config-token" } }),
+      "utf8",
+    );
+    for (const name of authNames) delete process.env[name];
+    process.env.OPENCLAW_ENGRAM_ACCESS_TOKEN = "stale-exported-token";
+    const target = daemonTargetFor({
+      mode: "delegate",
+      daemonHost: "127.0.0.1",
+      daemonAuthPrefersConfig: false,
+      daemonPort: 4318,
+      daemonConfigPath: configPath,
+    });
+    const stale = target.resolveAuthToken();
+    assert.deepEqual(stale, {
+      token: "stale-exported-token",
+      source: "OPENCLAW_ENGRAM_ACCESS_TOKEN",
+    });
+    target.invalidateAuthToken?.(stale);
+    assert.deepEqual(target.resolveAuthToken(), {
+      token: "rotated-config-token",
+      source: "daemon configuration",
+    });
+  } finally {
+    for (const name of authNames) {
+      const value = previous.get(name);
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
     await rm(home, { recursive: true, force: true });
   }
 });

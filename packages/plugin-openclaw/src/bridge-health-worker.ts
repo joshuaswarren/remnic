@@ -57,13 +57,12 @@ export function runHealthWorker(request: HealthRequest, data: HealthWorkerData):
   const view = new Int32Array(data.state);
   let completed = false;
 
-  // 1 = healthy, 2 = failed, 3 = failed with an AUTH rejection. The caller
-  // retries a bound credential only for 3: a readiness stall or a dead socket
-  // is not something a different token would fix.
-  function finish(ok: boolean, rejectedAuth = false): void {
+  // 1 = healthy, 2 = network failure, 3 = auth rejection, 4 = HTTP failure.
+  // The caller must not report an HTTP auth response as a network outage.
+  function finish(ok: boolean, rejectedAuth = false, httpFailure = false): void {
     if (completed) return;
     completed = true;
-    Atomics.store(view, 0, ok ? 1 : rejectedAuth ? 3 : 2);
+    Atomics.store(view, 0, ok ? 1 : rejectedAuth ? 3 : httpFailure ? 4 : 2);
     Atomics.notify(view, 0);
   }
 
@@ -151,7 +150,7 @@ export function runHealthWorker(request: HealthRequest, data: HealthWorkerData):
           } else if (statusCode === 401 || statusCode === 403) {
             finish(false, true);
           } else {
-            finish(false);
+            finish(false, false, true);
           }
         },
       );

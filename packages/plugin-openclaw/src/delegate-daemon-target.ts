@@ -11,6 +11,8 @@ import {
   readDaemonConfigAuthToken,
   readUnitAuthToken,
   type BridgeConfig,
+  type DaemonAuthToken,
+  type DaemonAuthTokenSource,
   type DelegateDaemonTarget,
 } from "./bridge.js";
 
@@ -24,11 +26,18 @@ import {
  * not 401 every delegated route until the gateway restarts too.
  */
 export function daemonTargetFor(bridge: BridgeConfig): DelegateDaemonTarget {
+  const invalidatedSources = new Set<DaemonAuthTokenSource>();
   return {
     host: bridge.daemonHost,
     port: bridge.daemonPort,
+    invalidateAuthToken: (auth: DaemonAuthToken) => {
+      invalidatedSources.add(auth.source);
+    },
     resolveAuthToken: () => {
-      if (bridge.daemonAuthTokenOverride !== undefined) {
+      if (
+        bridge.daemonAuthTokenOverride !== undefined &&
+        !invalidatedSources.has("daemon configuration")
+      ) {
         // A unit-supplied credential is re-read from its unit — including its
         // drop-ins and `EnvironmentFile=`.
         const unit =
@@ -54,13 +63,17 @@ export function daemonTargetFor(bridge: BridgeConfig): DelegateDaemonTarget {
           }
         }
       }
-      if (bridge.daemonAuthPrefersConfig && bridge.daemonConfigPath !== undefined) {
+      if (
+        bridge.daemonAuthPrefersConfig &&
+        bridge.daemonConfigPath !== undefined &&
+        !invalidatedSources.has("daemon configuration")
+      ) {
         const configToken = readDaemonConfigAuthToken(bridge.daemonConfigPath);
         if (configToken !== undefined) {
           return { token: configToken, source: "daemon configuration" };
         }
       }
-      return loadDaemonAuth(bridge.daemonConfigPath);
+      return loadDaemonAuth(bridge.daemonConfigPath, invalidatedSources);
     },
   };
 }
