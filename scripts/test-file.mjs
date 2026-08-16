@@ -1,9 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendNodeOption } from "./root-test-runner-env.mjs";
+
 import { ensurePackageBuild } from "./build-staleness.mjs";
+import { appendNodeOption } from "./root-test-runner-env.mjs";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -29,6 +31,7 @@ const files = fileArgs.map((fileArg) => {
   }
   return filePath;
 });
+
 ensurePackageBuild(
   repoRoot,
   "@remnic/bench",
@@ -41,6 +44,26 @@ ensurePackageBuild(
   ],
 );
 
+const testRunScratchDir = mkdtempSync(join(tmpdir(), "rt-"));
+let testRunScratchCleaned = false;
+function cleanupTestRunScratchDir() {
+  if (testRunScratchCleaned) return;
+  testRunScratchCleaned = true;
+  try {
+    rmSync(testRunScratchDir, { recursive: true, force: true });
+  } catch {
+    // Best-effort cleanup must not mask the test result.
+  }
+}
+process.on("exit", cleanupTestRunScratchDir);
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(signal, () => {
+    cleanupTestRunScratchDir();
+    process.removeAllListeners(signal);
+    process.kill(process.pid, signal);
+  });
+}
+
 const tsxBin = process.platform === "win32" ? "tsx.cmd" : "tsx";
 const workspaceBinDir = join(repoRoot, "node_modules", ".bin");
 const result = spawnSync(tsxBin, ["--test", ...runnerArgs, ...files], {
@@ -49,6 +72,9 @@ const result = spawnSync(tsxBin, ["--test", ...runnerArgs, ...files], {
     ...process.env,
     PATH: `${workspaceBinDir}${delimiter}${process.env.PATH ?? ""}`,
     NODE_OPTIONS: appendNodeOption(process.env.NODE_OPTIONS, "--conditions=remnic-source"),
+    TMPDIR: testRunScratchDir,
+    TMP: testRunScratchDir,
+    TEMP: testRunScratchDir,
   },
   stdio: "inherit",
 });
