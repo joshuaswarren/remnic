@@ -63,7 +63,7 @@ export async function appendEpisodicContextSection(
       timing,
     });
   if (maxEpisodes <= 0 || maxTurns <= 0) {
-    // Zero semantics (Checklist #33): disable before any archive query.
+    // Zero semantics (checklist item 33): disable before any archive query.
     skip("skip(limit=0)");
     return;
   }
@@ -122,7 +122,7 @@ export async function appendEpisodicContextSection(
       if (facts.length === 0) return null;
 
       // 2. Authoritative LCM session ids for a provenance sessionKey
-      // (Checklist #30): only keys framed under the caller's authorized read
+      // (checklist item 30): only keys framed under the caller's authorized read
       // namespaces. A foreign session's rows live under a foreign namespace
       // frame and are unreachable through this mapping.
       const readNamespaces = options.namespacesEnabled

@@ -346,6 +346,7 @@
     "entitySummaryEnabled",
     "entitySynthesisMaxTokens",
     "episodeNoteModeEnabled",
+    "episodicContextEnabled",
     "evalHarnessEnabled",
     "evalShadowModeEnabled",
     "evalStoreDir",

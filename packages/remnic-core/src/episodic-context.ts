@@ -177,7 +177,7 @@ export function compareEpisodeWindows(
  * the quote fallback for facts that lost every source.
  *
  * `maxEpisodes` or `maxTurnsPerEpisode` of 0 disables the section: returns
- * `[]` before any work (zero semantics, Checklist #33).
+ * `[]` before any work (zero semantics, checklist item 33).
  */
 export function planEpisodeWindows(options: {
   recalledFacts: ReadonlyArray<EpisodicFactInput>;
