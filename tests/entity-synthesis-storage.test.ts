@@ -16,6 +16,10 @@ import { parseConfig } from "../packages/remnic-core/src/config.js";
 import { normalizeLegacyEntityName } from "../packages/remnic-core/src/entity-id-normalization.js";
 import { normalizeEntityText } from "../packages/remnic-core/src/entity-schema.js";
 import {
+  parseEntityTimelineBullet,
+  serializeEntityTimelineEntry,
+} from "../packages/remnic-core/src/storage/entity-timeline.js";
+import {
   isEncryptedFile,
   writeMaybeEncryptedFile,
 } from "../packages/remnic-core/src/secure-store/secure-fs.js";
@@ -2675,6 +2679,42 @@ test("parseEntityFile keeps caller-provided entity schemas isolated per parse", 
   ]);
 });
 
+test("entity timeline origin metadata does not consume literal origin-like text", () => {
+  const entry = {
+    timestamp: "2026-04-13T10:00:00.000Z",
+    origin: "user",
+    text: "[remnic-origin=tool_output] literal text",
+  };
+  const serialized = serializeEntityTimelineEntry(entry);
+  assert.match(serialized, /\\\[remnic-origin=tool_output\]/);
+  assert.deepEqual(
+    parseEntityTimelineBullet(serialized.slice(2), "2026-04-13T00:00:00.000Z"),
+    entry,
+  );
+  const uppercase = { ...entry, text: "[REMNIC-ORIGIN=tool_output] literal text" };
+  const uppercaseSerialized = serializeEntityTimelineEntry(uppercase);
+  assert.deepEqual(
+    parseEntityTimelineBullet(uppercaseSerialized.slice(2), "2026-04-13T00:00:00.000Z"),
+    uppercase,
+  );
+  const markerLiteral = { ...entry, text: "[remnic-meta-v1] [remnic-origin=user] literal text" };
+  const markerSerialized = serializeEntityTimelineEntry(markerLiteral);
+  assert.deepEqual(
+    parseEntityTimelineBullet(markerSerialized.slice(2), "2026-04-13T00:00:00.000Z"),
+    markerLiteral,
+  );
+  for (const text of ["\\\\[remnic-origin=tool_output] literal text", "[remnic-meta-v1] literal text"]) {
+    const literal = { ...entry, text };
+    const literalSerialized = serializeEntityTimelineEntry(literal);
+    assert.deepEqual(
+      parseEntityTimelineBullet(literalSerialized.slice(2), "2026-04-13T00:00:00.000Z"),
+      literal,
+    );
+  }
+  const unterminated = "[remnic-meta-v1] [remnic-origin=user literal";
+  assert.equal(parseEntityTimelineBullet(unterminated, "2026-04-13T00:00:00.000Z")?.text, "[remnic-origin=user literal");
+});
+
 test("parseEntityFile preserves non-schema structured sections as structured facts", () => {
   const parsed = parseEntityFile([
     "---",
@@ -3716,12 +3756,12 @@ test("mergeFragmentedEntities preserves structured sections from fragments", asy
       "",
       "## Beliefs",
       "",
-      "- Small teams move faster than committees.",
+      "- [remnic-meta-v1] [remnic-origin=user] Small teams move faster than committees.",
       "",
       "## Timeline",
       "",
       "- [2026-04-13T10:05:00.000Z] Fragment A evidence",
-      "",
+      "- [remnic-meta-v1] [remnic-origin=tool_output] Roadmaps should stay legible to the team.",
     ].join("\n");
     const fragmentB = [
       "---",
@@ -3736,7 +3776,7 @@ test("mergeFragmentedEntities preserves structured sections from fragments", asy
       "",
       "## Beliefs",
       "",
-      "- Roadmaps should stay legible to the team.",
+      "- [remnic-meta-v1] [remnic-origin=tool_output] Roadmaps should stay legible to the team.",
       "",
       "## Communication Style",
       "",
@@ -3763,6 +3803,7 @@ test("mergeFragmentedEntities preserves structured sections from fragments", asy
           "Small teams move faster than committees.",
           "Roadmaps should stay legible to the team.",
         ],
+        factOrigins: ["user", "tool_output"],
       },
       {
         key: "communication_style",

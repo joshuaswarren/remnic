@@ -116,7 +116,6 @@ import type { HarmonicConstructionInput } from "../harmonic-construction.js";
 import { persistConstructedHarmonicRecords } from "./harmonic-construction-persist.js";
 import { ExtractionAnchorSnapshot } from "./extraction-anchor-snapshot.js";
 
-
 export class ExtractionPersistCoordinator {
   constructor(
     private readonly deps: ExtractionPersistDeps,
@@ -2856,6 +2855,7 @@ export class ExtractionPersistCoordinator {
           timestamp: sourceContext?.validAt,
           sessionKey: sourceContext?.sessionKey,
           principal: sourceContext?.principal,
+          origin,
           structuredSections: screened.structuredSections,
         });
         if (id) {

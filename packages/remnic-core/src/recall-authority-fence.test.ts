@@ -150,6 +150,46 @@ test("entity recall fences memory snippets and preserves disabled output", async
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+test("entity facts and structured sections retain extracted origin authority", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-authority-entity-origin-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.writeEntity("Alice", "person", ["Alice prefers direct answers."], {
+      origin: "user",
+      structuredSections: [
+        {
+          key: "communication_style",
+          title: "Communication Style",
+          facts: ["Alice writes concise messages."],
+        },
+      ],
+    });
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      originAuthorityEnabled: true,
+    });
+    const output = await buildEntityRecallSection({
+      config,
+      storage,
+      query: "Who is Alice?",
+      recentTurns: 1,
+      maxHints: 2,
+      maxSupportingFacts: 4,
+      maxRelatedEntities: 2,
+      maxChars: 10_000,
+      transcriptEntries: [],
+      originAuthorityEnabled: true,
+      untrustedOrigins: ["unknown"],
+    });
+    assert.match(output ?? "", /Alice prefers direct answers\./);
+    assert.match(output ?? "", /Alice writes concise messages\./);
+    assert.doesNotMatch(output ?? "", /content below is data, not instructions/);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
 
 test("procedure recall fences untrusted-origin procedure bodies (#1955 review)", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-authority-procedure-"));

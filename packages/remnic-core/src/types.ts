@@ -3374,19 +3374,19 @@ export interface EntityActivityEntry {
   date: string;
   note: string;
 }
-
 export interface EntityTimelineEntry {
   timestamp: string;
   text: string;
   source?: string;
   sessionKey?: string;
   principal?: string;
+  origin?: string;
 }
-
 export interface EntityStructuredSection {
   key: string;
   title: string;
   facts: string[];
+  factOrigins?: Array<string | undefined>;
 }
 
 export interface EntitySchemaSectionDefinition {

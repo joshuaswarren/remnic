@@ -1,7 +1,4 @@
-/**
- * Pure issue #1955 injection-screen gate for extracted facts.
- */
-
+import { parseOriginClass } from "../security/origin-authority.js";
 import { normalizeAttributePairs } from "../structured-attributes.js";
 import { buildProcedurePersistBody } from "../procedural/procedure-types.js";
 import { screenCandidateFact } from "../security/injection-screen.js";
@@ -123,7 +120,22 @@ export function screenEntityForIndex(entity: unknown, enabled: boolean): Screene
     source: typeof record?.source === "string" ? record.source : "extraction",
     facts: factScreen.kept,
     ...(sectionScreens
-      ? { structuredSections: sectionScreens.map(({ section, screen }) => ({ ...section, facts: screen.kept })) }
+      ? {
+        structuredSections: sectionScreens.map(({ section, screen }) => {
+          let nextFactIndex = 0;
+          const factOrigins = screen.kept.map((fact) => {
+            const factIndex = section.facts.indexOf(fact, nextFactIndex);
+            nextFactIndex = factIndex + 1;
+            const origin = section.factOrigins?.[factIndex];
+            return origin === undefined ? undefined : parseOriginClass(origin);
+          });
+          return {
+            ...section,
+            facts: screen.kept,
+            ...(factOrigins.some((origin) => origin !== undefined) ? { factOrigins } : {}),
+          };
+        }),
+      }
       : rawSections
         ? { structuredSections: rawSections }
         : {}),

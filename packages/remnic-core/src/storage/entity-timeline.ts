@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto";
 import { matchEntitySchemaSection, normalizeEntityStructuredSection } from "../entity-schema.js";
 import type { EntityFile, EntityStructuredSection, EntityTimelineEntry, PluginConfig } from "../types.js";
+export const ENTITY_TIMELINE_METADATA_MARKER = "remnic-meta-v1";
 
 export function parseEntityTimelineBullet(bullet: string, fallbackTimestamp: string): EntityTimelineEntry | null {
   const trimmed = bullet.trim();
@@ -17,10 +18,11 @@ export function parseEntityTimelineBullet(bullet: string, fallbackTimestamp: str
     text: "",
   };
   const consumedMetadataSegments: string[] = [];
+  let metadataMarkerSeen = false;
   let literalSingleSourceSegment: string | undefined;
 
   if (!trimmed.startsWith("[")) {
-    entry.text = trimmed;
+    entry.text = unescapeEntityTimelineText(trimmed);
     return entry.text ? entry : null;
   }
 
@@ -42,6 +44,13 @@ export function parseEntityTimelineBullet(bullet: string, fallbackTimestamp: str
     if (end === -1) break;
     const rawSegment = rest.slice(0, end + 1);
     const token = rest.slice(1, end).trim();
+    const nextRest = rest.slice(end + 1).trimStart();
+    if (token === ENTITY_TIMELINE_METADATA_MARKER) {
+      metadataMarkerSeen = true;
+      consumedMetadataSegments.push(rawSegment);
+      rest = nextRest;
+      continue;
+    }
     const equalsIdx = token.indexOf("=");
     if (equalsIdx === -1) {
       if (rest === trimmed) {
@@ -53,7 +62,10 @@ export function parseEntityTimelineBullet(bullet: string, fallbackTimestamp: str
     const key = token.slice(0, equalsIdx).trim().toLowerCase();
     const value = unescapeEntityTimelineMetadataValue(token.slice(equalsIdx + 1).trim());
     if (!value) break;
-    const nextRest = rest.slice(end + 1).trimStart();
+    if (key === "remnic-origin" && !metadataMarkerSeen) {
+      entry.text = rest.trim();
+      return entry.text ? entry : null;
+    }
     switch (key) {
       case "source_meta":
         entry.source = value;
@@ -78,6 +90,9 @@ export function parseEntityTimelineBullet(bullet: string, fallbackTimestamp: str
       case "principal":
         entry.principal = value;
         break;
+      case "remnic-origin":
+        entry.origin = value;
+        break;
       default:
         entry.text = rest.trim();
         return entry.text ? entry : null;
@@ -93,8 +108,7 @@ export function parseEntityTimelineBullet(bullet: string, fallbackTimestamp: str
       text: `${literalSingleSourceSegment} ${rest}`.trim(),
     };
   }
-
-  entry.text = rest.trim();
+  entry.text = unescapeEntityTimelineText(rest.trim());
   if (!entry.text) return null;
   return entry;
 }
@@ -241,6 +255,13 @@ export function unescapeEntityTimelineMetadataValue(value: string): string {
   }
   return result;
 }
+export function escapeEntityTimelineText(value: string): string {
+  return /^\\*\[(?:remnic-origin=|remnic-meta-v1\])/i.test(value) ? `\\${value}` : value;
+}
+
+export function unescapeEntityTimelineText(value: string): string {
+  return /^\\+\[(?:remnic-origin=|remnic-meta-v1\])/i.test(value) ? value.slice(1) : value;
+}
 
 export function serializeEntityTimelineEntry(entry: EntityTimelineEntry): string {
   const tokens: string[] = [];
@@ -257,8 +278,12 @@ export function serializeEntityTimelineEntry(entry: EntityTimelineEntry): string
   if (entry.principal) {
     tokens.push(`[principal=${escapeEntityTimelineMetadataValue(entry.principal)}]`);
   }
+  if (entry.origin) {
+    tokens.push(`[${ENTITY_TIMELINE_METADATA_MARKER}]`);
+    tokens.push(`[remnic-origin=${escapeEntityTimelineMetadataValue(entry.origin)}]`);
+  }
   const serializedMetadata = tokens.length > 0 ? `${tokens.join(" ")} ` : "";
-  return `- ${serializedMetadata}${entry.text}`.trimEnd();
+  return `- ${serializedMetadata}${escapeEntityTimelineText(entry.text)}`.trimEnd();
 }
 
 export function dedupeEntityTimelineFacts(timeline: EntityTimelineEntry[]): string[] {
@@ -269,6 +294,32 @@ export function normalizeEntitySectionFact(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
+export function normalizeStructuredSectionFactsWithOrigins(
+  facts: string[],
+  factOrigins?: Array<string | undefined>,
+  defaultOrigin?: string,
+): Pick<EntityStructuredSection, "facts" | "factOrigins"> {
+  const normalizedFacts: string[] = [];
+  const origins: Array<string | undefined> = [];
+  const seen = new Map<string, number>();
+  for (const [index, fact] of facts.entries()) {
+    const normalized = normalizeEntitySectionFact(fact);
+    if (!normalized) continue;
+    const existingIndex = seen.get(normalized) ?? -1;
+    const origin = factOrigins?.[index] ?? defaultOrigin;
+    if (existingIndex >= 0) {
+      if (origins[existingIndex] !== origin) origins[existingIndex] = undefined;
+      continue;
+    }
+    seen.set(normalized, normalizedFacts.length);
+    normalizedFacts.push(normalized);
+    origins.push(origin);
+  }
+  return {
+    facts: normalizedFacts,
+    ...(origins.some((origin) => origin !== undefined) ? { factOrigins: origins } : {}),
+  };
+}
 export function normalizeStructuredSectionFacts(facts: string[]): string[] {
   return [...new Set(facts.map((fact) => normalizeEntitySectionFact(fact)).filter((fact) => fact.length > 0))];
 }
@@ -304,14 +355,22 @@ export function compileEntityFacts(
   return facts;
 }
 
-function parseEntityStructuredSectionFacts(lines: string[]): string[] {
+function parseEntityStructuredSectionFacts(
+  lines: string[],
+): Pick<EntityStructuredSection, "facts" | "factOrigins"> {
   const facts: string[] = [];
+  const factOrigins: Array<string | undefined> = [];
   let currentBlock: string[] = [];
+  let currentOrigin: string | undefined;
 
   const flushCurrentBlock = (): void => {
     const normalized = normalizeEntitySectionFact(currentBlock.join(" "));
-    if (normalized.length > 0) facts.push(normalized);
+    if (normalized.length > 0) {
+      facts.push(normalized);
+      factOrigins.push(currentOrigin);
+    }
     currentBlock = [];
+    currentOrigin = undefined;
   };
 
   for (const rawLine of lines) {
@@ -322,16 +381,29 @@ function parseEntityStructuredSectionFacts(lines: string[]): string[] {
     }
     if (line.startsWith("- ")) {
       flushCurrentBlock();
-      currentBlock = [line.slice(2).trim()];
+      const bullet = line.slice(2).trim();
+      const metadataPrefix = `[${ENTITY_TIMELINE_METADATA_MARKER}] `;
+      const hasMarker = bullet.startsWith(metadataPrefix);
+      const originStart = metadataPrefix.length;
+      const originPrefix = hasMarker && bullet.startsWith("[remnic-origin=", originStart);
+      const originEndOffset = originPrefix
+        ? findEntityTimelineTokenEnd(bullet.slice(originStart))
+        : -1;
+      const originEnd = originEndOffset >= 0 ? originEndOffset + originStart : -1;
+      const token = originEnd >= 0 ? bullet.slice(originStart + 15, originEnd) : "";
+      currentBlock = [originEnd >= 0
+        ? unescapeEntityTimelineText(bullet.slice(originEnd + 1).trimStart())
+        : unescapeEntityTimelineText(hasMarker ? bullet.slice(metadataPrefix.length) : bullet)];
+      currentOrigin = originEnd >= 0
+        ? unescapeEntityTimelineMetadataValue(token)
+        : undefined;
       continue;
     }
     currentBlock.push(line);
   }
-
   flushCurrentBlock();
-  return [...new Set(facts)];
+  return normalizeStructuredSectionFactsWithOrigins(facts, factOrigins);
 }
-
 function looksLikeStructuredSectionFactList(lines: string[]): boolean {
   const firstNonBlank = lines.find((line) => line.trim().length > 0)?.trim() ?? "";
   return firstNonBlank.startsWith("- ");
@@ -355,27 +427,35 @@ export function partitionEntityStructuredSections(
       remainingExtraSections.push(section);
       continue;
     }
-    const facts = parseEntityStructuredSectionFacts(section.lines);
-    if (!matchedSection && facts.length === 0) {
+    const parsedFacts = parseEntityStructuredSectionFacts(section.lines);
+    if (!matchedSection && parsedFacts.facts.length === 0) {
       remainingExtraSections.push(section);
       continue;
     }
     const normalizedSection = matchedSection
       ? { key: matchedSection.key, title: matchedSection.title }
       : normalizeEntityStructuredSection(entityType, { key: section.title, title: section.title }, entitySchemas);
-    if (facts.length === 0) {
+    if (parsedFacts.facts.length === 0) {
       remainingExtraSections.push(section);
       continue;
     }
     const existing = structuredSectionIndex.get(normalizedSection.key);
     if (existing) {
-      existing.facts = normalizeStructuredSectionFacts([...existing.facts, ...facts]);
+      const existingOrigins = existing.facts.map((_, index) => existing.factOrigins?.[index]);
+      const incomingOrigins = parsedFacts.facts.map((_, index) => parsedFacts.factOrigins?.[index]);
+      const merged = normalizeStructuredSectionFactsWithOrigins(
+        [...existing.facts, ...parsedFacts.facts],
+        [...existingOrigins, ...incomingOrigins],
+      );
+      existing.facts = merged.facts;
+      existing.factOrigins = merged.factOrigins;
       continue;
     }
     const structuredSection: EntityStructuredSection = {
       key: normalizedSection.key,
       title: normalizedSection.title,
-      facts: normalizeStructuredSectionFacts(facts),
+      facts: parsedFacts.facts,
+      ...(parsedFacts.factOrigins ? { factOrigins: parsedFacts.factOrigins } : {}),
     };
     structuredSections.push(structuredSection);
     structuredSectionIndex.set(normalizedSection.key, structuredSection);

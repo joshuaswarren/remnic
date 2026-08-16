@@ -185,11 +185,15 @@ import {
   collectStructuredSectionFacts,
   compareEntityTimestamps,
   compileEntityFacts,
+  ENTITY_TIMELINE_METADATA_MARKER,
+  escapeEntityTimelineMetadataValue,
+  escapeEntityTimelineText,
   isEntitySynthesisStale,
   isEntitySynthesisTimelinePromotionBullet,
   latestEntityTimelineTimestamp,
   normalizeEntitySectionFact,
   normalizeStructuredSectionFacts,
+  normalizeStructuredSectionFactsWithOrigins,
   parseEntityTimelineBullet,
   partitionEntityStructuredSections,
   serializeEntityTimelineEntry,
@@ -220,6 +224,7 @@ export {
   fingerprintEntityStructuredFacts,
   isEntitySynthesisStale,
   normalizeStructuredSectionFacts,
+  normalizeStructuredSectionFactsWithOrigins,
 } from "./storage/entity-timeline.js";
 import {
   type ProjectedMemoryBrowseOptions,
@@ -244,7 +249,6 @@ import {
 } from "./write-envelope.js";
 // stripCitation import removed: legacy rebuild fallback was replaced by a
 // skip-with-warning strategy (Finding 1 — Uhol).  See ensureFactHashIndexAuthoritative.
-
 type SharedVersionKind = "memory-status" | "artifact-write" | "cold-write" | "memory-corpus" | "entity-mutation";
 
 type OfflineSyncDigestCacheEntry = {
@@ -255,15 +259,12 @@ type OfflineSyncDigestCacheEntry = {
   sha256: string;
   bytes: number;
 };
-
-
 export interface ReextractJobRequest {
   memoryId: string;
   model: string;
   requestedAt: string;
   source: "cli-migrate";
 }
-
 export interface MemoryLifecycleEventWriteOptions {
   at?: Date;
   actor?: string;
@@ -272,7 +273,6 @@ export interface MemoryLifecycleEventWriteOptions {
   relatedMemoryIds?: string[];
   correlationId?: string;
 }
-
 /**
  * Validate a Memory Worth counter (`mw_success` / `mw_fail`) before we persist
  * it. Rejects non-finite, non-integer, and negative values rather than silently
@@ -1420,10 +1420,12 @@ export function serializeEntityFile(entity: EntityFile, entitySchemas?: PluginCo
   const structuredSections = sortStructuredSectionsBySchema(
     entity.type,
     (entity.structuredSections ?? [])
-      .map((section) => ({
-        ...section,
-        facts: normalizeStructuredSectionFacts(section.facts),
-      }))
+      .map((section) => {
+        const normalized = normalizeStructuredSectionFactsWithOrigins(section.facts, section.factOrigins);
+        const result = { ...section, ...normalized };
+        if (normalized.factOrigins === undefined) delete result.factOrigins;
+        return result;
+      })
       .filter((section) => section.facts.length > 0),
     entitySchemas
   );
@@ -1443,7 +1445,6 @@ export function serializeEntityFile(entity: EntityFile, entitySchemas?: PluginCo
   const synthesisStructuredFactCount = entity.synthesisStructuredFactCount;
   const synthesisStructuredFactDigest = entity.synthesisStructuredFactDigest?.trim() || "";
   const synthesisVersion = entity.synthesisVersion ?? (synthesis ? 1 : 0);
-
   const lines: string[] = [
     "---",
     `created: ${created}`,
@@ -1464,14 +1465,12 @@ export function serializeEntityFile(entity: EntityFile, entitySchemas?: PluginCo
     `**Updated:** ${updated}`,
     "",
   ];
-
   if ((entity.preSectionLines ?? []).length > 0) {
     lines.push(...(entity.preSectionLines ?? []));
     if (entity.preSectionLines?.[entity.preSectionLines.length - 1] !== "") {
       lines.push("");
     }
   }
-
   lines.push("## Synthesis", "");
   if (synthesis) {
     lines.push(synthesis);
@@ -1485,7 +1484,6 @@ export function serializeEntityFile(entity: EntityFile, entitySchemas?: PluginCo
     }
     lines.push("");
   }
-
   if (legacyFacts.length > 0) {
     lines.push("## Facts", "");
     for (const fact of legacyFacts) {
@@ -1493,15 +1491,17 @@ export function serializeEntityFile(entity: EntityFile, entitySchemas?: PluginCo
     }
     lines.push("");
   }
-
   for (const section of structuredSections) {
     lines.push(`## ${section.title}`, "");
-    for (const fact of section.facts) {
-      lines.push(`- ${fact}`);
+    for (const [index, fact] of section.facts.entries()) {
+      const origin = section.factOrigins?.[index];
+      const prefix = origin
+        ? `[${ENTITY_TIMELINE_METADATA_MARKER}] [remnic-origin=${escapeEntityTimelineMetadataValue(origin)}] `
+        : "";
+      lines.push(`- ${prefix}${escapeEntityTimelineText(fact)}`);
     }
     lines.push("");
   }
-
   // Connected to (optional)
   if (entity.relationships.length > 0) {
     lines.push("## Connected to", "");
@@ -1510,7 +1510,6 @@ export function serializeEntityFile(entity: EntityFile, entitySchemas?: PluginCo
     }
     lines.push("");
   }
-
   // Activity (optional)
   if (entity.activity.length > 0) {
     lines.push("## Activity", "");
@@ -4239,6 +4238,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       source?: string;
       sessionKey?: string;
       principal?: string;
+      origin?: string;
       structuredSections?: EntityStructuredSection[];
     } = {}
   ): Promise<string> {

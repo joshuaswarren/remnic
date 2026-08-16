@@ -40,11 +40,12 @@ import {
   countEntityStructuredFacts,
   fingerprintEntityStructuredFacts,
   normalizeEntityName as normalizeEntityNameShared,
-  normalizeStructuredSectionFacts,
+  normalizeStructuredSectionFactsWithOrigins,
   parseEntityFile,
   serializeEntityFile,
   StorageManager,
 } from "../storage.js";
+import { parseOriginClass } from "../security/origin-authority.js";
 
 export interface EntityStoreDeps {
   /** Live class object of the host instance — shared static caches (see storage.ts storageManagerClass). */
@@ -204,6 +205,7 @@ export class EntityStore {
       source?: string;
       sessionKey?: string;
       principal?: string;
+      origin?: string;
       structuredSections?: EntityStructuredSection[];
     } = {},
   ): Promise<string> {
@@ -223,6 +225,7 @@ export class EntityStore {
       source?: string;
       sessionKey?: string;
       principal?: string;
+      origin?: string;
       structuredSections?: EntityStructuredSection[];
     } = {},
   ): Promise<string> {
@@ -283,26 +286,35 @@ export class EntityStore {
     const source = options.source?.trim() || undefined;
     const sessionKey = options.sessionKey?.trim() || undefined;
     const principal = options.principal?.trim() || undefined;
+    const origin = options.origin?.trim() ? parseOriginClass(options.origin) : undefined;
     const structuredSectionMap = new Map(
       (entity.structuredSections ?? []).map((section) => [section.key, {
         ...section,
         facts: [...section.facts],
+        ...(section.factOrigins ? { factOrigins: [...section.factOrigins] } : {}),
       }]),
     );
     for (const section of options.structuredSections ?? []) {
       const normalizedSection = normalizeEntityStructuredSection(type, section, this.deps.entitySchemas);
-      const normalizedFacts = normalizeStructuredSectionFacts(section.facts);
-      if (normalizedFacts.length === 0) continue;
+      const normalized = normalizeStructuredSectionFactsWithOrigins(section.facts, section.factOrigins, origin);
+      if (normalized.facts.length === 0) continue;
       const existingSection = structuredSectionMap.get(normalizedSection.key);
       if (!existingSection) {
         structuredSectionMap.set(normalizedSection.key, {
           key: normalizedSection.key,
           title: normalizedSection.title,
-          facts: normalizedFacts,
+          ...normalized,
         });
         continue;
       }
-      existingSection.facts = normalizeStructuredSectionFacts([...existingSection.facts, ...normalizedFacts]);
+      const existingOrigins = existingSection.facts.map((_, index) => existingSection.factOrigins?.[index]);
+      const incomingOrigins = normalized.facts.map((_, index) => normalized.factOrigins?.[index]);
+      const merged = normalizeStructuredSectionFactsWithOrigins(
+        [...existingSection.facts, ...normalized.facts],
+        [...existingOrigins, ...incomingOrigins],
+      );
+      existingSection.facts = merged.facts;
+      existingSection.factOrigins = merged.factOrigins;
       if (!existingSection.title.trim() && normalizedSection.title.trim()) {
         existingSection.title = normalizedSection.title;
       }
@@ -314,6 +326,7 @@ export class EntityStore {
         ...(source ? { source } : {}),
         ...(sessionKey ? { sessionKey } : {}),
         ...(principal ? { principal } : {}),
+        ...(origin ? { origin } : {}),
       };
       const alreadyPresent = entity.timeline.some((entry) =>
         entry.timestamp === nextEntry.timestamp
@@ -321,6 +334,7 @@ export class EntityStore {
         && entry.source === nextEntry.source
         && entry.sessionKey === nextEntry.sessionKey
         && entry.principal === nextEntry.principal
+        && entry.origin === nextEntry.origin
       );
       if (alreadyPresent) continue;
       entity.timeline.push(nextEntry);
@@ -762,26 +776,44 @@ export class EntityStore {
               (mergedEntity.structuredSections ?? []).map((section) => [section.key, {
                 ...section,
                 facts: [...section.facts],
+                factOrigins: section.factOrigins ? [...section.factOrigins] : undefined,
               }]),
             );
             for (const section of parsed.structuredSections ?? []) {
               const existingSection = mergedStructuredSectionMap.get(section.key);
               if (!existingSection) {
+                const facts: string[] = [];
+                const factOrigins: Array<string | undefined> = [];
+                for (const [index, fact] of section.facts.entries()) {
+                  const trimmed = fact.trim();
+                  if (!trimmed || facts.includes(trimmed)) continue;
+                  facts.push(trimmed);
+                  factOrigins.push(section.factOrigins?.[index]);
+                }
                 mergedStructuredSectionMap.set(section.key, {
                   key: section.key,
                   title: section.title,
-                  facts: [...new Set(section.facts.map((fact) => fact.trim()).filter((fact) => fact.length > 0))],
+                  facts,
+                  factOrigins: section.factOrigins ? factOrigins : undefined,
                 });
                 continue;
               }
 
-              const mergedFacts = new Set(existingSection.facts.map((fact) => fact.trim()));
-              for (const fact of section.facts) {
+              if (section.factOrigins && !existingSection.factOrigins) {
+                existingSection.factOrigins = existingSection.facts.map(() => undefined);
+              }
+              for (const [index, fact] of section.facts.entries()) {
                 const trimmed = fact.trim();
                 if (!trimmed) continue;
-                mergedFacts.add(trimmed);
+                const existingIndex = existingSection.facts.indexOf(trimmed);
+                const origin = section.factOrigins?.[index];
+                if (existingIndex === -1) {
+                  existingSection.facts.push(trimmed);
+                  existingSection.factOrigins?.push(origin);
+                } else if (existingSection.factOrigins?.[existingIndex] !== origin) {
+                  existingSection.factOrigins?.splice(existingIndex, 1, undefined);
+                }
               }
-              existingSection.facts = Array.from(mergedFacts);
               if (!existingSection.title.trim() && section.title.trim()) {
                 existingSection.title = section.title;
               }
@@ -802,9 +834,8 @@ export class EntityStore {
           }
         }
 
-        // Deduplicate timeline entries and derive facts from the timeline.
-        const timelineKeys = new Set<string>();
-        mergedEntity.timeline = mergedEntity.timeline.filter((entry) => {
+        const timelineByKey = new Map<string, (typeof mergedEntity.timeline)[number]>();
+        for (const entry of mergedEntity.timeline) {
           const key = JSON.stringify([
             entry.timestamp,
             entry.source ?? "",
@@ -812,10 +843,14 @@ export class EntityStore {
             entry.principal ?? "",
             entry.text,
           ]);
-          if (timelineKeys.has(key)) return false;
-          timelineKeys.add(key);
-          return true;
-        });
+          const existing = timelineByKey.get(key);
+          if (!existing) {
+            timelineByKey.set(key, entry);
+          } else if (existing.origin !== entry.origin) {
+            existing.origin = undefined;
+          }
+        }
+        mergedEntity.timeline = [...timelineByKey.values()];
         // Deduplicate relationships by target+label
         const relKeys = new Set<string>();
         mergedEntity.relationships = mergedEntity.relationships.filter((r) => {
