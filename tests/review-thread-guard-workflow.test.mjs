@@ -69,6 +69,19 @@ test("check-unsticker uses the shared dedup evaluator and complete thread fields
   assert.match(workflow, /hasGateReply\(t\) \|\| resolvedById\.get\(rec\.canonicalId\) === true/);
 });
 
+test("check-unsticker only reruns the guard when its latest run failed", () => {
+  const workflow = readRepoFile(".github/workflows/check-unsticker.yml");
+  assert.match(workflow, /latestFailedGuardRuns\(guardRuns\)/);
+  assert.match(workflow, /effective unresolved threads are zero/);
+});
+
+test("scheduled check-unsticker runs at most one scheduler instance", () => {
+  const workflow = readRepoFile(".github/workflows/check-unsticker.yml");
+  assert.match(workflow, /cron: ['"]\*\/5 \* \* \* \*['"]/);
+  assert.match(workflow, /group: check-unsticker/);
+  assert.match(workflow, /cancel-in-progress: false/);
+});
+
 test("review-thread guard posts duplicate audit replies only in enforce mode", () => {
   const workflow = readRepoFile(".github/workflows/review-thread-guard.yml");
   assert.match(workflow, /if \(applyInheritance && dupRecords\.length > 0\)/);
