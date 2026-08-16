@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { openLcmDatabase, ensureLcmStateDir } from "./schema.js";
-import { LcmArchive, type LcmStructuredRecallMatch } from "./archive.js";
+import { LcmArchive, type LcmMessage, type LcmStructuredRecallMatch } from "./archive.js";
 import { LcmDag } from "./dag.js";
 import { LcmSummarizer, type SummarizeFn } from "./summarizer.js";
 import {
@@ -539,6 +539,23 @@ export class LcmEngine {
       turn_count: best.msg_end - best.msg_start + 1,
       depth: best.depth,
     };
+  }
+
+  /**
+   * Retrieve raw archived messages for a turn range (inclusive bounds),
+   * read-only and unshaped — no token-budget trimming (issue #2331
+   * episodic-context). Callers own truncation and cleaning.
+   */
+  async getTurnRange(
+    sessionId: string,
+    fromTurn: number,
+    toTurn: number,
+  ): Promise<LcmMessage[]> {
+    if (!this.config.enabled) return [];
+    const normalizedSessionId = normalizeLcmSessionId(sessionId);
+    if (!normalizedSessionId) return [];
+    await this.ensureInitialized();
+    return this.archive!.getMessages(normalizedSessionId, fromTurn, toTurn);
   }
 
   /** Retrieve raw messages for a turn range (lossless expansion). */

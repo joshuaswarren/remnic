@@ -13,6 +13,7 @@ import type { EvalShadowRecallRecord } from "../evals.js";
 import type { HarmonicRetrievalResult } from "../harmonic-retrieval.js";
 import type { StorageManager } from "../index.js";
 import type { LcmEngine } from "../lcm/index.js";
+import type { RecallResultFormatter } from "./recall-result-formatter.js";
 import type { NamespaceCatalog } from "../namespaces/catalog.js";
 import type { NamespaceStorageRouter } from "../namespaces/storage.js";
 import type { ObjectiveStateSearchResult } from "../objective-state.js";
@@ -248,6 +249,7 @@ export interface RecallInternalDeps {
   formatHarmonicRetrievalResults(
     results: HarmonicRetrievalResult[],
   ): string;
+  readonly recallResultFormatter: RecallResultFormatter;
   formatObjectiveStateResults(
     results: ObjectiveStateSearchResult[],
   ): string;

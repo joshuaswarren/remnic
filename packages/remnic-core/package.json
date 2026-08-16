@@ -2930,6 +2930,16 @@
       "remnic-source": "./src/types.ts",
       "import": "./dist/types.js"
     },
+    "./user-message-cleaning": {
+      "types": "./dist/user-message-cleaning.d.ts",
+      "remnic-source": "./src/user-message-cleaning.ts",
+      "import": "./dist/user-message-cleaning.js"
+    },
+    "./user-message-cleaning.js": {
+      "types": "./dist/user-message-cleaning.d.ts",
+      "remnic-source": "./src/user-message-cleaning.ts",
+      "import": "./dist/user-message-cleaning.js"
+    },
     "./user-model": {
       "types": "./dist/user-model.d.ts",
       "remnic-source": "./src/user-model.ts",

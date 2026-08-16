@@ -384,6 +384,37 @@ export class RecallResultFormatter {
     return `## Harmonic Retrieval\n\n${lines.join("\n\n")}`;
   }
 
+  /**
+   * Render grouped raw-turn episodes for the top recalled facts (issue #2331).
+   * Returns `null` for zero episodes so the section is omitted entirely —
+   * never an empty header.
+   */
+  formatEpisodicContext(
+    episodes: ReadonlyArray<{
+      sessionKey: string;
+      fromTurn: number;
+      toTurn: number;
+      memoryIds: readonly string[];
+      turns: ReadonlyArray<{ role: string; content: string }>;
+    }>,
+  ): string | null {
+    if (episodes.length === 0) return null;
+    const blocks = episodes.map((episode) => {
+      const shortKey =
+        episode.sessionKey.length > 8
+          ? `${episode.sessionKey.slice(0, 8)}…`
+          : episode.sessionKey;
+      const header =
+        `### Episode: ${shortKey} turns ${episode.fromTurn}-${episode.toTurn - 1} ` +
+        `(supports [${episode.memoryIds.join(", ")}])`;
+      const lines = episode.turns.map(
+        (turn) => `${turn.role}: ${turn.content}`,
+      );
+      return [header, ...lines].join("\n");
+    });
+    return `## Source Episodes\n\n${blocks.join("\n\n")}`;
+  }
+
   formatWorkProductResults(
     results: WorkProductLedgerSearchResult[],
   ): string {

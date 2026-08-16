@@ -70,9 +70,9 @@ import { isDisagreementPrompt } from "../signal.js";
 import { buildTargetedFactRecallSection, shouldRecallTargetedFactEvidence } from "../targeted-fact-recall.js";
 import { shouldFilterSupersededFromRecall } from "../temporal-supersession.js";
 import { queryTemporalTimelineAsync } from "../temporal-index.js";
-import { buildTemporalTimelineRecallSection, type TemporalTimelineRecallItem } from "../temporal-timeline-recall.js";
-import { isValidAsOf } from "../temporal-validity.js";
 import { type TrustStageResultItem, projectTrustForXray } from "../trust-score-stage.js";
+import { isValidAsOf } from "../temporal-validity.js";
+import { buildTemporalTimelineRecallSection, type TemporalTimelineRecallItem } from "../temporal-timeline-recall.js";
 import { searchTrustZoneRecords } from "../trust-zones.js";
 import type { IdentityInjectionMode, MemoryFile, QmdSearchResult, RecallPlanMode } from "../types.js";
 import { type VerifiedEpisodeResult, compareVerifiedEpisodeResults, searchVerifiedEpisodes } from "../verified-recall.js";
@@ -105,6 +105,7 @@ import {
   type RecallResultPartitionSink,
 } from "./recall-rerank-coordinator.js";
 import type { RecallInternalDeps } from "./recall-internal-deps.js";
+import { appendEpisodicContextSection } from "./episodic-context-section.js";
 import { resolveCompositeProfileStorage } from "./recall-profile-storage.js";
 
 export class RecallInternalCoordinator {
@@ -469,29 +470,16 @@ export class RecallInternalCoordinator {
       scopeProfilePlan,
       lcmReadSessionIds,
     } = scopePlan;
-    // Query an LCM-backed read across the ordered read key set and return the
-    // FIRST non-empty result (#1505 fallback-namespace unification). The primary
-    // overlay key is tried first; if a branch-scoped session has no rows under its
-    // branch key, the project / root fallback keys are tried in order.
-    //
-    // #1505 codex P2 ("Merge LCM fallback reads instead of short-circuiting"): the
-    // query-SCORED sections (explicit-cue, targeted-facts, focused-list,
-    // response-guidance, event-order, structured message-parts) no longer use this
-    // helper — they MERGE candidates across EVERY authorized key under their single
-    // budget (a weak primary-key hit must not mask stronger fallback evidence; the
-    // section builders take `sessionIds`, structured-parts merges inline below).
-    // This first-non-empty helper now serves ONLY the compressed-history section,
-    // which is a per-session HOLISTIC DAG narrative with no per-item id to merge or
-    // dedupe on — see its call site for the rationale.
-    //
-    // When the set is a single key (single-user / no-overlay / explicit-namespace),
-    // this is exactly one call — unchanged. `lcmSessionId` is `string | undefined`:
-    // a legacy SESSIONLESS recall yields the single `undefined` key so the read
-    // runs ONE archive-wide read with no `session_id` filter (pre-#1505 behavior).
-    // Hosted scope profiles are stricter: without a session key there is no
-    // namespace-scoped LCM key to query, so the key set stays empty and LCM cannot
-    // bypass the profile read stack via an archive-wide read. NEVER the literal
-    // "default" session id (codex P2).
+    // `firstNonEmptyLcmRead`: query the ordered LCM read key set, return the
+    // FIRST non-empty result (#1505). The query-SCORED sections no longer use
+    // it — they MERGE candidates across every authorized key (a weak primary
+    // hit must not mask stronger fallback evidence); this helper now serves
+    // only compressed-history, a holistic per-session DAG narrative with no
+    // per-item id to merge on. A single-key set is exactly one call. A legacy
+    // SESSIONLESS recall yields one `undefined` key: one archive-wide read,
+    // no `session_id` filter. Hosted scope profiles without a session key get
+    // an EMPTY key set, so LCM cannot bypass the profile read stack. NEVER
+    // the literal "default" session id (codex P2).
     const firstNonEmptyLcmRead = async <T>(
       read: (lcmSessionId: string | undefined) => Promise<T>,
       isEmpty: (value: T) => boolean,
@@ -4926,6 +4914,13 @@ export class RecallInternalCoordinator {
       recallPlan: timings.recallPlan,
       queryPolicy: timings.queryPolicy,
     });
+    // Episodic context (#2331): opt-in raw-turn episodes for the top recalled
+    // facts; flag off is a no-op so recall output stays byte-identical.
+    await appendEpisodicContextSection(this.deps, {
+      sectionBuckets, recalledMemoryPaths, recalledMemoryNamespaces, scopePlan, namespacesEnabled,
+      enrichmentSectionDeadlineMs, recallOuterTimeoutMs, recallStart,
+      recordMetric: recordRecallSectionMetric, abortSignal: options.abortSignal,
+    });
     const recallBudgetChars = this.deps.getRecallBudgetChars(options.budgetCharsOverride);
     const assembledRecall = this.deps.assembleRecallSections(
       sectionBuckets, contextBudgetForFooter(recallBudgetChars, curiosityFooter),
@@ -5326,4 +5321,5 @@ export class RecallInternalCoordinator {
       closeProfileTrace();
     }
   }
+
 }

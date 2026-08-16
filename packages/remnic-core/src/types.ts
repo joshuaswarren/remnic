@@ -631,7 +631,6 @@ export interface DependencyPropagationConfig {
   dryRun: boolean;
 }
 
-
 export interface HeartbeatConfig {
   enabled: boolean;
   journalPath: string;
@@ -1408,6 +1407,7 @@ export interface PluginConfig extends BoundedJsonlStateConfig, SecurityConfig {
   harmonicRetrievalEnabled: boolean;
   abstractionAnchorsEnabled: boolean;
   abstractionNodeStoreDir: string;
+  episodicContextEnabled: boolean;
   // Episodic/semantic split foundation
   verifiedRecallEnabled: boolean;
   semanticRulePromotionEnabled: boolean;

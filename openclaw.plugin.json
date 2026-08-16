@@ -2154,6 +2154,11 @@
         "default": false,
         "description": "Enable HiMem episode/note classification (v8.0 Phase 2B). Tags each extracted memory as 'episode' (time-specific event) or 'note' (stable belief/preference). Disabled by default."
       },
+      "episodicContextEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Inject episode-grouped raw source turns for the top recalled facts (issue #2331). Reads the structured `sources` provenance of recalled facts, resolves it to LCM archive turn ranges, and appends a compact `Source Episodes` section within the existing recall budget. Facts without structured provenance are skipped."
+      },
       "evalHarnessEnabled": {
         "type": "boolean",
         "default": false,
@@ -7434,6 +7439,10 @@
     "harmonicRetrievalEnabled": {
       "label": "Harmonic Retrieval",
       "help": "Enable harmonic retrieval blending over abstraction nodes and cue anchors, including recall-section assembly and harmonic-search diagnostics."
+    },
+    "episodicContextEnabled": {
+      "label": "Episodic Context",
+      "help": "Inject episode-grouped raw source turns for the top recalled facts as a compact Source Episodes section."
     },
     "abstractionAnchorsEnabled": {
       "label": "Abstraction Anchors",
