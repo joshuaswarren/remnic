@@ -20,13 +20,26 @@ if [[ $git_common_dir != /* ]]; then
   git_common_dir=$repo_root/$git_common_dir
 fi
 git_common_dir=$(cd -- "$git_common_dir" && pwd -P)
-# Serialize helper invocations so ownership checks cannot race another helper.
 lock_path=$git_common_dir/dev-worktree.lock
 if ! mkdir -- "$lock_path" 2>/dev/null; then
-  printf 'Another worktree quickstart is already running for this repository.\n' >&2
-  exit 1
+  owner_pid=
+  if [[ -r $lock_path/pid ]]; then
+    IFS= read -r owner_pid <"$lock_path/pid"
+  fi
+  if [[ $owner_pid =~ ^[0-9]+$ ]] && ! kill -0 "$owner_pid" 2>/dev/null; then
+    rm -f -- "$lock_path/pid"
+    if ! rmdir -- "$lock_path" || ! mkdir -- "$lock_path" 2>/dev/null; then
+      printf 'Could not reclaim the previous worktree quickstart lock.\n' >&2
+      exit 1
+    fi
+  else
+    printf 'Another worktree quickstart is already running for this repository.\n' >&2
+    exit 1
+  fi
 fi
+printf '%s\n' "$$" >"$lock_path/pid"
 release_lock() {
+  rm -f -- "$lock_path/pid"
   rmdir -- "$lock_path" >/dev/null 2>&1 || true
 }
 trap release_lock EXIT
@@ -100,6 +113,12 @@ fi
 branch_existed_before=0
 if git -C "$repo_root" show-ref --verify --quiet "refs/heads/$branch"; then
   branch_existed_before=1
+  printf 'Refusing to clobber existing branch: %s\n' "$branch" >&2
+  exit 1
+fi
+if ! git -C "$repo_root" branch "$branch" "$base" >/dev/null; then
+  printf 'Could not create branch: %s\n' "$branch" >&2
+  exit 1
 fi
 cleanup() {
   if (( ! worktree_registered_before )); then
@@ -116,7 +135,26 @@ cleanup() {
 trap cleanup EXIT
 
 printf 'Creating worktree at %s from %s on branch %s\n' "$worktree_path" "$base" "$branch"
-git -C "$repo_root" worktree add -b "$branch" "$worktree_path" "$base"
+git -C "$repo_root" worktree add "$worktree_path" "$branch"
+mkdir -p -- "$worktree_path/.claude"
+if [[ -f $repo_root/.claude/napkin.md ]]; then
+  cp -- "$repo_root/.claude/napkin.md" "$worktree_path/.claude/napkin.md"
+else
+  printf '%s\n' \
+    '# Napkin' \
+    '' \
+    '## Corrections' \
+    '| Date | Source | What Went Wrong | What To Do Instead |' \
+    '|---|---|---|---|' \
+    '' \
+    '## User Preferences' \
+    '' \
+    '## Patterns That Work' \
+    '' \
+    '## Patterns That Do Not Work' \
+    '' \
+    '## Domain Notes' >"$worktree_path/.claude/napkin.md"
+fi
 
 printf 'Installing packages with pnpm@10.32.1\n'
 if ! (

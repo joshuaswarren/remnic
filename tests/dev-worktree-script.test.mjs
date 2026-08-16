@@ -61,6 +61,7 @@ test("creates an installed worktree and runs the smoke check at an absolute path
 
     assert.equal(result.status, 0, result.stderr);
     assert.equal(git("-C", worktreePath, "branch", "--show-current"), branch);
+    assert.equal(existsSync(path.join(worktreePath, ".claude", "napkin.md")), true);
     assert.match(result.stdout, /Worktree ready/);
     assert.match(result.stdout, new RegExp(`Next steps[\\s\\S]*${branch}`));
     const calls = readFileSync(fixture.log, "utf8");
