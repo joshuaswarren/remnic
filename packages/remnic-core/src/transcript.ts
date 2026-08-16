@@ -462,8 +462,6 @@ export class TranscriptManager {
     const { dir, alternateDir, legacyDir, readbackDirs } = this.getTranscriptPath(sessionKey);
     let bytes = 0;
     let tokens = 0;
-
-    // Maintain byte and script-aware token estimates in one incremental cache.
     try {
       const files = await this.getSessionStorageFiles(
         this.transcriptsDir,
@@ -487,7 +485,6 @@ export class TranscriptManager {
             bytes += estimate.bytes;
             tokens += estimate.tokens;
           } catch {
-            // fail-open
           }
         }
         this.sessionFootprintCache.set(sessionKey, { totalBytes: bytes, totalTokens: tokens, fileBytes, fileSizes, fileTokens });
@@ -517,7 +514,6 @@ export class TranscriptManager {
             bytes += estimate.bytes;
             tokens += estimate.tokens;
           } catch {
-            // fail-open
           }
         }
 
@@ -539,7 +535,6 @@ export class TranscriptManager {
               tokens += estimate.tokens - previousEstimate.tokens;
             }
           } catch {
-            // fail-open
           }
         }
 
@@ -549,7 +544,6 @@ export class TranscriptManager {
         cached.totalTokens = tokens;
       }
     } catch {
-      // fail-open
       this.sessionFootprintCache.delete(sessionKey);
     }
 
@@ -582,9 +576,6 @@ export class TranscriptManager {
     }
   }
 
-  /**
-   * Check if a file is a legacy flat transcript file (YYYY-MM-DD.jsonl format).
-   */
   private isLegacyTranscriptFile(filename: string): boolean {
     return /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(filename);
   }
@@ -1117,8 +1108,6 @@ export class TranscriptManager {
       formattedEntries.push(`[${timeStr}] ${roleLabel}: ${entry.content}`);
     }
 
-    // Build output, trimming from the beginning if too long.
-    // Keep the most recent context and count it with the shared estimator.
     let totalTokens = estimateTokenCount(lines.join("\n"));
     const selectedEntries: string[] = [];
 
