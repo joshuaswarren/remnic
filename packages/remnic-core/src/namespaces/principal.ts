@@ -1,7 +1,7 @@
 import { resolveNamespaceCapabilities } from "../capabilities.js";
 import type { PluginConfig } from "../types.js";
 import { isLikelyUnsafeRegex } from "../routing/engine.js";
-
+import { normalizeNamespaceIdentity } from "./identity.js";
 const MAX_REGEX_SESSION_KEY_LENGTH = 512;
 
 function compileSafePrincipalRegex(pattern: string): RegExp | null {
@@ -54,16 +54,21 @@ export function resolvePrincipal(sessionKey: string | undefined, config: PluginC
 export function canReadNamespace(principal: string | undefined, namespace: string, config: PluginConfig): boolean {
   if (!resolveNamespaceCapabilities(config).namespaces) return true;
   if (!principal) return false;
-  const policy = config.namespacePolicies.find((p) => p.name === namespace);
-  if (!policy) return namespace === config.defaultNamespace || namespace === config.sharedNamespace;
+  const identity = normalizeNamespaceIdentity(namespace);
+  const policy = config.namespacePolicies.find((p) => normalizeNamespaceIdentity(p.name) === identity);
+  if (!policy) {
+    return identity === normalizeNamespaceIdentity(config.defaultNamespace) ||
+      identity === normalizeNamespaceIdentity(config.sharedNamespace);
+  }
   return policy.readPrincipals.includes(principal) || policy.readPrincipals.includes("*");
 }
 
 export function canWriteNamespace(principal: string | undefined, namespace: string, config: PluginConfig): boolean {
   if (!resolveNamespaceCapabilities(config).namespaces) return true;
   if (!principal) return false;
-  const policy = config.namespacePolicies.find((p) => p.name === namespace);
-  if (!policy) return namespace === config.defaultNamespace;
+  const identity = normalizeNamespaceIdentity(namespace);
+  const policy = config.namespacePolicies.find((p) => normalizeNamespaceIdentity(p.name) === identity);
+  if (!policy) return identity === normalizeNamespaceIdentity(config.defaultNamespace);
   return policy.writePrincipals.includes(principal) || policy.writePrincipals.includes("*");
 }
 
@@ -87,8 +92,9 @@ export function isNamespacePolicyCovered(namespace: string, config: PluginConfig
   // An explicit policy wins over the default fallback (exactly as
   // canWriteNamespace), so a policy naming the default with no writers is NOT
   // covered. Only fall back to defaultNamespace when no policy matches.
-  const policy = config.namespacePolicies.find((p) => p.name === namespace);
-  if (!policy) return namespace === config.defaultNamespace;
+  const identity = normalizeNamespaceIdentity(namespace);
+  const policy = config.namespacePolicies.find((p) => normalizeNamespaceIdentity(p.name) === identity);
+  if (!policy) return identity === normalizeNamespaceIdentity(config.defaultNamespace);
   return policy.writePrincipals.some((w) => w.trim().length > 0);
 }
 
@@ -102,10 +108,11 @@ export function isNamespacePolicyCovered(namespace: string, config: PluginConfig
 export function defaultNamespaceForPrincipal(principal: string | undefined, config: PluginConfig): string {
   if (!resolveNamespaceCapabilities(config).namespaces) return config.defaultNamespace;
   if (!principal) return config.defaultNamespace;
-  const exists = config.namespacePolicies.some((p) => p.name === principal);
+  const exists = config.namespacePolicies.some(
+    (p) => normalizeNamespaceIdentity(p.name) === normalizeNamespaceIdentity(principal),
+  );
   return exists ? principal : config.defaultNamespace;
 }
-
 export function recallNamespacesForPrincipal(principal: string | undefined, config: PluginConfig): string[] {
   const out: string[] = [];
   if (!resolveNamespaceCapabilities(config).namespaces) return [config.defaultNamespace];

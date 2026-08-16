@@ -6,7 +6,11 @@ import { StorageManager } from "../storage.js";
 import { keyring, secureStoreDir } from "../secure-store/index.js";
 import type { PluginConfig } from "../types.js";
 import { ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
-import { namespaceIdentityToken, normalizeNamespaceIdentity } from "./identity.js";
+import {
+  namespaceIdentityLegacyToken,
+  namespaceIdentityToken,
+  normalizeNamespaceIdentity,
+} from "./identity.js";
 import type { NamespaceCatalog } from "./catalog.js";
 import { MutationSerializer } from "../utils/serialize-mutations.js";
 
@@ -192,15 +196,28 @@ export async function resolveNamespaceStorageRoot(
   if (normalizeNamespaceIdentity(namespace) === normalizeNamespaceIdentity(config.defaultNamespace)) {
     return resolveDefaultNamespaceRoot(config);
   }
-  const legacyRoot = resolveNamespaceDir(config.memoryDir, namespace);
-  const tokenizedRoot = resolveNamespaceDir(config.memoryDir, namespaceIdentityToken(namespace));
-  if (
-    (await exists(tokenizedRoot)) &&
-    (await hasAnyNamespaceStorageMarker(tokenizedRoot, { includeRuntimeState: true }))
-  ) {
-    return tokenizedRoot;
+  const normalized = normalizeNamespaceIdentity(namespace);
+  const legacyRoot = resolveNamespaceDir(config.memoryDir, normalized);
+  const legacyNfdNamespace = normalized.normalize("NFD");
+  const legacyNfdRoot = legacyNfdNamespace === normalized
+    ? null
+    : resolveNamespaceDir(config.memoryDir, legacyNfdNamespace);
+  const tokenizedRoot = resolveNamespaceDir(config.memoryDir, namespaceIdentityToken(normalized));
+  const legacyTokenRoot = resolveNamespaceDir(
+    config.memoryDir,
+    namespaceIdentityLegacyToken(legacyNfdNamespace),
+  );
+  for (const candidate of [tokenizedRoot, legacyTokenRoot]) {
+    if (
+      (await exists(candidate)) &&
+      (await hasAnyNamespaceStorageMarker(candidate, { includeRuntimeState: true }))
+    ) {
+      return candidate;
+    }
   }
-  return (await exists(legacyRoot)) ? legacyRoot : tokenizedRoot;
+  if (await exists(legacyRoot)) return legacyRoot;
+  if (legacyNfdRoot && (await exists(legacyNfdRoot))) return legacyNfdRoot;
+  return tokenizedRoot;
 }
 
 export class NamespaceStorageRouter {

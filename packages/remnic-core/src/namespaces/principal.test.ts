@@ -12,8 +12,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { canReadNamespace, isNamespacePolicyCovered, resolvePrincipal } from "./principal.js";
 import type { PluginConfig } from "../types.js";
+import { canReadNamespace, canWriteNamespace, isNamespacePolicyCovered, resolvePrincipal } from "./principal.js";
 
 // ──────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -284,4 +284,13 @@ test("isNamespacePolicyCovered: an explicit default-namespace policy overrides t
   assert.equal(isNamespacePolicyCovered("default", blankDefault), false);
   const grantedDefault = makeConfig(true, [{ name: "default", readPrincipals: [], writePrincipals: ["alice"] }]);
   assert.equal(isNamespacePolicyCovered("default", grantedDefault), true);
+});
+
+test("namespace ACL matches canonically equivalent Unicode identities", () => {
+  const config = makeConfig(true, [
+    { name: "Cafe\u0301", readPrincipals: ["reader"], writePrincipals: ["writer"] },
+  ]);
+
+  assert.equal(canReadNamespace("reader", "Café", config), true);
+  assert.equal(canWriteNamespace("writer", "Café", config), true);
 });

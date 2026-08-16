@@ -12,10 +12,7 @@ test("isSafeRouteNamespace accepts Unicode letters and NFC-normalizes before val
   assert.equal(isSafeRouteNamespace("界".repeat(42)), true);
   assert.equal(isSafeRouteNamespace("界".repeat(43)), false);
 
-  const target = validateRouteTarget(
-    { namespace: "Cafe\u0301" },
-    { allowedNamespaces: ["Café"] },
-  );
+  const target = validateRouteTarget({ namespace: "Cafe\u0301" }, { allowedNamespaces: ["Café"] });
   assert.deepEqual(target, {
     ok: true,
     target: { namespace: "Café" },
@@ -23,16 +20,7 @@ test("isSafeRouteNamespace accepts Unicode letters and NFC-normalizes before val
 });
 
 test("isSafeRouteNamespace rejects traversal, controls, bidi overrides, and edge whitespace", () => {
-  for (const unsafe of [
-    "../escape",
-    "a/b",
-    "a\\b",
-    "a\u0000b",
-    "a\u202Eb",
-    " name",
-    "name ",
-    "..",
-  ]) {
+  for (const unsafe of ["../escape", "a/b", "a\\b", "a\u0000b", "a\u202Eb", " name", "name ", ".."]) {
     assert.equal(isSafeRouteNamespace(unsafe), false, JSON.stringify(unsafe));
   }
 });
