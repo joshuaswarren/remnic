@@ -117,6 +117,7 @@ record_reviewer_neutral() {
       *"|${login}|"*)
         REVIEWER_PRESENT["$group"]=1
         REVIEWER_NEUTRAL_EVIDENCE["$group"]="$evidence"
+        REVIEWER_NEGATIVE_EVIDENCE["$group"]=""
         return 0
         ;;
     esac
@@ -128,6 +129,8 @@ record_reviewer_negative() {
   for group in "${REVIEWER_GROUPS[@]}"; do
     case "|${group}|" in
       *"|${login}|"*)
+        REVIEWER_PRESENT["$group"]=0
+        REVIEWER_NEUTRAL_EVIDENCE["$group"]=""
         REVIEWER_NEGATIVE_EVIDENCE["$group"]="$verdict"
         return 0
         ;;
@@ -262,7 +265,6 @@ reset_reviewer() {
       *"|${login}|"*)
         REVIEWER_PRESENT["$group"]=0
         REVIEWER_NEUTRAL_EVIDENCE["$group"]=""
-        REVIEWER_NEGATIVE_EVIDENCE["$group"]=""
         return 0
         ;;
     esac
