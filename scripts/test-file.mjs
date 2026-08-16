@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { ensurePackageBuild } from "./build-staleness.mjs";
+import { isAnySourceNewerThan } from "./build-staleness.mjs";
 import { appendNodeOption } from "./root-test-runner-env.mjs";
 import {
   loadNativeManifest,
@@ -37,8 +37,17 @@ const files = fileArgs.map((fileArg) => {
   return filePath;
 });
 
-ensurePackageBuild(
-  repoRoot,
+function ensureBuild(pkgName, distPath, sourcePaths) {
+  if (existsSync(distPath) && !isAnySourceNewerThan(sourcePaths, distPath)) return;
+  const build = spawnSync(
+    process.execPath,
+    [join(repoRoot, "scripts", "pnpm.mjs"), "--filter", pkgName, "build"],
+    { cwd: repoRoot, stdio: "inherit" },
+  );
+  if (build.status !== 0) process.exit(build.status ?? 1);
+}
+
+ensureBuild(
   "@remnic/core",
   join(repoRoot, "packages", "remnic-core", "dist", "index.js"),
   [
@@ -49,8 +58,7 @@ ensurePackageBuild(
   ],
 );
 
-ensurePackageBuild(
-  repoRoot,
+ensureBuild(
   "@remnic/bench",
   join(repoRoot, "packages", "bench", "dist", "index.js"),
   [
@@ -60,6 +68,7 @@ ensurePackageBuild(
     join(repoRoot, "packages", "bench", "tsconfig.json"),
   ],
 );
+
 let filesToRun = files;
 let nativeProbe = probeBetterSqlite3(repoRoot);
 if (!nativeProbe.ok) {
@@ -104,13 +113,11 @@ process.on("exit", cleanupTestRunScratchDir);
 let testProcess;
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.on(signal, () => {
-    cleanupTestRunScratchDir();
-    if (testProcess && !testProcess.killed) {
-      testProcess.kill(signal);
-      return;
-    }
+    if (testProcess && !testProcess.killed) testProcess.kill(signal);
     process.removeAllListeners(signal);
-    process.kill(process.pid, signal);
+    cleanupTestRunScratchDir();
+    process.exitCode = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }[signal] ?? 1;
+    process.exit(process.exitCode);
   });
 }
 
