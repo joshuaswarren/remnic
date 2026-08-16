@@ -22,9 +22,9 @@ test("root typecheck covers package tsconfigs", () => {
   const rootPkg = readJson<PackageJson>(join(repoRoot, "package.json"));
   const rootCheckTypes = rootPkg.scripts?.["check-types"] ?? "";
 
-  assert.match(rootCheckTypes, /\bpnpm --filter @remnic\/core build\b/);
+  assert.match(rootCheckTypes, /\bnode scripts\/pnpm\.mjs --filter @remnic\/core build\b/);
   assert.match(rootCheckTypes, /\btsc --noEmit\b/);
-  assert.match(rootCheckTypes, /\bpnpm --recursive\b/);
+  assert.match(rootCheckTypes, /\bnode scripts\/pnpm\.mjs --recursive\b/);
   assert.match(rootCheckTypes, /--if-present/);
   assert.match(rootCheckTypes, /--filter="\.\/packages\/\*"/);
   assert.doesNotMatch(rootCheckTypes, /--filter '\.\/packages\/\*'/);
