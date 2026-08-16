@@ -23,6 +23,7 @@ test("counts Thai combining marks in wide-script text", () => {
   assert.equal(estimateTokenCount("ที่"), 3);
 });
 
-test("counts astral code points once", () => {
-  assert.equal(estimateTokenCount("😀😀😀😀"), 1);
+test("counts token-dense Indic code points and emoji", () => {
+  assert.equal(estimateTokenCount("नमस्ते"), 6);
+  assert.equal(estimateTokenCount("😀😀😀😀"), 4);
 });
