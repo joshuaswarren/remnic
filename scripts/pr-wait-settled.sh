@@ -100,6 +100,12 @@ is_current_sha() {
   [[ -n "$commit" && ( "$HEAD_SHA" == "$commit"* || "$commit" == "$HEAD_SHA"* ) ]]
 }
 
+is_fresh_reaction() {
+  local created_at="$1"
+  [[ -n "${HEAD_VISIBLE_AT:-}" && -n "$created_at" &&
+    ( "$created_at" == "$HEAD_VISIBLE_AT" || "$created_at" > "$HEAD_VISIBLE_AT" ) ]]
+}
+
 record_reviewer() {
   local login="$1"
   local group
@@ -114,15 +120,21 @@ fetch_and_evaluate() {
   OUTSTANDING=()
   declare -A REVIEWER_PRESENT=()
   API_ERRORS=()
-  LEDGER_COMPLETE=false
-  HEAD_SHA=""
+  HEAD_VISIBLE_AT=""
+  SKIP_CURSOR=false
   if ! HEAD_SHA=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid 2>/dev/null); then
     API_ERRORS+=("head")
     append_item "api:head"
     return
   fi
+  local pr_meta
+  if pr_meta=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json author,files 2>/dev/null); then
+    if [[ "$(jq -r 'if (.author.login == "dependabot[bot]" and (.files | length) > 0 and all(.files[]; (.path // "" | split("/")[-1]) as $base | ["package.json", "package-lock.json", "pnpm-lock.yaml", "requirements.txt"] | index($base) != null)) then "true" else "false" end' <<< "$pr_meta")" == true ]]; then
+      SKIP_CURSOR=true
+    fi
+  fi
 
-  local checks_raw reviews_raw comments_raw issue_comments_raw check_runs_raw
+  local checks_raw reviews_raw issue_comments_raw check_runs_raw
   checks_raw="$(gh pr checks "$PR_NUMBER" --repo "$REPO" --required --json name,state 2>/dev/null || true)"
   if [[ -z "$checks_raw" ]]; then
     API_ERRORS+=("checks")
@@ -131,32 +143,32 @@ fetch_and_evaluate() {
     declare -A CHECK_STATES=()
     while IFS=$'\t' read -r check_name check_state; do
       [[ -n "$check_name" ]] || continue
-      CHECK_STATES["$check_name"]="${check_state^^}"
+      CHECK_STATES["$check_name"]+="${check_state^^}"$'\n'
     done < <(jq -r '.[] | [.name, (.state // "unknown")] | @tsv' <<< "$checks_raw")
     for check_name in "${!CHECK_STATES[@]}"; do
-      case "${CHECK_STATES[$check_name]}" in
-        SUCCESS|NEUTRAL|SKIPPED) ;;
-        *) append_item "check:${check_name}(${CHECK_STATES[$check_name]})" ;;
-      esac
+      local has_pass=false first_state=""
+      while IFS= read -r check_state; do
+        [[ -n "$first_state" ]] || first_state="$check_state"
+        case "$check_state" in
+          SUCCESS|NEUTRAL|SKIPPED) has_pass=true ;;
+        esac
+      done <<< "${CHECK_STATES[$check_name]}"
+      [[ "$has_pass" == true ]] || append_item "check:${check_name}(${first_state})"
     done
   fi
 
-  if ! reviews_raw=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --paginate --jq '.[] | [.user.login, (.commit_id // "")] | @tsv' 2>/dev/null); then
+  if ! reviews_raw=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --paginate --jq '.[] | [.user.login, (.commit_id // ""), (.state // ""), (.body // "" | gsub("[\r\n\t]"; " "))] | @tsv' 2>/dev/null); then
     API_ERRORS+=("reviews")
     append_item "api:reviews"
   else
-    while IFS=$'\t' read -r login commit; do
-      is_current_sha "$commit" && record_reviewer "$login"
+    while IFS=$'\t' read -r login commit state body; do
+      if is_current_sha "$commit" &&
+        [[ "$state" == "APPROVED" ||
+          ( "$state" == "COMMENTED" &&
+            "$body" =~ [Nn]o[[:space:]]+(major[[:space:]]+)?issues|[Aa]pproved|[Ll]ooks[[:space:]]+good ) ]]; then
+        record_reviewer "$login"
+      fi
     done <<< "$reviews_raw"
-  fi
-
-  if ! comments_raw=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments" --paginate --jq '.[] | [.user.login, (.commit_id // "")] | @tsv' 2>/dev/null); then
-    API_ERRORS+=("review-comments")
-    append_item "api:review-comments"
-  else
-    while IFS=$'\t' read -r login commit; do
-      is_current_sha "$commit" && record_reviewer "$login"
-    done <<< "$comments_raw"
   fi
 
   if ! issue_comments_raw=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate --jq '.[] | [.user.login, (.body // "" | gsub("[\r\n\t]"; " "))] | @tsv' 2>/dev/null); then
@@ -164,20 +176,31 @@ fetch_and_evaluate() {
     append_item "api:issue-comments"
   else
     while IFS=$'\t' read -r login body; do
-      if [[ "$login" == "github-actions[bot]" || "$login" == "github-actions" ]] &&
-        [[ "$body" == *"remnic-review-round:v1"* &&
-          "$body" == *"\"headSha\":\"${HEAD_SHA}\""* &&
-          "$body" == *"\"status\":\"closed\""* &&
-          "$body" == *"\"closeReason\":\"round-complete\""* ]]; then
-        LEDGER_COMPLETE=true
-      fi
-      if [[ "$login" == "chatgpt-codex-connector[bot]" || "$login" == "chatgpt-codex-connector" ]]; then
-        if [[ "$body" =~ [Rr]eviewed[[:space:]]+commit[^[:xdigit:]]+([[:xdigit:]]{7,40}) ]] &&
-          is_current_sha "${BASH_REMATCH[1]}"; then
-          record_reviewer "$login"
-        fi
+      if [[ "$login" == "chatgpt-codex-connector[bot]" || "$login" == "chatgpt-codex-connector" ]] &&
+        [[ "$body" =~ [Rr]eviewed[[:space:]]+commit[^[:xdigit:]]+([[:xdigit:]]{7,40}) ]] &&
+        is_current_sha "${BASH_REMATCH[1]}" &&
+        [[ "$body" =~ [Dd]idn.t[[:space:]]+find|[Nn]o[[:space:]]+(major[[:space:]]+)?issues|[Aa]pproved|[Ll]ooks[[:space:]]+good ]]; then
+        record_reviewer "$login"
       fi
     done <<< "$issue_comments_raw"
+  fi
+  local check_suite_times reaction_raw
+  if check_suite_times=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/check-suites" --paginate --jq '.check_suites[] | (.created_at // "")' 2>/dev/null); then
+    while IFS= read -r created_at; do
+      [[ -n "$created_at" ]] || continue
+      if [[ -z "$HEAD_VISIBLE_AT" || "$created_at" < "$HEAD_VISIBLE_AT" ]]; then
+        HEAD_VISIBLE_AT="$created_at"
+      fi
+    done <<< "$check_suite_times"
+  fi
+  if reaction_raw=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/reactions" --paginate --jq '.[] | [.user.login, .content, (.created_at // "")] | @tsv' 2>/dev/null); then
+    while IFS=$'\t' read -r login content created_at; do
+      if [[ "$login" == "chatgpt-codex-connector[bot]" || "$login" == "chatgpt-codex-connector" ]] &&
+        [[ "$content" =~ ^(\+1|heart|hooray|rocket)$ ]] &&
+        is_fresh_reaction "$created_at"; then
+        record_reviewer "$login"
+      fi
+    done <<< "$reaction_raw"
   fi
   if ! check_runs_raw=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs" --paginate --jq '.check_runs[] | [.name, (.app.slug // ""), (.status // ""), (.conclusion // ""), (.head_sha // "")] | @tsv' 2>/dev/null); then
     API_ERRORS+=("check-runs")
@@ -186,8 +209,9 @@ fetch_and_evaluate() {
     while IFS=$'\t' read -r check_name app_slug run_status conclusion run_sha; do
       [[ "$run_sha" == "$HEAD_SHA" ]] || continue
       [[ "$run_status" == "completed" ]] || continue
-      [[ -n "$conclusion" ]] || continue
-      record_reviewer "$app_slug"
+      case "$conclusion" in
+        success|neutral|skipped) record_reviewer "$app_slug" ;;
+      esac
     done <<< "$check_runs_raw"
   fi
 
@@ -199,17 +223,21 @@ fetch_and_evaluate() {
   fi
 
   local group
-  if [[ "$LEDGER_COMPLETE" != true ]]; then
-    for group in "${REVIEWER_GROUPS[@]}"; do
-      [[ "${REVIEWER_PRESENT[$group]:-0}" == 1 ]] || append_item "reviewer:${group%%|*}"
-    done
-  fi
+  for group in "${REVIEWER_GROUPS[@]}"; do
+    [[ "$SKIP_CURSOR" == true && "$group" == "${REVIEWER_GROUPS[0]}" ]] && continue
+    [[ "${REVIEWER_PRESENT[$group]:-0}" == 1 ]] || append_item "reviewer:${group%%|*}"
+  done
 }
 
 start_time="$(date +%s.%N)"
 while true; do
   fetch_and_evaluate
   if [[ ${#OUTSTANDING[@]} -eq 0 ]]; then
+    latest_head=""
+    if ! latest_head=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid 2>/dev/null) ||
+      [[ "$latest_head" != "$HEAD_SHA" ]]; then
+      continue
+    fi
     if [[ "$JSON_OUTPUT" == true ]]; then
       json_summary settled "$HEAD_SHA" '[]'
     else

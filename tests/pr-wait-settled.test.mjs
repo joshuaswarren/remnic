@@ -23,7 +23,11 @@ count=$((count + 1))
 printf '%s\\n' "$count" > "$GH_STUB_COUNT"
 
 if [[ "$1 $2" == "pr view" ]]; then
-  printf '%s\\n' '${headSha}'
+  if [[ "$*" == *"author,files"* ]]; then
+    printf '{"author":{"login":"someone"},"files":[{"path":"src/main.ts"}]}\\n'
+  else
+    printf '%s\\n' '${headSha}'
+  fi
   exit 0
 fi
 if [[ "$1 $2" == "pr checks" ]]; then
@@ -43,10 +47,12 @@ if [[ "$1 $2" == "api graphql" ]]; then
 fi
 if [[ "$1 $2" == "api repos/example/repo/pulls/7/reviews" ]]; then
   case "$GH_STUB_SCENARIO" in
-    green|superseded-neutral)
+    green|superseded-neutral|codex-reaction)
       printf 'cursor[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
       printf 'coderabbitai[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
-      printf 'chatgpt-codex-connector[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
+      if [[ "$GH_STUB_SCENARIO" != codex-reaction ]]; then
+        printf 'chatgpt-codex-connector[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
+      fi
       ;;
     missing-bot)
       printf 'cursor[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
@@ -57,10 +63,19 @@ fi
 if [[ "$1 $2" == "api repos/example/repo/pulls/7/comments" ]]; then
   exit 0
 fi
-if [[ "$1 $2" == "api repos/example/repo/issues/7/comments" ]]; then
-  if [[ "$GH_STUB_SCENARIO" == round-ledger ]]; then
-    printf 'github-actions[bot]\\t<!-- remnic-review-round:v1 {\"headSha\":\"${headSha}\",\"status\":\"closed\",\"closeReason\":\"round-complete\"} -->\\n'
+if [[ "$1 $2" == "api repos/example/repo/commits/${headSha}/check-suites" ]]; then
+  if [[ "$GH_STUB_SCENARIO" == codex-reaction ]]; then
+    printf '2026-06-01T00:00:00Z\\n'
   fi
+  exit 0
+fi
+if [[ "$1 $2" == "api repos/example/repo/issues/7/reactions" ]]; then
+  if [[ "$GH_STUB_SCENARIO" == codex-reaction ]]; then
+    printf 'chatgpt-codex-connector[bot]\\t+1\\t2026-06-02T00:00:00Z\\n'
+  fi
+  exit 0
+fi
+if [[ "$1 $2" == "api repos/example/repo/issues/7/comments" ]]; then
   exit 0
 fi
 if [[ "$1 $2" == "api repos/example/repo/commits/${headSha}/check-runs" ]]; then
@@ -138,8 +153,8 @@ test("wait accepts a superseded neutral ai-reviewers check", async () => {
   });
 });
 
-test("wait accepts a completed current-head round ledger", async () => {
-  await withGhStub("round-ledger", async (env) => {
+test("wait accepts a fresh Codex positive reaction", async () => {
+  await withGhStub("codex-reaction", async (env) => {
     const result = runWait(env, ["--timeout", "0", "--json"]);
     assert.equal(result.status, 0, result.stderr);
   });
