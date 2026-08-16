@@ -128,13 +128,17 @@ fetch_and_evaluate() {
     API_ERRORS+=("checks")
     append_item "api:checks"
   else
+    declare -A CHECK_STATES=()
     while IFS=$'\t' read -r check_name check_state; do
       [[ -n "$check_name" ]] || continue
-      case "${check_state^^}" in
-        SUCCESS|NEUTRAL|SKIPPED) ;;
-        *) append_item "check:${check_name}(${check_state:-unknown})" ;;
-      esac
+      CHECK_STATES["$check_name"]="${check_state^^}"
     done < <(jq -r '.[] | [.name, (.state // "unknown")] | @tsv' <<< "$checks_raw")
+    for check_name in "${!CHECK_STATES[@]}"; do
+      case "${CHECK_STATES[$check_name]}" in
+        SUCCESS|NEUTRAL|SKIPPED) ;;
+        *) append_item "check:${check_name}(${CHECK_STATES[$check_name]})" ;;
+      esac
+    done
   fi
 
   if ! reviews_raw=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --paginate --jq '.[] | [.user.login, (.commit_id // "")] | @tsv' 2>/dev/null); then

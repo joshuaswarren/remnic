@@ -32,6 +32,7 @@ if [[ "$1 $2" == "pr checks" ]]; then
       printf '[{"name":"ci","state":"PENDING"},{"name":"ai-reviewers","state":"SUCCESS"}]\\n'
       exit 8
       ;;
+    superseded-neutral) printf '[{"name":"ci","state":"SUCCESS"},{"name":"ai-reviewers","state":"CANCELLED"},{"name":"ai-reviewers","state":"NEUTRAL"}]\\n' ;;
     *) printf '[{"name":"ci","state":"SUCCESS"},{"name":"ai-reviewers","state":"NEUTRAL"}]\\n' ;;
   esac
   exit 0
@@ -96,7 +97,7 @@ function runWait(env, args) {
 test("wait settles a fully reviewed PR", async () => {
   await withGhStub("green", async (env) => {
     const result = runWait(env, ["--timeout", "0", "--interval", "0", "--json"]);
-    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
     const summary = JSON.parse(result.stdout);
     assert.equal(summary.head, headSha);
     assert.deepEqual(summary.outstanding, []);
