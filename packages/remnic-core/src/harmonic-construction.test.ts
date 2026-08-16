@@ -1326,7 +1326,8 @@ async function persistRecencyFixture(memoryDir: string): Promise<{
 
 async function rewriteTopicInsertedAt(
   storageDir: string,
-  insertedAtById: Record<string, string> | null
+  insertedAtById: Record<string, string> | null,
+  recordedAt?: string
 ): Promise<void> {
   const nodesDir = path.join(storageDir, "state", "abstraction-nodes", "nodes");
   for (const dayEntry of await readdir(nodesDir, { withFileTypes: true })) {
@@ -1342,7 +1343,10 @@ async function rewriteTopicInsertedAt(
       } else {
         metadata[HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY] = JSON.stringify(insertedAtById);
       }
-      await writeFile(filePath, `${JSON.stringify({ ...node, metadata }, null, 2)}\n`);
+      await writeFile(
+        filePath,
+        `${JSON.stringify({ ...node, metadata, ...(recordedAt ? { recordedAt } : {}) }, null, 2)}\n`
+      );
     }
   }
 }
@@ -1393,8 +1397,8 @@ test("harmonic projection keeps ascending id order for equal or missing insertio
   try {
     const { storageDir, persistedIds, contentById } = await persistRecencyFixture(memoryDir);
     const ascendingIds = [...persistedIds].sort(compareDeterministicStrings);
-    const [first, second, third] = ascendingIds.map((memoryId) => memoryId);
-    assert.ok(first && second && third);
+    const [first, second, third, fourth, fifth] = ascendingIds.map((memoryId) => memoryId);
+    assert.ok(first && second && third && fourth && fifth);
     const expectedSummary = [first, second, third]
       .map((memoryId) => contentById.get(memoryId))
       .join("; ");
@@ -1415,6 +1419,26 @@ test("harmonic projection keeps ascending id order for equal or missing insertio
     assert.deepEqual(topic.node.sourceMemoryIds, ascendingIds);
     assert.equal(topic.node.title, contentById.get(first));
     assert.equal(topic.node.summary, expectedSummary);
+
+    await rewriteTopicInsertedAt(
+      storageDir,
+      {
+        [first]: "not-a-timestamp",
+        [second]: "2026-01-01T00:00:00.000Z",
+        [third]: "2026-02-01T00:00:00.000Z",
+        [fourth]: "definitely not a date",
+        [fifth]: "2026-03-01T00:00:00.000Z",
+      },
+      "2026-06-01T00:00:00.000Z"
+    );
+    topic = await findProjectedTopic(storageDir);
+    assert.ok(topic);
+    assert.deepEqual(topic.node.sourceMemoryIds, [first, fourth, fifth, third, second]);
+    assert.equal(topic.node.title, contentById.get(first));
+    assert.equal(
+      topic.node.summary,
+      [first, fourth, fifth].map((memoryId) => contentById.get(memoryId)).join("; ")
+    );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
