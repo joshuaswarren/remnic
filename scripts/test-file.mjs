@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
@@ -34,6 +34,18 @@ const files = fileArgs.map((fileArg) => {
 
 ensurePackageBuild(
   repoRoot,
+  "@remnic/core",
+  join(repoRoot, "packages", "remnic-core", "dist", "index.js"),
+  [
+    join(repoRoot, "packages", "remnic-core", "src"),
+    join(repoRoot, "packages", "remnic-core", "package.json"),
+    join(repoRoot, "packages", "remnic-core", "tsup.config.ts"),
+    join(repoRoot, "packages", "remnic-core", "tsconfig.json"),
+  ],
+);
+
+ensurePackageBuild(
+  repoRoot,
   "@remnic/bench",
   join(repoRoot, "packages", "bench", "dist", "index.js"),
   [
@@ -56,9 +68,14 @@ function cleanupTestRunScratchDir() {
   }
 }
 process.on("exit", cleanupTestRunScratchDir);
+let testProcess;
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.on(signal, () => {
     cleanupTestRunScratchDir();
+    if (testProcess && !testProcess.killed) {
+      testProcess.kill(signal);
+      return;
+    }
     process.removeAllListeners(signal);
     process.kill(process.pid, signal);
   });
@@ -66,22 +83,31 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
 
 const tsxBin = process.platform === "win32" ? "tsx.cmd" : "tsx";
 const workspaceBinDir = join(repoRoot, "node_modules", ".bin");
-const result = spawnSync(tsxBin, ["--test", ...runnerArgs, ...files], {
-  cwd: repoRoot,
-  env: {
-    ...process.env,
-    PATH: `${workspaceBinDir}${delimiter}${process.env.PATH ?? ""}`,
-    NODE_OPTIONS: appendNodeOption(process.env.NODE_OPTIONS, "--conditions=remnic-source"),
-    TMPDIR: testRunScratchDir,
-    TMP: testRunScratchDir,
-    TEMP: testRunScratchDir,
-  },
-  stdio: "inherit",
+const result = await new Promise((resolve) => {
+  testProcess = spawn(tsxBin, ["--test", ...runnerArgs, ...files], {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      PATH: `${workspaceBinDir}${delimiter}${process.env.PATH ?? ""}`,
+      NODE_OPTIONS: appendNodeOption(process.env.NODE_OPTIONS, "--conditions=remnic-source"),
+      TMPDIR: testRunScratchDir,
+      TMP: testRunScratchDir,
+      TEMP: testRunScratchDir,
+    },
+    stdio: "inherit",
+  });
+  testProcess.on("error", (error) => resolve({ error }));
+  testProcess.on("close", (status, signal) => resolve({ status, signal }));
 });
 
 if (result.error) {
   console.error(`Failed to launch ${tsxBin}: ${result.error.message}`);
   process.exit(1);
+}
+
+if (result.signal) {
+  process.removeAllListeners(result.signal);
+  process.kill(process.pid, result.signal);
 }
 
 process.exit(result.status ?? 1);
