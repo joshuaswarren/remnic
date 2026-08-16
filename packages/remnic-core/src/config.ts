@@ -3175,6 +3175,9 @@ export function parseConfig(
     oramaEnabled: cfg.oramaEnabled === true,
     oramaDbPath: typeof cfg.oramaDbPath === "string" ? cfg.oramaDbPath : path.join(memoryDir, "orama"),
     oramaEmbeddingDimension: typeof cfg.oramaEmbeddingDimension === "number" ? cfg.oramaEmbeddingDimension : 1536,
+    // CJK/Thai lexical segmentation (issue #2187) — default on; string forms
+    // from CLI `--config` are coerced like neighboring boolean flags.
+    oramaCjkSegmentation: coerceBooleanLike(cfg.oramaCjkSegmentation) ?? true,
 
     // QMD daemon mode
     qmdDaemonEnabled: cfg.qmdDaemonEnabled !== false,

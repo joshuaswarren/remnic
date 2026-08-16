@@ -166,6 +166,7 @@ Access-layer safety notes:
 | `meilisearchAutoIndex` | `false` | Auto-push documents to Meilisearch on update |
 | `oramaDbPath` | `{memoryDir}/orama` | Orama database directory |
 | `oramaEmbeddingDimension` | `1536` | Vector dimension for Orama |
+| `oramaCjkSegmentation` | `true` | Segment space-free scripts (CJK/Thai) into character n-grams in the Orama lexical index (issue #2187) |
 | `remoteSearchBaseUrl` | `http://localhost:8181` | Remote search service URL |
 | `remoteSearchApiKey` | `(none)` | Remote search API key |
 | `remoteSearchTimeoutMs` | `30000` | Remote search request timeout |
@@ -1852,6 +1853,7 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `oramaEnabled` | `false` | `false` |
 | `oramaDbPath` | `~/.openclaw/workspace/memory/local/orama` | `~/.openclaw/workspace/memory/local/orama` |
 | `oramaEmbeddingDimension` | `1536` | `1536` |
+| `oramaCjkSegmentation` | `true` | `true` |
 | `qmdDaemonEnabled` | `true` | `true` |
 | `qmdDaemonUrl` | `http://localhost:8181/mcp` | `http://localhost:8181/mcp` |
 | `qmdDaemonRecheckIntervalMs` | `60000` | `60000` |

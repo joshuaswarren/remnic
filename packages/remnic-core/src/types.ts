@@ -1870,6 +1870,8 @@ export interface PluginConfig extends BoundedJsonlStateConfig, SecurityConfig {
   oramaEnabled: boolean;
   oramaDbPath?: string;
   oramaEmbeddingDimension?: number;
+  /** Segment space-free scripts (CJK/Thai) in the Orama lexical index (issue #2187). Default `true`. */
+  oramaCjkSegmentation?: boolean;
 
   // QMD daemon mode
   qmdDaemonEnabled: boolean;
@@ -2908,12 +2910,10 @@ export interface MemoryFrontmatter extends SourceConnectorProvenance, OriginMeta
   /** Last time this memory was accessed (ISO 8601) */
   lastAccessed?: string;
   // Memory Worth counters (issue #560)
-  //
   // Per-fact outcome counters used to derive a dynamic utility score —
   // `p(success | retrieved)` — as a complement to the static `importance`
   // field. Absent on legacy memories written before #560; readers must treat
   // `undefined` as zero observations (uniform Beta(1,1) prior).
-  //
   // Both values must be non-negative integers on write. PR 1 wires only the
   // schema + storage round-trip — no increments, scoring, or filtering yet.
   /** Number of sessions where this memory was retrieved and the outcome was judged a success. */

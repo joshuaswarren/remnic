@@ -1780,6 +1780,15 @@ describe("embedded backend provider identity", () => {
         embeddingDimension: 2,
       });
       (backend as any).oramaModule = {
+        components: {
+          tokenizer: {
+            createTokenizer: () => ({
+              language: "english",
+              normalizationCache: new Map(),
+              tokenize: (raw: string) => [raw],
+            }),
+          },
+        },
         count: async () => 2,
         search: async () => ({
           hits: [
@@ -2277,6 +2286,15 @@ describe("embedded backend provider identity", () => {
         embeddingDimension: 2,
       });
       (backend as any).oramaModule = {
+        components: {
+          tokenizer: {
+            createTokenizer: () => ({
+              language: "english",
+              normalizationCache: new Map(),
+              tokenize: (raw: string) => [raw],
+            }),
+          },
+        },
         count: async () => 1,
         create: async () => ({}),
         search: async () => ({

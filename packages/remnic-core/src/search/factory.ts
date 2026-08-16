@@ -79,6 +79,7 @@ function resolveNonQmdBackend(config: PluginConfig): SearchBackend | undefined {
       embedHelper,
       memoryDir: config.memoryDir,
       embeddingDimension: config.oramaEmbeddingDimension!,
+      cjkSegmentationEnabled: config.oramaCjkSegmentation !== false,
     });
   }
 

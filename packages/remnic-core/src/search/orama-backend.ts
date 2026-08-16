@@ -9,17 +9,28 @@ import {
   type SearchQueryOptions,
   type SearchResult,
 } from "./port.js";
-import type { EmbedHelper, EmbedProviderIdentity, EmbedWithProviderResult } from "./embed-helper.js";
-import { scanMemoryDir } from "./document-scanner.js";
-import { isSearchAborted, throwIfSearchAborted } from "./abort.js";
+ import type { EmbedHelper, EmbedProviderIdentity, EmbedWithProviderResult } from "./embed-helper.js";
+ import { scanMemoryDir } from "./document-scanner.js";
+ import { isSearchAborted, throwIfSearchAborted } from "./abort.js";
+import {
+  createCjkCapableTokenizer,
+  isSpaceFreeScriptChar,
+  ORAMA_CJK_TOKENIZER_LANGUAGE,
+} from "./orama-cjk-tokenizer.js";
+ 
+ export interface OramaBackendOptions {
+   dbPath: string;
+   collection: string;
+   embedHelper: EmbedHelper;
+   memoryDir: string;
+   embeddingDimension: number;
+  /**
+   * Segment space-free scripts (CJK/Thai) in the lexical index. Default
+   * `true`; `false` restores the stock English-only tokenizer (issue #2187).
+   */
+  cjkSegmentationEnabled?: boolean;
+ }
 
-export interface OramaBackendOptions {
-  dbPath: string;
-  collection: string;
-  embedHelper: EmbedHelper;
-  memoryDir: string;
-  embeddingDimension: number;
-}
 
 const ORAMA_COLLECTION_FILENAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
@@ -57,6 +68,7 @@ export class OramaBackend implements SearchBackend {
   private readonly embedHelper: EmbedHelper;
   private readonly memoryDir: string;
   private readonly embeddingDimension: number;
+  private readonly cjkSegmentationEnabled: boolean;
   private available = false;
   private db: any = null;
   private oramaModule: any = null;
@@ -72,6 +84,7 @@ export class OramaBackend implements SearchBackend {
     this.embedHelper = opts.embedHelper;
     this.memoryDir = opts.memoryDir;
     this.embeddingDimension = opts.embeddingDimension;
+    this.cjkSegmentationEnabled = opts.cjkSegmentationEnabled !== false;
   }
 
   async probe(): Promise<boolean> {
@@ -403,8 +416,11 @@ export class OramaBackend implements SearchBackend {
       return this.db;
     }
 
-    this.db = await this.migrateLegacyVectorProviderSchema(
-      await this.persistModule.restore("json", raw),
+    this.db = await this.applyTokenizerVersion(
+      await this.migrateLegacyVectorProviderSchema(
+        await this.persistModule.restore("json", raw),
+        this.collection,
+      ),
       this.collection,
     );
     return this.db;
@@ -426,8 +442,11 @@ export class OramaBackend implements SearchBackend {
       return await this.createDb();
     }
 
-    return await this.migrateLegacyVectorProviderSchema(
-      await this.persistModule.restore("json", raw),
+    return await this.applyTokenizerVersion(
+      await this.migrateLegacyVectorProviderSchema(
+        await this.persistModule.restore("json", raw),
+        collection,
+      ),
       collection,
     );
   }
@@ -442,7 +461,73 @@ export class OramaBackend implements SearchBackend {
       vectorProvider: "string",
       vector: `vector[${this.embeddingDimension}]`,
     };
-    return await create({ schema });
+    if (!this.cjkSegmentationEnabled) {
+      return await create({ schema });
+    }
+    return await create({
+      schema,
+      components: { tokenizer: createCjkCapableTokenizer(this.oramaModule) },
+    });
+  }
+
+  /**
+   * Attach the CJK-capable tokenizer to a restored index and rebuild the
+   * full-text index when it predates CJK tokenization. Orama persists
+   * `tokenizer.language` with the index, so a marker other than
+   * `ORAMA_CJK_TOKENIZER_LANGUAGE` identifies an index whose terms were
+   * produced by the stock English tokenizer. English-only corpora need no
+   * re-indexing — the CJK tokenizer emits identical tokens for legacy Latin
+   * content — so only the version marker is rewritten for them.
+   */
+  private async applyTokenizerVersion(db: any, collection: string): Promise<any> {
+    if (!this.cjkSegmentationEnabled) return db;
+    const persistedLanguage =
+      db?.tokenizer?.language && typeof db.tokenizer.language === "string"
+        ? db.tokenizer.language
+        : "";
+    db.tokenizer = createCjkCapableTokenizer(this.oramaModule);
+    if (persistedLanguage === ORAMA_CJK_TOKENIZER_LANGUAGE) return db;
+
+    try {
+      const { search: oramaSearch, count, update: oramaUpdate } = this.oramaModule;
+      const existingCount = await count(db);
+      if (existingCount === 0) {
+        await this.persistDbForCollection(db, collection);
+        return db;
+      }
+      const allHits = await oramaSearch(db, { term: "", limit: existingCount + 100 });
+      const hits = allHits.hits ?? [];
+      const hasSpaceFreeContent = hits.some((hit: any) => {
+        const doc = this.getStoredDocument(db, hit);
+        const content = typeof doc.content === "string" ? doc.content : "";
+        return [...content].some(isSpaceFreeScriptChar);
+      });
+      if (hasSpaceFreeContent) {
+        // Re-index every document in place (Orama update is remove+insert,
+        // so content is re-tokenized; vectors are carried through).
+        for (const hit of hits) {
+          const doc = this.getStoredDocument(db, hit);
+          const vector = this.getStoredVector(db, hit, doc);
+          await oramaUpdate(db, hit.id, {
+            id: typeof doc.id === "string" && doc.id.length > 0 ? doc.id : String(hit.id),
+            path: typeof doc.path === "string" ? doc.path : "",
+            content: typeof doc.content === "string" ? doc.content : "",
+            snippet:
+              typeof doc.snippet === "string"
+                ? doc.snippet
+                : typeof doc.content === "string"
+                  ? doc.content.slice(0, 200)
+                  : "",
+            vectorProvider: typeof doc.vectorProvider === "string" ? doc.vectorProvider : "",
+            vector: vector ?? this.zeroVector(),
+          });
+        }
+      }
+      await this.persistDbForCollection(db, collection);
+    } catch (err) {
+      log.debug(`OramaBackend tokenizer-version rebuild for ${collection} failed: ${err}`);
+    }
+    return db;
   }
 
   private async migrateLegacyVectorProviderSchema(db: any, collection: string): Promise<any> {
@@ -526,8 +611,11 @@ export class OramaBackend implements SearchBackend {
       await this.ensureModules();
       const raw = await readFile(filePath, "utf-8");
       const collection = path.basename(filePath, ".msp");
-      return await this.migrateLegacyVectorProviderSchema(
-        await this.persistModule.restore("json", raw),
+      return await this.applyTokenizerVersion(
+        await this.migrateLegacyVectorProviderSchema(
+          await this.persistModule.restore("json", raw),
+          collection,
+        ),
         collection,
       );
     } catch (err) {

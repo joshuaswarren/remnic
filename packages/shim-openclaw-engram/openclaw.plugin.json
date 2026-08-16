@@ -3891,6 +3891,11 @@
         "default": 1536,
         "description": "Embedding vector dimension for Orama (when searchBackend=orama)"
       },
+      "oramaCjkSegmentation": {
+        "type": "boolean",
+        "default": true,
+        "description": "Segment space-free scripts (CJK/Thai) into character n-grams in the Orama lexical index (issue #2187). Default true; false restores the stock English-only tokenizer."
+      },
       "oramaEnabled": {
         "type": "boolean",
         "default": false,
