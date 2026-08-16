@@ -132,13 +132,16 @@ function beliefLedgerFactKeys(sections: EntityStructuredSection[]): Set<string> 
   }
   return keys;
 }
-function recallFactsForStructuredSection(section: EntityStructuredSection): string[] {
-  if (!isBeliefLedgerSection(section)) return section.facts;
+type RecalledEntityFact = { text: string; sourceIndex: number };
+function recallFactsForStructuredSection(section: EntityStructuredSection): RecalledEntityFact[] {
+  if (!isBeliefLedgerSection(section)) {
+    return section.facts.map((text, sourceIndex) => ({ text, sourceIndex }));
+  }
   return currentActiveBeliefLedgerFactTexts(section.facts);
 }
-function currentActiveBeliefLedgerFactTexts(facts: string[]): string[] {
-  const byClaim = new Map<string, { status: string; updatedAtMs: number; texts: string[] }>();
-  for (const fact of facts) {
+function currentActiveBeliefLedgerFactTexts(facts: string[]): RecalledEntityFact[] {
+  const byClaim = new Map<string, { status: string; updatedAtMs: number; texts: RecalledEntityFact[] }>();
+  for (const [sourceIndex, fact] of facts.entries()) {
     const match = BELIEF_LEDGER_FACT_RE.exec(fact.trim());
     if (!match) continue;
     const [, claimId, status, updatedAt, text] = match;
@@ -153,20 +156,14 @@ function currentActiveBeliefLedgerFactTexts(facts: string[]): string[] {
       current.status === "active" &&
       normalizedStatus !== "active";
     if (!current || updatedAtMs > current.updatedAtMs || inactiveTieWins) {
-      byClaim.set(normalizedClaimId, { status: normalizedStatus, updatedAtMs, texts: [text.trim()] });
+      byClaim.set(normalizedClaimId, { status: normalizedStatus, updatedAtMs, texts: [{ text: text.trim(), sourceIndex }] });
       continue;
     }
     if (updatedAtMs === current.updatedAtMs && current.status === normalizedStatus) {
-      current.texts.push(text.trim());
+      current.texts.push({ text: text.trim(), sourceIndex });
     }
   }
-  const result: string[] = [];
-  for (const current of byClaim.values()) {
-    if (current.status === "active") {
-      result.push(...current.texts);
-    }
-  }
-  return result;
+  return [...byClaim.values()].flatMap((current) => current.status === "active" ? current.texts : []);
 }
 function relationLine(entry: EntityMentionIndexEntry, relationship: { target: string; label: string }): string {
   const normalizedLabel = relationship.label.replace(/\s+/g, " ").trim();
@@ -921,7 +918,13 @@ async function buildHintSnippets(
     if (!scored) continue;
     const normalized = normalizeEntityText(scored.text);
     const existing = deduped.get(normalized);
-    if (!existing || scored.score > existing.score) deduped.set(normalized, scored);
+    if (!existing) {
+      deduped.set(normalized, scored);
+    } else if (existing.origin !== scored.origin) {
+      deduped.set(normalized, { ...(scored.score > existing.score ? scored : existing), origin: undefined });
+    } else if (scored.score > existing.score) {
+      deduped.set(normalized, scored);
+    }
   }
 
   return [...deduped.values()]

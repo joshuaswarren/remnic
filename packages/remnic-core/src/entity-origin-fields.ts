@@ -1,6 +1,7 @@
 import type { EntityStructuredSection } from "./types.js";
 
 type OriginatedEntry = { text: string; origin?: string };
+type RecalledFact = { text: string; sourceIndex: number };
 type SanitizedFacts = { facts: string[]; origins: Array<string | undefined> };
 
 export type EntityOriginStructuredSection = EntityStructuredSection & {
@@ -31,19 +32,16 @@ export function sanitizeOriginatedFacts(
 
 export function buildOriginStructuredSections(
   sections: readonly EntityStructuredSection[],
-  recallFacts: (section: EntityStructuredSection) => string[],
+  recallFacts: (section: EntityStructuredSection) => RecalledFact[],
   sanitize: (value: string) => string,
   compact: (value: string, maxLength: number) => string,
 ): EntityOriginStructuredSection[] {
   return sections
     .map((section) => {
-      const entries = recallFacts(section).map((text) => {
-        const sourceIndex = section.facts.indexOf(text);
-        const beliefIndex = sourceIndex >= 0
-          ? sourceIndex
-          : section.facts.findIndex((fact) => fact.endsWith(`; ${text}`));
-        return { text, origin: section.factOrigins?.[beliefIndex] };
-      });
+      const entries = recallFacts(section).map(({ text, sourceIndex }) => ({
+        text,
+        origin: section.factOrigins?.[sourceIndex],
+      }));
       const result = sanitizeOriginatedFacts(entries, sanitize, compact, false);
       return {
         key: section.key,
