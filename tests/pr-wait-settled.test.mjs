@@ -76,6 +76,12 @@ if [[ "$1 $2" == "api repos/example/repo/pulls/7/reviews" ]]; then
       printf 'coderabbitai[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
       printf 'chatgpt-codex-connector[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
       ;;
+    neutral-then-approved)
+      printf 'cursor[bot]\\t%s\\tCOMMENTED\\tReview rate limited\\n' '${headSha}'
+      printf 'cursor[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
+      printf 'coderabbitai[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
+      printf 'chatgpt-codex-connector[bot]\\t%s\\tAPPROVED\\n' '${headSha}'
+      ;;
   esac
   exit 0
 fi
@@ -144,6 +150,14 @@ test("wait treats a rate-limited review as terminal neutral", async () => {
     const result = runWait(env, ["--timeout", "0", "--interval", "0"]);
     assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
     assert.match(result.stdout, /Review rate limited/);
+  });
+});
+
+test("wait clears neutral evidence after a later approval", async () => {
+  await withGhStub("neutral-then-approved", async (env) => {
+    const result = runWait(env, ["--timeout", "0", "--interval", "0"]);
+    assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
+    assert.doesNotMatch(result.stdout, /reviewer neutral/i);
   });
 });
 
