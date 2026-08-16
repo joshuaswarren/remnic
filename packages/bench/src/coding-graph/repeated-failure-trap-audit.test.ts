@@ -232,9 +232,9 @@ async function seedTerminalAuditRows(
         input: 2,
         output: 1,
         total: 3,
-        cachedInput: 0,
-        cacheWriteInput: 0,
-        reasoningOutput: 0,
+        cachedInput: 2,
+        cacheWriteInput: 1,
+        reasoningOutput: 4,
       };
       const retryTracePath = `traces/${rowKey}/attempt-1.json`;
       const retryTraceBytes = `${JSON.stringify({
@@ -653,13 +653,14 @@ test("runTrapAudit rejects a tampered prior retry trace with unchanged usage", a
         reasoningOutput: number;
       };
     };
+    // Keep strict equality here: this test pins the complete normalized usage contract.
     assert.deepEqual(retryTrace.usage, {
       input: 2,
       output: 1,
       total: 3,
-      cachedInput: 0,
-      cacheWriteInput: 0,
-      reasoningOutput: 0,
+      cachedInput: 2,
+      cacheWriteInput: 1,
+      reasoningOutput: 4,
     });
     await writeFile(retryTracePath, `${JSON.stringify({ ...retryTrace, tampered: true })}\n`);
 
