@@ -105,16 +105,13 @@ class FakeContext:
         self.tools[name] = {"schema": schema, "handler": handler}
 
 
-def _runtime_memory_store_categories() -> list[str]:
-    tools_source = (
-        Path(__file__).resolve().parents[3] / "src" / "tools.ts"
+def _canonical_memory_categories() -> list[str]:
+    config_source = (
+        Path(__file__).resolve().parents[3] / "packages" / "remnic-core" / "src" / "config.ts"
     ).read_text(encoding="utf-8")
-    memory_store_source = tools_source.split('name: "memory_store"', 1)[1].split(
-        'name: "memory_capture"', 1
-    )[0]
     match = re.search(
-        r"category:\s+Type\.Optional\(.*?enum:\s*\[(.*?)\]",
-        memory_store_source,
+        r"export const VALID_MEMORY_CATEGORIES = new Set\(\[(.*?)\]\);",
+        config_source,
         re.DOTALL,
     )
     assert match is not None
@@ -180,4 +177,4 @@ def test_issue_2392_memory_store_category_schema_matches_runtime_enum() -> None:
 
     category_schema = ctx.tools["remnic_memory_store"]["schema"]["parameters"]["properties"]["category"]
 
-    assert category_schema["enum"] == _runtime_memory_store_categories()
+    assert category_schema["enum"] == _canonical_memory_categories()
