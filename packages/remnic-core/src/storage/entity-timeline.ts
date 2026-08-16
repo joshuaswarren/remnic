@@ -22,7 +22,7 @@ export function parseEntityTimelineBullet(bullet: string, fallbackTimestamp: str
   let literalSingleSourceSegment: string | undefined;
 
   if (!trimmed.startsWith("[")) {
-    entry.text = trimmed;
+    entry.text = unescapeEntityTimelineText(trimmed);
     return entry.text ? entry : null;
   }
 
@@ -256,11 +256,11 @@ export function unescapeEntityTimelineMetadataValue(value: string): string {
   return result;
 }
 export function escapeEntityTimelineText(value: string): string {
-  return value.startsWith("[remnic-origin=") ? `\\${value}` : value;
+  return /^\\?\[remnic-origin=/i.test(value) ? `\\${value}` : value;
 }
 
 export function unescapeEntityTimelineText(value: string): string {
-  return value.startsWith("\\[remnic-origin=") ? value.slice(1) : value;
+  return /^\\{1,2}\[remnic-origin=/i.test(value) ? value.slice(1) : value;
 }
 
 export function serializeEntityTimelineEntry(entry: EntityTimelineEntry): string {
