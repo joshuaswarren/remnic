@@ -13,25 +13,30 @@ function createFakeNpm() {
   const bin = path.join(root, "bin");
   const log = path.join(root, "npm.log");
   mkdirSync(bin);
-  writeFileSync(
-    path.join(bin, "npm"),
-    '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$REMNIC_PNPM_TEST_LOG"\n',
-  );
-  chmodSync(path.join(bin, "npm"), 0o755);
-  symlinkSync(process.execPath, path.join(bin, "node"));
-  symlinkSync(
-    spawnSync("bash", ["-c", "command -v bash"], { encoding: "utf8" }).stdout.trim(),
-    path.join(bin, "bash"),
-  );
+  if (process.platform === "win32") {
+    writeFileSync(path.join(bin, "npm.cmd"), '@echo off\r\necho %*>>"%REMNIC_PNPM_TEST_LOG%"\r\n');
+  } else {
+    writeFileSync(
+      path.join(bin, "npm"),
+      '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$REMNIC_PNPM_TEST_LOG"\n',
+    );
+    chmodSync(path.join(bin, "npm"), 0o755);
+    symlinkSync(
+      spawnSync("bash", ["-c", "command -v bash"], { encoding: "utf8" }).stdout.trim(),
+      path.join(bin, "bash"),
+    );
+  }
   return { root, bin, log };
 }
 
 test("routes a root pnpm script through the pinned wrapper without pnpm on PATH", () => {
   const fixture = createFakeNpm();
   const { scripts } = JSON.parse(readFileSync(path.join(repoRoot, "package.json"), "utf8"));
+  const wrapperArgs = /^node scripts\/pnpm\.mjs (.+)$/.exec(scripts["plugin:inspect"])?.[1]?.split(" ");
 
   try {
-    const result = spawnSync("bash", ["-c", scripts["plugin:inspect"]], {
+    assert.deepEqual(wrapperArgs, ["--filter", "@remnic/plugin-openclaw", "run", "plugin:inspect"]);
+    const result = spawnSync(process.execPath, ["scripts/pnpm.mjs", ...wrapperArgs], {
       cwd: repoRoot,
       encoding: "utf8",
       env: {
