@@ -249,6 +249,7 @@ test("persistExtraction preserves structured entity sections on entity files", a
       key: "beliefs",
       title: "Beliefs",
       facts: ["Small teams move faster than committees."],
+      factOrigins: ["unknown"],
     },
   ]);
 });
