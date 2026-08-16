@@ -96,8 +96,7 @@ export function parseEntityTimelineBullet(bullet: string, fallbackTimestamp: str
       text: `${literalSingleSourceSegment} ${rest}`.trim(),
     };
   }
-
-  entry.text = rest.trim();
+  entry.text = unescapeEntityTimelineText(rest.trim());
   if (!entry.text) return null;
   return entry;
 }
@@ -244,6 +243,14 @@ export function unescapeEntityTimelineMetadataValue(value: string): string {
   }
   return result;
 }
+export function escapeEntityTimelineText(value: string): string {
+  return value.startsWith("[remnic-origin=") ? `\\${value}` : value;
+}
+
+export function unescapeEntityTimelineText(value: string): string {
+  return value.startsWith("\\[remnic-origin=") ? value.slice(1) : value;
+}
+
 export function serializeEntityTimelineEntry(entry: EntityTimelineEntry): string {
   const tokens: string[] = [];
   if (entry.timestamp.trim().length > 0) {
@@ -263,7 +270,7 @@ export function serializeEntityTimelineEntry(entry: EntityTimelineEntry): string
     tokens.push(`[remnic-origin=${escapeEntityTimelineMetadataValue(entry.origin)}]`);
   }
   const serializedMetadata = tokens.length > 0 ? `${tokens.join(" ")} ` : "";
-  return `- ${serializedMetadata}${entry.text}`.trimEnd();
+  return `- ${serializedMetadata}${escapeEntityTimelineText(entry.text)}`.trimEnd();
 }
 
 export function dedupeEntityTimelineFacts(timeline: EntityTimelineEntry[]): string[] {
@@ -361,9 +368,14 @@ function parseEntityStructuredSectionFacts(
     if (line.startsWith("- ")) {
       flushCurrentBlock();
       const bullet = line.slice(2).trim();
-      const end = bullet.startsWith("[remnic-origin=") ? findEntityTimelineTokenEnd(bullet) : -1;
+      const escapedOrigin = bullet.startsWith("\\[remnic-origin=");
+      const end = !escapedOrigin && bullet.startsWith("[remnic-origin=")
+        ? findEntityTimelineTokenEnd(bullet)
+        : -1;
       const token = end >= 0 ? bullet.slice(15, end) : "";
-      currentBlock = [end >= 0 ? bullet.slice(end + 1).trimStart() : bullet];
+      currentBlock = [end >= 0
+        ? bullet.slice(end + 1).trimStart()
+        : unescapeEntityTimelineText(bullet)];
       currentOrigin = end >= 0 ? unescapeEntityTimelineMetadataValue(token) : undefined;
       continue;
     }

@@ -109,15 +109,19 @@ function compactLine(value: string, maxLength: number = 220): string {
   return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 }
 function dedupeHintSnippetsByText(snippets: EntityHintSnippet[]): EntityHintSnippet[] {
-  const seen = new Set<string>();
-  const result: EntityHintSnippet[] = [];
+  const deduped = new Map<string, EntityHintSnippet>();
   for (const snippet of snippets) {
     const key = normalizeEntityText(snippet.text);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    result.push(snippet);
+    const existing = deduped.get(key);
+    if (!existing) {
+      deduped.set(key, snippet);
+      continue;
+    }
+    if (existing.origin !== snippet.origin) {
+      existing.origin = undefined;
+    }
   }
-  return result;
+  return [...deduped.values()];
 }
 function isBeliefLedgerSection(section: Pick<EntityStructuredSection, "key">): boolean {
   return normalizeEntityText(section.key).replace(/\s+/g, "_") === BELIEF_LEDGER_SECTION_KEY;

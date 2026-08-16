@@ -776,26 +776,44 @@ export class EntityStore {
               (mergedEntity.structuredSections ?? []).map((section) => [section.key, {
                 ...section,
                 facts: [...section.facts],
+                factOrigins: section.factOrigins ? [...section.factOrigins] : undefined,
               }]),
             );
             for (const section of parsed.structuredSections ?? []) {
               const existingSection = mergedStructuredSectionMap.get(section.key);
               if (!existingSection) {
+                const facts: string[] = [];
+                const factOrigins: Array<string | undefined> = [];
+                for (const [index, fact] of section.facts.entries()) {
+                  const trimmed = fact.trim();
+                  if (!trimmed || facts.includes(trimmed)) continue;
+                  facts.push(trimmed);
+                  factOrigins.push(section.factOrigins?.[index]);
+                }
                 mergedStructuredSectionMap.set(section.key, {
                   key: section.key,
                   title: section.title,
-                  facts: [...new Set(section.facts.map((fact) => fact.trim()).filter((fact) => fact.length > 0))],
+                  facts,
+                  factOrigins: section.factOrigins ? factOrigins : undefined,
                 });
                 continue;
               }
 
-              const mergedFacts = new Set(existingSection.facts.map((fact) => fact.trim()));
-              for (const fact of section.facts) {
+              if (section.factOrigins && !existingSection.factOrigins) {
+                existingSection.factOrigins = existingSection.facts.map(() => undefined);
+              }
+              for (const [index, fact] of section.facts.entries()) {
                 const trimmed = fact.trim();
                 if (!trimmed) continue;
-                mergedFacts.add(trimmed);
+                const existingIndex = existingSection.facts.indexOf(trimmed);
+                const origin = section.factOrigins?.[index];
+                if (existingIndex === -1) {
+                  existingSection.facts.push(trimmed);
+                  existingSection.factOrigins?.push(origin);
+                } else if (existingSection.factOrigins?.[existingIndex] !== origin) {
+                  existingSection.factOrigins?.splice(existingIndex, 1, undefined);
+                }
               }
-              existingSection.facts = Array.from(mergedFacts);
               if (!existingSection.title.trim() && section.title.trim()) {
                 existingSection.title = section.title;
               }

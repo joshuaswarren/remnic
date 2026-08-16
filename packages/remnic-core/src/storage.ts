@@ -186,6 +186,7 @@ import {
   compareEntityTimestamps,
   compileEntityFacts,
   escapeEntityTimelineMetadataValue,
+  escapeEntityTimelineText,
   isEntitySynthesisStale,
   isEntitySynthesisTimelinePromotionBullet,
   latestEntityTimelineTimestamp,
@@ -1496,7 +1497,7 @@ export function serializeEntityFile(entity: EntityFile, entitySchemas?: PluginCo
     for (const [index, fact] of section.facts.entries()) {
       const origin = section.factOrigins?.[index];
       const prefix = origin ? `[remnic-origin=${escapeEntityTimelineMetadataValue(origin)}] ` : "";
-      lines.push(`- ${prefix}${fact}`);
+      lines.push(`- ${prefix}${escapeEntityTimelineText(fact)}`);
     }
     lines.push("");
   }
