@@ -41,7 +41,11 @@
 // ---------------------------------------------------------------------------
 
 import { serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
-import { computeLegacyContentHash, isUnambiguousLegacyContentHash } from "../content-hash.js";
+import {
+  computeLegacyContentHash,
+  isUnambiguousLegacyContentHash,
+  normalizeLegacyContent,
+} from "../content-hash.js";
 
 /** Why a tombstone was emitted. */
 export type TombstoneReason =
@@ -899,15 +903,19 @@ export class TombstoneStore {
           // A persisted hash equal to the body's LEGACY hash only proves the
           // record predates the Unicode normalizer when that legacy hash is
           // unambiguous. When the legacy normalizer is lossy for this body
-          // (CJK-only text, or any body whose ASCII skeleton collides with a
-          // distinct contentHashSource), the equality cannot distinguish "old
-          // body hash" from "explicit source identity" — replacing the
-          // persisted hash would displace a live identity (issue #2367).
-          // Preserving keeps BOTH keys: contentHash stays the persisted
-          // identity and currentContentHashAlias still blocks the body.
+          // (any body whose ASCII skeleton collides with a distinct
+          // contentHashSource), the equality cannot distinguish "old body
+          // hash" from "explicit source identity" — replacing the persisted
+          // hash would displace a live identity (issue #2367). Preserving
+          // keeps BOTH keys: contentHash stays the persisted identity and
+          // currentContentHashAlias still blocks the body.
+          // An EMPTY legacy skeleton is excluded: every non-ASCII-only body
+          // maps to it, so it identifies nothing and would collide unrelated
+          // tombstones on one exact-tier key. Repair those rows instead.
           const preserveOverride =
             persistedHash !== undefined &&
             persistedHash !== currentHash &&
+            normalizeLegacyContent(m.rawContent).length > 0 &&
             !isUnambiguousLegacyContentHash(m.rawContent, persistedHash, currentNormalizedText);
           return {
             id:

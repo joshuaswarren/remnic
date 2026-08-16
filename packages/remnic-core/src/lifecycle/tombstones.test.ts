@@ -830,11 +830,13 @@ describe("TombstoneStore — revocation supersedes tombstone", () => {
 });
 
 describe("TombstoneStore — rebuild identity preservation (issue #2367)", () => {
-  it("does not displace an explicit contentHashSource that collides with a CJK body under the legacy normalizer", async () => {
+  it("repairs a CJK collision instead of indexing the empty legacy skeleton (issue #2367)", async () => {
     const env = await makeStore("default");
-    // Two distinct CJK-only strings collide under the lossy legacy
-    // normalizer (both skeletons are empty), so a persisted legacy hash of
-    // the source numerically equals the legacy hash of the body.
+    // Two distinct CJK-only strings collide under the lossy legacy normalizer
+    // (both skeletons are empty), so a persisted legacy hash of the source
+    // numerically equals the legacy hash of the body. The empty skeleton
+    // identifies nothing, so rebuild must repair the row to the current body
+    // hash rather than publish the collision key on the exact tier.
     const source = "利用者は紅茶を好む。";
     const body = "利用者は珈琲を好む。";
     const unrelated = "利用者は抹茶を好む。";
@@ -849,21 +851,27 @@ describe("TombstoneStore — rebuild identity preservation (issue #2367)", () =>
         contentHash: persistedHash,
         reason: "correction",
         createdBy: "user_correction",
-        createdAt: "2026-01-01T00:00:00.000Z",
+        createdAt: "2026-01-01T:00:00:00.000Z",
       },
     ]);
 
     const entry = env.store.snapshot().find((e) => e.kind === "tombstone");
     assert.ok(entry);
-    assert.equal(entry.contentHash, persistedHash);
-    assert.equal(entry.currentContentHashAlias, computeHash(body));
-    // The body stays blocked through the alias; unrelated CJK bodies do not.
+    assert.equal(entry.contentHash, computeHash(body));
+    assert.equal(entry.currentContentHashAlias, undefined);
+    // The body stays blocked; the shared empty-skeleton key is NOT indexed,
+    // so unrelated CJK bodies (and empty-content writes) are not blocked
+    // through it.
     assert.equal(
       env.store.lookup({ namespace: "default", contentHash: computeHash(body) })?.matchedTier,
       "exact",
     );
     assert.equal(
       env.store.lookup({ namespace: "default", contentHash: computeHash(unrelated) }),
+      null,
+    );
+    assert.equal(
+      env.store.lookup({ namespace: "default", contentHash: computeLegacyContentHash(unrelated) }),
       null,
     );
   });

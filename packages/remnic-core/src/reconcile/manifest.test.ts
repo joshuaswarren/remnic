@@ -234,6 +234,36 @@ test("reconcile collapse matches an explicit-source replica through the persiste
   assert.equal(collapsed.entries[0]?.reason, "semantic_duplicate");
 });
 
+test("reconcile manifest does not collapse distinct pure-CJK legacy facts through the empty skeleton (issue #2367)", async () => {
+  const first = "利用者は紅茶を好む。";
+  const second = "利用者は珈琲を好む。";
+  assert.equal(computeLegacyContentHash(first), computeLegacyContentHash(second));
+  const build = async (id: string, content: string) => {
+    const serialized = memoryFile({ id, content, contentHash: computeLegacyContentHash(content) });
+    const file = { path: `facts/${id}.md`, sha256: fileHash(serialized) };
+    const manifest = await buildReconcileManifest({
+      files: [file],
+      parseMemory: parseFrontmatter,
+      readFile: async () => serialized,
+    });
+    return { file, manifest };
+  };
+  const a = await build("legacy-cjk-first", first);
+  const b = await build("legacy-cjk-second", second);
+  const plan = planReconciliation([
+    { namespace: "default", local: [a.file], peer: [b.file] },
+  ]);
+
+  const collapsed = collapseActiveFactDuplicates(
+    plan,
+    new Map([["default", a.manifest]]),
+    new Map([["default", b.manifest]]),
+  );
+
+  assert.equal(collapsed.converged, false);
+  assert.equal(collapsed.entries.length, 2);
+});
+
 test("reconcile manifest does not add a legacy alias to a current Unicode identity", async () => {
   const unicode = "The user prefers café.";
   const ascii = "The user prefers caf.";

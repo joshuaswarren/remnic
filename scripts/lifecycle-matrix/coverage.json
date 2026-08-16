@@ -235,7 +235,8 @@
     "packages/remnic-core/src/maintenance/projection-support.ts": "memory-projection",
     "packages/remnic-core/src/maintenance/rebuild-memory-projection.ts": "memory-projection",
     "packages/remnic-core/src/orchestration/projection-rebuild-schedule.ts": "memory-projection",
-    "packages/plugin-openclaw/src/delegate-runtime.ts": "openclaw-delegate-runtime"
+    "packages/plugin-openclaw/src/delegate-runtime.ts": "openclaw-delegate-runtime",
+    "packages/remnic-core/src/storage/tombstone-migration-sources.ts": "tombstone-blocked-capture"
   },
   "grandfathered": [
     "packages/remnic-core/src/lifecycle.ts",
