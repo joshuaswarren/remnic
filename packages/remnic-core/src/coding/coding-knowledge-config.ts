@@ -21,7 +21,7 @@
  * the existing `ENGRAM_*` env vars from earlier releases do not pair them up.
  */
 
-import type { CodingKnowledgeConfig, CodingGraphLspConfig } from "../types.js";
+import type { CodingContext, CodingGraphLspConfig, CodingKnowledgeConfig } from "../types.js";
 import { TIER_1_LANGUAGES } from "./coding-graph-types.js";
 import { coerceBool } from "../connectors/coerce.js";
 
@@ -79,6 +79,40 @@ export function parseCodingKnowledgeConfig(raw: unknown): CodingKnowledgeConfig 
     // (config.test.ts) and leak a new key into serialized configs.
     ...readLspField(record.lsp),
   };
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Shared surface gates (rule 39: ONE predicate pair, identical on every
+// surface — issue #2478 dedupe). Each Track A surface used to carry its own
+// copy of this logic; they all resolve here now. The booleans are already
+// strict-coerced by parseCodingKnowledgeConfig, so `=== true` is safe here.
+// ──────────────────────────────────────────────────────────────────────────
+
+/** Boolean feature switches governed by the master `codingKnowledge.enabled` gate. */
+export type CodingKnowledgeFeatureFlag = "decisionRecords" | "architectureCard" | "sessionDelta";
+
+/**
+ * Config-only visibility gate — used by the MCP constructor to decide
+ * whether a coding tool is advertised in `tools/list`. True only when the
+ * master gate AND the feature switch are both on.
+ */
+export function isCodingKnowledgeFeatureVisible(
+  config: CodingKnowledgeConfig,
+  feature: CodingKnowledgeFeatureFlag,
+): boolean {
+  return config.enabled === true && config[feature] === true;
+}
+
+/**
+ * Full call-time gate: visibility PLUS an attached coding context
+ * (project/branch-scoped session). Handlers check this before dispatch.
+ */
+export function isCodingKnowledgeFeatureEnabled(
+  config: CodingKnowledgeConfig,
+  feature: CodingKnowledgeFeatureFlag,
+  codingContext: CodingContext | null | undefined,
+): boolean {
+  return isCodingKnowledgeFeatureVisible(config, feature) && codingContext != null;
 }
 
 /**

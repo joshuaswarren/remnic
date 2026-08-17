@@ -18,11 +18,10 @@ import {
   formatDeltaSubcommands,
   handleCodingDelta,
   isDeltaSubcommand,
-  isSessionDeltaSurfaceEnabled,
-  isSessionDeltaSurfaceVisible,
   type DeltaSurfaceContext,
   type DeltaSurfaceStorage,
 } from "./session-delta-surfaces.js";
+import { isCodingKnowledgeFeatureEnabled, isCodingKnowledgeFeatureVisible } from "./coding-knowledge-config.js";
 import type {
   CodingKnowledgeConfig,
   CodingContext,
@@ -111,28 +110,28 @@ test("isDeltaSubcommand: narrows valid + rejects unknown", () => {
 });
 
 test("gate: surface enabled when config + sessionDelta + coding context all true", () => {
-  assert.equal(isSessionDeltaSurfaceEnabled(DEFAULT_CONFIG, CODING_CONTEXT), true);
+  assert.equal(isCodingKnowledgeFeatureEnabled(DEFAULT_CONFIG, "sessionDelta", CODING_CONTEXT), true);
 });
 
 test("gate: surface disabled when master gate off", () => {
   const config: CodingKnowledgeConfig = { ...DEFAULT_CONFIG, enabled: false };
-  assert.equal(isSessionDeltaSurfaceEnabled(config, CODING_CONTEXT), false);
+  assert.equal(isCodingKnowledgeFeatureEnabled(config, "sessionDelta", CODING_CONTEXT), false);
 });
 
 test("gate: surface disabled when sessionDelta off", () => {
   const config: CodingKnowledgeConfig = { ...DEFAULT_CONFIG, sessionDelta: false };
-  assert.equal(isSessionDeltaSurfaceEnabled(config, CODING_CONTEXT), false);
+  assert.equal(isCodingKnowledgeFeatureEnabled(config, "sessionDelta", CODING_CONTEXT), false);
 });
 
 test("gate: surface disabled when no coding context", () => {
-  assert.equal(isSessionDeltaSurfaceEnabled(DEFAULT_CONFIG, null), false);
-  assert.equal(isSessionDeltaSurfaceEnabled(DEFAULT_CONFIG, undefined), false);
+  assert.equal(isCodingKnowledgeFeatureEnabled(DEFAULT_CONFIG, "sessionDelta", null), false);
+  assert.equal(isCodingKnowledgeFeatureEnabled(DEFAULT_CONFIG, "sessionDelta", undefined), false);
 });
 
 test("visibility gate: config-only check mirrors full gate minus context", () => {
-  assert.equal(isSessionDeltaSurfaceVisible(DEFAULT_CONFIG), true);
-  assert.equal(isSessionDeltaSurfaceVisible({ ...DEFAULT_CONFIG, enabled: false }), false);
-  assert.equal(isSessionDeltaSurfaceVisible({ ...DEFAULT_CONFIG, sessionDelta: false }), false);
+  assert.equal(isCodingKnowledgeFeatureVisible(DEFAULT_CONFIG, "sessionDelta"), true);
+  assert.equal(isCodingKnowledgeFeatureVisible({ ...DEFAULT_CONFIG, enabled: false }, "sessionDelta"), false);
+  assert.equal(isCodingKnowledgeFeatureVisible({ ...DEFAULT_CONFIG, sessionDelta: false }, "sessionDelta"), false);
 });
 
 // ──────────────────────────────────────────────────────────────────────────

@@ -24,6 +24,7 @@ import {
 import { log } from "../logger.js";
 import { composeMemoryEnvelope, type SealedMemoryEnvelope } from "../write-envelope.js";
 import type { MemoryWriteResult } from "../storage.js";
+import { isCodingKnowledgeFeatureEnabled } from "./coding-knowledge-config.js";
 
 // ──────────────────────────────────────────────────────────────────────────
 // Subcommands
@@ -56,45 +57,6 @@ export function formatDecisionSubcommands(): string {
   return DECISION_SUBCOMMANDS.join(", ");
 }
 
-// ──────────────────────────────────────────────────────────────────────────
-// Gate predicate — rule 39: one predicate, identical on every surface
-// ──────────────────────────────────────────────────────────────────────────
-
-/**
- * The single decision-record surface gate. Returns `true` only when:
- *  1. `codingKnowledge.enabled` is on (the master Track A gate),
- *  2. `codingKnowledge.decisionRecords` is on (the feature switch), AND
- *  3. A coding context is attached (the session is project/branch scoped —
- *     decision records live *in* the coding namespace, rule 42).
- *
- * Every surface — MCP `engram.coding_decision`, HTTP
- * `POST /engram/v1/coding/decisions`, CLI `engram-access decision` — MUST call
- * this predicate (or the handler that embeds it) before dispatching. The
- * tool-visibility gate in the MCP constructor checks conditions 1–2 only
- * (coding context is per-session and cannot be evaluated at construction
- * time); the call-time gate checks all three.
- */
-export function isDecisionRecordSurfaceEnabled(
-  config: CodingKnowledgeConfig,
-  codingContext: CodingContext | null | undefined,
-): boolean {
-  return (
-    config.enabled === true &&
-    config.decisionRecords === true &&
-    codingContext != null
-  );
-}
-
-/**
- * Config-only visibility gate — used by the MCP constructor to decide whether
- * to advertise `engram.coding_decision` in `tools/list`. When this returns
- * `false` the tools array is byte-identical to pre-feature (rule 39).
- */
-export function isDecisionRecordSurfaceVisible(
-  config: CodingKnowledgeConfig,
-): boolean {
-  return config.enabled === true && config.decisionRecords === true;
-}
 
 // ──────────────────────────────────────────────────────────────────────────
 // Surface request / response shapes
@@ -228,7 +190,7 @@ export async function handleCodingDecision(
   const codingContext = request.sessionKey
     ? ctx.getCodingContext(request.sessionKey)
     : null;
-  if (!isDecisionRecordSurfaceEnabled(ctx.codingKnowledge, codingContext)) {
+  if (!isCodingKnowledgeFeatureEnabled(ctx.codingKnowledge, "decisionRecords", codingContext)) {
     ctx.throwInputError(
       "coding_decision requires codingKnowledge.enabled, codingKnowledge.decisionRecords, and an attached coding context",
     );

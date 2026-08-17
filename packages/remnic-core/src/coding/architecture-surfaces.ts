@@ -35,6 +35,7 @@ import { stripAttributesSuffix } from "../structured-attributes.js";
 import { ARCHITECTURE_CARD_TRUNCATION_MARKER, type ArchitectureCardBuildResult } from "./architecture-card.js";
 import { log } from "../logger.js";
 import { composeMemoryEnvelope, type SealedMemoryEnvelope } from "../write-envelope.js";
+import { isCodingKnowledgeFeatureEnabled } from "./coding-knowledge-config.js";
 
 // ──────────────────────────────────────────────────────────────────────────
 // Subcommands
@@ -54,40 +55,6 @@ export function isArchitectureSubcommand(value: unknown): value is ArchitectureS
 /** Human-readable subcommand list for error messages (rule 51). */
 export function formatArchitectureSubcommands(): string {
   return ARCHITECTURE_SUBCOMMANDS.join(", ");
-}
-
-// ──────────────────────────────────────────────────────────────────────────
-// Gate predicates — rule 39: one predicate, identical on every surface
-// ──────────────────────────────────────────────────────────────────────────
-
-/**
- * The single architecture-card surface gate. Returns `true` only when:
- *  1. `codingKnowledge.enabled` is true,
- *  2. `codingKnowledge.architectureCard` is true,
- *  3. a coding context is attached (so a repo root is available).
- */
-export function isArchitectureCardSurfaceEnabled(
-  config: CodingKnowledgeConfig,
-  codingContext: CodingContext | null | undefined,
-): boolean {
-  return (
-    config.enabled === true &&
-    config.architectureCard === true &&
-    codingContext !== null &&
-    codingContext !== undefined
-  );
-}
-
-/**
- * Config-only visibility gate — used by the MCP constructor to decide
- * whether to advertise `engram.coding_architecture` in `tools/list`.
- * When this returns `false` the tools array is byte-identical to
- * pre-feature (rule 39).
- */
-export function isArchitectureCardSurfaceVisible(
-  config: CodingKnowledgeConfig,
-): boolean {
-  return config.enabled === true && config.architectureCard === true;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -228,7 +195,7 @@ export async function handleCodingArchitecture(
   // narrows it to CodingContext here, with no non-null assertion cast.
   if (
     codingContext === null ||
-    !isArchitectureCardSurfaceEnabled(ctx.codingKnowledge, codingContext)
+    !isCodingKnowledgeFeatureEnabled(ctx.codingKnowledge, "architectureCard", codingContext)
   ) {
     ctx.throwInputError(
       "coding_architecture requires codingKnowledge.enabled, codingKnowledge.architectureCard, and an attached coding context",

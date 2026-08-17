@@ -21,12 +21,11 @@ import { EngramMcpServer } from "../access-mcp.js";
 import {
   DECISION_SUBCOMMANDS,
   formatDecisionSubcommands,
-  isDecisionRecordSurfaceEnabled,
-  isDecisionRecordSurfaceVisible,
   isDecisionSubcommand,
   type DecisionSurfaceRequest,
   type DecisionSurfaceResponse,
 } from "./decision-surfaces.js";
+import { isCodingKnowledgeFeatureEnabled, isCodingKnowledgeFeatureVisible } from "./coding-knowledge-config.js";
 import type { CodingContext, CodingKnowledgeConfig, PluginConfig } from "../types.js";
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -104,28 +103,28 @@ function makeMockServiceWithConfig(
 // ──────────────────────────────────────────────────────────────────────────
 
 test("gate: disabled when config.enabled is false", () => {
-  assert.equal(isDecisionRecordSurfaceEnabled(GATE_OFF_CONFIG, CODING_CONTEXT), false);
+  assert.equal(isCodingKnowledgeFeatureEnabled(GATE_OFF_CONFIG, "decisionRecords", CODING_CONTEXT), false);
 });
 
 test("gate: disabled when decisionRecords is false", () => {
   const cfg: CodingKnowledgeConfig = { ...GATE_ON_CONFIG, decisionRecords: false };
-  assert.equal(isDecisionRecordSurfaceEnabled(cfg, CODING_CONTEXT), false);
+  assert.equal(isCodingKnowledgeFeatureEnabled(cfg, "decisionRecords", CODING_CONTEXT), false);
 });
 
 test("gate: disabled when no coding context attached", () => {
-  assert.equal(isDecisionRecordSurfaceEnabled(GATE_ON_CONFIG, null), false);
-  assert.equal(isDecisionRecordSurfaceEnabled(GATE_ON_CONFIG, undefined), false);
+  assert.equal(isCodingKnowledgeFeatureEnabled(GATE_ON_CONFIG, "decisionRecords", null), false);
+  assert.equal(isCodingKnowledgeFeatureEnabled(GATE_ON_CONFIG, "decisionRecords", undefined), false);
 });
 
 test("gate: enabled only when all three conditions hold", () => {
-  assert.equal(isDecisionRecordSurfaceEnabled(GATE_ON_CONFIG, CODING_CONTEXT), true);
+  assert.equal(isCodingKnowledgeFeatureEnabled(GATE_ON_CONFIG, "decisionRecords", CODING_CONTEXT), true);
 });
 
 test("visibility gate: config-only check for tools/list construction", () => {
-  assert.equal(isDecisionRecordSurfaceVisible(GATE_OFF_CONFIG), false);
-  assert.equal(isDecisionRecordSurfaceVisible(GATE_ON_CONFIG), true);
+  assert.equal(isCodingKnowledgeFeatureVisible(GATE_OFF_CONFIG, "decisionRecords"), false);
+  assert.equal(isCodingKnowledgeFeatureVisible(GATE_ON_CONFIG, "decisionRecords"), true);
   assert.equal(
-    isDecisionRecordSurfaceVisible({ ...GATE_ON_CONFIG, decisionRecords: false }),
+    isCodingKnowledgeFeatureVisible({ ...GATE_ON_CONFIG, decisionRecords: false }, "decisionRecords"),
     false,
   );
 });
