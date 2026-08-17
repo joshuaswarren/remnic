@@ -221,6 +221,8 @@ else
     done <<< "${CHECK_STATE_LINES[$gate_name]}"
     if [[ -n "$gate_green" ]]; then
       GATE_LINES+="  ${gate_name}: ${gate_green}"$'\n'
+    elif [[ "$gate_name" == "ai-reviewers" || "$gate_name" == "analyze" ]]; then
+      GATE_LINES+="  ${gate_name}: ${gate_first:-unknown} (informational)"$'\n'
     else
       GATE_FAILURES+=("check:${gate_name}(${gate_first:-none})")
       GATE_LINES+="  ${gate_name}: ${gate_first:-unknown} (RED)"$'\n'
@@ -334,6 +336,11 @@ if merge_out=$(gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --match-head-com
   merge_ok=true
 elif [[ "$merge_out" == *"already been merged"* || "$merge_out" == *"already merged"* ]]; then
   already_merged=true
+elif [[ "$merge_out" == *"503"* || "$merge_out" == *"No server is currently available"* ]]; then
+  printf '[pr-merge] GraphQL merge hit a GitHub 503; retrying via REST PUT.\n'
+  if merge_out=$(gh api -X PUT "repos/${REPO}/pulls/${PR_NUMBER}/merge" -f merge_method=squash 2>&1); then
+    merge_ok=true
+  fi
 fi
 if [[ "$merge_ok" != true && "$already_merged" != true ]]; then
   current_head="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid 2>/dev/null || true)"

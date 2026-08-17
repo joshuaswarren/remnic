@@ -21,6 +21,7 @@ export function isTransientGithubLookupError(error) {
     .join(" ");
 
   if (status === 429 || status === 502 || status === 503) return true;
+  if (/no server is currently available/i.test(message)) return true;
   if ((status === 404 || status === 422) && NODE_NOT_FOUND.test(message)) {
     return true;
   }

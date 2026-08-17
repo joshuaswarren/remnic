@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { isAnySourceNewerThan } from "./build-staleness.mjs";
 import { appendNodeOption } from "./root-test-runner-env.mjs";
 import { buildTestSpawnPlan, resolveTsxCliPath } from "./test-spawn-plan.mjs";
+import { shouldBuildBench } from "./test-file-deps.mjs";
 import {
   loadNativeManifest,
   partitionNativeDependent,
@@ -59,16 +60,18 @@ ensureBuild(
   ],
 );
 
-ensureBuild(
-  "@remnic/bench",
-  join(repoRoot, "packages", "bench", "dist", "index.js"),
-  [
-    join(repoRoot, "packages", "bench", "src"),
-    join(repoRoot, "packages", "bench", "package.json"),
-    join(repoRoot, "packages", "bench", "tsup.config.ts"),
-    join(repoRoot, "packages", "bench", "tsconfig.json"),
-  ],
-);
+if (shouldBuildBench(files)) {
+  ensureBuild(
+    "@remnic/bench",
+    join(repoRoot, "packages", "bench", "dist", "index.js"),
+    [
+      join(repoRoot, "packages", "bench", "src"),
+      join(repoRoot, "packages", "bench", "package.json"),
+      join(repoRoot, "packages", "bench", "tsup.config.ts"),
+      join(repoRoot, "packages", "bench", "tsconfig.json"),
+    ],
+  );
+}
 
 let filesToRun = files;
 let nativeProbe = probeBetterSqlite3(repoRoot);
