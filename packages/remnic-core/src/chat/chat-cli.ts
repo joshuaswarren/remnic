@@ -6,28 +6,25 @@
  * and `--once` / non-TTY mode for scripting/tests
  * (`echo "question" | remnic chat --once`).
  *
+ * Every turn routes through the shared `processChatMessage` factory
+ * (issue #2479) so session lifecycle, transcript persistence, and
+ * pending-plan/promotion markers behave identically to the HTTP/MCP
+ * surfaces.
+ *
  * This module is imported by cli.ts with a single thin registration line —
  * the god-file ratchet (#1520) tracks cli.ts LOC.
  */
 
-import readline from "node:readline";
 import { createInterface } from "node:readline";
-import { randomUUID } from "node:crypto";
 
 import type { EngramAccessService } from "../access-service.js";
-import type { PluginConfig } from "../types.js";
-import type { ChatConfig } from "./chat-types.js";
-import type { ChatTurnResult } from "./chat-types.js";
-import { ChatEngine } from "./chat-engine.js";
-import { createProductionChatLlmAdapter } from "./chat-llm.js";
-import { createChatExecutor } from "./chat-executor.js";
+import type { ChatConfig, ChatTurnResult } from "./chat-types.js";
+import { processChatMessage } from "./chat-factory.js";
 import {
   createChatSession,
   loadChatSession,
-  appendTranscriptEntry,
   sessionBelongsToPrincipal,
 } from "./chat-session.js";
-import { isConfirmationMessage } from "./chat-engine.js";
 
 /**
  * Read all of stdin to a UTF-8 string (non-TTY / scripting mode).
@@ -78,16 +75,10 @@ export async function runChatCli(opts: ChatCliOptions): Promise<void> {
     return;
   }
 
-  const adapter = createProductionChatLlmAdapter(llm as {
-    chatCompletion(
-      messages: Array<{ role: string; content: string }>,
-      options?: { model?: string; signal?: AbortSignal },
-    ): Promise<{ content: string } | null>;
-  });
-
-  // Load or create session FIRST so the executor inherits the session's
-  // stored namespace/sessionKey scope — a resumed session created via MCP
-  // must not lose its scope binding (codex review, Thread 19).
+  // Resolve the session up front so the banner and --once output print a
+  // stable session id.  Each turn then routes through processChatMessage,
+  // which reloads the session from disk — persisted state markers
+  // (pending plan/promotion) stay authoritative across turns.
   let session;
   if (opts.sessionId) {
     session = await loadChatSession(opts.memoryDir, opts.sessionId);
@@ -107,21 +98,15 @@ export async function runChatCli(opts: ChatCliOptions): Promise<void> {
     });
   }
 
-  const executor = createChatExecutor({
-    service: opts.service,
-    principal: opts.principal,
-    ...(session.namespace ? { namespace: session.namespace } : {}),
-    ...(session.sessionKey ? { sessionKey: session.sessionKey } : {}),
-  });
-
-  const engine = new ChatEngine({
-    llm: adapter,
-    executor,
-    maxToolCallsPerTurn: config.maxToolCallsPerTurn,
-    ...(config.model ? { model: config.model } : {}),
-    correctionAvailable: false,
-    scopeInspectAvailable: false,
-  });
+  const processTurn = (message: string): Promise<ChatTurnResult> =>
+    processChatMessage({
+      service: opts.service,
+      config,
+      memoryDir: opts.memoryDir,
+      message,
+      chatSessionId: session.id,
+      principal: opts.principal,
+    });
 
   // ── Non-TTY / --once mode ───────────────────────────────────────────
   if (opts.once) {
@@ -131,17 +116,7 @@ export async function runChatCli(opts: ChatCliOptions): Promise<void> {
       process.stdout.write("[error] No input provided.\n");
       return;
     }
-    const userEntry = await appendTranscriptEntry(opts.memoryDir, session.id, {
-      role: "user",
-      content: message,
-    });
-    session.transcript.push(userEntry);
-    const result = await engine.processMessage(message, session);
-    const assistantEntry = await appendTranscriptEntry(opts.memoryDir, session.id, {
-      role: "assistant",
-      content: result.reply,
-    });
-    session.transcript.push(assistantEntry);
+    const result = await processTurn(message);
     process.stdout.write(result.reply + "\n");
     process.stdout.write(`[session: ${session.id}]\n`);
     return;
@@ -173,18 +148,7 @@ export async function runChatCli(opts: ChatCliOptions): Promise<void> {
     // Serialize turns: a second line waits for the first to finish so
     // transcript updates and engine state don't race on the same session.
     inFlight = inFlight.then(async () => {
-    const userEntry = await appendTranscriptEntry(opts.memoryDir, session!.id, {
-      role: "user",
-      content: message,
-    });
-    session!.transcript.push(userEntry);
-
-    const result = await engine.processMessage(message, session!);
-    const assistantEntry = await appendTranscriptEntry(opts.memoryDir, session!.id, {
-      role: "assistant",
-      content: result.reply,
-    });
-    session!.transcript.push(assistantEntry);
+    const result = await processTurn(message);
 
     console.log(`\nassistant> ${result.reply}\n`);
     if (result.pendingPlan) {
