@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.62.2] — 2026-08-17
+
 ### Added
 
 - `node scripts/pr-threads.mjs <pr>` prints review thread IDs, authors, resolution state, and full bodies (`#2441`).
