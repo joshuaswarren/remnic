@@ -82,17 +82,37 @@ export const REDOS_SHAPES = Object.freeze([
     id: "nested-quantifier",
     codeql: "js/redos",
     // A quantified token inside a group that is itself quantified —
-    // (a+)+, (a*)+, (\d{2,})+ exponential backtracking.
-    detector: /\((?:\\.|[^()\\])+[*+}]\)[*+]/,
+    // (a+)+, (a*)+, (\d{2,})+ exponential backtracking. Detected with a
+    // string scan (not a regex): a regex detector for this shape is
+    // itself the nested-quantifier shape CodeQL flags.
+    detector: null,
     fix: "remove one quantifier level or rewrite the matching as a loop",
   },
 ]);
+
+/**
+ * One nesting level only: a `)` carrying `*`/`+` whose group body
+ * (no nested groups) ends with a quantifier (`*`, `+`, or `}`).
+ */
+function hasNestedQuantifier(src) {
+  for (let i = 0; i + 1 < src.length; i += 1) {
+    if (src[i] !== ")" || (src[i + 1] !== "*" && src[i + 1] !== "+")) continue;
+    const open = src.lastIndexOf("(", i);
+    if (open === -1) continue;
+    if (src.indexOf(")", open + 1) !== i) continue; // inner group — skip this level
+    const body = src.slice(open + 1, i);
+    const last = body[body.length - 1];
+    if (last === "*" || last === "+" || last === "}") return true;
+  }
+  return false;
+}
 
 function shapeMatches(shape, src) {
   if (shape.id === "ws-capture-chain") {
     const wsCount = (src.match(/\\s[*+]/g) ?? []).length;
     return wsCount >= 2 && (src.includes("(") || /\[[^\]]+\][*+]/.test(src));
   }
+  if (shape.id === "nested-quantifier") return hasNestedQuantifier(src);
   if (!shape.detector.test(src)) return false;
   if (shape.requiresAlternation && !src.includes("|")) return false;
   return true;
@@ -106,8 +126,10 @@ const PRE_REGEX_CHARS = new Set([
   ";", ">", "<", "+", "-", "*", "%", "~", "^", "\n",
 ]);
 
-const REGEX_LITERAL_RE =
-  /\/(?![/*])(?:\\.|\[(?:\\.|[^\]\\\n])*\]|[^/\\\n])+\/[a-z]*/g;
+// No regex-in-regex here: the scanner's own extraction runs as a linear
+// character scan (escapes and character classes respected), because a
+// nested-quantifier extraction pattern is itself js/polynomial-redos
+// bait (CodeQL flagged exactly that on this file's first PR run).
 
 /**
  * Track string spans and a line-comment start on one source line so
@@ -143,23 +165,42 @@ function lineRegions(line) {
   if (quote) strings.push([spanStart, line.length]);
   return { strings, commentStart };
 }
-
-/** Extract regex-literal candidates ({ literal, src, index }) from one line. */
 export function extractRegexLiterals(line) {
   const { strings, commentStart } = lineRegions(line);
   const inString = (pos) => strings.some(([s, e]) => pos >= s && pos <= e);
+  const isFlag = (c) => c >= "a" && c <= "z";
   const out = [];
-  REGEX_LITERAL_RE.lastIndex = 0;
-  for (const match of line.matchAll(REGEX_LITERAL_RE)) {
-    const open = match.index;
-    if (commentStart >= 0 && open > commentStart) continue;
+  for (let open = 0; open < line.length; open += 1) {
+    if (line[open] !== "/") continue;
+    if (commentStart >= 0 && open > commentStart) break;
     if (inString(open)) continue;
     const prev = open === 0 ? "" : line[open - 1];
     if (!PRE_REGEX_CHARS.has(prev)) continue;
-    const text = match[0];
-    const src = text.slice(1, text.lastIndexOf("/"));
-    if (src.length === 0) continue;
-    out.push({ literal: text, src, index: open });
+    const after = line[open + 1];
+    if (after === undefined || after === "/" || after === "*") continue;
+    // Walk to the closing slash, honoring escapes and [...] classes.
+    let i = open + 1;
+    let inClass = false;
+    let closed = -1;
+    while (i < line.length) {
+      const c = line[i];
+      if (c === "\\") i += 2;
+      else if (inClass) {
+        if (c === "]") inClass = false;
+        i += 1;
+      } else if (c === "[") {
+        inClass = true;
+        i += 1;
+      } else if (c === "/") {
+        closed = i;
+        break;
+      } else i += 1;
+    }
+    if (closed === -1 || closed === open + 1) continue;
+    let end = closed + 1;
+    while (end < line.length && isFlag(line[end])) end += 1;
+    out.push({ literal: line.slice(open, end), src: line.slice(open + 1, closed), index: open });
+    open = end - 1; // the for-loop increment moves past the literal
   }
   return out;
 }
