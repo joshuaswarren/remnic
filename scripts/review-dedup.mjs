@@ -447,14 +447,18 @@ export function isThreadAddressedByReply(thread) {
 }
 
 // Reviewer quota / rate-limit outage notices are infrastructure noise, not
-// product findings: they never gate a merge. Anchored to the observed bot
-// phrasings ("You have reached your Codex usage limits", "Review rate
-// limited") so a real finding that merely mentions limits still gates.
-const NON_FINDING_NOTICE_PATTERN = /\byou have reached your .{0,80}usage limits\b|\breview rate limited\b/i;
+// product findings: they never gate a merge. Matched against the COMPLETE
+// trimmed body (an allowlist of the observed bot notices) so a real finding
+// that merely quotes a notice phrase still gates. Exact-match fails closed:
+// a reworded notice blocks merges until it is added here.
+const NON_FINDING_NOTICE_BODIES = new Set([
+  "You have reached your Codex usage limits. Please try again later.",
+  "Review rate limited — no review was produced for this head.",
+]);
 
 /** True when the thread's first comment is a quota/rate-limit notice. */
 export function isNonFindingNotice(thread) {
-  return NON_FINDING_NOTICE_PATTERN.test(firstBody(thread));
+  return NON_FINDING_NOTICE_BODIES.has(firstBody(thread).trim());
 }
 
 function stableSort(threads) {

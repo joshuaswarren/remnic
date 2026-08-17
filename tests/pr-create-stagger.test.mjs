@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -58,8 +58,9 @@ test("stagger wrapper sleeps the remainder, execs gh with all args, and writes a
     { mode: 0o755 }
   );
 
-  // Fresh stamp + 2s gap: the wrapper must sleep the remainder before exec.
-  writeFileSync(path.join(lockDir, "stamp"), String(Math.floor(Date.now() / 1000) - 1));
+  // Fresh stamp + 2s gap: even if the wrapper starts after the next whole
+  // second ticks, ~2s of gap still remain, so the sleep is deterministic.
+  writeFileSync(path.join(lockDir, "stamp"), String(Math.floor(Date.now() / 1000)));
   const startedAt = Date.now();
   const out = execFileSync(
     "bash",
@@ -77,7 +78,7 @@ test("stagger wrapper sleeps the remainder, execs gh with all args, and writes a
   const elapsed = Date.now() - startedAt;
   assert.match(out, /PR-URL-FROM-STUB/);
   assert.deepEqual(readFileSync(ghLog, "utf8").trim().split("\n"), ["pr", "create", "--title", "t", "--fill"]);
-  assert.ok(elapsed >= 900, `expected a stagger sleep, finished in ${elapsed}ms`);
+  assert.ok(elapsed >= 1500, `expected a stagger sleep, finished in ${elapsed}ms`);
   assert.equal(existsSync(path.join(lockDir, "lock")), true, "lock lives under TMPDIR");
   const stamp = Number.parseInt(readFileSync(path.join(lockDir, "stamp"), "utf8"), 10);
   assert.ok(Number.isInteger(stamp) && stamp >= Math.floor(Date.now() / 1000) - 2, "stamp refreshed after the create");
@@ -117,4 +118,39 @@ test("stagger wrapper locks under TMPDIR and does not reference a home path", ()
   assert.match(src, /flock 9/);
   assert.doesNotMatch(src, /\$HOME|~\//);
   assert.doesNotMatch(src, /os\.homedir/);
+});
+
+test("stagger wrapper refuses a symlinked or foreign stagger dir and symlinked state files", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "pr-create-stagger-test-"));
+  const tmpRoot = path.join(dir, "tmp");
+  const binDir = path.join(dir, "bin");
+  const realDir = path.join(tmpRoot, "real");
+  mkdirSync(realDir, { recursive: true });
+  mkdirSync(binDir, { recursive: true });
+  writeFileSync(path.join(binDir, "gh"), "#!/usr/bin/env bash\necho SHOULD-NOT-RUN\n", { mode: 0o755 });
+  const run = (tmp) =>
+    execFileSync(
+      "bash",
+      [
+        "-c",
+        `PATH="${binDir}:$PATH" TMPDIR="${tmp}" bash "${path.join(repoRoot, "scripts", "gh-pr-create-stagger.sh")}" --title x; echo "rc=$?"`,
+      ],
+      { encoding: "utf8" }
+    ).trim();
+
+  // Symlinked stagger dir: refused before gh runs.
+  const linkRoot = path.join(dir, "linktmp");
+  mkdirSync(linkRoot, { recursive: true });
+  symlinkSync(realDir, path.join(linkRoot, "remnic-pr-create-stagger"));
+  assert.equal(run(linkRoot), "rc=2");
+
+  // Symlinked stamp inside an owned dir: refused before gh runs.
+  const ownRoot = path.join(dir, "owntmp");
+  const ownLockDir = path.join(ownRoot, "remnic-pr-create-stagger");
+  mkdirSync(ownLockDir, { recursive: true });
+  writeFileSync(path.join(ownLockDir, "victim"), "data");
+  symlinkSync(path.join(ownLockDir, "victim"), path.join(ownLockDir, "stamp"));
+  assert.equal(run(ownRoot), "rc=2");
+
+  rmSync(dir, { recursive: true, force: true });
 });

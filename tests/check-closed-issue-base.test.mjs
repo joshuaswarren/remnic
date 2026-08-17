@@ -13,10 +13,14 @@ test("parseFixNumbers matches the GitHub closing-keyword family, case-insensitiv
   assert.deepEqual(parseFixNumbers("This closes #34 and nothing else"), [34]);
   assert.deepEqual(parseFixNumbers("CLOSES #7. RESOLVED #8."), [7, 8]);
   assert.deepEqual(parseFixNumbers("Fixed #9, fixes #9 again (dedup)"), [9]);
+  assert.deepEqual(parseFixNumbers("Closes: #10"), [10], "optional colon form");
+  assert.deepEqual(parseFixNumbers("Fixes:  #11"), [11], "colon plus extra space");
+  assert.deepEqual(parseFixNumbers("resolves:#12"), [12], "colon without space still claims");
 });
 
 test("parseFixNumbers ignores cross-repo refs, plain mentions, and keyword-less bodies", () => {
   assert.deepEqual(parseFixNumbers("Fixes owner/repo#1"), []);
+  assert.deepEqual(parseFixNumbers("Fixes: owner/repo#1"), [], "cross-repo ref with colon");
   assert.deepEqual(parseFixNumbers("See #42 for context"), []);
   assert.deepEqual(parseFixNumbers(""), []);
   assert.deepEqual(parseFixNumbers("no keywords here #99"), []);

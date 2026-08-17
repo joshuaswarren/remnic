@@ -320,6 +320,16 @@ jobs:
             const { evaluateClosedIssueBase, parseFixNumbers } = await import(
               pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/check-closed-issue-base.mjs`).href
             );
+            const defaultBranch = context.payload.repository?.default_branch;
+            if (
+              defaultBranch &&
+              context.payload.pull_request?.base?.ref !== defaultBranch
+            ) {
+              core.info(
+                `closed-issue-base: base ${context.payload.pull_request.base.ref} is not the default branch ${defaultBranch} — GitHub does not interpret closing keywords there`,
+              );
+              return;
+            }
             const body = context.payload.pull_request?.body ?? "";
             const fixNumbers = parseFixNumbers(body);
             if (fixNumbers.length === 0) {

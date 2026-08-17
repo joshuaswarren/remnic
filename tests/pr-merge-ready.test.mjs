@@ -219,7 +219,6 @@ function run(env, args) {
   });
 }
 
-
 test("merges a green PR with --squash and deletes the branch only after MERGED", async () => {
   await withStubs("green", async (env, { ghLog, gitLog }) => {
     const result = run(env, []);
@@ -439,10 +438,7 @@ const GREEN_PRODUCT_CHECKS = [
 ];
 
 test("evaluateMergeReadiness: green product gates + NEUTRAL ai-reviewers is ready", () => {
-  const verdict = evaluateMergeReadiness([
-    ...GREEN_PRODUCT_CHECKS,
-    { name: "ai-reviewers", state: "NEUTRAL" },
-  ]);
+  const verdict = evaluateMergeReadiness([...GREEN_PRODUCT_CHECKS, { name: "ai-reviewers", state: "NEUTRAL" }]);
   assert.deepEqual(verdict, { ready: true, blockers: [] });
 });
 

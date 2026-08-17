@@ -13,9 +13,10 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-// GitHub closing-keyword family. Requires whitespace between keyword and #N so
+// GitHub closing-keyword family. The colon is optional (`Fixes #1`,
+// `Fixes: #1`); a separator (whitespace or colon) is still required so
 // cross-repo forms like `Fixes owner/repo#1` are NOT matched.
-const FIX_KEYWORD_PATTERN = /\b(?:fix(?:es|ed)?|clos(?:es|ed)?|resolv(?:es|ed)?)\s+#(\d+)/gi;
+const FIX_KEYWORD_PATTERN = /\b(?:fix(?:es|ed)?|clos(?:es|ed)?|resolv(?:es|ed)?)(?::\s*|\s+)#(\d+)/gi;
 
 /** Issue numbers referenced by a closing keyword in a PR body. */
 export function parseFixNumbers(body) {
@@ -65,8 +66,7 @@ export function evaluateClosedIssueBase(input) {
 }
 
 // CLI: `echo '{"body": "...", "commitsBehindMain": 18, "closedFixNumbers": [2454]}' | node scripts/check-closed-issue-base.mjs`
-const isDirectExecution =
-  Boolean(process.argv[1]) && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isDirectExecution = Boolean(process.argv[1]) && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isDirectExecution) {
   let raw = "";
   process.stdin.on("data", (chunk) => {

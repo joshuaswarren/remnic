@@ -16,7 +16,25 @@ stagger_dir="${TMPDIR:-/tmp}/remnic-pr-create-stagger"
 lock_file="$stagger_dir/lock"
 stamp_file="$stagger_dir/stamp"
 
-mkdir -p "$stagger_dir"
+# Predictable path under a shared TMPDIR: keep the dir private and refuse one
+# we do not own, a symlinked dir, or symlinked lock/stamp — otherwise a local
+# attacker can bypass the serialization or redirect the stamp write.
+# ponytail: check-then-open TOCTOU remains; O_NOFOLLOW would need a helper binary.
+mkdir -p "$stagger_dir" 2>/dev/null || {
+  echo "gh-pr-create-stagger: cannot create stagger dir: $stagger_dir" >&2
+  exit 2
+}
+if [[ -L "$stagger_dir" || ! -d "$stagger_dir" || ! -O "$stagger_dir" ]]; then
+  echo "gh-pr-create-stagger: refusing unsafe stagger dir: $stagger_dir" >&2
+  exit 2
+fi
+chmod 0700 "$stagger_dir"
+for state_file in "$lock_file" "$stamp_file"; do
+  if [[ -L "$state_file" ]]; then
+    echo "gh-pr-create-stagger: refusing symlinked state file: $state_file" >&2
+    exit 2
+  fi
+done
 
 # Hold the lock across wait + create so concurrent creators serialize with the
 # full gap between them, then release on exit.

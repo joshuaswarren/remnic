@@ -14,8 +14,8 @@ export const REQUIRED_PRODUCT_CHECKS = ["build", "tests (root)", "tests (package
 /** Present-only gate: blocks when it exists and is not SUCCESS. */
 export const PRESENT_ONLY_GATES = ["unresolved-review-threads"];
 
-/** Never blocks: informational at any state, missing included. */
-export const INFORMATIONAL_CHECKS = ["ai-reviewers"];
+// `ai-reviewers` is informational at any state (see the header): it is not in
+// either list above, so it can never produce a blocker.
 
 const isSuccess = (check) => String(check?.state ?? "").toUpperCase() === "SUCCESS";
 

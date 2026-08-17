@@ -404,6 +404,21 @@ test("a real finding that merely mentions usage limits still gates", () => {
   assert.equal(computeGuardObligations([thread]).effectiveUnresolvedCount, 1);
 });
 
+test("a real finding that quotes the exact notice phrase still gates", () => {
+  const thread = mkThread({
+    id: 516,
+    path: "scripts/foo.mjs",
+    startLine: 1,
+    line: 2,
+    author: "cursor",
+    body:
+      "The wrapper logs \"You have reached your Codex usage limits. Please try again later.\" verbatim, so operators cannot tell quota noise from a real failure",
+    isResolved: false,
+  });
+  assert.equal(isNonFindingNotice(thread), false, "only a complete-body match is a notice");
+  assert.equal(computeGuardObligations([thread]).effectiveUnresolvedCount, 1);
+});
+
 test("an unresolved canonical never hides its duplicate's finding", () => {
   const canonical = { ...dup1852C1, isResolved: false };
   const duplicate = { ...dup1852C2, isResolved: false };

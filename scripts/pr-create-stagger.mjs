@@ -25,8 +25,7 @@ export function msToWait(lastEpochSec, nowEpochSec, gapSec = DEFAULT_CREATE_GAP_
 
 // CLI: `node scripts/pr-create-stagger.mjs --wait-seconds <lastEpochSec>` prints
 // whole seconds to sleep (rounded up; 0 when no wait is needed).
-const isDirectExecution =
-  Boolean(process.argv[1]) && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isDirectExecution = Boolean(process.argv[1]) && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isDirectExecution) {
   const argIndex = process.argv.indexOf("--wait-seconds");
   const last = Number.parseInt(process.argv[argIndex + 1] ?? "", 10);
