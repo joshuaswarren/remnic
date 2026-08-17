@@ -177,8 +177,6 @@ function candidatePriority(candidate: NamespaceMaintenanceCandidate): number {
   if (candidate.source === "configured") return 2;
   if (candidate.kind === "team-project") return 3;
   if (candidate.kind === "project") return 4;
-  if (candidate.kind === "self") return 5;
-  if (candidate.kind === "legacy") return 6;
   if (candidate.kind === "branch") return 8;
   return 7;
 }

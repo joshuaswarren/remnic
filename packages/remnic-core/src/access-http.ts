@@ -22,7 +22,7 @@ import {
   respondOfflineManifestStream,
   respondOfflineSnapshotStream,
 } from "./access-http-offline-stream.js";
-import { nonEmptyQueryParam, optionalQueryString, positiveIntQueryParam } from "./access-http-query.js";
+import { nonEmptyQueryParam, optionalNamespaceKindQueryParam, optionalQueryString, positiveIntQueryParam } from "./access-http-query.js";
 import { CorrectionContractError } from "./correction/correction-contract.js";
 import { WearablesInputError } from "./wearables/errors.js"; import { respondMeetingsList, respondMeetingsGet, respondMeetingsBuild } from "./meetings/http-glue.js";
 import { EngramMcpServer, MCP_SUPPORTED_PROTOCOL_VERSIONS } from "./access-mcp.js";
@@ -2988,14 +2988,10 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
         return;
       }
       this.requireOperatorToken();
-      const kind = parsed.searchParams.get("kind");
-      const principal = parsed.searchParams.get("principal");
-      const projectId = parsed.searchParams.get("projectId");
+      const kind = optionalNamespaceKindQueryParam(parsed.searchParams.get("kind"));
       const discoveredBy = parsed.searchParams.get("discoveredBy");
       const result = await this.service.adminListNamespaces({
-        ...(kind ? { kind: kind as "default" | "self" | "shared" | "project" | "branch" | "team-project" | "explicit" | "legacy" } : {}),
-        ...(principal && principal.length > 0 ? { principal } : {}),
-        ...(projectId && projectId.length > 0 ? { projectId } : {}),
+        ...(kind ? { kind } : {}),
         ...(discoveredBy
           ? { discoveredBy: discoveredBy as "config" | "write" | "read" | "scan" | "migration" }
           : {}),
