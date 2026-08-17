@@ -208,6 +208,13 @@ These rules are the default workflow for all agents and contributors.
    - A merge-ready PR needs green checks, zero unresolved review threads, and a fresh positive AI verdict on the current head.
    - Use `scripts/pr-wait-settled.sh <pr-number>` to block until the current head has terminal required checks, current reviewer results, and zero unresolved threads.
    - Exact `Review rate limited` and empty-body results count as terminal neutral evidence. Pending reviewers remain blocking unless `--reviewer-timeout S` is set; expiry downgrades them to neutral with a warning.
+6. Fetch `origin/main` (or `github/main`) before creating a worktree.
+   Use `scripts/dev-worktree.sh`, which now defaults to that remote SHA.
+   Do not copy a stale local `main`.
+7. Before growing a file listed under `fileSizeGrandfather` in
+   `scripts/ratchet-baseline.json`, extract the addition to a sibling
+   module. Growing past the ceiling fails the required `checks` job.
+
 
 Reference workflow:
 `docs/ops/pr-review-hardening-playbook.md`
@@ -294,6 +301,13 @@ remain. Work with this, not against it:
    must be re-derived from scratch (the dominant source of wasted cycles). Never
    audit-then-hold — commit incrementally so a killed worker leaves recoverable
    state on the branch.
+4. Open at most one PR per minute when landing a batch. Five PRs at once
+   429 action downloads and 404 brand-new PR node IDs. The AI review and
+   scope-budget gates retry those lookups; do not treat the first red
+   run as a product defect.
+5. A positive CodeRabbit review on the current head satisfies
+   `ai-reviewers` when Cursor never starts. Cursor remains accepted.
+
 
 ### Transactional review rounds (issues #1992, #2442)
 

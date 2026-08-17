@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 usage() {
   printf 'Usage: %s <worktree-path> <branch> [base]\n' "$(basename "$0")" >&2
+  printf 'Default base is origin/main (or github/main) after fetch, not local HEAD.\n' >&2
   exit 2
 }
 
@@ -16,9 +17,22 @@ if [[ $worktree_arg == *$'\n'* || $worktree_arg == *$'\r'* ]]; then
   exit 1
 fi
 branch=$2
-base=${3:-HEAD}
+explicit_base=${3-}
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 repo_root=$(git -C "$script_dir" rev-parse --show-toplevel)
+if [[ -n $explicit_base ]]; then
+  base=$explicit_base
+else
+  git -C "$repo_root" fetch --quiet origin main 2>/dev/null || true
+  git -C "$repo_root" fetch --quiet github main 2>/dev/null || true
+  if git -C "$repo_root" rev-parse --verify --quiet refs/remotes/origin/main^{commit} >/dev/null; then
+    base=origin/main
+  elif git -C "$repo_root" rev-parse --verify --quiet refs/remotes/github/main^{commit} >/dev/null; then
+    base=github/main
+  else
+    base=HEAD
+  fi
+fi
 git_common_dir=$(git -C "$repo_root" rev-parse --git-common-dir)
 if [[ $git_common_dir != /* ]]; then
   git_common_dir=$repo_root/$git_common_dir

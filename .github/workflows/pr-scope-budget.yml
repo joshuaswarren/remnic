@@ -55,6 +55,16 @@ jobs:
           git checkout FETCH_HEAD -- scripts/pr-scope-budget.mjs scripts/effective-diff.mjs scripts/pr-scope-budget.json
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      - name: Bootstrap transient GitHub retry helper
+        run: |
+          if [ ! -f scripts/github-transient-retry.mjs ]; then
+            echo "::notice title=scope-budget bootstrap::scripts/github-transient-retry.mjs absent on base — using PR head copy"
+            git fetch --quiet --depth=1 origin "$HEAD_SHA"
+            git checkout FETCH_HEAD -- scripts/github-transient-retry.mjs
+          fi
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -66,13 +76,19 @@ jobs:
         with:
           script: |
             const fs = require('node:fs');
+            const { pathToFileURL } = require('node:url');
             const { owner, repo } = context.repo;
             const pull_number = context.payload.pull_request.number;
+            const { withTransientGithubRetry } = await import(
+              pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/github-transient-retry.mjs`).href
+            );
 
             // Paginate to completion — artifact PRs with >100 files exist.
-            const files = await github.paginate(github.rest.pulls.listFiles, {
-              owner, repo, pull_number, per_page: 100,
-            });
+            const files = await withTransientGithubRetry(() =>
+              github.paginate(github.rest.pulls.listFiles, {
+                owner, repo, pull_number, per_page: 100,
+              }),
+            );
             // GitHub truncates listFiles at 3,000 files even when paginated.
             // A budget check scoring a truncated list could pass on omitted
             // core files — fail-safe for a limiter is to FAIL loudly
@@ -94,15 +110,19 @@ jobs:
             }))));
 
             // Labels fetched FRESH (payload labels are stale on synchronize).
-            const labels = await github.paginate(github.rest.issues.listLabelsOnIssue, {
-              owner, repo, issue_number: pull_number, per_page: 100,
-            });
+            const labels = await withTransientGithubRetry(() =>
+              github.paginate(github.rest.issues.listLabelsOnIssue, {
+                owner, repo, issue_number: pull_number, per_page: 100,
+              }),
+            );
             fs.writeFileSync('/tmp/pr-labels.json', JSON.stringify(labels.map((l) => l.name)));
 
             // PR title + body — DATA only, scanned for #<n> issue references by
             // the evaluator (issue #2067). Fetched fresh so `edited` events
             // pick up title/body changes.
-            const pr = await github.rest.pulls.get({ owner, repo, pull_number });
+            const pr = await withTransientGithubRetry(() =>
+              github.rest.pulls.get({ owner, repo, pull_number }),
+            );
             fs.writeFileSync('/tmp/pr-meta.txt', `${pr.data.title ?? ''}\n\n${pr.data.body ?? ''}`);
 
             // Thresholds + ignore manifest from the BASE ref: a PR can never
