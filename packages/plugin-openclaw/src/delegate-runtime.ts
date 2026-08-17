@@ -11,12 +11,11 @@
  *   - compaction/reset    → POST /engram/v1/lcm/compaction/flush
  *
  * Deliberately out of scope for delegate v1 (still embedded-only): tool and
- * CLI registration, heartbeat/dreams surfaces, hourly summary crons, public
- * artifacts, and the memory-capability object. The daemon already exposes the
- * tool surface over HTTP/MCP to any client that needs it. This keeps a
- * co-located gateway from running a second orchestrator over the daemon's
- * memory corpus (double maintenance crons, duplicate extraction load, shared
- * SQLite contention).
+ * CLI registration, heartbeat/dreams surfaces, and hourly summary crons. The
+ * daemon already exposes the tool surface over HTTP/MCP to any client that
+ * needs it. This keeps a co-located gateway from running a second orchestrator
+ * over the daemon's memory corpus (double maintenance crons, duplicate
+ * extraction load, shared SQLite contention).
  */
 
 import path from "node:path";
