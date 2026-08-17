@@ -155,6 +155,8 @@ jobs:
         run: node scripts/check-ratchets.mjs
       - name: Package test script files exist
         run: node scripts/check-package-test-files.mjs
+      - name: Shared hook runner sync (issue #2483)
+        run: node scripts/check-hook-runner-sync.mjs
 
 
       - name: Docs-code parity
