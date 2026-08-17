@@ -4373,9 +4373,10 @@ const pluginDefinition = {
               log.debug(`LCM after_compaction error: ${lcmErr}`);
             }
           }
-          await queueOpenClawFlushPlanProcessing("after_compaction", workspaceDir, {
-            timeoutMs: cfg.beforeResetTimeoutMs,
-          });
+          // A completed compaction must not fail because replaying an unrelated
+          // flush-plan backlog exceeds the hook deadline. Keep the serialized
+          // drain in the background; lifecycle/startup triggers can retry it.
+          void queueOpenClawFlushPlanProcessing("after_compaction", workspaceDir);
 
           if (!orchestrator.config.compactionResetEnabled) {
             log.debug(

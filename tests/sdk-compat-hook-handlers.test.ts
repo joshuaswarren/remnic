@@ -2224,6 +2224,80 @@ test("after_compaction preserves the Codex heuristic baseline when the signal fl
   );
 });
 
+test("after_compaction does not await a long-running flush-plan drain", async () => {
+  const { default: plugin } = await import("../src/index.js");
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-after-compaction-flush-"));
+  try {
+    const api = buildHandlerCapturingApi("after-compaction-detached-flush-test");
+    api.pluginConfig = {
+      qmdEnabled: false,
+      modelSource: "gateway",
+      transcriptEnabled: false,
+      hourlySummariesEnabled: false,
+      workspaceDir,
+      openclawFlushPlanProcessingEnabled: true,
+      beforeResetTimeoutMs: 25,
+    };
+    plugin.register(api as any);
+
+    const afterCompaction = api.handlers.get("after_compaction");
+    assert.ok(afterCompaction, "after_compaction handler should be registered");
+
+    const orchestrator = (globalThis as any).__openclawEngramOrchestrator;
+    orchestrator.config.compactionResetEnabled = false;
+    orchestrator.lcmEngine = { enabled: false };
+
+    let markIngestStarted!: () => void;
+    const ingestStarted = new Promise<void>((resolve) => {
+      markIngestStarted = resolve;
+    });
+    let releaseIngest!: () => void;
+    const ingestReleased = new Promise<void>((resolve) => {
+      releaseIngest = resolve;
+    });
+    orchestrator.ingestBulkImportBatch = async () => {
+      markIngestStarted();
+      await ingestReleased;
+      return undefined;
+    };
+
+    const flushPlanPath = path.join(
+      workspaceDir,
+      "state",
+      "plugins",
+      SERVICE_ID,
+      "flush-plan.md",
+    );
+    await mkdir(path.dirname(flushPlanPath), { recursive: true });
+    await writeFile(flushPlanPath, "- Durable note queued after compaction.\n", "utf8");
+
+    const outcome = await Promise.race([
+      afterCompaction(
+        { sessionKey: "detached-after-compaction-flush" },
+        { sessionKey: "detached-after-compaction-flush", workspaceDir },
+      ).then(() => "resolved"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("timed_out"), 250)),
+    ]);
+    assert.equal(
+      outcome,
+      "resolved",
+      "after_compaction must not couple compaction success to backlog ingestion",
+    );
+
+    const drainStarted = await Promise.race([
+      ingestStarted.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 300)),
+    ]);
+    assert.equal(drainStarted, true, "the detached flush-plan drain should still start");
+
+    releaseIngest();
+    await waitForFlushPlanProcessingQueueToEmpty();
+    assert.equal(await readFile(flushPlanPath, "utf8"), "");
+  } finally {
+    await rm(workspaceDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
 test("before_prompt_build uses the Codex heuristic fallback when thread history shrinks", async () => {
   const { default: plugin } = await import("../src/index.js");
   const api = buildHandlerCapturingApi("before-prompt-build-codex-heuristic-test");
