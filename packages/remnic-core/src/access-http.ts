@@ -22,7 +22,7 @@ import {
   respondOfflineManifestStream,
   respondOfflineSnapshotStream,
 } from "./access-http-offline-stream.js";
-import { nonEmptyQueryParam, optionalQueryString, positiveIntQueryParam } from "./access-http-query.js";
+import { nonEmptyQueryParam, optionalNamespaceKindQueryParam, optionalQueryString, positiveIntQueryParam } from "./access-http-query.js";
 import { CorrectionContractError } from "./correction/correction-contract.js";
 import { WearablesInputError } from "./wearables/errors.js"; import { respondMeetingsList, respondMeetingsGet, respondMeetingsBuild } from "./meetings/http-glue.js";
 import { EngramMcpServer, MCP_SUPPORTED_PROTOCOL_VERSIONS } from "./access-mcp.js";
@@ -68,7 +68,6 @@ import { isValidResolutionVerb, executeResolution } from "./contradiction/resolu
 import { RelayMissionStoreError } from "./relay/mission.js";
 import { SupportPassportAccessHttpBase } from "./support-passport/access-http-base.js";
 import { serializeInlineScriptValue } from "./inline-script.js";
-import { isNamespaceKind } from "./namespaces/catalog.js";
 import type { SupportPassportExternalRequestHandler } from "./support-passport/public-http.js";
 export interface AccessHttpReadinessState {
   ready: boolean;
@@ -2989,18 +2988,10 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
         return;
       }
       this.requireOperatorToken();
-      const kind = parsed.searchParams.get("kind");
-      if (kind && !isNamespaceKind(kind)) {
-        this.respondJson(res, 400, {
-          error: "invalid_request",
-          code: "invalid_request",
-          message: "kind must be one of: default, shared, project, branch, team-project, explicit",
-        });
-        return;
-      }
+      const kind = optionalNamespaceKindQueryParam(parsed.searchParams.get("kind"));
       const discoveredBy = parsed.searchParams.get("discoveredBy");
       const result = await this.service.adminListNamespaces({
-        ...(kind && isNamespaceKind(kind) ? { kind } : {}),
+        ...(kind ? { kind } : {}),
         ...(discoveredBy
           ? { discoveredBy: discoveredBy as "config" | "write" | "read" | "scan" | "migration" }
           : {}),

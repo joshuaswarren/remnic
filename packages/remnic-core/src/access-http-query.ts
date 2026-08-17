@@ -1,4 +1,5 @@
 import { EngramAccessInputError } from "./access-service.js";
+import { isNamespaceKind, type NamespaceKind } from "./namespaces/catalog.js";
 
 /** Optional string field from a JSON body: absent/null/"" → undefined. */
 export function optionalQueryString(value: unknown, label: string): string | undefined {
@@ -22,4 +23,15 @@ export function positiveIntQueryParam(value: string | null, label: string): numb
     throw new EngramAccessInputError(`${label} expects a positive integer`);
   }
   return parsed;
+}
+
+/** Optional namespace-kind query param; rejects dead or unknown kinds. */
+export function optionalNamespaceKindQueryParam(value: string | null): NamespaceKind | undefined {
+  if (value === null || value.length === 0) return undefined;
+  if (!isNamespaceKind(value)) {
+    throw new EngramAccessInputError(
+      "kind must be one of: default, shared, project, branch, team-project, explicit",
+    );
+  }
+  return value;
 }
