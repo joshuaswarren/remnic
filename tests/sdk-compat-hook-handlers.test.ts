@@ -4854,6 +4854,107 @@ test("gateway_start does not process flush-plan files in passive slot mode", asy
   }
 });
 
+test("gateway_start flush-plan replay is not bounded by the reset-hook timeout", async () => {
+  const { default: plugin } = await import("../src/index.js");
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-flush-startup-deadline-"));
+  try {
+    const api = buildHandlerCapturingApi("flush-plan-startup-no-deadline-test");
+    api.pluginConfig = {
+      qmdEnabled: false,
+      modelSource: "gateway",
+      transcriptEnabled: false,
+      hourlySummariesEnabled: false,
+      workspaceDir,
+      openclawFlushPlanProcessingEnabled: true,
+      beforeResetTimeoutMs: 25,
+    };
+    plugin.register(api as any);
+
+    assert.ok(api._registeredServiceStart, "service start should be registered");
+
+    const orchestrator = (globalThis as any).__openclawEngramOrchestrator;
+    assert.ok(orchestrator, "orchestrator should exist on globalThis after register");
+    orchestrator.maybeRunFileHygiene = async () => undefined;
+
+    let ingestCalls = 0;
+    let ingestOptions: { deadlineMs?: number } | undefined;
+    let markIngestStarted!: () => void;
+    const ingestStarted = new Promise<void>((resolve) => {
+      markIngestStarted = resolve;
+    });
+    let releaseIngest!: () => void;
+    const ingestReleased = new Promise<void>((resolve) => {
+      releaseIngest = resolve;
+    });
+    orchestrator.ingestBulkImportBatch = async (
+      _turns: unknown,
+      options?: { deadlineMs?: number },
+    ) => {
+      ingestCalls += 1;
+      if (ingestCalls === 1) {
+        ingestOptions = options;
+        markIngestStarted();
+        await ingestReleased;
+      }
+      return undefined;
+    };
+
+    const firstContent = "- Startup replay must outlive the reset timeout budget.\n";
+    const flushPlanPath = path.join(
+      workspaceDir,
+      "state",
+      "plugins",
+      SERVICE_ID,
+      "flush-plan.md",
+    );
+    await mkdir(path.dirname(flushPlanPath), { recursive: true });
+    await writeFile(flushPlanPath, firstContent, "utf8");
+
+    await api._registeredServiceStart?.();
+    const firstDrainStarted = await Promise.race([
+      ingestStarted.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1000)),
+    ]);
+    assert.equal(
+      firstDrainStarted,
+      true,
+      "gateway_start should start the detached flush-plan replay",
+    );
+
+    // Hold ingestion past the entire beforeResetTimeoutMs budget.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.equal(
+      ingestCalls,
+      1,
+      "startup replay should still be active after the reset timeout budget elapsed",
+    );
+    assert.equal(
+      await readFile(flushPlanPath, "utf8"),
+      firstContent,
+      "startup replay should keep the snapshot while ingestion is in flight",
+    );
+    assert.ok(ingestOptions, "ingest options should have been captured");
+    assert.ok(
+      !("deadlineMs" in (ingestOptions ?? {})),
+      "startup replay ingest options must omit deadlineMs entirely",
+    );
+
+    releaseIngest();
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if ((await readFile(flushPlanPath, "utf8")) === "") break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(
+      await readFile(flushPlanPath, "utf8"),
+      "",
+      "startup replay should complete and clear the flush-plan snapshot once ingestion finishes",
+    );
+    await waitForFlushPlanProcessingQueueToEmpty();
+  } finally {
+    await rm(workspaceDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
 test("register rejects malformed OpenClaw flush-plan processing opt-outs", async () => {
   const { default: plugin } = await import("../src/index.js");
   for (const bad of ["fales", "maybe", 2, "2", "enabled"]) {
