@@ -166,7 +166,6 @@ jobs:
             // Keep deduplication logic in the tested repository module. The
             // workflow imports the base revision so a PR cannot change the
             // evaluator that judges its own review threads.
-            const { pathToFileURL } = require("node:url");
             const {
               DUPLICATE_LABEL,
               computeGuardObligations,
