@@ -1,8 +1,11 @@
+import {
+  LEGACY_PLUGIN_ID as LEGACY_REMNIC_MEMORY_SLOT_ID,
+  PLUGIN_ID as CANONICAL_REMNIC_MEMORY_SLOT_ID,
+} from "./plugin-id.js";
+
 export type SlotMismatchMode = "error" | "warn" | "silent";
 export type SlotValidationResult = "ok" | "passive";
 
-const CANONICAL_REMNIC_MEMORY_SLOT_ID = "openclaw-remnic";
-const LEGACY_REMNIC_MEMORY_SLOT_ID = "openclaw-engram";
 const MAX_SLOT_DISTANCE_INPUT_LENGTH = 256;
 
 export interface SlotValidationContext {
