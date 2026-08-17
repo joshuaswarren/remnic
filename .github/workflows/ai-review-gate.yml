@@ -20,7 +20,7 @@ jobs:
   ai-reviewers:
     if: >-
       (github.event_name == 'check_run' &&
-        contains(fromJSON('["cursor-bugbot","cursor"]'), github.event.check_run.app.slug)) ||
+        contains(fromJSON('["cursor-bugbot","cursor","coderabbitai"]'), github.event.check_run.app.slug)) ||
       (github.event_name != 'check_run' && github.event.pull_request.draft == false)
     # Coalesce PR-head events, isolate check_run, never force-cancel. All PR-head
     # events (pull_request, pull_request_review, pull_request_review_comment — all
@@ -46,11 +46,20 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.event.pull_request.base.sha || github.sha }}
+      - name: Bootstrap transient GitHub retry helper
+        run: |
+          if [ ! -f scripts/github-transient-retry.mjs ]; then
+            echo "::notice title=ai-review-gate bootstrap::scripts/github-transient-retry.mjs absent on base — using PR head copy"
+            git fetch --quiet --depth=1 origin "$HEAD_SHA"
+            git checkout FETCH_HEAD -- scripts/github-transient-retry.mjs
+          fi
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Check AI review bot activity
         uses: actions/github-script@v7
         env:
           REQUIRED_AI_REVIEWER_GROUPS: >-
-            cursor-bugbot[bot]|cursor[bot]|cursor-bugbot|cursor
+            cursor-bugbot[bot]|cursor[bot]|cursor-bugbot|cursor|coderabbitai[bot]|coderabbitai
         with:
           script: |
             const BAD_CHECK_CONCLUSIONS = new Set([
@@ -126,6 +135,9 @@ jobs:
               splitEffectiveDiff,
               isArtifactOnlyPullRequest,
             } = await import(pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/effective-diff.mjs`).href);
+            const { withTransientGithubRetry, isTransientGithubLookupError } = await import(
+              pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/github-transient-retry.mjs`).href
+            );
             const IGNORE_MANIFEST_PATH = ".github/ai-review-ignore";
 
 
@@ -440,23 +452,28 @@ jobs:
               let hasBlockers = false;
 
               for (const pr of pullRequestNumbers) {
-                const pullRequest = await github.rest.pulls.get({
-                  owner,
-                  repo,
-                  pull_number: pr,
-                });
+                try {
+                const pullRequest = await withTransientGithubRetry(() =>
+                  github.rest.pulls.get({
+                    owner,
+                    repo,
+                    pull_number: pr,
+                  }),
+                );
                 if (pullRequest.data.draft) {
                   core.notice(`Skipping draft pull request #${pr}.`);
                   continue;
                 }
                 evaluatedCount += 1;
 
-                const reviews = await github.paginate(github.rest.pulls.listReviews, {
-                  owner,
-                  repo,
-                  pull_number: pr,
-                  per_page: 100,
-                });
+                const reviews = await withTransientGithubRetry(() =>
+                  github.paginate(github.rest.pulls.listReviews, {
+                    owner,
+                    repo,
+                    pull_number: pr,
+                    per_page: 100,
+                  }),
+                );
 
                 const issueComments = await github.paginate(github.rest.issues.listComments, {
                   owner,
@@ -592,6 +609,17 @@ jobs:
                 }
 
                 core.notice(`PR #${pr}: ${result.reason}`);
+                } catch (error) {
+                  if (!isTransientGithubLookupError(error)) throw error;
+                  evaluatedCount += 1;
+                  core.info(
+                    `PR #${pr}: transient GitHub lookup after retries (${error?.message ?? error}); polling again`,
+                  );
+                  failures.push({
+                    pr,
+                    reason: `transient github lookup: ${error?.message ?? error}`,
+                  });
+                }
               }
 
               return { failures, evaluatedCount, hasBlockers };
@@ -617,11 +645,13 @@ jobs:
               // never force-cancels us, so this is how a superseded run yields
               // instead of polling a stale head to the deadline.
               if (triggerHeadSha) {
-                const current = await github.rest.pulls.get({
-                  owner,
-                  repo,
-                  pull_number: pullRequestNumbers[0],
-                });
+                const current = await withTransientGithubRetry(() =>
+                  github.rest.pulls.get({
+                    owner,
+                    repo,
+                    pull_number: pullRequestNumbers[0],
+                  }),
+                );
                 const currentHeadSha = current.data.head?.sha;
                 if (currentHeadSha && currentHeadSha !== triggerHeadSha) {
                   core.notice(

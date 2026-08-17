@@ -17,14 +17,17 @@ const headCommittedAt = "2026-05-21T12:00:00.000Z";
 test("AI review gate workflow only runs check_run events for reviewer apps", () => {
   const workflow = readFileSync(".github/workflows/ai-review-gate.yml", "utf8");
 
-  assert.match(workflow, /contains\(fromJSON\('\["cursor-bugbot","cursor"\]'\)/);
+  assert.match(workflow, /contains\(fromJSON\('\["cursor-bugbot","cursor","coderabbitai"\]'\)/);
   assert.doesNotMatch(workflow, /github\.event\.check_run\.app\.slug != 'github-actions'/);
 });
 
 test("AI review gate workflow requires the active current-head reviewer group", () => {
   const workflow = readFileSync(".github/workflows/ai-review-gate.yml", "utf8");
 
-  assert.match(workflow, /cursor-bugbot\[bot\]\|cursor\[bot\]\|cursor-bugbot\|cursor/);
+  assert.match(
+    workflow,
+    /cursor-bugbot\[bot\]\|cursor\[bot\]\|cursor-bugbot\|cursor\|coderabbitai\[bot\]\|coderabbitai/,
+  );
   assert.doesNotMatch(workflow, /kilo-code-bot\[bot\].*REQUIRED_AI_REVIEWER_GROUPS/s);
   assert.doesNotMatch(workflow, /chatgpt-codex-connector.*REQUIRED_AI_REVIEWER_GROUPS/s);
 });
@@ -273,6 +276,24 @@ test("AI review gate passes only when every required group has positive current-
   assert.deepEqual(result.missing, []);
   assert.deepEqual(result.blockers, []);
 });
+
+test("CodeRabbit current-head success satisfies the Cursor OR group", () => {
+  const result = evaluateAiReviewGate({
+    groups: parseReviewerGroups(
+      "cursor-bugbot[bot]|cursor[bot]|cursor-bugbot|cursor|coderabbitai[bot]|coderabbitai",
+    ),
+    headSha,
+    headCommittedAt,
+    checkRuns: [
+      { app: { slug: "coderabbitai" }, conclusion: "success", head_sha: headSha },
+    ],
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.missing, []);
+  assert.deepEqual(result.blockers, []);
+});
+
 
 test("AI review gate fails on failed review-bot check runs", () => {
   const result = evaluateAiReviewGate({

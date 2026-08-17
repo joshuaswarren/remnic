@@ -30,6 +30,16 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.event.pull_request.base.sha || github.sha }}
+      - name: Bootstrap transient GitHub retry helper
+        run: |
+          if [ ! -f scripts/github-transient-retry.mjs ]; then
+            echo "::notice title=thread-guard bootstrap::scripts/github-transient-retry.mjs absent on base — using PR head copy"
+            git fetch --quiet --depth=1 origin "$HEAD_SHA"
+            git checkout FETCH_HEAD -- scripts/github-transient-retry.mjs
+          fi
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
 
       - name: Fail on unresolved review threads
         uses: actions/github-script@v7
@@ -41,6 +51,10 @@ jobs:
           REVIEW_DEDUP_MODE: shadow
         with:
           script: |
+            const { pathToFileURL } = require("node:url");
+            const { withTransientGithubRetry } = await import(
+              pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/github-transient-retry.mjs`).href
+            );
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             // pull_request and pull_request_review_comment events include issue.number for the PR.
@@ -54,12 +68,13 @@ jobs:
               core.setFailed("Unable to determine pull request number for review-thread guard.");
               return;
             }
-
-            const prMeta = await github.rest.pulls.get({
-              owner,
-              repo,
-              pull_number: pr,
-            });
+            const prMeta = await withTransientGithubRetry(() =>
+              github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: pr,
+              }),
+            );
             if (prMeta.data.draft === true) {
               core.notice("Skipping unresolved review-thread gate for draft PR.");
               return;
@@ -108,7 +123,9 @@ jobs:
             let threads = [];
             let after = null;
             while (true) {
-              const result = await github.graphql(query, { owner, repo, pr, after });
+              const result = await withTransientGithubRetry(() =>
+                github.graphql(query, { owner, repo, pr, after }),
+              );
               const conn = result.repository.pullRequest.reviewThreads;
               threads = threads.concat(conn.nodes || []);
               if (!conn.pageInfo?.hasNextPage) break;
@@ -149,7 +166,6 @@ jobs:
             // Keep deduplication logic in the tested repository module. The
             // workflow imports the base revision so a PR cannot change the
             // evaluator that judges its own review threads.
-            const { pathToFileURL } = require("node:url");
             const {
               DUPLICATE_LABEL,
               computeGuardObligations,
