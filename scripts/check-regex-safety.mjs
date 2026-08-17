@@ -56,9 +56,10 @@ export const REDOS_SHAPES = Object.freeze([
   {
     id: "lazy-any",
     codeql: "js/polynomial-redos",
-    // [\s\S]* / [\s\S]+ (greedy or lazy) or a lazy .*/.+ — an unbounded
+    // [\s\S]* / [\S\s]+ / [\w\W]*? / [\d\D]+ … any complementary pair in
+    // either order (greedy or lazy), or a lazy .*/.+ — an unbounded
     // quantifier over a class that matches everything.
-    detector: /\[\\s\\S\][*+]\??|\.[*+]\?/,
+    detector: /\[(?:\\s\\S|\\S\\s|\\w\\W|\\W\\w|\\d\\D|\\D\\d)\][*+]\??|\.[*+]\?/,
     fix: "bound the quantifier (e.g. {0,256}) or replace with an indexOf/loop scan",
   },
   {
@@ -180,13 +181,16 @@ const PRE_REGEX_CHARS = new Set([
 // bait (CodeQL flagged exactly that on this file's first PR run).
 
 /**
- * Track string spans and a line-comment start on one source line so
- * candidates inside strings or after `//` are skipped. Best-effort:
- * regex literals containing quote characters can confuse the tracker,
- * which at worst suppresses a later candidate on the same line.
+ * Track string spans, same-line block-comment spans, and a trailing
+ * comment start on one source line so candidates inside strings or
+ * comments are skipped. A `/* ... *​/` pair that closes on the same
+ * line only masks its own span — code after `*​/` is still scanned.
+ * Best-effort: regex literals containing quote characters can confuse
+ * the tracker, which at worst suppresses a later candidate.
  */
 function lineRegions(line) {
   const strings = [];
+  const comments = [];
   let commentStart = -1;
   let quote = null;
   let spanStart = 0;
@@ -205,27 +209,38 @@ function lineRegions(line) {
       spanStart = i;
       continue;
     }
-    if (c === "/" && (line[i + 1] === "/" || line[i + 1] === "*")) {
+    if (c === "/" && line[i + 1] === "/") {
       commentStart = i;
       break;
     }
+    if (c === "/" && line[i + 1] === "*") {
+      const close = line.indexOf("*/", i + 2);
+      if (close === -1) {
+        commentStart = i;
+        break;
+      }
+      comments.push([i, close + 1]);
+      i = close + 1;
+      continue;
+    }
   }
   if (quote) strings.push([spanStart, line.length]);
-  return { strings, commentStart };
+  return { strings, comments, commentStart };
 }
 export function extractRegexLiterals(line) {
   // JSDoc/block-comment continuation lines start with `*` — code-looking
   // regexes there are prose, not literals. (A `/*` opener on this line is
   // handled by commentStart below.)
   if (/^\s*\*/.test(line)) return [];
-  const { strings, commentStart } = lineRegions(line);
+  const { strings, comments, commentStart } = lineRegions(line);
   const inString = (pos) => strings.some(([s, e]) => pos >= s && pos <= e);
+  const inComment = (pos) => comments.some(([s, e]) => pos >= s && pos <= e);
   const isFlag = (c) => c >= "a" && c <= "z";
   const out = [];
   for (let open = 0; open < line.length; open += 1) {
     if (line[open] !== "/") continue;
     if (commentStart >= 0 && open > commentStart) break;
-    if (inString(open)) continue;
+    if (inString(open) || inComment(open)) continue;
     const prev = open === 0 ? "" : line[open - 1];
     if (!PRE_REGEX_CHARS.has(prev)) continue;
     const after = line[open + 1];

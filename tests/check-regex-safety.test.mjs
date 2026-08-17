@@ -130,6 +130,35 @@ test("nested-quantifier distinguishes bounded from unbounded brace repetition", 
   });
 });
 
+test("a closed same-line block comment masks only its own span; swapped any-pairs still fire", () => {
+  withTempDir("regex-safety-block-", (dir) => {
+    // Regex after the closing */ on the same line must be scanned.
+    const blinded = path.join(dir, "after-close.ts");
+    writeFileSync(blinded, "const a = 1; /* note */ const bad = /[\\s\\S]*?y/;\n");
+    const res = runScript([blinded]);
+    assert.equal(res.status, 1, `${res.stdout}\n${res.stderr}`);
+    assert.match(res.stderr, /after-close\.ts:1: \[lazy-any\]/);
+
+    // Regex inside the comment span is ignored; code after it is clean.
+    const masked = path.join(dir, "inside-comment.ts");
+    writeFileSync(masked, "const a = 1; /* /fake[\\s\\S]*?x/ */ const ok = /\\d+/;\n");
+    assert.equal(runScript([masked]).status, 0);
+
+    // Complementary pairs in either spelling are flagged.
+    for (const [name, re] of [
+      ["swapped", "[\\S\\s]*?"],
+      ["wordpair", "[\\w\\W]*"],
+      ["digitpair", "[\\d\\D]+"],
+    ]) {
+      const f = path.join(dir, `${name}.ts`);
+      writeFileSync(f, `export const v = /${re}x/;\n`);
+      const hit = runScript([f]);
+      assert.equal(hit.status, 1, `${name}: ${hit.stdout}\n${hit.stderr}`);
+      assert.match(hit.stderr, new RegExp(`${name}\\.ts:1: \\[lazy-any\\]`));
+    }
+  });
+});
+
 test("scans only lines added since the base commit, including uncommitted edits", () => {
   withTempDir("regex-safety-git-", (dir) => {
     const repo = path.join(dir, "repo");
