@@ -106,7 +106,8 @@ export type {
   NativeRunnerOptions,
   ResolveHelperDeps,
 } from "./native.js";
-export { chunkStableId, createChunkProcessor } from "./processor.js";
+export { chunkStableId, createChunkProcessor, MAX_BUFFERED_CHUNKS, QUARANTINE_AFTER_FAILURES } from "./processor.js";
+export { scanOrphanedChunks } from "./orphan-scan.js";
 export type { ChunkProcessor, ChunkProcessorDeps, ChunkTranscribeInput } from "./processor.js";
 export { createLiveCapture } from "./capture.js";
 export type { LiveCapture, LiveCaptureOptions } from "./capture.js";
