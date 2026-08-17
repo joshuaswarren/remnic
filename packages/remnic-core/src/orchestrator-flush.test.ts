@@ -12,8 +12,10 @@ import { TurnIngestionCoordinator } from "./orchestration/turn-ingestion.js";
 import { SmartBuffer } from "./buffer.js";
 import { parseConfig } from "./config.js";
 import { stableHash } from "./coding/git-context.js";
-import type { BufferState, BufferTurn } from "./types.js";
+import type { BufferState, BufferTurn, PluginConfig } from "./types.js";
 import type { ImportTurn } from "./bulk-import/types.js";
+import type { LcmEngine } from "./lcm/index.js";
+import type { ExtractionRunResult } from "./orchestration/extraction-run.js";
 import { namespaceIdentityToken } from "./namespaces/identity.js";
 import { readNamespaceMaintenanceStatuses } from "./maintenance/namespace-planner.js";
 import { stubPersistExtraction } from "./testing/orchestrator-lite.js";
@@ -26,6 +28,22 @@ function makeTurn(sessionKey: string, content: string, sessionOwnerPrincipal?: s
     sessionKey,
     ...(sessionOwnerPrincipal ? { sessionOwnerPrincipal } : {}),
   };
+}
+
+/**
+ * Writable orchestrator double for `ingestBulkImportBatch` slice tests: the
+ * real prototype methods run, but the per-test stub surface must stay
+ * assignable (the real class marks these fields readonly).
+ */
+interface BulkImportTestDouble {
+  config: PluginConfig;
+  extractionQueueCoordinator: ExtractionQueueCoordinator;
+  lcmEngine: LcmEngine | null;
+  runExtraction: (
+    turns: BufferTurn[],
+    options?: Record<string, unknown>,
+  ) => Promise<ExtractionRunResult>;
+  ingestBulkImportBatch: Orchestrator["ingestBulkImportBatch"];
 }
 
 interface ScopedFlushTestDouble {
@@ -802,6 +820,129 @@ test("ingestBulkImportBatch can disable source-valid-at replay context", async (
       [{ content: "Remember the third chunk.", contextOnly: false }],
     ],
   );
+});
+
+test("ingestBulkImportBatch skips LCM observation for flush-plan recovery batches (issue #2457)", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as unknown as BulkImportTestDouble;
+  orchestrator.config = parseConfig({});
+  orchestrator.extractionQueueCoordinator = new ExtractionQueueCoordinator();
+  const observedSessionKeys: string[] = [];
+  orchestrator.lcmEngine = {
+    enabled: true,
+    observeMessages: async (sessionKey: string) => {
+      observedSessionKeys.push(sessionKey);
+    },
+    // Partial engine double for the observe seam.
+  } as unknown as LcmEngine;
+  const extractedSlices: BufferTurn[][] = [];
+  orchestrator.runExtraction = async (turns: BufferTurn[]) => {
+    extractedSlices.push(turns);
+    return { status: "completed", persistedCount: 1, durableOutputCount: 1 };
+  };
+
+  const result = await orchestrator.ingestBulkImportBatch([
+    {
+      role: "user",
+      timestamp: "2026-06-24T12:00:00.000Z",
+      content: "Recovery material the host already compacted once.",
+      importProvenance: {
+        sourceLabel: "OpenClaw flush plan",
+        sourceId: "openclaw-remnic:flush-plan",
+      },
+    },
+    {
+      role: "user",
+      timestamp: "2026-06-24T12:00:01.000Z",
+      content: "Chunked recovery material.",
+      importProvenance: {
+        sourceLabel: "OpenClaw flush plan",
+        sourceId: "openclaw-remnic:flush-plan:2/3",
+      },
+    },
+  ]);
+
+  assert.deepEqual(observedSessionKeys, []);
+  assert.equal(extractedSlices.length, 2);
+  assert.equal(result.extractionCount, 2);
+  assert.equal(result.persistedCount, 2);
+});
+
+test("ingestBulkImportBatch still observes ordinary bulk imports through LCM (issue #2457)", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as unknown as BulkImportTestDouble;
+  orchestrator.config = parseConfig({});
+  orchestrator.extractionQueueCoordinator = new ExtractionQueueCoordinator();
+  const observed: { sessionKey: string; turnCount: number }[] = [];
+  orchestrator.lcmEngine = {
+    enabled: true,
+    observeMessages: async (sessionKey: string, messages: unknown[]) => {
+      observed.push({ sessionKey, turnCount: messages.length });
+    },
+    // Partial engine double for the observe seam.
+  } as unknown as LcmEngine;
+  orchestrator.runExtraction = async () => ({
+    status: "completed",
+    persistedCount: 1,
+    durableOutputCount: 1,
+  });
+
+  await orchestrator.ingestBulkImportBatch([
+    {
+      role: "user",
+      timestamp: "2026-06-24T12:00:00.000Z",
+      content: "Ordinary chatgpt import turn.",
+      importProvenance: { sourceLabel: "chatgpt", sourceId: "cg-1" },
+    },
+    {
+      role: "user",
+      timestamp: "2026-06-24T12:00:01.000Z",
+      content: "Ordinary turn without provenance.",
+    },
+  ]);
+
+  assert.deepEqual(
+    observed.map((entry) => entry.turnCount),
+    [2],
+  );
+  assert.ok(observed[0]?.sessionKey.startsWith("bulk-import:batch:"));
+});
+
+test("ingestBulkImportBatch observes mixed batches that contain flush-plan turns (issue #2457)", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as unknown as BulkImportTestDouble;
+  orchestrator.config = parseConfig({});
+  orchestrator.extractionQueueCoordinator = new ExtractionQueueCoordinator();
+  const observed: number[] = [];
+  orchestrator.lcmEngine = {
+    enabled: true,
+    observeMessages: async (_sessionKey: string, messages: unknown[]) => {
+      observed.push(messages.length);
+    },
+    // Partial engine double for the observe seam.
+  } as unknown as LcmEngine;
+  orchestrator.runExtraction = async () => ({
+    status: "completed",
+    persistedCount: 1,
+    durableOutputCount: 1,
+  });
+
+  await orchestrator.ingestBulkImportBatch([
+    {
+      role: "user",
+      timestamp: "2026-06-24T12:00:00.000Z",
+      content: "Recovery material mixed into an ordinary batch.",
+      importProvenance: {
+        sourceLabel: "OpenClaw flush plan",
+        sourceId: "openclaw-remnic:flush-plan",
+      },
+    },
+    {
+      role: "user",
+      timestamp: "2026-06-24T12:00:01.000Z",
+      content: "Ordinary chatgpt import turn.",
+      importProvenance: { sourceLabel: "chatgpt", sourceId: "cg-2" },
+    },
+  ]);
+
+  assert.deepEqual(observed, [2]);
 });
 
 test("ingestBulkImportBatch preserves partial metadata failure before a later slice rejects", async () => {
