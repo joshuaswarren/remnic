@@ -1867,19 +1867,15 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private factHashIndexAuthoritative: boolean | null = null;
   private factHashIndexAuthoritativePromise: Promise<boolean> | null = null;
   /**
-   * Fact-ONLY hash membership (PR #2016). The shared `factHashIndex` above is
-   * category-agnostic (the round-15 corpus rebuild + addContentHashDedup index
-   * every category), so it cannot answer a fact-only question. This set carries
-   * only `category === "fact"` hashes and is the sole source for
-   * `hasFactContentHash`, so an over-included non-fact body can never suppress a
-   * real fact candidate. Kept in lockstep with the shared index on EVERY path:
-   * the authoritative corpus rebuild (repopulated in place), the write path
-   * (`writeMemory` / `addActiveFactContentHash`), the storage-owned removal
-   * (`removeFactContentHashesForMemories`), AND the orchestrator's archival /
-   * consolidation removal (`removeContentHashForMemory` ->
-   * `removeFactOnlyHashForMemory`). In-memory only; never persisted.
+   * Fact-ONLY hash membership (PR #2016 / issue #2474) lives on the shared
+   * `ContentHashIndex` fact-only partition (`addFact*` / `hasFact*` /
+   * `removeFactByHash`), not a parallel set here. The partition carries only
+   * `category === "fact"` hashes and is the sole source for
+   * `hasFactContentHash`, so an over-included non-fact body can never
+   * suppress a real fact candidate. In-memory only; never persisted — every
+   * authoritative corpus rebuild repopulates it via
+   * `ContentHashIndex.clear()` + `addFactByHash`.
    */
-  private factOnlyHashes: Set<string> = new Set();
   /** Optional lock/retry tuning for the fact-hash index cross-process lock (PR #2016; tests inject tight budgets). */
   factHashIndexLockOptions: ContentHashIndexLockOptions = {};
   private readonly secureAppendChains = new Map<string, Promise<void>>();
@@ -3328,15 +3324,14 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    */
   private async rebuildFactHashIndexFromCorpus(factHashIndex: ContentHashIndex): Promise<void> {
     factHashIndex.clear();
-    // Fact-ONLY membership rebuilt in lockstep (PR #2016): hasFactContentHash
-    // reads THIS set, never the category-agnostic shared index below, so an
-    // over-included non-fact body can never satisfy a fact-hash check. Repopulate
-    // the LIVE set in place (clear + add) rather than building a fresh set and
-    // reassigning: a concurrent in-process writeMemory that adds a fact hash
-    // during the corpus-read awaits below would be lost by a publish-time
-    // reassignment (PR #2016 thread SDzOT), exactly as the shared index avoids
-    // by mutating its `hashes` set in place.
-    this.factOnlyHashes.clear();
+    // Fact-ONLY membership is rebuilt in lockstep (PR #2016 / issue #2474):
+    // hasFactContentHash reads the index's fact-only partition, never the
+    // category-agnostic shared set, so an over-included non-fact body can
+    // never satisfy a fact-hash check. `factHashIndex.clear()` above cleared
+    // the partition too, and it repopulates in place below — a concurrent
+    // in-process writeMemory that adds a fact hash during the corpus-read
+    // awaits survives publication (PR #2016 thread SDzOT), exactly as the
+    // shared index preserves by mutating its `hashes` set in place.
     // #1909 review round 14: index the HOT and COLD tiers together. A fact or
     // procedure demoted to cold/ is still active and its content-hash must
     // survive the corpus rebuild, or a restart would drop the hash and let the
@@ -3371,8 +3366,11 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         continue;
       }
       for (const hash of hashes) {
-        factHashIndex.addByHash(hash);
-        if (memory.frontmatter.category === "fact") this.factOnlyHashes.add(hash);
+        if (memory.frontmatter.category === "fact") {
+          factHashIndex.addFactByHash(hash);
+        } else {
+          factHashIndex.addByHash(hash);
+        }
       }
     }
     if (legacyRecovered > 0) {
@@ -3896,8 +3894,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
           options.contentHashSource !== undefined && options.contentHashSource.length > 0
             ? sanitizeMemoryContent(options.contentHashSource).text
             : sanitized.text;
-        factHashIndex.add(hashText);
-        this.factOnlyHashes.add(ContentHashIndex.computeHash(hashText));
+        factHashIndex.addFact(hashText);
         // Gate only the flush (issue #1909): the `.add(...)` above already set
         // dirty=true. When the caller defers, it owns the batch save
         // (extraction persist -> saveContentHashIndexes()). Single-write callers
@@ -3973,7 +3970,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     // upkeep); otherwise the snapshot may be stale, so verify against the durable
     // fact corpus (ground truth) so a lock-contended read never suppresses a fact.
     if (authoritative) {
-      return this.factOnlyHashes.has(hash);
+      const factHashIndex = await this.getFactHashIndex();
+      return factHashIndex.hasFact(sanitized.text);
     }
     return await this.factContentHashPresentInCorpus(hash);
   }
@@ -4002,8 +4000,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     await this.ensureFactHashIndexAuthoritative();
     const factHashIndex = await this.getFactHashIndex();
     for (const hash of hashes) {
-      factHashIndex.addByHash(hash);
-      this.factOnlyHashes.add(hash);
+      factHashIndex.addFactByHash(hash);
     }
     // PR #2016 thread SDzOP: flush through the SAME cross-process locked
     // reconcile the write/batch/rebuild paths use, never the unlocked whole-file
@@ -4089,7 +4086,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     for (const hash of removedHashes) {
       if (!remainingActiveHashes.has(hash)) {
         factHashIndex.removeByHash(hash);
-        this.factOnlyHashes.delete(hash);
+        factHashIndex.removeFactByHash(hash);
       }
     }
     // PR #2016 thread SDzOP: serialize the removal with the per-index lock via
@@ -4102,21 +4099,23 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   }
 
   /**
-   * Remove a memory's fact-ONLY hash membership in lockstep with the shared,
-   * category-agnostic index removal the orchestrator's
-   * `removeContentHashForMemory` performs on archival / semantic consolidation
-   * (PR #2016 threads SDzOP / SDzOR). Without this, `factOnlyHashes` kept a
-   * removed/superseded fact's hash and `hasFactContentHash` returned a stale
-   * `true` until the next corpus rebuild, so wearable / explicit-capture /
-   * promotion callers skipped a valid write. In-memory only — `factOnlyHashes`
-   * is never persisted; it is rebuilt from the corpus. No-op for non-facts.
-   * Matches the shared index's unconditional per-hash removal so the two stay
-   * coherent.
+   * Remove a memory's fact-ONLY partition membership in lockstep with the
+   * shared, category-agnostic index removal the orchestrator's
+   * `removeContentHashForMemory` performs on archival / semantic
+   * consolidation (PR #2016 threads SDzOP / SDzOR). Without this, the
+   * partition kept a removed/superseded fact's hash and `hasFactContentHash`
+   * returned a stale `true` until the next corpus rebuild, so wearable /
+   * explicit-capture / promotion callers skipped a valid write. No-op when
+   * the fact-hash index has not been loaded in this process yet (the
+   * partition is empty then and the corpus rebuild excludes the removed
+   * memory). No-op for non-facts.
    */
   removeFactOnlyHashForMemory(memory: MemoryFile): void {
     if (memory.frontmatter.category !== "fact") return;
+    const factHashIndex = this.factHashIndex;
+    if (!factHashIndex) return;
     for (const hash of this.factContentHashesForRemoval(memory)) {
-      this.factOnlyHashes.delete(hash);
+      factHashIndex.removeFactByHash(hash);
     }
   }
 

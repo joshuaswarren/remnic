@@ -308,10 +308,10 @@ test("direct writeMemory('fact') without the flag persists the hash via the LOCK
 });
 
 test("#2016 thread SDzOT: a fact hash added during the authoritative rebuild's corpus scan is not lost", async () => {
-  // The rebuild used to build a fresh `factOnly` set and publish it with
-  // `this.factOnlyHashes = factOnly`, dropping any concurrent in-process
-  // writeMemory that added to the LIVE set during the readAllMemories /
-  // readAllColdMemories awaits. The rebuild now repopulates the live set in place
+  // The rebuild used to build a fresh fact-only set and publish it with a
+  // reassignment, dropping any concurrent in-process writeMemory that added to
+  // the LIVE membership during the readAllMemories / readAllColdMemories
+  // awaits. The fact-only partition on ContentHashIndex repopulates in place
   // (clear + add), so a concurrent add survives publication — exactly as the
   // shared index preserves concurrent adds by mutating its `hashes` set in place.
   await withMemoryDir(async (dir) => {
@@ -320,7 +320,7 @@ test("#2016 thread SDzOT: a fact hash added during the authoritative rebuild's c
     await storage.writeMemory("fact", "alpha established fact", { source: "extraction" });
 
     const s = storage as unknown as {
-      factOnlyHashes: Set<string>;
+      factHashIndex: ContentHashIndex | null;
       factHashIndexAuthoritative: boolean | null;
       readAllColdMemories: () => Promise<unknown[]>;
       ensureFactHashIndexAuthoritative: () => Promise<boolean>;
@@ -329,13 +329,13 @@ test("#2016 thread SDzOT: a fact hash added during the authoritative rebuild's c
     const realCold = s.readAllColdMemories.bind(storage);
     let injected = false;
     // Interpose on the SECOND corpus await inside the rebuild (after clear()):
-    // simulate a concurrent writeMemory adding a fact hash to the live set while
-    // the rebuild is mid-scan.
+    // simulate a concurrent writeMemory adding a fact hash to the live
+    // partition while the rebuild is mid-scan.
     s.readAllColdMemories = async () => {
       const res = await realCold();
       if (!injected) {
         injected = true;
-        s.factOnlyHashes.add(sentinel);
+        s.factHashIndex?.addFactByHash(sentinel);
       }
       return res;
     };
@@ -345,7 +345,7 @@ test("#2016 thread SDzOT: a fact hash added during the authoritative rebuild's c
     assert.equal(await s.ensureFactHashIndexAuthoritative(), true, "rebuild published");
 
     assert.equal(
-      s.factOnlyHashes.has(sentinel),
+      s.factHashIndex?.hasFactByHash(sentinel),
       true,
       "a fact hash added during the rebuild scan must survive publication (lost under reassign)"
     );

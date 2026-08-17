@@ -110,6 +110,20 @@ export interface ContentHashPathEntry {
  */
 export class ContentHashIndex {
   private hashes: Set<string> = new Set();
+  /**
+   * Fact-ONLY hash partition (issue #2474). `hashes` above is category-blind
+   * (every write category registers there); this subset carries only
+   * `category === "fact"` hashes so fact-only membership checks
+   * (`hasFact*`) can never be satisfied by an unrelated decision/preference
+   * sharing the same normalized body. In-memory only — never serialized to
+   * fact-hashes.txt; `clear()` drops it and every authoritative rebuild
+   * repopulates it via `addFactByHash`. Subset invariant: `factHashes ⊆
+   * hashes` — `addFact*` registers in both, and the removal sites that drop
+   * a shared hash also drop the partition entry (removal stays caller-paired
+   * because shared-index removal is category-blind: archiving a non-fact
+   * must not evict an active fact's fact-only membership).
+   */
+  private factHashes: Set<string> = new Set();
   private dirty = false;
   /** True when load() found the pre-Unicode, markerless on-disk format. */
   private formatMigrationRequired = false;
@@ -290,6 +304,9 @@ export class ContentHashIndex {
     if (this.hashes.size > 0) {
       this.hashes.clear();
     }
+    // The fact-only partition is rebuilt with the shared set on every
+    // authoritative corpus rebuild, so it clears here too (issue #2474).
+    this.factHashes.clear();
     // A full clear is always paired with a plain overwrite save() (rebuild);
     // pending per-hash add/remove deltas are subsumed by writing the rebuilt set.
     // Cancel any armed deferred-reconcile retry (PR #2016) so it cannot fire in
@@ -691,6 +708,43 @@ export class ContentHashIndex {
     this.hashes.add(hash);
     this.added.add(hash);
     this.dirty = true;
+  }
+
+  // ── Fact-only partition (issue #2474) ─────────────────────────────────
+  // Folded here from StorageManager's parallel `factOnlyHashes` set, which had
+  // to be kept in lockstep by hand on every add/remove/rebuild site. The
+  // partition lives on the index instance, so every path that mutates the
+  // shared set and needs fact-only truth mutates it in the same breath.
+
+  /** Register fact content in BOTH the shared index and the fact-only partition. */
+  addFact(content: string): void {
+    this.addFactByHash(ContentHashIndex.computeHash(content));
+  }
+
+  /** Register a pre-computed fact hash in both the shared index and the fact-only partition. */
+  addFactByHash(hash: string): void {
+    this.addByHash(hash);
+    this.factHashes.add(hash);
+  }
+
+  /** Fact-ONLY membership: has this content been registered as a fact? */
+  hasFact(content: string): boolean {
+    return this.factHashes.has(ContentHashIndex.computeHash(content));
+  }
+
+  /** Fact-ONLY membership for a pre-computed SHA-256 hash. */
+  hasFactByHash(hash: string): boolean {
+    return this.factHashes.has(hash);
+  }
+
+  /**
+   * Drop fact-only partition membership WITHOUT touching the shared index.
+   * The shared removal stays caller-owned: a shared hash is dropped only when
+   * no other active memory holds it, while fact-only membership follows the
+   * fact's own lifecycle (supersede/archive/promotion).
+   */
+  removeFactByHash(hash: string): void {
+    this.factHashes.delete(hash);
   }
 
   /**
