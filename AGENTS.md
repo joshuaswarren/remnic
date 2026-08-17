@@ -215,6 +215,7 @@ Reference workflow:
 Use `scripts/dev-worktree.sh <worktree-path> <branch> [base]` to create an
 isolated, installed worktree with a core type-check smoke check.
 - **Subagent worktree discipline.** Verify `pwd` before every write; use absolute paths rooted at this worktree; NEVER write to the main checkout or sibling worktrees; agent file tools may ignore cwd.
+- **Checkpoint after each milestone.** After a commit is pushed, a PR is opened, or threads are resolved, run `node scripts/agent-checkpoint.mjs write --note "<milestone>"` so a coordinator can resume after a crash.
 
 Run pnpm through the pinned package manager wrapper:
 

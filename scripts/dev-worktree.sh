@@ -213,4 +213,5 @@ printf 'Next steps:\n'
 printf '  cd %q\n' "$worktree_path"
 printf '  git status\n'
 printf '  git push -u origin %q\n' "$branch"
+printf '  node scripts/agent-checkpoint.mjs write --note "<milestone>"\n'
 printf 'Worktree discipline: %s\n' "$worktree_discipline"

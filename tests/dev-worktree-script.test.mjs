@@ -69,6 +69,7 @@ test("creates an installed worktree and runs the smoke check at an absolute path
     assert.ok(result.stdout.includes(`Worktree discipline: ${worktreeDiscipline}`));
     assert.match(result.stdout, /Worktree ready/);
     assert.match(result.stdout, new RegExp(`Next steps[\\s\\S]*${branch}`));
+    assert.match(result.stdout, /node scripts\/agent-checkpoint\.mjs write --note/);
     const calls = readFileSync(fixture.log, "utf8");
     assert.match(calls, /exec --yes pnpm@10\.32\.1 -- install --frozen-lockfile/);
     assert.match(calls, /exec --yes pnpm@10\.32\.1 -- --filter @remnic\/core run check-types/);
