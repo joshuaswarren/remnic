@@ -120,7 +120,7 @@ test("stagger wrapper locks under TMPDIR and does not reference a home path", ()
   assert.doesNotMatch(src, /os\.homedir/);
 });
 
-test("stagger wrapper refuses a symlinked or foreign stagger dir and symlinked state files", () => {
+test("stagger wrapper refuses a symlinked stagger dir and symlinked lock or stamp", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "pr-create-stagger-test-"));
   const tmpRoot = path.join(dir, "tmp");
   const binDir = path.join(dir, "bin");
@@ -144,12 +144,15 @@ test("stagger wrapper refuses a symlinked or foreign stagger dir and symlinked s
   symlinkSync(realDir, path.join(linkRoot, "remnic-pr-create-stagger"));
   assert.equal(run(linkRoot), "rc=2");
 
-  // Symlinked stamp inside an owned dir: refused before gh runs.
+  // Symlinked state files inside an owned dir: refused before gh runs.
   const ownRoot = path.join(dir, "owntmp");
   const ownLockDir = path.join(ownRoot, "remnic-pr-create-stagger");
   mkdirSync(ownLockDir, { recursive: true });
   writeFileSync(path.join(ownLockDir, "victim"), "data");
   symlinkSync(path.join(ownLockDir, "victim"), path.join(ownLockDir, "stamp"));
+  assert.equal(run(ownRoot), "rc=2");
+  rmSync(path.join(ownLockDir, "stamp"));
+  symlinkSync(path.join(ownLockDir, "victim"), path.join(ownLockDir, "lock"));
   assert.equal(run(ownRoot), "rc=2");
 
   rmSync(dir, { recursive: true, force: true });
