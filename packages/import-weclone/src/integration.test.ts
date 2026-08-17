@@ -39,9 +39,6 @@ import type { BulkImportSource, ImportTurn } from "@remnic/core";
 import { wecloneImportAdapter } from "./adapter.js";
 import { ensureWecloneImportAdapterRegistered } from "./index.js";
 import { parseWeCloneExport } from "./parser.js";
-import { groupIntoThreads } from "./threader.js";
-import { mapParticipants } from "./participant.js";
-import { chunkThreads } from "./chunker.js";
 
 // ---------------------------------------------------------------------------
 // Synthetic fixture — multi-thread export covering all code paths
@@ -211,115 +208,6 @@ describe("integration: WeClone → @remnic/core bulk-import", () => {
     assert.equal(carol?.role, "other");
   });
 
-  it("threader groups messages into threads with reply-chain merging", () => {
-    const source = parseWeCloneExport(buildSyntheticExport());
-    const threads = groupIntoThreads(source.turns);
-
-    // With the default 30-min gap + reply-chain merge, we expect:
-    //   - Thread 1 (morning) MERGED with thread 3 (evening) via m-002 → m-020
-    //   - Thread 2 (mid-day) standalone
-    //   - Thread 4 (late-night lonely) filtered out by minThreadSize=2
-    //
-    // That yields exactly 2 threads.
-    assert.equal(threads.length, 2);
-
-    // The merged thread must contain both morning and evening messages
-    const morningMerged = threads.find((t) =>
-      t.turns.some((turn) => turn.content === "good morning team"),
-    );
-    assert.ok(morningMerged, "morning thread should be present");
-    assert.ok(
-      morningMerged.turns.some(
-        (turn) => turn.content === "following up on the standup topic from earlier",
-      ),
-      "evening reply should be merged into morning thread via reply chain",
-    );
-
-    // Every thread is sorted by timestamp
-    for (const thread of threads) {
-      for (let i = 1; i < thread.turns.length; i += 1) {
-        assert.ok(
-          new Date(thread.turns[i].timestamp).getTime() >=
-            new Date(thread.turns[i - 1].timestamp).getTime(),
-          "thread turns must be sorted by timestamp",
-        );
-      }
-    }
-
-    // The lonely late-night message must NOT appear in any thread
-    for (const thread of threads) {
-      for (const turn of thread.turns) {
-        assert.notEqual(
-          turn.content,
-          "note to self: push the docs",
-          "single-message thread should be filtered out by minThreadSize",
-        );
-      }
-    }
-  });
-
-  it("participant mapper classifies self/frequent/occasional correctly", () => {
-    const source = parseWeCloneExport(buildSyntheticExport());
-    const participants = mapParticipants(source.turns);
-
-    const byId = new Map(participants.map((p) => [p.id, p]));
-    // Alice has the most messages and should be tagged "self"
-    assert.equal(byId.get("Alice")?.relationship, "self");
-    // Bob is a frequent contributor (> 10% of total messages)
-    assert.equal(byId.get("Bob")?.relationship, "frequent");
-    // ChatGPT Bot appears once — occasional in this fixture
-    const bot = byId.get("ChatGPT Bot");
-    assert.ok(
-      bot?.relationship === "occasional" || bot?.relationship === "frequent",
-      `ChatGPT Bot should be occasional or frequent, got ${bot?.relationship}`,
-    );
-
-    // Counts should round-trip with the source turns
-    const totalFromParticipants = participants.reduce(
-      (acc, p) => acc + p.messageCount,
-      0,
-    );
-    assert.equal(totalFromParticipants, source.turns.length);
-  });
-
-  it("chunker splits long threads with the configured overlap", () => {
-    // Build a single long synthetic thread to exercise the chunker
-    // deterministically (isolated from threader behavior).
-    const longThread: ImportTurn[] = [];
-    for (let i = 0; i < 10; i += 1) {
-      longThread.push({
-        role: "user",
-        content: `msg-${i}`,
-        timestamp: new Date(
-          Date.parse("2025-04-01T08:00:00Z") + i * 60_000,
-        ).toISOString(),
-        participantId: "Alice",
-        participantName: "Alice",
-      });
-    }
-    const chunks = chunkThreads(
-      [
-        {
-          turns: longThread,
-          threadId: "thread-0001",
-          startTime: longThread[0].timestamp,
-          endTime: longThread[longThread.length - 1].timestamp,
-        },
-      ],
-      { maxTurnsPerChunk: 4, overlapTurns: 1 },
-    );
-
-    // Sliding window: step = 4 - 1 = 3. Windows start at 0, 3, 6. The
-    // third window covers msg-6..msg-9 (end === turns.length), so the
-    // loop breaks and we get exactly 3 chunks.
-    assert.equal(chunks.length, 3);
-    assert.equal(chunks[0][0].content, "msg-0");
-    assert.equal(chunks[0].at(-1)?.content, "msg-3");
-    // Overlap of 1 means chunk 1 starts at msg-3 (overlap with chunk 0's tail)
-    assert.equal(chunks[1][0].content, "msg-3");
-    // Last chunk should end at msg-9
-    assert.equal(chunks.at(-1)?.at(-1)?.content, "msg-9");
-  });
 
   it("adapter registers in core and resolves by name", () => {
     registerBulkImportSource(wecloneImportAdapter);

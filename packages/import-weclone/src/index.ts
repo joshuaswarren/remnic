@@ -20,27 +20,6 @@ export {
   type ParseOptions,
 } from "./parser.js";
 
-export {
-  groupIntoThreads,
-  type ThreadGroup,
-  type ThreaderOptions,
-} from "./threader.js";
-
-export {
-  mapParticipants,
-  type ParticipantEntity,
-} from "./participant.js";
-
-export {
-  chunkThreads,
-  type ChunkOptions,
-} from "./chunker.js";
-
-export {
-  createProgressTracker,
-  type ImportProgress,
-  type ProgressCallback,
-} from "./progress.js";
 
 /**
  * Idempotently register the WeClone adapter with the core bulk-import
