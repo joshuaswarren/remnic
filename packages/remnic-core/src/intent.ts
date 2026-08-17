@@ -1,3 +1,11 @@
+import {
+  CAUSAL_CHAIN_CUES,
+  GRAPH_MODE_CUES,
+  containsRecallCue,
+  endsWithQuestionMark,
+  isMultilingualAck,
+  stripTrailingRecallNoise,
+} from "./recall-planner-i18n.js";
 import type { MemoryIntent, RecallPlanMode } from "./types.js";
 
 const GOAL_PATTERNS: Array<{ re: RegExp; goal: string }> = [
@@ -100,35 +108,26 @@ export function intentCompatibilityScore(queryIntent: MemoryIntent, memoryIntent
 
 export function planRecallMode(prompt: string): RecallPlanMode {
   const p = normalizeTextInput(prompt).trim();
-  let ackCandidate = p;
-  while (ackCandidate.length > 0) {
-    const ch = ackCandidate.charCodeAt(ackCandidate.length - 1);
-    const isDigit = ch >= 48 && ch <= 57;
-    const isUpper = ch >= 65 && ch <= 90;
-    const isLower = ch >= 97 && ch <= 122;
-    // Strip any trailing non-alphanumeric noise (punctuation/emojis/symbols).
-    if (isDigit || isUpper || isLower) break;
-    ackCandidate = ackCandidate.slice(0, -1);
-  }
-  ackCandidate = ackCandidate.trim();
   if (p.length === 0) return "no_recall";
 
-  if (/\b(timeline|sequence|history|what happened|chain of events|root cause)\b/i.test(p)) {
+  if (
+    /\b(timeline|sequence|history|what happened|chain of events|root cause)\b/i.test(p) ||
+    containsRecallCue(p, GRAPH_MODE_CUES)
+  ) {
     return "graph_mode";
   }
 
   // Reserve no_recall for low-information acknowledgements; avoid broad regressions.
-  if (
-    p.length <= 18 &&
-    /^(ok|okay|kk|thanks|thx|got it|sounds good|yep|yes|nope|no|done|cool|works)$/i.test(ackCandidate)
-  ) {
+  // Multilingual table (issue #2191): Japanese/Chinese/Korean/Russian/etc acks
+  // route the same way; the exact-match set cannot match longer English prompts.
+  if (p.length <= 18 && isMultilingualAck(stripTrailingRecallNoise(p))) {
     return "no_recall";
   }
 
   // Full recall for prompts that are explicitly memory-seeking or analytical questions.
   if (
     /\b(previous|earlier|remember|last time|did we|what did we decide|context|summarize|summary|recap|key points|decision)\b/i.test(p) ||
-    /\?$/.test(p) ||
+    endsWithQuestionMark(p) ||
     /^(what|why|how|when|where|who|which)\b/i.test(p.toLowerCase())
   ) {
     return "full";
@@ -148,7 +147,8 @@ export function planRecallMode(prompt: string): RecallPlanMode {
 export function hasBroadGraphIntent(prompt: string): boolean {
   const p = normalizeTextInput(prompt).trim().toLowerCase();
   if (!p) return false;
-  return /\b(what changed|how did we get here|why did this happen|what led to|cause chain|dependency chain|regression chain|failure chain)\b/i.test(
-    p,
+  return (
+    /\b(what changed|how did we get here|why did this happen|what led to|cause chain|dependency chain|regression chain|failure chain)\b/i.test(p) ||
+    containsRecallCue(p, CAUSAL_CHAIN_CUES)
   );
 }

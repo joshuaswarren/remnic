@@ -6,7 +6,9 @@ const DEFAULT_RECALL_STOP_WORDS = ["the", "and", "for", "with", "from", "into", 
 
 export function isUnsegmentableRecallChar(char: string): boolean {
   if (char === "ー" || char === "ｰ") return true;
-  return /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(char);
+  return /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Thai}\p{Script=Khmer}\p{Script=Lao}\p{Script=Myanmar}]/u.test(
+    char,
+  );
 }
 
 function isRecallCombiningMark(char: string): boolean {

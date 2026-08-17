@@ -7,6 +7,10 @@ import {
   type RankedEvidenceItem,
 } from "./recall-pipeline-stages.js";
 
+import { shouldRecallEventOrderEvidence } from "./event-order-query.js";
+export { shouldRecallEventOrderEvidence };
+
+
 export interface EventOrderRecallOptions {
   engine: ExplicitCueRecallEngine | null | undefined;
   // event-order reads a SINGLE LCM session key. Unlike the relevance-ranked
@@ -28,87 +32,6 @@ const DEFAULT_SCAN_WINDOW_TURNS = 12;
 const DEFAULT_SCAN_WINDOW_TOKENS = 24_000;
 const DEFAULT_MAX_ITEMS = 24;
 
-export function shouldRecallEventOrderEvidence(query: string): boolean {
-  const normalized = query.toLowerCase();
-
-  // --- Existing event-order patterns (LongMemEval order-reconstruction phrasing) ---
-  if (
-    /\border in which\b/.test(normalized) ||
-    /\bsequence in which\b/.test(normalized) ||
-    /\breconstruct\b.*\btimeline\b/.test(normalized) ||
-    /\btimeline\b.*\bin order\b/.test(normalized) ||
-    /\bsequence\b.*\bin order\b/.test(normalized) ||
-    /\bintroduced\b.*\bin order\b/.test(normalized) ||
-    (/\bwalk me through\b/.test(normalized) && /\bin order\b/.test(normalized)) ||
-    (/\bin order\b/.test(normalized) &&
-      /\b(?:develop(?:ed|ment)?|evolv(?:e|ed|ing)?|progress|throughout|conversations?|sessions?)\b/.test(normalized)) ||
-    /\bprogress\b.*\bin order\b/.test(normalized) ||
-    /\bchronological(?:ly| order)?\b/.test(normalized) ||
-    isTimelineSummaryQuery(normalized)
-  ) {
-    return true;
-  }
-
-  // --- Temporal-reasoning patterns (LongMemEval temporal-reasoning question type) ---
-  // These question shapes need chronological evidence to answer correctly:
-  // ordering ("which happened first"), relative time ("how many days
-  // between"), and recency ("which did I [verb] last"). The event-order tier
-  // surfaces a chronologically sorted evidence pack so the responder can
-  // reconstruct the answer from an ordered timeline rather than fragments.
-  // Verified against the LongMemEval-oracle dataset: 0% of the 133
-  // temporal-reasoning questions matched the original heuristic above.
-
-  // "Which X did I Y first, A or B?" / "What was the first X ...?"
-  if (/\bwhich\b.*\bfirst\b/.test(normalized) || /\bwhat was the first\b/.test(normalized)) {
-    return true;
-  }
-  // "Which event happened first, A or B?" / "Which happened first"
-  if (/\bhappened first\b/.test(normalized) || /\bwhich\b.*\bhappened\b/.test(normalized)) {
-    return true;
-  }
-  // "How many days before/between/after/did it take"
-  if (/\bhow many days\b/.test(normalized)) {
-    return true;
-  }
-  // "When did I ..." (date-shaped)
-  if (/\bwhen did\b/.test(normalized)) {
-    return true;
-  }
-  // "Which X did I Y last?" / "the last X I ..."
-  if (/\bwhich\b.*\blast\b/.test(normalized) || /\bthe last\b.*\bi\b/.test(normalized)) {
-    return true;
-  }
-  // "Who did I meet/become first, X or Y?" (person ordering)
-  if (/\bwho\b.*\bfirst\b/.test(normalized)) {
-    return true;
-  }
-  // "most recently" / "most recent" (recency)
-  if (/\bmost recent(?:ly)?\b/.test(normalized)) {
-    return true;
-  }
-  // "What is the order of..." / "...from earliest to latest"
-  if (/\border of\b/.test(normalized) || /\bfrom earliest to latest\b/.test(normalized)) {
-    return true;
-  }
-
-  // "How long have/did/had I been..." (duration)
-  if (/\bhow long\b/.test(normalized)) {
-    return true;
-  }
-  // "How many months/weeks/years ago/before" (relative time)
-  if (/\bhow many (months|weeks|years)\b/.test(normalized)) {
-    return true;
-  }
-  // "How many X did I [verb] before Y" (temporal comparison)
-  if (/\bhow many\b.*\bbefore\b/.test(normalized)) {
-    return true;
-  }
-  // "How old was I when..." (age-at-time)
-  if (/\bhow old\b.*\bwhen\b/.test(normalized)) {
-    return true;
-  }
-  return false;
-}
 
 export async function buildEventOrderRecallSection(
   options: EventOrderRecallOptions,
@@ -1693,15 +1616,6 @@ function deriveChronologicalCueLabels(content: string, query: string): string[] 
   return [...labels].slice(0, 5);
 }
 
-function isTimelineSummaryQuery(normalized: string): boolean {
-  return /\b(?:summarize|summary|major progress|what happened|develop(?:ed|ment)?|approached)\b/.test(
-    normalized,
-  ) &&
-    (/\b(?:over time|throughout|between|project|progress|timeline|journey|sessions?|along the way)\b/.test(
-      normalized,
-    ) ||
-      /\bfrom\b.+\bthrough\b/.test(normalized));
-}
 
 function addLabelIf(
   labels: Set<string>,

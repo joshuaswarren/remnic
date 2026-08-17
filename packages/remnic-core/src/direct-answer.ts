@@ -18,7 +18,11 @@
  * Not wired into retrieval yet — see slice 3.
  */
 
-import { normalizeRecallTokenSet, normalizeRecallTokens } from "./recall-tokenization.js";
+import {
+  isUnsegmentableRecallChar as isUnsegmentableRecallCodepoint,
+  normalizeRecallTokenSet,
+  normalizeRecallTokens,
+} from "./recall-tokenization.js";
 import type { TrustZoneName } from "./trust-zones.js";
 import type { MemoryFile, MemoryStatus } from "./types.js";
 
@@ -154,8 +158,7 @@ interface ScoredCandidate {
 }
 
 function hasUnsegmentableRecallChar(token: string): boolean {
-  if (token.includes("ー") || token.includes("ｰ")) return true;
-  return /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(token);
+  return [...token].some((ch) => isUnsegmentableRecallCodepoint(ch));
 }
 
 function requiredCjkPhraseTokens(query: string): string[] {

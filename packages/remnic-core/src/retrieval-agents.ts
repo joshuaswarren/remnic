@@ -24,6 +24,8 @@ import type { QmdSearchResult } from "./types.js";
 import type { QmdClient } from "./qmd.js";
 import { isTemporalQuery, recencyWindowBoundsFromPrompt } from "./temporal-index.js";
 import { isAbortError } from "./abort-error.js";
+import { normalizeRecallTokens } from "./recall-tokenization.js";
+
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -56,10 +58,9 @@ export function shouldRunAgent(
 ): boolean {
   switch (agent) {
     case "direct":
-      // Skip only if query has no word-like tokens at all. Both capitalized and
-      // lowercase entity names are stored (normalizeEntityName lowercases them),
-      // so gating on capitalization would silently skip most real entity lookups.
-      return knownEntityCount > 0 || /\b\w{2,}/.test(query);
+      // Skip only if the query has no letter/number tokens. `\w` and `\b` are
+      // ASCII-only, so CJK entity names would never start the direct agent.
+      return knownEntityCount > 0 || /[\p{L}\p{N}]{2,}/u.test(query);
     case "temporal":
       // Only run temporal agent when the query actually asks about a time window.
       // Running it for every query injects recency bias into semantic searches.
@@ -74,12 +75,7 @@ export function shouldRunAgent(
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function tokenize(value: string): string[] {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim()
-    .split(/\s+/)
-    .filter((t) => t.length >= 2);
+  return normalizeRecallTokens(value).filter((t) => t.length >= 2);
 }
 
 function overlapScore(queryTokens: string[], candidateTokens: string[]): number {
