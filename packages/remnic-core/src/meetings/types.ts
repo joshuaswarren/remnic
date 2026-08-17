@@ -8,6 +8,7 @@
  * timestamps are UTC ISO-8601; windows are half-open [startUtc, endUtc).
  */
 
+import type { ActivitySnapshot } from "../activity/types.js";
 import type {
   FusedSegment,
   FusedSpeaker,
@@ -81,23 +82,6 @@ export interface MeetingsDetectionConfig {
   mergeGapMinutes: number;
 }
 
-/**
- * One screen-activity snapshot fed into meeting fusion (assembled from the
- * activity store by a later wiring slice; injected directly in tests). Text is
- * already post-redaction — meeting fusion never sees raw capture.
- */
-export interface MeetingActivitySnapshot {
-  /** ISO 8601 UTC instant the snapshot was captured. */
-  tsUtc: string;
-  /** Foreground application label (e.g. "Preview", "Chrome", "Zoom"). */
-  app: string;
-  /** Window title, when known. */
-  title?: string;
-  /** Browser URL, when known. */
-  url?: string;
-  /** Extracted on-screen text excerpt, when known. */
-  text?: string;
-}
 
 /** One entry in a meeting's screen-context timeline (an other-app dwell). */
 export interface MeetingScreenContextEvent {
@@ -144,8 +128,9 @@ export interface MeetingBuildInput {
    * is fine (they are clipped in `fuseMeeting`).
    */
   conversations: FusionConversationInput[];
-  /** Day screen-activity snapshots (filtered to the window in `fuseMeeting`). */
-  activity?: MeetingActivitySnapshot[];
+  /** Day screen-activity snapshots (filtered to the window in `fuseMeeting`).
+   * Already post-redaction — meeting fusion never sees raw capture. */
+  activity?: ActivitySnapshot[];
 }
 
 /** The fused, screen-aware view of a meeting produced by `fuseMeeting`. */

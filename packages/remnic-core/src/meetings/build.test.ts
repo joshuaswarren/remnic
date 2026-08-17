@@ -5,12 +5,12 @@ import { MeetingsBuilder, type MeetingDayData, type MeetingsDayBuildSummary, typ
 import { DEFAULT_MEETINGS_CONFIG } from "./config.js";
 import { MeetingRecordStore, type MeetingRecordFileIo } from "./store.js";
 import type {
-  MeetingActivitySnapshot,
   MeetingsConfig,
   MeetingAppSpan,
   MeetingAudioWindow,
   MeetingRecord,
 } from "./types.js";
+import type { ActivitySnapshot } from "../activity/types.js";
 import type { FusionConversationInput, FusionSegmentInput } from "../wearables/fusion/types.js";
 import type { MeetingMemoryGenerator, MeetingMemoryOutcome } from "./memory-generator.js";
 
@@ -174,9 +174,25 @@ test("degradation — audio only yields a record with no screen-context section"
 });
 
 test("full — app+audio with activity fuses transcript and screen context", async () => {
-  const activity: MeetingActivitySnapshot[] = [
-    { tsUtc: "2026-03-10T14:05:00.000Z", app: "Preview", title: "Q3-roadmap.pdf" },
-    { tsUtc: "2026-03-10T14:30:00.000Z", app: "Zoom", text: "meeting chat" },
+  const activity: ActivitySnapshot[] = [
+    {
+      machine: "workstation",
+      capturedAtUtc: "2026-03-10T14:05:00.000Z",
+      app: "Preview",
+      windowTitle: "Q3-roadmap.pdf",
+      text: "",
+      textSource: "ax",
+      contentHash: "snap-1",
+    },
+    {
+      machine: "workstation",
+      capturedAtUtc: "2026-03-10T14:30:00.000Z",
+      app: "Zoom",
+      windowTitle: "",
+      text: "meeting chat",
+      textSource: "ax",
+      contentHash: "snap-2",
+    },
   ];
   const { builder: b, store } = builder(
     {
