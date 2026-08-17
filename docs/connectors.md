@@ -20,7 +20,7 @@ For the live-connector framework contract (how to write one) see
 
 | Command | Family | What it does |
 |---|---|---|
-| `remnic connectors list` | Agent-tool | List the 14 marketplace agent-tool connectors and their install state |
+| `remnic connectors list` | Agent-tool | List the 15 marketplace agent-tool connectors and their install state |
 | `remnic connectors install <id>` | Agent-tool | Install a connector and publish its memory extension |
 | `remnic connectors remove <id>` | Agent-tool | Remove a connector and unpublish its extension |
 | `remnic connectors doctor <id>` | Agent-tool | Health-check one connector and its publisher |
@@ -49,10 +49,10 @@ Available connectors:
   ...
 ```
 
-`✓` marks an installed connector, `○` an available one. The 14 built-ins are
+`✓` marks an installed connector, `○` an available one. The 15 built-ins are
 `claude-code`, `codex-cli`, `cursor`, `cline`, `github-copilot`, `roo-code`,
-`windsurf`, `amp`, `pi`, `omp`, `replit`, `generic-mcp`, `weclone`, and
-`hermes`. Add `--json` for machine-readable `{ installed, available }`.
+`windsurf`, `amp`, `pi`, `omp`, `replit`, `generic-mcp`, `weclone`, `hermes`,
+and `droid`. Add `--json` for machine-readable `{ installed, available }`.
 
 ### Install, remove, doctor
 

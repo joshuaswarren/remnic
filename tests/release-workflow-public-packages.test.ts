@@ -28,6 +28,7 @@ const expectedPublishDirs = [
   "packages/connector-omi",
   "packages/connector-fireflies",
   "packages/connector-granola",
+  "packages/connector-droid",
   "packages/hermes-provider",
   "packages/belief-ledger",
   "packages/remnic-server",

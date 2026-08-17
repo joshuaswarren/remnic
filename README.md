@@ -9,7 +9,7 @@ Open-source, local-first memory and context for AI agents. One memory store, eve
 Website: **[remnic.ai](https://remnic.ai)** - guide library, comparisons, benchmarks, and changelog.
 
 - **Your files, your machine.** Every memory is a plain markdown file with YAML frontmatter on your disk. No database, no cloud dependency, no subscription. `cat`, `grep`, edit, and version-control your memory with the tools you already use.
-- **One memory across every tool.** OpenClaw, Claude Code, Codex CLI, Cursor, ChatGPT (developer mode), Hermes, Replit, Pi, omp, and any MCP client read and write the same store. Tell one agent a preference; every agent knows it.
+- **One memory across every tool.** OpenClaw, Claude Code, Codex CLI, Cursor, ChatGPT (developer mode), Hermes, Replit, Pi, omp, Factory Droid, and any MCP client read and write the same store. Tell one agent a preference; every agent knows it.
 - **Automatic extraction and recall.** Remnic watches conversations, distills durable knowledge, and injects the right context back when it is needed.
 - **Sharp retrieval.** Hybrid search (BM25 + vector + reranking) over rebuildable indexes, with graph recall, memory-worth scoring, and per-result provenance you can inspect.
 - **MIT licensed.** Free, open, and built to be forked.
@@ -320,6 +320,7 @@ One store, many front doors. Each integration reads and writes the same memory o
 | Replit | MCP | On demand | [docs/plugins/replit.md](docs/plugins/replit.md) |
 | Pi Coding Agent | Native extension + MCP + compaction | Every turn / every turn | [docs/integration/pi.md](docs/integration/pi.md) |
 | Oh My Pi (omp) | Native extension + MCP | Every turn / every turn | [docs/integration/omp.md](docs/integration/omp.md) |
+| Factory Droid | HTTP MCP + bearer auth | On demand | [docs/integration/droid.md](docs/integration/droid.md) |
 | Any MCP client | HTTP or stdio MCP | On demand | [docs/integration/connector-setup.md](docs/integration/connector-setup.md) |
 
 Once the daemon is running, register each tool with a single command:
@@ -330,6 +331,7 @@ remnic connectors install claude-code   # token + connector state
 remnic connectors install pi            # token + connector state
 remnic connectors install omp           # token + connector state
 remnic connectors install replit        # token + connector state
+remnic connectors install droid         # token + connector state + ~/.factory/mcp.json
 ```
 
 Each install mints a host-specific auth token and records Remnic-side connector state; for some hosts (such as Codex CLI) it also materializes the memory extension. How much of the host itself gets configured varies — Claude Code and Hermes, for example, need a few manual wiring steps documented in their plugin guides. See the [connector setup guide](docs/integration/connector-setup.md) for every tool, exactly what its install automates, its config snippet, and multi-tenant setups.
