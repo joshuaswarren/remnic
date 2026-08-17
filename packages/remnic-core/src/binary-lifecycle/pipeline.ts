@@ -294,11 +294,25 @@ async function stageRedirect(
         }
 
         if (asset.redirectedAt === undefined) {
-          if (!dryRun) {
-            asset.status = "mirrored";
+          let remoteSeen = false;
+          for (const mdPath of mdFiles) {
+            try {
+              const content = await readMarkdownFile(mdPath);
+              if (content.includes(asset.mirroredPath)) {
+                remoteSeen = true;
+                break;
+              }
+            } catch {
+              // Verify already succeeded; a later read error is not a local ref.
+            }
           }
-          log.info(`[binary-lifecycle] preserved mirrored asset without redirected marker: ${asset.originalPath}${dryRun ? " [dry-run]" : ""}`);
-          continue;
+          if (!remoteSeen) {
+            if (!dryRun) {
+              asset.status = "mirrored";
+            }
+            log.info(`[binary-lifecycle] preserved mirrored asset without redirected marker: ${asset.originalPath}${dryRun ? " [dry-run]" : ""}`);
+            continue;
+          }
         }
 
         if (!Number.isFinite(new Date(asset.mirroredAt).getTime())) {
@@ -400,9 +414,6 @@ async function stageRedirect(
       continue;
     }
 
-    const redirectedAt = new Date().toISOString();
-    asset.redirectedAt = redirectedAt;
-
     const verifyResult = await countRemainingLocalReferences(
       memoryDir,
       asset,
@@ -411,7 +422,10 @@ async function stageRedirect(
       readMarkdownFile,
     );
     if (verifyResult.errors.length > 0 || verifyResult.remaining > 0) {
-      asset.status = "error";
+asset.status = "error";
+// Failed verify must not read as a completed redirect (#2471); this also
+// clears stale stamps written by manifests from before that fix.
+delete asset.redirectedAt;
       for (const msg of verifyResult.errors) {
         log.error(`[binary-lifecycle] ${msg}`);
         errors.push(msg);
@@ -424,7 +438,7 @@ async function stageRedirect(
       continue;
     }
     asset.status = "redirected";
-    asset.redirectedAt = redirectedAt;
+asset.redirectedAt = new Date().toISOString();
     redirected++;
     log.info(`[binary-lifecycle] redirected: ${asset.originalPath}`);
   }
