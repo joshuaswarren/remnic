@@ -105,6 +105,68 @@ test("a push during an open round increments telemetry but cannot dispatch", () 
   assert.equal(result.state.lastHeadChangedAt, "2026-07-18T12:01:00.000Z");
 });
 
+test("the first push in an open round counts one fix round; micro-pushes coalesce", () => {
+  const state = openRound();
+  const pushed = decideRound({ ...base, state, headSha: "head-2", botActivity: null }).state;
+  assert.equal(pushed.pushes, 1);
+  assert.equal(pushed.fixRounds, 1);
+  const again = decideRound({ ...base, state: pushed, headSha: "head-3", botActivity: null }).state;
+  assert.equal(again.pushes, 2);
+  assert.equal(again.fixRounds, 1, "a second push in the same round is not a new fix round");
+});
+
+test("fix rounds accumulate across bot rounds, not across post-dispatch pushes", () => {
+  const later = "2026-07-18T12:20:00.000Z";
+  const later2 = "2026-07-18T12:25:00.000Z";
+  const resolved = base.threads.map((thread) => ({ ...thread, isResolved: true }));
+  const fixed = decideRound({ ...base, state: openRound(), headSha: "head-2", botActivity: null }).state;
+  assert.equal(fixed.fixRounds, 1);
+
+  const dispatched = decideRound({
+    ...base,
+    state: fixed,
+    headSha: "head-2",
+    now: later,
+    threads: resolved,
+    botActivity: null,
+  });
+  assert.equal(dispatched.action, "dispatch");
+
+  const midPush = decideRound({ ...base, state: dispatched.state, headSha: "head-3", botActivity: null });
+  assert.equal(midPush.action, "wait");
+  assert.equal(midPush.state.fixRounds, 1, "a push after dispatch, before the next bot round, is not a fix round");
+
+  const reopened = decideRound({
+    ...base,
+    state: midPush.state,
+    headSha: "head-3",
+    now: later2,
+    botActivity: { id: "review-2", at: later2 },
+  });
+  assert.equal(reopened.action, "open");
+  assert.equal(reopened.state.round, 2);
+  assert.equal(reopened.state.fixRounds, 1, "the cumulative fix-round count carries into the next round");
+
+  const fix2 = decideRound({ ...base, state: reopened.state, headSha: "head-4", botActivity: null }).state;
+  assert.equal(fix2.pushes, 1);
+  assert.equal(fix2.fixRounds, 2);
+});
+
+test("the ledger round-trips the budget fields", () => {
+  const state = openRound();
+  state.fixRounds = 3;
+  state.fixRoundWarnedAt = "2026-07-18T12:10:00.000Z";
+  state.capIssueUrl = "https://github.com/o/r/issues/555";
+  assert.deepEqual(parseRoundLedger(renderRoundLedger(state)), state);
+});
+
+test("a legacy ledger without budget fields still parses", () => {
+  const { fixRounds: _f, fixRoundWarnedAt: _w, capIssueUrl: _c, ...legacy } = openRound();
+  const parsed = parseRoundLedger(renderRoundLedger(legacy));
+  assert.ok(parsed, "pre-budget shadow ledgers must keep parsing (count reads as 0)");
+  assert.equal(parsed.fixRounds, undefined);
+});
+
 test("resolving every round thread dispatches only after the head debounce", () => {
   const state = openRound();
   const addressed = base.threads.map((thread) => ({ ...thread, isResolved: true }));

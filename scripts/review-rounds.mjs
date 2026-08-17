@@ -91,6 +91,11 @@ function openRound({ state, headSha, now, threads, botActivity }) {
     headSha,
     lastHeadChangedAt: now,
     pushes: 0,
+    // Round-budget ledger (issue #2442): cumulative per-PR fix-round count and
+    // one-shot stamps, carried forward across rounds.
+    fixRounds: state?.fixRounds ?? 0,
+    fixRoundWarnedAt: state?.fixRoundWarnedAt ?? null,
+    capIssueUrl: state?.capIssueUrl ?? null,
     threadIds: eligibleThreadIds(threads),
     dispatchIssuedAt: null,
     closeReason: null,
@@ -210,6 +215,13 @@ export function decideRound({
       state: closeForDispatch(next, now, "force-label"),
     };
   }
+  // Round-budget ledger (issue #2442): one fix round per open round — the
+  // FIRST push after the round's bot findings is that round's batched fix;
+  // later micro-pushes coalesce into the same fix round. Post-dispatch pushes
+  // (closed branch above) never count.
+  if (state.pushes === 0 && next.pushes === 1) {
+    next.fixRounds = (next.fixRounds ?? 0) + 1;
+  }
 
   // Nothing to act on yet (round opened with no threads and no pushes): a clean
   // bot review has nothing to auto-close or debounce-dispatch, so wait rather
@@ -279,6 +291,20 @@ function isValidRoundState(state) {
   if (!state || state.version !== 1 || !["open", "closed"].includes(state.status)) return false;
   if (!Number.isInteger(state.round) || state.round < 1) return false;
   if (!Number.isInteger(state.pushes) || state.pushes < 0) return false;
+  // Round-budget fields (issue #2442) are optional so pre-budget ledgers
+  // deployed during shadow v1 still parse (missing counts read as 0).
+  if (state.fixRounds !== undefined && (!Number.isInteger(state.fixRounds) || state.fixRounds < 0)) {
+    return false;
+  }
+  if (
+    state.fixRoundWarnedAt !== undefined && state.fixRoundWarnedAt !== null &&
+    (typeof state.fixRoundWarnedAt !== "string" || parseTime(state.fixRoundWarnedAt) === 0)
+  ) {
+    return false;
+  }
+  if (state.capIssueUrl !== undefined && state.capIssueUrl !== null && typeof state.capIssueUrl !== "string") {
+    return false;
+  }
   if (!Array.isArray(state.threadIds) || state.threadIds.some((id) => typeof id !== "string" || id.length === 0)) return false;
   if (new Set(state.threadIds).size !== state.threadIds.length) return false;
   if (typeof state.openedAt !== "string" || parseTime(state.openedAt) === 0) return false;

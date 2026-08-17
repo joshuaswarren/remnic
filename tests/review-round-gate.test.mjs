@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 import { ROUND_COMMENT_MARKER, parseRoundLedger, renderRoundLedger } from "../scripts/review-rounds.mjs";
 import {
   AUTO_CLOSED_LABEL,
+  CAP_LABEL,
+  FIX_ROUND_CAP,
   DEFAULT_REQUIRED_AI_REVIEWER_GROUPS,
   FORCE_DISPATCH_LABEL,
   PUSH_WARN_THRESHOLD,
@@ -246,9 +248,9 @@ for (const name of ["pr-1852.json", "pr-1923.json"]) {
 
 function fakeGithub({
   existingComments = [], threads = [], labels = [], draft = false,
-  failDispatch = false, failLedgerWrite = false,
+  failDispatch = false, failLedgerWrite = false, failCapIssue = false,
 } = {}) {
-  const calls = { created: [], updated: [], graphql: 0, labelsAdded: [], labelsRemoved: [] };
+  const calls = { created: [], updated: [], graphql: 0, labelsAdded: [], labelsRemoved: [], issuesCreated: [] };
   const listComments = () => {};
   const listReviews = () => {};
   const listReviewComments = () => {};
@@ -293,6 +295,14 @@ function fakeGithub({
         },
         addLabels: async (args) => calls.labelsAdded.push(args),
         removeLabel: async (args) => calls.labelsRemoved.push(args),
+        // issues.create files the round-4 cap backlog issue (issue #2442);
+        // failCapIssue simulates a transient failure so tests can assert the
+        // gate degrades to a log line and retries on the next event.
+        create: async (args) => {
+          if (failCapIssue) throw new Error("simulated cap issue failure");
+          calls.issuesCreated.push(args);
+          return { data: { html_url: "https://github.com/o/r/issues/555" } };
+        },
       },
       repos: {
         getCommit: async () => ({ data: { commit: { committer: { date: "2026-07-18T11:59:00.000Z" } } } }),
@@ -555,4 +565,152 @@ test("shadow persists a dry-run dispatch as an OPEN round; enforce persists it c
   assert.equal(enforced.state.status, "closed", "enforcement records the real dispatch");
   assert.equal(typeof enforced.state.dispatchIssuedAt, "string");
   assert.equal(parseRoundLedger(enforced.commentBody).status, "closed");
+});
+
+// ===========================================================================
+// Round-budget ledger enforcement (issue #2442): warn at fix round 3, file the
+// ONE cap backlog issue at fix round 4 — never blocking, never re-firing.
+// ===========================================================================
+
+function budgetThread(id, { critical = false, resolved = false, body } = {}) {
+  return {
+    id,
+    isResolved: resolved,
+    comments: {
+      nodes: [
+        {
+          author: { login: "cursor" },
+          path: `src/file-${id}.ts`,
+          url: `https://github.com/o/r/pull/7/files#discussion_r_${id}`,
+          body: body ?? (critical ? "Security: this leaks a bearer token." : "Consider a more descriptive name here."),
+        },
+      ],
+    },
+  };
+}
+
+const budgetThreads = (count) => Array.from({ length: count }, (_, index) => budgetThread(`t${index + 1}`));
+
+function openBudgetState({ round, fixRounds, fixRoundWarnedAt = null, capIssueUrl = null }) {
+  return {
+    version: 1,
+    status: "open",
+    round,
+    openedAt: "2026-07-18T11:00:00.000Z",
+    openedHeadSha: "head-1",
+    headSha: "head-1",
+    lastHeadChangedAt: "2026-07-18T11:00:00.000Z",
+    pushes: 0,
+    fixRounds,
+    fixRoundWarnedAt,
+    capIssueUrl,
+    threadIds: ["thread-1", "thread-2"],
+    dispatchIssuedAt: null,
+    closeReason: null,
+    autoClosed: false,
+    lastBotActivity: { id: "review-1", at: "2026-07-18T12:00:00.000Z" },
+  };
+}
+
+test("budget telemetry and summary surface the fix-round count", () => {
+  const seeded = renderRoundLedger(openBudgetState({ round: 3, fixRounds: 3 }));
+  const result = decide({ ledgerBody: seeded });
+  assert.equal(result.telemetry.fixRounds, 3);
+  assert.match(result.commentBody, /Fix rounds: \*\*3\*\*/);
+  assert.match(result.commentBody, /Fix-round budget at 3/);
+});
+
+test("the budget ledger posts a one-time warning reply at fix round 3", async () => {
+  const seed = renderRoundLedger(openBudgetState({ round: 3, fixRounds: 3 }));
+  const first = fakeGithub({ existingComments: [{ id: 7, body: seed }], threads: budgetThreads(2) });
+  await runRoundGate({ github: first.github, context, core, env: {} });
+  const warning = first.calls.created.find((comment) => /fix round 3 of 4/.test(comment.body));
+  assert.ok(warning, "warning reply posted on the PR");
+  assert.match(warning.body, /declined in-thread/);
+  const persisted = parseRoundLedger(first.calls.updated[0].body);
+  assert.ok(persisted.fixRoundWarnedAt, "warn stamp persisted in the ledger");
+  assert.equal(persisted.capIssueUrl, null, "no cap issue at round 3");
+
+  const second = fakeGithub({
+    existingComments: [{ id: 7, body: first.calls.updated[0].body }],
+    threads: budgetThreads(2),
+  });
+  await runRoundGate({ github: second.github, context, core, env: {} });
+  assert.ok(
+    !second.calls.created.some((comment) => /fix round 3 of 4/.test(comment.body)),
+    "the warning is one-shot across events",
+  );
+});
+
+test("at the cap the ledger files ONE backlog issue of still-open non-critical threads", async () => {
+  const threads = [
+    budgetThread("t1"),
+    budgetThread("t2", { critical: true }),
+    budgetThread("t5", { critical: true, body: "Performance regression: latency doubles under load." }),
+    budgetThread("t3", { resolved: true }),
+    budgetThread("t4"),
+  ];
+  const seed = renderRoundLedger(
+    openBudgetState({ round: 4, fixRounds: 4, fixRoundWarnedAt: "2026-07-18T12:10:00.000Z" }),
+  );
+  const first = fakeGithub({ existingComments: [{ id: 7, body: seed }], threads });
+  await runRoundGate({ github: first.github, context, core, env: {} });
+
+  assert.equal(first.calls.issuesCreated.length, 1, "exactly one backlog issue is filed");
+  const issue = first.calls.issuesCreated[0];
+  assert.match(issue.title, /review-round cap reached on PR #7/);
+  assert.match(issue.body, /discussion_r_t1\b/);
+  assert.match(issue.body, /discussion_r_t4\b/);
+  assert.doesNotMatch(issue.body, /discussion_r_t5/, "perf-regression threads stay actionable, not backlogged");
+  assert.doesNotMatch(issue.body, /discussion_r_t3/, "resolved threads are not listed");
+  assert.ok(
+    first.calls.labelsAdded.some((added) => added.labels.includes(CAP_LABEL)),
+    "the PR is labeled review-round:cap",
+  );
+  const persisted = parseRoundLedger(first.calls.updated[0].body);
+  assert.equal(persisted.capIssueUrl, "https://github.com/o/r/issues/555", "issue link persisted in the ledger");
+  assert.match(first.calls.updated[0].body, /Cap backlog issue: https:\/\/github\.com\/o\/r\/issues\/555/);
+
+  const second = fakeGithub({
+    existingComments: [{ id: 7, body: first.calls.updated[0].body }],
+    threads,
+  });
+  await runRoundGate({ github: second.github, context, core, env: {} });
+  assert.equal(second.calls.issuesCreated.length, 0, "the cap issue is one-shot across events");
+});
+
+test("a cap with no still-open non-critical threads files nothing", async () => {
+  const threads = [budgetThread("t1", { critical: true }), budgetThread("t2", { resolved: true })];
+  const seed = renderRoundLedger(openBudgetState({ round: 4, fixRounds: 4 }));
+  const { github, calls } = fakeGithub({ existingComments: [{ id: 7, body: seed }], threads });
+  await runRoundGate({ github, context, core, env: {} });
+  assert.equal(calls.issuesCreated.length, 0, "an empty decline backlog is not filed as an issue");
+  // Regression (cursor, round 1): the empty-backlog path must still persist the
+  // warn stamp written in the same run, or the one-shot warning re-posts forever.
+  const persisted = parseRoundLedger(calls.updated[0].body);
+  assert.equal(persisted.capIssueUrl, null);
+  assert.ok(persisted.fixRoundWarnedAt, "the warn stamp survives the empty-backlog skip");
+  const second = fakeGithub({ existingComments: [{ id: 7, body: calls.updated[0].body }], threads });
+  await runRoundGate({ github: second.github, context, core, env: {} });
+  assert.ok(
+    !second.calls.created.some((comment) => /fix round 4 of 4/.test(comment.body)),
+    "the warning does not re-post after the empty-backlog run",
+  );
+});
+
+test("cap filing failures degrade to a log line and never fail the check", async () => {
+  let failed = false;
+  const spyCore = { notice() {}, info() {}, warning() {}, setFailed() { failed = true; } };
+  const seed = renderRoundLedger(openBudgetState({ round: 4, fixRounds: 4 }));
+  const { github, calls } = fakeGithub({
+    existingComments: [{ id: 7, body: seed }],
+    threads: budgetThreads(1),
+    failCapIssue: true,
+  });
+  const result = await runRoundGate({ github, context, core: spyCore, env: {} });
+  assert.ok(result, "the gate completes");
+  assert.equal(failed, false, "a cap failure never fails the check");
+  const persisted = parseRoundLedger(calls.updated[0].body);
+  assert.equal(persisted.capIssueUrl, null, "no stamp without a filed issue (retries next event)");
+  assert.ok(persisted.fixRoundWarnedAt, "the round-3 warning still fired on the way to the cap");
 });

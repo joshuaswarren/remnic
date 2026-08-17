@@ -41,6 +41,18 @@ export const FORCE_DISPATCH_LABEL = "review-round:force-dispatch";
 export const AUTO_CLOSED_LABEL = "review-round:auto-closed";
 /** Micro-push telemetry warns once the round crosses this many pushes (issue #1992 §4). */
 export const PUSH_WARN_THRESHOLD = 3;
+/** Round-budget ledger (issue #2442): a one-time warning reply posts at this many fix rounds. */
+export const FIX_ROUND_WARN_THRESHOLD = 3;
+/** At the cap, ONE backlog issue is filed listing still-open non-critical threads. */
+export const FIX_ROUND_CAP = 4;
+/** Label stamped on the PR when the cap backlog issue is filed (issue #2442). */
+export const CAP_LABEL = "review-round:cap";
+// Threads matching this stay actionable at the cap (AGENTS.md "Budget the
+// review loop, then decline": correctness, security, data-integrity defects
+// and perf/capacity/reliability regressions are never declined). Over-matching
+// errs safe: the thread stays on the PR instead of the backlog.
+const CRITICAL_THREAD_PATTERN =
+  /\b(security|vulnerab(?:le|ility)|exploit|injection|remote code execution|data[ -]integrity|correctness|unbounded|memory leak|n\+1|performance|capacity|reliability|regression)\b/i;
 export const DEFAULT_REQUIRED_AI_REVIEWER_GROUPS =
   "cursor-bugbot[bot]|cursor[bot]|cursor-bugbot|cursor|" +
   "coderabbitai[bot]|coderabbitai|chatgpt-codex-connector[bot]|chatgpt-codex-connector";
@@ -132,6 +144,8 @@ export function computeRoundGateDecision({
   const telemetry = {
     round: state?.round ?? 0,
     status: state?.status ?? "none",
+    fixRounds: state?.fixRounds ?? 0,
+    capIssueUrl: state?.capIssueUrl ?? null,
     action: decision.action,
     reason: decision.reason,
     pushes,
@@ -169,6 +183,16 @@ function renderRoundSummary({ telemetry, unresolved }) {
       `- ⚠️ ${telemetry.pushes} pushes this round exceeds the batch rule ` +
         "(batch review fixes by subsystem, push once per round). " +
         "Telemetry only in v1 — no failure (issue #1992 §4).",
+    );
+  }
+  lines.push(
+    `- Fix rounds: **${telemetry.fixRounds ?? 0}** (warn ${FIX_ROUND_WARN_THRESHOLD}, cap ${FIX_ROUND_CAP}; issue #2442)`,
+  );
+  if (telemetry.capIssueUrl) {
+    lines.push(`- Cap backlog issue: ${telemetry.capIssueUrl}`);
+  } else if ((telemetry.fixRounds ?? 0) >= FIX_ROUND_WARN_THRESHOLD) {
+    lines.push(
+      `- ⚠️ Fix-round budget at ${telemetry.fixRounds}: from round ${FIX_ROUND_WARN_THRESHOLD} on, only critical/regression/required-check findings are actionable (AGENTS.md); at the cap the decline backlog is filed automatically.`,
     );
   }
   const verb = telemetry.dispatch ? "DISPATCH" : "WAIT";
@@ -228,7 +252,7 @@ async function fetchReviewThreads(github, owner, repo, prNumber) {
               isResolved
               isOutdated
               comments(first: 100) {
-                nodes { path author { login } }
+                nodes { path author { login } url body }
               }
             }
           }
@@ -388,6 +412,23 @@ async function runRoundGateForPr({ github, core, env, owner, repo, prNumber }) {
     );
   }
 
+  // Round-budget enforcement (issue #2442) runs BEFORE the ledger persist so
+  // the one-shot warning/cap stamps land in the same single ledger write; a
+  // failed side effect leaves the stamp unset and retries on the next event.
+  // It is independent of REVIEW_ROUND_ENFORCE (which gates reviewer dispatch
+  // only) and, like dispatch, is non-blocking by contract.
+  if (persist) {
+    await enforceRoundBudget({
+      github,
+      core,
+      owner,
+      repo,
+      prNumber,
+      prTitle: pull.data.title ?? "",
+      result,
+      threads,
+    });
+  }
   // The ledger comment is the visibility mechanism in v1: upsert it (even in
   // shadow mode) unless an enforced dispatch failed above. Writes can fail on
   // fork PRs (read-only token) — that degrades to a log line, never a failed
@@ -441,6 +482,139 @@ async function runRoundGateForPr({ github, core, env, owner, repo, prNumber }) {
   return result;
 }
 
+
+function firstThreadComment(thread) {
+  return thread?.comments?.nodes?.[0] ?? thread?.comments?.[0] ?? null;
+}
+
+function threadPermalink(thread) {
+  const url = firstThreadComment(thread)?.url;
+  return typeof url === "string" && url.length > 0 ? url : null;
+}
+
+function threadIsCritical(thread) {
+  return CRITICAL_THREAD_PATTERN.test(firstThreadComment(thread)?.body ?? "");
+}
+
+/** Still-open, non-critical threads with a permalink — the cap decline backlog. */
+function openNonCriticalThreads(threads) {
+  return (Array.isArray(threads) ? threads : []).filter(
+    (thread) => thread?.isResolved === false && !threadIsCritical(thread) && threadPermalink(thread) !== null,
+  );
+}
+
+function renderBudgetWarning(fixRounds) {
+  return [
+    `⚠️ **Review-round budget: fix round ${fixRounds} of ${FIX_ROUND_CAP}.**`,
+    "",
+    "From round three on, only these review findings are actionable (AGENTS.md, ",
+    '"Budget the review loop, then decline"): a correctness, security, or ',
+    "data-integrity defect; a performance, capacity, or reliability regression; ",
+    "a failing required check; a factually wrong claim; or a mandated rule the ",
+    "PR violates. Everything else is **declined in-thread with the reason and ",
+    "the thread resolved** — a reasoned decline satisfies the ",
+    "zero-unresolved-threads bar exactly as much as a fix.",
+    "",
+    `At fix round ${FIX_ROUND_CAP} the cap fires: every still-open non-critical `,
+    "thread is declined and filed as ONE backlog issue, and the PR is labeled ",
+    `\`${CAP_LABEL}\`. Critical findings and regressions stay actionable at any `,
+    "round. This ledger never fails a check and never blocks merge (issue #2442).",
+  ].join("\n");
+}
+
+function renderCapIssueBody({ prNumber, threads, fixRounds }) {
+  const lines = [];
+  lines.push(
+    `The per-PR review-round budget ledger reached its cap (**${fixRounds} fix rounds**) on PR #${prNumber}.`,
+  );
+  lines.push("");
+  lines.push(
+    'Per AGENTS.md ("Budget the review loop, then decline"), each still-open ',
+    "non-critical thread listed below must be declined in-thread with a reason ",
+    "and resolved by a maintainer before merge; this issue is the backlog ",
+    "artifact tracking those declines — the workflow itself never resolves or ",
+    "hides a thread. **Critical findings (correctness, security, data ",
+    "integrity) and performance/capacity/reliability regressions are NOT ",
+    "declinable** — they stay actionable on the PR and take precedence over ",
+    "the cap.",
+  );
+  lines.push("");
+  lines.push(`## Still-open non-critical threads (${threads.length})`);
+  for (const thread of threads) {
+    lines.push(`- ${threadPermalink(thread)} — ${threadLabel(thread)}`);
+  }
+  lines.push("");
+  lines.push(
+    "Filed automatically by the Review Round Dispatch workflow (issue #2442). ",
+    "The ledger never blocks merge; zero-unresolved-threads remains the merge gate.",
+  );
+  return lines.join("\n");
+}
+
+/**
+ * Round-budget ledger enforcement (issue #2442): one-time warning reply at
+ * FIX_ROUND_WARN_THRESHOLD, ONE cap backlog issue at FIX_ROUND_CAP. Every side
+ * effect is stamped into the ledger state so it never re-fires; every failure
+ * degrades to a log line (the gate never fails a check).
+ */
+async function enforceRoundBudget({ github, core, owner, repo, prNumber, prTitle, result, threads }) {
+  const state = result.state;
+  if (!state) return;
+  const fixRounds = state.fixRounds ?? 0;
+
+  if (fixRounds >= FIX_ROUND_WARN_THRESHOLD && !state.fixRoundWarnedAt) {
+    try {
+      await github.rest.issues.createComment({
+        owner,
+        repo,
+        issue_number: prNumber,
+        body: renderBudgetWarning(fixRounds),
+      });
+      state.fixRoundWarnedAt = new Date().toISOString();
+      core.notice(`review-round gate PR #${prNumber}: budget warning posted at fix round ${fixRounds}.`);
+    } catch (error) {
+      core.info(
+        `review-round gate PR #${prNumber}: budget warning comment failed ` +
+          `(${error?.message ?? error}); will retry on the next event.`,
+      );
+    }
+  }
+
+  if (fixRounds >= FIX_ROUND_CAP && !state.capIssueUrl) {
+    const declined = openNonCriticalThreads(threads);
+    // Nothing still-open to backlog: skip only the FILING (the cap re-evaluates
+    // next event) — never return early, or a warning stamp written above would
+    // be dropped from the persisted commentBody and re-post every event (cursor).
+    if (declined.length > 0) {
+      try {
+        const issue = await github.rest.issues.create({
+          owner,
+          repo,
+          title: `review-round cap reached on PR #${prNumber}: ${prTitle}`,
+          body: renderCapIssueBody({ prNumber, threads: declined, fixRounds }),
+        });
+        const url = issue?.data?.html_url ?? null;
+        if (url) {
+          state.capIssueUrl = url;
+          result.telemetry.capIssueUrl = url;
+          await addLabelSafely(github, owner, repo, prNumber, CAP_LABEL, core);
+          core.notice(`review-round gate PR #${prNumber}: cap backlog issue filed (${url}).`);
+        }
+      } catch (error) {
+        core.info(
+          `review-round gate PR #${prNumber}: cap backlog issue failed ` +
+            `(${error?.message ?? error}); will retry on the next event.`,
+        );
+      }
+    }
+  }
+
+  result.commentBody = renderRoundComment({
+    state: result.state,
+    telemetry: result.telemetry,
+    unresolved: result.unresolved,
+  });
+}
 async function dispatchReviewers({ github, owner, repo, prNumber, core }) {
   // Request a fresh bot round against the settled head. Returns true only when
   // the trigger comment is posted, so the caller can withhold the dispatched
