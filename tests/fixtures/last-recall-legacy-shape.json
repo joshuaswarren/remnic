@@ -1,0 +1,52 @@
+{
+  "legacy-full": {
+    "sessionKey": "legacy-full",
+    "recordedAt": "2026-08-01T10:00:00.000Z",
+    "queryHash": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+    "queryLen": 24,
+    "writeNonce": "legacy-nonce-full",
+    "memoryIds": ["fact-alpha", "fact-beta", "fact-gamma"],
+    "resultPaths": [
+      "/memory-under-test/namespaces/team-alpha/facts/2026-08-01/fact-alpha.md",
+      "/memory-under-test/facts/2026-08-01/fact-beta.md",
+      "/memory-under-test/namespaces/team-alpha/facts/2026-08-01/fact-gamma.md"
+    ],
+    "resultNamespaces": ["team-alpha", null, "team-alpha"],
+    "namespace": "team-alpha",
+    "plannerMode": "full",
+    "source": "hot_qmd",
+    "fallbackUsed": false,
+    "sourcesUsed": ["hot_qmd", "memories"],
+    "latencyMs": 42,
+    "budgetsApplied": {
+      "appliedTopK": 3,
+      "recallBudgetChars": 8000,
+      "maxMemoryTokens": 2000,
+      "finalContextChars": 1200,
+      "truncated": true,
+      "includedSections": ["profile", "memories"],
+      "omittedSections": ["questions"],
+      "includedMemoryIds": ["fact-alpha", "fact-beta", "fact-gamma"],
+      "includedMemoryPaths": [
+        "/memory-under-test/namespaces/team-alpha/facts/2026-08-01/fact-alpha.md",
+        "/memory-under-test/facts/2026-08-01/fact-beta.md",
+        "/memory-under-test/namespaces/team-alpha/facts/2026-08-01/fact-gamma.md"
+      ],
+      "includedMemoryNamespaces": ["team-alpha", null, "team-alpha"],
+      "omittedMemoryIds": ["fact-dropped"]
+    }
+  },
+  "legacy-ids-only": {
+    "sessionKey": "legacy-ids-only",
+    "recordedAt": "2026-08-02T10:00:00.000Z",
+    "queryHash": "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3",
+    "queryLen": 11,
+    "writeNonce": "legacy-nonce-ids",
+    "memoryIds": ["fact-delta"],
+    "namespace": "default",
+    "plannerMode": "minimal",
+    "fallbackUsed": true,
+    "sourcesUsed": ["recent_scan"],
+    "latencyMs": 7
+  }
+}

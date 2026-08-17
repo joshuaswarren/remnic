@@ -26,7 +26,7 @@ import { expandScopeProfileReadNamespaces, resolveScopeProfilePlan } from "./nam
 import type { Orchestrator, RecallInvocationOptions } from "./orchestrator.js";
 import { decideDisclosureEscalation } from "./recall-disclosure-escalation.js";
 import { assembleRecallResponse } from "./access-recall-response.js";
-import type { LastRecallSnapshot } from "./recall-state.js";
+import { coerceIncludedMemories, type LastRecallSnapshot } from "./recall-state.js";
 import type { RecallContextComposition } from "./recall-context-composition.js";
 import { type TagMatchMode, applyTagFilter, normalizeTags, parseTagMatch } from "./recall-tag-filter.js";
 import { type RecallXraySnapshot, estimateRecallTokens } from "./recall-xray.js";
@@ -44,7 +44,6 @@ import {
 // Canonical copies (access-service.ts still carries private duplicates for
 // its remaining callers; dedupe tracked separately).
 import { qmdCollectionPathParts, qmdResultPathCandidates } from "./orchestration/qmd-result-resolver.js";
-
 export interface AccessRecallSurfaceDeps {
   readonly auditAdapter: AccessAuditAdapter | null;
   readonly budget: CrossNamespaceBudget;
@@ -214,7 +213,10 @@ export class AccessRecallSurface {
     rawExcerptsSuppressed?: boolean;
   }): Promise<EngramAccessRecallResponse> {
     const memoryIds = options.snapshot.results.map((result) => result.memoryId);
-    const resultPaths = options.snapshot.results.map((result) => result.path);
+    const includedMemories = options.snapshot.results.map((result) => ({
+      id: result.memoryId,
+      path: result.path,
+    }));
     const namespace = options.snapshot.namespace
       ? this.deps.resolveNamespace(options.snapshot.namespace)
       : this.deps.orchestrator.config.defaultNamespace;
@@ -243,7 +245,7 @@ export class AccessRecallSurface {
         finalContextChars: options.snapshot.budget.used,
       },
       latencyMs: Date.now() - options.startedAt,
-      resultPaths,
+      includedMemories,
     };
     const results = await this.deps.serializeRecallResults(
       snapshotForSerialization,
@@ -515,12 +517,10 @@ export class AccessRecallSurface {
               : null,
           );
     const rawExcerpts = rawExcerptsResult ?? undefined;
-
-    const resultNamespaces = snapshot.resultNamespaces ?? [];
-    for (let index = 0; index < (snapshot.resultPaths ?? []).length; index += 1) {
-      const memoryPath = snapshot.resultPaths?.[index];
-      const memoryNamespace = resultNamespaces[index];
+    for (const included of coerceIncludedMemories(snapshot)) {
+      const memoryPath = included.path;
       if (!memoryPath) continue;
+      const memoryNamespace = included.namespace;
       const seenKey = `${memoryNamespace ?? ""}\0${memoryPath}`;
       if (seen.has(seenKey)) continue;
       const resolved = await readResultPath(memoryPath, memoryNamespace);

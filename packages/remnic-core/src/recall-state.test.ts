@@ -83,19 +83,73 @@ test("LastRecallStore.record persists tierExplain and round-trips to JSON on dis
   assert.deepEqual(parsed["s1"]?.tierExplain, tierExplain);
 });
 
-test("LastRecallStore.record persists per-result namespaces", async () => {
+test("LastRecallStore.record shims legacy resultPaths/resultNamespaces into includedMemories", async () => {
   const { store } = await freshStore();
-  const resultNamespaces = ["main", "shared"] as Array<string | undefined>;
   await store.record({
     sessionKey: "s1",
     query: "namespaced recall",
     memoryIds: ["same-id", "same-id"],
     resultPaths: ["facts/same-id.md", "facts/same-id.md"],
-    resultNamespaces,
+    resultNamespaces: ["main", "shared"],
   });
   const snap = store.get("s1");
   assert.ok(snap);
-  assert.deepEqual(snap.resultNamespaces, resultNamespaces);
+  assert.deepEqual(snap.includedMemories, [
+    { id: "same-id", path: "facts/same-id.md", namespace: "main" },
+    { id: "same-id", path: "facts/same-id.md", namespace: "shared" },
+  ]);
+  assert.deepEqual(snap.memoryIds, ["same-id", "same-id"]);
+});
+
+// ── Legacy on-disk shapes hydrate to includedMemories (#2476) ─────────────
+
+test("LastRecallStore.load shims legacy last_recall.json shapes to includedMemories", async () => {
+  const { dir } = await freshStore();
+  const fixturePath = path.resolve(
+    import.meta.dirname,
+    "../../../tests/fixtures/last-recall-legacy-shape.json",
+  );
+  const fixture = JSON.parse(await readFile(fixturePath, "utf-8")) as Record<string, unknown>;
+
+  await mkdir(path.join(dir, "state"), { recursive: true });
+  await writeFile(
+    path.join(dir, "state", "last_recall.json"),
+    JSON.stringify(fixture),
+    "utf-8",
+  );
+  const store = new LastRecallStore(dir);
+  await store.load();
+
+  const full = store.get("legacy-full");
+  assert.ok(full);
+  assert.deepEqual(full.includedMemories, [
+    {
+      id: "fact-alpha",
+      path: "/memory-under-test/namespaces/team-alpha/facts/2026-08-01/fact-alpha.md",
+      namespace: "team-alpha",
+    },
+    { id: "fact-beta", path: "/memory-under-test/facts/2026-08-01/fact-beta.md" },
+    {
+      id: "fact-gamma",
+      path: "/memory-under-test/namespaces/team-alpha/facts/2026-08-01/fact-gamma.md",
+      namespace: "team-alpha",
+    },
+  ]);
+  assert.deepEqual(full.memoryIds, ["fact-alpha", "fact-beta", "fact-gamma"]);
+  // Legacy parallel arrays are stripped from the hydrated snapshot — every
+  // surface re-emits only the canonical form.
+  assert.equal("resultPaths" in full, false);
+  assert.equal("resultNamespaces" in full, false);
+  assert.ok(full.budgetsApplied);
+  assert.equal("includedMemoryIds" in full.budgetsApplied, false);
+  assert.equal("includedMemoryPaths" in full.budgetsApplied, false);
+  assert.equal("includedMemoryNamespaces" in full.budgetsApplied, false);
+  assert.deepEqual(full.budgetsApplied.omittedMemoryIds, ["fact-dropped"]);
+
+  const idsOnly = store.get("legacy-ids-only");
+  assert.ok(idsOnly);
+  assert.deepEqual(idsOnly.includedMemories, [{ id: "fact-delta", path: "" }]);
+  assert.deepEqual(idsOnly.memoryIds, ["fact-delta"]);
 });
 
 // ── Defensive copies isolate the stored snapshot from caller mutation ──────

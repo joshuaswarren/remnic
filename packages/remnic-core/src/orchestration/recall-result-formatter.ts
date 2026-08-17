@@ -33,6 +33,7 @@ import type { WorkProductLedgerSearchResult } from "../work-product-ledger.js";
 import { trustResultFor, type TrustStageResultItem } from "../trust-score-stage.js";
 import { CONNECTOR_ID_PATTERN, CONNECTOR_LABEL_MAX_LENGTH } from "../connectors/label.js";
 import { isValidConnectorId } from "../connectors/index.js";
+import type { IncludedMemory } from "../included-memories.js";
 import type {
   ContinuityIncidentRecord,
   IdentityInjectionMode,
@@ -113,64 +114,35 @@ export function displayResultPath(
 }
 
 /**
- * Return a copy of budget metadata with `includedMemoryPaths` rendered
- * memoryDir-relative, so recall/last-recall API callers never receive operator
- * filesystem paths via budget output even though the internal snapshot keeps
- * absolute paths for tracking/x-ray (#2020). Other fields are unchanged.
- */
-export function displaySafeBudgetsApplied<
-  T extends {
-    includedMemoryPaths?: string[];
-    includedMemoryNamespaces?: Array<string | undefined>;
-  },
->(budgetsApplied: T | undefined, memoryDir: string): T | undefined {
-  if (!budgetsApplied?.includedMemoryPaths) return budgetsApplied;
-  return {
-    ...budgetsApplied,
-    includedMemoryPaths: budgetsApplied.includedMemoryPaths.map((p, i) =>
-      displayResultPath(p, memoryDir, budgetsApplied.includedMemoryNamespaces?.[i]),
-    ),
-  };
-}
-
-/**
  * Return a display-safe copy of a recall snapshot for the `includeDebug=true`
- * surface (#2077). `resultPaths` and `budgetsApplied.includedMemoryPaths` are
- * rendered namespace-relative from their aligned namespace metadata; a
- * `tierExplain.sourceAnchors[]` entry reuses that SAME authoritative metadata
- * when its absolute path matches a result/included path, and otherwise falls
- * back to the memoryDir-relative on-disk form. Either way the debug flag never
- * leaks absolute operator paths, and an anchor is never attributed to a decoded
- * (guessed) namespace — an anchor carries no owner of its own. Returns a
- * shallow copy; the input snapshot is never mutated.
+ * surface (#2077). `includedMemories[].path` is rendered namespace-relative
+ * from each memory's own namespace — the same rendering `resultPaths` received
+ * before the struct consolidation; a `tierExplain.sourceAnchors[]` entry
+ * reuses that SAME authoritative metadata when its absolute path matches an
+ * included memory's path, and otherwise falls back to the memoryDir-relative
+ * on-disk form. Either way the debug flag never leaks absolute operator
+ * paths, and an anchor is never attributed to a decoded (guessed) namespace —
+ * an anchor carries no owner of its own. Returns a shallow copy; the input
+ * snapshot is never mutated.
  */
 export function displaySafeRecallSnapshot<
   T extends {
-    resultPaths?: string[];
-    resultNamespaces?: Array<string | undefined>;
-    budgetsApplied?: {
-      includedMemoryPaths?: string[];
-      includedMemoryNamespaces?: Array<string | undefined>;
-    };
+    includedMemories?: IncludedMemory[];
     tierExplain?: {
       sourceAnchors?: Array<{ path: string; lineRange?: [number, number] }>;
     };
   },
 >(snapshot: T, memoryDir: string): T {
-  const resultPaths = snapshot.resultPaths?.map((p, i) =>
-    displayResultPath(p, memoryDir, snapshot.resultNamespaces?.[i]),
-  );
-  // Authoritative absolute-path -> namespace map recorded at capture time, so a
-  // tier anchor that coincides with a returned result renders under the SAME
-  // namespace as that result instead of the raw storage segment (#2077).
+  const includedMemories = snapshot.includedMemories?.map((memory) => ({
+    ...memory,
+    path: displayResultPath(memory.path, memoryDir, memory.namespace),
+  }));
+  // Authoritative absolute-path -> namespace map recorded at capture time, so
+  // a tier anchor that coincides with an included memory renders under the
+  // SAME namespace as that memory instead of the raw storage segment (#2077).
   const namespaceByPath = new Map<string, string | undefined>();
-  snapshot.resultPaths?.forEach((p, i) => {
-    if (!namespaceByPath.has(p)) namespaceByPath.set(p, snapshot.resultNamespaces?.[i]);
-  });
-  snapshot.budgetsApplied?.includedMemoryPaths?.forEach((p, i) => {
-    if (!namespaceByPath.has(p)) {
-      namespaceByPath.set(p, snapshot.budgetsApplied?.includedMemoryNamespaces?.[i]);
-    }
+  snapshot.includedMemories?.forEach((memory) => {
+    if (!namespaceByPath.has(memory.path)) namespaceByPath.set(memory.path, memory.namespace);
   });
   const tierExplain =
     snapshot.tierExplain?.sourceAnchors
@@ -184,10 +156,7 @@ export function displaySafeRecallSnapshot<
       : undefined;
   return {
     ...snapshot,
-    ...(resultPaths ? { resultPaths } : {}),
-    ...(snapshot.budgetsApplied
-      ? { budgetsApplied: displaySafeBudgetsApplied(snapshot.budgetsApplied, memoryDir) }
-      : {}),
+    ...(includedMemories ? { includedMemories } : {}),
     ...(tierExplain ? { tierExplain } : {}),
   };
 }

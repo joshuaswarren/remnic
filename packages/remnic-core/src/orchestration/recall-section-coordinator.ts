@@ -17,7 +17,7 @@
  * TierMigrationCoordinator accessor pattern.
  */
 
-import type { LastRecallBudgetSummary } from "../recall-state.js";
+import type { IncludedMemory, LastRecallBudgetSummary } from "../recall-state.js";
 import { estimateTokenCount } from "../token-estimate.js";
 import { graphemeUnits, truncateGraphemeSafe } from "../whitespace.js";
 import type { PluginConfig, RecallSectionConfig } from "../types.js";
@@ -273,9 +273,7 @@ export class RecallSectionCoordinator {
     omittedIds: string[];
     truncated: boolean;
     finalChars: number;
-    includedMemoryIds: string[];
-    includedMemoryPaths: string[];
-    includedMemoryNamespaces: Array<string | undefined>;
+    includedMemories: IncludedMemory[];
     omittedMemoryIds: string[];
   } {
     type OrderedSection = { id: string; chunks: RecallSectionChunk[] };
@@ -340,9 +338,7 @@ export class RecallSectionCoordinator {
         omittedIds: orderedSections.map((entry) => entry.id),
         truncated: orderedSections.length > 0,
         finalChars: 0,
-        includedMemoryIds: [],
-        includedMemoryPaths: [],
-        includedMemoryNamespaces: [],
+        includedMemories: [],
         omittedMemoryIds: candidateMemoryIds,
       };
     }
@@ -372,9 +368,7 @@ export class RecallSectionCoordinator {
         break;
       }
     }
-    const includedMemoryIds: string[] = [];
-    const includedMemoryPaths: string[] = [];
-    const includedMemoryNamespaces: Array<string | undefined> = [];
+    const includedMemories: IncludedMemory[] = [];
     let usedChars = 0;
     let usedTokens = 0;
     let truncated = false;
@@ -492,12 +486,12 @@ export class RecallSectionCoordinator {
               rendered = chunk.content;
               includedLeadingContent = false;
               includedAtomicCount = 1;
-              // Push id/path/namespace together so the parallel tracking arrays
-              // never misalign when a chunk carries only one of them (#2020).
               if (chunk.memoryId && chunk.memoryPath) {
-                includedMemoryIds.push(chunk.memoryId);
-                includedMemoryPaths.push(chunk.memoryPath);
-                includedMemoryNamespaces.push(chunk.memoryNamespace);
+                includedMemories.push(
+                  chunk.memoryNamespace
+                    ? { id: chunk.memoryId, path: chunk.memoryPath, namespace: chunk.memoryNamespace }
+                    : { id: chunk.memoryId, path: chunk.memoryPath },
+                );
               }
               continue;
             }
@@ -522,9 +516,11 @@ export class RecallSectionCoordinator {
           if (chunk.atomic) {
             includedAtomicCount += 1;
             if (chunk.memoryId && chunk.memoryPath) {
-              includedMemoryIds.push(chunk.memoryId);
-              includedMemoryPaths.push(chunk.memoryPath);
-              includedMemoryNamespaces.push(chunk.memoryNamespace);
+              includedMemories.push(
+                chunk.memoryNamespace
+                  ? { id: chunk.memoryId, path: chunk.memoryPath, namespace: chunk.memoryNamespace }
+                  : { id: chunk.memoryId, path: chunk.memoryPath },
+              );
             }
           } else {
             includedPostAtomicContent = true;
@@ -574,16 +570,11 @@ export class RecallSectionCoordinator {
       omittedIds,
       truncated,
       finalChars: usedChars,
-      includedMemoryIds,
-      includedMemoryPaths,
-      includedMemoryNamespaces,
+      includedMemories,
       omittedMemoryIds: (() => {
-        // Key by (namespace, id): the same memory id can exist in more than one
-        // namespace, so an id-only subtraction would hide a budget-dropped copy
-        // when another namespace's copy was included (#2020).
         const includedKeys = new Set(
-          includedMemoryIds.map(
-            (id, i) => `${includedMemoryNamespaces[i] ?? ""}\u0000${id}`,
+          includedMemories.map(
+            (memory) => `${memory.namespace ?? ""}\u0000${memory.id}`,
           ),
         );
         return candidateMemoryChunks
@@ -604,9 +595,6 @@ export class RecallSectionCoordinator {
     finalContextChars?: number;
     truncated?: boolean;
     includedSections?: string[];
-    includedMemoryIds?: string[];
-    includedMemoryPaths?: string[];
-    includedMemoryNamespaces?: Array<string | undefined>;
     omittedMemoryIds?: string[];
     omittedSections?: string[];
   }): LastRecallBudgetSummary {
@@ -619,9 +607,6 @@ export class RecallSectionCoordinator {
       qmdHybridFetchLimit: options.qmdHybridFetchLimit,
       finalContextChars: options.finalContextChars,
       truncated: options.truncated,
-      includedMemoryIds: [...(options.includedMemoryIds ?? [])],
-      includedMemoryPaths: [...(options.includedMemoryPaths ?? [])],
-      includedMemoryNamespaces: [...(options.includedMemoryNamespaces ?? [])],
       omittedMemoryIds: [...(options.omittedMemoryIds ?? [])],
       includedSections: [...(options.includedSections ?? [])],
       omittedSections: [...(options.omittedSections ?? [])],

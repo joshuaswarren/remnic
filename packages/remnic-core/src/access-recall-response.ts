@@ -15,7 +15,7 @@ import { type BudgetDecision, toBudgetWarning } from "./cross-namespace-budget.j
 import { decideDisclosureEscalation } from "./recall-disclosure-escalation.js";
 import { type TagMatchMode, applyTagFilter, normalizeTags, parseTagMatch } from "./recall-tag-filter.js";
 import type { RecallDisclosure, RecallPlanMode } from "./types.js";
-import { displaySafeBudgetsApplied, displaySafeRecallSnapshot } from "./orchestration/recall-result-formatter.js";
+import { displaySafeRecallSnapshot } from "./orchestration/recall-result-formatter.js";
 import {
   boundRecallContextComposition,
   composeRecallContext,
@@ -305,7 +305,7 @@ export async function assembleRecallResponse(
       fallbackUsed: snapshot?.fallbackUsed ?? false,
       sourcesUsed: snapshot?.sourcesUsed ?? [],
       disclosure,
-      budgetsApplied: displaySafeBudgetsApplied(snapshot?.budgetsApplied, deps.orchestrator.config.memoryDir),
+      budgetsApplied: snapshot?.budgetsApplied,
       auditAnomalies,
       budgetWarning: toBudgetWarning(budgetDecision),
       latencyMs: snapshot?.latencyMs ?? (Date.now() - startedAt),

@@ -46,6 +46,6 @@ test("recall reserves one memory chunk that fits both character and token budget
 
   const assembled = coordinator.assembleRecallSections(buckets);
 
-  assert.deepEqual(assembled.includedMemoryIds, ["latin"]);
+  assert.deepEqual(assembled.includedMemories, [{ id: "latin", path: "memories/latin.md" }]);
   assert.ok(estimateTokenCount(assembled.sections.join("\n\n---\n\n")) <= 50);
 });

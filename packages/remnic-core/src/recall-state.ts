@@ -12,6 +12,14 @@ import type {
   RecallPlanMode,
   RecallTierExplain,
 } from "./types.js";
+import {
+  coerceIncludedMemories,
+  type IncludedMemory,
+} from "./included-memories.js";
+
+export type { IncludedMemory } from "./included-memories.js";
+export { coerceIncludedMemories } from "./included-memories.js";
+
 
 export interface LastRecallBudgetSummary {
   requestedTopK?: number;
@@ -24,9 +32,6 @@ export interface LastRecallBudgetSummary {
   truncated?: boolean;
   includedSections?: string[];
   omittedSections?: string[];
-  includedMemoryIds?: string[];
-  includedMemoryPaths?: string[];
-  includedMemoryNamespaces?: Array<string | undefined>;
   omittedMemoryIds?: string[];
 }
 
@@ -36,6 +41,7 @@ export interface LastRecallSnapshot {
   queryHash: string;
   queryLen: number;
   memoryIds: string[];
+  includedMemories: IncludedMemory[];
   namespace?: string;
   recallNamespaces?: string[];
   traceId?: string;
@@ -46,8 +52,6 @@ export interface LastRecallSnapshot {
   sourcesUsed?: string[];
   budgetsApplied?: LastRecallBudgetSummary;
   latencyMs?: number;
-  resultPaths?: string[];
-  resultNamespaces?: Array<string | undefined>;
   policyVersion?: string;
   identityInjectionMode?: IdentityInjectionMode | "none";
   identityInjectedChars?: number;
@@ -198,17 +202,35 @@ function cloneTierExplain(
   return structuredClone(tierExplain);
 }
 
-/**
- * Deep-copy a LastRecallSnapshot so callers that receive it cannot
- * mutate the store's internal state through mutable array/object
- * fields.  Same structuredClone rationale as cloneTierExplain above.
- */
+function hydrateLastRecallSnapshot(snapshot: LastRecallSnapshot): LastRecallSnapshot {
+  const includedMemories = coerceIncludedMemories(snapshot);
+  // Strip the legacy parallel arrays so a hydrated snapshot re-emits only the
+  // canonical `includedMemories` form on every surface (in-memory clones,
+  // re-persisted state, MCP/HTTP JSON). The freshly parsed disk object is
+  // private to this load, so in-place deletes are safe.
+  const legacy = snapshot as unknown as Record<string, unknown>;
+  delete legacy.resultPaths;
+  delete legacy.resultNamespaces;
+  if (legacy.budgetsApplied && typeof legacy.budgetsApplied === "object") {
+    const budgets = legacy.budgetsApplied as Record<string, unknown>;
+    delete budgets.includedMemoryIds;
+    delete budgets.includedMemoryPaths;
+    delete budgets.includedMemoryNamespaces;
+  }
+  return {
+    ...snapshot,
+    includedMemories,
+    memoryIds: includedMemories.map((memory) => memory.id),
+  };
+}
+
 function cloneLastRecallSnapshot(
   snapshot: LastRecallSnapshot | null,
 ): LastRecallSnapshot | null {
   if (!snapshot) return null;
-  return structuredClone(snapshot);
+  return structuredClone(hydrateLastRecallSnapshot(snapshot));
 }
+
 
 export interface TierMigrationCycleSummary {
   trigger: "extraction" | "maintenance" | "manual";
@@ -320,7 +342,14 @@ export class LastRecallStore {
     try {
       const raw = await readFile(this.statePath, "utf-8");
       const parsed = JSON.parse(raw) as LastRecallState;
-      if (parsed && typeof parsed === "object") this.state = parsed;
+      if (parsed && typeof parsed === "object") {
+        this.state = Object.fromEntries(
+          Object.entries(parsed).map(([sessionKey, snapshot]) => [
+            sessionKey,
+            hydrateLastRecallSnapshot(snapshot),
+          ]),
+        );
+      }
     } catch {
       this.state = {};
     }
@@ -352,7 +381,8 @@ export class LastRecallStore {
   async record(opts: {
     sessionKey: string;
     query: string;
-    memoryIds: string[];
+    memoryIds?: string[];
+    includedMemories?: IncludedMemory[];
     namespace?: string;
     recallNamespaces?: string[];
     traceId?: string;
@@ -393,13 +423,15 @@ export class LastRecallStore {
     // cloneLastRecallSnapshot so caller arrays/objects passed in
     // `opts` cannot retain a live reference to the persisted state and
     // tear it after `record()` returns.
+    const includedMemories = coerceIncludedMemories(opts);
     const liveSnapshot: LastRecallSnapshot = {
       sessionKey: opts.sessionKey,
       recordedAt: now,
       queryHash,
       writeNonce: randomUUID(),
       queryLen: opts.query.length,
-      memoryIds: opts.memoryIds,
+      includedMemories,
+      memoryIds: includedMemories.map((memory) => memory.id),
       namespace: opts.namespace,
       recallNamespaces: opts.recallNamespaces,
       traceId: opts.traceId,
@@ -410,8 +442,6 @@ export class LastRecallStore {
       sourcesUsed: opts.sourcesUsed,
       budgetsApplied: opts.budgetsApplied,
       latencyMs: opts.latencyMs,
-      resultPaths: opts.resultPaths,
-      resultNamespaces: opts.resultNamespaces,
       policyVersion: opts.policyVersion,
       identityInjectionMode: opts.identityInjection?.mode,
       identityInjectedChars: opts.identityInjection?.injectedChars,

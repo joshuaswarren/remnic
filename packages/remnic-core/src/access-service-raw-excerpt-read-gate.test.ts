@@ -92,7 +92,7 @@ function makeRawExcerptProbe(options: {
     memoryIds: [],
     namespace: options.snapshotNamespace,
     recallNamespaces: [options.snapshotNamespace],
-    resultPaths: [],
+    includedMemories: [],
   };
 
   const storage = {
