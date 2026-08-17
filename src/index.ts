@@ -4373,9 +4373,7 @@ const pluginDefinition = {
               log.debug(`LCM after_compaction error: ${lcmErr}`);
             }
           }
-          await queueOpenClawFlushPlanProcessing("after_compaction", workspaceDir, {
-            timeoutMs: cfg.beforeResetTimeoutMs,
-          });
+          void queueOpenClawFlushPlanProcessing("after_compaction", workspaceDir);
 
           if (!orchestrator.config.compactionResetEnabled) {
             log.debug(

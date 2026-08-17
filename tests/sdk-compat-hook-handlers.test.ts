@@ -2224,6 +2224,141 @@ test("after_compaction preserves the Codex heuristic baseline when the signal fl
   );
 });
 
+test("after_compaction fire-and-forgets flush-plan processing without a hook deadline", async () => {
+  const { default: plugin } = await import("../src/index.js");
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-after-compaction-flush-"));
+  try {
+    const api = buildHandlerCapturingApi("after-compaction-flush-plan-no-deadline-test");
+    api.pluginConfig = {
+      qmdEnabled: false,
+      modelSource: "gateway",
+      transcriptEnabled: false,
+      hourlySummariesEnabled: false,
+      workspaceDir,
+      openclawFlushPlanProcessingEnabled: true,
+      beforeResetTimeoutMs: 25,
+      compactionResetEnabled: true,
+    };
+    const resetSessionCalls: Array<{ sessionKey?: string; reason?: string }> = [];
+    (api as { resetSession?: unknown }).resetSession = async (
+      sessionKey: string,
+      reason: string,
+    ) => {
+      resetSessionCalls.push({ sessionKey, reason });
+      return { ok: true, sessionId: "session-after-compaction-flush-new" };
+    };
+    plugin.register(api as any);
+
+    const afterCompaction = api.handlers.get("after_compaction");
+    assert.ok(afterCompaction, "after_compaction handler should be registered");
+
+    const orchestrator = (globalThis as any).__openclawEngramOrchestrator;
+    assert.ok(orchestrator, "orchestrator should exist on globalThis after register");
+    orchestrator.maybeRunFileHygiene = async () => undefined;
+    orchestrator.config.compactionResetEnabled = true;
+
+    const recordCompactionCalls: Array<{
+      sessionKey: string;
+      tokensBefore: number;
+      tokensAfter: number;
+    }> = [];
+    orchestrator.lcmEngine = {
+      enabled: true,
+      recordCompaction: async (
+        sessionKey: string,
+        tokensBefore: number,
+        tokensAfter: number,
+      ) => {
+        recordCompactionCalls.push({ sessionKey, tokensBefore, tokensAfter });
+      },
+      verifyPostCompaction: async () => undefined,
+    };
+
+    let ingestCalls = 0;
+    let ingestOptions: { deadlineMs?: number } | undefined;
+    let markIngestStarted!: () => void;
+    const ingestStarted = new Promise<void>((resolve) => {
+      markIngestStarted = resolve;
+    });
+    let releaseIngest!: () => void;
+    const ingestReleased = new Promise<void>((resolve) => {
+      releaseIngest = resolve;
+    });
+    orchestrator.ingestBulkImportBatch = async (
+      _turns: unknown,
+      options?: { deadlineMs?: number },
+    ) => {
+      ingestCalls += 1;
+      ingestOptions = options;
+      markIngestStarted();
+      await ingestReleased;
+      throw new Error("flush-plan ingest rejected");
+    };
+
+    const flushPlanPath = path.join(
+      workspaceDir,
+      "state",
+      "plugins",
+      SERVICE_ID,
+      "flush-plan.md",
+    );
+    await mkdir(path.dirname(flushPlanPath), { recursive: true });
+    await writeFile(
+      flushPlanPath,
+      "- After-compaction replay must not block the compaction hook.\n",
+      "utf8",
+    );
+
+    // The hook must settle while the flush-plan ingest is still in flight;
+    // awaiting the queue here would hang until the test runner times out.
+    await afterCompaction(
+      {
+        sessionKey: "session-after-compaction-flush",
+        tokenCount: 42,
+        messageCount: 3,
+      },
+      { sessionKey: "session-after-compaction-flush", workspaceDir },
+    );
+
+    const queueInvoked = await Promise.race([
+      ingestStarted.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1000)),
+    ]);
+    assert.equal(
+      queueInvoked,
+      true,
+      "after_compaction should still queue flush-plan processing",
+    );
+    assert.equal(
+      ingestCalls,
+      1,
+      "after_compaction flush-plan queue should run exactly one ingest",
+    );
+    assert.ok(ingestOptions, "ingest options should have been captured");
+    assert.ok(
+      !("deadlineMs" in (ingestOptions ?? {})),
+      "after_compaction ingest options must omit deadlineMs entirely",
+    );
+
+    assert.equal(
+      recordCompactionCalls.length,
+      1,
+      "LCM compaction record should complete",
+    );
+    assert.equal(recordCompactionCalls[0]?.tokensAfter, 42);
+    assert.equal(
+      resetSessionCalls.length,
+      1,
+      "compaction reset should still run after the fire-and-forget queue call",
+    );
+
+    releaseIngest();
+    await waitForFlushPlanProcessingQueueToEmpty();
+  } finally {
+    await rm(workspaceDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
 test("before_prompt_build uses the Codex heuristic fallback when thread history shrinks", async () => {
   const { default: plugin } = await import("../src/index.js");
   const api = buildHandlerCapturingApi("before-prompt-build-codex-heuristic-test");
