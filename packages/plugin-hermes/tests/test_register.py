@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from remnic_hermes import register
+from remnic_hermes.provider import RemnicMemoryProvider as _RealProvider
 
 _RECALL_DEBUG_TOOL_SUFFIXES = [
     "recall_explain",
@@ -121,6 +122,14 @@ def _populate_provider_mock(provider):  # type: ignore[no-untyped-def]
         setattr(provider, f"{suffix}_schema", {"name": f"remnic_{suffix}"})
         setattr(provider, f"legacy_{suffix}_schema", {"name": f"engram_{suffix}"})
         setattr(provider, suffix, object())
+    # register() drives registration from the provider's schema surface
+    # (issue #2483), so the mock must expose the REAL collection/mapping
+    # implementations over the attributes set above — a hand-rolled fake
+    # here could drift from production and pass vacuously.
+    provider.get_tool_schemas.side_effect = _RealProvider.get_tool_schemas.__get__(provider)
+    provider._handler_name_for_tool.side_effect = _RealProvider._handler_name_for_tool.__get__(
+        provider
+    )
 
 
 def test_register_prefers_remnic_config_key():
@@ -172,6 +181,9 @@ def test_register_prefers_remnic_config_key():
     assert "engram_day_summary" in registered_tools
     assert "remnic_profiling_report" in registered_tools
     assert "engram_profiling_report" in registered_tools
+    # The schema loop must register each tool exactly once (get_tool_schemas
+    # dedupes by name; a duplicate registration would shadow the first).
+    assert len(registered_tools) == len(set(registered_tools))
 
 
 def test_register_falls_back_to_engram_config_key():

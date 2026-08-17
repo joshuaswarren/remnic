@@ -21,6 +21,9 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 
 const RUNNER = path.join(__dirname, "remnic-cc-hook.cjs");
+// Shared runner source (issue #2483): implementation-detail assertions read
+// the core, while behavioral tests spawn the wrapper entry (RUNNER).
+const CORE = path.join(__dirname, "remnic-hook-core.cjs");
 
 function startServer(handler) {
   const calls = [];
@@ -76,6 +79,12 @@ function runHook(event, input, { port, home, env = {} } = {}) {
         // Internal worker-propagation channel, not a user credential. Pinned
         // so an inherited value cannot reach the detached observe worker.
         REMNIC_HOOK_TOKEN: "",
+        // Clear daemon URL env so a developer shell with REMNIC_DAEMON_URL
+        // set can't route tests away from the mock server (the shared core
+        // honors it since issue #2483). Tests that WANT a daemon URL
+        // override it via env.extra (which spreads last).
+        REMNIC_DAEMON_URL: "",
+        ENGRAM_DAEMON_URL: "",
         ...env.extra,
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -161,6 +170,44 @@ test("session-start: health probe carries the bearer token (auth-gated daemons)"
     // Without this header an auth-gated daemon 401s the probe and the hook
     // reports "daemon not running", silently skipping recall/observe.
     assert.equal(healthAuth, "Bearer test-token");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("session-start: REMNIC_DAEMON_URL routes recall to the remote base URL (#2483)", async () => {
+  const home = mkHome();
+  const { server, port, calls } = await startServer((req, res) => {
+    if (req.url === "/engram/v1/health") return res.writeHead(200).end("ok");
+    if (req.url === "/engram/v1/recall") {
+      return res.writeHead(200, { "Content-Type": "application/json" }).end(
+        JSON.stringify({ context: "remote recall", count: 1, mode: "auto" }),
+      );
+    }
+    res.writeHead(404).end();
+  });
+  try {
+    // A full REMNIC_DAEMON_URL must take precedence over the (wrong) PORT —
+    // the same remote/central-daemon contract the Codex runner has had since
+    // #1571. Issue #2483: the Claude Code hook inherits it via the shared
+    // core, so a Claude Code host can also reach a remote daemon over
+    // Tailscale/LAN/VPN (plain or TLS).
+    const { json } = await runHook(
+      "session-start",
+      { session_id: "remote-1", cwd: home },
+      {
+        port: 1, // deliberately unused; daemon URL wins
+        home,
+        env: { extra: { REMNIC_DAEMON_URL: `http://127.0.0.1:${port}` } },
+      },
+    );
+    assert.equal(json.continue, true);
+    assert.match(json.hookSpecificOutput.additionalContext, /remote recall/);
+    assert.ok(
+      calls.some((c) => c.url === "/engram/v1/recall"),
+      "recall reached the REMNIC_DAEMON_URL host",
+    );
   } finally {
     server.close();
     fs.rmSync(home, { recursive: true, force: true });
@@ -471,7 +518,7 @@ test("post-tool-observe: worker payload travels via STDIN, not the environment",
   // (big file edits) would E2BIG; the worker reads stdin instead. We assert
   // the source rather than running an E2BIG payload because reproducing the
   // limit cross-platform is impractical.
-  const src = fs.readFileSync(RUNNER, "utf8");
+  const src = fs.readFileSync(CORE, "utf8");
   assert.doesNotMatch(
     src,
     /REMNIC_HOOK_INPUT:\s*rawInput/,
@@ -804,7 +851,7 @@ test("plugin.json: manifest conforms to the Claude Code plugin schema (author is
 });
 
 test("runner source: payload fields never reach a shell — spawn uses fixed argv (#1518 guard shell interpolation)", () => {
-  const src = fs.readFileSync(RUNNER, "utf8");
+  const src = fs.readFileSync(CORE, "utf8");
   // Every spawn/spawnSync must use a fixed literal argument array, never a
   // string command, so a payload value (session id, cwd, transcript path,
   // prompt, tool name) cannot achieve command injection.
@@ -831,7 +878,7 @@ test("runner source: payload fields never reach a shell — spawn uses fixed arg
 });
 
 test("runner source: stdin is the single payload source — no env-var override", () => {
-  const src = fs.readFileSync(RUNNER, "utf8");
+  const src = fs.readFileSync(CORE, "utf8");
   assert.doesNotMatch(
     src,
     /process\.env\.REMNIC_HOOK_INPUT/,
@@ -840,7 +887,7 @@ test("runner source: stdin is the single payload source — no env-var override"
 });
 
 test("runner source: path inputs are type-validated before use (#1518 validate path types)", () => {
-  const src = fs.readFileSync(RUNNER, "utf8");
+  const src = fs.readFileSync(CORE, "utf8");
   // cwd / transcript_path are coerced via `input.X || ""` so an unexpected
   // non-string payload field (number, object, array) cannot reach fs / git
   // and throw an opaque error or, worse, be coerced by Node to a path.

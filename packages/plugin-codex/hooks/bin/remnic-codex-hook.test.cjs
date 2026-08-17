@@ -15,6 +15,9 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 
 const RUNNER = path.join(__dirname, "remnic-codex-hook.cjs");
+// Shared runner source (issue #2483): implementation-detail assertions read
+// the core, while behavioral tests spawn the wrapper entry (RUNNER).
+const CORE = path.join(__dirname, "remnic-hook-core.cjs");
 
 function startServer(handler) {
   const calls = [];
@@ -396,7 +399,7 @@ test(
       const pluginRoot = path.join(home, "plugin root");
       const binDir = path.join(pluginRoot, "hooks", "bin");
       fs.mkdirSync(binDir, { recursive: true });
-      for (const file of ["remnic-codex-hook.sh", "remnic-codex-hook.cjs"]) {
+      for (const file of ["remnic-codex-hook.sh", "remnic-codex-hook.cjs", "remnic-hook-core.cjs"]) {
         fs.copyFileSync(path.join(__dirname, file), path.join(binDir, file));
       }
       fs.chmodSync(path.join(binDir, "remnic-codex-hook.sh"), 0o644);
@@ -449,7 +452,7 @@ test(
 );
 
 test("runner source: remnic→engram fallthrough is PATH-gated and Windows-shim aware (#1443 review)", () => {
-  const src = fs.readFileSync(path.join(__dirname, "remnic-codex-hook.cjs"), "utf8");
+  const src = fs.readFileSync(CORE, "utf8");
   // Both the migration and daemon-start loops pre-check PATH with onPath()
   // (.cmd/.exe-aware) so the remnic→engram fallthrough happens, and launch
   // through a shell on Windows so `.cmd` npm shims actually run.
@@ -463,7 +466,7 @@ test("runner source: remnic→engram fallthrough is PATH-gated and Windows-shim 
 });
 
 test("runner source: materialize child receives an explicit HOME (#1443 review)", () => {
-  const src = fs.readFileSync(path.join(__dirname, "remnic-codex-hook.cjs"), "utf8");
+  const src = fs.readFileSync(CORE, "utf8");
   // The spawned materializer must get the runner's resolved HOME so Windows
   // (HOME usually unset) resolves the same config home as the hook.
   assert.match(
@@ -475,7 +478,7 @@ test("runner source: materialize child receives an explicit HOME (#1443 review)"
 });
 
 test("runner source: stdin is the single payload source — no env-var override (#1443 review)", () => {
-  const src = fs.readFileSync(path.join(__dirname, "remnic-codex-hook.cjs"), "utf8");
+  const src = fs.readFileSync(CORE, "utf8");
   // An inherited REMNIC_HOOK_INPUT must NOT be able to override the piped
   // stdin payload, so readStdin must not read it.
   assert.doesNotMatch(
@@ -490,7 +493,7 @@ test("post-tool-observe: worker payload travels via STDIN, not the environment (
   // (big file edits, big command output) would E2BIG; the worker now reads
   // stdin instead. We assert the source rather than running an E2BIG payload
   // because reproducing the limit cross-platform is impractical.
-  const src = fs.readFileSync(path.join(__dirname, "remnic-codex-hook.cjs"), "utf8");
+  const src = fs.readFileSync(CORE, "utf8");
   assert.doesNotMatch(
     src,
     /REMNIC_HOOK_INPUT:\s*rawInput/,
@@ -766,7 +769,7 @@ test("pre-compact: REMNIC_DAEMON_URL routes the flush to the remote base URL (#1
 });
 
 test("runner source: DAEMON_URL honors https:// remotes and falls back to HOST/PORT (#1571)", () => {
-  const src = fs.readFileSync(path.join(__dirname, "remnic-codex-hook.cjs"), "utf8");
+  const src = fs.readFileSync(CORE, "utf8");
   // Both transports are wired so a TLS remote daemon is reachable.
   assert.match(src, /const https = require\("https"\)/, "https transport is required");
   assert.match(

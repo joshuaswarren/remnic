@@ -80,12 +80,11 @@ test("compounding engine.synthesizeWeekly invokes materializeAfterCausalConsolid
   );
 });
 
-// The two regression guards below moved from the bash hook to the unified
-// Node.js runner introduced in issue #1440. The session-end event of
-// `remnic-codex-hook.cjs` is the new place where the materializer is invoked.
-const codexHookRunner = path.join(
+// Session-end materialize lives in the shared runner (#2483). The Codex
+// wrapper only selects Codex-only events.
+const codexHookCore = path.join(
   repoRoot,
-  "packages/plugin-codex/hooks/bin/remnic-codex-hook.cjs",
+  "packages/plugin-codex/hooks/bin/remnic-hook-core.cjs",
 );
 
 test("unified Codex hook runner resolves REMNIC_REPO_ROOT from its own filesystem location", () => {
@@ -93,7 +92,7 @@ test("unified Codex hook runner resolves REMNIC_REPO_ROOT from its own filesyste
   // when either $REMNIC_REPO_ROOT was set OR `remnic --print-root` returned
   // a path. Neither condition holds in most installs, so the materializer
   // silently never ran. The fix resolves relative to the runner's own dir.
-  const src = readFileSync(codexHookRunner, "utf-8");
+  const src = readFileSync(codexHookCore, "utf-8");
   assert.match(
     src,
     /__dirname/u,
@@ -120,7 +119,7 @@ test("unified Codex hook runner prefers the packaged materialize.cjs binary for 
   // never shipped inside any published package payload. The fix ships a
   // packaged CJS wrapper at `packages/plugin-codex/bin/materialize.cjs` and
   // has the hook prefer it before falling back to the dev script.
-  const src = readFileSync(codexHookRunner, "utf-8");
+  const src = readFileSync(codexHookCore, "utf-8");
   assert.match(
     src,
     /materialize\.cjs/u,

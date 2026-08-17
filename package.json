@@ -987,6 +987,8 @@
   "scripts": {
     "sync:openclaw-plugin": "node scripts/sync-openclaw-plugin.mjs",
     "check:openclaw-plugin-sync": "node scripts/check-openclaw-plugin-sync.mjs",
+    "sync:hook-runner": "node scripts/sync-hook-runner.mjs",
+    "check:hook-runner-sync": "node scripts/check-hook-runner-sync.mjs",
     "check:openclaw-sdk-surface": "node scripts/check-openclaw-sdk-surface.mjs",
     "check:openclaw-sdk-surface:required": "node scripts/check-openclaw-sdk-surface.mjs --require",
     "check:ratchets": "node scripts/check-ratchets.mjs",
