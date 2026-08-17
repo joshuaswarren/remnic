@@ -193,6 +193,15 @@ export function selectThreads(threads, { all = false } = {}) {
   return all ? threads : threads.filter((thread) => !thread.isResolved);
 }
 
+export function nextPageCursor(pageInfo, after) {
+  if (!pageInfo?.hasNextPage) return null;
+  const cursor = pageInfo.endCursor;
+  if (typeof cursor !== "string" || cursor.length === 0 || cursor === after) {
+    throw new Error("reviewThreads pagination cursor is missing or repeated");
+  }
+  return cursor;
+}
+
 export function formatHuman(threads) {
   return threads
     .map((thread) => `id: ${thread.id}\nauthor: ${thread.author}\nisResolved: ${thread.isResolved}\n\n${thread.body}\n`)
@@ -220,9 +229,9 @@ function fetchThreads({ ghBin, owner, name, pr, env }) {
       "graphql",
       "-f",
       `query=${REVIEW_THREADS_QUERY}`,
-      "-F",
+      "-f",
       `owner=${owner}`,
-      "-F",
+      "-f",
       `name=${name}`,
       "-F",
       `pr=${pr}`,
@@ -237,8 +246,7 @@ function fetchThreads({ ghBin, owner, name, pr, env }) {
     }
     threads.push(...threadsFromPayload(payload));
     const pageInfo = repositoryPayload(payload)?.pullRequest?.reviewThreads?.pageInfo;
-    if (!pageInfo?.hasNextPage) break;
-    after = pageInfo.endCursor;
+    after = nextPageCursor(pageInfo, after);
     if (!after) break;
   }
   return threads;

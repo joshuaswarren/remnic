@@ -7,6 +7,7 @@ import test from "node:test";
 
 import {
   formatHuman,
+  nextPageCursor,
   parseArgs,
   parseGhJson,
   selectThreads,
@@ -29,6 +30,9 @@ function createGhStub() {
     ghPath,
     `#!/usr/bin/env bash
 set -euo pipefail
+if [[ -n "\${GH_STUB_ARGS:-}" ]]; then
+  printf '%s\\n' "$*" > "\${GH_STUB_ARGS}"
+fi
 if [[ -n "\${GH_STUB_BANNER_LINE:-}" ]]; then
   printf '%s\\n' "\${GH_STUB_BANNER_LINE}"
 fi
@@ -41,8 +45,9 @@ cat "\${GH_STUB_FIXTURE}"
 
 function runThreads(args, { banner = false } = {}) {
   const { root, ghPath } = createGhStub();
+  const argsPath = path.join(root, "gh-args");
   try {
-    return spawnSync(process.execPath, [scriptPath, ...args], {
+    const result = spawnSync(process.execPath, [scriptPath, ...args], {
       cwd: repoRoot,
       encoding: "utf8",
       env: {
@@ -50,9 +55,17 @@ function runThreads(args, { banner = false } = {}) {
         REMNIC_GH_BIN: ghPath,
         REMNIC_REPO: "example/repo",
         GH_STUB_FIXTURE: fixturePath,
+        GH_STUB_ARGS: argsPath,
         ...(banner ? { GH_STUB_BANNER_LINE: MISE_BANNER } : {}),
       },
     });
+    let ghArgs = "";
+    try {
+      ghArgs = readFileSync(argsPath, "utf8");
+    } catch {
+      ghArgs = "";
+    }
+    return { ...result, ghArgs };
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -146,3 +159,22 @@ test("human output prints id, author, and the full body", () => {
   assert.equal(result.stdout.includes("PRRT_kwDOResolved2441"), false);
   assert.equal(result.stdout.trimEnd(), formatHuman(selectThreads(threadsFromPayload(fixture))).trimEnd());
 });
+
+test("owner and name are passed as raw string flags", () => {
+  const result = runThreads(["12", "--json"]);
+  assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
+  assert.match(result.ghArgs, /(^|\s)-f owner=example(\s|$)/);
+  assert.match(result.ghArgs, /(^|\s)-f name=repo(\s|$)/);
+  assert.match(result.ghArgs, /(^|\s)-F pr=12(\s|$)/);
+  assert.equal(result.ghArgs.includes("-F owner="), false);
+  assert.equal(result.ghArgs.includes("-F name="), false);
+});
+
+test("nextPageCursor fails closed on a missing or repeated cursor", () => {
+  assert.equal(nextPageCursor({ hasNextPage: false, endCursor: "c1" }, null), null);
+  assert.equal(nextPageCursor({ hasNextPage: true, endCursor: "c2" }, "c1"), "c2");
+  assert.throws(() => nextPageCursor({ hasNextPage: true, endCursor: "" }, null), /missing or repeated/);
+  assert.throws(() => nextPageCursor({ hasNextPage: true, endCursor: "c1" }, "c1"), /missing or repeated/);
+  assert.throws(() => nextPageCursor({ hasNextPage: true }, null), /missing or repeated/);
+});
+
