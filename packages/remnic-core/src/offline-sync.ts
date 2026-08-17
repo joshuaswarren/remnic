@@ -33,7 +33,7 @@ import {
   type OfflineSyncExcludeFile,
   type OfflineSyncFileTarget,
 } from "./offline-sync-file-io.js";
-
+import { CENSUS_MAX_MTIME_MS, isCensusMtimeMs, isSha256Hex } from "./census-validation.js";
 export type { OfflineSyncExcludeFile, OfflineSyncFileTarget } from "./offline-sync-file-io.js";
 
 export const OFFLINE_SYNC_SNAPSHOT_FORMAT = "remnic.offline-sync.snapshot.v1";
@@ -43,7 +43,7 @@ export const OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES = 64 * 1024 * 1024;
 export const OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES = 8 * 1024 * 1024;
 export const OFFLINE_SYNC_APPLY_MAX_BODY_BYTES = 16 * 1024 * 1024;
 export const OFFLINE_SYNC_SNAPSHOT_BASE_MAX_BODY_BYTES = 64 * 1024 * 1024;
-export const OFFLINE_SYNC_MAX_MTIME_MS = 8_640_000_000_000_000;
+export const OFFLINE_SYNC_MAX_MTIME_MS = CENSUS_MAX_MTIME_MS;
 
 export interface OfflineSyncFileState {
   path: string;
@@ -288,7 +288,7 @@ function compareByPath<T extends { path: string }>(left: T, right: T): number {
 }
 
 function assertSha256(value: unknown, field: string): string {
-  if (typeof value !== "string" || !/^[a-f0-9]{64}$/i.test(value)) {
+  if (!isSha256Hex(value)) {
     throw new Error(`${field} must be a 64-character sha256 hex string`);
   }
   return value.toLowerCase();
@@ -315,7 +315,7 @@ function assertNonNegativeFinite(value: unknown, field: string): number {
 
 function assertOfflineSyncMtimeMs(value: unknown, field: string): number {
   const mtimeMs = assertNonNegativeFinite(value, field);
-  if (mtimeMs > OFFLINE_SYNC_MAX_MTIME_MS) {
+  if (!isCensusMtimeMs(mtimeMs)) {
     throw new Error(`${field} must be within JavaScript Date range`);
   }
   return mtimeMs;
