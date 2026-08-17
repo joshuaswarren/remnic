@@ -619,6 +619,12 @@ export class SmartBuffer {
     log.debug(
       `buffer[${bufferKey}]: ${mutation.turnCountInWindow} turns, signal=${mutation.signalLevel}, decision=${decision}`,
     );
+    if (decision !== "keep_buffering" && extractionTurns === undefined) {
+      extractionTurns = [
+        ...mutation.retainedTurnsSnapshot,
+        ...mutation.activeTurnsSnapshot,
+      ];
+    }
     return extractionTurns ? { decision, extractionTurns } : { decision };
   }
 

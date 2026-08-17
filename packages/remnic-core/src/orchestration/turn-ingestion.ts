@@ -201,8 +201,9 @@ export class TurnIngestionCoordinator {
         : { decision: await this.deps.buffer.addTurn(bufferKey, turn) };
 
     if (outcome.decision === "keep_buffering") return;
+    if (!outcome.extractionTurns) return;
     await this.deps.queueBufferedExtraction(
-      outcome.extractionTurns ?? this.deps.buffer.getTurns(bufferKey),
+      outcome.extractionTurns,
       "trigger_mode",
       { bufferKey },
     );
