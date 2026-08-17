@@ -91,8 +91,52 @@ export const REDOS_SHAPES = Object.freeze([
 ]);
 
 /**
+ * Replace escape-targeted punctuation and character-class contents with
+ * spaces so shape detectors see only STRUCTURAL regex syntax: `\)` or
+ * `[()]` are literals, not group syntax; `\s` / `\d` shorthands survive
+ * (their leading backslash targets a letter, not punctuation).
+ */
+function maskLiterals(src) {
+  let out = "";
+  let inClass = false;
+  for (let i = 0; i < src.length; i += 1) {
+    const c = src[i];
+    if (c === "\\") {
+      const next = src[i + 1] ?? "";
+      const isShorthand = /[a-zA-Z0-9]/.test(next);
+      out += isShorthand ? c + next : "  ";
+      i += 1;
+      continue;
+    }
+    if (inClass) {
+      out += c === "]" ? "]" : " ";
+      if (c === "]") inClass = false;
+      continue;
+    }
+    if (c === "[") {
+      inClass = true;
+      out += "[";
+      if (src[i + 1] === "^") {
+        out += "^"; // negation marker is structural, not content
+        i += 1;
+      }
+      continue;
+    }
+    out += c;
+  }
+  return out;
+}
+
+/** True when a `{...}` quantifier body has no upper bound ({2,}). */
+function unboundedBrace(braceBody) {
+  return /^\d+,$/.test(braceBody);
+}
+
+/**
  * One nesting level only: a `)` carrying `*`/`+` whose group body
- * (no nested groups) ends with a quantifier (`*`, `+`, or `}`).
+ * (no nested groups) ends with an UNBOUNDED quantifier (`*`, `+`, or
+ * `{n,}`). Bounded repetitions like `(\d{2})+` are linear and pass.
+ * Operates on masked source (escapes/classes already neutralized).
  */
 function hasNestedQuantifier(src) {
   for (let i = 0; i + 1 < src.length; i += 1) {
@@ -102,7 +146,11 @@ function hasNestedQuantifier(src) {
     if (src.indexOf(")", open + 1) !== i) continue; // inner group — skip this level
     const body = src.slice(open + 1, i);
     const last = body[body.length - 1];
-    if (last === "*" || last === "+" || last === "}") return true;
+    if (last === "*" || last === "+") return true;
+    if (last === "}") {
+      const openBrace = body.lastIndexOf("{");
+      if (openBrace !== -1 && unboundedBrace(body.slice(openBrace + 1, -1))) return true;
+    }
   }
   return false;
 }
@@ -157,7 +205,7 @@ function lineRegions(line) {
       spanStart = i;
       continue;
     }
-    if (c === "/" && line[i + 1] === "/") {
+    if (c === "/" && (line[i + 1] === "/" || line[i + 1] === "*")) {
       commentStart = i;
       break;
     }
@@ -166,6 +214,10 @@ function lineRegions(line) {
   return { strings, commentStart };
 }
 export function extractRegexLiterals(line) {
+  // JSDoc/block-comment continuation lines start with `*` — code-looking
+  // regexes there are prose, not literals. (A `/*` opener on this line is
+  // handled by commentStart below.)
+  if (/^\s*\*/.test(line)) return [];
   const { strings, commentStart } = lineRegions(line);
   const inString = (pos) => strings.some(([s, e]) => pos >= s && pos <= e);
   const isFlag = (c) => c >= "a" && c <= "z";
@@ -209,8 +261,9 @@ export function extractRegexLiterals(line) {
 export function scanLine(text) {
   const findings = [];
   for (const { literal, src } of extractRegexLiterals(text)) {
+    const masked = maskLiterals(src);
     for (const shape of REDOS_SHAPES) {
-      if (shapeMatches(shape, src)) {
+      if (shapeMatches(shape, masked)) {
         findings.push({ id: shape.id, codeql: shape.codeql, literal, fix: shape.fix });
       }
     }
@@ -234,9 +287,14 @@ function tryGit(args, cwd = ROOT) {
 
 function resolveBase() {
   const ref = process.env.REMNIC_REGEX_SAFETY_BASE_REF || "origin/main";
+  const head = tryGit(["rev-parse", "HEAD"]);
   if (tryGit(["rev-parse", "--verify", `${ref}^{commit}`])) {
     const mergeBase = tryGit(["merge-base", "HEAD", ref]);
-    if (mergeBase) return { base: mergeBase.trim(), ref };
+    // On push events (CI on main) origin/main == HEAD and the diff is
+    // empty; fall through to HEAD~1 so the last commit is still scanned.
+    if (mergeBase && mergeBase.trim() !== (head ?? "").trim()) {
+      return { base: mergeBase.trim(), ref };
+    }
   }
   if (tryGit(["rev-parse", "--verify", "HEAD~1"])) {
     return { base: "HEAD~1", ref: "HEAD~1" };
@@ -286,7 +344,25 @@ function collectGitModeLines() {
     "*.mts",
   ]);
   if (diff === null) return { error: `git diff against ${resolved.ref} failed` };
-  return { added: parseAddedLines(diff), base: resolved.ref };
+  const added = parseAddedLines(diff);
+  // `git diff` never reports untracked files — a brand-new .ts file is
+  // entirely "added lines", so scan it whole (pre-commit runs before
+  // the first `git add` is guaranteed).
+  const untracked = tryGit(["ls-files", "--others", "--exclude-standard", "--", "*.ts", "*.mts"]);
+  if (untracked) {
+    for (const relPath of untracked.split("\n")) {
+      if (!relPath) continue;
+      try {
+        const lines = readFileSync(path.join(ROOT, relPath), "utf8").split("\n");
+        for (let i = 0; i < lines.length; i += 1) {
+          added.push({ file: relPath, line: i + 1, text: lines[i] });
+        }
+      } catch {
+        // unreadable untracked file — the diff scan will surface tracked problems
+      }
+    }
+  }
+  return { added, base: resolved.ref };
 }
 
 function collectArgvModeLines(files) {

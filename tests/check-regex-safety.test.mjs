@@ -69,6 +69,10 @@ const GOOD_FIXTURE = [
   "export const proto = /^https?:\\/\\/\\S+$/;",
   "const ratio = total / count / scale;",
   'const note = "contains [a-z]* and .*? inside a string";',
+  "export const boundedRep = /(\\d{2})+/;",
+  "export const literalStar = /(\\*)+/;",
+  "const afterBlock = 1; /* note /fake[\\s\\S]*?re/ here */",
+  " * const jsdoc = /[\\s\\S]*?x/;",
   "// comment with /fake.*?regex/ never scanned",
   "",
 ].join("\n");
@@ -107,9 +111,22 @@ test("ignores files that are not .ts/.mts", () => {
   withTempDir("regex-safety-ext-", (dir) => {
     const js = path.join(dir, "notscanned.js");
     writeFileSync(js, 'export const x = /[\\s\\S]*?y/;\n');
-
     const res = runScript([js]);
     assert.equal(res.status, 0, `${res.stdout}\n${res.stderr}`);
+  });
+});
+
+test("nested-quantifier distinguishes bounded from unbounded brace repetition", () => {
+  withTempDir("regex-safety-brace-", (dir) => {
+    const safe = path.join(dir, "safe.ts");
+    writeFileSync(safe, "export const pairs = /(\\d{2})+/;\n");
+    assert.equal(runScript([safe]).status, 0);
+
+    const risky = path.join(dir, "risky.ts");
+    writeFileSync(risky, "export const unbounded = /(\\d{2,})+/;\n");
+    const res = runScript([risky]);
+    assert.equal(res.status, 1, `${res.stdout}\n${res.stderr}`);
+    assert.match(res.stderr, /risky\.ts:1: \[nested-quantifier\]/);
   });
 });
 
@@ -139,6 +156,20 @@ test("scans only lines added since the base commit, including uncommitted edits"
     assert.equal(dirty.status, 1, `${dirty.stdout}\n${dirty.stderr}`);
     assert.match(dirty.stderr, /scan\.ts:3: \[lazy-any\]/);
     assert.doesNotMatch(dirty.stderr, /scan\.ts:1/);
+
+    // Committing the bad line keeps it in the HEAD~1..worktree diff: a
+    // push event with a clean tree still scans the last commit.
+    git(repo, ["add", "scan.ts"]);
+    git(repo, ["commit", "-q", "-m", "add bad shape"]);
+    const committed = runScript([], repo, { REMNIC_REGEX_SAFETY_ROOT: repo });
+    assert.equal(committed.status, 1, `${committed.stdout}\n${committed.stderr}`);
+    assert.match(committed.stderr, /scan\.ts:3: \[lazy-any\]/);
+
+    // An untracked brand-new .ts file is fully "added" and must be scanned.
+    writeFileSync(path.join(repo, "untracked.ts"), "export const u = /[\\s\\S]*?z/;\n");
+    const withUntracked = runScript([], repo, { REMNIC_REGEX_SAFETY_ROOT: repo });
+    assert.equal(withUntracked.status, 1, `${withUntracked.stdout}\n${withUntracked.stderr}`);
+    assert.match(withUntracked.stderr, /untracked\.ts:1: \[lazy-any\]/);
   });
 });
 
