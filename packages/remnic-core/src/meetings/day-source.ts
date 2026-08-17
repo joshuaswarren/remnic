@@ -28,7 +28,6 @@ import type { FusionConversationInput, FusionSegmentInput } from "../wearables/f
 import type { MeetingDayData, MeetingsDaySource } from "./build.js";
 import { MeetingsInputError } from "./errors.js";
 import type {
-  MeetingActivitySnapshot,
   MeetingAppSpan,
   MeetingAudioWindow,
   MeetingsConfig,
@@ -95,15 +94,6 @@ export function storageWearableDayReader(store: WearableDayTranscriptStore): Mee
       return bodies;
     },
   };
-}
-
-/** Map an activity snapshot to the redaction-safe screen snapshot fusion sees. */
-function toMeetingActivitySnapshot(snapshot: ActivitySnapshot): MeetingActivitySnapshot {
-  const out: MeetingActivitySnapshot = { tsUtc: snapshot.capturedAtUtc, app: snapshot.app };
-  if (snapshot.windowTitle.length > 0) out.title = snapshot.windowTitle;
-  if (snapshot.browserUrl !== undefined && snapshot.browserUrl.length > 0) out.url = snapshot.browserUrl;
-  if (snapshot.text.length > 0) out.text = snapshot.text;
-  return out;
 }
 
 /**
@@ -341,12 +331,11 @@ export class ActivityWearablesMeetingsDaySource implements MeetingsDaySource {
     const snapshots = this.deps.activity
       ? await this.deps.activity.listSnapshotsForDay(null, startUtc, endUtc)
       : [];
-    const activity = snapshots.map(toMeetingActivitySnapshot);
     const appSpans = deriveAppSpans(snapshots, this.deps.config.appPatterns);
     const bodies = await this.deps.wearables.readDayBodies(date);
     const tzBySource = new Map(bodies.map((b) => [b.source, b.timezone ?? ""] as const));
     const conversations = shiftFusionInputsToUtc(reconstructFusionInputs(date, bodies), tzBySource);
     const audioWindows = buildAudioWindows(conversations);
-    return { detection: { date, appSpans, audioWindows }, conversations, activity };
+    return { detection: { date, appSpans, audioWindows }, conversations, activity: snapshots };
   }
 }

@@ -22,10 +22,10 @@ import type {
   MeetingMemoryOutcome,
   MeetingsDayFactGenResult,
 } from "./memory-generator.js";
+import type { ActivitySnapshot } from "../activity/types.js";
 import type { FusionConversationInput } from "../wearables/fusion/types.js";
 import type {
   DetectedMeeting,
-  MeetingActivitySnapshot,
   MeetingRecord,
   MeetingsConfig,
   MeetingsDetectionInput,
@@ -38,7 +38,7 @@ export interface MeetingDayData {
   /** Fusion conversation inputs across all wearable sources for the day. */
   conversations: FusionConversationInput[];
   /** Screen-activity snapshots for the day. */
-  activity?: MeetingActivitySnapshot[];
+  activity?: ActivitySnapshot[];
 }
 
 /** Supplies a day's signals. Backed by fixtures in tests; by the activity +

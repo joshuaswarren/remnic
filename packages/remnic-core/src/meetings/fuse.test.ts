@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 
 import { DEFAULT_MEETINGS_CONFIG } from "./config.js";
 import { fuseMeeting } from "./fuse.js";
-import type {
-  DetectedMeeting,
-  MeetingActivitySnapshot,
-  MeetingsConfig,
-} from "./types.js";
+import type { ActivitySnapshot } from "../activity/types.js";
+import type { DetectedMeeting, MeetingsConfig } from "./types.js";
 import type { FusionConversationInput, FusionSegmentInput } from "../wearables/fusion/types.js";
 
 const DATE = "2026-03-10";
@@ -51,8 +50,17 @@ function conv(
   return { source, conversationId: id, startIso, endIso, segments };
 }
 
-function snap(overrides: Partial<MeetingActivitySnapshot> & { tsUtc: string; app: string }): MeetingActivitySnapshot {
-  return { ...overrides };
+function snap(
+  overrides: Partial<ActivitySnapshot> & { capturedAtUtc: string; app: string },
+): ActivitySnapshot {
+  return {
+    machine: "workstation",
+    windowTitle: "",
+    text: "",
+    textSource: "ax",
+    contentHash: "snap-hash",
+    ...overrides,
+  };
 }
 
 test("fusion prefers the higher-trust source in overlap regions and records corroboratedBy without duplicating text", () => {
@@ -97,10 +105,10 @@ test("screen context includes a >=20s dwell and omits a 5s alt-tab; meeting-app 
         ]),
       ],
       activity: [
-        snap({ tsUtc: "2026-03-10T14:05:00.000Z", app: "Preview", title: "Q3-roadmap.pdf", text: "Q3 roadmap draft" }),
-        snap({ tsUtc: "2026-03-10T14:05:25.000Z", app: "Notes", title: "scratch" }), // Preview dwell 25s → include; Notes starts
-        snap({ tsUtc: "2026-03-10T14:05:30.000Z", app: "Preview", title: "Q3-roadmap.pdf" }), // Notes dwell 5s → exclude
-        snap({ tsUtc: "2026-03-10T14:10:00.000Z", app: "Zoom", text: "Jane: agenda item one" }), // meeting-app → excerpt
+        snap({ capturedAtUtc: "2026-03-10T14:05:00.000Z", app: "Preview", windowTitle: "Q3-roadmap.pdf", text: "Q3 roadmap draft" }),
+        snap({ capturedAtUtc: "2026-03-10T14:05:25.000Z", app: "Notes", windowTitle: "scratch" }), // Preview dwell 25s → include; Notes starts
+        snap({ capturedAtUtc: "2026-03-10T14:05:30.000Z", app: "Preview", windowTitle: "Q3-roadmap.pdf" }), // Notes dwell 5s → exclude
+        snap({ capturedAtUtc: "2026-03-10T14:10:00.000Z", app: "Zoom", text: "Jane: agenda item one" }), // meeting-app → excerpt
       ],
     },
     config(),
@@ -122,9 +130,9 @@ test("context excerpts respect maxContextChars", () => {
       meeting: meeting(),
       conversations: [],
       activity: [
-        snap({ tsUtc: "2026-03-10T14:01:00.000Z", app: "Zoom", text: "aaaa" }),
-        snap({ tsUtc: "2026-03-10T14:02:00.000Z", app: "Zoom", text: "bbbb" }),
-        snap({ tsUtc: "2026-03-10T14:03:00.000Z", app: "Zoom", text: "cccc" }),
+        snap({ capturedAtUtc: "2026-03-10T14:01:00.000Z", app: "Zoom", text: "aaaa" }),
+        snap({ capturedAtUtc: "2026-03-10T14:02:00.000Z", app: "Zoom", text: "bbbb" }),
+        snap({ capturedAtUtc: "2026-03-10T14:03:00.000Z", app: "Zoom", text: "cccc" }),
       ],
     },
     config({ maxContextChars: 8 }),
@@ -199,10 +207,51 @@ test("a lone trailing other-app snapshot is not inflated to the meeting end", ()
       ],
       // A single Notes snapshot 1 min before the window end. With no later
       // snapshot, the trailing run must NOT count dwell up to the meeting end.
-      activity: [snap({ tsUtc: "2026-03-10T14:29:00.000Z", app: "Notes", title: "scratch" })],
+      activity: [snap({ capturedAtUtc: "2026-03-10T14:29:00.000Z", app: "Notes", windowTitle: "scratch" })],
     },
     config(),
   );
   assert.equal(fused.snapshotCount, 1);
   assert.deepEqual(fused.screenContext, [], "a lone trailing snapshot has zero observed dwell");
+});
+
+test("fusion reads ActivitySnapshot fields — capturedAtUtc, browserUrl runs, windowTitle fallback", () => {
+  const fused = fuseMeeting(
+    {
+      meeting: meeting(),
+      conversations: [],
+      activity: [
+        snap({ capturedAtUtc: "2026-03-10T14:05:00.000Z", app: "Chrome", browserUrl: "https://github.com/org/repo/pull/1" }),
+        snap({ capturedAtUtc: "2026-03-10T14:06:00.000Z", app: "Chrome", browserUrl: "https://github.com/org/repo/pull/1" }),
+        // Different URL on the same app → a separate dwell run.
+        snap({ capturedAtUtc: "2026-03-10T14:06:30.000Z", app: "Chrome", browserUrl: "https://example.com/doc" }),
+        snap({ capturedAtUtc: "2026-03-10T14:07:00.000Z", app: "Chrome", browserUrl: "https://example.com/doc" }),
+        // Empty browserUrl falls back to the window title for key and label.
+        snap({ capturedAtUtc: "2026-03-10T14:07:30.000Z", app: "Chrome", windowTitle: "Spec v2" }),
+        snap({ capturedAtUtc: "2026-03-10T14:08:00.000Z", app: "Chrome", windowTitle: "Spec v2" }),
+      ],
+    },
+    config(),
+  );
+  assert.equal(fused.snapshotCount, 6);
+  assert.deepEqual(
+    fused.screenContext.map((e) => e.label),
+    [
+      "Chrome: github.com/org/repo/pull/1",
+      "Chrome: example.com/doc",
+      "Chrome: Spec v2",
+    ],
+  );
+  // Run dwell ends at the next different-key snapshot (90s, 60s) or, for the
+  // trailing run, at its own last snapshot (30s).
+  assert.deepEqual(fused.screenContext.map((e) => e.dwellSeconds), [90, 60, 30]);
+});
+
+test("MeetingActivitySnapshot and its rename mapper are gone", () => {
+  const here = import.meta.dirname;
+  for (const file of ["types.ts", "fuse.ts", "day-source.ts", "build.ts"]) {
+    const src = readFileSync(join(here, file), "utf8");
+    assert.ok(!src.includes("MeetingActivitySnapshot"), `${file} must not reference MeetingActivitySnapshot`);
+    assert.ok(!src.includes("toMeetingActivitySnapshot"), `${file} must not reference toMeetingActivitySnapshot`);
+  }
 });

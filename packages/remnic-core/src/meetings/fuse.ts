@@ -23,9 +23,9 @@ import type {
   FusionConversationInput,
   FusionSegmentInput,
 } from "../wearables/fusion/types.js";
+import type { ActivitySnapshot } from "../activity/types.js";
 import type {
   FusedMeeting,
-  MeetingActivitySnapshot,
   MeetingBuildInput,
   MeetingScreenContextEvent,
   MeetingsConfig,
@@ -119,20 +119,22 @@ function shortenUrl(url: string): string {
   return url.replace(/^[a-z]+:\/\//i, "");
 }
 
-function contextLabel(snap: MeetingActivitySnapshot): string {
-  if (snap.url !== undefined && snap.url.length > 0) return `${snap.app}: ${shortenUrl(snap.url)}`;
-  if (snap.title !== undefined && snap.title.length > 0) return `${snap.app}: ${snap.title}`;
+function contextLabel(snap: ActivitySnapshot): string {
+  if (snap.browserUrl !== undefined && snap.browserUrl.length > 0) {
+    return `${snap.app}: ${shortenUrl(snap.browserUrl)}`;
+  }
+  if (snap.windowTitle.length > 0) return `${snap.app}: ${snap.windowTitle}`;
   return snap.app;
 }
 
 /** True when a snapshot is the meeting app itself (captions/chat/participants),
  *  not other context. Matches the meeting's app or any configured app pattern. */
 function isMeetingAppSnapshot(
-  snap: MeetingActivitySnapshot,
+  snap: ActivitySnapshot,
   meetingApp: string | undefined,
   appPatterns: readonly string[],
 ): boolean {
-  const hay = `${snap.app} ${snap.title ?? ""} ${snap.url ?? ""}`.toLowerCase();
+  const hay = `${snap.app} ${snap.windowTitle} ${snap.browserUrl ?? ""}`.toLowerCase();
   if (meetingApp !== undefined && meetingApp.length > 0 && hay.includes(meetingApp.toLowerCase())) {
     return true;
   }
@@ -159,21 +161,25 @@ interface ScreenContextResult {
  * kept. Meeting-app snapshots never enter the timeline but feed excerpts.
  */
 function buildScreenContext(
-  activity: readonly MeetingActivitySnapshot[],
+  activity: readonly ActivitySnapshot[],
   windowStartMs: number,
   windowEndMs: number,
   meetingApp: string | undefined,
   config: MeetingsConfig,
 ): ScreenContextResult {
   const win = activity
-    .map((snap) => ({ snap, ms: Date.parse(snap.tsUtc) }))
+    .map((snap) => ({ snap, ms: Date.parse(snap.capturedAtUtc) }))
     .filter((entry) => Number.isFinite(entry.ms) && entry.ms >= windowStartMs && entry.ms < windowEndMs)
     .sort((a, b) => a.ms - b.ms || SORT_STR(a.snap.app, b.snap.app));
 
-  const keyOf = (snap: MeetingActivitySnapshot): string =>
+  /** Run key detail: the URL when present, else the window title. */
+  const keyDetail = (snap: ActivitySnapshot): string =>
+    snap.browserUrl !== undefined && snap.browserUrl.length > 0 ? snap.browserUrl : snap.windowTitle;
+
+  const keyOf = (snap: ActivitySnapshot): string =>
     isMeetingAppSnapshot(snap, meetingApp, config.appPatterns)
       ? MEETING_APP_KEY
-      : `${snap.app}\u0000${snap.url ?? snap.title ?? ""}`;
+      : `${snap.app}\u0000${keyDetail(snap)}`;
 
   const events: MeetingScreenContextEvent[] = [];
   const includedText: string[] = [];
@@ -197,7 +203,7 @@ function buildScreenContext(
       // Captions / chat / participant text visible on the meeting app itself.
       for (let i = runStartIdx; i < runEndIdx; i++) {
         const text = win[i]!.snap.text;
-        if (text !== undefined && text.trim().length > 0) includedText.push(text.trim());
+        if (text.trim().length > 0) includedText.push(text.trim());
       }
     } else if (dwellSeconds >= config.contextDwellSeconds) {
       events.push({
@@ -209,7 +215,7 @@ function buildScreenContext(
       });
       for (let i = runStartIdx; i < runEndIdx; i++) {
         const text = win[i]!.snap.text;
-        if (text !== undefined && text.trim().length > 0) includedText.push(text.trim());
+        if (text.trim().length > 0) includedText.push(text.trim());
       }
     }
     runStartIdx = runEndIdx;

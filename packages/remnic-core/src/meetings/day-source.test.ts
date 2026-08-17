@@ -127,7 +127,9 @@ test("loadDayData assembles detection + activity for the requested day, keyed to
   assert.equal(data.detection.appSpans[0]?.app, "Zoom");
   assert.deepEqual(data.detection.audioWindows, [], "no wearable transcripts → no audio windows");
   assert.equal(data.activity?.length, 2);
-  assert.equal(data.activity?.[0]?.title, "Standup");
+  // Activity is the raw ActivitySnapshot list now — no rename mapper in between.
+  assert.equal(data.activity?.[0]?.windowTitle, "Standup");
+  assert.equal(data.activity?.[0]?.capturedAtUtc, "2026-03-10T14:00:00.000Z");
   assert.equal(data.conversations.length, 0);
 });
 
