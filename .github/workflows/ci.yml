@@ -153,6 +153,9 @@ jobs:
 
       - name: Structural ratchets
         run: node scripts/check-ratchets.mjs
+      - name: Package test script files exist
+        run: node scripts/check-package-test-files.mjs
+
 
       - name: Docs-code parity
         run: node scripts/check-docs-parity.mjs

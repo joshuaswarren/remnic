@@ -214,6 +214,17 @@ These rules are the default workflow for all agents and contributors.
 7. Before growing a file listed under `fileSizeGrandfather` in
    `scripts/ratchet-baseline.json`, extract the addition to a sibling
    module. Growing past the ceiling fails the required `checks` job.
+8. Parallel multi-issue batches stay parallel.
+   Spawn one implementer per isolated worktree and keep it running.
+   A short clean `git status` is not a stall. Do not cancel the set and
+   serialize the work onto the orchestrator. Fan each PR-loop to its own
+   subagent.
+9. Before picking an open issue, grep the named symbol on `github/main`.
+   If the change already landed, close the issue. Do not open a duplicate PR.
+10. Merge with REST `PUT /repos/{owner}/{repo}/pulls/{n}/merge` when checks
+    and test shards are green. An older `ai-reviewers` failure or cancellation
+    on the same head is not a product defect.
+
 
 
 Reference workflow:

@@ -125,13 +125,14 @@ jobs:
               core.notice(`A newer AI Review Gate run exists on head ${headSha.slice(0, 7)}; it owns the gate, not this verdict - not neutralizing.`);
               return;
             }
-            // Every completed `cancelled` gate run on this head is older than this
-            // newest positive verdict, so each is a dead suite the verdict
-            // superseded.
+            // Every completed cancelled OR failed gate run on this head that
+            // is older than this newest positive verdict is a dead suite.
+            // Same-head failures after a later success are infra (404/422/429
+            // / cancelled poll), not a product defect on this commit.
             const supersededCancellations = siblingRuns.filter((candidate) =>
               candidate.id !== run.id &&
               candidate.status === 'completed' &&
-              candidate.conclusion === 'cancelled',
+              (candidate.conclusion === 'cancelled' || candidate.conclusion === 'failure'),
             );
             if (supersededCancellations.length === 0) {
               core.notice(`No older cancelled ai-reviewers suites to clear on head ${headSha.slice(0, 7)}.`);
