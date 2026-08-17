@@ -789,25 +789,51 @@ async function ingestFlushPlanImportTurns(params: {
   importTurns: ImportTurn[];
   deadlineMs?: number;
 }): Promise<void | OpenClawFlushPlanIngestResult> {
-  try {
-    return await params.ingestor.ingestBulkImportBatch(params.importTurns, {
-      ...(params.deadlineMs === undefined
-        ? {}
-        : { deadlineMs: params.deadlineMs }),
-      failOnExtractionFailure: true,
-      includeSourceValidAtContext: false,
-    });
-  } catch (error) {
-    const partialResult = partialIngestResultFromError(error);
-    if (
-      partialResult &&
-      typeof partialResult.processedTurnCount === "number" &&
-      partialResult.processedTurnCount > 0
-    ) {
-      return partialResult;
+  const aggregate: Required<OpenClawFlushPlanIngestResult> = {
+    attemptedTurnCount: 0,
+    extractionCount: 0,
+    persistedCount: 0,
+    durableOutputCount: 0,
+    skippedCount: 0,
+    failedCount: 0,
+    postPersistMetadataFailureCount: 0,
+    processedTurnCount: 0,
+  };
+  const addResult = (result: void | OpenClawFlushPlanIngestResult): void => {
+    if (!result) return;
+    for (const key of Object.keys(aggregate) as Array<keyof typeof aggregate>) {
+      const value = result[key];
+      if (typeof value === "number" && Number.isFinite(value)) {
+        aggregate[key] += value;
+      }
     }
-    throw error;
+  };
+
+  for (const importTurn of params.importTurns) {
+    try {
+      const result = await params.ingestor.ingestBulkImportBatch([importTurn], {
+        ...(params.deadlineMs === undefined
+          ? {}
+          : { deadlineMs: params.deadlineMs }),
+        failOnExtractionFailure: true,
+        includeSourceValidAtContext: false,
+      });
+      addResult(result);
+      if (isFailedIngestResult(result)) return aggregate;
+      if (!result || typeof result.processedTurnCount !== "number") {
+        aggregate.processedTurnCount += 1;
+      }
+    } catch (error) {
+      const partialResult = partialIngestResultFromError(error);
+      addResult(partialResult);
+      if (aggregate.processedTurnCount > 0) {
+        aggregate.failedCount = Math.max(1, aggregate.failedCount);
+        return aggregate;
+      }
+      throw error;
+    }
   }
+  return aggregate;
 }
 
 function hasPostPersistMetadataFailure(

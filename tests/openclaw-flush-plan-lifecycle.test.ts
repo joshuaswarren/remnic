@@ -306,6 +306,7 @@ test("processOpenClawFlushPlanFile chunks oversized snapshots before clearing", 
     ].join("\n");
     await writeFlushPlan(flushPlanPath, content);
     const received: ImportTurn[] = [];
+    const batchSizes: number[] = [];
 
     const result = await processOpenClawFlushPlanFile({
       enabled: true,
@@ -315,6 +316,7 @@ test("processOpenClawFlushPlanFile chunks oversized snapshots before clearing", 
       now: () => new Date("2026-06-24T00:00:00.000Z"),
       ingestor: {
         async ingestBulkImportBatch(turns) {
+          batchSizes.push(turns.length);
           received.push(...turns);
         },
       },
@@ -323,6 +325,7 @@ test("processOpenClawFlushPlanFile chunks oversized snapshots before clearing", 
     assert.equal(result.status, "processed");
     assert.equal(await readFile(flushPlanPath, "utf8"), "");
     assert.ok(received.length > 1);
+    assert.deepEqual(batchSizes, Array(received.length).fill(1));
     assert.ok(received.every((turn) => turn.content.length <= maxTurnChars));
     assert.equal(
       new Set(received.map((turn) => turn.timestamp)).size,
