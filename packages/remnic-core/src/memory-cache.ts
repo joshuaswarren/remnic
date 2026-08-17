@@ -33,26 +33,41 @@ function sweepExpiredHotEntries(now: number): void {
   }
 }
 
+/**
+ * Shared read gate for every versioned cache layer (issue #2481): serve an
+ * entry only when its version and secure-store keyId match the caller.
+ * `currentVersion === 0` means version tracking is unavailable (tests, fresh
+ * installs) and always misses so disk is read. The TTL is a safety net for
+ * external filesystem edits that bypass the version sentinel (issue #1902):
+ * ttlMs <= 0 disables it, and on expiry the entry is evicted — not just
+ * skipped — so a stale dir releases its resident corpus instead of lingering
+ * until an explicit clear.
+ */
+function getVersionedCacheEntry<K, E extends { version: number; keyId: string; loadedAt: number }>(
+  cache: Map<K, E>,
+  key: K,
+  currentVersion: number,
+  keyId: string,
+  ttlMs: number,
+): E | null {
+  if (currentVersion === 0) return null;
+  const entry = cache.get(key);
+  if (!entry || entry.version !== currentVersion || entry.keyId !== keyId) return null;
+  if (ttlMs > 0 && Date.now() - entry.loadedAt > ttlMs) {
+    cache.delete(key);
+    return null;
+  }
+  return entry;
+}
+
 export function getCachedMemories(
   baseDir: string,
   currentVersion: number,
   keyId = "",
   ttlMs = 0,
 ): MemoryFile[] | null {
-  // Don't serve from cache when version tracking is unavailable (version=0).
-  // This ensures tests and fresh installs without a version file always read disk.
-  if (currentVersion === 0) return null;
-  const entry = hotCacheByDir.get(baseDir);
-  if (!entry || entry.version !== currentVersion || entry.keyId !== keyId) return null;
-  // TTL safety net (issue #1902): bound staleness from external filesystem edits
-  // that bypass the version sentinel. ttlMs <= 0 disables the check. On expiry
-  // evict the entry (not just return null) so a revisited-but-stale dir releases
-  // its resident corpus instead of lingering until an explicit clear.
-  if (ttlMs > 0 && Date.now() - entry.loadedAt > ttlMs) {
-    hotCacheByDir.delete(baseDir);
-    return null;
-  }
-  return [...entry.memories.values()];
+  const entry = getVersionedCacheEntry(hotCacheByDir, baseDir, currentVersion, keyId, ttlMs);
+  return entry ? [...entry.memories.values()] : null;
 }
 
 export function setCachedMemories(
@@ -89,10 +104,10 @@ export function getCachedArchivedMemories(
   currentVersion: number,
   keyId = "",
 ): MemoryFile[] | null {
-  if (currentVersion === 0) return null;
-  const entry = archiveCacheByDir.get(baseDir);
-  if (!entry || entry.version !== currentVersion || entry.keyId !== keyId) return null;
-  return [...entry.memories.values()];
+  // ttlMs 0: the archive cache has no age TTL; it is version-keyed and cleared
+  // via invalidation.
+  const entry = getVersionedCacheEntry(archiveCacheByDir, baseDir, currentVersion, keyId, 0);
+  return entry ? [...entry.memories.values()] : null;
 }
 
 export function setCachedArchivedMemories(
@@ -165,7 +180,7 @@ export function invalidateCachedEntities(baseDir: string): void {
 // These avoid O(146K) filter+map on every verified recall/rules call.
 interface DerivedCacheEntry<T> {
   data: T;
-  sourceVersion: number; // matches the hot cache version it was derived from
+  version: number; // matches the hot cache version it was derived from
   keyId: string; // secure-store key identity of the corpus it was derived from (#1902)
   loadedAt: number; // build time — bounds staleness from external edits via ttlMs (#1902)
 }
@@ -179,17 +194,8 @@ export function getCachedEpisodeMap(
   keyId = "",
   ttlMs = 0,
 ): Map<string, MemoryFile> | null {
-  if (currentVersion === 0) return null;
-  const entry = episodeMapByDir.get(baseDir);
-  if (!entry || entry.sourceVersion !== currentVersion || entry.keyId !== keyId) return null;
-  // TTL safety net (issue #1902): the version sentinel doesn't move on a direct
-  // external edit, so bound how long a derived view is served before a rebuild
-  // (which re-reads via readAllMemories, itself TTL-bounded). ttlMs <= 0 disables.
-  if (ttlMs > 0 && Date.now() - entry.loadedAt > ttlMs) {
-    episodeMapByDir.delete(baseDir);
-    return null;
-  }
-  return entry.data;
+  const entry = getVersionedCacheEntry(episodeMapByDir, baseDir, currentVersion, keyId, ttlMs);
+  return entry ? entry.data : null;
 }
 
 /** Build and cache the episode memory map from the full memory list. */
@@ -206,7 +212,7 @@ export function setCachedEpisodeMap(
     if (m.frontmatter.memoryKind !== "episode") continue;
     map.set(m.frontmatter.id, m);
   }
-  if (cache) episodeMapByDir.set(baseDir, { data: map, sourceVersion: version, keyId, loadedAt: Date.now() });
+  if (cache) episodeMapByDir.set(baseDir, { data: map, version, keyId, loadedAt: Date.now() });
   return map;
 }
 
@@ -217,16 +223,8 @@ export function getCachedRuleMemories(
   keyId = "",
   ttlMs = 0,
 ): { all: MemoryFile[]; byId: Map<string, MemoryFile> } | null {
-  if (currentVersion === 0) return null;
-  const entry = ruleMemoriesByDir.get(baseDir);
-  if (!entry || entry.sourceVersion !== currentVersion || entry.keyId !== keyId) return null;
-  // TTL safety net (issue #1902): bound staleness from direct external edits
-  // that don't move the version sentinel. ttlMs <= 0 disables.
-  if (ttlMs > 0 && Date.now() - entry.loadedAt > ttlMs) {
-    ruleMemoriesByDir.delete(baseDir);
-    return null;
-  }
-  return entry.data;
+  const entry = getVersionedCacheEntry(ruleMemoriesByDir, baseDir, currentVersion, keyId, ttlMs);
+  return entry ? entry.data : null;
 }
 
 /** Build and cache the rule memories from the full memory list. */
@@ -250,7 +248,7 @@ export function setCachedRuleMemories(
     }
   }
   const result = { all, byId };
-  if (cache) ruleMemoriesByDir.set(baseDir, { data: result, sourceVersion: version, keyId, loadedAt: Date.now() });
+  if (cache) ruleMemoriesByDir.set(baseDir, { data: result, version, keyId, loadedAt: Date.now() });
   return result;
 }
 
