@@ -32,11 +32,11 @@ import {
 import {
   DECISION_SUBCOMMANDS,
   handleCodingDecision,
-  isDecisionRecordSurfaceEnabled,
   type DecisionSurfaceContext,
   type DecisionSurfaceRequest,
   type DecisionSurfaceResponse,
 } from "./decision-surfaces.js";
+import { isCodingKnowledgeFeatureEnabled } from "./coding-knowledge-config.js";
 
 // ──────────────────────────────────────────────────────────────────────────
 // Canonical tool names — mirror the external codebase-memory-mcp surface
@@ -674,7 +674,7 @@ async function handleManageAdr(
   // done-when) asserts that `manage_adr record` and `coding_decision record`
   // write byte-identical records -- both routes call handleCodingDecision.
   const codingContext = resolveCodingContext(request, ctx);
-  if (!isDecisionRecordSurfaceEnabled(ctx.config.codingKnowledge, codingContext)) {
+  if (!isCodingKnowledgeFeatureEnabled(ctx.config.codingKnowledge, "decisionRecords", codingContext)) {
     return disabledResponse(
       request.tool,
       "manage_adr requires codingKnowledge.enabled + decisionRecords + an attached coding context",

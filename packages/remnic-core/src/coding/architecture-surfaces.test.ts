@@ -22,8 +22,6 @@ import {
   ARCHITECTURE_CARD_TAG,
   ARCHITECTURE_CARD_KIND,
   handleCodingArchitecture,
-  isArchitectureCardSurfaceEnabled,
-  isArchitectureCardSurfaceVisible,
   isArchitectureSubcommand,
   formatArchitectureSubcommands,
   findArchitectureCardMemory,
@@ -31,6 +29,7 @@ import {
   type ArchitectureSurfaceRequest,
   type ArchitectureSurfaceStorage,
 } from "./architecture-surfaces.js";
+import { isCodingKnowledgeFeatureEnabled, isCodingKnowledgeFeatureVisible } from "./coding-knowledge-config.js";
 import { sealedWriteToLegacyArgs } from "../write-envelope.js";
 import type { ArchitectureCardBuildResult } from "./architecture-card.js";
 import type {
@@ -183,28 +182,28 @@ test("subcommands: formatArchitectureSubcommands lists valid options", () => {
 // ──────────────────────────────────────────────────────────────────────────
 
 test("gate: surface enabled when config + architectureCard + coding context all true", () => {
-  assert.equal(isArchitectureCardSurfaceEnabled(DEFAULT_CONFIG, CODING_CONTEXT), true);
+  assert.equal(isCodingKnowledgeFeatureEnabled(DEFAULT_CONFIG, "architectureCard", CODING_CONTEXT), true);
 });
 
 test("gate: surface disabled when master gate off", () => {
   const config: CodingKnowledgeConfig = { ...DEFAULT_CONFIG, enabled: false };
-  assert.equal(isArchitectureCardSurfaceEnabled(config, CODING_CONTEXT), false);
+  assert.equal(isCodingKnowledgeFeatureEnabled(config, "architectureCard", CODING_CONTEXT), false);
 });
 
 test("gate: surface disabled when architectureCard off", () => {
   const config: CodingKnowledgeConfig = { ...DEFAULT_CONFIG, architectureCard: false };
-  assert.equal(isArchitectureCardSurfaceEnabled(config, CODING_CONTEXT), false);
+  assert.equal(isCodingKnowledgeFeatureEnabled(config, "architectureCard", CODING_CONTEXT), false);
 });
 
 test("gate: surface disabled when no coding context", () => {
-  assert.equal(isArchitectureCardSurfaceEnabled(DEFAULT_CONFIG, null), false);
-  assert.equal(isArchitectureCardSurfaceEnabled(DEFAULT_CONFIG, undefined), false);
+  assert.equal(isCodingKnowledgeFeatureEnabled(DEFAULT_CONFIG, "architectureCard", null), false);
+  assert.equal(isCodingKnowledgeFeatureEnabled(DEFAULT_CONFIG, "architectureCard", undefined), false);
 });
 
 test("gate: visibility (tools/list) matches config-only check", () => {
-  assert.equal(isArchitectureCardSurfaceVisible(DEFAULT_CONFIG), true);
-  assert.equal(isArchitectureCardSurfaceVisible({ ...DEFAULT_CONFIG, enabled: false }), false);
-  assert.equal(isArchitectureCardSurfaceVisible({ ...DEFAULT_CONFIG, architectureCard: false }), false);
+  assert.equal(isCodingKnowledgeFeatureVisible(DEFAULT_CONFIG, "architectureCard"), true);
+  assert.equal(isCodingKnowledgeFeatureVisible({ ...DEFAULT_CONFIG, enabled: false }, "architectureCard"), false);
+  assert.equal(isCodingKnowledgeFeatureVisible({ ...DEFAULT_CONFIG, architectureCard: false }, "architectureCard"), false);
 });
 
 // ──────────────────────────────────────────────────────────────────────────

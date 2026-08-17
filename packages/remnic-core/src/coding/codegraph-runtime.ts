@@ -9,9 +9,11 @@
  * dependency that hosts opt into. Every code path that needs a GraphStore
  * calls {@link getCodegraphStore} here; this module owns:
  *
- *   - the loader boundary (one place that dynamically imports the optional
- *     package; CLAUDE.md rule 57 / AGENTS.md rule 44 documented exception --
- *     the optional peer genuinely does not exist on every install);
+ *   - the store-module boundary — @remnic/coding-graph is imported by the
+ *     ONE shared loader (optional-coding-graph.ts; single cache and
+ *     contract check per process). This module narrows that shared module
+ *     to the runtime's GraphStore view; it never imports the package
+ *     itself;
  *   - per-project GraphStore caching (one open SQLite handle per
  *     `(principal, projectId)` pair, lifecycle-tracked so a host process can
  *     close them on shutdown);
@@ -30,20 +32,14 @@ import { createHash } from "node:crypto";
 import { expandTildePath } from "../utils/path.js";
 
 import type { PluginConfig, CodingKnowledgeConfig, CodingContext } from "../types.js";
-import { isCodingGraphInstalled } from "./optional-coding-graph.js";
+import { buildCodingGraphInstallHint, isCodingGraphInstalled, tryLoadCodingGraphModule } from "./optional-coding-graph.js";
 import { displayErrorDetail } from "../runtime/better-sqlite.js";
 // Type-only reference to the surface context shape (ts-import-type rule).
 // Erased at compile time, so the runtime → surfaces → runtime import cycle is
 // type-only and has no runtime effect.
 import type { CodegraphSurfaceContext } from "./codegraph-surfaces.js";
 
-// Lazy-loaded optional package -- see file header. The dynamic import below
-// is the documented exception to the static-import rule: @remnic/coding-graph
-// is an optional peer dependency that is genuinely absent on base installs,
-// so a static import would either fail the base install or be bundled into
-// @remnic/core's dist. The specifier is composed from string literals to
-// keep this a runtime-only reference.
-const CODEGRAPH_SPECIFIER = "@remnic/" + "coding-graph";
+
 
 /**
  * Minimal structural shape of the @remnic/coding-graph public surface this
@@ -270,8 +266,6 @@ interface CachedStore {
 }
 
 const storeCache = new Map<string, CachedStore>();
-let cachedModule: CodegraphModule | null | undefined;
-let moduleLoadPromise: Promise<CodegraphModule | null> | null = null;
 
 function storeCacheKey(principalSafe: string, projectSafe: string, dbPath: string): string {
   // Thread 8 (issue #1554): include the resolved DB path so two configs
@@ -282,29 +276,24 @@ function storeCacheKey(principalSafe: string, projectSafe: string, dbPath: strin
 }
 
 /**
- * Dynamically import the optional package ONCE per process. Subsequent
- * callers await the same promise. Missing/incompatible installs collapse
- * to `null` (graceful degradation -- surfaces translate to a clean hint).
+ * Narrow the module served by the shared loader (optional-coding-graph.ts)
+ * to this runtime's structural view. The shared loader owns the single
+ * dynamic import, cache, and miss/incompatible diagnostics; this predicate
+ * only checks the GraphStore capability the runtime needs. A missing,
+ * broken, or engine-incompatible install collapses to `null` (graceful
+ * degradation -- surfaces translate to the install hint).
  */
-async function loadCodegraphModule(): Promise<CodegraphModule | null> {
-  if (cachedModule !== undefined) return cachedModule;
-  if (moduleLoadPromise === null) {
-    moduleLoadPromise = (async () => {
-      try {
-        const mod = (await import(CODEGRAPH_SPECIFIER)) as Partial<CodegraphModule>;
-        if (mod && typeof mod === "object" && mod.GraphStore && typeof mod.GraphStore.open === "function") {
-          cachedModule = mod as CodegraphModule;
-          return cachedModule;
-        }
-        cachedModule = null;
-        return null;
-      } catch {
-        cachedModule = null;
-        return null;
-      }
-    })();
-  }
-  return moduleLoadPromise;
+function isCodegraphModule(value: object): value is CodegraphModule {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  const graphStore = candidate.GraphStore as { open?: unknown } | undefined;
+  return graphStore !== undefined && typeof graphStore.open === "function";
+}
+
+async function resolveCodegraphModule(): Promise<CodegraphModule | null> {
+  const mod = await tryLoadCodingGraphModule();
+  if (mod === null || !isCodegraphModule(mod)) return null;
+  return mod;
 }
 
 /**
@@ -332,12 +321,9 @@ export async function getCodegraphStore(params: {
       "codegraph tools are disabled (codingKnowledge.enabled or codingKnowledge.codegraphTools is false)",
     );
   }
-  const mod = await loadCodegraphModule();
+  const mod = await resolveCodegraphModule();
   if (mod === null) {
-    throw new CodegraphRuntimeError(
-      "package_missing",
-      "The @remnic/coding-graph package is not installed; install it to use codegraph tools.",
-    );
+    throw new CodegraphRuntimeError("package_missing", buildCodingGraphInstallHint());
   }
   // Key the cache on SANITIZED values AND the resolved DB path (thread 8):
   // two different raw identifiers that sanitize to the same path segment
@@ -533,7 +519,7 @@ export async function runCodegraphReindex(params: {
   readonly repoRoot: string;
   readonly mode: string;
 }): Promise<CodegraphDelegateOutcome<{ mode: string; filesIngested: number; head: string | null }>> {
-  const mod = await loadCodegraphModule();
+  const mod = await resolveCodegraphModule();
   if (mod === null) {
     return { ok: false, code: "package_missing", message: "The @remnic/coding-graph package is not installed." };
   }
@@ -676,7 +662,7 @@ export async function runCodegraphLspResolution(params: {
     }
   | { ok: false; code: string; message: string }
 > {
-  const mod = await loadCodegraphModule();
+  const mod = await resolveCodegraphModule();
   if (mod === null) {
     return { ok: false, code: "package_missing", message: "@remnic/coding-graph is not installed." };
   }
@@ -1112,7 +1098,7 @@ export async function reportCodegraphIndexStatus(params: {
   readonly store: CodegraphStore;
   readonly repoRoot: string;
 }): Promise<CodegraphDelegateOutcome<{ status: Record<string, unknown> }>> {
-  const mod = await loadCodegraphModule();
+  const mod = await resolveCodegraphModule();
   if (mod === null) {
     return { ok: false, code: "package_missing", message: "The @remnic/coding-graph package is not installed." };
   }
@@ -1140,7 +1126,7 @@ export async function detectCodegraphChanges(params: {
   readonly repoRoot: string;
   readonly head: string;
 }): Promise<CodegraphDelegateOutcome<{ affected: readonly unknown[] }>> {
-  const mod = await loadCodegraphModule();
+  const mod = await resolveCodegraphModule();
   if (mod === null) {
     return { ok: false, code: "package_missing", message: "The @remnic/coding-graph package is not installed." };
   }
@@ -1229,12 +1215,6 @@ export async function ingestCodegraphTraces(params: {
   }
 }
 
-/** Test seam: reset the module cache so a fresh import can be observed. */
-export function __resetCodegraphRuntimeForTest(): void {
-  cachedModule = undefined;
-  moduleLoadPromise = null;
-  storeCache.clear();
-}
 
 /**
  * Derive a stable per-repo project id from an absolute repoRoot (issue #1554

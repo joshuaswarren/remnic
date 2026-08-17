@@ -37,6 +37,7 @@ import {
   type SessionDeltaGitInvoker,
   type SessionDeltaResult,
 } from "./session-delta.js";
+import { isCodingKnowledgeFeatureEnabled } from "./coding-knowledge-config.js";
 import { log } from "../logger.js";
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -59,38 +60,6 @@ export function formatDeltaSubcommands(): string {
   return DELTA_SUBCOMMANDS.join(", ");
 }
 
-// ──────────────────────────────────────────────────────────────────────────
-// Gate predicates — rule 39: one predicate, identical on every surface
-// ──────────────────────────────────────────────────────────────────────────
-
-/**
- * The single session-delta surface gate. Returns `true` only when:
- *  1. `codingKnowledge.enabled` is true,
- *  2. `codingKnowledge.sessionDelta` is true,
- *  3. a coding context is attached (so a repo root is available).
- */
-export function isSessionDeltaSurfaceEnabled(
-  config: CodingKnowledgeConfig,
-  codingContext: CodingContext | null | undefined,
-): boolean {
-  return (
-    config.enabled === true &&
-    config.sessionDelta === true &&
-    codingContext !== null &&
-    codingContext !== undefined
-  );
-}
-
-/**
- * Config-only visibility gate — used by the MCP constructor to decide
- * whether to advertise `engram.coding_delta` in `tools/list`. When this
- * returns `false` the tools array is byte-identical to pre-feature (rule 39).
- */
-export function isSessionDeltaSurfaceVisible(
-  config: CodingKnowledgeConfig,
-): boolean {
-  return config.enabled === true && config.sessionDelta === true;
-}
 
 // ──────────────────────────────────────────────────────────────────────────
 // Surface request / response shapes
@@ -222,7 +191,7 @@ export async function handleCodingDelta(
     : null;
   if (
     codingContext === null ||
-    !isSessionDeltaSurfaceEnabled(ctx.codingKnowledge, codingContext)
+    !isCodingKnowledgeFeatureEnabled(ctx.codingKnowledge, "sessionDelta", codingContext)
   ) {
     ctx.throwInputError(
       "coding_delta requires codingKnowledge.enabled, codingKnowledge.sessionDelta, and an attached coding context",
