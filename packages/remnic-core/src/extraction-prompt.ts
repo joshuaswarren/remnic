@@ -118,7 +118,7 @@ Rules:
 - Priority: corrections > principles${resolveRecallAuxiliaryCapabilities(config).causalRuleExtraction ? " > rules" : ""} > preferences > commitments > decisions > relationships > entities > moments > skills > facts
 - Corrections get highest confidence.
 - Each fact should be a standalone, self-contained statement.
-- Entity references should use normalized names (lowercase, hyphenated: "jane-doe", "acme-corp")
+- Entity references should use normalized names (lowercase, hyphenated: "jane-doe", "acme-corp"). When the source language is not written in a Latin script, the source-script name IS the normalized form — never transliterate or translate it.
 - CRITICAL: Entity names must be CANONICAL. Always use the hyphenated multi-word form: "acme-corp" NOT "acmecorp" or "acme". "jane-doe" NOT "janedoe" or "jane". If unsure, prefer the most specific full name.
 - Avoid creating entities typed as "other" when a more specific type fits (company, project, tool, person, place)
 ${CUE_ANCHOR_PROMPT_INSTRUCTION}

@@ -1419,7 +1419,7 @@ Rules:
 - Lines labelled [context user] or [context assistant] are reference context only. They may resolve references or complete a question-and-answer pair in a normal turn, but never alone establish durable information.
 - Questions are optional. Return an empty array when the conversation does not support a useful unresolved question.
 - Set confidence from source evidence: Explicit (0.95-1.0), Implied (0.70-0.94), Inferred (0.40-0.69), or Speculative (0.00-0.39). Corrections get highest confidence.
-- Use normalized, hyphenated entity names and keep the entity list short.
+- Use normalized, hyphenated entity names and keep the entity list short. When the source language is not written in a Latin script, the source-script name IS the normalized form — never transliterate or translate it.
 - Keep facts standalone. Skip transient task state and operational noise such as routine scheduler, monitoring, or automation status.
 - Add structuredAttributes only for concrete values.
 - ${OUTPUT_LANGUAGE_POLICY}

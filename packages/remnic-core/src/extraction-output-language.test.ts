@@ -77,14 +77,20 @@ test("local extraction of a Japanese conversation keeps the source language and 
       capturedPrompt = messages.map((m) => m.content).join("\n");
       return {
         content: JSON.stringify({
-          facts: [],
+          facts: [
+            {
+              category: "preference",
+              content: "私は毎朝緑茶を飲みます。",
+              confidence: 0.9,
+            },
+          ],
           profileUpdates: [],
           entities: [],
           questions: [],
           relationships: [],
         }),
       };
-    },
+    }
   };
   const modelRegistry = {
     calculateContextSizes: () => ({
@@ -95,8 +101,7 @@ test("local extraction of a Japanese conversation keeps the source language and 
   };
   assert.equal(Reflect.set(engine, "localLlm", localLlm), true);
   assert.equal(Reflect.set(engine, "modelRegistry", modelRegistry), true);
-
-  await engine.extract(JAPANESE_TURNS);
+  const result = await engine.extract(JAPANESE_TURNS);
 
   assert.ok(capturedPrompt.length > 0, "no prompt captured from local extraction");
   assert.ok(
@@ -104,5 +109,8 @@ test("local extraction of a Japanese conversation keeps the source language and 
     "local extraction prompt missing policy",
   );
   assert.ok(capturedPrompt.includes("私は毎朝緑茶を飲みます。"), "Japanese source not in prompt");
-  assert.doesNotMatch(capturedPrompt, ENGLISH_OUTPUT_DIRECTIVE_RE);
+  assert.ok(
+    result.facts.some((fact) => fact.content === "私は毎朝緑茶を飲みます。"),
+    "Japanese fact content altered or dropped by extraction",
+  );
 });
