@@ -19,6 +19,12 @@ import { createHash } from "node:crypto";
 
 import { log } from "@remnic/core/logger";
 
+import {
+  ChunkApplyError,
+  isReleaseEligible,
+  MAX_BUFFERED_CHUNKS,
+  QUARANTINE_AFTER_FAILURES,
+} from "./buffer-policy.js";
 import type { AssemblySegment, ConversationAssembler } from "./assembly.js";
 import { dedupeCrossChannel } from "./dedup.js";
 import { CaptureInputError } from "./errors.js";
@@ -81,6 +87,8 @@ export interface ChunkProcessor {
   finalize(): Promise<number>;
 }
 
+export { MAX_BUFFERED_CHUNKS, QUARANTINE_AFTER_FAILURES } from "./buffer-policy.js";
+
 /**
  * Stable chunk identity derived purely from the WAV path. Because it never
  * depends on a freshly-generated conversation id, the same chunk yields the
@@ -130,14 +138,6 @@ export function chunkStableId(event: ChunkEvent): string {
   return `chk_${createHash("sha1").update(event.path).digest("hex")}`;
 }
 
-/**
- * Ceiling on chunks held in the reorder buffer.
- *
- * At the default 30-second chunks this is over four hours of audio per
- * channel, so it is only reachable when persistence has been failing for a
- * long time. Bounding it keeps memory and the per-release scan finite.
- */
-const MAX_BUFFERED_CHUNKS = 512;
 
 /** One transcribed chunk waiting in the reorder buffer (issue #2145). */
 interface BufferedChunk {
@@ -187,7 +187,7 @@ function lastEndMs(event: ChunkEvent, raw: readonly TranscribedSegment[]): numbe
 
 export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
   let tail: Promise<void> = Promise.resolve();
-  let recovered = false;
+  const failCounts = new Map<string, number>();
   let openConversationId: string | null = null;
   // Set when a chunk is deliberately left unapplied for a later replay: its
   // conversation must stay `capturing` so that replay can resume it.
@@ -355,6 +355,18 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     }
   };
 
+  function persistPending(entry: BufferedChunk, reason: "evicted" | "quarantined"): void {
+    deps.spool.recordPendingChunk({
+      id: entry.chunkId,
+      wavPath: entry.event.path,
+      startedAtUtc: entry.event.startedAtUtc,
+      endedAtUtc: entry.event.endedAtUtc,
+      channel: entry.event.channel,
+      device: entry.event.device,
+      reason,
+    });
+  }
+
   async function process(event: ChunkEvent): Promise<void> {
     const chunkId = chunkStableId(event);
     // In-run replay: already applied, or already transcribed and waiting in
@@ -424,6 +436,7 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       const evicted = buffer.shift();
       if (evicted !== undefined) {
         bufferedIds.delete(evicted.chunkId);
+        persistPending(evicted, "evicted");
         report(
           new Error(
             `reorder buffer is full (${MAX_BUFFERED_CHUNKS}); chunk ${evicted.chunkId} was dropped with its raw audio retained`,
@@ -476,36 +489,24 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     batch: readonly BufferedChunk[],
     progress: { persisted: boolean },
   ): Promise<void> {
-    // Recover the newest still-open conversation once (any chunk, incl. silent)
-    // so a post-restart chunk continues it; then finalize a stale open
-    // conversation when this batch is released a gap past it. Pure-silence runs
-    // never call assembler.add, so closeIfIdle is what closes them.
-    if (!recovered) {
-      recovered = true;
-      // Prefer the conversation this batch's own chunks already contributed
-      // to: a replay of an OLDER chunk must resume its own prefix, or its
-      // missing tail predates the newest capturing conversation and lands in a
-      // new one instead (issue #2145).
-      const ownPrefix = batch
-        .flatMap((entry) => deps.spool.conversationIdsForChunk(entry.chunkId))
-        .map((id) => deps.spool.capturingConversationById(id))
-        .find((conversation) => conversation !== null);
-      const prior = ownPrefix ?? deps.spool.latestCapturingConversation();
-      if (prior) {
-        deps.assembler.resume(prior);
-        openConversationId = prior.id;
-      }
-      // A restart loses which chunks are still awaiting a replay, so rebuild
-      // the holds from the durable markers: a manifest without a `:done` is a
-      // chunk whose WAV is retained, and the conversations capturing right now
-      // are the prefixes its replay could still resume (issue #2145).
-      const capturingAtStartup = new Set(deps.spool.capturingConversationIds());
-      for (const chunkId of deps.spool.incompleteChunkIds()) {
-        // Each hold is scoped to that chunk's own conversation, so a completed
-        // one finalizes even while another chunk still awaits replay.
-        const held = heldFor(chunkId, capturingAtStartup);
-        if (held.size > 0) retainedChunks.set(chunkId, held);
-      }
+    // Reconstruct assembler position from durable rows on every apply
+    // (issue #2379). A partial persist then retry must resume the capturing
+    // conversation and its segment bounds, not keep an advanced assembler.
+    deps.assembler.rewind([]);
+    openConversationId = null;
+    const ownPrefix = batch
+      .flatMap((entry) => deps.spool.conversationIdsForChunk(entry.chunkId))
+      .map((id) => deps.spool.capturingConversationById(id))
+      .find((conversation) => conversation !== null);
+    const prior = ownPrefix ?? deps.spool.latestCapturingConversation();
+    if (prior) {
+      deps.assembler.resume(prior);
+      openConversationId = prior.id;
+    }
+    const capturingNow = new Set(deps.spool.capturingConversationIds());
+    for (const chunkId of deps.spool.incompleteChunkIds()) {
+      const held = heldFor(chunkId, capturingNow);
+      if (held.size > 0) retainedChunks.set(chunkId, held);
     }
     // Decide retention BEFORE anything can close a conversation: a chunk kept
     // for a later replay must keep its durable prefix resumable, and both the
@@ -562,7 +563,11 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     // after it had consumed segments would leave it advanced.
     if (deps.embed) {
       for (const { entry, item } of fresh) {
-        item.seg.embedding = await deps.embed(entry.event, item.raw);
+        try {
+          item.seg.embedding = await deps.embed(entry.event, item.raw);
+        } catch (error) {
+          throw new ChunkApplyError(entry.chunkId, error);
+        }
       }
     }
 
@@ -606,16 +611,20 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
           // and the batch must still be able to rewind.
           if (finalizeConv(openConversationId)) progress.persisted = true;
         }
-        deps.spool.appendAssembledSegments({
-          idempotencyKey: key,
-          chunkId: key,
-          conversationId: run.id,
-          startedAtUtc: run.startedAtUtc,
-          state: "capturing",
-          device: event.device,
-          wavPath: event.path,
-          segments: [item.seg],
-        });
+        try {
+          deps.spool.appendAssembledSegments({
+            idempotencyKey: key,
+            chunkId: key,
+            conversationId: run.id,
+            startedAtUtc: run.startedAtUtc,
+            state: "capturing",
+            device: event.device,
+            wavPath: event.path,
+            segments: [item.seg],
+          });
+        } catch (error) {
+          throw new ChunkApplyError(chunkId, error);
+        }
         progress.persisted = true;
         openConversationId = run.id;
       }
@@ -653,6 +662,8 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       // transcribe the missing tail. Cleanup is best-effort; the janitor is
       // the backstop.
       deps.spool.markChunkComplete(entry.chunkId, openConversationId ?? "-");
+      deps.spool.deletePendingChunk(entry.chunkId);
+      failCounts.delete(entry.chunkId);
       try {
         await deps.cleanupRawAudio(entry.event);
       } catch (err) {
@@ -715,13 +726,10 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
   }
 
   /**
-   * Release every buffered chunk the watermark has passed, as one batch.
-   *
    * A chunk becomes releasable when the newest observed chunk end is
-   * `reorderWindowMs` past its own end. Releasing the whole releasable set
-   * together is what lets `applyBatch` interleave overlapping cross-channel
-   * windows; holding until the END clears the watermark is what bounds how far
-   * out of order an arrival can be.
+   * `reorderWindowMs` past its own end AND no still-held chunk overlaps it
+   * (issue #2379). Releasing the whole releasable set together is what lets
+   * `applyBatch` interleave overlapping cross-channel windows.
    *
    * `flushAll` ignores the watermark, for `finalize()`.
    */
@@ -732,11 +740,12 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     let finalFailure: unknown;
     for (;;) {
       const threshold = flushAll ? Number.POSITIVE_INFINITY : watermarkSourceMs - reorderWindowMs;
+      const held = buffer.filter((entry) => entry.endMs > threshold);
       const batch: BufferedChunk[] = [];
       let manifestBlocked = false;
       for (let i = buffer.length - 1; i >= 0; i--) {
         const candidate = buffer[i];
-        if (candidate.endMs > threshold) continue;
+        if (!isReleaseEligible(candidate, threshold, held)) continue;
         // Record the transcript manifest BEFORE the chunk can be appended, and
         // only once. A chunk whose manifest cannot be written stays buffered
         // with its raw audio: releasing it would let a later, changed
@@ -782,6 +791,7 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
       }
       if (batch.length === 0) {
         if (flushAll && buffer.length > 0) {
+          for (const entry of buffer) persistPending(entry, "evicted");
           throw new Error("buffered chunks could not be released; they are retained for replay");
         }
         return;
@@ -793,44 +803,41 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
           left.endMs - right.endMs ||
           (left.chunkId < right.chunkId ? -1 : left.chunkId > right.chunkId ? 1 : 0),
       );
-      // Rewind only matters when NOTHING durable changed: then the in-memory
-      // state is ahead of the spool and the retry would collapse conversations
-      // the first attempt split. Once anything is durable — an appended
-      // segment OR a finalized conversation — the spool cannot be rewound, so
-      // neither is the memory that mirrors it (issue #2145).
-      //
-      // The snapshot covers every piece of in-memory state `applyBatch`
-      // touches, not just the assembler: `resume()` and `openConversationId`
-      // are set inside it too, and rewinding the assembler alone would leave
-      // the recovery flags claiming a conversation the assembler no longer has.
-      const checkpoint = {
-        assembler: deps.assembler.checkpoint(),
-        recovered,
-        openConversationId,
-      };
       const progress = { persisted: false };
       try {
         await applyBatch(batch, progress);
       } catch (error) {
-        if (!progress.persisted) {
-          deps.assembler.rewind(checkpoint.assembler);
-          recovered = checkpoint.recovered;
-          openConversationId = checkpoint.openConversationId;
+        // Next apply reseeds from the spool. Drop in-memory assembly here so a
+        // pre-commit failure leaves the assembler empty and a partial persist
+        // does not keep an advanced position (issue #2379).
+        deps.assembler.rewind([]);
+        openConversationId = null;
+        let quarantinedId: string | undefined;
+        if (error instanceof ChunkApplyError) {
+          const failures = (failCounts.get(error.chunkId) ?? 0) + 1;
+          failCounts.set(error.chunkId, failures);
+          if (failures >= QUARANTINE_AFTER_FAILURES) {
+            const poisoned = batch.find((entry) => entry.chunkId === error.chunkId);
+            if (poisoned !== undefined) {
+              persistPending(poisoned, "quarantined");
+              retainedChunks.delete(poisoned.chunkId);
+              quarantinedId = poisoned.chunkId;
+            }
+          }
         }
-        // Requeue FIRST: `report` runs an operator callback that may itself
-        // throw, and losing the batch to a broken telemetry sink would turn an
-        // observer failure into data loss. A throw mid-batch leaves the chunks
-        // after the failure point applied to nothing — they were already
-        // spliced out of the buffer, and the native helper emits each event
-        // once (issue #2145).
         for (const entry of batch) {
           if (processedThisRun.has(entry.chunkId) || bufferedIds.has(entry.chunkId)) continue;
+          if (entry.chunkId === quarantinedId) continue;
           buffer.push(entry);
           bufferedIds.add(entry.chunkId);
         }
-        if (flushAll) finalFailure ??= error;
+        if (flushAll) {
+          for (const entry of buffer) persistPending(entry, "evicted");
+          finalFailure ??= error;
+        }
         report(error, batch[0].event);
         if (finalFailure !== undefined) throw finalFailure;
+        if (quarantinedId !== undefined) continue;
         return;
       }
       // The batch is durable, so no rollback can need the conversations it

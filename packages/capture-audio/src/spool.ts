@@ -23,6 +23,12 @@ import { chmodSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 
 import { SPOOL_SCHEMA_VERSION } from "./constants.js";
+import {
+  MAX_QUARANTINED_CHUNKS,
+  type PendingChunkInput,
+  type PendingChunkReason,
+  type PendingChunkRecord,
+} from "./buffer-policy.js";
 import { CaptureConfigError } from "./errors.js";
 import { dateInTimezone, ulid } from "./util.js";
 import { decodeCursor, encodeCursor } from "./validate.js";
@@ -183,6 +189,16 @@ CREATE TABLE IF NOT EXISTS applied_chunks (
   idempotency_key TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL,
   applied_at_utc TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS pending_chunks (
+  id TEXT PRIMARY KEY,
+  wav_path TEXT NOT NULL,
+  started_at_utc TEXT NOT NULL,
+  ended_at_utc TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  device TEXT,
+  reason TEXT NOT NULL,
+  created_at_utc TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_conv_keyset ON conversations(started_at_utc, id);
 CREATE INDEX IF NOT EXISTS idx_seg_conv ON segments(conversation_id, ordinal);
@@ -882,6 +898,73 @@ export class Spool {
     const row = this.#db.prepare("SELECT COUNT(*) AS n FROM chunks WHERE status = 'pending'").get() as { n: number };
     return row.n;
   }
+
+  recordPendingChunk(input: PendingChunkInput): void {
+    this.#db
+      .prepare(
+        "INSERT INTO pending_chunks(id, wav_path, started_at_utc, ended_at_utc, channel, device, reason, created_at_utc) " +
+          "VALUES (?,?,?,?,?,?,?,?) " +
+          "ON CONFLICT(id) DO UPDATE SET wav_path = excluded.wav_path, started_at_utc = excluded.started_at_utc, " +
+          "ended_at_utc = excluded.ended_at_utc, channel = excluded.channel, device = excluded.device, " +
+          "reason = excluded.reason, created_at_utc = excluded.created_at_utc",
+      )
+      .run(
+        input.id,
+        input.wavPath,
+        canonicalInstant(input.startedAtUtc, "pendingChunk.startedAtUtc"),
+        canonicalInstant(input.endedAtUtc, "pendingChunk.endedAtUtc"),
+        input.channel,
+        input.device,
+        input.reason,
+        new Date().toISOString(),
+      );
+    if (input.reason !== "quarantined") return;
+    const extra = this.#db
+      .prepare(
+        "SELECT id FROM pending_chunks WHERE reason = 'quarantined' ORDER BY created_at_utc ASC, id ASC",
+      )
+      .all() as Array<{ id: string }>;
+    const overflow = extra.length - MAX_QUARANTINED_CHUNKS;
+    if (overflow <= 0) return;
+    const drop = this.#db.prepare("DELETE FROM pending_chunks WHERE id = ?");
+    for (let i = 0; i < overflow; i++) {
+      const id = extra[i]?.id;
+      if (id !== undefined) drop.run(id);
+    }
+  }
+
+  listPendingChunks(reason?: PendingChunkReason): PendingChunkRecord[] {
+    const rows = (
+      reason === undefined
+        ? this.#db.prepare(
+            "SELECT id, wav_path AS wavPath, started_at_utc AS startedAtUtc, ended_at_utc AS endedAtUtc, " +
+              "channel, device, reason, created_at_utc AS createdAtUtc FROM pending_chunks " +
+              "ORDER BY created_at_utc ASC, id ASC",
+          ).all()
+        : this.#db
+            .prepare(
+              "SELECT id, wav_path AS wavPath, started_at_utc AS startedAtUtc, ended_at_utc AS endedAtUtc, " +
+                "channel, device, reason, created_at_utc AS createdAtUtc FROM pending_chunks " +
+                "WHERE reason = ? ORDER BY created_at_utc ASC, id ASC",
+            )
+            .all(reason)
+    ) as Array<{
+      id: string;
+      wavPath: string;
+      startedAtUtc: string;
+      endedAtUtc: string;
+      channel: "mic" | "system";
+      device: string | null;
+      reason: PendingChunkReason;
+      createdAtUtc: string;
+    }>;
+    return rows;
+  }
+
+  deletePendingChunk(id: string): void {
+    this.#db.prepare("DELETE FROM pending_chunks WHERE id = ?").run(id);
+  }
+
 
   stats(): { conversations: number; segments: number; chunks: number } {
     const count = (table: string): number =>

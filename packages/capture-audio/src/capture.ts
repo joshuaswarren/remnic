@@ -27,6 +27,7 @@ import {
   type ResolveHelperDeps,
   type RestartTimer,
 } from "./native.js";
+import { scanOrphanedChunks } from "./orphan-scan.js";
 import { createChunkProcessor, type ChunkProcessor, type ChunkTranscribeInput } from "./processor.js";
 import type { Spool } from "./spool.js";
 import { resolveModelPath, runWhisperCli, transcribeWithWhisper, type TranscribedSegment } from "./stt.js";
@@ -180,6 +181,9 @@ export function createLiveCapture(options: LiveCaptureOptions): LiveCapture {
       // Pre-flight the STT model once so a missing/unreadable model fails fast
       // (actionable) here instead of throwing on every captured chunk.
       resolveModel();
+      for (const event of scanOrphanedChunks({ rawDirectory: outDir, spool })) {
+        processor.enqueue(event);
+      }
       runner.start();
     },
     async stop(): Promise<number> {
