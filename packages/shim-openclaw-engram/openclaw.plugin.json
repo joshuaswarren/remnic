@@ -1,7 +1,7 @@
 {
   "id": "openclaw-engram",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.62.1",
+  "version": "9.62.2",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -105,7 +105,7 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
-    "abstractionAnchorsEnabled": {
+      "abstractionAnchorsEnabled": {
         "type": "boolean",
         "default": false,
         "description": "Enable typed cue-anchor indexing for abstraction nodes and expose it through cue-anchor status tooling."
