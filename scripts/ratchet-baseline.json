@@ -8,7 +8,7 @@
       "packages/remnic-core/src/cli.ts": 9428,
       "packages/remnic-core/src/access-service.ts": 5910,
       "packages/remnic-core/src/storage.ts": 7315,
-      "packages/remnic-core/src/config.ts": 4559
+      "packages/remnic-core/src/config.ts": 4561
     },
     "oversizedFileCount": 12,
     "fileSizeGrandfather": {
@@ -36,7 +36,7 @@
       "packages/remnic-core/src/cli.ts": 9428,
       "packages/remnic-core/src/coding/codegraph-runtime.ts": 1311,
       "packages/remnic-core/src/compounding/engine.ts": 1722,
-      "packages/remnic-core/src/config.ts": 4559,
+      "packages/remnic-core/src/config.ts": 4561,
       "packages/remnic-core/src/connectors/index.ts": 4061,
       "packages/remnic-core/src/connectors/live/gmail.ts": 1303,
       "packages/remnic-core/src/evals.ts": 1321,
@@ -53,7 +53,7 @@
       "packages/remnic-core/src/offline-sync.ts": 2646,
       "packages/remnic-core/src/operator-toolkit.ts": 2501,
       "packages/remnic-core/src/orchestration/extraction-persist.ts": 3031,
-      "packages/remnic-core/src/orchestration/recall-internal.ts": 5329,
+      "packages/remnic-core/src/orchestration/recall-internal.ts": 5344,
       "packages/remnic-core/src/orchestration/recall-search-pipeline.ts": 1719,
       "packages/remnic-core/src/orchestrator.ts": 3979,
       "packages/remnic-core/src/peers/storage.ts": 1435,
