@@ -16,6 +16,8 @@ import {
   formatRoundLedger,
   hasGateReply,
   isDetached,
+  isNonFindingNotice,
+  isThreadAddressedByReply,
   stripMarkup,
   threadAnchor,
 } from "../scripts/review-dedup.mjs";
@@ -294,7 +296,127 @@ test("not-a-duplicate reply re-opens the detached thread's guard obligation with
     applyInheritance: true,
   });
   assert.equal(enforce.duplicateCount, 0, "detached thread is no longer a duplicate");
-  assert.equal(enforce.effectiveUnresolvedCount, 1, "detached unresolved thread gates again");
+  // The maintainer reply that detached the thread also ADDRESSES it (a non-bot
+  // answer): the finding stops gating, but stays visible in the raw count.
+  assert.equal(enforce.rawUnresolvedCount, 1, "still measured as unresolved");
+  assert.equal(enforce.effectiveUnresolvedCount, 0, "non-bot reply satisfies the thread without a resolve");
+});
+
+test("an author decline reply satisfies a thread with no UI resolve (shadow and enforce)", () => {
+  // PR #2496 shape: reviewer nit, author replies "Declining: ...", thread left
+  // unresolved in the UI — must not keep the guard red.
+  const thread = mkThread({
+    id: 510,
+    path: "scripts/foo.mjs",
+    startLine: 10,
+    line: 12,
+    author: "kilo-code-bot",
+    body: "nit: use a named constant for the retry count",
+    isResolved: false,
+    replies: [{ author: "contributor", body: "Declining: the literal mirrors the config key it guards." }],
+  });
+  assert.equal(isThreadAddressedByReply(thread), true);
+  const shadow = computeGuardObligations([thread], REVIEW_DEDUP_CONFIG, { applyInheritance: false });
+  const enforce = computeGuardObligations([thread], REVIEW_DEDUP_CONFIG, { applyInheritance: true });
+  assert.equal(shadow.rawUnresolvedCount, 1, "raw count stays byte-identical");
+  assert.equal(shadow.effectiveUnresolvedCount, 0, "addressed by reply — no shadow obligation");
+  assert.equal(enforce.effectiveUnresolvedCount, 0, "addressed by reply — no enforce obligation");
+});
+
+test("bot-only replies never address a thread", () => {
+  const thread = mkThread({
+    id: 511,
+    path: "scripts/foo.mjs",
+    startLine: 1,
+    line: 2,
+    author: "cursor",
+    body: "finding",
+    isResolved: false,
+    replies: [
+      { author: "coderabbitai", body: "acknowledged, waiting for your feedback" },
+      { author: "github-actions[bot]", body: "gate bookkeeping reply" },
+    ],
+  });
+  assert.equal(isThreadAddressedByReply(thread), false);
+  assert.equal(computeGuardObligations([thread]).effectiveUnresolvedCount, 1);
+});
+
+test("an empty non-bot reply does not address a thread", () => {
+  const thread = mkThread({
+    id: 512,
+    path: "scripts/foo.mjs",
+    startLine: 1,
+    line: 2,
+    author: "cursor",
+    body: "finding",
+    isResolved: false,
+    replies: [{ author: "contributor", body: "   " }],
+  });
+  assert.equal(isThreadAddressedByReply(thread), false);
+  assert.equal(computeGuardObligations([thread]).effectiveUnresolvedCount, 1);
+});
+
+test("the thread's own first comment never counts as an addressing reply", () => {
+  const thread = mkThread({
+    id: 513,
+    path: "scripts/foo.mjs",
+    startLine: 1,
+    line: 2,
+    author: "contributor",
+    body: "self-explaining finding",
+    isResolved: false,
+  });
+  assert.equal(isThreadAddressedByReply(thread), false);
+});
+
+test("quota and rate-limit notices are non-findings that never gate", () => {
+  for (const body of [
+    "You have reached your Codex usage limits. Please try again later.",
+    "Review rate limited — no review was produced for this head.",
+  ]) {
+    const thread = mkThread({
+      id: 514,
+      path: "scripts/foo.mjs",
+      startLine: 1,
+      line: 2,
+      author: "chatgpt-codex-connector[bot]",
+      body,
+      isResolved: false,
+    });
+    assert.equal(isNonFindingNotice(thread), true, body);
+    const shadow = computeGuardObligations([thread], REVIEW_DEDUP_CONFIG, { applyInheritance: false });
+    assert.equal(shadow.rawUnresolvedCount, 1, "still measured");
+    assert.equal(shadow.effectiveUnresolvedCount, 0, "quota notice never gates");
+  }
+});
+
+test("a real finding that merely mentions usage limits still gates", () => {
+  const thread = mkThread({
+    id: 515,
+    path: "scripts/foo.mjs",
+    startLine: 1,
+    line: 2,
+    author: "cursor",
+    body: "The client drops the 429 body instead of parsing the usage limits header, so backoff never engages",
+    isResolved: false,
+  });
+  assert.equal(isNonFindingNotice(thread), false);
+  assert.equal(computeGuardObligations([thread]).effectiveUnresolvedCount, 1);
+});
+
+test("a real finding that quotes the exact notice phrase still gates", () => {
+  const thread = mkThread({
+    id: 516,
+    path: "scripts/foo.mjs",
+    startLine: 1,
+    line: 2,
+    author: "cursor",
+    body:
+      "The wrapper logs \"You have reached your Codex usage limits. Please try again later.\" verbatim, so operators cannot tell quota noise from a real failure",
+    isResolved: false,
+  });
+  assert.equal(isNonFindingNotice(thread), false, "only a complete-body match is a notice");
+  assert.equal(computeGuardObligations([thread]).effectiveUnresolvedCount, 1);
 });
 
 test("an unresolved canonical never hides its duplicate's finding", () => {

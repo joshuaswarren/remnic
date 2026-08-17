@@ -60,6 +60,22 @@ export const GATE_REPLY_MARKER = "<!-- remnic-review-dedup:duplicate -->";
 // gate-authored link — a false-merge vector (codex P2). Require the author.
 export const GATE_REPLY_AUTHOR_LOGINS = new Set(["github-actions", "github-actions[bot]"]);
 
+// Reviewer bots and automation identities whose replies are never a human
+// answer. Used by isThreadAddressedByReply: an author decline ("Declining: …")
+// satisfies the thread's guard obligation without a GraphQL resolve, but only
+// when the reply comes from someone who is not just another bot echo.
+export const REVIEW_BOT_LOGINS = new Set([
+  "coderabbitai",
+  "coderabbitai[bot]",
+  "kilo-code-bot",
+  "kilo-code-bot[bot]",
+  "chatgpt-codex-connector[bot]",
+  "cursor",
+  "cursor[bot]",
+  "github-actions",
+  "github-actions[bot]",
+]);
+
 // PR-level label applied when at least one finding is merged, so the merge is
 // discoverable off the thread as well as on it.
 export const DUPLICATE_LABEL = "duplicate-finding";
@@ -413,6 +429,38 @@ function isNonDedupThread(thread) {
   return NON_DEDUP_AUTHOR_LOGINS.has(firstAuthorLogin(thread) ?? "");
 }
 
+/**
+ * True when a non-bot comment after the first (e.g. the PR author's
+ * "Declining: …" reply) has answered the thread. Per the repo's round
+ * semantics, a non-author-bot reply addresses a thread exactly like a
+ * resolve does — the thread must then stop gating the merge even though
+ * nobody clicked Resolve in the UI.
+ */
+export function isThreadAddressedByReply(thread) {
+  const replies = thread?.comments?.nodes ?? [];
+  for (let i = 1; i < replies.length; i += 1) {
+    const login = replies[i]?.author?.login;
+    if (!login || REVIEW_BOT_LOGINS.has(login)) continue;
+    if (String(replies[i]?.body ?? "").trim() !== "") return true;
+  }
+  return false;
+}
+
+// Reviewer quota / rate-limit outage notices are infrastructure noise, not
+// product findings: they never gate a merge. Matched against the COMPLETE
+// trimmed body (an allowlist of the observed bot notices) so a real finding
+// that merely quotes a notice phrase still gates. Exact-match fails closed:
+// a reworded notice blocks merges until it is added here.
+const NON_FINDING_NOTICE_BODIES = new Set([
+  "You have reached your Codex usage limits. Please try again later.",
+  "Review rate limited — no review was produced for this head.",
+]);
+
+/** True when the thread's first comment is a quota/rate-limit notice. */
+export function isNonFindingNotice(thread) {
+  return NON_FINDING_NOTICE_BODIES.has(firstBody(thread).trim());
+}
+
 function stableSort(threads) {
   return threads
     .map((thread, index) => ({ thread, index }))
@@ -528,6 +576,9 @@ function isStaleResolvedCanonical(thread) {
  * - applyInheritance=true (enforce): a duplicate whose canonical is resolved
  *   contributes no obligation only after a gate-authored audit reply is present
  *   or its id appears in `options.auditedDuplicateIds`.
+ * - An unresolved thread that a non-bot reply has ADDRESSED (author decline),
+ *   or whose first comment is a quota/rate-limit notice, carries no effective
+ *   obligation in either mode, but still counts in rawUnresolvedCount.
  *
  * `wouldBeLostUniqueFindings` reports duplicates whose canonical is UNRESOLVED —
  * i.e. findings enforcement would still surface, proving no distinct finding is
@@ -558,9 +609,12 @@ export function computeGuardObligations(threads, config = REVIEW_DEDUP_CONFIG, o
     const selfResolved = isThreadResolved(thread);
     if (!selfResolved) rawUnresolved.push(thread);
 
+    const addressed =
+      !selfResolved && (isThreadAddressedByReply(thread) || isNonFindingNotice(thread));
+
     const isDuplicate = record.canonicalId !== record.id;
     if (!isDuplicate) {
-      if (!selfResolved) effectiveUnresolved.push(thread);
+      if (!selfResolved && !addressed) effectiveUnresolved.push(thread);
       continue;
     }
 
@@ -575,8 +629,14 @@ export function computeGuardObligations(threads, config = REVIEW_DEDUP_CONFIG, o
       });
     }
     if (!applyInheritance) {
-      if (!selfResolved) effectiveUnresolved.push(thread); // Shadow: preserve raw count.
-    } else if (!selfResolved && canonicalIsResolved && !auditedDuplicateIds.has(record.id) && !hasGateReply(thread)) {
+      if (!selfResolved && !addressed) effectiveUnresolved.push(thread); // Shadow: raw count minus addressed.
+    } else if (
+      !selfResolved &&
+      !addressed &&
+      canonicalIsResolved &&
+      !auditedDuplicateIds.has(record.id) &&
+      !hasGateReply(thread)
+    ) {
       // Enforce: a resolved canonical folds a duplicate ONLY with audit evidence
       // (the gate-authored reply). Without it, folding would let a transient or
       // read-only reply-post failure pass enforce with no gate-authored
