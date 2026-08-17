@@ -192,7 +192,7 @@ These rules are the default workflow for all agents and contributors.
    - Do not let a PR drift for multiple review rounds and then merge `main` halfway through unless forced by a conflict.
 
 3. Batch review fixes by subsystem.
-   - Re-scan unresolved comments, fix the whole subsystem, run verification once, then push once.
+   - Re-scan unresolved comments with `node scripts/pr-threads.mjs <pr-number>` (canonical thread intake: id, author, isResolved, full body). Default is unresolved only; `--all` includes resolved; `--json` emits an array. Fix the whole subsystem, run verification once, then push once.
    - Avoid serial micro-pushes that only expose the next adjacent invariant.
 
 4. Run the local hardening gate before claiming review-clean.
