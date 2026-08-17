@@ -456,7 +456,12 @@ export class TurnIngestionCoordinator {
       };
     }
 
-    if (this.deps.lcmEngine?.enabled) {
+    const isOpenClawFlushPlanImport = sessionTurns.some((turn) => {
+      const provenance = turn.importProvenance;
+      return provenance?.sourceLabel === "OpenClaw flush plan" ||
+        provenance?.sourceId?.includes(":flush-plan") === true;
+    });
+    if (this.deps.lcmEngine?.enabled && !isOpenClawFlushPlanImport) {
       await this.deps.lcmEngine.observeMessages(
         sessionKey,
         sessionTurns.map((turn) => ({

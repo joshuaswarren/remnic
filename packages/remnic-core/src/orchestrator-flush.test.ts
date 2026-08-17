@@ -751,6 +751,70 @@ test("ingestBulkImportBatch reports post-persist metadata failures separately", 
   assert.equal(result.postPersistMetadataFailureCount, 1);
 });
 
+test("ingestBulkImportBatch skips LCM observation for OpenClaw flush-plan imports", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  orchestrator.config = parseConfig({});
+  orchestrator.extractionQueueCoordinator = new ExtractionQueueCoordinator();
+  let observed = 0;
+  orchestrator.lcmEngine = {
+    enabled: true,
+    async observeMessages() {
+      observed += 1;
+    },
+  };
+  orchestrator.runExtraction = async () => ({
+    status: "completed",
+    persistedCount: 1,
+    durableOutputCount: 1,
+  });
+
+  await orchestrator.ingestBulkImportBatch([
+    {
+      role: "user",
+      timestamp: "2026-08-17T00:00:00.000Z",
+      content: "Recovered compaction memory.",
+      importProvenance: {
+        sourceLabel: "OpenClaw flush plan",
+        sourceId: "openclaw-remnic:flush-plan:1/2",
+      },
+    },
+  ]);
+
+  assert.equal(observed, 0);
+});
+
+test("ingestBulkImportBatch still observes ordinary imports with LCM", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  orchestrator.config = parseConfig({});
+  orchestrator.extractionQueueCoordinator = new ExtractionQueueCoordinator();
+  let observed = 0;
+  orchestrator.lcmEngine = {
+    enabled: true,
+    async observeMessages() {
+      observed += 1;
+    },
+  };
+  orchestrator.runExtraction = async () => ({
+    status: "completed",
+    persistedCount: 1,
+    durableOutputCount: 1,
+  });
+
+  await orchestrator.ingestBulkImportBatch([
+    {
+      role: "user",
+      timestamp: "2026-08-17T00:00:00.000Z",
+      content: "Imported durable memory.",
+      importProvenance: {
+        sourceLabel: "Chat export",
+        sourceId: "chat-export:1",
+      },
+    },
+  ]);
+
+  assert.equal(observed, 1);
+});
+
 test("ingestBulkImportBatch can disable source-valid-at replay context", async () => {
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   orchestrator.config = parseConfig({});
