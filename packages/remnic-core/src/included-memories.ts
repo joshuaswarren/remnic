@@ -47,18 +47,19 @@ function normalizeIncludedMemory(value: unknown): IncludedMemory | undefined {
   return namespace ? { id, path, namespace } : { id, path };
 }
 
-export function coerceIncludedMemories(raw: LegacyIncludedMemorySource): IncludedMemory[] {
-  if (Array.isArray(raw.includedMemories)) {
-    return raw.includedMemories
+export function coerceIncludedMemories(raw: object): IncludedMemory[] {
+  const source = raw as LegacyIncludedMemorySource;
+  if (Array.isArray(source.includedMemories)) {
+    return source.includedMemories
       .map(normalizeIncludedMemory)
       .filter((item): item is IncludedMemory => item !== undefined);
   }
 
-  const budgets = legacyBudgetView(raw);
-  const ids = asStringList(raw.memoryIds ?? budgets.includedMemoryIds);
-  const paths = asStringList(raw.resultPaths ?? budgets.includedMemoryPaths);
+  const budgets = legacyBudgetView(source);
+  const ids = asStringList(source.memoryIds ?? budgets.includedMemoryIds);
+  const paths = asStringList(source.resultPaths ?? budgets.includedMemoryPaths);
   const namespaces = asOptionalStringList(
-    raw.resultNamespaces ?? budgets.includedMemoryNamespaces,
+    source.resultNamespaces ?? budgets.includedMemoryNamespaces,
   );
   const count = Math.max(ids.length, paths.length);
   const memories: IncludedMemory[] = [];
