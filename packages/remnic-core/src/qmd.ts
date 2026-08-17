@@ -562,6 +562,11 @@ function runCommandWithTimeout(
     const child = launchProcess(command, args, {
       env: mergeEnv({ NO_COLOR: "1", ...options.env }),
       stdio: ["ignore", "pipe", "pipe"],
+      // POSIX: own process group so a timeout/abort kill can take down qmd's
+      // grandchildren too (launcher scripts spawn workers that outlive the
+      // launcher itself). Issue #2456. Windows ignores this option here —
+      // kill falls back to a direct child.kill.
+      detached: process.platform !== "win32",
     });
     if (!child.stdout || !child.stderr) {
       reject(new Error(`${label} failed to open stdio pipes`));
@@ -575,7 +580,7 @@ function runCommandWithTimeout(
     const timer = setTimeout(() => {
       settled = true;
       cleanup();
-      child.kill("SIGKILL");
+      killBoundedChild(child);
       // Flag the deadline breach so classifyProbeFailure can tell a genuine
       // timeout from a non-zero-exit error whose message merely embeds stderr.
       reject(
@@ -589,7 +594,7 @@ function runCommandWithTimeout(
       settled = true;
       clearTimeout(timer);
       cleanup();
-      child.kill("SIGKILL");
+      killBoundedChild(child);
       reject(abortError(`${label} aborted`));
     };
     const cleanup = () => {
@@ -635,6 +640,29 @@ function runProcessCommand(
     signal,
   });
 }
+
+// Kill a bounded subprocess and its descendants. On POSIX the child runs
+// detached (own process group), so a negative-pid signal reaches the whole
+// tree. Fall back to a direct kill on Windows, missing pid, or when the
+// group is already gone. Never throws — callers use it on best-effort paths.
+function killBoundedChild(child: CommandChildProcess): void {
+  const pid = child.pid;
+  if (pid !== undefined && process.platform !== "win32") {
+    try {
+      process.kill(-pid, "SIGKILL");
+      return;
+    } catch {
+      // Group already reaped or never became a leader — fall through.
+    }
+  }
+  try {
+    child.kill("SIGKILL");
+  } catch {
+    // Already exited between the check and the kill.
+  }
+}
+
+export { runCommandWithTimeout as runCommandWithTimeoutForTest };
 
 // ---------------------------------------------------------------------------
 // QMD Stdio Daemon Session (MCP over stdio child process)
