@@ -41,6 +41,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { writeFile as fsWriteFile } from "node:fs/promises";
 import * as childProcess from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
@@ -285,6 +286,17 @@ import {
 } from "./openclaw-managed-upgrade-loader.js";
 import { expandTilde, resolveHomeDir } from "./path-utils.js";
 import {
+  probeDaemonHealth,
+  printHealthCheck,
+  readCompatEnv,
+  remoteRecall,
+  remoteRecallXray,
+  resolveDaemonBaseUrl,
+  resolveOperatorToken,
+  resolveRemoteDaemon,
+  type RemoteRecallResult,
+} from "./remote-daemon.js";
+import {
   inspectLaunchdPlist,
   launchdLoadPlist,
   launchdUnloadPlist,
@@ -440,9 +452,7 @@ export interface BenchCatalogEntry {
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-function readCompatEnv(primary: string, legacy: string): string | undefined {
-  return process.env[primary] ?? process.env[legacy];
-}
+
 
 const PID_DIR = path.join(resolveHomeDir(), ".remnic");
 const LEGACY_PID_DIR = path.join(resolveHomeDir(), ".engram");
@@ -4600,13 +4610,13 @@ function cmdInit(): void {
  * Resolve a bearer token for the local status/health probe (issue #2006).
  * Precedence mirrors the daemon: operator token first (env
  * `REMNIC_AUTH_TOKEN` / `ENGRAM_AUTH_TOKEN`, then config `server.authToken`
- * via `oauthResolveOperatorToken()`), then any connector token from the
+ * via `resolveOperatorToken()`), then any connector token from the
  * local token store — the access server accepts connector tokens for
  * health. Returns `undefined` for open daemons so the probe stays
  * unauthenticated exactly as before.
  */
 function resolveStatusProbeToken(): string | undefined {
-  const operatorToken = oauthResolveOperatorToken();
+  const operatorToken = resolveOperatorToken(resolveConfigPath());
   if (operatorToken) return operatorToken;
   try {
     // Connector tokens authorize health EXCEPT chatgpt-minted ones, which
@@ -4625,6 +4635,29 @@ function resolveStatusProbeToken(): string | undefined {
 export const __statusHealthTestHooks = { resolveStatusProbeToken };
 
 async function cmdStatus(json: boolean): Promise<void> {
+  // Remote mode (issue #2448): a configured REMNIC_DAEMON_URL / server.url
+  // origin is the target. No local service-manager probe, no PID file —
+  // "running" means the remote health endpoint answered.
+  const remote = resolveRemoteDaemon(resolveConfigPath());
+  if (remote) {
+    if (json) {
+      const probe = await probeDaemonHealth(remote.baseUrl, remote.token);
+      console.log(
+        JSON.stringify({
+          running: probe.ok,
+          pid: null,
+          pidFile: null,
+          logFile: null,
+          remote: remote.baseUrl,
+        }),
+      );
+      return;
+    }
+    console.log(`Remnic server: remote (${remote.baseUrl})`);
+    await printHealthCheck(remote.baseUrl, remote.token);
+    return;
+  }
+
   const { running, pid } = isServiceRunning();
   if (json) {
     console.log(JSON.stringify({ running, pid: pid ?? null, pidFile: PID_FILE, logFile: LOG_FILE }));
@@ -4635,55 +4668,7 @@ async function cmdStatus(json: boolean): Promise<void> {
     return;
   }
   console.log(`Remnic server: running${pid ? ` (pid ${pid})` : ""}`);
-
-  const port = inferPort();
-  const probeToken = resolveStatusProbeToken();
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 3000);
-  try {
-    const response = await fetch(`http://127.0.0.1:${port}/engram/v1/health`, {
-      signal: controller.signal,
-      ...(probeToken ? { headers: { Authorization: `Bearer ${probeToken}` } } : {}),
-    });
-    if (!response.ok) {
-      const hint =
-        response.status === 401 && !probeToken
-          ? " (daemon requires auth and no local token was found — set REMNIC_AUTH_TOKEN, configure server.authToken, or run 'remnic token generate')"
-          : response.status === 401
-            ? " (local token rejected by the daemon)"
-            : "";
-      console.log(`Health: server responded with ${response.status} ${response.statusText}${hint}`);
-    } else {
-      const health = (await response.json()) as {
-        status?: unknown;
-        qmd?: {
-          pendingEmbeddings?: number | null;
-          oldestPendingAgeMs?: number | null;
-          embeddingBacklogThreshold?: number;
-          degradedReason?: string;
-        };
-      };
-      const status = typeof health.status === "string" ? health.status : "ok";
-      console.log(`Health: ${status}`);
-      const qmd = health.qmd;
-      if (qmd?.pendingEmbeddings != null) {
-        console.log(`  Pending embeddings: ${qmd.pendingEmbeddings}`);
-        if (qmd.oldestPendingAgeMs != null) {
-          console.log(`  Oldest pending: ${Math.round(qmd.oldestPendingAgeMs / 60_000)}m`);
-        }
-        if (qmd.embeddingBacklogThreshold != null) {
-          console.log(`  Backlog threshold: ${qmd.embeddingBacklogThreshold}`);
-        }
-      }
-      if (qmd?.degradedReason) {
-        console.log(`  Degraded: ${qmd.degradedReason}`);
-      }
-    }
-  } catch {
-    console.log("Health: unable to reach server");
-  } finally {
-    clearTimeout(timeoutId);
-  }
+  await printHealthCheck(resolveDaemonBaseUrl(resolveConfigPath()), resolveStatusProbeToken());
 }
 // ── OAuth operator commands ─────────────────────────────────────────────────
 //
@@ -4719,101 +4704,6 @@ interface OAuthDecisionResponse {
   redirect?: string;
 }
 
-/**
- * Read + parse the remnic config file, returning a `Record<string, unknown>`
- * view of its top level. Returns `undefined` on any IO / parse error so
- * the caller can fall through to the env / default path. The cast is
- * unavoidable here — `JSON.parse` returns `any` and the on-disk shape is
- * user-authored — so this helper is the single point that materialises
- * the unsafe boundary. Callers narrow with `typeof` / `in` at every
- * access (rule: `ts-no-inline-cast-access`).
- */
-function oauthReadConfigRecord(configPath: string): Record<string, unknown> | undefined {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
-    return undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function oauthResolveBaseUrl(): string {
-  const configPath = resolveConfigPath();
-  let port = 4318;
-  let host = "127.0.0.1";
-  const raw = oauthReadConfigRecord(configPath);
-  if (raw && "server" in raw) {
-    const server = raw.server;
-    if (server && typeof server === "object") {
-      const hostCandidate = (server as Record<string, unknown>).host;
-      if (typeof hostCandidate === "string" && hostCandidate.length > 0) {
-        host = hostCandidate;
-      }
-      const portCandidate = (server as Record<string, unknown>).port;
-      if (typeof portCandidate === "number" && Number.isInteger(portCandidate)) {
-        port = portCandidate;
-      }
-    }
-  }
-  // Env overrides win over the file, matching the daemon: startServer()
-  // merges REMNIC_HOST/REMNIC_PORT (ENGRAM_* legacy) over server.host/port,
-  // so the CLI must resolve the same endpoint or it targets the wrong port.
-  const envHost = readCompatEnv("REMNIC_HOST", "ENGRAM_HOST");
-  if (typeof envHost === "string" && envHost.length > 0) {
-    host = envHost;
-  }
-  const envPortRaw = readCompatEnv("REMNIC_PORT", "ENGRAM_PORT");
-  if (typeof envPortRaw === "string" && envPortRaw.length > 0) {
-    const envPort = Number(envPortRaw);
-    // Reject an explicitly-set-but-invalid port instead of silently
-    // falling back (the daemon rejects it too, so a bad value is a
-    // misconfiguration the operator must see, not paper over).
-    if (!Number.isInteger(envPort) || envPort < 1 || envPort > 65535) {
-      throw new Error(
-        `Invalid REMNIC_PORT/ENGRAM_PORT "${envPortRaw}": expected an integer in [1, 65535].`,
-      );
-    }
-    port = envPort;
-  }
-  return `http://${host}:${port}`;
-}
-
-/**
- * Resolve the operator bearer token, matching the daemon's precedence
- * exactly. `startServer()` merges `REMNIC_AUTH_TOKEN` (env) OVER
- * `server.authToken` (file), so the running daemon accepts the env token
- * when both are set. This resolver therefore checks env FIRST, then the
- * file value (with `ENGRAM_AUTH_TOKEN` as the legacy env alias). A file
- * that still holds the literal `${REMNIC_AUTH_TOKEN}` placeholder no
- * longer shadows the real env token. Returns `undefined` when no token is
- * configured; callers fail loudly rather than auto-pick a default.
- */
-function oauthResolveOperatorToken(): string | undefined {
-  const envToken = readCompatEnv("REMNIC_AUTH_TOKEN", "ENGRAM_AUTH_TOKEN");
-  if (typeof envToken === "string" && envToken.length > 0) return envToken;
-  const raw = oauthReadConfigRecord(resolveConfigPath());
-  if (raw && "server" in raw) {
-    const server = raw.server;
-    if (server && typeof server === "object" && "authToken" in server) {
-      const candidate = (server as Record<string, unknown>).authToken;
-      // A config created by `remnic init` may still hold the literal
-      // `${REMNIC_AUTH_TOKEN}` placeholder; treat that as unresolved so
-      // callers fall through to other sources (env, token store) rather
-      // than sending the placeholder as a real bearer token.
-      if (
-        typeof candidate === "string" &&
-        candidate.length > 0 &&
-        !candidate.includes("${")
-      ) {
-        return candidate;
-      }
-    }
-  }
-  return undefined;
-}
 
 /**
  * Hit one of the operator OAuth endpoints. Centralises the auth header,
@@ -4847,7 +4737,7 @@ async function oauthFetch(
     if (body !== undefined) {
       init.body = JSON.stringify(body);
     }
-    const response = await fetch(`${oauthResolveBaseUrl()}${path}`, init);
+    const response = await fetch(`${resolveDaemonBaseUrl(resolveConfigPath())}${path}`, init);
     if (response.status === 401) {
       throw new Error(
         "operator token rejected by remnic-server (HTTP 401). Update `server.authToken` or `REMNIC_AUTH_TOKEN` to match the running daemon.",
@@ -4896,7 +4786,7 @@ async function oauthFetch(
         msg.includes("ENOTFOUND")
       ) {
         throw new Error(
-          `cannot reach remnic-server at ${oauthResolveBaseUrl()} — is remnic-server running? Start it with \`remnic daemon start\`.`,
+          `cannot reach remnic-server at ${resolveDaemonBaseUrl(resolveConfigPath())} — is remnic-server running? Start it with \`remnic daemon start\` (or point REMNIC_DAEMON_URL at a remote daemon).`,
         );
       }
       throw err;
@@ -5000,7 +4890,7 @@ Server endpoints (operator bearer auth):
  * env/config state (rule: validate inputs first, deterministically).
  */
 function oauthRequireOperatorToken(): string {
-  const token = oauthResolveOperatorToken();
+  const token = resolveOperatorToken(resolveConfigPath());
   if (!token) {
     console.error(
       "remnic oauth: no operator token configured. Set `server.authToken` in remnic.config.json or export REMNIC_AUTH_TOKEN.",
@@ -5194,7 +5084,7 @@ async function cmdOAuth(rest: string[]): Promise<void> {
   }
 }
 
-interface QueryRenderableResult {
+export interface QueryRenderableResult {
   content?: string;
   preview?: string;
   context?: string;
@@ -5281,6 +5171,20 @@ async function cmdQuery(queryText: string, json: boolean, explain: boolean): Pro
     process.exit(1);
   }
 
+  // Remote mode (issue #2448): route the recall through the configured
+  // origin instead of booting a local orchestrator.
+  const remote = resolveRemoteDaemon(resolveConfigPath());
+  if (remote) {
+    const started = Date.now();
+    const result = await remoteRecall(remote, buildQueryRecallRequest(queryText));
+    if (explain) {
+      printMinimalQueryExplain(queryText, result, Date.now() - started, json);
+      return;
+    }
+    printQueryResult(result, json);
+    return;
+  }
+
   initLogger();
   const configPath = resolveConfigPath();
   const raw = fs.existsSync(configPath)
@@ -5318,55 +5222,68 @@ async function cmdQuery(queryText: string, json: boolean, explain: boolean): Pro
 
       const explainStart = Date.now();
       const recallResult = await service.recall(recallRequest);
-      const totalDurationMs = Date.now() - explainStart;
-      // recall() returns { count, results, memoryIds, ... } (see
-      // EngramAccessRecallResponse). A prior version of this fallback
-      // read .memories, which doesn't exist, so resultsCount was always
-      // 0 and users saw misleading explain output. (Codex feedback on
-      // PR #545.) Prefer the numeric count and fall back to
-      // results.length for robustness across future schema tweaks.
-      const resultsCount =
-        typeof recallResult.count === "number"
-          ? recallResult.count
-          : Array.isArray(recallResult.results)
-            ? recallResult.results.length
-            : 0;
-      const minimalExplain = {
-        query: queryText,
-        totalDurationMs,
-        resultsCount,
-        results: summarizeQueryExplainFallbackResults(recallResult),
-        note: "Install @remnic/bench for a full tier-level explain breakdown.",
-      };
-      if (json) {
-        console.log(JSON.stringify(minimalExplain, null, 2));
-      } else {
-        console.log(`Query: ${minimalExplain.query}`);
-        console.log(`Total duration: ${minimalExplain.totalDurationMs}ms`);
-        console.log(`Results: ${minimalExplain.resultsCount}`);
-        for (const result of minimalExplain.results) {
-          const suffix = result.source ? ` (${result.source})` : "";
-          console.log(`  ${result.index}. ${result.text}${suffix}`);
-        }
-        console.log(`Note: ${minimalExplain.note}`);
-      }
+      printMinimalQueryExplain(queryText, recallResult, Date.now() - explainStart, json);
       return;
     }
 
-    const result = await service.recall(recallRequest);
-    if (json) {
-      console.log(JSON.stringify(result, null, 2));
-    } else {
-      for (const line of renderQueryTextLines(result)) {
-        console.log(line);
-      }
-    }
+    printQueryResult(await service.recall(recallRequest), json);
   } finally {
     // One-shot CLI calls should not wait for or orphan deferred QMD
     // maintenance; the daemon/gateway process performs full warmup instead.
     orchestrator.abortDeferredInit();
     await orchestrator.destroy();
   }
+}
+
+function printQueryResult(result: RemoteRecallResult, json: boolean): void {
+  if (json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  for (const line of renderQueryTextLines(result)) {
+    console.log(line);
+  }
+}
+
+/**
+ * Minimal `query --explain` fallback used when @remnic/bench is absent —
+ * locally and for remote daemons (the bench explainer needs an in-process
+ * access service). recall() returns `{ count, results, memoryIds, ... }`
+ * (see EngramAccessRecallResponse); prefer the numeric count and fall
+ * back to results.length (a prior version read `.memories`, which doesn't
+ * exist — Codex feedback on PR #545).
+ */
+function printMinimalQueryExplain(
+  queryText: string,
+  result: RemoteRecallResult,
+  totalDurationMs: number,
+  json: boolean,
+): void {
+  const resultsCount =
+    typeof result.count === "number"
+      ? result.count
+      : Array.isArray(result.results)
+        ? result.results.length
+        : 0;
+  const minimalExplain = {
+    query: queryText,
+    totalDurationMs,
+    resultsCount,
+    results: summarizeQueryExplainFallbackResults(result),
+    note: "Install @remnic/bench for a full tier-level explain breakdown.",
+  };
+  if (json) {
+    console.log(JSON.stringify(minimalExplain, null, 2));
+    return;
+  }
+  console.log(`Query: ${minimalExplain.query}`);
+  console.log(`Total duration: ${minimalExplain.totalDurationMs}ms`);
+  console.log(`Results: ${minimalExplain.resultsCount}`);
+  for (const resultLine of minimalExplain.results) {
+    const suffix = resultLine.source ? ` (${resultLine.source})` : "";
+    console.log(`  ${resultLine.index}. ${resultLine.text}${suffix}`);
+  }
+  console.log(`Note: ${minimalExplain.note}`);
 }
 
 // ── Action confidence ──────────────────────────────────────────────────────
@@ -5563,6 +5480,14 @@ async function cmdXray(rest: string[]): Promise<void> {
   const { rawQuery, options } = extractXrayRawArgs(rest);
   parseXrayCliOptions(rawQuery, options);
 
+  // Remote mode (issue #2448): the X-ray endpoint lives on the remote
+  // daemon; no local orchestrator boot.
+  const remote = resolveRemoteDaemon(resolveConfigPath());
+  if (remote) {
+    await runXrayCommand(rest, xrayCliIo((request) => remoteRecallXray(remote, request)));
+    return;
+  }
+
   initLogger();
   const configPath = resolveConfigPath();
   const raw = fs.existsSync(configPath)
@@ -5576,19 +5501,22 @@ async function cmdXray(rest: string[]): Promise<void> {
   const service = new EngramAccessService(orchestrator);
 
   try {
-    await runXrayCommand(rest, {
-      recallXray: (request) => service.recallXray(request),
-      writeFile: async (filePath, data) => {
-        const { writeFile: fsWriteFile } = await import("node:fs/promises");
-        await fsWriteFile(filePath, data, "utf8");
-      },
-      stdout: (line) => console.log(line),
-    });
+    await runXrayCommand(rest, xrayCliIo((request) => service.recallXray(request)));
   } finally {
     // Xray is diagnostic, so it waits for deferred startup sync before recall;
     // abort remains a no-op guard if startup behavior changes later.
     orchestrator.abortDeferredInit();
   }
+}
+
+function xrayCliIo(
+  recallXray: Parameters<typeof runXrayCommand>[1]["recallXray"],
+): Parameters<typeof runXrayCommand>[1] {
+  return {
+    recallXray,
+    writeFile: (filePath, data) => fsWriteFile(filePath, data, "utf8"),
+    stdout: (line) => console.log(line),
+  };
 }
 
 // ── Page-level versioning (issue #371) ─────────────────────────────────────
@@ -6620,22 +6548,39 @@ async function cmdDoctor(): Promise<void> {
       : "not set (required for direct OpenAI-backed extraction)",
   });
 
-  const svcState = isServiceRunning();
-  const standaloneServiceInstalled = isStandaloneServiceInstalled();
-  const daemonOptionalForOpenclaw = openclawPluginModeConfigured && !standaloneServiceInstalled;
-  checks.push({
-    name: "Server daemon",
-    ok: svcState.running || daemonOptionalForOpenclaw,
-    warn: !svcState.running,
-    detail: svcState.running
-      ? `running${svcState.pid ? ` (pid ${svcState.pid})` : ""}`
-      : daemonOptionalForOpenclaw
-      ? "stopped (not required for OpenClaw plugin mode)"
-      : "stopped",
-    remediation: !svcState.running && standaloneServiceInstalled
-      ? "Run `remnic daemon start`, or `remnic daemon uninstall` if you only use the OpenClaw plugin."
-      : undefined,
-  });
+  // Remote mode (issue #2448): probe the configured origin instead of the
+  // local service manager. Nothing is spawned locally.
+  const remoteDaemon = resolveRemoteDaemon(configPath);
+  if (remoteDaemon) {
+    const probe = await probeDaemonHealth(remoteDaemon.baseUrl, remoteDaemon.token);
+    const detail = probe.ok
+      ? `remote ${remoteDaemon.baseUrl} (reachable)`
+      : `remote ${remoteDaemon.baseUrl} (unreachable${probe.status ? `, HTTP ${probe.status}` : probe.error ? `, ${probe.error}` : ""})`;
+    checks.push({
+      name: "Server daemon",
+      ok: probe.ok,
+      warn: !probe.ok,
+      detail,
+      remediation: probe.ok ? undefined : "Check REMNIC_DAEMON_URL / server.url and the remote server's availability.",
+    });
+  } else {
+    const svcState = isServiceRunning();
+    const standaloneServiceInstalled = isStandaloneServiceInstalled();
+    const daemonOptionalForOpenclaw = openclawPluginModeConfigured && !standaloneServiceInstalled;
+    checks.push({
+      name: "Server daemon",
+      ok: svcState.running || daemonOptionalForOpenclaw,
+      warn: !svcState.running,
+      detail: svcState.running
+        ? `running${svcState.pid ? ` (pid ${svcState.pid})` : ""}`
+        : daemonOptionalForOpenclaw
+        ? "stopped (not required for OpenClaw plugin mode)"
+        : "stopped",
+      remediation: !svcState.running && standaloneServiceInstalled
+        ? "Run `remnic daemon start`, or `remnic daemon uninstall` if you only use the OpenClaw plugin."
+        : undefined,
+    });
+  }
 
   if (isMacOS()) {
     const launchdInspection = selectLaunchdInspection(openclawPluginModeConfigured);
