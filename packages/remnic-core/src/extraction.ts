@@ -49,7 +49,17 @@ import { applyGroundingWithConnector, headerConnector, renderExtractionConversat
 import { isMemoryCategory } from "./write-envelope.js";
 import { classifyExtractionThrownError, classifyFallbackParseFailure } from "./extraction-error-classification.js";
 import { AMBIENT_CAPTURE_PROMPT_SECTION_COMPACT, clampAmbientCaptureConfidence } from "./ambient-provenance.js";
-import { CUE_ANCHOR_PROMPT_INSTRUCTION, EXTRACTION_RESPONSE_SHAPE, buildExtractionInstructions, eventTimePromptInstruction } from "./extraction-prompt.js";
+import {
+  CONSOLIDATION_RESPONSE_SCHEMA,
+  CUE_ANCHOR_PROMPT_INSTRUCTION,
+  EXTRACTION_RESPONSE_SHAPE,
+  OUTPUT_LANGUAGE_POLICY,
+  PROFILE_CONSOLIDATION_RESPONSE_SCHEMA,
+  buildConsolidationSystemPrompt,
+  buildExtractionInstructions,
+  buildProfileConsolidationSystemPrompt,
+  eventTimePromptInstruction,
+} from "./extraction-prompt.js";
 import {
   containsExtractionPlaceholder,
   extractionAttributes,
@@ -66,19 +76,6 @@ type ExtractedEntityResult = ExtractionResult["entities"][number];
 type ExtractedRelationshipResult = NonNullable<ExtractionResult["relationships"]>[number];
 
 const PROACTIVE_MIN_CONFIDENCE = 0.8;
-const CONSOLIDATION_RESPONSE_SCHEMA = `{
-  "items": [
-    {
-      "existingId": "id",
-      "action": "ADD",
-      "mergeWith": "optional-existing-id",
-      "updatedContent": "optional replacement content",
-      "reason": "brief reason for this action"
-    }
-  ],
-  "profileUpdates": ["optional profile update"],
-  "entityUpdates": [{"name": "person-jane-doe", "type": "person", "facts": ["Now leads the backend team", "Recently migrated the user service to TypeScript"]}]
-}`;
 
 function extractionEntityType(value: unknown): ExtractedEntityResult["type"] | undefined {
   const type = extractionText(value);
@@ -688,6 +685,7 @@ export class ExtractionEngine {
     const prompt = [
       "You are doing a proactive second-pass memory extraction.",
       `Generate up to ${maxAdditional} additional high-value follow-up questions not already covered.${ambientCapture ? AMBIENT_CAPTURE_PROMPT_SECTION_COMPACT : ""}`,
+      OUTPUT_LANGUAGE_POLICY,
       "Return only valid JSON with this shape:",
       '{"questions":[{"question":"...","context":"...","priority":0.0}]}',
       "",
@@ -790,6 +788,7 @@ export class ExtractionEngine {
       "You are answering proactive memory follow-up questions using only the provided buffered conversation.",
       `Return at most ${maxAdditional} additional high-confidence memory candidates that were omitted from the base extraction.`,
       `Only include information directly supported by the conversation. Do not speculate. Do not repeat the base extraction.${ambientCapture ? AMBIENT_CAPTURE_PROMPT_SECTION_COMPACT : ""}`,
+      OUTPUT_LANGUAGE_POLICY,
       "Return only valid JSON with this shape:",
       '{"facts":[{"category":"fact","content":"...","confidence":0.0,"tags":["..."],"entityRef":"optional","promptedByQuestion":"optional","quote":"optional verbatim span from a single turn"}],"profileUpdates":["..."],"entities":[{"name":"...","type":"person","facts":["..."],"structuredSections":[{"key":"beliefs","title":"Beliefs","facts":["..."]}],"promptedByQuestion":"optional"}],"relationships":[{"source":"...","target":"...","label":"...","promptedByQuestion":"optional"}]}',
       this.config.provenance?.enabled
@@ -1423,6 +1422,7 @@ Rules:
 - Use normalized, hyphenated entity names and keep the entity list short.
 - Keep facts standalone. Skip transient task state and operational noise such as routine scheduler, monitoring, or automation status.
 - Add structuredAttributes only for concrete values.
+- ${OUTPUT_LANGUAGE_POLICY}
 ${CUE_ANCHOR_PROMPT_INSTRUCTION}\n- Include at most five durable relationships.${this.config.provenance?.enabled ? `
 - Each fact must include a quote copied verbatim from one contiguous conversation span.` : ""}${lifecycleCaps.extractionScopeClassification ? `
 - Set each fact scope to "global" for cross-project knowledge or "project" for codebase-specific knowledge. Tool, command, or CLI-flag instructions tied to one agent are "project" (the same tool name can mean different things across agents); when keeping one, begin the fact with a leading "In <agent>," clause naming that agent.` : ""}${ambientCapture ? AMBIENT_CAPTURE_PROMPT_SECTION_COMPACT : ""}
@@ -1650,19 +1650,7 @@ ${truncatedConversation}`;
       [
         {
           role: "system",
-          content: `You are a memory consolidation system. Compare new memories against existing ones and decide what to do with each.
-
-Actions:
-- ADD: Keep the new memory as-is (no duplicate exists)
-- MERGE: Combine with an existing memory (provide mergeWith ID and updated content)
-- UPDATE: Replace existing memory content (provide updated content)
-- INVALIDATE: Remove existing memory (it's been superseded or is wrong)
-- SKIP: This new memory is redundant (exact duplicate or subset of existing)
-
-Also:
-- Suggest profile updates based on patterns across memories
-- Identify entity updates for entity tracking${resolveRecallAuxiliaryCapabilities(this.config).causalRuleExtraction ? `
-- When merging or updating memories, look for IF→THEN causal patterns. If a memory describes "X failed/succeeded because Y" or "doing X led to Y", rewrite its content to make the causal rule explicit in the form "IF <condition> THEN <action/outcome>".` : ""}`,
+          content: buildConsolidationSystemPrompt(this.config),
         },
         {
           role: "user",
@@ -1696,19 +1684,7 @@ Consolidate the new memories against existing ones.`,
     }
 
     try {
-      const instructionText = `You are a memory consolidation system. Compare new memories against existing ones and decide what to do with each.
-
-Actions:
-- ADD: Keep the new memory as-is (no duplicate exists)
-- MERGE: Combine with an existing memory (provide mergeWith ID and updated content)
-- UPDATE: Replace existing memory content (provide updated content)
-- INVALIDATE: Remove existing memory (it's been superseded or is wrong)
-- SKIP: This new memory is redundant (exact duplicate or subset of existing)
-
-Also:
-- Suggest profile updates based on patterns across memories
-- Identify entity updates for entity tracking${resolveRecallAuxiliaryCapabilities(this.config).causalRuleExtraction ? `
-- When merging or updating memories, look for IF→THEN causal patterns. If a memory describes "X failed/succeeded because Y" or "doing X led to Y", rewrite its content to make the causal rule explicit in the form "IF <condition> THEN <action/outcome>".` : ""}
+      const instructionText = `${buildConsolidationSystemPrompt(this.config)}
 
 Current behavioral profile:
 ${currentProfile || "(empty)"}
@@ -1794,19 +1770,7 @@ ${CONSOLIDATION_RESPONSE_SCHEMA}`;
     );
     log.debug(`Consolidation model context: ${contextSizes.description}`);
 
-    const prompt = `You are a memory consolidation system. Compare new memories against existing ones and decide what to do with each.
-
-Actions:
-- ADD: Keep the new memory as-is (no duplicate exists)
-- MERGE: Combine with an existing memory (provide mergeWith ID and updated content)
-- UPDATE: Replace existing memory content (provide updated content)
-- INVALIDATE: Remove existing memory (it's been superseded or is wrong)
-- SKIP: This new memory is redundant (exact duplicate or subset of existing)
-
-Also:
-- Suggest profile updates based on patterns across memories
-- Identify entity updates for entity tracking${resolveRecallAuxiliaryCapabilities(this.config).causalRuleExtraction ? `
-- When merging or updating memories, look for IF→THEN causal patterns. If a memory describes "X failed/succeeded because Y" or "doing X led to Y", rewrite its content to make the causal rule explicit in the form "IF <condition> THEN <action/outcome>".` : ""}
+    const prompt = `${buildConsolidationSystemPrompt(this.config)}
 
 Current behavioral profile:
 ${currentProfile || "(empty)"}
@@ -1907,17 +1871,7 @@ ${CONSOLIDATION_RESPONSE_SCHEMA}`;
       [
         {
           role: "system",
-          content: `You are a profile consolidation system. You are given a behavioral profile (markdown) that has grown too large. Your job is to produce a CONSOLIDATED version that:
-
-1. PRESERVES all ## section headers and their structure
-2. MERGES duplicate or near-duplicate bullet points into single, clear statements
-3. REMOVES stale information that has been superseded by newer bullets
-4. REMOVES trivial or overly specific operational details that won't be useful across sessions
-5. KEEPS the most important, durable observations about the user's preferences, habits, identity, and working style
-6. Target roughly ${targetLines} lines — this is a soft target, prioritize quality over length
-7. Write in the same style as the existing profile — concise bullets, no fluff
-
-The output should be the COMPLETE consolidated profile as valid markdown, starting with "# Behavioral Profile".`,
+          content: buildProfileConsolidationSystemPrompt(targetLines),
         },
         { role: "user", content: fullProfileContent },
       ],
@@ -1937,24 +1891,10 @@ The output should be the COMPLETE consolidated profile as valid markdown, starti
     }
 
     try {
-      const instructionText = `You are a profile consolidation system. You are given a behavioral profile (markdown) that has grown too large. Your job is to produce a CONSOLIDATED version that:
-
-1. PRESERVES all ## section headers and their structure
-2. MERGES duplicate or near-duplicate bullet points into single, clear statements
-3. REMOVES stale information that has been superseded by newer bullets
-4. REMOVES trivial or overly specific operational details that won't be useful across sessions
-5. KEEPS the most important, durable observations about the user's preferences, habits, identity, and working style
-6. Target roughly ${targetLines} lines — this is a soft target, prioritize quality over length
-7. Write in the same style as the existing profile — concise bullets, no fluff
-
-The output should be the COMPLETE consolidated profile as valid markdown, starting with "# Behavioral Profile".
+      const instructionText = `${buildProfileConsolidationSystemPrompt(targetLines)}
 
 Respond with valid JSON matching this schema:
-{
-  "consolidatedProfile": "# Behavioral Profile\\n\\n... (complete markdown)",
-  "removedCount": 42,
-  "summary": "brief summary of what was consolidated"
-}`;
+${PROFILE_CONSOLIDATION_RESPONSE_SCHEMA}`;
 
       const response = await this.client.chat.completions.create({
         model: this.config.model,
@@ -2027,25 +1967,13 @@ Respond with valid JSON matching this schema:
     );
     log.debug(`Profile consolidation model context: ${contextSizes.description}`);
 
-    const prompt = `You are a profile consolidation system. You are given a behavioral profile (markdown) that has grown too large. Your job is to produce a CONSOLIDATED version that:
-
-1. PRESERVES all ## section headers and their structure
-2. MERGES duplicate or near-duplicate bullet points into single, clear statements
-3. REMOVES stale information that has been superseded by newer bullets
-4. REMOVES trivial or overly specific operational details that won't be useful across sessions
-5. KEEPS the most important, durable observations about the user's preferences, habits, identity, and working style
-6. Target roughly ${targetLines} lines — this is a soft target, prioritize quality over length
-7. Write in the same style as the existing profile — concise bullets, no fluff
+    const prompt = `${buildProfileConsolidationSystemPrompt(targetLines)}
 
 Profile to consolidate:
 ${fullProfileContent}
 
 Respond with valid JSON matching this schema:
-{
-  "consolidatedProfile": "# Behavioral Profile\\n\\n... (complete markdown)",
-  "removedCount": 42,
-  "summary": "brief summary of what was consolidated"
-}`;
+${PROFILE_CONSOLIDATION_RESPONSE_SCHEMA}`;
 
     const response = await this.localLlm.chatCompletion(
       [

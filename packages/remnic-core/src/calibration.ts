@@ -20,6 +20,7 @@ import type { AgentPersonaModelConfig, GatewayConfig, MemoryFile } from "./types
 import { listJsonFiles, readJsonFile } from "./json-store.js";
 import { isRecord } from "./store-contract.js";
 import { log } from "./logger.js";
+import { OUTPUT_LANGUAGE_POLICY } from "./extraction-prompt.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -193,7 +194,7 @@ async function readCorrectionsImpl(memoryDir: string): Promise<CorrectionMemory[
 
 // ─── LLM-Assisted Clustering and Replay ──────────────────────────────────────
 
-const CLUSTER_PROMPT = `You are analyzing user corrections to an AI assistant. Each correction represents a moment where the assistant's prediction of what the user wanted was WRONG.
+export const CLUSTER_PROMPT = `You are analyzing user corrections to an AI assistant. Each correction represents a moment where the assistant's prediction of what the user wanted was WRONG.
 
 Your job: Group these corrections into clusters where the SAME TYPE of misunderstanding is happening. Then for each cluster, synthesize a CalibrationRule.
 
@@ -205,6 +206,7 @@ A CalibrationRule describes:
 - ruleType: One of "model_tendency", "user_expectation", "scope_boundary", "verification_required"
 
 Focus on PATTERNS, not individual corrections. A cluster needs at least 2 corrections to be worth a rule.
+${OUTPUT_LANGUAGE_POLICY}
 
 Output valid JSON only:
 {

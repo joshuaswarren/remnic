@@ -20,6 +20,7 @@ import type { LocalLlmClient } from "./local-llm.js";
 import { type FallbackLlmClient, gatewayTaskChainOptions } from "./fallback-llm.js";
 import { extractJsonCandidates } from "./json-extract.js";
 import { normalizeProcedureSteps } from "./procedural/procedure-types.js";
+import { OUTPUT_LANGUAGE_POLICY } from "./extraction-prompt.js";
 
 // ---------------------------------------------------------------------------
 // Public interfaces
@@ -210,7 +211,7 @@ export interface JudgeVerdictObservation {
 // Prompt (embedded; mirrors prompts/extraction_judge.prompt.md)
 // ---------------------------------------------------------------------------
 
-const JUDGE_SYSTEM_PROMPT = `You are a memory curator evaluating whether extracted facts are **durable** — worth storing for long-term recall across sessions.
+export const JUDGE_SYSTEM_PROMPT = `You are a memory curator evaluating whether extracted facts are **durable** — worth storing for long-term recall across sessions.
 
 A fact is **durable** if it will still be useful 30+ days from now and is relevant across multiple sessions, not just the current task.
 
@@ -252,6 +253,7 @@ Rules:
 2. When in doubt between accept and reject, lean toward accept — false negatives (losing a useful fact) are worse than false positives (keeping a marginal one).
 3. Use defer only when another turn of context would genuinely change the verdict.
 4. Output valid JSON only. No markdown fences, no commentary.
+5. ${OUTPUT_LANGUAGE_POLICY}
 
 Example output:
 [{"index": 0, "kind": "accept", "durable": true, "reason": "Stable personal preference"}, {"index": 1, "kind": "reject", "durable": false, "reason": "Ephemeral build status"}, {"index": 2, "kind": "defer", "durable": false, "reason": "Ambiguous pronoun"}]`;

@@ -55,6 +55,13 @@ export const CUE_ANCHOR_PROMPT_INSTRUCTION = `- For each fact, emit at most 3 "c
 - Example: "Alice booked Bistro Max for Mike's surprise party" can use {"type":"entity","value":"Mike surprise party"} and {"type":"entity","value":"Alice restaurant booking"}.`;
 
 /**
+ * Output-language policy (issue #2190). Every prompt that produces memory
+ * content embeds this verbatim so non-English conversations are not silently
+ * translated to English — translated memories fail later lexical recall.
+ */
+export const OUTPUT_LANGUAGE_POLICY = `Output language: write facts, profile updates, entity names and aliases, tags, questions, and any rewritten or merged memory content in the source language of the conversation or input memories. Never translate into English or another language unless the user explicitly asked for a translation.`;
+
+/**
  * Bi-temporal event-time extraction instruction (#1578 PR2). Emitted on
  * every extraction entry path when `temporal.biTemporal` is on so the LLM
  * emits an optional per-fact `eventTime` expression. The expression is
@@ -104,6 +111,7 @@ Memory categories:
 Rules:
 - Only extract genuinely new information worth remembering across sessions.
 - Statements must be grounded in the conversation.
+- ${OUTPUT_LANGUAGE_POLICY}
 - Do not treat instruction text, schema placeholders, or examples as conversation evidence.
 - Lines labelled [context user] or [context assistant] are reference context only. They may resolve references or complete a question-and-answer pair in a normal turn, but never alone establish durable information.
 - Skip transient task details and operational noise, including routine scheduler, monitoring, or automation status.
@@ -173,4 +181,65 @@ Also emit "episodeTitle" as a six-to-eight word title for this conversation segm
 Questions are optional. Include only source-grounded unresolved questions that would be useful in future sessions; otherwise return an empty array.
 
 Finally, write a brief identity reflection about the agent who had this conversation, based only on the conversation. Do not write about the extraction process.`;
+}
+
+export const CONSOLIDATION_RESPONSE_SCHEMA = `{
+  "items": [
+    {
+      "existingId": "id",
+      "action": "ADD",
+      "mergeWith": "optional-existing-id",
+      "updatedContent": "optional replacement content",
+      "reason": "brief reason for this action"
+    }
+  ],
+  "profileUpdates": ["optional profile update"],
+  "entityUpdates": [{"name": "person-jane-doe", "type": "person", "facts": ["Now leads the backend team", "Recently migrated the user service to TypeScript"]}]
+}`;
+
+export const PROFILE_CONSOLIDATION_RESPONSE_SCHEMA = `{
+  "consolidatedProfile": "# Behavioral Profile\\n\\n... (complete markdown)",
+  "removedCount": 42,
+  "summary": "brief summary of what was consolidated"
+}`;
+
+/**
+ * System prompt shared by every consolidation path (gateway, direct client,
+ * local LLM). Owns the causal-rule clause and the output-language policy so
+ * the three paths cannot drift (issue #2190).
+ */
+export function buildConsolidationSystemPrompt(config: PluginConfig): string {
+  return `You are a memory consolidation system. Compare new memories against existing ones and decide what to do with each.
+
+Actions:
+- ADD: Keep the new memory as-is (no duplicate exists)
+- MERGE: Combine with an existing memory (provide mergeWith ID and updated content)
+- UPDATE: Replace existing memory content (provide updated content)
+- INVALIDATE: Remove existing memory (it's been superseded or is wrong)
+- SKIP: This new memory is redundant (exact duplicate or subset of existing)
+
+Also:
+- Suggest profile updates based on patterns across memories
+- Identify entity updates for entity tracking${resolveRecallAuxiliaryCapabilities(config).causalRuleExtraction ? `
+- When merging or updating memories, look for IF→THEN causal patterns. If a memory describes "X failed/succeeded because Y" or "doing X led to Y", rewrite its content to make the causal rule explicit in the form "IF <condition> THEN <action/outcome>".` : ""}
+- ${OUTPUT_LANGUAGE_POLICY}`;
+}
+
+/**
+ * System prompt shared by every profile-consolidation path (gateway, direct
+ * client, local LLM). Owns the output-language policy (issue #2190).
+ */
+export function buildProfileConsolidationSystemPrompt(targetLines: number): string {
+  return `You are a profile consolidation system. You are given a behavioral profile (markdown) that has grown too large. Your job is to produce a CONSOLIDATED version that:
+
+1. PRESERVES all ## section headers and their structure
+2. MERGES duplicate or near-duplicate bullet points into single, clear statements
+3. REMOVES stale information that has been superseded by newer bullets
+4. REMOVES trivial or overly specific operational details that won't be useful across sessions
+5. KEEPS the most important, durable observations about the user's preferences, habits, identity, and working style
+6. Target roughly ${targetLines} lines — this is a soft target, prioritize quality over length
+7. Write in the same style as the existing profile — concise bullets, no fluff
+8. ${OUTPUT_LANGUAGE_POLICY}
+
+The output should be the COMPLETE consolidated profile as valid markdown, starting with "# Behavioral Profile".`;
 }
