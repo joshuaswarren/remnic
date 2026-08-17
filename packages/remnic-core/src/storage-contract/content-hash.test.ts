@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ContentHashIndex } from "../storage.js";
+import { ContentHashIndex, StorageManager } from "../storage.js";
 import { makeStorage } from "./harness.js";
 
 test("content-hash: ContentHashIndex.computeHash is deterministic for the same input", () => {
@@ -153,6 +153,64 @@ test("content-hash: the frontmatter contentHash matches computeHash of the raw c
       memory!.frontmatter.contentHash,
       ContentHashIndex.computeHash(rawFact),
       "frontmatter contentHash must equal computeHash of the raw content",
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+test("content-hash: fact-only membership across write, supersede, and rebuild — no stale true (#2474)", async () => {
+  const { storage, baseDir, cleanup } = await makeStorage();
+  try {
+    const supersededBody = "the staging region retires on friday";
+    const activeBody = "the production region stays";
+
+    // Write: both facts register fact-only membership on the shared index.
+    await storage.writeMemory("fact", supersededBody);
+    await storage.writeMemory("fact", activeBody);
+    assert.equal(
+      await storage.hasFactContentHash(supersededBody),
+      true,
+      "write registers the fact-only hash",
+    );
+    assert.equal(await storage.hasFactContentHash(activeBody), true);
+
+    // Supersede: the frontmatter rewrite runs syncFactHashIndexAfterRewrite →
+    // removeFactContentHashesForMemories, which must drop BOTH the shared hash
+    // and the fact-only partition. A stale partition entry is the PR #2016
+    // stale-true bug class: wearable / explicit-capture / promotion callers
+    // would skip a valid re-write.
+    const mem = (await storage.readAllMemories()).find((m) =>
+      (m.content ?? "").includes(supersededBody),
+    );
+    assert.ok(mem, "the fact to supersede must exist");
+    const ok = await storage.writeMemoryFrontmatter(mem!, { status: "superseded" });
+    assert.equal(ok, true, "frontmatter rewrite must succeed");
+    assert.equal(
+      await storage.hasFactContentHash(supersededBody),
+      false,
+      "no stale hasFactContentHash true after supersede",
+    );
+    assert.equal(
+      await storage.hasFactContentHash(activeBody),
+      true,
+      "the untouched fact keeps its fact-only membership",
+    );
+
+    // Rebuild: a fresh instance repopulates the index from the corpus. The
+    // superseded fact must stay out of the fact-only partition; the active
+    // fact must survive.
+    const reopened = new StorageManager(baseDir);
+    await reopened.ensureDirectories();
+    assert.equal(
+      await reopened.hasFactContentHash(supersededBody),
+      false,
+      "superseded fact stays out of fact-only membership after rebuild",
+    );
+    assert.equal(
+      await reopened.hasFactContentHash(activeBody),
+      true,
+      "active fact survives the rebuild",
     );
   } finally {
     await cleanup();
