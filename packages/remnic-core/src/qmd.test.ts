@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -15,6 +16,57 @@ import {
   QmdClient,
   shouldAutoUpgradeQmd,
 } from "./qmd.js";
+
+test("QMD subprocess timeout kills launcher descendants", {
+  skip: process.platform === "win32",
+}, async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-qmd-process-group-"));
+  const launcherPath = path.join(dir, "fake-qmd");
+  const grandchildPidPath = path.join(dir, "grandchild.pid");
+  try {
+    await writeFile(
+      launcherPath,
+      `#!${process.execPath}\n` +
+        `const { spawn } = require("node:child_process");\n` +
+        `const fs = require("node:fs");\n` +
+        `const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });\n` +
+        `fs.writeFileSync(process.argv[2], String(child.pid));\n` +
+        `setInterval(() => {}, 1000);\n`,
+      "utf8",
+    );
+    await chmod(launcherPath, 0o755);
+
+    const client = new QmdClient("process-group-test", 1, { qmdPath: launcherPath });
+    const internals = client as unknown as {
+      runQmdCommand: (
+        args: string[],
+        timeoutMs: number,
+      ) => Promise<{ stdout: string; stderr: string }>;
+    };
+
+    await assert.rejects(
+      internals.runQmdCommand([grandchildPidPath], 150),
+      /timed out after 150ms/,
+    );
+    const grandchildPid = Number.parseInt(await readFile(grandchildPidPath, "utf8"), 10);
+    assert.ok(Number.isInteger(grandchildPid) && grandchildPid > 0);
+
+    let alive = true;
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      try {
+        const stat = await readFile(`/proc/${grandchildPid}/stat`, "utf8");
+        alive = stat.split(" ")[2] !== "Z";
+      } catch {
+        alive = false;
+      }
+      if (!alive) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(alive, false, "QMD timeout must not leave its grandchild running");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("parseQmdVersion extracts semantic version from qmd output", () => {
   assert.deepEqual(parseQmdVersion("qmd 2.5.3 (abcdef)"), [2, 5, 3]);

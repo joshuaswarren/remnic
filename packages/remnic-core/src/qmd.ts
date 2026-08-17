@@ -562,6 +562,9 @@ function runCommandWithTimeout(
     const child = launchProcess(command, args, {
       env: mergeEnv({ NO_COLOR: "1", ...options.env }),
       stdio: ["ignore", "pipe", "pipe"],
+      // QMD may launch embedding/model workers. Give the command its own
+      // process group so timeout/abort cleanup can terminate descendants too.
+      detached: process.platform !== "win32",
     });
     if (!child.stdout || !child.stderr) {
       reject(new Error(`${label} failed to open stdio pipes`));
@@ -575,7 +578,7 @@ function runCommandWithTimeout(
     const timer = setTimeout(() => {
       settled = true;
       cleanup();
-      child.kill("SIGKILL");
+      killQmdCommandTree(child, "SIGKILL");
       // Flag the deadline breach so classifyProbeFailure can tell a genuine
       // timeout from a non-zero-exit error whose message merely embeds stderr.
       reject(
@@ -589,7 +592,7 @@ function runCommandWithTimeout(
       settled = true;
       clearTimeout(timer);
       cleanup();
-      child.kill("SIGKILL");
+      killQmdCommandTree(child, "SIGKILL");
       reject(abortError(`${label} aborted`));
     };
     const cleanup = () => {
@@ -622,6 +625,25 @@ function runCommandWithTimeout(
       }
     });
   });
+}
+
+function killQmdCommandTree(
+  child: CommandChildProcess,
+  signal: NodeJS.Signals,
+): void {
+  if (process.platform !== "win32" && typeof child.pid === "number") {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch {
+      // The group may already be gone or unavailable; fall back to the child.
+    }
+  }
+  try {
+    child.kill(signal);
+  } catch {
+    // Ignore exit races during timeout/abort cleanup.
+  }
 }
 
 function runProcessCommand(
