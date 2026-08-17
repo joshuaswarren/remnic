@@ -38,6 +38,10 @@ test("shouldRunAgent: direct runs when knownEntityCount > 0", () => {
   assert.equal(shouldRunAgent("direct", "what happened", 3), true);
 });
 
+test("shouldRunAgent: direct runs for a pure-CJK query naming an entity", () => {
+  assert.equal(shouldRunAgent("direct", "東京プロジェクト", 0), true);
+});
+
 test("shouldRunAgent: contextual always runs", () => {
   assert.equal(shouldRunAgent("contextual", "anything", 0), true);
 });

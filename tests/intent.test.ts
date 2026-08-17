@@ -21,6 +21,16 @@ test("planRecallMode uses graph_mode for timeline/history prompts", () => {
   assert.equal(planRecallMode("what happened in the timeline"), "graph_mode");
 });
 
+test("planRecallMode treats Japanese acknowledgements as no_recall", () => {
+  assert.equal(planRecallMode("はい"), "no_recall");
+  assert.equal(planRecallMode("わかった"), "no_recall");
+});
+
+test("planRecallMode matches Japanese timeline prompts to the English mode", () => {
+  assert.equal(planRecallMode("what happened in the timeline"), "graph_mode");
+  assert.equal(planRecallMode("タイムラインで何があった"), "graph_mode");
+});
+
 test("hasBroadGraphIntent matches expanded causal phrasing", () => {
   assert.equal(hasBroadGraphIntent("What changed in our recall pipeline?"), true);
   assert.equal(hasBroadGraphIntent("How did we get here with QMD failures?"), true);
