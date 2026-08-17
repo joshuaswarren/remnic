@@ -213,6 +213,7 @@ test("offline manifest streams body-free active, archived, old, bad, and encrypt
       id: "active-memory",
       category: "fact",
       contentHash: activeContentHash,
+      identityResolutionVersion: 2,
       normalizerVersion: 4,
       status: "active",
     });

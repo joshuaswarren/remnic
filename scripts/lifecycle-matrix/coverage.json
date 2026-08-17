@@ -128,6 +128,7 @@
     "packages/remnic-core/src/storage/tombstone-blocked-capture-index.ts",
     "packages/remnic-core/src/storage/tombstone-blocked-capture-sync.ts",
     "packages/remnic-core/src/storage/tombstone-blocked-capture-mutation.ts",
+    "packages/remnic-core/src/storage/tombstone-migration-sources.ts",
     "packages/remnic-core/src/storage/entity-store.ts",
     "packages/remnic-core/src/storage/entity-timeline.ts",
     "packages/remnic-core/src/storage/identity-continuity-store.ts",
