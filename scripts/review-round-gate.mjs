@@ -52,7 +52,7 @@ export const CAP_LABEL = "review-round:cap";
 // and perf/capacity/reliability regressions are never declined). Over-matching
 // errs safe: the thread stays on the PR instead of the backlog.
 const CRITICAL_THREAD_PATTERN =
-  /\b(security|vulnerab(?:le|ility)|exploit|injection|remote code execution|data[ -]integrity|correctness|unbounded|memory leak|n\+1)\b/i;
+  /\b(security|vulnerab(?:le|ility)|exploit|injection|remote code execution|data[ -]integrity|correctness|unbounded|memory leak|n\+1|performance|capacity|reliability|regression)\b/i;
 export const DEFAULT_REQUIRED_AI_REVIEWER_GROUPS =
   "cursor-bugbot[bot]|cursor[bot]|cursor-bugbot|cursor|" +
   "coderabbitai[bot]|coderabbitai|chatgpt-codex-connector[bot]|chatgpt-codex-connector";
@@ -529,12 +529,14 @@ function renderCapIssueBody({ prNumber, threads, fixRounds }) {
   );
   lines.push("");
   lines.push(
-    'Per AGENTS.md ("Budget the review loop, then decline"), the still-open ',
-    "non-critical thread(s) below are declined in-thread with a reason and ",
-    "resolved; this issue is the required backlog artifact for those declines. ",
-    "**Critical findings (correctness, security, data integrity) and ",
-    "performance/capacity/reliability regressions are NOT declined** — they ",
-    "stay actionable on the PR and take precedence over the cap.",
+    'Per AGENTS.md ("Budget the review loop, then decline"), each still-open ',
+    "non-critical thread listed below must be declined in-thread with a reason ",
+    "and resolved by a maintainer before merge; this issue is the backlog ",
+    "artifact tracking those declines — the workflow itself never resolves or ",
+    "hides a thread. **Critical findings (correctness, security, data ",
+    "integrity) and performance/capacity/reliability regressions are NOT ",
+    "declinable** — they stay actionable on the PR and take precedence over ",
+    "the cap.",
   );
   lines.push("");
   lines.push(`## Still-open non-critical threads (${threads.length})`);
@@ -580,26 +582,30 @@ async function enforceRoundBudget({ github, core, owner, repo, prNumber, prTitle
 
   if (fixRounds >= FIX_ROUND_CAP && !state.capIssueUrl) {
     const declined = openNonCriticalThreads(threads);
-    if (declined.length === 0) return; // nothing still-open to backlog; re-evaluates next event
-    try {
-      const issue = await github.rest.issues.create({
-        owner,
-        repo,
-        title: `review-round cap reached on PR #${prNumber}: ${prTitle}`,
-        body: renderCapIssueBody({ prNumber, threads: declined, fixRounds }),
-      });
-      const url = issue?.data?.html_url ?? null;
-      if (url) {
-        state.capIssueUrl = url;
-        result.telemetry.capIssueUrl = url;
-        await addLabelSafely(github, owner, repo, prNumber, CAP_LABEL, core);
-        core.notice(`review-round gate PR #${prNumber}: cap backlog issue filed (${url}).`);
+    // Nothing still-open to backlog: skip only the FILING (the cap re-evaluates
+    // next event) — never return early, or a warning stamp written above would
+    // be dropped from the persisted commentBody and re-post every event (cursor).
+    if (declined.length > 0) {
+      try {
+        const issue = await github.rest.issues.create({
+          owner,
+          repo,
+          title: `review-round cap reached on PR #${prNumber}: ${prTitle}`,
+          body: renderCapIssueBody({ prNumber, threads: declined, fixRounds }),
+        });
+        const url = issue?.data?.html_url ?? null;
+        if (url) {
+          state.capIssueUrl = url;
+          result.telemetry.capIssueUrl = url;
+          await addLabelSafely(github, owner, repo, prNumber, CAP_LABEL, core);
+          core.notice(`review-round gate PR #${prNumber}: cap backlog issue filed (${url}).`);
+        }
+      } catch (error) {
+        core.info(
+          `review-round gate PR #${prNumber}: cap backlog issue failed ` +
+            `(${error?.message ?? error}); will retry on the next event.`,
+        );
       }
-    } catch (error) {
-      core.info(
-        `review-round gate PR #${prNumber}: cap backlog issue failed ` +
-          `(${error?.message ?? error}); will retry on the next event.`,
-      );
     }
   }
 

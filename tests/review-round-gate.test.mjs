@@ -572,7 +572,7 @@ test("shadow persists a dry-run dispatch as an OPEN round; enforce persists it c
 // ONE cap backlog issue at fix round 4 — never blocking, never re-firing.
 // ===========================================================================
 
-function budgetThread(id, { critical = false, resolved = false } = {}) {
+function budgetThread(id, { critical = false, resolved = false, body } = {}) {
   return {
     id,
     isResolved: resolved,
@@ -582,7 +582,7 @@ function budgetThread(id, { critical = false, resolved = false } = {}) {
           author: { login: "cursor" },
           path: `src/file-${id}.ts`,
           url: `https://github.com/o/r/pull/7/files#discussion_r_${id}`,
-          body: critical ? "Security: this leaks a bearer token." : "Consider a more descriptive name here.",
+          body: body ?? (critical ? "Security: this leaks a bearer token." : "Consider a more descriptive name here."),
         },
       ],
     },
@@ -646,6 +646,7 @@ test("at the cap the ledger files ONE backlog issue of still-open non-critical t
   const threads = [
     budgetThread("t1"),
     budgetThread("t2", { critical: true }),
+    budgetThread("t5", { critical: true, body: "Performance regression: latency doubles under load." }),
     budgetThread("t3", { resolved: true }),
     budgetThread("t4"),
   ];
@@ -660,7 +661,7 @@ test("at the cap the ledger files ONE backlog issue of still-open non-critical t
   assert.match(issue.title, /review-round cap reached on PR #7/);
   assert.match(issue.body, /discussion_r_t1\b/);
   assert.match(issue.body, /discussion_r_t4\b/);
-  assert.doesNotMatch(issue.body, /discussion_r_t2/, "critical threads stay on the PR, not the backlog");
+  assert.doesNotMatch(issue.body, /discussion_r_t5/, "perf-regression threads stay actionable, not backlogged");
   assert.doesNotMatch(issue.body, /discussion_r_t3/, "resolved threads are not listed");
   assert.ok(
     first.calls.labelsAdded.some((added) => added.labels.includes(CAP_LABEL)),
@@ -684,7 +685,17 @@ test("a cap with no still-open non-critical threads files nothing", async () => 
   const { github, calls } = fakeGithub({ existingComments: [{ id: 7, body: seed }], threads });
   await runRoundGate({ github, context, core, env: {} });
   assert.equal(calls.issuesCreated.length, 0, "an empty decline backlog is not filed as an issue");
-  assert.equal(parseRoundLedger(calls.updated[0].body).capIssueUrl, null);
+  // Regression (cursor, round 1): the empty-backlog path must still persist the
+  // warn stamp written in the same run, or the one-shot warning re-posts forever.
+  const persisted = parseRoundLedger(calls.updated[0].body);
+  assert.equal(persisted.capIssueUrl, null);
+  assert.ok(persisted.fixRoundWarnedAt, "the warn stamp survives the empty-backlog skip");
+  const second = fakeGithub({ existingComments: [{ id: 7, body: calls.updated[0].body }], threads });
+  await runRoundGate({ github: second.github, context, core, env: {} });
+  assert.ok(
+    !second.calls.created.some((comment) => /fix round 4 of 4/.test(comment.body)),
+    "the warning does not re-post after the empty-backlog run",
+  );
 });
 
 test("cap filing failures degrade to a log line and never fail the check", async () => {
