@@ -123,6 +123,25 @@ export interface TurnIngestionOptions extends SourceConnectorProvenance {
   turnFingerprint?: string;
 }
 
+/**
+ * Flush-plan recovery imports are compacted material the host already
+ * summarized before appending it to the flush-plan file. Feeding those
+ * turns through LCM observation again re-summarizes the same content
+ * (issue #2457). The producer stamps both a dedicated `sourceLabel` and a
+ * `:flush-plan[:chunk]`-shaped `sourceId`, so either marker identifies a
+ * recovery turn; ordinary bulk-import turns never carry either.
+ */
+function isFlushPlanRecoveryTurn(
+  turn: Pick<BufferTurn, "importProvenance">,
+): boolean {
+  const provenance = turn.importProvenance;
+  if (provenance?.sourceLabel === "OpenClaw flush plan") return true;
+  return (
+    typeof provenance?.sourceId === "string" &&
+    /:flush-plan(:\d+\/\d+)?$/.test(provenance.sourceId)
+  );
+}
+
 export class TurnIngestionCoordinator {
   constructor(
     private readonly deps: TurnIngestionDeps,
@@ -456,7 +475,11 @@ export class TurnIngestionCoordinator {
       };
     }
 
-    if (this.deps.lcmEngine?.enabled) {
+    // Skip LCM only when every turn is flush-plan recovery material; a mixed
+    // batch keeps the ordinary observe path (issue #2457). Extraction and
+    // persistence below are unaffected either way.
+    const skipLcmObservation = sessionTurns.every(isFlushPlanRecoveryTurn);
+    if (!skipLcmObservation && this.deps.lcmEngine?.enabled) {
       await this.deps.lcmEngine.observeMessages(
         sessionKey,
         sessionTurns.map((turn) => ({
