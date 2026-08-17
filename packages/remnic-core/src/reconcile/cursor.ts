@@ -1,7 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import type { ReconcilePlanEntry, ReconcileSemanticAgreement } from "./plan.js";
+import {
+  type ReconcilePlanEntry,
+  type ReconcileSemanticAgreement,
+  semanticAgreementKey,
+} from "./plan.js";
 
 export type ConvergeRefreshTarget = "local" | "receiver";
 
@@ -74,10 +78,6 @@ function digestAfterReconcile(entry: ReconcilePlanEntry): string | undefined {
   if (entry.action !== "identical") return undefined;
   if (entry.localSha256 && entry.peerSha256 && entry.localSha256 !== entry.peerSha256) return undefined;
   return entry.localSha256 ?? entry.peerSha256;
-}
-
-function semanticAgreementKey(agreement: ReconcileSemanticAgreement): string {
-  return `${agreement.local.path}\0${agreement.peer.path}`;
 }
 
 export function deriveConvergeCursorBase(

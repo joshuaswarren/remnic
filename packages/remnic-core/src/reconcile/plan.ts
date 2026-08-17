@@ -1,5 +1,5 @@
+import { CENSUS_MAX_MTIME_MS, isCensusMtimeMs, isSha256Hex } from "../census-validation.js";
 import { normalizeNamespaceIdentity } from "../namespaces/identity.js";
-import { OFFLINE_SYNC_MAX_MTIME_MS } from "../offline-sync.js";
 import { validateArchiveRelativePath } from "../transfer/fs-utils.js";
 import type { OfflineSyncFileState } from "../offline-sync.js";
 import {
@@ -197,8 +197,7 @@ export class ReconcilePlanInputError extends Error {
   }
 }
 
-/** Matches `assertSha256` in offline-sync so both surfaces reject the same values (§40). */
-const SHA256_PATTERN = /^[a-f0-9]{64}$/i;
+/** Shared with offline-sync's census validation (issue #2477): one acceptance set. */
 
 /**
  * Validate a census record's identity fields.
@@ -247,14 +246,9 @@ function assertCensusRecord(
  * deliberately does not require an integer.
  */
 function assertMtimeMs(value: unknown, context: string): number {
-  if (
-    typeof value !== "number"
-    || !Number.isFinite(value)
-    || value < 0
-    || value > OFFLINE_SYNC_MAX_MTIME_MS
-  ) {
+  if (!isCensusMtimeMs(value)) {
     throw new ReconcilePlanInputError(
-      `reconcile: ${context} has an out-of-range mtimeMs; expected a finite value between 0 and ${OFFLINE_SYNC_MAX_MTIME_MS}`,
+      `reconcile: ${context} has an out-of-range mtimeMs; expected a finite value between 0 and ${CENSUS_MAX_MTIME_MS}`,
     );
   }
   return value;
@@ -267,7 +261,7 @@ function assertMtimeMs(value: unknown, context: string): number {
  * and tombstone lookups would silently miss.
  */
 function assertDigest(value: unknown, context: string): string {
-  if (typeof value !== "string" || !SHA256_PATTERN.test(value)) {
+  if (!isSha256Hex(value)) {
     throw new ReconcilePlanInputError(
       `reconcile: ${context} must carry a 64-character sha256 hex digest`,
     );
@@ -503,14 +497,23 @@ function assertConflictPolicy(value: ConvergeConflictPolicy | undefined): Conver
  * Total ordering for plan entries (§12): namespace, then path. Both are unique
  * per entry, so equal keys are impossible and the comparator never has to
  * return 0 for distinct rows — the output is byte-identical across runs, which
- * is what makes a convergence report diffable.
+ * is what makes a convergence report diffable. Cursor and manifest sort with
+ * this same export; a local copy on either side is how ordering drifts (§2477).
  */
-function compareEntries(a: ReconcilePlanEntry, b: ReconcilePlanEntry): number {
+export function compareReconcilePlanEntries(a: ReconcilePlanEntry, b: ReconcilePlanEntry): number {
   if (a.namespace !== b.namespace) return a.namespace < b.namespace ? -1 : 1;
   if (a.path !== b.path) return a.path < b.path ? -1 : 1;
   return 0;
 }
 
+/**
+ * Identity of a semantic-duplicate pair: the ordered (local, peer) path pair.
+ * Cursor derivation and manifest collapse must key prior agreements with this
+ * same export or a stored cursor stops matching the plan that wrote it.
+ */
+export function semanticAgreementKey(agreement: ReconcileSemanticAgreement): string {
+  return `${agreement.local.path}\0${agreement.peer.path}`;
+}
 
 function resolveConflict(
   policy: ConvergeConflictPolicy,
@@ -795,7 +798,7 @@ export function planNamespaceReconciliation(
     });
   }
 
-  return entries.sort(compareEntries);
+  return entries.sort(compareReconcilePlanEntries);
 }
 
 /** Aggregate entries into the per-namespace convergence report (#2150). */
@@ -852,7 +855,7 @@ export function planReconciliation(
     seenNamespaces.add(name);
     entries.push(...planNamespaceReconciliation(namespace, options));
   }
-  entries.sort(compareEntries);
+  entries.sort(compareReconcilePlanEntries);
   return {
     entries,
     byNamespace: summarizeReconcilePlan(entries),

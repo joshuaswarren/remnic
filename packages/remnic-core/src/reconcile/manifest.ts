@@ -12,6 +12,8 @@ import {
   type ReconcilePlanEntry,
   type ReconcileSemanticAgreement,
   type ReconcileSemanticChange,
+  compareReconcilePlanEntries,
+  semanticAgreementKey,
   summarizeReconcilePlan,
 } from "./plan.js";
 
@@ -218,15 +220,6 @@ function contentHashRows(
   return rows;
 }
 
-function comparePlanEntries(left: ReconcilePlanEntry, right: ReconcilePlanEntry): number {
-  if (left.namespace !== right.namespace) return left.namespace < right.namespace ? -1 : 1;
-  return left.path < right.path ? -1 : left.path > right.path ? 1 : 0;
-}
-
-function semanticAgreementKey(agreement: ReconcileSemanticAgreement): string {
-  return `${agreement.local.path}\0${agreement.peer.path}`;
-}
-
 function classifySemanticChange(
   current: ReconcileSemanticAgreement,
   prior: ReconcileSemanticAgreement | undefined
@@ -396,13 +389,13 @@ export function collapseActiveFactDuplicates(
     if (removed.size > 0 || replacements.length > 0) {
       entriesByNamespace.set(
         namespace,
-        [...entries.filter((entry) => !removed.has(entry)), ...replacements].sort(comparePlanEntries)
+        [...entries.filter((entry) => !removed.has(entry)), ...replacements].sort(compareReconcilePlanEntries)
       );
     }
   }
 
   if (!changed) return plan;
-  const entries = [...entriesByNamespace.values()].flat().sort(comparePlanEntries);
+  const entries = [...entriesByNamespace.values()].flat().sort(compareReconcilePlanEntries);
   return {
     entries,
     byNamespace: summarizeReconcilePlan(entries),
