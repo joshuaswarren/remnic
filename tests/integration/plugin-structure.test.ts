@@ -277,9 +277,7 @@ test("server imports from @remnic/core, not ../../../src/", () => {
 // ---------------------------------------------------------------------------
 
 test("Claude Code hooks prefer ~/.remnic/tokens.json with Engram fallback", () => {
-  // The token-resolution contract lives in the unified runner, not the
-  // deleted per-event `.sh` scripts (#1518).
-  const runner = path.join(PACKAGES, "plugin-claude-code", "hooks", "bin", "remnic-cc-hook.cjs");
+  const runner = path.join(PACKAGES, "plugin-claude-code", "hooks", "bin", "remnic-hook-core.cjs");
   const content = fs.readFileSync(runner, "utf-8");
   assert.ok(content.includes("tokens.json"), "Must read from token file");
   assert.ok(content.includes(".remnic"), "Must prefer Remnic token path");
@@ -289,11 +287,17 @@ test("Claude Code hooks prefer ~/.remnic/tokens.json with Engram fallback", () =
 });
 
 test("Codex unified runner prefers ~/.remnic/tokens.json with Engram fallback (#1440)", () => {
-  const runner = path.join(PACKAGES, "plugin-codex", "hooks", "bin", "remnic-codex-hook.cjs");
-  const content = fs.readFileSync(runner, "utf-8");
-  assert.ok(content.includes("tokens.json"), "Must read from token file");
-  assert.ok(content.includes(".remnic"), "Must prefer Remnic token path");
-  assert.ok(content.includes(".engram"), "Must preserve Engram token fallback");
-  assert.ok(content.includes("codex-cli"), "Must look for codex-cli token key");
-  assert.ok(content.includes('"codex"'), "Must preserve legacy codex token fallback");
+  const core = fs.readFileSync(
+    path.join(PACKAGES, "plugin-codex", "hooks", "bin", "remnic-hook-core.cjs"),
+    "utf-8",
+  );
+  const wrapper = fs.readFileSync(
+    path.join(PACKAGES, "plugin-codex", "hooks", "bin", "remnic-codex-hook.cjs"),
+    "utf-8",
+  );
+  assert.ok(core.includes("tokens.json"), "Must read from token file");
+  assert.ok(core.includes(".remnic"), "Must prefer Remnic token path");
+  assert.ok(core.includes(".engram"), "Must preserve Engram token fallback");
+  assert.ok(wrapper.includes("codex-cli"), "Must look for codex-cli token key");
+  assert.ok(wrapper.includes('"codex"'), "Must preserve legacy codex token fallback");
 });
