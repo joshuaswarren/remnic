@@ -180,3 +180,36 @@ test("strip-negation pattern is derived from NEGATION_WORDS", async () => {
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("strip-negation cache rebuilds on same-size vocabulary swap", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-dedup-negation-swap-"));
+
+  try {
+    const factsDir = path.join(memoryDir, "facts");
+    await mkdir(factsDir);
+    await writeFile(
+      path.join(factsDir, "plain.md"),
+      ["---", "id: mem-swap-plain", "category: fact", "---", "The user enjoys morning runs."].join("\n"),
+      "utf8"
+    );
+    await writeFile(
+      path.join(factsDir, "rarely.md"),
+      ["---", "id: mem-swap-rarely", "category: fact", "---", "The user rarely enjoys morning runs."].join("\n"),
+      "utf8"
+    );
+
+    // Warm the pattern cache with the current vocabulary (no "rarely" yet).
+    assert.equal(findContradictions({ memoryDir, categories: ["facts"] }).contradictions.length, 0);
+
+    // Same-size swap: the size-keyed cache would keep serving the stale pattern.
+    NEGATION_WORDS.delete("never");
+    NEGATION_WORDS.add("rarely");
+    const result = findContradictions({ memoryDir, categories: ["facts"] });
+    assert.equal(result.contradictions.length, 1);
+    assert.equal(result.contradictions[0]?.severity, "high");
+  } finally {
+    NEGATION_WORDS.delete("rarely");
+    NEGATION_WORDS.add("never");
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

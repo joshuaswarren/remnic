@@ -322,20 +322,19 @@ function escapeRegExp(value: string): string {
 }
 
 // Single vocabulary source: the strip pattern is derived from NEGATION_WORDS,
-// never hand-maintained. Size-keyed cache so per-pair calls do not rebuild it.
-// ponytail: a same-size edit to the set would serve a stale pattern; rebuild
-// unconditionally if that ever matters.
+// never hand-maintained. Keyed on the alternation content so any vocabulary
+// change (not just a size change) rebuilds the pattern.
 let stripNegationPattern: RegExp | null = null;
-let stripNegationPatternSize = -1;
+let stripNegationPatternSource: string | null = null;
 
 function stripNegationRegex(): RegExp {
-  if (stripNegationPattern === null || stripNegationPatternSize !== NEGATION_WORDS.size) {
-    const alternation = [...NEGATION_WORDS]
-      .sort((a, b) => b.length - a.length)
-      .map(escapeRegExp)
-      .join("|");
+  const alternation = [...NEGATION_WORDS]
+    .sort((a, b) => b.length - a.length)
+    .map(escapeRegExp)
+    .join("|");
+  if (stripNegationPattern === null || stripNegationPatternSource !== alternation) {
     stripNegationPattern = new RegExp(`\\b(?:${alternation})\\b`, "gi");
-    stripNegationPatternSize = NEGATION_WORDS.size;
+    stripNegationPatternSource = alternation;
   }
   return stripNegationPattern;
 }
