@@ -278,27 +278,51 @@ export const ProactiveExtractionResultSchema = z.object({
     ),
 });
 
+/**
+ * Salvage array for model-produced extraction output (issue #2455).
+ *
+ * Mixed valid+invalid items parse to the valid subset so one malformed
+ * element no longer discards the whole extraction. A non-empty array with
+ * zero valid items still fails, so bounded retry stays effective and wholly
+ * malformed output is never silently accepted as empty. Empty arrays stay
+ * valid. Consolidation schemas intentionally stay strict — do not use this
+ * for them.
+ */
+function salvageArray<T extends z.ZodTypeAny>(itemSchema: T) {
+  return z
+    .array(z.unknown())
+    .transform((items, ctx) => {
+      const valid: z.infer<T>[] = [];
+      for (const raw of items) {
+        const parsed = itemSchema.safeParse(raw);
+        if (parsed.success) {
+          valid.push(parsed.data);
+        }
+      }
+      if (items.length > 0 && valid.length === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "array contains no items matching the schema",
+        });
+        return z.NEVER;
+      }
+      return valid;
+    });
+}
+
 export const ExtractionResultSchema = z.object({
-  facts: z
-    .array(ExtractedFactSchema)
-    .describe(
-      "Extracted memories from the conversation. Include facts, preferences, corrections, and decisions. Only extract genuinely new, durable information — skip transient task state.",
-    ),
-  profileUpdates: z
-    .array(z.string())
-    .describe(
-      "Updates to the user's behavioral profile. Each string is a standalone statement about the user's preferences, habits, or personality. Only include genuinely new insights.",
-    ),
-  entities: z
-    .array(EntityMentionSchema)
-    .describe(
-      "Entities mentioned in the conversation with new facts about them.",
-    ),
-  questions: z
-    .array(ExtractedQuestionSchema)
-    .describe(
-      "Zero to three source-grounded questions useful in future sessions. Return an empty array when the conversation supports none.",
-    ),
+  facts: salvageArray(ExtractedFactSchema).describe(
+    "Extracted memories from the conversation. Include facts, preferences, corrections, and decisions. Only extract genuinely new, durable information — skip transient task state.",
+  ),
+  profileUpdates: salvageArray(z.string()).describe(
+    "Updates to the user's behavioral profile. Each string is a standalone statement about the user's preferences, habits, or personality. Only include genuinely new insights.",
+  ),
+  entities: salvageArray(EntityMentionSchema).describe(
+    "Entities mentioned in the conversation with new facts about them.",
+  ),
+  questions: salvageArray(ExtractedQuestionSchema).describe(
+    "Zero to three source-grounded questions useful in future sessions. Return an empty array when the conversation supports none.",
+  ),
   identityReflection: z
     .string()
     .optional()
@@ -311,8 +335,7 @@ export const ExtractionResultSchema = z.object({
     .optional()
     .nullable()
     .describe("A six-to-eight word title for this conversation segment."),
-  relationships: z
-    .array(ExtractedRelationshipSchema)
+  relationships: salvageArray(ExtractedRelationshipSchema)
     .optional()
     .nullable()
     .describe(
