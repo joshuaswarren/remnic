@@ -1,0 +1,52 @@
+{
+  "name": "@remnic/connector-droid",
+  "version": "9.63.0",
+  "description": "Factory Droid connector for Remnic — connect Droid to your shared memory store via HTTP MCP",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts",
+    "precheck-types": "node ../../scripts/ensure-bench-build-deps.mjs",
+    "check-types": "tsc --noEmit",
+    "test": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx --test src/index.test.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "peerDependencies": {
+    "@remnic/core": "^9.63.0"
+  },
+  "devDependencies": {
+    "@remnic/core": "workspace:*",
+    "tsup": "^8.0.0",
+    "typescript": "^5.7.0",
+    "tsx": "^4.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joshuaswarren/remnic.git",
+    "directory": "packages/connector-droid"
+  },
+  "keywords": [
+    "remnic",
+    "memory",
+    "droid",
+    "factory",
+    "ai",
+    "agent",
+    "mcp"
+  ]
+}

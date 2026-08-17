@@ -49,10 +49,10 @@ Available connectors:
   ...
 ```
 
-`✓` marks an installed connector, `○` an available one. The 14 built-ins are
+`✓` marks an installed connector, `○` an available one. The 15 built-ins are
 `claude-code`, `codex-cli`, `cursor`, `cline`, `github-copilot`, `roo-code`,
-`windsurf`, `amp`, `pi`, `omp`, `replit`, `generic-mcp`, `weclone`, and
-`hermes`. Add `--json` for machine-readable `{ installed, available }`.
+`windsurf`, `amp`, `pi`, `omp`, `replit`, `generic-mcp`, `weclone`, `hermes`,
+and `droid`. Add `--json` for machine-readable `{ installed, available }`.
 
 ### Install, remove, doctor
 

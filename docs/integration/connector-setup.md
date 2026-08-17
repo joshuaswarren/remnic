@@ -349,6 +349,32 @@ for the full config reference and architecture diagram.
 
 ---
 
+---
+
+## Factory Droid
+
+[Factory Droid](https://factory.ai) is an AI software engineering agent. Install the connector to give Droid persistent memory:
+
+```bash
+remnic connectors install droid
+```
+
+This mints a host token, records connector state, and writes a `remnic` entry to the **user-level** `~/.factory/mcp.json` (HTTP MCP + Authorization bearer). Existing MCP server entries are preserved. The project-level `.factory/mcp.json` is never touched.
+
+Optional configuration:
+
+```bash
+remnic connectors install droid \
+  --config mcpServerUrl=http://127.0.0.1:4318/mcp \
+  --config namespace=my-project
+```
+
+See the [full Droid integration guide](droid.md) for doctor, remove, and troubleshooting.
+
+**Capabilities:** observe, recall, store, search, entities, real-time sync, batch
+
+---
+
 ## Generic MCP Client
 
 Any tool that supports the [Model Context Protocol](https://modelcontextprotocol.io/) can connect to Remnic. Point your client at:
