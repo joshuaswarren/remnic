@@ -200,6 +200,7 @@ These rules are the default workflow for all agents and contributors.
    - If you touch `orchestrator.ts`, `storage.ts`, `intent.ts`, `memory-cache.ts`,
      `entity-retrieval.ts`, `config.ts`, or any file under `storage/` or `orchestration/`
      in `src/` or `packages/remnic-core/src/`, also run `npm run test:entity-hardening`.
+   - `npm run check:regex-safety` (also part of `preflight:quick`) flags new regex literals on changed `.ts`/`.mts` lines that match the ReDoS shapes CodeQL repeatedly flagged — `[\s\S]*?`/lazy `.*?`, unbounded `[^>]*` with an alternative branch, `\s*` chains around captures, nested quantifiers like `(a+)+`. Prefer bounded quantifiers or `indexOf`/loop scans (issue #2439).
    - If Cursor CLI is available, run `npm run review:cursor` before requesting external AI review.
 
 5. Treat external AI review as stale unless it matches the current head.

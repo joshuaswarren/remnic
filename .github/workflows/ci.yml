@@ -156,6 +156,14 @@ jobs:
 
       - name: Docs-code parity
         run: node scripts/check-docs-parity.mjs
+      # ReDoS-shape pre-check (issue #2439): scans changed .ts/.mts lines for
+      # the regex shapes CodeQL redos flagged across PR rounds. Relies on the
+      # base-ref fetch performed by the ratchet scoping step above; on non-PR
+      # events (shallow checkout, no base) the script self-skips.
+      - name: Regex safety pre-check (issue #2439)
+        run: node scripts/check-regex-safety.mjs
+        env:
+          REMNIC_REGEX_SAFETY_BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.event.pull_request.base.ref) || 'origin/main' }}
 
   # The root/misc suite runs on a hosted runner. Package tests use two
   # deterministic file shards on the self-hosted pool when it is safe.

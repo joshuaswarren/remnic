@@ -991,6 +991,7 @@
     "check:openclaw-sdk-surface:required": "node scripts/check-openclaw-sdk-surface.mjs --require",
     "check:ratchets": "node scripts/check-ratchets.mjs",
     "check:docs-parity": "node scripts/check-docs-parity.mjs",
+    "check:regex-safety": "node scripts/check-regex-safety.mjs",
     "release:bump-changed-packages": "node scripts/bump-changed-packages.mjs",
     "build": "node scripts/pnpm.mjs --filter @remnic/core build && node scripts/pnpm.mjs --filter @remnic/plugin-openclaw build && node scripts/pnpm.mjs run check:openclaw-plugin-sync && tsup && node scripts/copy-admin-console.mjs",
     "dev": "node scripts/pnpm.mjs --filter @remnic/plugin-openclaw build && node scripts/pnpm.mjs --parallel --filter remnic-workspace --filter @remnic/plugin-openclaw run dev:watch",
