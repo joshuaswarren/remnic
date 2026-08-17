@@ -587,7 +587,7 @@ test("binary lifecycle resumes redirects after verification read failures", asyn
     assert.match(firstResult.errors.join("\n"), /injected verification read failure/);
     assert.equal(await readFile(notePath, "utf8"), "![img](remote/image.png)");
     assert.equal(manifest.assets[0]?.status, "error");
-    assert.equal(typeof manifest.assets[0]?.redirectedAt, "string");
+    assert.equal(manifest.assets[0]?.redirectedAt, undefined);
 
     const secondResult = await runBinaryLifecyclePipeline(memoryDir, baseConfig, nestedRemoteBackend, noopLogger);
     manifest = JSON.parse(
