@@ -59,13 +59,11 @@ import { ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
 
 export type NamespaceKind =
   | "default"
-  | "self"
   | "shared"
   | "project"
   | "branch"
   | "team-project"
-  | "explicit"
-  | "legacy";
+  | "explicit";
 
 export type NamespaceDiscoverySource = "config" | "write" | "read" | "scan" | "migration";
 
@@ -73,10 +71,6 @@ export interface NamespaceRecord {
   namespace: string;
   identityToken: string;
   kind: NamespaceKind;
-  principal?: string;
-  projectId?: string;
-  branch?: string;
-  parentNamespace?: string;
   createdAt: string;
   lastReadAt?: string;
   lastWriteAt?: string;
@@ -95,10 +89,6 @@ export interface NamespaceCatalogFilter {
 export interface NamespaceTouchMetadata {
   discoveredBy?: NamespaceDiscoverySource;
   kind?: NamespaceKind;
-  principal?: string;
-  projectId?: string;
-  branch?: string;
-  parentNamespace?: string;
   /** Explicit storage dir (when the caller already resolved it). */
   storageDir?: string;
   /** Override the touch timestamp (mainly for tests / migration replay). */
@@ -129,13 +119,11 @@ export interface NamespaceCatalogRebuildResult {
 
 const NAMESPACE_KINDS: readonly NamespaceKind[] = [
   "default",
-  "self",
   "shared",
   "project",
   "branch",
   "team-project",
   "explicit",
-  "legacy",
 ];
 
 const NAMESPACE_DISCOVERY_SOURCES: readonly NamespaceDiscoverySource[] = [
@@ -301,8 +289,7 @@ function coerceRecord(value: unknown): NamespaceRecord | null {
   if (typeof v.storageDir !== "string" || v.storageDir.length === 0) return null;
   if (typeof v.createdAt !== "string" || v.createdAt.length === 0) return null;
   if (!isValidIsoTimestamp(v.createdAt)) return null;
-  const kind = v.kind === undefined ? "explicit" : isNamespaceKind(v.kind) ? v.kind : null;
-  if (!kind) return null;
+  const kind = isNamespaceKind(v.kind) ? v.kind : "explicit";
   const discoveredBy =
     v.discoveredBy === undefined
       ? "scan"
@@ -318,10 +305,6 @@ function coerceRecord(value: unknown): NamespaceRecord | null {
     storageDir: v.storageDir,
     discoveredBy,
   };
-  if (typeof v.principal === "string") record.principal = v.principal;
-  if (typeof v.projectId === "string") record.projectId = v.projectId;
-  if (typeof v.branch === "string") record.branch = v.branch;
-  if (typeof v.parentNamespace === "string") record.parentNamespace = v.parentNamespace;
   if (typeof v.lastReadAt === "string" && isValidIsoTimestamp(v.lastReadAt)) {
     record.lastReadAt = v.lastReadAt;
   }
@@ -792,12 +775,6 @@ export class NamespaceCatalog {
     if (kind === "read" && cached.lastReadAt === undefined) return true;
     if (!metadata) return false;
     if (metadata.kind !== undefined && metadata.kind !== cached.kind) return true;
-    if (metadata.principal !== undefined && metadata.principal !== cached.principal) return true;
-    if (metadata.projectId !== undefined && metadata.projectId !== cached.projectId) return true;
-    if (metadata.branch !== undefined && metadata.branch !== cached.branch) return true;
-    if (metadata.parentNamespace !== undefined && metadata.parentNamespace !== cached.parentNamespace) {
-      return true;
-    }
     // A changed storageDir repoints routing/containment for this namespace —
     // must be observable at once, not held stale by the coalesce window (#1903, Cursor).
     if (metadata.storageDir !== undefined && metadata.storageDir !== cached.storageDir) return true;
@@ -1399,15 +1376,10 @@ export class NamespaceCatalog {
                 (kind === "register" ? "config" : kind === "maintenance" ? "scan" : kind),
             };
 
-        // Update mutable fields. storageDir, kind, and the principal/project hints
-        // may legitimately change over a namespace's lifetime, so they upsert.
+        // Update mutable fields. storageDir and kind may change over a
+        // namespace's lifetime, so they upsert.
         record.storageDir = storageDir;
         if (metadata?.kind) record.kind = metadata.kind;
-        if (metadata?.principal !== undefined) record.principal = metadata.principal;
-        if (metadata?.projectId !== undefined) record.projectId = metadata.projectId;
-        if (metadata?.branch !== undefined) record.branch = metadata.branch;
-        if (metadata?.parentNamespace !== undefined)
-          record.parentNamespace = metadata.parentNamespace;
         // PROVENANCE (creation-only, with one upgrade — round 6, codex P2 NBPmT):
         // `discoveredBy` is otherwise preserved for existing records (a routine
         // read/register/resolve never relabels it). The single exception is a real
@@ -2109,10 +2081,6 @@ export class NamespaceCatalog {
     if (prior.lastReadAt) merged.lastReadAt = prior.lastReadAt;
     if (prior.lastWriteAt) merged.lastWriteAt = prior.lastWriteAt;
     if (prior.lastMaintenanceAt) merged.lastMaintenanceAt = { ...prior.lastMaintenanceAt };
-    if (prior.principal !== undefined) merged.principal = prior.principal;
-    if (prior.projectId !== undefined) merged.projectId = prior.projectId;
-    if (prior.branch !== undefined) merged.branch = prior.branch;
-    if (prior.parentNamespace !== undefined) merged.parentNamespace = prior.parentNamespace;
     return merged;
   }
   // ── Persistence ──────────────────────────────────────────────────────────

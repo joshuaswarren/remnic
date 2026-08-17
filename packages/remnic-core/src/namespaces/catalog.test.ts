@@ -600,15 +600,16 @@ test("catalog quarantines malformed JSONL record fields at the parse boundary", 
 
     assert.deepEqual(
       list.map((r) => r.namespace),
-      ["valid"],
-      "invalid enum/token/timestamp records must not surface",
+      ["bad-kind", "valid"],
+      "unknown kinds coerce to explicit; other malformed records stay quarantined",
     );
-    assert.equal(list[0]?.identityToken, validToken);
-    assert.equal(list[0]?.kind, "project");
-    assert.equal(list[0]?.discoveredBy, "write");
-    assert.equal(list[0]?.lastReadAt, undefined);
-    assert.equal(list[0]?.lastWriteAt, undefined);
-    assert.deepEqual(list[0]?.lastMaintenanceAt, { ok: now });
+    assert.equal(list.find((r) => r.namespace === "bad-kind")?.kind, "explicit");
+    const valid = list.find((r) => r.namespace === "valid");
+    assert.equal(valid?.kind, "project");
+    assert.equal(valid?.discoveredBy, "write");
+    assert.equal(valid?.lastReadAt, undefined);
+    assert.equal(valid?.lastWriteAt, undefined);
+    assert.deepEqual(valid?.lastMaintenanceAt, { ok: now });
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
@@ -3952,3 +3953,47 @@ test("#1903 cross-instance compaction never drops another instance's rows", asyn
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("#2469 persisted self/legacy kinds coerce to explicit and drop unused hints", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const ns = "project-origin-dead-kind";
+    const token = namespaceIdentityToken(ns);
+    const stateDir = path.join(memoryDir, "state");
+    await mkdir(stateDir, { recursive: true });
+    const line = JSON.stringify({
+      namespace: ns,
+      identityToken: token,
+      kind: "self",
+      principal: "unused",
+      projectId: "unused",
+      branch: "unused",
+      parentNamespace: "unused",
+      createdAt: "2026-08-17T00:00:00.000Z",
+      storageDir: path.join(memoryDir, "namespaces", token),
+      discoveredBy: "write",
+    });
+    const legacyLine = JSON.stringify({
+      namespace: "shared",
+      identityToken: namespaceIdentityToken("shared"),
+      kind: "legacy",
+      createdAt: "2026-08-17T00:00:00.000Z",
+      storageDir: path.join(memoryDir, "namespaces", namespaceIdentityToken("shared")),
+      discoveredBy: "config",
+    });
+    await writeFile(path.join(stateDir, "namespaces.jsonl"), `${line}\n${legacyLine}\n`, "utf8");
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    const selfRecord = await catalog.getNamespaceRecord(ns);
+    assert.equal(selfRecord?.kind, "explicit");
+    assert.equal(
+      (selfRecord as { principal?: string } | null)?.principal,
+      undefined,
+    );
+    const legacyRecord = await catalog.getNamespaceRecord("shared");
+    assert.equal(legacyRecord?.kind, "explicit");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
