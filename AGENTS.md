@@ -280,7 +280,7 @@ remain. Work with this, not against it:
    audit-then-hold — commit incrementally so a killed worker leaves recoverable
    state on the branch.
 
-### Transactional review rounds (shadow — issue #1992)
+### Transactional review rounds (issues #1992, #2442)
 
 The `Review Round Dispatch` workflow (`review-round-dispatch.yml`) makes the
 "batch fixes, push once per round" rule mechanical instead of prose. It keeps a
@@ -297,13 +297,21 @@ decision core in `scripts/review-rounds.mjs` + `scripts/review-round-gate.mjs`):
   round exceeds its max age (default 24 h, auto-closed and labeled), or when a
   maintainer applies the `review-round:force-dispatch` label.
 - The ledger comment tracks `pushes this round: N` and warns at N>3.
+- The ledger also counts **fix rounds** per PR (the first push landing in an
+  open round is that round's batched fix; later micro-pushes coalesce into it).
 
-This is **shadow-only in v1** (`REVIEW_ROUND_ENFORCE: 'false'`): it never fails a
-check, never blocks merge, and never hides an unresolved thread — the
-`unresolved-review-threads` guard stays the thread merge gate untouched, and its
-missing concurrency group (that `check-unsticker` depends on) is preserved. The
-enforcement flip and the guard's round-scoped pending state are a later step,
-gated on shadow data (umbrella #1988 decision D).
+The **round-budget ledger is enforcing** (issue #2442): at fix round 3 it posts
+a one-time warning reply citing the decline policy above, and at fix round 4 it
+automatically files ONE GitHub issue listing every still-open non-critical
+thread with permalinks (the decline rule's required backlog artifact), labels
+the PR `review-round:cap`, and links the issue from the ledger comment. These
+actions never fail a check, never block merge, and never resolve or hide a
+thread — the `unresolved-review-threads` guard stays the merge gate (a reasoned
+decline satisfies it exactly as much as a fix). Reviewer *dispatch* remains
+shadow (`REVIEW_ROUND_ENFORCE: 'false'`): the dispatch flip and the guard's
+round-scoped pending state are a later step, gated on shadow data (umbrella
+#1988 decision D), and the guard's missing concurrency group (that
+`check-unsticker` depends on) is preserved.
 
 ## Why Stateful PRs Churn (Read Before Touching Lifecycle Logic)
 
