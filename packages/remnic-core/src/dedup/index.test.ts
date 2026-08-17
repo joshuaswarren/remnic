@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { findContradictions, findDuplicates } from "./index.js";
+import { NEGATION_WORDS, findContradictions, findDuplicates } from "./index.js";
 
 test("findContradictions detects can versus cannot statements", async () => {
   const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-dedup-contradiction-"));
@@ -147,5 +147,36 @@ test("dedup scans reject symlinked category directories outside memoryDir", asyn
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
     await rm(outsideDir, { recursive: true, force: true });
+  }
+});
+
+test("strip-negation pattern is derived from NEGATION_WORDS", async () => {
+  NEGATION_WORDS.add("seldom");
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-dedup-negation-"));
+
+  try {
+    const factsDir = path.join(memoryDir, "facts");
+    await mkdir(factsDir);
+    await writeFile(
+      path.join(factsDir, "plain.md"),
+      ["---", "id: mem-plain", "category: fact", "---", "The user enjoys morning runs."].join("\n"),
+      "utf8"
+    );
+    await writeFile(
+      path.join(factsDir, "seldom.md"),
+      ["---", "id: mem-seldom", "category: fact", "---", "The user seldom enjoys morning runs."].join("\n"),
+      "utf8"
+    );
+
+    const result = findContradictions({ memoryDir, categories: ["facts"] });
+
+    // "high" requires the stripped texts to match exactly, which only happens
+    // when the strip pattern honors the word the test added to the set.
+    assert.equal(result.contradictions.length, 1);
+    assert.equal(result.contradictions[0]?.severity, "high");
+    assert.equal(result.contradictions[0]?.reason, "Negated version of similar content");
+  } finally {
+    NEGATION_WORDS.delete("seldom");
+    await rm(memoryDir, { recursive: true, force: true });
   }
 });
