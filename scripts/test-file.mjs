@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { isAnySourceNewerThan } from "./build-staleness.mjs";
 import { appendNodeOption } from "./root-test-runner-env.mjs";
+import { buildTestSpawnPlan, resolveTsxCliPath } from "./test-spawn-plan.mjs";
 import {
   loadNativeManifest,
   partitionNativeDependent,
@@ -121,10 +122,16 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   });
 }
 
-const tsxBin = process.platform === "win32" ? "tsx.cmd" : "tsx";
 const workspaceBinDir = join(repoRoot, "node_modules", ".bin");
+const spawnPlan = buildTestSpawnPlan({
+  platform: process.platform,
+  execPath: process.execPath,
+  tsxCliPath: process.platform === "win32" ? resolveTsxCliPath(repoRoot) : undefined,
+  runnerArgs,
+  files: filesToRun,
+});
 const result = await new Promise((resolve) => {
-  testProcess = spawn(tsxBin, ["--test", ...runnerArgs, ...filesToRun], {
+  testProcess = spawn(spawnPlan.command, spawnPlan.args, {
     cwd: repoRoot,
     env: {
       ...process.env,
@@ -135,14 +142,13 @@ const result = await new Promise((resolve) => {
       TEMP: testRunScratchDir,
     },
     stdio: "inherit",
-    shell: process.platform === "win32",
+    shell: spawnPlan.shell,
   });
-  testProcess.on("error", (error) => resolve({ error }));
   testProcess.on("close", (status, signal) => resolve({ status, signal }));
 });
 
 if (result.error) {
-  console.error(`Failed to launch ${tsxBin}: ${result.error.message}`);
+  console.error(`Failed to launch ${spawnPlan.command}: ${result.error.message}`);
   process.exit(1);
 }
 
