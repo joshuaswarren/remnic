@@ -79,9 +79,18 @@ jobs:
             const { pathToFileURL } = require('node:url');
             const { owner, repo } = context.repo;
             const pull_number = context.payload.pull_request.number;
-            const { withTransientGithubRetry } = await import(
+            const { withTransientGithubRetry, isTransientGithubLookupError } = await import(
               pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/github-transient-retry.mjs`).href
             );
+            async function fetchOrFallback(fn, fallback, label) {
+              try {
+                return await withTransientGithubRetry(fn, { attempts: 6, delayMs: 5_000 });
+              } catch (error) {
+                if (!isTransientGithubLookupError(error)) throw error;
+                core.warning(`${label} failed after retries (${error.message}); using event payload fallback.`);
+                return fallback;
+              }
+            }
 
             // Paginate to completion — artifact PRs with >100 files exist.
             const files = await withTransientGithubRetry(() =>
@@ -110,18 +119,22 @@ jobs:
             }))));
 
             // Labels fetched FRESH (payload labels are stale on synchronize).
-            const labels = await withTransientGithubRetry(() =>
-              github.paginate(github.rest.issues.listLabelsOnIssue, {
+            // If the issue node is still unreadable after retries, use the
+            // event payload so a GitHub 422 cannot fail the required check.
+            const labels = await fetchOrFallback(
+              () => github.paginate(github.rest.issues.listLabelsOnIssue, {
                 owner, repo, issue_number: pull_number, per_page: 100,
               }),
+              context.payload.pull_request.labels || [],
+              'Fresh label fetch',
             );
             fs.writeFileSync('/tmp/pr-labels.json', JSON.stringify(labels.map((l) => l.name)));
 
-            // PR title + body — DATA only, scanned for #<n> issue references by
-            // the evaluator (issue #2067). Fetched fresh so `edited` events
-            // pick up title/body changes.
-            const pr = await withTransientGithubRetry(() =>
-              github.rest.pulls.get({ owner, repo, pull_number }),
+            const payloadPr = context.payload.pull_request;
+            const pr = await fetchOrFallback(
+              () => github.rest.pulls.get({ owner, repo, pull_number }),
+              { data: { title: payloadPr.title ?? '', body: payloadPr.body ?? '' } },
+              'Fresh PR meta fetch',
             );
             fs.writeFileSync('/tmp/pr-meta.txt', `${pr.data.title ?? ''}\n\n${pr.data.body ?? ''}`);
 
