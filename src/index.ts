@@ -5323,7 +5323,6 @@ const pluginDefinition = {
             void queueOpenClawFlushPlanProcessing(
               "gateway_start",
               getOpenClawRuntimeWorkspaceDir(api),
-              { timeoutMs: cfg.beforeResetTimeoutMs },
             );
           } catch (err) {
             // Unsubscribe Opik exporter if it was subscribed before the failure so

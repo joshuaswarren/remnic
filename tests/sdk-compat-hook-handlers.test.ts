@@ -4854,6 +4854,73 @@ test("gateway_start does not process flush-plan files in passive slot mode", asy
   }
 });
 
+test("gateway_start does not apply the reset-hook deadline to flush-plan replay", async () => {
+  const { default: plugin } = await import("../src/index.js");
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-flush-gateway-deadline-"));
+  let releaseIngest: (() => void) | undefined;
+  try {
+    const api = buildHandlerCapturingApi("flush-plan-gateway-no-reset-deadline-test");
+    api.pluginConfig = {
+      qmdEnabled: false,
+      modelSource: "gateway",
+      transcriptEnabled: false,
+      hourlySummariesEnabled: false,
+      workspaceDir,
+      openclawFlushPlanProcessingEnabled: true,
+      beforeResetTimeoutMs: 25,
+    };
+    plugin.register(api as any);
+
+    const orchestrator = (globalThis as any).__openclawEngramOrchestrator;
+    assert.ok(orchestrator, "orchestrator should exist on globalThis after register");
+    let observedDeadlineMs: number | undefined;
+    let markIngestStarted!: () => void;
+    const ingestStarted = new Promise<void>((resolve) => {
+      markIngestStarted = resolve;
+    });
+    const ingestReleased = new Promise<void>((resolve) => {
+      releaseIngest = resolve;
+    });
+    orchestrator.ingestBulkImportBatch = async (
+      _turns: unknown[],
+      options?: { deadlineMs?: number },
+    ) => {
+      observedDeadlineMs = options?.deadlineMs;
+      markIngestStarted();
+      await ingestReleased;
+      return undefined;
+    };
+
+    const flushPlanPath = path.join(
+      workspaceDir,
+      "state",
+      "plugins",
+      SERVICE_ID,
+      "flush-plan.md",
+    );
+    await mkdir(path.dirname(flushPlanPath), { recursive: true });
+    await writeFile(flushPlanPath, "- Startup replay may exceed a reset hook budget.\n", "utf8");
+
+    await api._registeredServiceStart?.();
+    await ingestStarted;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    assert.equal(observedDeadlineMs, undefined);
+    assert.notEqual(
+      await readFile(flushPlanPath, "utf8"),
+      "",
+      "startup replay should remain in flight beyond beforeResetTimeoutMs",
+    );
+
+    releaseIngest();
+    await waitForFlushPlanProcessingQueueToEmpty();
+    assert.equal(await readFile(flushPlanPath, "utf8"), "");
+  } finally {
+    releaseIngest?.();
+    await rm(workspaceDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
 test("register rejects malformed OpenClaw flush-plan processing opt-outs", async () => {
   const { default: plugin } = await import("../src/index.js");
   for (const bad of ["fales", "maybe", 2, "2", "enabled"]) {
