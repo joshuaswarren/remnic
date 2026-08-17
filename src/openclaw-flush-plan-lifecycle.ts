@@ -784,30 +784,88 @@ function partialIngestResultFromError(
   return partialResult as OpenClawFlushPlanIngestResult;
 }
 
+const INGEST_RESULT_COUNTER_KEYS = [
+  "attemptedTurnCount",
+  "extractionCount",
+  "persistedCount",
+  "durableOutputCount",
+  "skippedCount",
+  "failedCount",
+  "postPersistMetadataFailureCount",
+  "processedTurnCount",
+] as const;
+
+type IngestResultCounterKey = (typeof INGEST_RESULT_COUNTER_KEYS)[number];
+type IngestResultCounters = Record<IngestResultCounterKey, number>;
+
+function emptyIngestResultCounters(): IngestResultCounters {
+  return {
+    attemptedTurnCount: 0,
+    extractionCount: 0,
+    persistedCount: 0,
+    durableOutputCount: 0,
+    skippedCount: 0,
+    failedCount: 0,
+    postPersistMetadataFailureCount: 0,
+    processedTurnCount: 0,
+  };
+}
+
+function mergeIngestResultCounters(
+  aggregate: IngestResultCounters,
+  result: void | OpenClawFlushPlanIngestResult,
+): void {
+  if (!result || typeof result !== "object") return;
+  for (const key of INGEST_RESULT_COUNTER_KEYS) {
+    const value = result[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      aggregate[key] += value;
+    }
+  }
+}
+
 async function ingestFlushPlanImportTurns(params: {
   ingestor: OpenClawFlushPlanIngestor;
   importTurns: ImportTurn[];
   deadlineMs?: number;
 }): Promise<void | OpenClawFlushPlanIngestResult> {
-  try {
-    return await params.ingestor.ingestBulkImportBatch(params.importTurns, {
-      ...(params.deadlineMs === undefined
-        ? {}
-        : { deadlineMs: params.deadlineMs }),
-      failOnExtractionFailure: true,
-      includeSourceValidAtContext: false,
-    });
-  } catch (error) {
-    const partialResult = partialIngestResultFromError(error);
-    if (
-      partialResult &&
-      typeof partialResult.processedTurnCount === "number" &&
-      partialResult.processedTurnCount > 0
-    ) {
-      return partialResult;
+  const aggregate = emptyIngestResultCounters();
+
+  for (const turn of params.importTurns) {
+    let result: void | OpenClawFlushPlanIngestResult;
+    try {
+      // One turn per call keeps each chunk on its own bulk-import session key
+      // so chunked flush plans never recombine into one extraction buffer.
+      result = await params.ingestor.ingestBulkImportBatch([turn], {
+        ...(params.deadlineMs === undefined
+          ? {}
+          : { deadlineMs: params.deadlineMs }),
+        failOnExtractionFailure: true,
+        includeSourceValidAtContext: false,
+      });
+    } catch (error) {
+      mergeIngestResultCounters(
+        aggregate,
+        partialIngestResultFromError(error),
+      );
+      if (aggregate.failedCount <= 0) aggregate.failedCount += 1;
+      if (aggregate.processedTurnCount > 0) return aggregate;
+      throw error;
     }
-    throw error;
+
+    mergeIngestResultCounters(aggregate, result);
+    if (isFailedIngestResult(result)) return aggregate;
+    if (
+      !(
+        typeof result?.processedTurnCount === "number" &&
+        result.processedTurnCount > 0
+      )
+    ) {
+      aggregate.processedTurnCount += 1;
+    }
   }
+
+  return aggregate;
 }
 
 function hasPostPersistMetadataFailure(
