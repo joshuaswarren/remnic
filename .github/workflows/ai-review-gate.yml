@@ -135,7 +135,7 @@ jobs:
               splitEffectiveDiff,
               isArtifactOnlyPullRequest,
             } = await import(pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/effective-diff.mjs`).href);
-            const { withTransientGithubRetry } = await import(
+            const { withTransientGithubRetry, isTransientGithubLookupError } = await import(
               pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/github-transient-retry.mjs`).href
             );
             const IGNORE_MANIFEST_PATH = ".github/ai-review-ignore";
@@ -452,6 +452,7 @@ jobs:
               let hasBlockers = false;
 
               for (const pr of pullRequestNumbers) {
+                try {
                 const pullRequest = await withTransientGithubRetry(() =>
                   github.rest.pulls.get({
                     owner,
@@ -608,6 +609,17 @@ jobs:
                 }
 
                 core.notice(`PR #${pr}: ${result.reason}`);
+                } catch (error) {
+                  if (!isTransientGithubLookupError(error)) throw error;
+                  evaluatedCount += 1;
+                  core.info(
+                    `PR #${pr}: transient GitHub lookup after retries (${error?.message ?? error}); polling again`,
+                  );
+                  failures.push({
+                    pr,
+                    reason: `transient github lookup: ${error?.message ?? error}`,
+                  });
+                }
               }
 
               return { failures, evaluatedCount, hasBlockers };

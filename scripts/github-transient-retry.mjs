@@ -29,7 +29,7 @@ export function isTransientGithubLookupError(error) {
 
 export async function withTransientGithubRetry(
   fn,
-  { attempts = 6, delayMs = 5_000, sleep } = {},
+  { attempts = 18, delayMs = 10_000, sleep } = {},
 ) {
   const wait =
     typeof sleep === "function"
