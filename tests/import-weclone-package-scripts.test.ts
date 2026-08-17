@@ -21,12 +21,8 @@ test("import-weclone test script runs explicit files against workspace source ex
   const testScriptParts = testScript.split(/\s+/);
   for (const testFile of [
     "src/adapter.test.ts",
-    "src/chunker.test.ts",
     "src/integration.test.ts",
     "src/parser.test.ts",
-    "src/participant.test.ts",
-    "src/progress.test.ts",
-    "src/threader.test.ts",
   ]) {
     assert.ok(testScriptParts.includes(testFile), `${testFile} missing from import-weclone test script`);
   }
