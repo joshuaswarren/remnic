@@ -15,6 +15,12 @@ import { withTempDir as managedWithTempDir } from "../testing/tmp-dir.js";
 import type { EngramAccessService } from "../access-service.js";
 import { parseConfig } from "../config.js";
 import { runChatCli } from "./chat-cli.js";
+import { processChatMessage } from "./chat-factory.js";
+import {
+  createChatSession,
+  loadChatSession,
+  markPendingPlan,
+} from "./chat-session.js";
 import { DEFAULT_CHAT_CONFIG } from "./chat-config.js";
 
 /** Capture stdout.write for the duration of `fn`. */
@@ -135,5 +141,52 @@ test("CLI: resumes an existing session by id", async () => {
       runChatCli({ service, config: service.configRef!.chat, memoryDir, once: true, input: "again", sessionId }),
     );
     assert.ok(second.includes("[session:"), "resumed run should also print a session id");
+  });
+});
+
+test("CLI --once: pending plan is visible on reload the same way as HTTP (issue #2479)", async () => {
+  await withTempDir(async (memoryDir) => {
+    const service = makeService({
+      memoryDir,
+      configRef: parseConfig({ memoryDir, chat: { ...DEFAULT_CHAT_CONFIG, enabled: true } }),
+    });
+
+    // CLI side: first turn mints the session.
+    const first = await captureStdout(() =>
+      runChatCli({ service, config: service.configRef!.chat, memoryDir, once: true, input: "hello" }),
+    );
+    const sessionId = /\[session: ([^\]]+)\]/.exec(first)![1]!;
+    // Pending plan minted by an earlier correction-preview turn.
+    await markPendingPlan(memoryDir, sessionId, "plan-cli-2479");
+    await captureStdout(() =>
+      runChatCli({ service, config: service.configRef!.chat, memoryDir, once: true, input: "anything else?", sessionId }),
+    );
+    const viaCli = await loadChatSession(memoryDir, sessionId);
+    // HTTP side: identical scenario through the shared processor.
+    const httpSession = await createChatSession(memoryDir, {});
+    await processChatMessage({
+      service,
+      config: service.configRef!.chat,
+      memoryDir,
+      message: "hello",
+      chatSessionId: httpSession.id,
+    });
+    await markPendingPlan(memoryDir, httpSession.id, "plan-http-2479");
+    await processChatMessage({
+      service,
+      config: service.configRef!.chat,
+      memoryDir,
+      message: "anything else?",
+      chatSessionId: httpSession.id,
+    });
+    const viaHttp = await loadChatSession(memoryDir, httpSession.id);
+
+    assert.equal(viaCli?.pendingPlanId, "plan-cli-2479", "CLI turn must leave the pending plan visible on reload");
+    assert.equal(viaHttp?.pendingPlanId, "plan-http-2479", "HTTP turn must leave the pending plan visible on reload");
+    // Transcript shape parity: both surfaces append the same role sequence.
+    assert.deepEqual(
+      viaCli!.transcript.map((e) => e.role),
+      viaHttp!.transcript.map((e) => e.role),
+    );
   });
 });
