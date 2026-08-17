@@ -224,6 +224,16 @@ These rules are the default workflow for all agents and contributors.
 10. Merge with REST `PUT /repos/{owner}/{repo}/pulls/{n}/merge` when checks
     and test shards are green. An older `ai-reviewers` failure or cancellation
     on the same head is not a product defect.
+11. Check closed-issue claims before review. A PR whose body claims
+    `Fixes #N` for an issue that is already closed, with a base ≥15 commits
+    behind main, is a revert bomb: the three-dot diff looks like the fix, but
+    a two-dot diff against current main deletes every commit that landed after
+    the issue closed. The `closed-issue-base` job in `review-thread-guard.yml`
+    fails such PRs — rebase onto main and re-verify the issue before
+    requesting review.
+12. Stagger PR creates in a parallel batch. Opening several PRs at once trips
+    GitHub 429/502/503. Use `scripts/gh-pr-create-stagger.sh` (lock + 65s gap
+    via TMPDIR) instead of a bare `gh pr create`.
 
 
 

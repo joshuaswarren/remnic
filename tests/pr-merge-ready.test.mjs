@@ -425,3 +425,63 @@ test("rejects a fractional --timeout and a non-numeric PR number with usage exit
     assert.equal(flagFirst.status, 2);
   });
 });
+
+// --- Pure merge-readiness evaluator (scripts/pr-merge-ready.mjs) -----------
+
+import { evaluateMergeReadiness } from "../scripts/pr-merge-ready.mjs";
+
+const GREEN_PRODUCT_CHECKS = [
+  { name: "build", state: "SUCCESS" },
+  { name: "tests (root)", state: "SUCCESS" },
+  { name: "tests (packages-1)", state: "SUCCESS" },
+  { name: "tests (packages-2)", state: "SUCCESS" },
+  { name: "unresolved-review-threads", state: "SUCCESS" },
+];
+
+test("evaluateMergeReadiness: green product gates + NEUTRAL ai-reviewers is ready", () => {
+  const verdict = evaluateMergeReadiness([
+    ...GREEN_PRODUCT_CHECKS,
+    { name: "ai-reviewers", state: "NEUTRAL" },
+  ]);
+  assert.deepEqual(verdict, { ready: true, blockers: [] });
+});
+
+test("evaluateMergeReadiness: ai-reviewers missing, FAILURE, or skipping never blocks", () => {
+  for (const state of ["FAILURE", "SKIPPING", "PENDING", "CANCELLED"]) {
+    const verdict = evaluateMergeReadiness([...GREEN_PRODUCT_CHECKS, { name: "ai-reviewers", state }]);
+    assert.equal(verdict.ready, true, `ai-reviewers ${state} is informational`);
+  }
+  assert.equal(evaluateMergeReadiness(GREEN_PRODUCT_CHECKS).ready, true, "absent ai-reviewers is fine");
+});
+
+test("evaluateMergeReadiness: a red or pending product gate blocks", () => {
+  for (const [name, state] of [
+    ["build", "FAILURE"],
+    ["tests (root)", "PENDING"],
+    ["tests (packages-1)", "CANCELLED"],
+    ["tests (packages-2)", "FAILURE"],
+  ]) {
+    const verdict = evaluateMergeReadiness([...GREEN_PRODUCT_CHECKS, { name, state }]);
+    assert.equal(verdict.ready, false, `${name} ${state} blocks`);
+    assert.ok(verdict.blockers.some((b) => b.startsWith(`${name}:`)));
+  }
+});
+
+test("evaluateMergeReadiness: a missing required product gate blocks", () => {
+  const verdict = evaluateMergeReadiness(GREEN_PRODUCT_CHECKS.filter((c) => c.name !== "build"));
+  assert.equal(verdict.ready, false);
+  assert.ok(verdict.blockers.includes("build: missing (required product gate)"));
+});
+
+test("evaluateMergeReadiness: unresolved-review-threads blocks when present, absent is fine", () => {
+  const without = GREEN_PRODUCT_CHECKS.filter((c) => c.name !== "unresolved-review-threads");
+  assert.equal(evaluateMergeReadiness(without).ready, true);
+  const red = evaluateMergeReadiness([...without, { name: "unresolved-review-threads", state: "FAILURE" }]);
+  assert.equal(red.ready, false);
+  assert.deepEqual(red.blockers, ["unresolved-review-threads: FAILURE"]);
+});
+
+test("evaluateMergeReadiness: unknown checks and non-array input are not blockers", () => {
+  assert.equal(evaluateMergeReadiness([...GREEN_PRODUCT_CHECKS, { name: "analyze", state: "FAILURE" }]).ready, true);
+  assert.equal(evaluateMergeReadiness(undefined).ready, false, "no rows -> product gates missing");
+});

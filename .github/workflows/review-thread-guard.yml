@@ -286,3 +286,70 @@ jobs:
             core.setFailed(
               `Found ${unresolvedThreads.length} unresolved review thread(s). Resolve them before merge.\n${summary}`,
             );
+
+  closed-issue-base:
+    # Parallel-run defect (2026-08): PRs claiming `Fixes #N` on issues that
+    # were ALREADY closed, with a base >=15 commits behind main, show a
+    # three-dot diff that looks like the fix — merging it deletes every commit
+    # that landed after the issue closed. Advisory (not in the required
+    # ruleset): fails loudly so a human rebases before review. API hiccups
+    # (404/429/503) skip with a notice rather than blocking.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Checkout evaluator at base (trusted code)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha }}
+      - name: Bootstrap evaluator when absent on base
+        run: |
+          if [ ! -f scripts/check-closed-issue-base.mjs ]; then
+            echo "::notice title=closed-issue-base bootstrap::evaluator absent on base — using PR head copy"
+            git fetch --quiet --depth=1 origin "$HEAD_SHA"
+            git checkout FETCH_HEAD -- scripts/check-closed-issue-base.mjs
+          fi
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      - name: Check closed-issue claims against base staleness
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { pathToFileURL } = require("node:url");
+            const { evaluateClosedIssueBase, parseFixNumbers } = await import(
+              pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/check-closed-issue-base.mjs`).href
+            );
+            const body = context.payload.pull_request?.body ?? "";
+            const fixNumbers = parseFixNumbers(body);
+            if (fixNumbers.length === 0) {
+              core.info("closed-issue-base: no closing-keyword claims in the PR body");
+              return;
+            }
+            const { owner, repo } = context.repo;
+            let behind = 0;
+            try {
+              const baseRef = context.payload.pull_request.base.ref;
+              const headSha = context.payload.pull_request.head.sha;
+              const compare = await github.rest.repos.compareCommits({
+                owner,
+                repo,
+                basehead: `${baseRef}...${headSha}`,
+              });
+              behind = compare.data.behind_by ?? 0;
+            } catch (error) {
+              core.notice(`closed-issue-base: compare API unavailable (${error?.status ?? error?.message}) — skipping staleness check`);
+              return;
+            }
+            const closedFixNumbers = [];
+            for (const n of fixNumbers) {
+              try {
+                const issue = await github.rest.issues.get({ owner, repo, issue_number: n });
+                if (issue.data.state === "closed") closedFixNumbers.push(n);
+              } catch (error) {
+                core.notice(`closed-issue-base: issue #${n} unreadable (${error?.status ?? error?.message}) — treating as open`);
+              }
+            }
+            const verdict = evaluateClosedIssueBase({ body, commitsBehindMain: behind, closedFixNumbers });
+            core.info(`closed-issue-base: ${verdict.reason}`);
+            if (!verdict.ok) core.setFailed(`stale-closed-issue-base: ${verdict.reason}`);
