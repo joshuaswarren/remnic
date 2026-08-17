@@ -1,7 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 
-export const REMNIC_OPENCLAW_PLUGIN_ID = "openclaw-remnic";
+import { REMNIC_OPENCLAW_PLUGIN_ID } from "./plugin-id.js";
+
+export { REMNIC_OPENCLAW_PLUGIN_ID };
+
 const OPENCLAW_EXEC_TIMEOUT_MS = 120_000;
 const OPENCLAW_PLUGIN_PACKAGE = "@remnic/plugin-openclaw";
 const DIST_TAG_SELECTOR = /^[A-Za-z][0-9A-Za-z._-]*$/;
