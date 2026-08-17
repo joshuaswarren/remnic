@@ -620,7 +620,10 @@ export class SmartBuffer {
       `buffer[${bufferKey}]: ${mutation.turnCountInWindow} turns, signal=${mutation.signalLevel}, decision=${decision}`,
     );
     if (decision !== "keep_buffering" && extractionTurns === undefined) {
-      extractionTurns = mutation.activeTurnsSnapshot;
+      extractionTurns = [
+        ...mutation.retainedTurnsSnapshot,
+        ...mutation.activeTurnsSnapshot,
+      ];
     }
     return extractionTurns ? { decision, extractionTurns } : { decision };
   }

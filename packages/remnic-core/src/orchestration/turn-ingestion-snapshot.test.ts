@@ -36,6 +36,20 @@ test("#2468 extract trigger returns the mutation snapshot", async () => {
   assert.equal(outcome.extractionTurns?.[0]?.content, "only");
 });
 
+test("#2468 built-in trigger includes retained turns in the snapshot", async () => {
+  const buffer = new SmartBuffer(
+    parseConfig({ triggerMode: "every_n", bufferMaxTurns: 1 }),
+    new FakeStorage({ turns: [], lastExtractionAt: null, extractionCount: 0 }) as never,
+  );
+  await buffer.retainDeferredTurns("k", [makeTurn("retained")], 10);
+  const outcome = await buffer.addTurnWithOutcome("k", makeTurn("live"));
+  assert.equal(outcome.decision, "extract_batch");
+  assert.deepEqual(
+    outcome.extractionTurns?.map((turn) => turn.content),
+    ["retained", "live"],
+  );
+});
+
 test("#2468 processTurn does not adopt a later getTurns() batch", async () => {
   const snapshot = [makeTurn("first")];
   const later = [makeTurn("first"), makeTurn("later")];
