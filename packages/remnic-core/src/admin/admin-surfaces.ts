@@ -322,8 +322,6 @@ export function inspectScope(options: InspectScopeOptions): ScopeInspection {
 /** Filters the namespace browser accepts (superset of {@link NamespaceCatalogFilter}). */
 export interface AdminNamespaceFilter {
   kind?: NamespaceRecord["kind"];
-  principal?: string;
-  projectId?: string;
   discoveredBy?: NamespaceRecord["discoveredBy"];
   /** Only namespaces with a write at/after this instant. */
   writtenSince?: Date;
@@ -336,10 +334,6 @@ export interface AdminNamespaceEntry {
   namespace: string;
   identityToken: string;
   kind: NamespaceRecord["kind"];
-  principal?: string;
-  projectId?: string;
-  branch?: string;
-  parentNamespace?: string;
   createdAt: string;
   lastReadAt?: string;
   lastWriteAt?: string;
@@ -386,12 +380,6 @@ export async function listAdminNamespaces(options: ListAdminNamespacesOptions): 
 
   let entries: AdminNamespaceEntry[] = records.map((record) => toAdminEntry(record, staleBefore));
 
-  if (filter?.principal) {
-    entries = entries.filter((entry) => entry.principal === filter.principal);
-  }
-  if (filter?.projectId) {
-    entries = entries.filter((entry) => entry.projectId === filter.projectId);
-  }
   if (filter?.staleBefore) {
     const cutoff = filter.staleBefore.getTime();
     entries = entries.filter((entry) => {
@@ -411,10 +399,6 @@ function toAdminEntry(record: NamespaceRecord, staleBefore: Date): AdminNamespac
     namespace: record.namespace,
     identityToken: record.identityToken,
     kind: record.kind,
-    principal: record.principal,
-    projectId: record.projectId,
-    branch: record.branch,
-    parentNamespace: record.parentNamespace,
     createdAt: record.createdAt,
     lastReadAt: record.lastReadAt,
     lastWriteAt: record.lastWriteAt,

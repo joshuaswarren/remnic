@@ -200,20 +200,15 @@ test("listAdminNamespaces lists configured + discovered namespaces and marks sta
   }
 });
 
-test("listAdminNamespaces filters by principal", async () => {
+test("listAdminNamespaces filters by kind", async () => {
   const memoryDir = await makeTempDir();
   try {
-    const config = makeConfig({
-      memoryDir,
-      namespacePolicies: [
-        { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
-        { name: "bob", readPrincipals: ["bob"], writePrincipals: ["bob"] },
-      ],
-    });
+    const config = makeConfig({ memoryDir });
     const catalog = new NamespaceCatalog(config);
     await catalog.registerConfiguredNamespaces();
-    const result = await listAdminNamespaces({ catalog, filter: { principal: "alice" } });
-    assert.ok(result.entries.every((entry) => entry.principal === "alice"));
+    const result = await listAdminNamespaces({ catalog, filter: { kind: "default" } });
+    assert.ok(result.entries.length > 0, "default kind filter must return the default namespace");
+    assert.ok(result.entries.every((entry) => entry.kind === "default"));
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

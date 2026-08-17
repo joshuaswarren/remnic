@@ -263,7 +263,7 @@ function isValidIsoTimestamp(value: string): boolean {
   return Number.isFinite(ms);
 }
 
-function isNamespaceKind(value: unknown): value is NamespaceKind {
+export function isNamespaceKind(value: unknown): value is NamespaceKind {
   return typeof value === "string" && (NAMESPACE_KINDS as readonly string[]).includes(value);
 }
 

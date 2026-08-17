@@ -68,6 +68,7 @@ import { isValidResolutionVerb, executeResolution } from "./contradiction/resolu
 import { RelayMissionStoreError } from "./relay/mission.js";
 import { SupportPassportAccessHttpBase } from "./support-passport/access-http-base.js";
 import { serializeInlineScriptValue } from "./inline-script.js";
+import { isNamespaceKind } from "./namespaces/catalog.js";
 import type { SupportPassportExternalRequestHandler } from "./support-passport/public-http.js";
 export interface AccessHttpReadinessState {
   ready: boolean;
@@ -2989,13 +2990,17 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
       }
       this.requireOperatorToken();
       const kind = parsed.searchParams.get("kind");
-      const principal = parsed.searchParams.get("principal");
-      const projectId = parsed.searchParams.get("projectId");
+      if (kind && !isNamespaceKind(kind)) {
+        this.respondJson(res, 400, {
+          error: "invalid_request",
+          code: "invalid_request",
+          message: "kind must be one of: default, shared, project, branch, team-project, explicit",
+        });
+        return;
+      }
       const discoveredBy = parsed.searchParams.get("discoveredBy");
       const result = await this.service.adminListNamespaces({
-        ...(kind ? { kind: kind as "default" | "self" | "shared" | "project" | "branch" | "team-project" | "explicit" | "legacy" } : {}),
-        ...(principal && principal.length > 0 ? { principal } : {}),
-        ...(projectId && projectId.length > 0 ? { projectId } : {}),
+        ...(kind && isNamespaceKind(kind) ? { kind } : {}),
         ...(discoveredBy
           ? { discoveredBy: discoveredBy as "config" | "write" | "read" | "scan" | "migration" }
           : {}),

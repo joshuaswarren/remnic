@@ -728,6 +728,38 @@ test("HTTP admin dashboard endpoints require bearer authentication and apply con
   }
 });
 
+test("HTTP admin namespaces rejects dead kinds and accepts live kinds", async () => {
+  const filters: unknown[] = [];
+  const service = {
+    adminListNamespaces: async (filter: unknown) => {
+      filters.push(filter);
+      return { enabled: true, entries: [] };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  try {
+    const rejected = await fetch(
+      `http://127.0.0.1:${status.port}/engram/v1/admin/namespaces?kind=self`,
+      { headers: { authorization: "Bearer test-token" } },
+    );
+    assert.equal(rejected.status, 400);
+    const accepted = await fetch(
+      `http://127.0.0.1:${status.port}/engram/v1/admin/namespaces?kind=default`,
+      { headers: { authorization: "Bearer test-token" } },
+    );
+    assert.equal(accepted.status, 200);
+    assert.deepEqual(filters, [{ kind: "default" }]);
+  } finally {
+    await server.stop();
+  }
+});
+
 test("HTTP coding-context endpoint accepts projectTag shorthand", async () => {
   const calls: unknown[] = [];
   const service = {
