@@ -49,7 +49,11 @@ function parseArgs(argv) {
       continue;
     }
     if (arg === "--note") {
-      note = argv[i + 1] ?? "";
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith("-") || value.trim() === "") {
+        fail("--note requires a non-empty value", 2);
+      }
+      note = value;
       i += 1;
       continue;
     }

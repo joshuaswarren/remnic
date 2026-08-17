@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -81,6 +81,21 @@ test("read returns entries and exit codes", () => {
     assert.equal(parsed[0].note, "alpha");
     assert.match(parsed[0].timestamp, /^\d{4}-\d{2}-\d{2}T.*Z$/);
     assert.equal(parsed[0].head, git(root, "rev-parse", "--short", "HEAD"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("write rejects a missing or flag-like --note value", () => {
+  const root = createRepo();
+  try {
+    const missing = run(root, ["write", "--note"]);
+    assert.equal(missing.status, 2);
+    const flagLike = run(root, ["write", "--note", "--json"]);
+    assert.equal(flagLike.status, 2);
+    const empty = run(root, ["write", "--note", ""]);
+    assert.equal(empty.status, 2);
+    assert.equal(existsSync(stateFile(root)), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
