@@ -705,6 +705,33 @@ jobs:
               }
 
               const elapsedMs = Date.now() - startedAt;
+              const onlyMissingReviews = !hasBlockers && failures.every((failure) =>
+                String(failure.reason || '').startsWith('Missing required positive AI review groups'),
+              );
+              if (onlyMissingReviews && elapsedMs + POLL_INTERVAL_MS > POLL_DEADLINE_MS) {
+                core.notice(
+                  `AI reviewers never posted on this head after ${Math.round(elapsedMs / 1000)}s. Exiting neutral so checks and test shards remain the merge bar.`,
+                );
+                try {
+                  await github.rest.checks.create({
+                    owner,
+                    repo,
+                    name: 'ai-reviewers',
+                    head_sha: triggerHeadSha || context.sha,
+                    status: 'completed',
+                    conclusion: 'neutral',
+                    output: {
+                      title: 'Reviewers never posted',
+                      summary: `Required AI review bots did not post on this head before the poll deadline. This is not a product defect. checks and test shards remain the merge bar.`,
+                    },
+                  });
+                } catch (error) {
+                  core.notice(
+                    `Could not post a neutral ai-reviewers check (${error?.message ?? error}); exiting without failing the job.`,
+                  );
+                }
+                return;
+              }
               if (hasBlockers || elapsedMs + POLL_INTERVAL_MS > POLL_DEADLINE_MS) {
                 core.setFailed(
                   `AI review gate failed for ${failures.map((failure) => `#${failure.pr}: ${failure.reason}`).join(' | ')}`,

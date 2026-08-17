@@ -7,6 +7,7 @@ import {
   canUseDependabotManifestException,
   evaluateAiReviewGate,
   isDependabotManifestOnlyPullRequest,
+  isMissingReviewOnlyFailure,
   parseReviewerGroups,
 } from "../scripts/ai-review-gate.mjs";
 
@@ -821,4 +822,28 @@ test("AI review gate accepts check runs newer than head when SHA metadata is una
   });
 
   assert.equal(result.ok, true);
+});
+
+test("missing-review-only failures are distinct from blocker failures", () => {
+  const missing = evaluateAiReviewGate({
+    groups,
+    headSha,
+    headCommittedAt,
+  });
+  assert.equal(isMissingReviewOnlyFailure(missing), true);
+
+  const blocked = evaluateAiReviewGate({
+    groups: parseReviewerGroups("cursor"),
+    headSha,
+    headCommittedAt,
+    reviews: [{ user: { login: "cursor" }, state: "CHANGES_REQUESTED", commit_id: headSha }],
+  });
+  assert.equal(isMissingReviewOnlyFailure(blocked), false);
+});
+
+test("AI review gate workflow exits neutral when bots never post", () => {
+  const workflow = readFileSync(".github/workflows/ai-review-gate.yml", "utf8");
+  assert.match(workflow, /AI reviewers never posted/);
+  assert.match(workflow, /onlyMissingReviews/);
+  assert.match(workflow, /conclusion:\s*'neutral'/);
 });

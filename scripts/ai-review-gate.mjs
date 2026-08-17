@@ -304,3 +304,14 @@ export function evaluateAiReviewGate({
     blockers: effectiveBlockers,
   };
 }
+
+/** True when the only gate miss is that required bots never posted. */
+export function isMissingReviewOnlyFailure(result) {
+  return (
+    result?.ok === false &&
+    Array.isArray(result.blockers) &&
+    result.blockers.length === 0 &&
+    Array.isArray(result.missing) &&
+    result.missing.length > 0
+  );
+}

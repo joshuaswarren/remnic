@@ -39,6 +39,15 @@ test("treats 429/502/503 as transient and leaves real 404s fatal", () => {
   );
 });
 
+test("treats GitHub 503 body text as transient even without a status", () => {
+  assert.equal(
+    isTransientGithubLookupError({
+      message: "No server is currently available to service your request.",
+    }),
+    true,
+  );
+});
+
 test("retries transient lookups then returns the success value", async () => {
   const sleeps = [];
   let calls = 0;

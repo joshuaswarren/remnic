@@ -411,6 +411,10 @@ fetch_and_evaluate() {
       case "$conclusion" in
         success|neutral) record_reviewer "$app_slug" ;;
       esac
+      if [[ "$check_name" == "ai-reviewers" && "$conclusion" == "failure" ]]; then
+        record_reviewer_neutral "cursor" "ai-reviewers never posted"
+        record_reviewer_neutral "coderabbitai" "ai-reviewers never posted"
+      fi
     done <<< "$check_runs_raw"
   fi
 

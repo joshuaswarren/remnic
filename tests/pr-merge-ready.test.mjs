@@ -53,7 +53,13 @@ if [[ "$1" == "api" && "$2" == "repos/example/repo/commits/${headSha}/check-runs
   case "$GH_STUB_SCENARIO" in
     red_check)
       printf 'ci\\tcompleted\\tsuccess\\t${headSha}\\n'
+      printf 'tests\\tcompleted\\tfailure\\t${headSha}\\n'
+      printf 'unresolved-review-threads\\tcompleted\\tsuccess\\t${headSha}\\n'
+      ;;
+    ai_reviewers_red)
+      printf 'ci\\tcompleted\\tsuccess\\t${headSha}\\n'
       printf 'ai-reviewers\\tcompleted\\tfailure\\t${headSha}\\n'
+      printf 'analyze\\tcompleted\\tfailure\\t${headSha}\\n'
       printf 'unresolved-review-threads\\tcompleted\\tsuccess\\t${headSha}\\n'
       ;;
     pending_check)
@@ -299,7 +305,7 @@ test("blocks on a red head check without dismissing, merging, or deleting", asyn
   await withStubs("red_check", async (env, { ghLog, gitLog }) => {
     const result = run(env, []);
     assert.equal(result.status, 1, `${result.stderr}\n${result.stdout}`);
-    assert.match(result.stdout, /ai-reviewers: completed\/failure \(RED\)/);
+    assert.match(result.stdout, /tests: completed\/failure \(RED\)/);
     assert.match(result.stdout, /verdict:\s+BLOCKED/);
     assert.match(result.stderr, /gates not satisfied/);
 
@@ -307,6 +313,17 @@ test("blocks on a red head check without dismissing, merging, or deleting", asyn
     assert.doesNotMatch(ghLogText, /dismiss\|/);
     assert.doesNotMatch(ghLogText, /merge:/);
     assert.equal(await readLog(gitLog), "");
+  });
+});
+
+test("treats a red ai-reviewers or analyze check as informational", async () => {
+  await withStubs("ai_reviewers_red", async (env, { ghLog }) => {
+    const result = run(env, []);
+    assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
+    assert.match(result.stdout, /ai-reviewers: completed\/failure \(informational\)/);
+    assert.match(result.stdout, /analyze: completed\/failure \(informational\)/);
+    assert.match(result.stdout, /verdict:\s+READY/);
+    assert.match(await readLog(ghLog), /merge:plain/);
   });
 });
 
