@@ -249,6 +249,21 @@ importers:
         specifier: ^5.7.0
         version: 5.9.3
 
+  packages/connector-droid:
+    devDependencies:
+      '@remnic/core':
+        specifier: workspace:*
+        version: link:../remnic-core
+      tsup:
+        specifier: ^8.0.0
+        version: 8.5.1(postcss@8.5.16)(tsx@4.23.0)(typescript@5.9.3)(yaml@2.9.0)
+      tsx:
+        specifier: ^4.0.0
+        version: 4.23.0
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
   packages/connector-fireflies:
     devDependencies:
       '@remnic/core':
@@ -651,7 +666,7 @@ importers:
     dependencies:
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
-        version: 1.29.0(zod@4.0.0)
+        version: 1.29.0(zod@3.25.76)
       '@remnic/core':
         specifier: workspace:^
         version: link:../remnic-core
@@ -2941,28 +2956,6 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@modelcontextprotocol/sdk@1.29.0(zod@4.0.0)':
-    dependencies:
-      '@hono/node-server': 1.19.14(hono@4.12.29)
-      ajv: 8.20.0
-      ajv-formats: 3.0.1
-      content-type: 1.0.5
-      cors: 2.8.6
-      cross-spawn: 7.0.6
-      eventsource: 3.0.7
-      eventsource-parser: 3.1.0
-      express: 5.2.1
-      express-rate-limit: 8.5.2(express@5.2.1)
-      hono: 4.12.29
-      jose: 6.2.3
-      json-schema-typed: 8.0.2
-      pkce-challenge: 5.0.1
-      raw-body: 3.0.2
-      zod: 4.0.0
-      zod-to-json-schema: 3.25.2(zod@4.0.0)
-    transitivePeerDependencies:
-      - supports-color
-
   '@msgpack/msgpack@3.1.3': {}
 
   '@napi-rs/wasm-runtime@0.2.12':
@@ -4406,10 +4399,6 @@ snapshots:
   zod-to-json-schema@3.25.2(zod@3.25.76):
     dependencies:
       zod: 3.25.76
-
-  zod-to-json-schema@3.25.2(zod@4.0.0):
-    dependencies:
-      zod: 4.0.0
 
   zod@3.25.76: {}
 
