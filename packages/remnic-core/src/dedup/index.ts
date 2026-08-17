@@ -245,7 +245,7 @@ function tokenizeForSimilarity(text: string): Set<string> {
 
 // ── Contradiction detection ──────────────────────────────────────────────────
 
-const NEGATION_WORDS = new Set([
+export const NEGATION_WORDS = new Set([
   "not",
   "don't",
   "doesn't",
@@ -317,9 +317,31 @@ function containsNegation(text: string): boolean {
   return words.some((w) => NEGATION_WORDS.has(w));
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Single vocabulary source: the strip pattern is derived from NEGATION_WORDS,
+// never hand-maintained. Keyed on the alternation content so any vocabulary
+// change (not just a size change) rebuilds the pattern.
+let stripNegationPattern: RegExp | null = null;
+let stripNegationPatternSource: string | null = null;
+
+function stripNegationRegex(): RegExp {
+  const alternation = [...NEGATION_WORDS]
+    .sort((a, b) => b.length - a.length)
+    .map(escapeRegExp)
+    .join("|");
+  if (stripNegationPattern === null || stripNegationPatternSource !== alternation) {
+    stripNegationPattern = new RegExp(`\\b(?:${alternation})\\b`, "gi");
+    stripNegationPatternSource = alternation;
+  }
+  return stripNegationPattern;
+}
+
 function stripNegation(text: string): string {
   return text
-    .replace(/\b(not|don't|doesn't|isn't|aren't|won't|can't|cannot|never|no|none|neither|nor|nothing|nowhere)\b/gi, "")
+    .replace(stripNegationRegex(), "")
     .replace(/\s+/g, " ")
     .trim();
 }
