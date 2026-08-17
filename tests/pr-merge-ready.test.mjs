@@ -60,6 +60,12 @@ if [[ "$1" == "api" && "$2" == "repos/example/repo/commits/${headSha}/check-runs
       printf 'ci\\tin_progress\\t-\\t${headSha}\\n'
       printf 'ai-reviewers\\tcompleted\\tsuccess\\t${headSha}\\n'
       ;;
+    rerun_green)
+      printf 'ci\\tcompleted\\tfailure\\t${headSha}\\n'
+      printf 'ci\\tcompleted\\tsuccess\\t${headSha}\\n'
+      printf 'ai-reviewers\\tcompleted\\tsuccess\\t${headSha}\\n'
+      printf 'unresolved-review-threads\\tcompleted\\tsuccess\\t${headSha}\\n'
+      ;;
     *)
       printf 'ci\\tcompleted\\tsuccess\\t${headSha}\\n'
       printf 'ai-reviewers\\tcompleted\\tsuccess\\t${headSha}\\n'
@@ -70,16 +76,23 @@ if [[ "$1" == "api" && "$2" == "repos/example/repo/commits/${headSha}/check-runs
 fi
 
 if [[ "$1" == "api" && "$2" == "repos/example/repo/pulls/7/reviews" ]]; then
-  case "$GH_STUB_SCENARIO" in
-    stale_review)
-      printf 'R_STALE\\tcoderabbitai[bot]\\t${staleSha}\\n'
-      ;;
-    current_head_changes)
-      printf 'R_FRESH\\tcoderabbitai[bot]\\t${headSha}\\n'
-      ;;
-    *)
-      ;;
-  esac
+  review_calls=$(( $(cat "$GH_STUB_REVIEWS_COUNT" 2>/dev/null || echo 0) + 1 ))
+  printf '%s\\n' "$review_calls" > "$GH_STUB_REVIEWS_COUNT"
+  # The gate-time query reads 3 columns (its jq mentions .user.login); the
+  # pre-admin recheck reads 2 (node_id, commit_id). Branch on the jq shape so
+  # each caller gets the column layout it parses.
+  if [[ "$*" == *"user.login"* ]]; then
+    case "$GH_STUB_SCENARIO" in
+      stale_review)
+        printf 'R_STALE\\tcoderabbitai[bot]\\t${staleSha}\\n'
+        ;;
+      current_head_changes)
+        printf 'R_FRESH\\tcoderabbitai[bot]\\t${headSha}\\n'
+        ;;
+    esac
+  elif [[ "$GH_STUB_SCENARIO" == "late_changes_requested" && "$review_calls" -ge 2 ]]; then
+    printf 'R_LATE\\t${headSha}\\n'
+  fi
   exit 0
 fi
 
@@ -123,8 +136,9 @@ if [[ "$1 $2" == "pr merge" ]]; then
     touch "$GH_STUB_DIR/merged"
     exit 0
   fi
+
   case "$GH_STUB_SCENARIO" in
-    admin_retry|merge_refused_twice)
+    admin_retry|merge_refused_twice|late_changes_requested)
       log "merge:plain:refused"
       echo "Pull request is not mergeable: merge state is BLOCKED" >&2
       exit 1
@@ -177,6 +191,7 @@ async function withStubs(scenario, fn) {
       ...process.env,
       GH_STUB_DIR: tmp,
       GH_STUB_LOG: ghLog,
+      GH_STUB_REVIEWS_COUNT: path.join(tmp, "reviews-count"),
       GIT_STUB_LOG: gitLog,
       GH_STUB_SCENARIO: scenario,
       REMNIC_GH_BIN: path.join(binDir, "gh"),
@@ -202,7 +217,6 @@ function run(env, args) {
 test("merges a green PR with --squash and deletes the branch only after MERGED", async () => {
   await withStubs("green", async (env, { ghLog, gitLog }) => {
     const result = run(env, []);
-    assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
 
     // Evidence block: head SHA, per-gate conclusions, thread count.
     assert.match(result.stdout, new RegExp(headSha));
@@ -216,7 +230,7 @@ test("merges a green PR with --squash and deletes the branch only after MERGED",
     assert.match(ghLogText, /merge:plain/);
 
     const gitLogText = await readLog(gitLog);
-    assert.match(gitLogText, /git push origin --delete feat\/example/);
+    assert.match(gitLogText, /git push origin --delete feat\/example/, `${result.stderr}\n${result.stdout}`);
   });
 });
 
@@ -356,4 +370,41 @@ test("usage errors exit 2", async () => {
   const result = spawnSync("bash", [scriptPath], { cwd: repoRoot, encoding: "utf8" });
   assert.equal(result.status, 2);
   assert.match(result.stderr, /Usage: scripts\/pr-merge-ready\.sh/);
+});
+test("a superseded failed re-run row does not block a green latest run", async () => {
+  await withStubs("rerun_green", async (env, { ghLog, gitLog }) => {
+    const result = run(env, []);
+    assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
+    assert.match(result.stdout, /ci: success/);
+    assert.match(result.stdout, /verdict:\s+READY/);
+    assert.match(await readLog(ghLog), /merge:plain/);
+    assert.match(await readLog(gitLog), /git push origin --delete feat\/example/);
+  });
+});
+
+test("refuses --admin retry when a live verdict lands on the head after gate verification", async () => {
+  await withStubs("late_changes_requested", async (env, { ghLog, gitLog }) => {
+    const result = run(env, []);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /CHANGES_REQUESTED review\(s\) now target the current head/);
+    const ghLogText = await readLog(ghLog);
+    assert.match(ghLogText, /merge:plain:refused/);
+    assert.doesNotMatch(ghLogText, /merge:admin/);
+    assert.equal(await readLog(gitLog), "");
+  });
+});
+
+test("rejects a fractional --timeout and a non-numeric PR number with usage exit 2", async () => {
+  await withStubs("green", async (env) => {
+    const fractional = run(env, ["--timeout", "1.5"]);
+    assert.equal(fractional.status, 2);
+    assert.match(fractional.stderr, /Invalid --timeout value/);
+
+    const flagFirst = spawnSync("bash", [scriptPath, "--check", "7"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env,
+    });
+    assert.equal(flagFirst.status, 2);
+  });
 });

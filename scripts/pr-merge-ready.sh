@@ -68,7 +68,17 @@ strip_gh_banner() {
 
 GH_BIN="$(resolve_gh)"
 gh() {
-  "$GH_BIN" "$@" 2> >(strip_gh_banner >&2) | strip_gh_banner
+  # Synchronous stderr filtering (round-1 review): an async process
+  # substitution `2> >(strip_gh_banner >&2)` can outlive the command
+  # substitution capturing this function's output, racing away failure text
+  # the merge path matches on ("already merged"). Capture stderr to a temp
+  # file, strip after gh exits, and preserve its status via pipefail.
+  local err_file status=0
+  err_file="$(mktemp)"
+  "$GH_BIN" "$@" 2>"$err_file" | strip_gh_banner || status=$?
+  strip_gh_banner <"$err_file" >&2
+  rm -f "$err_file"
+  return "$status"
 }
 
 resolve_git() {
@@ -95,6 +105,7 @@ if [[ $# -lt 1 ]]; then
   exit 2
 fi
 PR_NUMBER="$1"
+[[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || { usage; exit 2; }
 shift
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -102,10 +113,20 @@ while [[ $# -gt 0 ]]; do
       DRY_RUN=true
       shift
       ;;
-    --interval|--timeout)
+    --interval)
+      # Fractional OK: only `sleep` consumes it.
       [[ $# -ge 2 ]] || { usage; exit 2; }
-      [[ "$2" =~ ^[0-9]+([.][0-9]+)?$ ]] || { printf 'Invalid %s value: %s\n' "$1" "$2" >&2; exit 2; }
-      if [[ "$1" == "--timeout" ]]; then TIMEOUT="$2"; else INTERVAL="$2"; fi
+      [[ "$2" =~ ^[0-9]+([.][0-9]+)?$ ]] || { printf 'Invalid --interval value: %s\n' "$2" >&2; exit 2; }
+      INTERVAL="$2"
+      shift 2
+      ;;
+    --timeout)
+      # Integer only (round-1 review): the merge-poll deadline uses bash
+      # integer arithmetic; a fractional value would abort after a
+      # successful merge and skip the branch delete.
+      [[ $# -ge 2 ]] || { usage; exit 2; }
+      [[ "$2" =~ ^[0-9]+$ ]] || { printf 'Invalid --timeout value (integer seconds): %s\n' "$2" >&2; exit 2; }
+      TIMEOUT="$2"
       shift 2
       ;;
     *)
@@ -172,23 +193,41 @@ fi
 IFS=$'\t' read -r HEAD_SHA BRANCH PR_STATE MERGE_STATE <<< "$pr_meta"
 GATE_FAILURES=()
 GATE_LINES=""
-GATE_COUNT=0
+GATE_NAMES=0
 if ! check_runs_raw=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs" --paginate --jq '.check_runs[] | [.name, (.status // "-"), (.conclusion // "-"), (.head_sha // "-")] | @tsv' 2>/dev/null); then
   GATE_FAILURES+=("api:check-runs")
 else
+  # Per-name aggregation (round-1 review): a re-run leaves superseded rows on
+  # the same SHA, and branch protection honors the latest run per check name.
+  # A name is green when ANY of its runs completed green — the same semantics
+  # as scripts/pr-wait-settled.sh. Display shows the first (non-green) state
+  # only when no run for that name is green.
+  declare -A CHECK_STATE_LINES=()
   while IFS=$'\t' read -r gate_name run_status conclusion run_sha; do
     [[ -n "$gate_name" ]] || continue
     [[ "$run_sha" == "$HEAD_SHA" ]] || continue
-    GATE_COUNT=$((GATE_COUNT + 1))
-    if [[ "$run_status" == "completed" && "$conclusion" =~ ^(success|neutral|skipped)$ ]]; then
-      GATE_LINES+="  ${gate_name}: ${conclusion}"$'\n'
-    else
-      GATE_FAILURES+=("check:${gate_name}(${run_status}/${conclusion})")
-      GATE_LINES+="  ${gate_name}: ${run_status}/${conclusion:-pending} (RED)"$'\n'
-    fi
+    CHECK_STATE_LINES["$gate_name"]+="${run_status}/${conclusion}"$'\n'
   done <<< "$check_runs_raw"
+  for gate_name in "${!CHECK_STATE_LINES[@]}"; do
+    GATE_NAMES=$((GATE_NAMES + 1))
+    gate_green=""
+    gate_first=""
+    while IFS= read -r state_line; do
+      [[ -n "$state_line" ]] || continue
+      [[ -n "$gate_first" ]] || gate_first="$state_line"
+      case "$state_line" in
+        completed/success|completed/neutral|completed/skipped) gate_green="${state_line#completed/}" ;;
+      esac
+    done <<< "${CHECK_STATE_LINES[$gate_name]}"
+    if [[ -n "$gate_green" ]]; then
+      GATE_LINES+="  ${gate_name}: ${gate_green}"$'\n'
+    else
+      GATE_FAILURES+=("check:${gate_name}(${gate_first:-none})")
+      GATE_LINES+="  ${gate_name}: ${gate_first:-unknown} (RED)"$'\n'
+    fi
+  done
 fi
-if [[ "$GATE_COUNT" -eq 0 && ${#GATE_FAILURES[@]} -eq 0 ]]; then
+if [[ "$GATE_NAMES" -eq 0 && ${#GATE_FAILURES[@]} -eq 0 ]]; then
   GATE_FAILURES+=("check-runs:none-reported-on-head")
 fi
 
@@ -233,7 +272,7 @@ if [[ "$THREADS_READ_FAILED" == true ]]; then
 else
   printf 'threads:         %s unresolved / %s total\n' "$THREAD_UNRESOLVED" "$THREAD_TOTAL"
 fi
-printf 'gates (%s check runs on head):\n' "$GATE_COUNT"
+printf 'gates (%s distinct check names on head):\n' "$GATE_NAMES"
 if [[ -n "$GATE_LINES" ]]; then
   printf '%s' "$GATE_LINES"
 else
@@ -303,9 +342,26 @@ if [[ "$merge_ok" != true && "$already_merged" != true ]]; then
       "${current_head:-unreadable}" "${HEAD_SHA:0:7}" >&2
     exit 1
   fi
+  # Round-1 review: a CHANGES_REQUESTED posted on this same head AFTER the
+  # initial gate pass is a live rejection -- re-check before --admin so the
+  # fallback can never bulldoze a standing verdict.
+  late_blockers=0
+  if ! late_reviews_raw=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --paginate --jq '.[] | select(.state == "CHANGES_REQUESTED") | [(.node_id // "-"), (.commit_id // "-")] | @tsv' 2>/dev/null); then
+    printf '[pr-merge] FAIL: cannot re-read reviews before --admin retry; refusing.\n' >&2
+    exit 1
+  fi
+  while IFS=$'\t' read -r late_node late_commit; do
+    [[ -n "$late_node" ]] || continue
+    [[ "$late_commit" == "$HEAD_SHA" ]] && late_blockers=$((late_blockers + 1))
+  done <<< "$late_reviews_raw"
+  if [[ "$late_blockers" -gt 0 ]]; then
+    printf '[pr-merge] FAIL: %s CHANGES_REQUESTED review(s) now target the current head; refusing --admin retry.\n' \
+      "$late_blockers" >&2
+    exit 1
+  fi
   printf '[pr-merge] plain merge refused: %s\n' "$merge_out"
   printf '[pr-merge] retrying ONCE with --admin. WHY: every verified precondition held (head %s check runs green, %s unresolved threads, %s stale verdict(s) dismissed, head unchanged at %s) and GitHub still refuses — known mergeStateStatus BLOCKED-after-dismissal behavior (issue #2440).\n' \
-    "$GATE_COUNT" "$THREAD_UNRESOLVED" "${#STALE_REVIEWS[@]}" "$HEAD_SHA"
+    "$GATE_NAMES" "$THREAD_UNRESOLVED" "${#STALE_REVIEWS[@]}" "$HEAD_SHA"
   if ! merge_out=$(gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --admin --match-head-commit "$HEAD_SHA" 2>&1); then
     printf '[pr-merge] FAIL: --admin merge also refused: %s\n' "$merge_out" >&2
     exit 1
