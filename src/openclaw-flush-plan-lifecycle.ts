@@ -12,6 +12,11 @@ import {
   writeFile,
 } from "node:fs/promises";
 import type { ImportTurn } from "@remnic/core/bulk-import";
+import {
+  ingestFlushPlanImportTurns,
+  isFailedIngestResult,
+} from "./openclaw-flush-plan-serial-ingest.js";
+
 
 export type OpenClawFlushPlanProcessStatus =
   | "disabled"
@@ -764,51 +769,6 @@ function timestampForFlushPlanChunk(importedAt: string, chunkIndex: number): str
   return new Date(importedAtMs + chunkIndex).toISOString();
 }
 
-function isFailedIngestResult(
-  result: void | OpenClawFlushPlanIngestResult,
-): boolean {
-  return Boolean(
-    result &&
-      typeof result === "object" &&
-      typeof result.failedCount === "number" &&
-      result.failedCount > 0,
-  );
-}
-
-function partialIngestResultFromError(
-  error: unknown,
-): OpenClawFlushPlanIngestResult | undefined {
-  if (!error || typeof error !== "object") return undefined;
-  const partialResult = (error as { partialResult?: unknown }).partialResult;
-  if (!partialResult || typeof partialResult !== "object") return undefined;
-  return partialResult as OpenClawFlushPlanIngestResult;
-}
-
-async function ingestFlushPlanImportTurns(params: {
-  ingestor: OpenClawFlushPlanIngestor;
-  importTurns: ImportTurn[];
-  deadlineMs?: number;
-}): Promise<void | OpenClawFlushPlanIngestResult> {
-  try {
-    return await params.ingestor.ingestBulkImportBatch(params.importTurns, {
-      ...(params.deadlineMs === undefined
-        ? {}
-        : { deadlineMs: params.deadlineMs }),
-      failOnExtractionFailure: true,
-      includeSourceValidAtContext: false,
-    });
-  } catch (error) {
-    const partialResult = partialIngestResultFromError(error);
-    if (
-      partialResult &&
-      typeof partialResult.processedTurnCount === "number" &&
-      partialResult.processedTurnCount > 0
-    ) {
-      return partialResult;
-    }
-    throw error;
-  }
-}
 
 function hasPostPersistMetadataFailure(
   result: void | OpenClawFlushPlanIngestResult,

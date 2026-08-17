@@ -349,6 +349,46 @@ test("processOpenClawFlushPlanFile chunks oversized snapshots before clearing", 
   });
 });
 
+test("processOpenClawFlushPlanFile replays oversized chunks in isolated size-one batches", async () => {
+  await withWorkspace(async (workspaceDir, flushPlanPath) => {
+    const maxTurnChars = 260;
+    const content = [
+      `- ${"Alpha serial flush-plan detail ".repeat(8)}`,
+      `- ${"Beta serial flush-plan detail ".repeat(8)}`,
+      `- ${"Gamma serial flush-plan detail ".repeat(8)}`,
+    ].join("\n");
+    await writeFlushPlan(flushPlanPath, content);
+    const batchSizes: number[] = [];
+    const received: ImportTurn[] = [];
+
+    const result = await processOpenClawFlushPlanFile({
+      enabled: true,
+      workspaceDir,
+      serviceId: SERVICE_ID,
+      maxTurnChars,
+      now: () => new Date("2026-06-24T00:00:00.000Z"),
+      ingestor: {
+        async ingestBulkImportBatch(turns) {
+          batchSizes.push(turns.length);
+          received.push(...turns);
+        },
+      },
+    });
+
+    assert.equal(result.status, "processed");
+    assert.ok(received.length > 1, "fixture should produce multiple chunks");
+    assert.equal(batchSizes.length, received.length);
+    assert.ok(
+      batchSizes.every((size) => size === 1),
+      `every oversized-plan ingest batch must have size one, got ${batchSizes.join(",")}`,
+    );
+    assert.equal(
+      received.map((turn) => String(turn.rawContent ?? "")).join(""),
+      content.trim(),
+    );
+  });
+});
+
 test("processOpenClawFlushPlanFile reuses pending marker chunk fingerprints after config changes", async () => {
   await withWorkspace(async (workspaceDir, flushPlanPath) => {
     const firstMaxTurnChars = 260;
@@ -358,7 +398,6 @@ test("processOpenClawFlushPlanFile reuses pending marker chunk fingerprints afte
       `- ${"Gamma pending flush-plan detail ".repeat(8)}`,
     ].join("\n");
     await writeFlushPlan(flushPlanPath, content);
-    const firstTurns: ImportTurn[] = [];
 
     await assert.rejects(
       processOpenClawFlushPlanFile({
@@ -369,7 +408,11 @@ test("processOpenClawFlushPlanFile reuses pending marker chunk fingerprints afte
         now: () => new Date("2026-06-24T00:00:00.000Z"),
         ingestor: {
           async ingestBulkImportBatch(turns) {
-            firstTurns.push(...turns);
+            assert.equal(
+              turns.length,
+              1,
+              "flush-plan chunks must be replayed one batch per turn",
+            );
             throw new Error("backend unavailable");
           },
         },
@@ -377,15 +420,17 @@ test("processOpenClawFlushPlanFile reuses pending marker chunk fingerprints afte
       /backend unavailable/,
     );
 
-    assert.ok(firstTurns.length > 1);
     const marker = JSON.parse(
       await readFile(processedMarkerPath(flushPlanPath), "utf8"),
     ) as {
       status?: string;
-      processedChunks?: unknown[];
+      processedChunks?: {
+        turnFingerprint?: string;
+        timestamp?: string;
+      }[];
     };
     assert.equal(marker.status, "pending");
-    assert.equal(marker.processedChunks?.length, firstTurns.length);
+    assert.ok((marker.processedChunks?.length ?? 0) > 1);
 
     const secondTurns: ImportTurn[] = [];
     const result = await processOpenClawFlushPlanFile({
@@ -395,23 +440,29 @@ test("processOpenClawFlushPlanFile reuses pending marker chunk fingerprints afte
       maxTurnChars: 4000,
       ingestor: {
         async ingestBulkImportBatch(turns) {
+          assert.equal(
+            turns.length,
+            1,
+            "marker recovery must keep replaying one batch per turn",
+          );
           secondTurns.push(...turns);
         },
       },
     });
 
     assert.equal(result.status, "processed_marker_recovered");
-    assert.deepEqual(
-      secondTurns.map((turn) => turn.rawContent),
-      firstTurns.map((turn) => turn.rawContent),
-    );
+    assert.equal(secondTurns.length, marker.processedChunks?.length);
     assert.deepEqual(
       secondTurns.map((turn) => turn.turnFingerprint),
-      firstTurns.map((turn) => turn.turnFingerprint),
+      marker.processedChunks?.map((chunk) => chunk.turnFingerprint),
     );
     assert.deepEqual(
       secondTurns.map((turn) => turn.timestamp),
-      firstTurns.map((turn) => turn.timestamp),
+      marker.processedChunks?.map((chunk) => chunk.timestamp),
+    );
+    assert.equal(
+      secondTurns.map((turn) => String(turn.rawContent ?? "")).join(""),
+      content.trim(),
     );
   });
 });
@@ -1220,7 +1271,6 @@ test("processOpenClawFlushPlanFile defers cleanup without retry after metadata-o
     assert.equal(importCalls, 1);
   });
 });
-
 test("processOpenClawFlushPlanFile preserves only failed tail after partial durable import", async () => {
   await withWorkspace(async (workspaceDir, flushPlanPath) => {
     const content =
@@ -1238,23 +1288,29 @@ test("processOpenClawFlushPlanFile preserves only failed tail after partial dura
       ingestor: {
         async ingestBulkImportBatch(turns) {
           importCalls += 1;
-          assert.ok(turns.length > 1, "test fixture should produce multiple chunks");
-          firstProcessedChunk =
-            typeof turns[0]?.rawContent === "string"
-              ? turns[0].rawContent
-              : (turns[0]?.content ?? "");
+          assert.equal(
+            turns.length,
+            1,
+            "flush-plan chunks must be replayed one batch per turn",
+          );
+          if (importCalls === 1) {
+            firstProcessedChunk =
+              typeof turns[0]?.rawContent === "string"
+                ? turns[0].rawContent
+                : (turns[0]?.content ?? "");
+            return undefined;
+          }
           const partialFailure = new Error("later chunk failed") as Error & {
             partialResult: Record<string, unknown>;
           };
           partialFailure.partialResult = {
-            attemptedTurnCount: turns.length,
-            extractionCount: 1,
-            persistedCount: 1,
-            durableOutputCount: 1,
+            attemptedTurnCount: 1,
+            extractionCount: 0,
+            persistedCount: 0,
+            durableOutputCount: 0,
             skippedCount: 0,
             failedCount: 1,
             postPersistMetadataFailureCount: 1,
-            processedTurnCount: 1,
           };
           throw partialFailure;
         },
@@ -1265,6 +1321,7 @@ test("processOpenClawFlushPlanFile preserves only failed tail after partial dura
     assert.match(first.reason ?? "", /metadata persistence was incomplete/);
     assert.equal(await readFile(flushPlanPath, "utf8"), content);
     assert.ok(firstProcessedChunk.length > 0);
+    assert.equal(importCalls, 2);
 
     const second = await processOpenClawFlushPlanFile({
       enabled: true,
@@ -1284,7 +1341,6 @@ test("processOpenClawFlushPlanFile preserves only failed tail after partial dura
       content.slice(firstProcessedChunk.length),
     );
     await assert.rejects(readFile(processedMarkerPath(flushPlanPath), "utf8"), /ENOENT/);
-    assert.equal(importCalls, 1);
   });
 });
 
