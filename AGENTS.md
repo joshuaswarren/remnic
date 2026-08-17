@@ -243,6 +243,19 @@ Merge with `gh pr merge <number> --squash`. Do not add `--delete-branch` when
 git push origin --delete <branch>
 ```
 
+For the whole end-of-review sequence in one command, run
+`scripts/pr-merge-ready.sh <pr-number>` (issue #2440): it verifies the head
+SHA's check-run conclusions and the GraphQL unresolved-thread count, prints an
+evidence block (head SHA, per-gate conclusion, thread count), dismisses
+`CHANGES_REQUESTED` reviews that target a superseded head with a reason string,
+merges `--squash` — retrying once with `--admin` only when every verified
+precondition held and the head is unchanged (GitHub can leave mergeStateStatus
+BLOCKED after a dismissal even with head checks green) — and deletes the remote
+branch only after polling confirms `state=MERGED`, because deleting before the
+merge confirms auto-closes the PR (hit on #2434). `--check` prints the plan
+without acting. A `CHANGES_REQUESTED` verdict on the current head blocks the
+merge rather than being dismissed.
+
 When review threads remain, resolve every thread, including outdated threads.
 If `unresolved-review-threads` stays red, dispatch the check-unsticker workflow:
 
