@@ -333,3 +333,59 @@ test("extraction schema permits empty optional question output", () => {
   assert.deepEqual(parsed.data?.questions, []);
   assert.match(ExtractionResultSchema.shape.questions.description ?? "", /zero to three/i);
 });
+
+test("extraction schema salvages valid items from mixed-validity model arrays", () => {
+  const parsed = ExtractionResultSchema.parse({
+    facts: [
+      {
+        category: "fact",
+        content: "Keep this valid memory.",
+        confidence: 0.95,
+        tags: ["salvage"],
+      },
+      {
+        category: "procedure",
+        content: "Malformed one-step procedure.",
+        confidence: 0.8,
+        tags: ["salvage"],
+        procedureSteps: [{ order: 1, intent: "Only one step" }],
+      },
+      {
+        category: "invented_category",
+        content: "Invalid enum value.",
+        confidence: 0.7,
+        tags: ["salvage"],
+      },
+    ],
+    profileUpdates: ["Keep this profile update.", { invalid: true }],
+    entities: [
+      { name: "qmd", type: "tool", facts: ["Valid entity fact."] },
+      { name: "invalid", type: "skill", facts: ["Invalid entity type."] },
+    ],
+    questions: [
+      { question: "Valid question?", context: "Schema fixture", priority: 0.5 },
+      { question: "Invalid priority", context: "Schema fixture", priority: 9 },
+    ],
+    relationships: [
+      { source: "remnic", target: "qmd", label: "uses" },
+      { source: "missing-fields" },
+    ],
+  });
+
+  assert.deepEqual(parsed.facts.map((fact) => fact.content), ["Keep this valid memory."]);
+  assert.deepEqual(parsed.profileUpdates, ["Keep this profile update."]);
+  assert.deepEqual(parsed.entities.map((entity) => entity.name), ["qmd"]);
+  assert.deepEqual(parsed.questions.map((question) => question.question), ["Valid question?"]);
+  assert.deepEqual(parsed.relationships?.map((relationship) => relationship.label), ["uses"]);
+});
+
+test("extraction schema rejects wholly-invalid non-empty arrays for retry", () => {
+  const parsed = ExtractionResultSchema.safeParse({
+    facts: [{ category: "invented_category", content: "Invalid.", confidence: 0.7, tags: [] }],
+    profileUpdates: [],
+    entities: [],
+    questions: [],
+  });
+
+  assert.equal(parsed.success, false);
+});

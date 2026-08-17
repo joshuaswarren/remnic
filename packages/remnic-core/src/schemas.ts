@@ -253,26 +253,52 @@ export const ExtractedRelationshipSchema = z.object({
     .describe("Optional proactive follow-up question that surfaced this relationship."),
 });
 
+function salvageArrayItems<T>(raw: unknown, schema: z.ZodType<T>): unknown {
+  if (!Array.isArray(raw)) return [];
+  const salvaged: T[] = [];
+  for (const item of raw) {
+    const parsed = schema.safeParse(item);
+    if (parsed.success) salvaged.push(parsed.data);
+  }
+  // Keep a wholly-invalid non-empty array invalid so callers can retry rather
+  // than silently accepting an empty extraction. Mixed batches retain the
+  // valid items instead of discarding the entire model response.
+  return raw.length > 0 && salvaged.length === 0 ? raw : salvaged;
+}
+
+function salvageStringItems(raw: unknown): unknown {
+  if (!Array.isArray(raw)) return [];
+  const salvaged = raw.filter((item): item is string => typeof item === "string");
+  return raw.length > 0 && salvaged.length === 0 ? raw : salvaged;
+}
+
 export const ProactiveExtractionResultSchema = z.object({
   facts: z
-    .array(ExtractedFactSchema)
+    .preprocess(
+      (raw) => salvageArrayItems(raw, ExtractedFactSchema),
+      z.array(ExtractedFactSchema),
+    )
     .describe(
       "Additional high-confidence memories recovered only after answering proactive follow-up questions from the same buffered conversation.",
     ),
   profileUpdates: z
-    .array(z.string())
+    .preprocess(salvageStringItems, z.array(z.string()))
     .describe(
       "Additional profile updates directly supported by the buffered conversation. Omit anything speculative.",
     ),
   entities: z
-    .array(EntityMentionSchema)
+    .preprocess(
+      (raw) => salvageArrayItems(raw, EntityMentionSchema),
+      z.array(EntityMentionSchema),
+    )
     .describe(
       "Additional entities or entity facts surfaced by the proactive follow-up pass.",
     ),
   relationships: z
-    .array(ExtractedRelationshipSchema)
-    .optional()
-    .nullable()
+    .preprocess(
+      (raw) => raw == null ? raw : salvageArrayItems(raw, ExtractedRelationshipSchema),
+      z.array(ExtractedRelationshipSchema).optional().nullable(),
+    )
     .describe(
       "Additional relationships surfaced by the proactive follow-up pass.",
     ),
@@ -280,22 +306,31 @@ export const ProactiveExtractionResultSchema = z.object({
 
 export const ExtractionResultSchema = z.object({
   facts: z
-    .array(ExtractedFactSchema)
+    .preprocess(
+      (raw) => salvageArrayItems(raw, ExtractedFactSchema),
+      z.array(ExtractedFactSchema),
+    )
     .describe(
       "Extracted memories from the conversation. Include facts, preferences, corrections, and decisions. Only extract genuinely new, durable information — skip transient task state.",
     ),
   profileUpdates: z
-    .array(z.string())
+    .preprocess(salvageStringItems, z.array(z.string()))
     .describe(
       "Updates to the user's behavioral profile. Each string is a standalone statement about the user's preferences, habits, or personality. Only include genuinely new insights.",
     ),
   entities: z
-    .array(EntityMentionSchema)
+    .preprocess(
+      (raw) => salvageArrayItems(raw, EntityMentionSchema),
+      z.array(EntityMentionSchema),
+    )
     .describe(
       "Entities mentioned in the conversation with new facts about them.",
     ),
   questions: z
-    .array(ExtractedQuestionSchema)
+    .preprocess(
+      (raw) => salvageArrayItems(raw, ExtractedQuestionSchema),
+      z.array(ExtractedQuestionSchema),
+    )
     .describe(
       "Zero to three source-grounded questions useful in future sessions. Return an empty array when the conversation supports none.",
     ),
@@ -312,9 +347,10 @@ export const ExtractionResultSchema = z.object({
     .nullable()
     .describe("A six-to-eight word title for this conversation segment."),
   relationships: z
-    .array(ExtractedRelationshipSchema)
-    .optional()
-    .nullable()
+    .preprocess(
+      (raw) => raw == null ? raw : salvageArrayItems(raw, ExtractedRelationshipSchema),
+      z.array(ExtractedRelationshipSchema).optional().nullable(),
+    )
     .describe(
       "Relationships between entities discovered in this conversation. Max 5 per extraction. Format: {source, target, label}.",
     ),
