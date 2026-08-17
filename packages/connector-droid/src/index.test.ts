@@ -68,6 +68,32 @@ test("upsertFactoryMcpRemnicEntry updates remnic entry on re-install", () => {
   assert.equal(headers["Authorization"], "Bearer new-token-789");
 });
 
+test("upsertFactoryMcpRemnicEntry does not preserve stale X-Engram-Namespace on reinstall", () => {
+  const prior = JSON.stringify({
+    mcpServers: {
+      remnic: { type: "http", url: "http://localhost:4318/mcp", headers: { Authorization: "Bearer old", "X-Engram-Namespace": "old-ns" } },
+    },
+  });
+  // Reinstall without namespace — should NOT preserve the old namespace.
+  const config = upsertFactoryMcpRemnicEntry(prior, "new-tok", {});
+  const remnic = (config.mcpServers as Record<string, Record<string, unknown>>).remnic;
+  const headers = remnic.headers as Record<string, string>;
+  assert.equal(headers["Authorization"], "Bearer new-tok");
+  assert.ok(!("X-Engram-Namespace" in headers), "stale X-Engram-Namespace must not be preserved");
+});
+
+test("upsertFactoryMcpRemnicEntry preserves user-managed headers on reinstall", () => {
+  const prior = JSON.stringify({
+    mcpServers: {
+      remnic: { type: "http", url: "http://localhost:4318/mcp", headers: { Authorization: "Bearer old", "X-Custom-Header": "my-value" } },
+    },
+  });
+  const config = upsertFactoryMcpRemnicEntry(prior, "new-tok", {});
+  const remnic = (config.mcpServers as Record<string, Record<string, unknown>>).remnic;
+  const headers = remnic.headers as Record<string, string>;
+  assert.equal(headers["X-Custom-Header"], "my-value");
+});
+
 test("upsertFactoryMcpRemnicEntry adds namespace header when configured", () => {
   const config = upsertFactoryMcpRemnicEntry(null, "tok", { namespace: "my-project" });
   const remnic = (config.mcpServers as Record<string, Record<string, unknown>>).remnic;
@@ -81,10 +107,11 @@ test("upsertFactoryMcpRemnicEntry uses custom mcpServerUrl when provided", () =>
   assert.equal(remnic.url, "http://custom:9999/mcp");
 });
 
-test("upsertFactoryMcpRemnicEntry handles malformed prior JSON gracefully", () => {
-  const config = upsertFactoryMcpRemnicEntry("not valid json", "tok", {});
-  const servers = config.mcpServers as Record<string, unknown>;
-  assert.ok("remnic" in servers);
+test("upsertFactoryMcpRemnicEntry throws on malformed prior JSON instead of silently discarding entries", () => {
+  assert.throws(
+    () => upsertFactoryMcpRemnicEntry("not valid json", "tok", {}),
+    /malformed JSON/,
+  );
 });
 
 test("removeFactoryMcpRemnicEntry removes the remnic entry and preserves others", () => {

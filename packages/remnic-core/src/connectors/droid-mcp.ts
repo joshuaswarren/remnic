@@ -117,6 +117,9 @@ saveTokenStoreFn: (store: any) => void,
 export function readDroidMcpProvenance(configPath: string): DroidMcpProvenance {
   let mcpConfigPath: string | null = null;
   let registryParseFailed = false;
+  if (!fs.existsSync(configPath)) {
+    return { mcpConfigPath: null, registryParseFailed: false };
+  }
   try {
     const stored = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
     if (typeof stored.factoryMcpPath === "string" && stored.factoryMcpPath.length > 0) {
@@ -247,35 +250,43 @@ export interface DroidDoctorCheck {
  */
 export function droidMcpDoctorCheck(savedPath: string | undefined): DroidDoctorCheck {
   const mcpPath = savedPath ?? resolveFactoryMcpPath();
+  // Safety gate: validate persisted path before reading (mirrors removeConnector).
+  if (savedPath !== undefined) {
+    const expectedSuffix = path.join(".factory", "mcp.json");
+    if (!path.isAbsolute(savedPath) || !savedPath.endsWith(expectedSuffix)) {
+      return { name: "Droid MCP config", ok: false, detail: `Unsafe path in droid.json: ${savedPath}` };
+    }
+  }
   try {
     const raw = fs.readFileSync(mcpPath, "utf8");
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const servers = parsed.mcpServers;
-    const hasRemnic =
-      typeof servers === "object" && servers !== null &&
-      "remnic" in (servers as Record<string, unknown>);
+    if (typeof servers !== "object" || servers === null || !("remnic" in (servers as Record<string, unknown>))) {
+      return { name: "Droid MCP config", ok: false, detail: `remnic entry missing in ${mcpPath} — run \`remnic connectors install droid\`` };
+    }
+    const remnic = (servers as Record<string, Record<string, unknown>>).remnic;
+    // Validate the entry has the expected shape (type + url + Authorization).
+    if (remnic.type !== "http" || typeof remnic.url !== "string") {
+      return { name: "Droid MCP config", ok: false, detail: `remnic entry malformed in ${mcpPath}` };
+    }
+    const headers = remnic.headers as Record<string, unknown> | undefined;
+    const hasAuth = headers && typeof headers["Authorization"] === "string" && (headers["Authorization"] as string).startsWith("Bearer ");
     return {
       name: "Droid MCP config",
-      ok: hasRemnic,
-      detail: hasRemnic
-        ? `remnic entry present in ${mcpPath}`
-        : `remnic entry missing in ${mcpPath} — run \`remnic connectors install droid\``,
+      ok: !!hasAuth,
+      detail: hasAuth ? `remnic entry present in ${mcpPath}` : `remnic entry missing Authorization header in ${mcpPath} — run \`remnic connectors install droid\``,
     };
   } catch {
-    return {
-      name: "Droid MCP config",
-      ok: false,
-      detail: `Cannot read ${mcpPath} — run \`remnic connectors install droid\``,
-    };
+    return { name: "Droid MCP config", ok: false, detail: `Cannot read ${mcpPath} — run \`remnic connectors install droid\`` };
   }
 }
 
 // ── Path resolution and low-level helpers ───────────────────────────────────
 
 /**
- * Resolve the path to ~/.factory/mcp.json. Honours HOME / USERPROFILE env
- * overrides so tests can point the install at a temp dir without leaking
- * into the real home directory. Always returns an absolute path.
+ * Resolve the path to ~/.factory/mcp.json. Honours the HOME env override
+ * so tests can point the install at a temp dir without leaking into the
+ * real home directory. Falls back to os.homedir() when HOME is unset.
  */
 export function resolveFactoryMcpPath(): string {
   const envHome = readEnvVar("HOME");
@@ -324,10 +335,17 @@ export function upsertFactoryMcpRemnicEntry(
       if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
         config = parsed as Record<string, unknown>;
       } else {
+        // Non-object JSON — start fresh but warn in console.
+        console.warn("[remnic/connectors] ~/.factory/mcp.json contained non-object JSON; starting fresh.");
         config = {};
       }
     } catch {
-      config = {};
+      // Malformed JSON — do NOT silently discard other MCP server entries.
+      // Throw so the caller can surface the error instead of overwriting the file.
+      throw new Error(
+        "~/.factory/mcp.json contains malformed JSON and cannot be parsed. " +
+        "Fix the file manually before reinstalling, or use --force to overwrite (this will lose existing MCP server entries).",
+      );
     }
   } else {
     config = {};
@@ -345,6 +363,10 @@ export function upsertFactoryMcpRemnicEntry(
 
   const remnicEntry: Record<string, unknown> = { type: "http", url: mcpUrl };
 
+  // Preserve prior headers EXCEPT Remnic-managed ones (Authorization,
+  // X-Engram-Namespace). These are always replaced from the current install
+  // config so a reinstall that clears namespace does not leave a stale header.
+  const REMNIC_MANAGED_HEADERS = new Set(["Authorization", "X-Engram-Namespace"]);
   const headers: Record<string, string> = {};
   if (
     typeof servers.remnic === "object" && servers.remnic !== null &&
@@ -353,7 +375,7 @@ export function upsertFactoryMcpRemnicEntry(
   ) {
     const priorHeaders = (servers.remnic as Record<string, Record<string, unknown>>).headers as Record<string, unknown>;
     for (const [key, value] of Object.entries(priorHeaders)) {
-      if (key !== "Authorization" && typeof value === "string") {
+      if (!REMNIC_MANAGED_HEADERS.has(key) && typeof value === "string") {
         headers[key] = value;
       }
     }

@@ -231,7 +231,7 @@ test("droid install/remove/doctor flow with temp HOME", async () => {
     // Verify droid.json is deleted
     assert.ok(!fs.existsSync(droidJsonPath), "droid.json must be deleted after remove");
   } finally {
-    process.env.HOME = origHome;
+    if (origHome !== undefined) process.env.HOME = origHome; else delete process.env.HOME;
     if (origRemnicHome !== undefined) {
       process.env.REMNIC_HOME = origRemnicHome;
     } else {
@@ -292,7 +292,7 @@ test("droid install preserves user-level mcp.json and never touches project-leve
       "project-level .factory/mcp.json must NOT be created by install",
     );
   } finally {
-    process.env.HOME = origHome;
+    if (origHome !== undefined) process.env.HOME = origHome; else delete process.env.HOME;
     if (origRemnicHome !== undefined) {
       process.env.REMNIC_HOME = origRemnicHome;
     } else {

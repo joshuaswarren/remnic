@@ -20,7 +20,7 @@ For the live-connector framework contract (how to write one) see
 
 | Command | Family | What it does |
 |---|---|---|
-| `remnic connectors list` | Agent-tool | List the 14 marketplace agent-tool connectors and their install state |
+| `remnic connectors list` | Agent-tool | List the 15 marketplace agent-tool connectors and their install state |
 | `remnic connectors install <id>` | Agent-tool | Install a connector and publish its memory extension |
 | `remnic connectors remove <id>` | Agent-tool | Remove a connector and unpublish its extension |
 | `remnic connectors doctor <id>` | Agent-tool | Health-check one connector and its publisher |

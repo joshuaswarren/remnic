@@ -100,7 +100,7 @@ If you prefer to configure Droid manually, add this to `~/.factory/mcp.json`:
   "mcpServers": {
     "remnic": {
       "type": "http",
-      "url": "http://localhost:4318/mcp",
+      "url": "http://127.0.0.1:4318/mcp",
       "headers": {
         "Authorization": "Bearer <your-remnic-token>"
       }

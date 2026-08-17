@@ -28,6 +28,11 @@
   "peerDependencies": {
     "@remnic/core": "^9.63.0"
   },
+  "peerDependenciesMeta": {
+    "@remnic/core": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@remnic/core": "workspace:*",
     "tsup": "^8.0.0",
