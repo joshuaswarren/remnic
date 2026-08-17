@@ -29,6 +29,15 @@ import {
 } from "./hermes-shim.js";
 import { getConnectorsDir, getRegistryPath } from "./paths.js";
 export { getConnectorsDir, getRegistryPath } from "./paths.js";
+export { resolveFactoryMcpPath, upsertFactoryMcpRemnicEntry, removeFactoryMcpRemnicEntry } from "./droid-mcp.js";
+export { DROID_CONNECTOR_MANIFEST } from "./droid-mcp.js";
+import {
+  DROID_CONNECTOR_MANIFEST,
+  droidInstallStep,
+  removeDroidMcpEntry as removeDroidMcpEntryImpl,
+  droidMcpDoctorCheck as droidMcpDoctorCheckImpl,
+  readDroidMcpProvenance,
+} from "./droid-mcp.js";
 
 // Native memory artifact materialization for Codex CLI (#378). Surfaced here
 // so downstream callers can `import { materializeForNamespace } from "@remnic/core/connectors"`.
@@ -565,32 +574,7 @@ export const BUILTIN_CONNECTORS: ConnectorManifest[] = [
     tags: ["official", "python", "hermes"],
     requiresToken: true,
   },
-  {
-    id: "droid",
-    name: "Factory Droid",
-    version: "1.0.0",
-    description:
-      "Factory Droid — AI software engineering agent; memory via HTTP MCP with bearer auth",
-    capabilities: {
-      observe: true,
-      recall: true,
-      store: true,
-      search: true,
-      entities: true,
-      realtimeSync: true,
-      batch: true,
-      maxBudgetChars: 32000,
-      connectionType: "mcp",
-    },
-    configSchema: {
-      mcpServerUrl: "URL of the MCP Remnic server (default: http://127.0.0.1:4318/mcp)",
-      namespace: "Optional namespace",
-    },
-    homepage: "https://factory.ai",
-    author: "Remnic",
-    tags: ["official", "ai", "droid", "factory"],
-    requiresToken: true,
-  },
+  DROID_CONNECTOR_MANIFEST,
 ];
 
 // ── Registry management ───────────────────────────────────────────────────
@@ -2055,76 +2039,21 @@ export function installConnector(options: InstallOptions): InstallResult {
   }
 
   // ── Droid: write remnic MCP server entry to ~/.factory/mcp.json ──────────
-  //
-  // Factory Droid reads MCP server config from the USER-level ~/.factory/mcp.json
-  // (never the project-level .factory/mcp.json, which may be committed to git).
-  // installConnector writes a "remnic" entry under mcpServers with HTTP transport
-  // and the freshly minted bearer token so Droid can authenticate to the Remnic
-  // daemon. Existing entries are preserved; only the "remnic" key is upserted.
-  //
-  // The token is NOT written into the connector.json registry file (same rule
-  // as all other connectors). It lives only in ~/.factory/mcp.json (which Droid
-  // reads) and ~/.remnic/tokens.json (the authoritative store). The registry
-  // JSON persists the resolved factoryMcpPath so removeConnector can locate the
-  // exact file later even if HOME or the env changes.
   let droidMcpRollback: (() => void) | null = null;
   if (options.connectorId === "droid") {
-    try {
-      const mcpPath = resolveFactoryMcpPath();
-      const priorContent = readFactoryMcpIfExists(mcpPath);
-      const mcpConfig = upsertFactoryMcpRemnicEntry(
-        priorContent,
-        tokenEntry?.token,
-        resolvedConfig,
-      );
-      fs.mkdirSync(path.dirname(mcpPath), { recursive: true });
-      droidMcpRollback = () => {
-        try {
-          if (priorContent === null) {
-            if (fs.existsSync(mcpPath)) fs.unlinkSync(mcpPath);
-          } else {
-            writeSecretFileSync(mcpPath, priorContent);
-          }
-        } catch {
-          // Best-effort rollback.
-        }
-      };
-      try {
-        writeSecretFileSync(mcpPath, JSON.stringify(mcpConfig, null, 2));
-      } catch (writeErr) {
-        try { droidMcpRollback(); } catch { /* best-effort */ }
-        droidMcpRollback = null;
-        throw writeErr;
-      }
-      resolvedConfig.factoryMcpPath = mcpPath;
-    } catch (droidErr) {
-      let tokenRolledBack = false;
-      let tokenRollbackMsg = "";
-      if (tokenEntry !== null && nonHermesPriorTokenStore !== null) {
-        try {
-          saveTokenStore(nonHermesPriorTokenStore);
-          tokenRolledBack = true;
-        } catch (tokenRestoreErr) {
-          tokenRolledBack = false;
-          tokenRollbackMsg =
-            tokenRestoreErr instanceof Error ? tokenRestoreErr.message : String(tokenRestoreErr);
-        }
-      }
-      const tokenSuffix = manifest.requiresToken && tokenEntry !== null
-        ? tokenRolledBack
-          ? " Token has been rolled back."
-          : ` Token rollback FAILED (${tokenRollbackMsg}) — tokens.json may contain an orphaned entry. ` +
-            `Manually inspect ~/.remnic/tokens.json and reinstall.`
-        : "";
-      return {
-        connectorId: options.connectorId,
-        status: "error",
-        message:
-          `Droid install aborted: ~/.factory/mcp.json write failed — ` +
-          `${droidErr instanceof Error ? droidErr.message : String(droidErr)}.` +
-          `${tokenSuffix} Resolve the write permission issue on ~/.factory/, then reinstall.`,
-      };
+    const stepResult = droidInstallStep(
+      tokenEntry?.token,
+      resolvedConfig,
+      manifest.requiresToken ?? false,
+      tokenEntry,
+      nonHermesPriorTokenStore,
+      saveTokenStore,
+    );
+    if (!stepResult.ok) {
+      return { connectorId: options.connectorId, status: "error", message: stepResult.errorMessage };
     }
+    droidMcpRollback = stepResult.rollback;
+    resolvedConfig.factoryMcpPath = stepResult.mcpPath;
   }
 
   // Finding 5: strip internal/test-only keys that must never be persisted to
@@ -2424,47 +2353,17 @@ export function removeConnector(connectorId: string): RemoveResult {
     }
   }
 
-  // For droid, read the persisted factoryMcpPath from the saved registry
-  // config BEFORE deleting it. Using the persisted absolute path (rather
-  // than recomputing from current HOME) guarantees that a remove still
-  // targets the original file even if HOME has changed between install
-  // and remove. If the path is missing (legacy install pre-dating
-  // factoryMcpPath provenance), fall back to env resolution.
+  // For droid, read the persisted factoryMcpPath before deleting the config.
   let droidMcpConfigPath: string | null = null;
   let droidRegistryParseFailed = false;
   if (connectorId === "droid") {
-    try {
-      const stored = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
-      if (typeof stored.factoryMcpPath === "string" && stored.factoryMcpPath.length > 0) {
-        droidMcpConfigPath = stored.factoryMcpPath;
-      }
-    } catch {
-      droidRegistryParseFailed = true;
-    }
-    if (droidMcpConfigPath === null && !droidRegistryParseFailed) {
-      try {
-        droidMcpConfigPath = resolveFactoryMcpPath();
-      } catch {
-        // Resolution failed — leave null; cleanup block skips.
-      }
-    }
+    const prov = readDroidMcpProvenance(configPath);
+    droidMcpConfigPath = prov.mcpConfigPath;
+    droidRegistryParseFailed = prov.registryParseFailed;
   }
   if (connectorId === "droid" && droidRegistryParseFailed) {
-    console.warn(
-      "[remnic/connectors] removeConnector: droid.json is malformed — " +
-        "aborting removal to preserve provenance. Fix or delete " +
-        configPath +
-        " manually and retry.",
-    );
-    return {
-      connectorId,
-      configPath,
-      message:
-        "Removal aborted: droid.json is malformed. Registry config left in place for inspection; " +
-        "~/.factory/mcp.json NOT modified.",
-      status: "skipped",
-      reason: "config-parse-failed",
-    };
+    console.warn(`[remnic/connectors] removeConnector: droid.json malformed — aborting. Fix or delete ${configPath} manually and retry.`);
+    return { connectorId, configPath, message: "Removal aborted: droid.json is malformed. Registry config left in place.", status: "skipped", reason: "config-parse-failed" };
   }
 
   if (connectorId === "weclone" && weCloneRegistryParseFailed) {
@@ -2716,63 +2615,18 @@ export function removeConnector(connectorId: string): RemoveResult {
   }
 
   // Droid-specific: remove the "remnic" entry from ~/.factory/mcp.json.
-  // Using the persisted absolute path (read above before the registry file
-  // was deleted) — not a re-derivation from the current environment — so a
-  // HOME change between install and remove cannot leave the old mcp.json
-  // with a stale "remnic" entry (and its live bearer token) behind.
   let droidMcpDeleteFailed: string | null = null;
   if (connectorId === "droid") {
     if (droidMcpConfigPath === null) {
-      notes.push(
-        "Droid MCP config cleanup skipped: no persisted path found in saved config " +
-          "(likely a legacy install predating factoryMcpPath provenance).",
-      );
+      notes.push("Droid MCP config cleanup skipped: no persisted path found (legacy install).");
     } else {
-      // Safety gate: validate the persisted path before modifying. The path
-      // is loaded from user-controlled JSON, so restrict to paths that are:
-      //   1. Absolute (relative paths are CWD-dependent).
-      //   2. End with ".factory/mcp.json" — the only filename the installer
-      //      ever writes.
-      const expectedSuffix = path.join(".factory", "mcp.json");
-      const isSafePath =
-        path.isAbsolute(droidMcpConfigPath) &&
-        droidMcpConfigPath.endsWith(expectedSuffix);
-      if (!isSafePath) {
-        droidMcpDeleteFailed =
-          `MCP config path ${JSON.stringify(droidMcpConfigPath)} failed safety validation ` +
-          `(must be absolute and end with "${expectedSuffix}"). ` +
-          `Refusing to modify — remove the "remnic" entry manually if it exists.`;
-      } else {
-        try {
-          const priorContent = readFactoryMcpIfExists(droidMcpConfigPath);
-          if (priorContent !== null) {
-            const updated = removeFactoryMcpRemnicEntry(priorContent);
-            if (updated !== null) {
-              writeSecretFileSync(droidMcpConfigPath, JSON.stringify(updated, null, 2));
-              notes.push(`Removed remnic entry from Droid MCP config: ${droidMcpConfigPath}`);
-            }
-          }
-        } catch (err) {
-          droidMcpDeleteFailed = err instanceof Error ? err.message : String(err);
-        }
-      }
+      try { const note = removeDroidMcpEntryImpl(droidMcpConfigPath); if (note) notes.push(note); }
+      catch (err) { droidMcpDeleteFailed = err instanceof Error ? err.message : String(err); }
     }
   }
   if (droidMcpDeleteFailed !== null && droidMcpConfigPath !== null) {
-    const tokenStatus = tokenRevoked
-      ? "the registry config was deleted and the token was revoked"
-      : "the registry config was deleted but TOKEN REVOCATION ALSO FAILED — " +
-        "inspect ~/.remnic/tokens.json and revoke manually";
-    return {
-      connectorId,
-      configPath,
-      status: "error",
-      message:
-        `Droid remove partially succeeded: ${tokenStatus}, ` +
-        `but the MCP config at ${droidMcpConfigPath} could not be updated ` +
-        `(${droidMcpDeleteFailed}). Manually remove the "remnic" entry from that file — ` +
-        `it may still contain a Remnic daemon bearer token.`,
-    };
+    const ts = tokenRevoked ? "token was revoked" : "TOKEN REVOCATION ALSO FAILED — inspect ~/.remnic/tokens.json and revoke manually";
+    return { connectorId, configPath, status: "error", message: `Droid remove partially succeeded: registry config deleted, ${ts}, but the MCP config at ${droidMcpConfigPath} could not be updated (${droidMcpDeleteFailed}). Manually remove the "remnic" entry.` };
   }
 
   // Hermes-specific: strip the remnic: block from config.yaml (the writability
@@ -3514,29 +3368,7 @@ export async function doctorConnector(connectorId: string): Promise<DoctorResult
 
   // Droid-specific: check ~/.factory/mcp.json has the remnic entry
   if (connectorId === "droid") {
-    const savedPath = instance.config.factoryMcpPath as string | undefined;
-    const mcpPath = savedPath ?? resolveFactoryMcpPath();
-    try {
-      const raw = fs.readFileSync(mcpPath, "utf8");
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      const servers = parsed.mcpServers;
-      const hasRemnic =
-        typeof servers === "object" && servers !== null &&
-        "remnic" in (servers as Record<string, unknown>);
-      checks.push({
-        name: "Droid MCP config",
-        ok: hasRemnic,
-        detail: hasRemnic
-          ? `remnic entry present in ${mcpPath}`
-          : `remnic entry missing in ${mcpPath} — run \`remnic connectors install droid\``,
-      });
-    } catch {
-      checks.push({
-        name: "Droid MCP config",
-        ok: false,
-        detail: `Cannot read ${mcpPath} — run \`remnic connectors install droid\``,
-      });
-    }
+    checks.push(droidMcpDoctorCheckImpl(instance.config.factoryMcpPath as string | undefined));
   }
 
   const healthy = checks.every((c) => c.ok);
@@ -4223,161 +4055,5 @@ export function buildWeCloneProxyConfig(args: {
     config.remnicAuthToken = priorConfig.remnicAuthToken;
   }
 
-  return config;
-}
-
-// ── Droid ~/.factory/mcp.json helpers ─────────────────────────────────────
-//
-// Factory Droid reads MCP server config from the user-level ~/.factory/mcp.json.
-// `remnic connectors install droid` writes a "remnic" entry under mcpServers
-// with HTTP transport and a bearer token so Droid can authenticate to the
-// Remnic daemon. The token is NEVER written into the project-level
-// .factory/mcp.json — only the user-level file at ~/.factory/mcp.json.
-
-/**
- * Resolve the path to ~/.factory/mcp.json. Honours HOME / USERPROFILE env
- * overrides so tests can point the install at a temp dir without leaking
- * into the real home directory. Always returns an absolute path.
- */
-export function resolveFactoryMcpPath(): string {
-  const envHome = readEnvVar("HOME");
-  const home = envHome && envHome.length > 0 ? envHome : os.homedir();
-  return path.resolve(home, ".factory", "mcp.json");
-}
-
-/**
- * Read the existing ~/.factory/mcp.json, if any. Returns raw string contents
- * so the caller can parse, modify, and restore on rollback.
- */
-function readFactoryMcpIfExists(mcpPath: string): string | null {
-  try {
-    if (!fs.existsSync(mcpPath)) return null;
-    return fs.readFileSync(mcpPath, "utf8");
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Default MCP server URL for the Remnic daemon.
- */
-const REMNIC_DEFAULT_MCP_URL = "http://127.0.0.1:4318/mcp";
-
-/**
- * Upsert the "remnic" entry in a ~/.factory/mcp.json config object.
- *
- * Parses the prior content (if any), preserves all existing mcpServers entries,
- * and sets the "remnic" entry with HTTP transport, the bearer token, and an
- * optional namespace header. Returns the full config object ready to serialize.
- *
- * If no token is available, the entry is still written but without the
- * Authorization header — the caller will see an auth error from the daemon,
- * which is more informative than a missing entry.
- */
-export function upsertFactoryMcpRemnicEntry(
-  priorContent: string | null,
-  authToken: string | undefined,
-  resolvedConfig: Record<string, unknown>,
-): Record<string, unknown> {
-  let config: Record<string, unknown>;
-  if (priorContent !== null) {
-    try {
-      const parsed = JSON.parse(priorContent);
-      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-        config = parsed as Record<string, unknown>;
-      } else {
-        config = {};
-      }
-    } catch {
-      // Prior content is not valid JSON — start fresh.
-      config = {};
-    }
-  } else {
-    config = {};
-  }
-
-  // Ensure mcpServers object exists
-  if (typeof config.mcpServers !== "object" || config.mcpServers === null || Array.isArray(config.mcpServers)) {
-    config.mcpServers = {};
-  }
-  const servers = config.mcpServers as Record<string, unknown>;
-
-  // Resolve the MCP URL from user config or default
-  const mcpUrl =
-    typeof resolvedConfig.mcpServerUrl === "string" && resolvedConfig.mcpServerUrl.length > 0
-      ? resolvedConfig.mcpServerUrl
-      : REMNIC_DEFAULT_MCP_URL;
-
-  // Build the remnic entry
-  const remnicEntry: Record<string, unknown> = {
-    type: "http",
-    url: mcpUrl,
-  };
-
-  // Build headers — preserve any non-remnic headers from the prior entry
-  const headers: Record<string, string> = {};
-  if (
-    typeof servers.remnic === "object" && servers.remnic !== null &&
-    typeof (servers.remnic as Record<string, unknown>).headers === "object" &&
-    (servers.remnic as Record<string, unknown>).headers !== null
-  ) {
-    const priorHeaders = (servers.remnic as Record<string, Record<string, unknown>>).headers as Record<string, unknown>;
-    for (const [key, value] of Object.entries(priorHeaders)) {
-      if (key !== "Authorization" && typeof value === "string") {
-        headers[key] = value;
-      }
-    }
-  }
-
-  if (authToken && authToken.length > 0) {
-    headers["Authorization"] = `Bearer ${authToken}`;
-  }
-
-  // Add optional namespace header
-  const namespace =
-    typeof resolvedConfig.namespace === "string" && resolvedConfig.namespace.length > 0
-      ? resolvedConfig.namespace
-      : undefined;
-  if (namespace) {
-    headers["X-Engram-Namespace"] = namespace;
-  }
-
-  if (Object.keys(headers).length > 0) {
-    remnicEntry.headers = headers;
-  }
-
-  servers.remnic = remnicEntry;
-  return config;
-}
-
-/**
- * Remove the "remnic" entry from a ~/.factory/mcp.json config object.
- *
- * Returns the updated config object (with remnic removed) or null if the
- * entry was not present (no modification needed).
- */
-export function removeFactoryMcpRemnicEntry(
-  priorContent: string,
-): Record<string, unknown> | null {
-  let config: Record<string, unknown>;
-  try {
-    const parsed = JSON.parse(priorContent);
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      return null;
-    }
-    config = parsed as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-
-  if (typeof config.mcpServers !== "object" || config.mcpServers === null) {
-    return null;
-  }
-  const servers = config.mcpServers as Record<string, unknown>;
-  if (!("remnic" in servers)) {
-    return null;
-  }
-
-  delete servers.remnic;
   return config;
 }

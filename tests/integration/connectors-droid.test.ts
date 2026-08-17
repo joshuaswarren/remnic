@@ -22,17 +22,20 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "../..");
 const CONNECTORS_SRC = path.join(ROOT, "packages/remnic-core/src/connectors/index.ts");
+const DROID_MCP_SRC = path.join(ROOT, "packages/remnic-core/src/connectors/droid-mcp.ts");
 
 // ── Source-level checks ───────────────────────────────────────────────────
 
 test("droid is in BUILTIN_CONNECTORS", () => {
   const content = fs.readFileSync(CONNECTORS_SRC, "utf-8");
-  assert.ok(content.includes('id: "droid"'), "droid must be in BUILTIN_CONNECTORS");
-  assert.ok(content.includes('name: "Factory Droid"'), "Must have correct name");
+  assert.ok(content.includes("DROID_CONNECTOR_MANIFEST"), "index.ts must reference DROID_CONNECTOR_MANIFEST");
+  const droidContent = fs.readFileSync(DROID_MCP_SRC, "utf-8");
+  assert.ok(droidContent.includes('id: "droid"'), "droid manifest must exist in droid-mcp.ts");
+  assert.ok(droidContent.includes('name: "Factory Droid"'), "Must have correct name");
 });
 
 test("droid connector has expected capabilities", () => {
-  const content = fs.readFileSync(CONNECTORS_SRC, "utf-8");
+  const content = fs.readFileSync(DROID_MCP_SRC, "utf-8");
   const droidIdx = content.indexOf('id: "droid"');
   assert.ok(droidIdx >= 0, "droid block must exist");
   const window = content.slice(droidIdx, droidIdx + 600);
@@ -44,7 +47,7 @@ test("droid connector has expected capabilities", () => {
 });
 
 test("droid connector requires a token", () => {
-  const content = fs.readFileSync(CONNECTORS_SRC, "utf-8");
+  const content = fs.readFileSync(DROID_MCP_SRC, "utf-8");
   const droidIdx = content.indexOf('id: "droid"');
   const window = content.slice(droidIdx, droidIdx + 800);
   assert.ok(window.includes("requiresToken: true"), "droid must require a token");
@@ -53,24 +56,24 @@ test("droid connector requires a token", () => {
 test("resolveFactoryMcpPath is exported", () => {
   const content = fs.readFileSync(CONNECTORS_SRC, "utf-8");
   assert.ok(
-    content.includes("export function resolveFactoryMcpPath"),
-    "resolveFactoryMcpPath must be exported",
+    content.includes("resolveFactoryMcpPath"),
+    "resolveFactoryMcpPath must be exported from connectors/index.ts",
   );
 });
 
 test("upsertFactoryMcpRemnicEntry is exported", () => {
   const content = fs.readFileSync(CONNECTORS_SRC, "utf-8");
   assert.ok(
-    content.includes("export function upsertFactoryMcpRemnicEntry"),
-    "upsertFactoryMcpRemnicEntry must be exported",
+    content.includes("upsertFactoryMcpRemnicEntry"),
+    "upsertFactoryMcpRemnicEntry must be exported from connectors/index.ts",
   );
 });
 
 test("removeFactoryMcpRemnicEntry is exported", () => {
   const content = fs.readFileSync(CONNECTORS_SRC, "utf-8");
   assert.ok(
-    content.includes("export function removeFactoryMcpRemnicEntry"),
-    "removeFactoryMcpRemnicEntry must be exported",
+    content.includes("removeFactoryMcpRemnicEntry"),
+    "removeFactoryMcpRemnicEntry must be exported from connectors/index.ts",
   );
 });
 
@@ -81,12 +84,21 @@ test("installConnector has a droid-specific block that writes ~/.factory/mcp.jso
     "installConnector must have a droid-specific block",
   );
   assert.ok(
-    content.includes("resolveFactoryMcpPath"),
-    "droid install must resolve the factory MCP path",
+    content.includes("droidInstallStep"),
+    "installConnector must call droidInstallStep for droid",
+  );
+  // The actual implementation lives in droid-mcp.ts
+  const droidMcpSrc = fs.readFileSync(
+    path.join(ROOT, "packages/remnic-core/src/connectors/droid-mcp.ts"),
+    "utf-8",
   );
   assert.ok(
-    content.includes("upsertFactoryMcpRemnicEntry"),
-    "droid install must upsert the remnic entry",
+    droidMcpSrc.includes("resolveFactoryMcpPath"),
+    "droid-mcp.ts must resolve the factory MCP path",
+  );
+  assert.ok(
+    droidMcpSrc.includes("upsertFactoryMcpRemnicEntry"),
+    "droid-mcp.ts must upsert the remnic entry",
   );
 });
 
@@ -101,8 +113,17 @@ test("removeConnector has a droid-specific block that removes the remnic entry",
     "removeConnector must have a droid-specific block",
   );
   assert.ok(
-    removeSection.includes("removeFactoryMcpRemnicEntry"),
-    "removeConnector must call removeFactoryMcpRemnicEntry for droid",
+    removeSection.includes("removeDroidMcpEntry"),
+    "removeConnector must call removeDroidMcpEntry for droid",
+  );
+  // The actual implementation lives in droid-mcp.ts
+  const droidMcpSrc = fs.readFileSync(
+    path.join(ROOT, "packages/remnic-core/src/connectors/droid-mcp.ts"),
+    "utf-8",
+  );
+  assert.ok(
+    droidMcpSrc.includes("removeFactoryMcpRemnicEntry"),
+    "droid-mcp.ts must call removeFactoryMcpRemnicEntry",
   );
 });
 
