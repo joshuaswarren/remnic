@@ -307,6 +307,7 @@ function parseSupportPassportCardMetadata(
 export function hasLiveSupportPassportCard(memory: Pick<MemoryFile, "frontmatter" | "content">): boolean {
   const metadata = parseSupportPassportCardMetadata(memory);
   if (metadata?.fields.status !== "active" && metadata?.fields.status !== "pending_review") return false;
+  if (metadata.sourceMemoryIds.length === 0) return false;
   return SupportPassportCardSchema.omit({ revision: true }).safeParse({
     ...metadata.fields,
     statement: stripAttributesSuffix(memory.content),

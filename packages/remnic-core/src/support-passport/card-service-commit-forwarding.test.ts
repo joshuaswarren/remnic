@@ -56,6 +56,7 @@ test("rejected-draft recovery forwards the commit notification", async () => {
   assert.ok(replacement);
   const storage = {
     getMemoryById: async (id: string) => (id === "draft-one" ? replaced : null),
+    getMemoryByIdIncludingArchived: async (id: string) => (id === "draft-one" ? replaced : null),
   } as unknown as StorageManager;
   const service = new SupportPassportCardService({
     resolveOwner: async () => ({ principal: PRINCIPAL, namespace: NAMESPACE, storage }),

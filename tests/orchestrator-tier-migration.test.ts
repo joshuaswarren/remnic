@@ -68,7 +68,7 @@ test("tier migration pins live passport cards but routes completed private recor
       "support-passport-title": "Quiet space",
       "support-passport-order": "0",
       "support-passport-review-by": "2026-09-01T12:00:00.000Z",
-      "support-passport-source-ids": "",
+      "support-passport-source-ids": "source-1",
     };
     const active = await storage.writeMemory("preference", "Offer a quiet place.", {
       source: "support-passport",

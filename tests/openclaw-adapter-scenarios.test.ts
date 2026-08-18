@@ -425,6 +425,55 @@ test("scenario: compatibility memory runtime excludes private support-passport r
   });
 });
 
+test("scenario: compatibility memory runtime applies minScore after private-refill (#2387)", async () => {
+  await withScenarioRegistration(async ({ capture, orchestrator }) => {
+    const runtime = capture.registrations("registerMemoryRuntime")[0]?.[0] as
+      | {
+          getMemorySearchManager(params: {
+            cfg: unknown;
+            agentId: string;
+          }): Promise<{
+            manager: {
+              search(
+                query: string,
+                options?: { maxResults?: number; minScore?: number },
+              ): Promise<Array<{ citation: string; score?: number }>>;
+            };
+          }>;
+        }
+      | undefined;
+    assert.equal(typeof runtime?.getMemorySearchManager, "function");
+
+    const rankedResults = Array.from({ length: 40 }, (_, index) => ({
+      id: `result-${index}`,
+      path: `preferences/result-${index}.md`,
+      snippet: `snippet ${index}`,
+      score: index === 0 ? 0.9 : 0.5,
+    }));
+    const requestedLimits: number[] = [];
+    orchestrator.searchAcrossNamespaces = async (params: Record<string, unknown>) => {
+      const limit = Number(params.maxResults);
+      requestedLimits.push(limit);
+      return rankedResults.slice(0, limit);
+    };
+    orchestrator.filterPrivateSearchResults = async (results: Array<{ path: string }>) => results;
+
+    const { manager } = await runtime!.getMemorySearchManager({ cfg: {}, agentId: "generalist" });
+
+    // A strict threshold the whole page fails must not walk the backend
+    // candidate cap: score filtering is not a privacy exclusion.
+    const none = await manager.search("support", { maxResults: 5, minScore: 0.95 });
+    assert.deepEqual(requestedLimits, [5]);
+    assert.deepEqual(none, []);
+
+    // Threshold survivors are kept with the same single backend page.
+    requestedLimits.length = 0;
+    const some = await manager.search("support", { maxResults: 2, minScore: 0.85 });
+    assert.deepEqual(requestedLimits, [2]);
+    assert.deepEqual(some.map((result) => result.citation), ["preferences/result-0.md"]);
+  });
+});
+
 test("scenario: prompt injection precomputes recall and serves the cached prompt-section builder", async () => {
   await withScenarioRegistration(async ({ capture, orchestrator }) => {
     let recallCount = 0;

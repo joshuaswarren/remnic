@@ -516,6 +516,69 @@ test("offline apply routes reject forged support-passport metadata and allow pub
   }
 });
 
+test("offline apply rejects JSON-escaped support-passport markers (#2387)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-access-escaped-marker-"));
+  try {
+    const storage = new StorageManager(root);
+    await storage.ensureDirectories();
+    const { service } = createManifestService({ root, storage });
+    // The raw frontmatter text never contains the literal marker substring;
+    // only JSON.parse of the structured-attribute value reconstructs it.
+    const escaped = Buffer.from([
+      "---",
+      "id: escaped-marker",
+      "category: fact",
+      `structuredAttributes: {"support\\u002dpassport-owner":"${"a".repeat(64)}"}`,
+      "---",
+      "Ordinary-looking body",
+    ].join("\n"));
+
+    const chunkPath = "facts/2026-08-13/escaped-chunk.md";
+    await assert.rejects(
+      () => service.offlineSyncApplyFileContent({
+        sourceId: "peer",
+        path: chunkPath,
+        sha256: sha256(escaped),
+        bytes: escaped.length,
+        mtimeMs: 0,
+        offset: 0,
+        content: escaped,
+      }),
+      (error) => error instanceof EngramAccessInputError && /private support-passport record/.test(error.message),
+    );
+    await assert.rejects(() => readFile(path.join(root, chunkPath)));
+
+    const changesetPath = "facts/2026-08-13/escaped-changeset.md";
+    await assert.rejects(
+      () => service.offlineSyncApply({
+        returnCurrentFiles: false,
+        changeset: {
+          format: OFFLINE_SYNC_CHANGESET_FORMAT,
+          schemaVersion: 1,
+          createdAt: new Date().toISOString(),
+          sourceId: "peer",
+          includeTranscripts: true,
+          changes: [{
+            type: "upsert",
+            path: changesetPath,
+            file: {
+              path: changesetPath,
+              sha256: sha256(escaped),
+              bytes: escaped.length,
+              mtimeMs: 0,
+              contentBase64: escaped.toString("base64"),
+            },
+          }],
+        },
+      }),
+      (error) => error instanceof EngramAccessInputError && /private support-passport record/.test(error.message),
+    );
+    await assert.rejects(() => readFile(path.join(root, changesetPath)));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("offline apply-file-content reports invalid metadata as input errors", async () => {
   const service = createOfflineService();
   await assert.rejects(

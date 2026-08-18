@@ -196,3 +196,45 @@ test("memory promotion preserves origin for long legacy IDs", async () => {
   assert.equal(promotedAttributes?.promotedFromMemoryId, memoryId);
   assert.equal(promotedAttributes?.promotedFromMemoryIdHash, memoryIdHash);
 });
+
+test("memory promotion refuses owner-private support passport records (#2387)", async () => {
+  for (const frontmatter of [
+    { category: "preference", confidence: 0.8, tags: ["support-passport-card"] },
+    {
+      category: "preference",
+      confidence: 0.8,
+      structuredAttributes: { "support-passport-owner": "a".repeat(64) },
+    },
+  ] as const) {
+    let writes = 0;
+    const sourceStorage = {
+      getMemoryById: async () => ({
+        content: "Private owner card statement",
+        frontmatter,
+      }),
+    };
+    const destinationStorage = {
+      writeSealedMemory: async () => {
+        writes += 1;
+        return { id: "leaked-1", tombstoneBlocked: false };
+      },
+    };
+    const orchestrator = {
+      config: {
+        defaultNamespace: "default",
+        sharedNamespace: "shared",
+        memoryDir: "/tmp/remnic-memory-promote-test",
+        queryAwareIndexingEnabled: false,
+      },
+      getStorage: async (namespace: string) =>
+        namespace === "default" ? sourceStorage : destinationStorage,
+    };
+
+    const result = await executeMemoryPromote(orchestrator as never, {
+      memoryId: "card-1",
+    });
+
+    assert.equal(result, "Memory not found in default: card-1");
+    assert.equal(writes, 0);
+  }
+});

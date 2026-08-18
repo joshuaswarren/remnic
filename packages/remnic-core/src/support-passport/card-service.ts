@@ -832,7 +832,7 @@ export class SupportPassportCardService {
     if (currentCard.card.status === "pending_review") {
       const priorId = currentMemory.frontmatter.supersedes;
       if (!priorId) return currentMemory;
-      const prior = await storage.getMemoryById(priorId);
+      const prior = await storage.getMemoryByIdIncludingArchived(priorId);
       if (
         prior &&
         ownsMemory(prior, namespace, principal) &&
@@ -973,7 +973,10 @@ export class SupportPassportCardService {
     onCommitted?: () => void
   ): Promise<void> {
     if (!replacement.replacesDraftId) return;
-    const replacedDraft = await storage.getMemoryById(replacement.replacesDraftId);
+    // Tier-independent: an interrupted edit's rejected predecessor can be
+    // demoted to the cold tier before recovery runs; a hot-only lookup would
+    // mistake it for deleted and orphan the valid replacement (#2387).
+    const replacedDraft = await storage.getMemoryByIdIncludingArchived(replacement.replacesDraftId);
     const projectedDraft = replacedDraft ? projectOwnedCard(replacedDraft, namespace, principal) : null;
     if (
       replacedDraft &&
@@ -999,7 +1002,7 @@ export class SupportPassportCardService {
         return;
       }
     }
-    const currentDraft = await storage.getMemoryById(replacement.replacesDraftId);
+    const currentDraft = await storage.getMemoryByIdIncludingArchived(replacement.replacesDraftId);
     if (
       currentDraft &&
       ownsMemory(currentDraft, namespace, principal) &&

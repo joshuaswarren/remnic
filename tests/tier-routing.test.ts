@@ -119,7 +119,7 @@ test("decideTierTransition keeps live support passport cards in the hot tier", (
         "support-passport-title": "Quiet space",
         "support-passport-order": "0",
         "support-passport-review-by": "2026-09-01T12:00:00.000Z",
-        "support-passport-source-ids": "",
+        "support-passport-source-ids": "source-1",
       },
       confidence: 0,
       confidenceTier: "speculative",
@@ -153,6 +153,7 @@ test("decideTierTransition does not pin incomplete support passport metadata", (
   for (const requiredAttribute of [
     "support-passport-order",
     "support-passport-review-by",
+    "support-passport-source-ids",
   ] as const) {
     const incomplete: Record<string, string> = { ...attributes };
     delete incomplete[requiredAttribute];

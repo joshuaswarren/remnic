@@ -130,11 +130,13 @@ function migrateMemoryCurrentTable(db: BetterSqlite3Database): void {
   if (!columns.has("preview_text")) {
     db.exec(`ALTER TABLE memory_current ADD COLUMN preview_text TEXT NOT NULL DEFAULT ''`);
   }
+  if (!columns.has("private_record")) db.exec(`ALTER TABLE memory_current ADD COLUMN private_record INTEGER NOT NULL DEFAULT 0; UPDATE memory_current SET private_record = 1 WHERE tags_json LIKE '%support-passport-%'`);
 }
 
 function memoryCurrentRequiresMigration(db: BetterSqlite3Database): boolean {
   const columns = listTableColumns(db, "memory_current");
-  return columns.size > 0 && (!columns.has("tags_json") || !columns.has("preview_text"));
+  return columns.size > 0 &&
+    (!columns.has("tags_json") || !columns.has("preview_text") || !columns.has("private_record"));
 }
 
 function migrateProjectionSchemaIfNeeded(memoryDir: string): void {

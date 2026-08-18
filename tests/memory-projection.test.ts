@@ -16,6 +16,7 @@ import { runMemoryGovernance } from "../src/maintenance/memory-governance.ts";
 import {
   getMemoryProjectionPath,
   initializeMemoryProjectionDb, markProjectedMemoryPathInvalid,
+  probeProjectionHealth,
   readProjectedEntityMentions,
   readProjectedLatestReviewQueue,
   readProjectedMemoryBrowse, updateProjectedMemoryPath,
@@ -467,6 +468,95 @@ test("projection reads lazily migrate legacy schema columns for existing project
     } finally {
       migrated.close();
     }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("privacy-filtered browse lazily migrates schema-v3 projections to private_record (#2387)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-projection-v3-"));
+  try {
+    const projectionPath = getMemoryProjectionPath(memoryDir);
+    await mkdir(path.dirname(projectionPath), { recursive: true });
+    const db = new Database(projectionPath);
+    try {
+      db.exec(`
+        CREATE TABLE meta (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        );
+
+        CREATE TABLE memory_current (
+          memory_id TEXT PRIMARY KEY,
+          category TEXT NOT NULL,
+          status TEXT NOT NULL,
+          path_rel TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          entity_ref TEXT,
+          source TEXT NOT NULL,
+          confidence REAL NOT NULL,
+          confidence_tier TEXT NOT NULL,
+          tags_json TEXT NOT NULL DEFAULT '[]',
+          preview_text TEXT NOT NULL DEFAULT ''
+        );
+      `);
+      const insert = db.prepare(`
+        INSERT INTO memory_current (
+          memory_id, category, status, path_rel, created_at, updated_at,
+          entity_ref, source, confidence, confidence_tier, tags_json, preview_text
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      insert.run(
+        "fact-public", "fact", "active", "facts/2026-03-08/public.md",
+        "2026-03-08T00:00:00.000Z", "2026-03-08T01:00:00.000Z",
+        null, "test", 0.8, "implied", "[]", "public preview",
+      );
+      insert.run(
+        "pref-passport", "preference", "active", "preferences/2026-03-08/passport.md",
+        "2026-03-08T00:00:00.000Z", "2026-03-08T01:00:00.000Z",
+        null, "test", 0.8, "implied",
+        JSON.stringify(["support-passport-card"]), "private preview",
+      );
+    } finally {
+      db.close();
+    }
+
+    // First privacy-filtered browse cannot serve from the v3 store...
+    assert.equal(
+      readProjectedMemoryBrowse(memoryDir, { limit: 20, offset: 0, excludePrivateRecords: true }),
+      null,
+    );
+    // ...but it migrates the store on the way out.
+    const migrated = new Database(projectionPath);
+    try {
+      const columns = migrated
+        .prepare(`PRAGMA table_info(memory_current)`)
+        .all() as Array<{ name: string }>;
+      assert.equal(columns.some((column) => column.name === "private_record"), true);
+      const privateFlag = (memoryId: string): unknown =>
+        migrated
+          .prepare(`SELECT private_record FROM memory_current WHERE memory_id = ?`)
+          .get(memoryId);
+      for (const [memoryId, expected] of [["pref-passport", 1], ["fact-public", 0]] as const) {
+        const row = privateFlag(memoryId);
+        assert.ok(row && typeof row === "object" && "private_record" in row);
+        assert.equal(Number(row.private_record), expected);
+      }
+    } finally {
+      migrated.close();
+    }
+
+    const browse = readProjectedMemoryBrowse(memoryDir, {
+      limit: 20,
+      offset: 0,
+      excludePrivateRecords: true,
+    });
+    assert.ok(browse);
+    assert.equal(browse?.total, 1);
+    assert.equal(browse?.memories[0]?.id, "fact-public");
+
+    assert.equal(probeProjectionHealth(memoryDir).state, "openable");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
