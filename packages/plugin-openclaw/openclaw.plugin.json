@@ -4126,7 +4126,7 @@
               },
               "retireFailRatio": {
                 "type": "number",
-                "minimum": 0,
+                "exclusiveMinimum": 0,
                 "default": 2,
                 "description": "mw_fail must exceed mw_success times this ratio for failure-dominant retirement."
               },

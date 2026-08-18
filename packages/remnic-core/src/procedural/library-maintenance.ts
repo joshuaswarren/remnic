@@ -386,7 +386,6 @@ export async function runProcedureLibraryMaintenance(options: {
         ? "retire_idle"
         : null;
     if (reasonCode === null) continue;
-    retireIds.add(m.frontmatter.id);
     if (isUserEditedProcedure(m.content)) {
       report.proposed.push({
         action: "flag_user_edited",
@@ -397,6 +396,7 @@ export async function runProcedureLibraryMaintenance(options: {
       });
       continue;
     }
+    retireIds.add(m.frontmatter.id);
     retireActions.push({
       action: "retire",
       reasonCode,
@@ -489,8 +489,18 @@ export async function runProcedureLibraryMaintenance(options: {
         const memory = byId.get(action.memoryIds[0]!);
         if (!memory) continue;
         const existing = memory.frontmatter.structuredAttributes ?? {};
+        const prior = existing.needsRepair;
+        let priorReason: string | null = null;
+        if (typeof prior === "string") {
+          try {
+            const parsed = JSON.parse(prior) as { reason?: unknown };
+            if (typeof parsed.reason === "string") priorReason = parsed.reason;
+          } catch {
+            priorReason = prior;
+          }
+        }
+        if (priorReason === action.reason) continue;
         const stamp = JSON.stringify({ reason: action.reason, detectedAt: nowIso });
-        if (existing.needsRepair === stamp) continue;
         await options.storage.writeMemoryFrontmatter(
           memory,
           {
