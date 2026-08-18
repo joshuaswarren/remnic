@@ -3557,18 +3557,22 @@ const pluginDefinition = {
                     namespaces: namespace ? [namespace] : undefined,
                     mode: resolvedMode,
                   }),
-                  filterPrivate: async (results) => {
-                    const visible = await orchestrator.filterPrivateSearchResults(
-                      results,
-                      namespace ? [namespace] : [],
-                    );
-                    return minScore === undefined
-                      ? visible
-                      : visible.filter((result) => result.score >= minScore);
-                  },
+                  filterPrivate: (results) => orchestrator.filterPrivateSearchResults(
+                    results,
+                    namespace ? [namespace] : [],
+                  ),
                   isExcluded: (resultPath) => isMemoryArtifactPath(resultPath),
                 });
-                return visibleResults
+                // minScore is a ranking preference, not a privacy/artifact
+                // exclusion: results arrive score-descending, so rows behind
+                // the returned page cannot clear a threshold the page failed.
+                // Filtering after the refill keeps a strict threshold from
+                // walking the backend candidate cap one page-doubling at a
+                // time (#2387).
+                const scoredResults = minScore === undefined
+                  ? visibleResults
+                  : visibleResults.filter((result) => result.score >= minScore);
+                return scoredResults
                   .map((result, index): RuntimeSearchResult => {
                   const candidate = result as unknown as {
                     path?: string;

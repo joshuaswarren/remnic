@@ -9,9 +9,13 @@ import {
   type OfflineSyncApplyChangesetResult,
   type OfflineSyncApplyFileContentChunkResult,
 } from "../offline-sync.js";
+import { parseFrontmatter } from "../storage.js";
 import { validateArchiveRelativePath } from "../transfer/fs-utils.js";
 import type { MemoryFile } from "../types.js";
-import { createSupportPassportPrivateFileExclusion } from "./card-projection.js";
+import {
+  createSupportPassportPrivateFileExclusion,
+  isSupportPassportPrivateMemory,
+} from "./card-projection.js";
 
 const MAX_SUPPORT_PASSPORT_FRONTMATTER_BYTES = 1_048_576;
 const SUPPORT_PASSPORT_MARKER = "support-passport-";
@@ -62,6 +66,15 @@ function completeFrontmatter(raw: Buffer): string | null {
 
 function assertFrontmatterAllowed(frontmatter: string, relativePath: string): void {
   if (frontmatter.includes(SUPPORT_PASSPORT_MARKER)) {
+    throw new Error(`offline sync cannot modify private support-passport record: ${relativePath}`);
+  }
+  // Canonical classification (#2387): YAML/JSON escapes — e.g. a
+  // structured-attribute key written as `support\u002dpassport-owner` — hide
+  // the marker from the raw scan above, while the storage reader's
+  // JSON.parse reconstructs it after the write. Validate the parsed
+  // frontmatter with the same predicate the read path classifies by.
+  const parsed = parseFrontmatter(frontmatter);
+  if (parsed && isSupportPassportPrivateMemory({ frontmatter: parsed.frontmatter })) {
     throw new Error(`offline sync cannot modify private support-passport record: ${relativePath}`);
   }
 }

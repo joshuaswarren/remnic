@@ -153,6 +153,7 @@ test("decideTierTransition does not pin incomplete support passport metadata", (
   for (const requiredAttribute of [
     "support-passport-order",
     "support-passport-review-by",
+    "support-passport-source-ids",
   ] as const) {
     const incomplete: Record<string, string> = { ...attributes };
     delete incomplete[requiredAttribute];

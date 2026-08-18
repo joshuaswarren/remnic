@@ -6,6 +6,7 @@ import {
   TAG_LIMITS,
 } from "@remnic/core/write-envelope";
 import { stripAttributesSuffix } from "@remnic/core/storage";
+import { isSupportPassportPrivateMemory } from "@remnic/core/support-passport";
 import { displayErrorDetail } from "@remnic/core/runtime/better-sqlite";
 import { isSafeRouteNamespace } from "@remnic/core/routing/engine";
 import { indexMemoryAsync, indexesExistAsync } from "./temporal-index.js";
@@ -75,7 +76,11 @@ export async function executeMemoryPromote(
 
   const src = await orchestrator.getStorage(srcNs);
   const mem = await src.getMemoryById(memoryId);
-  if (!mem) {
+  // Owner-private support-passport records must not cross their storage
+  // boundary through a copy-based promotion. Reported as not found so the
+  // tool never confirms a private record's existence to another principal
+  // (#2387).
+  if (!mem || isSupportPassportPrivateMemory(mem)) {
     return `Memory not found in ${srcNs}: ${memoryId}`;
   }
 

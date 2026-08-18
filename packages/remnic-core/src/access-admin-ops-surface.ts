@@ -23,6 +23,7 @@ import { resolveScopeProfilePlan } from "./namespaces/scope-profiles.js";
 import type { Orchestrator } from "./orchestrator.js";
 import { formatProfileTraceAscii } from "./profiling.js";
 import { resolveScopePlan } from "./scopes/scope-plan.js";
+import { isSupportPassportPrivateMemory } from "./support-passport/card-projection.js";
 import {
   EngramAccessInputError,
   buildProjectedGovernanceProposedActions,
@@ -818,7 +819,11 @@ export class AccessAdminOpsSurface {
       readMemory: async (namespace, memoryId) => {
         const resolved = await this.deps.orchestrator.getStorage(namespace);
         const memory = await resolved.getMemoryById(memoryId);
-        if (!memory) return null;
+        // Owner-private support-passport records must not cross their
+        // storage boundary through a copy-based promotion; reported as not
+        // found so the route never confirms a private record's existence
+        // (#2387).
+        if (!memory || isSupportPassportPrivateMemory(memory)) return null;
         return {
           category: memory.frontmatter.category,
           content: memory.content,

@@ -152,7 +152,11 @@ export function ownerListCards(storedCards: StoredSupportPassportCard[]): Stored
     if (activeReplacementPredecessors.has(item.card.cardId)) return false;
     if (replacedDraftIds.has(item.card.cardId)) return false;
     if (!item.replacesDraftId) return true;
+    // The replaced draft may be demoted to the cold tier or archived after
+    // its rejection; a hot-only projection then reports it missing. A
+    // missing predecessor must not hide the replacement — only a restored
+    // active predecessor does (#2387).
     const replacedStatus = byId.get(item.replacesDraftId)?.card.status;
-    return replacedStatus === "pending_review" || replacedStatus === "rejected";
+    return replacedStatus === undefined || replacedStatus === "pending_review" || replacedStatus === "rejected";
   });
 }

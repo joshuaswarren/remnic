@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -1420,6 +1420,80 @@ test("retrying an interrupted pending-draft replacement reuses one approvable dr
       (await subject.service.listCards({ principal: "owner:alice" })).map((card) => [card.cardId, card.status]),
       [[approved.cardId, "active"]]
     );
+  } finally {
+    await subject.cleanup();
+  }
+});
+
+test("replacement recovery reads a cold-tier rejected predecessor (#2387)", async () => {
+  const subject = await makeSubject();
+  try {
+    const draft = await subject.service.createManualDraft({
+      principal: "owner:alice",
+      title: "Quiet place",
+      statement: "Offer me a quiet place.",
+      category: "environment",
+      reviewBy: OWNER_REVIEW_BY,
+    });
+    const originalWrite = subject.aliceStorage.writeMemoryFrontmatterIfUnchanged.bind(subject.aliceStorage);
+    let interrupted = false;
+    subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = async (memory, patch, lifecycle) => {
+      if (!interrupted && lifecycle?.reasonCode === "draft-replacement-complete") {
+        interrupted = true;
+        throw new Error("simulated process exit before the prepared marker cleared");
+      }
+      return await originalWrite(memory, patch, lifecycle);
+    };
+
+    await assert.rejects(
+      subject.service.replaceCard({
+        principal: "owner:alice",
+        cardId: draft.cardId,
+        expectedRevision: draft.revision,
+        title: "Quiet place and time",
+        statement: "Offer me a quiet place and time.",
+        category: "environment",
+        reviewBy: OWNER_REVIEW_BY,
+      }),
+      /simulated process exit/
+    );
+    subject.aliceStorage.writeMemoryFrontmatterIfUnchanged = originalWrite;
+
+    // Interrupted state: the prior draft is durably rejected while the
+    // replacement still carries its prepared marker. Simulate tier
+    // migration demoting the rejected predecessor to the cold tier.
+    const beforeRecovery = await subject.aliceStorage.readAllMemories();
+    const replacement = beforeRecovery.find((memory) => memory.frontmatter.id !== draft.cardId);
+    assert.ok(replacement);
+    assert.equal(replacement.frontmatter.status, "pending_review");
+    assert.equal(
+      replacement.frontmatter.structuredAttributes?.["support-passport-draft-replacement-prepared"],
+      "true"
+    );
+    const rejectedDraft = beforeRecovery.find((memory) => memory.frontmatter.id === draft.cardId);
+    assert.ok(rejectedDraft);
+    assert.equal(rejectedDraft.frontmatter.status, "rejected");
+    const coldDir = path.join(subject.aliceStorage.dir, "cold", "preference");
+    await mkdir(coldDir, { recursive: true });
+    await rename(rejectedDraft.path, path.join(coldDir, path.basename(rejectedDraft.path)));
+    StorageManager.clearAllStaticCaches();
+    assert.equal(await subject.aliceStorage.getMemoryById(draft.cardId), null);
+    const replacementCard = projectSupportPassportCard(replacement);
+    assert.ok(replacementCard);
+    const approved = await subject.service.approveCard({
+      principal: "owner:alice",
+      cardId: replacement.frontmatter.id,
+      expectedRevision: replacementCard.card.revision,
+    });
+    assert.equal(approved.status, "active");
+
+    assert.deepEqual(
+      (await subject.service.listCards({ principal: "owner:alice" })).map((card) => [card.cardId, card.status]),
+      [[replacement.frontmatter.id, "active"]]
+    );
+
+    const coldPredecessor = await subject.aliceStorage.getMemoryByIdIncludingArchived(draft.cardId);
+    assert.equal(coldPredecessor?.frontmatter.status, "rejected");
   } finally {
     await subject.cleanup();
   }
