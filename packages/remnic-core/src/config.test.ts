@@ -2569,6 +2569,7 @@ test("parseConfig forwards activity source settings", () => {
     minConfidence: 0.7,
     minImportance: "normal",
     maxMemoriesPerDay: 0,
+    timeline: { enabled: false },
   });
 });
 

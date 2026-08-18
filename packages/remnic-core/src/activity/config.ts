@@ -1,7 +1,7 @@
 import { coerceBooleanLike, coerceNumber } from "../connectors/coerce.js";
 import { assertValidTimezone } from "./digest.js";
 import type { ImportanceLevel } from "../types.js";
-import type { ActivityConfig, ActivityExtractionMode, ActivitySourceConfig } from "./types.js";
+import type { ActivityConfig, ActivityExtractionMode, ActivitySourceConfig, ActivityTimelineConfig } from "./types.js";
 
 const EXTRACTION_MODES: readonly ActivityExtractionMode[] = ["off", "smart"];
 const IMPORTANCE_LEVELS: readonly ImportanceLevel[] = ["critical", "high", "normal", "low", "trivial"];
@@ -22,6 +22,7 @@ export function defaultActivityConfig(): ActivityConfig {
     minConfidence: 0.7,
     minImportance: "normal",
     maxMemoriesPerDay: 0,
+    timeline: { enabled: false },
   };
 }
 
@@ -182,5 +183,24 @@ export function parseActivityConfig(raw: unknown): ActivityConfig {
     minConfidence: parseUnitInterval(config.minConfidence, "minConfidence", defaults.minConfidence),
     minImportance: minImportance as ImportanceLevel,
     maxMemoriesPerDay,
+    timeline: parseTimelineConfig(config.timeline),
   };
+}
+
+/**
+ * Parse the `activity.timeline.*` block. `enabled` is the master gate for
+ * timeline-card derivation (issue #2049); default false. A non-object block
+ * is malformed and must fail rather than silently disabling the layer.
+ */
+function parseTimelineConfig(raw: unknown): ActivityTimelineConfig {
+  if (raw === undefined) return { enabled: false };
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new TypeError("activity.timeline must be an object");
+  }
+  const timeline = raw as Record<string, unknown>;
+  const enabledValue = coerceBooleanLike(timeline.enabled, "activity.timeline.enabled");
+  if (timeline.enabled !== undefined && enabledValue === undefined) {
+    throw new TypeError("activity.timeline.enabled must be a boolean");
+  }
+  return { enabled: enabledValue ?? false };
 }

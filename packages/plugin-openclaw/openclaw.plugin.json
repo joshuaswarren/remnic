@@ -6252,6 +6252,19 @@
             "minimum": 0,
             "default": 0,
             "description": "Maximum activity memories written per day. Set to 0 for no count cap."
+          },
+          "timeline": {
+            "type": "object",
+            "additionalProperties": false,
+            "default": {},
+            "description": "Timeline-card derivation over the activity store (issue #2049): deterministic grouping, categories, idle/pause semantics.",
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "default": false,
+                "description": "Master gate for timeline-card derivation. Default false."
+              }
+            }
           }
         }
       },
