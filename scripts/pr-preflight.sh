@@ -300,6 +300,8 @@ run bash scripts/check-review-patterns.sh
 run node scripts/check-ratchets.mjs
 run node scripts/check-package-test-files.mjs
 run node scripts/check-hook-runner-sync.mjs
+run node scripts/check-hook-grep-targets.mjs
+run node scripts/check-last-recall-json-load.mjs
 
 run node scripts/check-docs-parity.mjs
 run node scripts/check-dataset-hygiene.mjs

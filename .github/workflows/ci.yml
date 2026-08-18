@@ -157,6 +157,12 @@ jobs:
         run: node scripts/check-package-test-files.mjs
       - name: Shared hook runner sync (issue #2483)
         run: node scripts/check-hook-runner-sync.mjs
+      - name: Hook contract tests target remnic-hook-core.cjs
+        run: node scripts/check-hook-grep-targets.mjs
+      - name: Hook contract source-grep tests
+        run: node --test tests/codex-materialize-consolidation-wiring.test.ts tests/integration/plugin-structure.test.ts
+      - name: last_recall.json load hardening
+        run: node scripts/check-last-recall-json-load.mjs
 
 
       - name: Docs-code parity
