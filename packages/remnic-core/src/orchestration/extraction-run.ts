@@ -1082,15 +1082,13 @@ export class ExtractionRunCoordinator {
         .map((t) => t.content)
         .join("\n\n")
     );
-    const durableOutputCount =
-      result.facts.length + result.entities.length + result.questions.length + result.profileUpdates.length;
+    const durableOutputCount = result.facts.length + result.entities.length + result.questions.length + result.profileUpdates.length;
     try {
       options.onDurableCommit?.();
     } catch (error) {
       log.warn("runExtraction: durable-commit callback failed", error);
     }
     const runPostPersistBestEffort = runExtractionPostPersistBestEffort.bind(null, runDeadlineAware);
-    await tagPersistedMemories(storage, persistedIds, this.config);
     const postPersist = await runExtractionPostPersist({
       result,
       storage,
@@ -1115,6 +1113,8 @@ export class ExtractionRunCoordinator {
     });
     meta = postPersist.meta ?? null;
     const postPersistMetadataFailed = postPersist.metadataFailed;
+    await runPostPersistBestEffort("during_location_tagging", () =>
+      tagPersistedMemories(storage, persistedIds, this.config));
 
     // Passive correction capture (issue #1581) — detect corrections expressed
     // passively in the extracted turns and route to the Correction Contract.

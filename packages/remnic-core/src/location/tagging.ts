@@ -28,6 +28,7 @@ import {
   matchDominantPlace,
   memoryLocationWindow,
   planLocationUpdate,
+  TAGGABLE_PLACE_KINDS,
   type LocationSourceSegments,
   type LocationTagPolicy,
   type LocationUpdatePlan,
@@ -205,8 +206,9 @@ export async function enrichMemoriesWithLocation(
       }
       await options.storage.writeMemoryFrontmatter(memory, plan.patch, { actor: "location-tagging" });
       countOutcome(counts, plan.outcome);
-    } catch {
+    } catch (error) {
       counts.failed += 1;
+      log.warn("[location] memory location patch failed (skipped)", memory.frontmatter.id, error);
     }
   }
   return counts;
@@ -232,15 +234,14 @@ export async function fillWearableConversationLocations(
   for (const conversation of conversations) {
     if (conversation.location !== undefined && conversation.location.length > 0) continue;
     try {
-      const startMs = Date.parse(conversation.startIso);
-      const endMs = conversation.endIso !== undefined ? Date.parse(conversation.endIso) : Number.NaN;
-      const window =
-        Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs
-          ? { kind: "interval" as const, startUtc: conversation.startIso, endUtc: conversation.endIso as string }
-          : { kind: "instant" as const, atUtc: conversation.startIso };
-      const anchor = window.kind === "interval" ? new Date(Date.parse(window.endUtc) - 1).toISOString() : window.atUtc;
-      const days = [...new Set([localDayKey(anchor, deps.config.timezone), localDayKey(conversation.startIso, deps.config.timezone)])];
-      const outcome = matchDominantPlace(window, segmentsForDays(index, days), policy);
+      const windowResult = memoryLocationWindow(
+        { valid_at: conversation.startIso, invalid_at: conversation.endIso },
+        (instant) => localDayKey(instant, deps.config.timezone),
+      );
+      if (windowResult.rejected !== undefined || windowResult.window === undefined || windowResult.days === undefined) {
+        continue;
+      }
+      const outcome = matchDominantPlace(windowResult.window, segmentsForDays(index, windowResult.days), policy);
       if (outcome.status === "matched") {
         conversation.location = outcome.match.place.label;
       }
@@ -264,7 +265,7 @@ export async function renderDayLocationContext(
   }
   if (segments.length === 0) return null;
   const durations = placeDurations(segments)
-    .filter((duration) => ["home", "work", "poi"].includes(duration.place.kind ?? "poi"))
+    .filter((duration) => TAGGABLE_PLACE_KINDS[duration.place.kind ?? ""] === true)
     .sort((a, b) => (a.totalMs !== b.totalMs ? b.totalMs - a.totalMs : a.place.id < b.place.id ? -1 : 1));
   if (durations.length === 0) return null;
   const lines = durations.map((duration) => {

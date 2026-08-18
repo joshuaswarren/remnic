@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { matchDominantPlace, memoryLocationWindow, type LocationTagPolicy } from "./matching.js";
+import { locationTagSlug, matchDominantPlace, memoryLocationWindow, type LocationTagPolicy } from "./matching.js";
 import type { LocationPlace, LocationSegment } from "./types.js";
 
 const policy: LocationTagPolicy = {
@@ -62,4 +62,9 @@ test("dominant named place wins; ties stay unmatched", () => {
   );
   assert.equal(tied.status, "unmatched");
   if (tied.status === "unmatched") assert.equal(tied.reason, "ambiguous");
+});
+
+test("slug trims provider delimiter runs without a trim regex", () => {
+  assert.equal(locationTagSlug("--reitti:place:7--"), "reitti-place-7");
+  assert.equal(locationTagSlug("???"), "");
 });

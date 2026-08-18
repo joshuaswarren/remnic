@@ -6,13 +6,17 @@
  */
 
 import assert from "node:assert/strict";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import type { MemoryFile } from "../types.js";
 import type { StorageManager } from "../index.js";
+import type { WearableConversation } from "../wearables/types.js";
 import { parseLocationConfig } from "./config.js";
 import type { LocationSourceSegments } from "./matching.js";
-import { enrichMemoriesWithLocation } from "./tagging.js";
+import { enrichMemoriesWithLocation, fillWearableConversationLocations } from "./tagging.js";
 
 function memory(id: string, frontmatter: Record<string, unknown> = {}): MemoryFile {
   return { path: `facts/${id}.md`, content: "body", frontmatter: { id, ...frontmatter } } as MemoryFile;
@@ -116,4 +120,27 @@ test("a failing memory write is counted and never blocks the others", async () =
   assert.equal(counts.failed, 1);
   assert.equal(counts.tagged, 1);
   assert.deepEqual(writes.map((w) => w.id), ["fine"]);
+});
+
+test("wearable fill reuses the shared window: over-span conversations stay unfilled", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-location-wearable-"));
+  try {
+    await mkdir(path.join(memoryDir, "state", "locations"), { recursive: true });
+    await writeFile(
+      path.join(memoryDir, "state", "locations", "sync.json"),
+      JSON.stringify({ version: 1, sources: { reitti: { days: { "2026-08-01": { observationCount: 1, segments: HOME.segments } } } } }),
+    );
+    const conversations: Array<{ id: string; startIso: string; endIso?: string; location?: string }> = [
+      { id: "c1", startIso: "2026-08-01T12:30:00.000Z", endIso: "2026-08-01T13:30:00.000Z" },
+      { id: "c2", startIso: "2026-08-01T12:30:00.000Z", endIso: "2026-08-05T13:30:00.000Z" },
+    ];
+    await fillWearableConversationLocations(conversations as WearableConversation[], {
+      memoryDir,
+      config: taggedConfig(),
+    });
+    assert.equal(conversations[0]?.location, "Home", "in-window conversation gets the matched label");
+    assert.equal(conversations[1]?.location, undefined, "span-too-long conversation is skipped, not mislabeled");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
 });

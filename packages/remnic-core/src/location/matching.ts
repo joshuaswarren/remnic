@@ -49,7 +49,7 @@ export const LOCATION_ATTRIBUTE_KEYS = [
 ] as const;
 
 /** Place kinds eligible for tagging: resolved, named places only. */
-const TAGGABLE_PLACE_KINDS: Record<string, true> = { home: true, work: true, poi: true };
+export const TAGGABLE_PLACE_KINDS: Record<string, true> = { home: true, work: true, poi: true };
 
 export interface LocationTagPolicy {
   minimumOverlapSeconds: number;
@@ -189,8 +189,8 @@ export function matchDominantPlace(
           : segment.confidence === undefined
             ? existing.confidence
             : Math.min(existing.confidence, segment.confidence);
-      if (segment.startUtc < existing.startUtc) existing.startUtc = segment.startUtc;
-      if (segment.endUtc > existing.endUtc) existing.endUtc = segment.endUtc;
+      if (Date.parse(segment.startUtc) < Date.parse(existing.startUtc)) existing.startUtc = segment.startUtc;
+      if (Date.parse(segment.endUtc) > Date.parse(existing.endUtc)) existing.endUtc = segment.endUtc;
     }
   }
   if (byPlace.size === 0) return { status: "unmatched", reason: "no-overlap" };
@@ -230,11 +230,14 @@ export function matchDominantPlace(
 
 /** Deterministic tag slug for a provider place id (`reitti:place:7` → `reitti-place-7`). */
 export function locationTagSlug(placeId: string): string {
-  const slug = placeId
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return slug.slice(0, TAG_LIMITS.maxTagLength - LOCATION_TAG_PREFIX.length);
+  const delimited = placeId.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  // Trim delimiter runs without a trim regex: CodeQL flags polynomial
+  // `-+` alternation on provider-supplied ids (uncontrolled data).
+  let start = 0;
+  let end = delimited.length;
+  while (start < end && delimited[start] === "-") start += 1;
+  while (end > start && delimited[end - 1] === "-") end -= 1;
+  return delimited.slice(start, end).slice(0, TAG_LIMITS.maxTagLength - LOCATION_TAG_PREFIX.length);
 }
 
 /** The provider-owned tag for a matched place. */
