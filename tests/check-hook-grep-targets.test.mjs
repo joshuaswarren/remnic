@@ -38,8 +38,17 @@ test("fails when contract tests omit remnic-hook-core.cjs", () => {
 test("passes when both contract tests name the core file", () => {
   const root = writeTree({
     [HOOK_CORE_REL]: "module.exports = {}",
-    [HOOK_CONTRACT_TESTS[0]]: 'readFileSync(codexHookCore) // remnic-hook-core.cjs',
+    [HOOK_CONTRACT_TESTS[0]]: 'readFileSync("remnic-hook-core.cjs")',
     [HOOK_CONTRACT_TESTS[1]]: 'path.join(PACKAGES, "plugin-codex", "hooks", "bin", "remnic-hook-core.cjs")',
   });
   assert.deepEqual(findHookGrepTargetMisses(root), []);
+});
+
+test("fails when the core filename appears only in a comment", () => {
+  const root = writeTree({
+    [HOOK_CORE_REL]: "module.exports = {}",
+    [HOOK_CONTRACT_TESTS[0]]: "// remnic-hook-core.cjs is the shared runner",
+    [HOOK_CONTRACT_TESTS[1]]: 'path.join(PACKAGES, "plugin-codex", "hooks", "bin", "remnic-hook-core.cjs")',
+  });
+  assert.deepEqual(findHookGrepTargetMisses(root), [HOOK_CONTRACT_TESTS[0]]);
 });

@@ -160,7 +160,7 @@ jobs:
       - name: Hook contract tests target remnic-hook-core.cjs
         run: node scripts/check-hook-grep-targets.mjs
       - name: Hook contract source-grep tests
-        run: node --test tests/codex-materialize-consolidation-wiring.test.ts tests/integration/plugin-structure.test.ts
+        run: node --import tsx --test tests/codex-materialize-consolidation-wiring.test.ts tests/integration/plugin-structure.test.ts
       - name: last_recall.json load hardening
         run: node scripts/check-last-recall-json-load.mjs
 

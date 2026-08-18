@@ -30,7 +30,7 @@ export function findHookGrepTargetMisses(root) {
       continue;
     }
     const src = readFileSync(filePath, "utf8");
-    if (!src.includes("remnic-hook-core.cjs")) {
+    if (!/(?:readFile(?:Sync)?|join)\([\s\S]{0,200}remnic-hook-core\.cjs/.test(src)) {
       misses.push(rel);
     }
   }
