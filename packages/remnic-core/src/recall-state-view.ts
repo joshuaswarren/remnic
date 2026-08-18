@@ -30,15 +30,23 @@ export interface StateViewResult {
 
 export const DEFAULT_RECALL_STATE_VIEWS = false;
 
-const CHANGE_PHRASE_RE = /\b(?:when\s+did|used\s+to)\b/i;
-const CHANGE_WORD_RE = /\b(?:before|after|switch(?:es|ed|ing)?|chang(?:e|es|ed|ing))\b/i;
+const CHANGE_WORDS = ["before", "after", "switch", "switches", "switched", "switching", "change", "changes", "changed", "changing"];
 
 export function parseRecallStateViews(raw: unknown): boolean {
   return coerceBooleanLike(raw, "recallStateViews") === true;
 }
 
 export function isChangeOrientedQuery(query: string): boolean {
-  return CHANGE_PHRASE_RE.test(query) || CHANGE_WORD_RE.test(query);
+  const lower = query.toLowerCase();
+  if (lower.includes("when did") || lower.includes("used to")) return true;
+  return CHANGE_WORDS.some((word) => {
+    const idx = lower.indexOf(word);
+    if (idx < 0) return false;
+    const before = idx === 0 || !/[a-z0-9]/.test(lower[idx - 1] ?? "");
+    const afterIdx = idx + word.length;
+    const after = afterIdx >= lower.length || !/[a-z0-9]/.test(lower[afterIdx] ?? "");
+    return before && after;
+  });
 }
 
 export function shouldWidenSuperseded(
