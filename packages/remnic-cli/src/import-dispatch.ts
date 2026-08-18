@@ -92,16 +92,16 @@ export interface ImportDispatchIO {
   stderr: (line: string) => void;
 }
 
-export const IMPORT_USAGE = `remnic import — Bring memory from ChatGPT, Claude, Gemini, Mem0, or Supermemory (issue #568)
+export const IMPORT_USAGE = `remnic import — Bring memory from ChatGPT, Claude, Gemini, Mem0, Supermemory, or OKF
 
 Usage:
   remnic import --adapter <name> --file <path> [options]
+  remnic import okf <dir> [options]
 
 Required:
   --adapter <name>            One of: ${SUPPORTED_IMPORTERS.join(" | ")}
-  --file <path>               Path to a text/JSON source export. ZIP archives
-                              are not accepted by this single-file path yet. May be
-                              omitted for API-only adapters (mem0).
+  --file <path>               Path to a text/JSON source export, or an OKF directory.
+                              Archives must be unpacked first.
 
 Options:
   --dry-run                   Parse and transform only; do not write memories.
@@ -117,16 +117,10 @@ Bulk mode (slice 7):
                               mem0 exports inside <dir> and run each
                               matching adapter. Replaces --adapter/--file.
 
-Slice 1 ships infrastructure only. Adapter packages
-(@remnic/import-chatgpt, @remnic/import-claude, @remnic/import-gemini,
-@remnic/import-mem0, @remnic/import-supermemory) land in follow-up slices.
-Install whichever you need:
+Install the adapter you need:
 
   npm install -g @remnic/import-chatgpt
-  npm install -g @remnic/import-claude
-  npm install -g @remnic/import-gemini
-  npm install -g @remnic/import-mem0
-  npm install -g @remnic/import-supermemory
+  npm install -g @remnic/import-okf
 `;
 
 /**
@@ -140,7 +134,10 @@ Install whichever you need:
 export function parseImportArgs(rest: readonly string[]): ImportDispatchArgs {
   const args = [...rest];
 
-  const adapter = takeValue(args, "--adapter");
+  let adapter = takeValue(args, "--adapter");
+  if (!adapter && args[0] && !args[0].startsWith("--") && isSupportedImporterName(args[0])) {
+    adapter = args.shift() as typeof adapter;
+  }
   if (!adapter) {
     throw new Error(
       `--adapter <name> is required. Valid values: ${SUPPORTED_IMPORTERS.join(", ")}`,
@@ -160,9 +157,8 @@ export function parseImportArgs(rest: readonly string[]): ImportDispatchArgs {
   // first, `takeValue` sees the adjacent `--dry-run` token and correctly
   // rejects it as a missing value. Cursor bugbot flagged this on PR #583.
   const fileRaw = takeOptionalValue(args, "--file");
-  // Expand leading `~` so paths like `~/export.json` resolve. Node's fs
-  // does not expand the tilde — CLAUDE.md rule 17.
-  const file = fileRaw !== undefined ? expandTilde(fileRaw) : undefined;
+  let file = fileRaw !== undefined ? expandTilde(fileRaw) : undefined;
+
 
   const batchSizeRaw = takeOptionalValue(args, "--batch-size");
   let batchSize: number | undefined;
@@ -193,8 +189,11 @@ export function parseImportArgs(rest: readonly string[]): ImportDispatchArgs {
   // booleans.
   const dryRun = consumeFlag(args, "--dry-run");
   const includeConversations = consumeFlag(args, "--include-conversations");
-
+  if (file === undefined && args[0] && !args[0].startsWith("--")) {
+    file = expandTilde(args.shift() as string);
+  }
   rejectLeftoverImportArgs(args, "remnic import");
+
 
   return {
     adapter,
@@ -230,21 +229,20 @@ export async function runImportCommand(
   args: ImportDispatchArgs,
   io: ImportDispatchIO,
 ): Promise<RunImporterResult> {
-  if (args.file && isZipFilePath(args.file)) {
+  if (args.file && (isZipFilePath(args.file) || /\.(tgz|tar\.gz)$/i.test(args.file))) {
     throw new Error(
-      `ZIP imports are not supported by --file yet: '${args.file}'. ` +
-        "Extract the archive first or use --all-from-bundle for supported bundle layouts.",
+      `unpack first: archive imports are not supported ('${args.file}'). Extract the archive, then pass the directory.`,
     );
   }
   const adapter = await io.loadAdapter(args.adapter);
 
-  // Shape inputs the adapter understands. Adapters that accept raw file
-  // bytes (e.g. a ZIP buffer) are free to re-read the path themselves via
-  // `parseOptions.filePath`; this slice-1 wiring passes the file contents as
-  // a string for text/JSON exports and the path as a fallback so adapters
-  // can choose.
   let input: unknown;
-  if (args.file) {
+  if (args.adapter === "okf") {
+    if (!args.file) {
+      throw new Error("OKF import requires a directory path (remnic import okf <dir>)");
+    }
+    input = args.file;
+  } else if (args.file) {
     try {
       input = await io.readFile(args.file);
     } catch (err) {
@@ -255,10 +253,9 @@ export async function runImportCommand(
       );
     }
   } else {
-    // No file → API-only adapter (mem0). Pass `undefined` through; adapters
-    // that require a file will surface their own error.
     input = undefined;
   }
+
 
   const parseOptions: ImporterParseOptions = {
     filePath: args.file,

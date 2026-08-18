@@ -49,6 +49,7 @@
     "@remnic/import-lossless-claw": "^9.65.8",
     "@remnic/import-mem0": "^9.65.8",
     "@remnic/import-supermemory": "^9.65.8",
+    "@remnic/import-okf": "^9.65.8",
     "@remnic/connector-limitless": "^9.65.8",
     "@remnic/connector-bee": "^9.65.8",
     "@remnic/connector-omi": "^9.65.8",
@@ -83,6 +84,9 @@
       "optional": true
     },
     "@remnic/import-supermemory": {
+      "optional": true
+    },
+    "@remnic/import-okf": {
       "optional": true
     },
     "@remnic/connector-limitless": {
