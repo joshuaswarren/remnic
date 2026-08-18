@@ -40,7 +40,7 @@ import {
   type MemoryLifecycleCapabilitySet,
 } from "../capabilities.js";
 import { parseFlexibleIsoTimestamp } from "../utils/iso-timestamp.js";
-import { enrichMemoriesWithLocation } from "../location/tagging.js";
+import { tagPersistedMemories } from "../location/tagging.js";
 import { log } from "../logger.js";
 import type { PluginConfig, BufferTurn, ExtractionResult, MetaState, ExtractionFailureClass } from "../types.js";
 import type { TierMigrationCycleSummary } from "../recall-state.js";
@@ -62,7 +62,6 @@ export class ExtractionDeadlineError extends Error {
     this.stage = stage;
   }
 }
-
 
 /** Dependencies injected by the orchestrator. All stable references or
  *  live accessors — lazy getters for anything tests reassign
@@ -1091,22 +1090,7 @@ export class ExtractionRunCoordinator {
       log.warn("runExtraction: durable-commit callback failed", error);
     }
     const runPostPersistBestEffort = runExtractionPostPersistBestEffort.bind(null, runDeadlineAware);
-    // Provider-owned location tagging (issue #2046): the batch has cleared
-    // the trust/importance/content-hash gates and is durable, so tag the new
-    // memories from stored location segments. Best-effort by contract — a
-    // location failure must never fail the extraction that already persisted.
-    if (persistedIds.length > 0 && this.config.location.enabled && this.config.location.tagging.enabled) {
-      try {
-        await enrichMemoriesWithLocation({
-          storage,
-          memoryIds: persistedIds,
-          memoryDir: this.config.memoryDir,
-          config: this.config.location,
-        });
-      } catch (locationError) {
-        log.warn("[location] post-write tagging failed (non-fatal)", locationError);
-      }
-    }
+    await tagPersistedMemories(storage, persistedIds, this.config);
     const postPersist = await runExtractionPostPersist({
       result,
       storage,

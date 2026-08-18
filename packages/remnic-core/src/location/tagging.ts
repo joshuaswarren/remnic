@@ -20,7 +20,8 @@
  */
 
 import type { StorageManager } from "../index.js";
-import type { MemoryFile } from "../types.js";
+import { log } from "../logger.js";
+import type { MemoryFile, PluginConfig } from "../types.js";
 import type { WearableConversation } from "../wearables/types.js";
 import { localDayKey, placeDurations } from "./intervals.js";
 import {
@@ -32,6 +33,7 @@ import {
   type LocationUpdatePlan,
 } from "./matching.js";
 import { loadLocationSyncState } from "./store.js";
+import { log } from "../logger.js";
 import type { LocationConfig } from "./types.js";
 
 /** Segments for one local day, per source id, from the sync state. */
@@ -63,6 +65,24 @@ export function locationTagPolicy(config: LocationConfig): LocationTagPolicy {
 /** Every tagging path is off unless BOTH gates are on. */
 export function locationTaggingEnabled(config: LocationConfig): boolean {
   return config.enabled && config.tagging.enabled;
+}
+
+export async function tagPersistedMemories(
+  storage: StorageManager,
+  memoryIds: string[],
+  config: { memoryDir: string; location: LocationConfig },
+): Promise<void> {
+  if (memoryIds.length === 0 || !locationTaggingEnabled(config.location)) return;
+  try {
+    await enrichMemoriesWithLocation({
+      storage,
+      memoryIds,
+      memoryDir: config.memoryDir,
+      config: config.location,
+    });
+  } catch (locationError) {
+    log.warn("[location] post-write tagging failed (non-fatal)", locationError);
+  }
 }
 
 function segmentsForDays(index: DaySegmentIndex, days: readonly string[]): LocationSourceSegments[] {
@@ -181,10 +201,33 @@ export async function enrichMemoriesWithLocation(
       await options.storage.writeMemoryFrontmatter(memory, plan.patch, { actor: "location-tagging" });
       countOutcome(counts, plan.outcome);
     } catch {
-      counts.failed += 1;
     }
   }
   return counts;
+}
+
+/**
+ * Write-time post-persist hook (issue #2046): tag the memories an extraction
+ * batch just made durable. Best-effort by contract — gated on both location
+ * gates, and a location failure must never fail the extraction that already
+ * persisted.
+ */
+export async function tagPersistedMemories(
+  storage: Pick<StorageManager, "getMemoryById" | "writeMemoryFrontmatter">,
+  memoryIds: readonly string[],
+  config: PluginConfig,
+): Promise<void> {
+  if (memoryIds.length === 0 || !locationTaggingEnabled(config.location)) return;
+  try {
+    await enrichMemoriesWithLocation({
+      storage,
+      memoryIds: [...memoryIds],
+      memoryDir: config.memoryDir,
+      config: config.location,
+    });
+  } catch (error) {
+    log.warn("[location] post-write tagging failed (non-fatal)", error);
+  }
 }
 
 /**
