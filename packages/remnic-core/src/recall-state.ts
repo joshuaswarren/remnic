@@ -191,6 +191,13 @@ type StateFileWriter = (filePath: string, content: string) => Promise<void>;
  * recordedAt are compared. Extracted so every annotation surface applies
  * identical guards (CLAUDE.md rule 22).
  */
+function cloneTierExplain(
+  tierExplain: RecallTierExplain | undefined,
+): RecallTierExplain | undefined {
+  if (!tierExplain) return undefined;
+  return structuredClone(tierExplain);
+}
+
 function snapshotMatchesExpectedIdentity(
   current: LastRecallSnapshot,
   expected?: { writeNonce?: string; traceId?: string; recordedAt?: string },
@@ -201,41 +208,30 @@ function snapshotMatchesExpectedIdentity(
   }
   const hasExpectedTraceId =
     typeof expected.traceId === "string" && expected.traceId.length > 0;
-  if (hasExpectedTraceId) {
-    return current.traceId === expected.traceId;
-  }
-  if (expected.recordedAt !== undefined) {
+  if (hasExpectedTraceId && current.traceId !== expected.traceId) return false;
+  if (typeof expected.recordedAt === "string" && expected.recordedAt.length > 0) {
     return current.recordedAt === expected.recordedAt;
   }
   return true;
 }
 
-function cloneTierExplain(
-  tierExplain: RecallTierExplain | undefined,
-): RecallTierExplain | undefined {
-  if (!tierExplain) return undefined;
-  return structuredClone(tierExplain);
-}
-
 function hydrateLastRecallSnapshot(snapshot: LastRecallSnapshot): LastRecallSnapshot {
   const includedMemories = coerceIncludedMemories(snapshot);
-  // Strip the legacy parallel arrays so a hydrated snapshot re-emits only the
-  // canonical `includedMemories` form on every surface (in-memory clones,
-  // re-persisted state, MCP/HTTP JSON). The freshly parsed disk object is
-  // private to this load, so in-place deletes are safe.
-  const legacy = snapshot as unknown as Record<string, unknown>;
-  delete legacy.resultPaths;
-  delete legacy.resultNamespaces;
-  if (legacy.budgetsApplied && typeof legacy.budgetsApplied === "object") {
-    const budgets = legacy.budgetsApplied as Record<string, unknown>;
-    delete budgets.includedMemoryIds;
-    delete budgets.includedMemoryPaths;
-    delete budgets.includedMemoryNamespaces;
-  }
+  const budgets = snapshot.budgetsApplied
+    ? {
+        ...snapshot.budgetsApplied,
+        includedMemoryIds: includedMemories.map((memory) => memory.id),
+        includedMemoryPaths: includedMemories.map((memory) => memory.path),
+        includedMemoryNamespaces: includedMemories.map((memory) => memory.namespace),
+      }
+    : undefined;
   return {
     ...snapshot,
     includedMemories,
     memoryIds: includedMemories.map((memory) => memory.id),
+    resultPaths: includedMemories.map((memory) => memory.path),
+    resultNamespaces: includedMemories.map((memory) => memory.namespace),
+    ...(budgets ? { budgetsApplied: budgets } : {}),
   };
 }
 
@@ -245,6 +241,7 @@ function cloneLastRecallSnapshot(
   if (!snapshot) return null;
   return structuredClone(hydrateLastRecallSnapshot(snapshot));
 }
+
 
 
 export interface TierMigrationCycleSummary {

@@ -305,7 +305,9 @@ export async function assembleRecallResponse(
       fallbackUsed: snapshot?.fallbackUsed ?? false,
       sourcesUsed: snapshot?.sourcesUsed ?? [],
       disclosure,
-      budgetsApplied: snapshot?.budgetsApplied,
+      budgetsApplied: snapshot
+        ? displaySafeRecallSnapshot(snapshot, deps.orchestrator.config.memoryDir).budgetsApplied
+        : undefined,
       auditAnomalies,
       budgetWarning: toBudgetWarning(budgetDecision),
       latencyMs: snapshot?.latencyMs ?? (Date.now() - startedAt),

@@ -136,15 +136,11 @@ test("LastRecallStore.load shims legacy last_recall.json shapes to includedMemor
     },
   ]);
   assert.deepEqual(full.memoryIds, ["fact-alpha", "fact-beta", "fact-gamma"]);
-  // Legacy parallel arrays are stripped from the hydrated snapshot — every
-  // surface re-emits only the canonical form.
-  assert.equal("resultPaths" in full, false);
-  assert.equal("resultNamespaces" in full, false);
-  assert.ok(full.budgetsApplied);
-  assert.equal("includedMemoryIds" in full.budgetsApplied, false);
-  assert.equal("includedMemoryPaths" in full.budgetsApplied, false);
-  assert.equal("includedMemoryNamespaces" in full.budgetsApplied, false);
-  assert.deepEqual(full.budgetsApplied.omittedMemoryIds, ["fact-dropped"]);
+  assert.deepEqual(
+    full.resultPaths,
+    full.includedMemories?.map((memory) => memory.path),
+  );
+  assert.deepEqual(full.budgetsApplied?.omittedMemoryIds, ["fact-dropped"]);
 
   const idsOnly = store.get("legacy-ids-only");
   assert.ok(idsOnly);
