@@ -381,17 +381,17 @@ function main() {
     if (JSON.stringify(extracted.keys) !== JSON.stringify(snapshot.keys)) {
       failures.push({
         message:
-          "[snapshot] parsed-keys.snapshot.json is stale — regenerate with `npx tsx scripts/config-contract/extract-parsed-keys.ts > scripts/config-contract/parsed-keys.snapshot.json`",
+          "[snapshot] parsed-keys.snapshot.json is stale — regenerate with `npx tsx scripts/config-contract/extract-parsed-keys.ts --write`",
       });
     }
     if (JSON.stringify(extractedUnparseable) !== JSON.stringify(snapshot.unparseable)) {
       failures.push({
-        message: "[snapshot] parsed-keys.snapshot.json unparseable list drifted — regenerate the snapshot",
+        message: "[snapshot] parsed-keys.snapshot.json unparseable list drifted — regenerate with `npx tsx scripts/config-contract/extract-parsed-keys.ts --write`",
       });
     }
     if (JSON.stringify(extracted.ambiguousValueMembers) !== JSON.stringify(snapshot.ambiguousValueMembers)) {
       failures.push({
-        message: "[snapshot] parsed-keys.snapshot.json ambiguousValueMembers drifted — regenerate the snapshot",
+        message: "[snapshot] parsed-keys.snapshot.json ambiguousValueMembers drifted — regenerate with `npx tsx scripts/config-contract/extract-parsed-keys.ts --write`",
       });
     }
   }
