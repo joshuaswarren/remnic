@@ -610,6 +610,11 @@ jobs:
               echo "::notice::Skipping private package: $pkg_dir"
               continue
             fi
+            if ! node -e "const os=require('./$pkg_json').os; if (!Array.isArray(os) || os.length===0) process.exit(0); process.exit(os.includes(process.platform)?0:1)"; then
+              echo "::notice::Skipping $pkg_dir (os-restricted; published by capture-native-helper.yml)"
+              continue
+            fi
+
             pkg_name="$(node -p "require('./$pkg_json').name")"
             pkg_version="$(node -p "require('./$pkg_json').version")"
             if npm view "${pkg_name}@${pkg_version}" version >/dev/null 2>&1; then

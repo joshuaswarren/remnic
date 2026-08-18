@@ -17,6 +17,11 @@ on:
       - 'packages/capture-native-darwin-x64/**'
       - 'packages/capture-screen/**'
       - '.github/workflows/capture-native-helper.yml'
+  release:
+    # The GitHub release created at the end of release-and-publish.yml is the
+    # publish trigger: by then versions are bumped on the tagged commit, so
+    # the darwin platform packages publish at exactly the release version.
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -104,6 +109,73 @@ jobs:
           name: remnic-capture-helper-${{ matrix.arch }}
           path: ${{ matrix.platformPackage }}/bin/remnic-capture-helper
           if-no-files-found: error
+
+
+  publish:
+    if: github.event_name == 'release'
+    needs: swift
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            platformPackage: packages/capture-native-darwin-arm64
+          - arch: x64
+            platformPackage: packages/capture-native-darwin-x64
+    name: publish (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download helper binary
+        uses: actions/download-artifact@v4
+        with:
+          name: remnic-capture-helper-${{ matrix.arch }}
+          path: ${{ matrix.platformPackage }}/bin
+
+      - name: Mark helper executable
+        run: chmod +x "${{ matrix.platformPackage }}/bin/remnic-capture-helper"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.13.0'
+          registry-url: https://registry.npmjs.org
+
+      - name: Publish platform package
+        working-directory: ${{ matrix.platformPackage }}
+        run: |
+          set -euo pipefail
+          pkg_name="$(node -p "require('./package.json').name")"
+          pkg_version="$(node -p "require('./package.json').version")"
+          if npm view "${pkg_name}@${pkg_version}" version >/dev/null 2>&1; then
+            echo "::notice::${pkg_name}@${pkg_version} already published; skipping."
+            exit 0
+          fi
+          publish_log="$(mktemp)"
+          if pnpm publish --access public --provenance --no-git-checks >"$publish_log" 2>&1; then
+            cat "$publish_log"
+            rm -f "$publish_log"
+            exit 0
+          fi
+          cat "$publish_log"
+          if grep -q "npm error code E404" "$publish_log"; then
+            echo "::error::Provision npm trusted publishing for ${pkg_name}, then rerun this workflow."
+            rm -f "$publish_log"
+            exit 1
+          fi
+          rm -f "$publish_log"
+          exit 1
 
   # The screen-activity daemon (@remnic/capture-screen) is TypeScript and is
   # proven on Linux like the rest of the workspace.
