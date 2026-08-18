@@ -6,6 +6,7 @@ import {
   type ReviewDeckSnapshot,
   type ReviewDeckSourceRow,
 } from "./review-deck.js";
+import { parseFrontmatterFields, splitMarkdownFrontmatter } from "./frontmatter.js";
 
 const QUEUE_DIRS = ["suggestions", "review"] as const;
 
@@ -147,30 +148,13 @@ function readFileSafe(filePath: string): string | null {
   }
 }
 
-function splitFrontmatter(content: string): { fields: string; body: string } | null {
-  if (!content.startsWith("---\n")) return null;
-  const end = content.indexOf("\n---", 4);
-  if (end === -1) return null;
-  const after = end + "\n---".length;
-  const body = content.startsWith("\n", after) ? content.slice(after + 1) : content.slice(after);
-  return { fields: content.slice(4, end), body };
-}
-
 function parseFrontmatter(content: string): Record<string, unknown> | null {
-  const split = splitFrontmatter(content);
-  if (!split) return null;
-  const fm: Record<string, unknown> = {};
-  for (const line of split.fields.split("\n")) {
-    const colonIdx = line.indexOf(":");
-    if (colonIdx === -1) continue;
-    fm[line.slice(0, colonIdx).trim()] = line.slice(colonIdx + 1).trim();
-  }
-  return fm;
+  if (!content.startsWith("---\n")) return null;
+  return parseFrontmatterFields(content);
 }
 
 function extractBody(content: string): string {
-  const split = splitFrontmatter(content);
-  return split ? split.body.trim() : content.trim();
+  return splitMarkdownFrontmatter(content)?.body.trim() ?? content.trim();
 }
 
 function parseBoolean(value: unknown): boolean {

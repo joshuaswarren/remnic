@@ -58,8 +58,6 @@ test("stagger wrapper sleeps the remainder, execs gh with all args, and writes a
     { mode: 0o755 }
   );
 
-  // Fresh stamp + 2s gap: even if the wrapper starts after the next whole
-  // second ticks, ~2s of gap still remain, so the sleep is deterministic.
   writeFileSync(path.join(lockDir, "stamp"), String(Math.floor(Date.now() / 1000)));
   const startedAt = Date.now();
   const out = execFileSync(
@@ -71,14 +69,14 @@ test("stagger wrapper sleeps the remainder, execs gh with all args, and writes a
         ...process.env,
         PATH: `${binDir}:${process.env.PATH}`,
         TMPDIR: tmpRoot,
-        REMNIC_PR_CREATE_GAP_SEC: "2",
+        REMNIC_PR_CREATE_GAP_SEC: "3",
       },
     }
   );
   const elapsed = Date.now() - startedAt;
   assert.match(out, /PR-URL-FROM-STUB/);
   assert.deepEqual(readFileSync(ghLog, "utf8").trim().split("\n"), ["pr", "create", "--title", "t", "--fill"]);
-  assert.ok(elapsed >= 1500, `expected a stagger sleep, finished in ${elapsed}ms`);
+  assert.ok(elapsed >= 1000, `expected a stagger sleep, finished in ${elapsed}ms`);
   assert.equal(existsSync(path.join(lockDir, "lock")), true, "lock lives under TMPDIR");
   const stamp = Number.parseInt(readFileSync(path.join(lockDir, "stamp"), "utf8"), 10);
   assert.ok(Number.isInteger(stamp) && stamp >= Math.floor(Date.now() / 1000) - 2, "stamp refreshed after the create");
