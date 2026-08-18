@@ -1,6 +1,6 @@
 {
   "name": "@joshuaswarren/openclaw-engram",
-  "version": "9.63.12",
+  "version": "9.64.0",
   "description": "Deprecated compatibility shim for Engram installs. Re-exports @remnic/plugin-openclaw and forwards engram-access to @remnic/core.",
   "type": "module",
   "main": "dist/index.js",
