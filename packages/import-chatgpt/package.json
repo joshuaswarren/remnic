@@ -1,6 +1,6 @@
 {
   "name": "@remnic/import-chatgpt",
-  "version": "9.63.9",
+  "version": "9.63.10",
   "description": "Import memory and conversation summaries from ChatGPT data exports into Remnic (issue #568)",
   "type": "module",
   "main": "dist/index.js",
@@ -26,7 +26,7 @@
     "provenance": true
   },
   "peerDependencies": {
-    "@remnic/core": "^9.63.9"
+    "@remnic/core": "^9.63.10"
   },
   "devDependencies": {
     "@remnic/core": "workspace:*",
