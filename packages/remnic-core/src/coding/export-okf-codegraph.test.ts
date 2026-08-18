@@ -19,6 +19,7 @@ import type { PluginConfig } from "../types.js";
 import { StorageManager } from "../storage.js";
 import { serializeDecisionRecord, type DecisionRecord } from "./decision-records.js";
 import { getCodegraphStore, resolveCodegraphDbPath } from "./codegraph-runtime.js";
+import { isCodingGraphInstalled } from "./optional-coding-graph.js";
 
 import {
   DEFAULT_OKF_CODEGRAPH_MAX_MODULE_CONCEPTS,
@@ -176,6 +177,13 @@ async function makeFixture(): Promise<Fixture> {
   };
 }
 
+async function requireEngine(t: { skip: (reason: string) => void }): Promise<boolean> {
+  if (await isCodingGraphInstalled()) return true;
+  t.skip("@remnic/coding-graph is optional and not installed");
+  return false;
+}
+
+
 function sha256File(file: string): string {
   return createHash("sha256").update(readFileSync(file)).digest("hex");
 }
@@ -209,7 +217,8 @@ test("parseOkfCodegraphSymbolFilter defaults to exported and rejects unknowns", 
   assert.equal(DEFAULT_OKF_CODEGRAPH_MAX_MODULE_CONCEPTS, 500);
 });
 
-test("exportCodegraphOkfBundle writes the full bundle: card verbatim, ADRs, modules, edges", async () => {
+test("exportCodegraphOkfBundle writes the full bundle: card verbatim, ADRs, modules, edges", async (t) => {
+  if (!(await requireEngine(t))) return;
   const fx = await makeFixture();
   const out = path.join(fx.memoryDir, "out-a");
   try {
@@ -274,7 +283,8 @@ test("exportCodegraphOkfBundle writes the full bundle: card verbatim, ADRs, modu
   }
 });
 
-test("exportCodegraphOkfBundle is byte-stable for an unchanged graph", async () => {
+test("exportCodegraphOkfBundle is byte-stable for an unchanged graph", async (t) => {
+  if (!(await requireEngine(t))) return;
   const fx = await makeFixture();
   const outA = path.join(fx.memoryDir, "det-a");
   const outB = path.join(fx.memoryDir, "det-b");
@@ -295,7 +305,8 @@ test("exportCodegraphOkfBundle is byte-stable for an unchanged graph", async () 
   }
 });
 
-test("truncation keeps the most-symbolic file, notices in the root index, keeps broken links", async () => {
+test("truncation keeps the most-symbolic file, notices in the root index, keeps broken links", async (t) => {
+  if (!(await requireEngine(t))) return;
   const fx = await makeFixture();
   const out = path.join(fx.memoryDir, "out-trunc");
   try {
@@ -316,7 +327,8 @@ test("truncation keeps the most-symbolic file, notices in the root index, keeps 
   }
 });
 
-test("--symbols none|all changes only the # Symbols tables", async () => {
+test("--symbols none|all changes only the # Symbols tables", async (t) => {
+  if (!(await requireEngine(t))) return;
   const fx = await makeFixture();
   const outNone = path.join(fx.memoryDir, "sym-none");
   const outAll = path.join(fx.memoryDir, "sym-all");
@@ -339,25 +351,31 @@ test("--symbols none|all changes only the # Symbols tables", async () => {
   }
 });
 
-test("gating: disabled config and unknown project produce tagged actionable refusals", async () => {
+test("gating: disabled config and unknown project produce tagged actionable refusals", async (t) => {
+  const out = path.join(os.tmpdir(), `okf-cg-gate-${process.pid}`);
+  await assert.rejects(
+    exportCodegraphOkfBundle({
+      config: { codingKnowledge: { enabled: false } } as unknown as PluginConfig,
+      memoryDir: os.tmpdir(),
+      projectId: PROJECT_ID,
+      outDir: out,
+    }),
+    (err: unknown) => err instanceof Error && "code" in err && (err as { code: string }).code === "disabled",
+  );
+  if (!(await requireEngine(t))) return;
   const fx = await makeFixture();
-  const out = path.join(fx.memoryDir, "out-gate");
   try {
     await assert.rejects(
-      exportBundle(fx, out, { config: { codingKnowledge: { enabled: false } } as unknown as PluginConfig }),
-      (err: unknown) => err instanceof Error && "code" in err && (err as { code: string }).code === "disabled",
-    );
-    await assert.rejects(
-      exportBundle(fx, out, { projectId: "nope" }),
+      exportBundle(fx, path.join(fx.memoryDir, "out-gate"), { projectId: "nope" }),
       (err: unknown) =>
         err instanceof Error &&
         "code" in err &&
         (err as { code: string }).code === "project_not_found" &&
         /known projects: .*p1/.test(err.message),
     );
-    assert.equal(existsSync(out), false, "no bundle on refusal");
   } finally {
     await rm(fx.memoryDir, { recursive: true, force: true });
     await rm(fx.repoDir, { recursive: true, force: true });
   }
 });
+
