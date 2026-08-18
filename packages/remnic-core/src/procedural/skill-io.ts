@@ -49,8 +49,25 @@ export async function exportSkillBundles(options: {
     if (!pathIsInside(outDir, dir)) {
       throw new Error(`skill export: refusing to write outside ${outDir} (slug ${bundle.slug})`);
     }
+    try {
+      const existing = await lstat(dir);
+      if (existing.isSymbolicLink()) {
+        throw new Error(`skill export: refusing to write through symlink ${dir}`);
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
     await mkdir(dir, { recursive: true });
-    await writeFile(path.join(dir, SKILL_FILE_NAME), renderSkillBundle(bundle), "utf-8");
+    const skillPath = path.join(dir, SKILL_FILE_NAME);
+    try {
+      const existingSkill = await lstat(skillPath);
+      if (existingSkill.isSymbolicLink()) {
+        throw new Error(`skill export: refusing to write through symlink ${skillPath}`);
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    await writeFile(skillPath, renderSkillBundle(bundle), "utf-8");
     slugs.push(bundle.slug);
   }
   return { outDir, slugs };
@@ -91,42 +108,46 @@ export async function readSkillBundlesFromDir(dir: string): Promise<ReadSkillBun
   entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
   for (const entry of entries) {
-    if (entry.isSymbolicLink()) {
-      skipped.push({ entry: entry.name, reason: "symlink" });
-      continue;
-    }
-    if (!entry.isDirectory()) continue;
-
-    const bundleDir = path.join(root, entry.name);
-    const bundleReal = await realpath(bundleDir);
-    if (!pathIsInside(rootReal, bundleReal)) {
-      skipped.push({ entry: entry.name, reason: "resolves outside the import root" });
-      continue;
-    }
-
-    const skillPath = path.join(bundleDir, SKILL_FILE_NAME);
-    let skillStat;
     try {
-      skillStat = await lstat(skillPath);
-    } catch {
-      skipped.push({ entry: entry.name, reason: `no ${SKILL_FILE_NAME}` });
-      continue;
+      if (entry.isSymbolicLink()) {
+        skipped.push({ entry: entry.name, reason: "symlink" });
+        continue;
+      }
+      if (!entry.isDirectory()) continue;
+      const bundleDir = path.join(root, entry.name);
+      const bundleReal = await realpath(bundleDir);
+      if (!pathIsInside(rootReal, bundleReal)) {
+        skipped.push({ entry: entry.name, reason: "resolves outside the import root" });
+        continue;
+      }
+      const skillPath = path.join(bundleDir, SKILL_FILE_NAME);
+      let skillStat;
+      try {
+        skillStat = await lstat(skillPath);
+      } catch {
+        skipped.push({ entry: entry.name, reason: `no ${SKILL_FILE_NAME}` });
+        continue;
+      }
+      if (skillStat.isSymbolicLink() || !skillStat.isFile()) {
+        skipped.push({ entry: entry.name, reason: `${SKILL_FILE_NAME} is not a regular file` });
+        continue;
+      }
+      const parsed = parseSkillBundle(await readFile(skillPath, "utf-8"), sanitizeSkillSlug(entry.name));
+      if (!parsed) {
+        skipped.push({ entry: entry.name, reason: "empty body" });
+        continue;
+      }
+      const siblings = await readdir(bundleDir);
+      bundles.push({
+        ...parsed,
+        hasUnimportedResources: siblings.some((name) => name !== SKILL_FILE_NAME),
+      });
+    } catch (err) {
+      skipped.push({
+        entry: entry.name,
+        reason: `unreadable: ${err instanceof Error ? err.message : String(err)}`,
+      });
     }
-    if (skillStat.isSymbolicLink() || !skillStat.isFile()) {
-      skipped.push({ entry: entry.name, reason: `${SKILL_FILE_NAME} is not a regular file` });
-      continue;
-    }
-
-    const parsed = parseSkillBundle(await readFile(skillPath, "utf-8"), sanitizeSkillSlug(entry.name));
-    if (!parsed) {
-      skipped.push({ entry: entry.name, reason: "empty body" });
-      continue;
-    }
-    const siblings = await readdir(bundleDir);
-    bundles.push({
-      ...parsed,
-      hasUnimportedResources: siblings.some((name) => name !== SKILL_FILE_NAME),
-    });
   }
 
   return { bundles, skipped };
@@ -185,6 +206,7 @@ export async function persistImportedSkills(options: {
     const written = await options.storage.writeSealedMemory(envelope, { status: "pending_review" });
     if (written.tombstoneBlocked) {
       rejected.push({ slug: bundle.slug, reason: "blocked by a tombstone; left for review" });
+      continue;
     }
     imported.push({
       slug: bundle.slug,
