@@ -78,3 +78,31 @@ export function evaluateMemoryActionPolicy(input: {
     eligibility,
   };
 }
+
+/**
+ * Gate for active-context SUMMARY/FILTER plans (issue #2347). The single
+ * deny rule is the shared `contextCompressionActionsEnabled` gate — a closed
+ * gate returns `feature_disabled` before any selection or model work. LLM
+ * summaries carry their own cap gate (`activeContextTransformLlmEnabled`)
+ * resolved at plan time, not here.
+ */
+export interface ActiveContextTransformPolicyResult {
+  decision: "allow" | "deny";
+  rationale: string;
+}
+
+export function evaluateActiveContextTransformPolicy(options: {
+  actionsEnabled: boolean;
+  operation: "SUMMARY" | "FILTER";
+}): ActiveContextTransformPolicyResult {
+  if (!options.actionsEnabled) {
+    return {
+      decision: "deny",
+      rationale: "contextCompressionActionsEnabled=false",
+    };
+  }
+  return {
+    decision: "allow",
+    rationale: `${options.operation.toLowerCase()}_eligible`,
+  };
+}

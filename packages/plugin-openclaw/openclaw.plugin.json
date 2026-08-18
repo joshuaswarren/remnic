@@ -129,6 +129,53 @@
         "default": false,
         "description": "Write action-conditioned causal-stage edges from typed trajectory records into the causal graph."
       },
+      "activeContextMaxMessages": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 1000,
+        "default": 200,
+        "description": "Max messages accepted in one active-context snapshot (issue #2347)."
+      },
+      "activeContextMaxSnapshotChars": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 1000000,
+        "default": 200000,
+        "description": "Max total content chars accepted in one active-context snapshot (issue #2347)."
+      },
+      "activeContextMinRetainedMessages": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 50,
+        "default": 3,
+        "description": "Floor on messages retained after an active-context plan applies (issue #2347)."
+      },
+      "activeContextPlanTtlMinutes": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 1440,
+        "default": 15,
+        "description": "TTL in minutes for active-context plans and retained snapshots (issue #2347)."
+      },
+      "activeContextRetentionMaxBytes": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 10000000,
+        "default": 1000000,
+        "description": "Max bytes for the adapter-local retained source snapshot (issue #2347)."
+      },
+      "activeContextSummaryMaxTokens": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 4096,
+        "default": 512,
+        "description": "Max output tokens for one SUMMARY replacement (issue #2347)."
+      },
+      "activeContextTransformLlmEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Permit method=llm active-context SUMMARY plans; auto degrades to deterministic when off (issue #2347)."
+      },
       "activeRecallAgents": {
         "type": "array",
         "items": {

@@ -1,8 +1,6 @@
-import { log } from "../logger.js";
-import { looksLikeMechanicalTelemetryTranscript } from "../telemetry-transcript.js";
-import { estimateTokenCount } from "../token-estimate.js";
-import type { LcmArchive, LcmMessage } from "./archive.js";
+import { summarizeContextPure, type SummarizeFn } from "../context-summary.js";
 import { estimateTokens } from "./archive.js";
+import type { LcmArchive, LcmMessage } from "./archive.js";
 import type { LcmDag } from "./dag.js";
 
 /** Generate a ULID-like ID (timestamp + random). */
@@ -12,11 +10,9 @@ function generateNodeId(): string {
   return `lcm-${ts}-${rand}`;
 }
 
-export type SummarizeFn = (
-  text: string,
-  targetTokens: number,
-  aggressive: boolean,
-) => Promise<string | null>;
+// `SummarizeFn` moved to the shared pure summary seam (context-summary.ts,
+// #2347); re-exported here for back-compat with existing imports.
+export type { SummarizeFn };
 
 export interface LcmSummarizerConfig {
   leafBatchSize: number;
@@ -145,98 +141,23 @@ export class LcmSummarizer {
   }
 
   /**
-   * Three-level escalation:
-   * 0 = Normal LLM summary
-   * 1 = Aggressive bullet compression
-   * 2 = Deterministic truncation (no LLM)
+   * Three-level escalation, delegated to the shared pure summary seam
+   * (context-summary.ts): 0 = normal LLM, 1 = aggressive, 2 = deterministic.
    */
   private async summarizeWithEscalation(
     text: string,
     targetTokens: number,
   ): Promise<{ text: string; escalation: number }> {
-    const { telemetryPrefilterEnabled } = this.config;
-    if (
-      telemetryPrefilterEnabled &&
-      looksLikeMechanicalTelemetryTranscript(text)
-    ) {
-      return {
-        text: deterministicTruncate(
-          text,
-          Math.min(targetTokens, this.config.deterministicMaxTokens),
-        ),
-        escalation: 2,
-      };
-    }
-
-    // Level 0: Normal LLM summary
-    try {
-      const result = await this.summarizeFn(text, targetTokens, false);
-      if (result && estimateTokens(result) <= targetTokens * 1.5) {
-        return { text: result, escalation: 0 };
-      }
-      // If too long, try aggressive
-    } catch (err) {
-      log.debug(`LCM level-0 summary failed: ${err}`);
-    }
-
-    // Level 1: Aggressive bullet compression
-    try {
-      const aggressiveTarget = Math.max(32, Math.ceil(targetTokens * 0.5));
-      const result = await this.summarizeFn(text, aggressiveTarget, true);
-      if (result && estimateTokens(result) <= targetTokens * 1.5) {
-        return { text: result, escalation: 1 };
-      }
-    } catch (err) {
-      log.debug(`LCM level-1 summary failed: ${err}`);
-    }
-
-    // Level 2: Deterministic truncation (guaranteed, no LLM)
-    return {
-      text: deterministicTruncate(text, this.config.deterministicMaxTokens),
-      escalation: 2,
-    };
+    const { deterministicMaxTokens, telemetryPrefilterEnabled } = this.config;
+    const result = await summarizeContextPure(text, targetTokens, "auto", {
+      llm: this.summarizeFn,
+      deterministicMaxTokens,
+      telemetryPrefilterEnabled,
+    });
+    return { text: result.text, escalation: result.escalation ?? 2 };
   }
 }
 
-/** Deterministic truncation: first and last sentence, plus middle truncation. */
-function deterministicTruncate(text: string, maxTokens: number): string {
-  if (maxTokens <= 0 || estimateTokenCount(text) <= maxTokens) return text;
-
-  const sentences = text.split(/(?<=[.!?])\s+/).filter((s) => s.length > 0);
-  if (sentences.length <= 2) return clampToTokenBudget(text, maxTokens);
-
-  const first = sentences[0];
-  const last = sentences[sentences.length - 1];
-  const render = (middle: string[], truncated: boolean): string =>
-    `${first} ${middle.join(" ")}${truncated ? " [...] " : " "}${last}`;
-
-  const base = render([], false);
-  if (estimateTokenCount(base) > maxTokens) return clampToTokenBudget(text, maxTokens);
-  if (estimateTokenCount(render([], true)) > maxTokens) return base;
-
-  const middle: string[] = [];
-  for (let i = 1; i < sentences.length - 1; i++) {
-    const candidate = [...middle, sentences[i]];
-    const truncated = i < sentences.length - 2;
-    if (estimateTokenCount(render(candidate, truncated)) > maxTokens) break;
-    middle.push(sentences[i]);
-  }
-
-  const truncated = middle.length < sentences.length - 2;
-  return clampToTokenBudget(render(middle, truncated), maxTokens);
-}
-
-function clampToTokenBudget(text: string, maxTokens: number): string {
-  const codePoints = [...text];
-  let low = 0;
-  let high = codePoints.length;
-  while (low < high) {
-    const mid = Math.ceil((low + high) / 2);
-    if (estimateTokenCount(codePoints.slice(0, mid).join("")) <= maxTokens) low = mid;
-    else high = mid - 1;
-  }
-  return codePoints.slice(0, low).join("");
-}
 
 function chunkArray<T>(arr: T[], size: number): T[][] {
   const chunks: T[][] = [];

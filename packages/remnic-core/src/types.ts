@@ -15,7 +15,7 @@ import type { DriftDetectionSettings, MemoryDriftProvenance, RecallDriftAnnotati
 import type { ProceduralMaintenanceConfig } from "./procedural/maintenance-config.js";
 import type { SkillProjectionConfig } from "./procedural/skill-projection.js";
 import type { ActionGateConfig } from "./coding/action-gate.js";
-
+import type { ActiveContextConfigFields } from "./active-context-config.js";
 import type { AmbientCaptureProvenance, BufferTurnOwner, SecurityConfig, OriginMetadata } from "./security/types.js";
 export type MemorySubject = "user" | "agent";
 export type SubjectGuardMode = "off" | "warn" | "enforce";
@@ -682,8 +682,7 @@ export interface SemanticChunkingConfigShape {
   fallbackToRecursive: boolean;
 }
 
-
-export interface PluginConfig extends BoundedJsonlStateConfig, SecurityConfig, DriftDetectionSettings {
+export interface PluginConfig extends BoundedJsonlStateConfig, SecurityConfig, DriftDetectionSettings, ActiveContextConfigFields {
   openaiApiKey: string | undefined;
   openaiBaseUrl: string | undefined;
   model: string;

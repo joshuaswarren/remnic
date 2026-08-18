@@ -1,17 +1,10 @@
 /**
- * @remnic/core
- *
- * Framework-agnostic Remnic memory engine.
- *
- * Exports the orchestrator, config parsing, storage, search,
- * extraction, graph, trust zones, and access layer.
- *
- * This package has ZERO OpenClaw imports — it can be consumed by
- * any host adapter (CLI, HTTP server, MCP server, etc.).
- *
+ * @remnic/core — framework-agnostic Remnic memory engine.
+ * Zero OpenClaw imports. Any host adapter can consume this package.
  */
-
 export { collapseWhitespace, displayWidth, graphemeUnits, padEndDisplay, truncateCodePointSafe, truncateGraphemeSafe } from "./whitespace.js";
+export * from "./context-summary.js";
+export * from "./active-context-transform.js";
 
 // ---------------------------------------------------------------------------
 // Plugin entry resolution
