@@ -47,6 +47,7 @@ const INTERNAL_QMD_ROOTS = new Set([
   "config",
   "entities",
   "identity",
+  "locations",
   "meetings",
   "namespaces",
   "state",

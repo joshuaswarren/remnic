@@ -6432,6 +6432,59 @@
           }
         }
       },
+      "location": {
+        "type": "object",
+        "additionalProperties": false,
+        "default": {},
+        "description": "Opt-in location context foundation (issue #2044): day-bucketed place observations from registered providers. Providers are registered by host adapters; no provider client ships in core.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Master gate for the location subsystem."
+          },
+          "timezone": {
+            "type": "string",
+            "default": "UTC",
+            "description": "IANA timezone used to bucket observations into local days."
+          },
+          "syncDays": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 90,
+            "default": 1,
+            "description": "Number of local days to synchronize per run."
+          },
+          "retainCoordinates": {
+            "type": "boolean",
+            "default": false,
+            "description": "When false (default), place coordinates are dropped before any persistence or rendering; only place labels are kept."
+          },
+          "sources": {
+            "type": "array",
+            "default": [],
+            "description": "Location sources: registered provider ids plus their per-source toggle.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "Registered location provider id (lowercase kebab)."
+                },
+                "enabled": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Set false to short-circuit this source only."
+                }
+              }
+            }
+          }
+        }
+      },
       "workIndexAutoRebuildDebounceMs": {
         "type": "number",
         "default": 1000,

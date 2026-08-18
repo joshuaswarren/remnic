@@ -6,6 +6,7 @@ import { ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
 import {
   isActivityDigestPath,
   isArtifactMemoryPath,
+  isLocationDayPath,
   isMeetingRecordPath,
 } from "./orchestrator-helpers.js";
 
@@ -133,6 +134,7 @@ export function isSearchExcludedPath(
     if (
       isArtifactMemoryPath(candidate) ||
       isNamespacedActivityDigestPath(candidate, policy.memoryDir) ||
+      isNamespacedLocationDayPath(candidate, policy.memoryDir) ||
       isMeetingRecordPath(candidate)
     ) {
       return true;
@@ -158,6 +160,21 @@ function isNamespacedActivityDigestPath(candidate: string, memoryDir?: string): 
   const namespaced = /^namespaces[\\/]([^\\/]+)[\\/](.*)$/.exec(relative);
   if (namespaced === null) return false;
   return isActivityDigestPath(namespaced[2] ?? "", memoryDir);
+}
+
+/**
+ * The location day-file check, applied against the NAMESPACE root a hit came
+ * from — same rationale as `isNamespacedActivityDigestPath`: a namespaced
+ * search rewrites hits to absolute paths beneath `…/namespaces/<ns>/`, so the
+ * root-aware predicate is re-measured against the namespace's own root.
+ */
+function isNamespacedLocationDayPath(candidate: string, memoryDir?: string): boolean {
+  if (isLocationDayPath(candidate, memoryDir)) return true;
+  if (memoryDir === undefined || memoryDir.length === 0) return false;
+  const relative = path.relative(memoryDir, path.resolve(memoryDir, candidate));
+  const namespaced = /^namespaces[\\/]([^\\/]+)[\\/](.*)$/.exec(relative);
+  if (namespaced === null) return false;
+  return isLocationDayPath(namespaced[2] ?? "", memoryDir);
 }
 
 /** A path as given, plus its form with a leading COLLECTION segment removed. */
