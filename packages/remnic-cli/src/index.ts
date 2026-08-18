@@ -8,6 +8,7 @@
  *   status            Show server/daemon status
  *   query <text>      Query memories
  *   xray <query>      Recall with X-ray capture; renders tier + filters + scores
+ *   who-knows <topic> Rank entities by expertise on a topic
  *   wearables <cmd>   Wearable transcript sources (Limitless / Bee / Omi)
  *   doctor            Run diagnostics
  *   config            Show current config
@@ -5542,7 +5543,8 @@ export async function runWhoKnowsCommand(
 }
 
 async function cmdWhoKnows(rest: string[]): Promise<void> {
-  extractWhoKnowsRawArgs(rest); // fail fast before any IO
+  const { topic, options } = extractWhoKnowsRawArgs(rest);
+  parseWhoKnowsCliOptions(topic, options); // validate topic/--limit before any IO
   if (resolveRemoteDaemon(resolveConfigPath())) {
     throw new Error("who-knows: remote daemon mode is not supported yet; run with a local config");
   }
@@ -5561,6 +5563,7 @@ async function cmdWhoKnows(rest: string[]): Promise<void> {
     });
   } finally {
     orchestrator.abortDeferredInit();
+    await orchestrator.destroy();
   }
 }
 
@@ -13458,6 +13461,7 @@ Usage:
     Run a recall with X-ray capture and print the unified snapshot
     (tier + audit + MMR + filters). Part of #570. Defaults to text
     output on stdout.
+  remnic who-knows <topic> [--limit N] [--json] [--namespace <ns>]  Rank entities by topic expertise
   remnic wearables <status|check|sync|transcript|search|memories|speakers|corrections>
     Wearable transcript sources (Limitless / Bee / Omi): pull + clean +
     store day transcripts, trust-gated memory creation, speaker labels,
@@ -13467,6 +13471,8 @@ Usage:
     Retrospective meetings: list stored records, show one by id, or build
     (detect + fuse + store) a day's meetings from ingested audio + screen
     activity. Run "remnic meetings help" for details.
+  remnic who-knows <topic> [--limit <1-50>] [--namespace <ns>] [--json]
+    Rank entities by demonstrated expertise on a topic (issue #2057).
   remnic external-wiki search <query...> [--wiki-id <id>] [--limit <1-20>] [--max-chars-per-hit <100-8000>] [--json]
 
   remnic doctor                Run diagnostics
