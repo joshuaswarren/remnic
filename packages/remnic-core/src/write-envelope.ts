@@ -674,6 +674,7 @@ export function sealedWriteToLegacyArgs(
       // unvalidated connector provenance past the sealed envelope when the
       // envelope had none.
       origin: envelope.origin,
+      sourceConnector: envelope.sourceConnector,
       subject: envelope.subject,
     },
   };
