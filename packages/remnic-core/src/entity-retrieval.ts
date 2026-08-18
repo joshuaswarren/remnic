@@ -10,6 +10,11 @@ import { normalizeEntityText, resolveRequestedEntitySectionKeys } from "./entity
 import type { EntityStructuredSection, MemoryFile, PluginConfig, TranscriptEntry } from "./types.js";
 import { truncateGraphemeSafe } from "./whitespace.js";
 import { containsPhrase } from "./entity-retrieval-boundaries.js";
+import {
+  detectNonEnglishEntityQueryMode,
+  isStructuralEntityFollowUpQuery,
+  type EntityQueryMode,
+} from "./entity-retrieval-i18n.js";
 import { buildOriginStructuredSections, sanitizeOriginatedFacts, type EntityOriginStructuredSection } from "./entity-origin-fields.js";
 import {
   checkEntityRecallAbort,
@@ -24,7 +29,6 @@ const METADATA_WRAPPER_RE = /^(source|context|metadata|notes?):/i;
 const ENTITY_PRONOUN_RE = /\b(he|him|his|she|her|they|them|their|it|its)\b/i;
 const BELIEF_LEDGER_SECTION_KEY = "belief_ledger";
 const BELIEF_LEDGER_FACT_RE = /^claim=([^;]+);\s*status=([^;]+);\s*updatedAt=([^;]+);\s*(.+)$/;
-type EntityQueryMode = "direct" | "timeline" | "follow_up";
 type EntityMentionIndexEntry = {
   canonicalId: string;
   name: string;
@@ -198,7 +202,7 @@ function detectEntityQueryMode(query: string): EntityQueryMode | null {
   if (ENTITY_PRONOUN_RE.test(normalized) && normalized.split(/\s+/).length <= 8) {
     return "follow_up";
   }
-  return null;
+  return detectNonEnglishEntityQueryMode(normalized);
 }
 function scoreAliasMatch(query: string, alias: string): number {
   const normalizedQuery = normalizeEntityText(query);
@@ -1061,7 +1065,17 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
   // during a scan is observed here (issue #2291).
   checkEntityRecallAbort(options.abortSignal);
   const prefixedMode = detectEntityQueryMode(options.query);
-  const persistedIndex = prefixedMode
+  // #2193: a short question with no entity name is a structural follow-up
+  // cue in any language (zero-pronoun languages never trip a pronoun word
+  // list), so it enters the same coreference path as an English "what about
+  // him?". Recent-turn resolution stays the gate — this only routes.
+  const structuralFollowUp = prefixedMode === null
+    && isStructuralEntityFollowUpQuery(
+      options.query,
+      options.recentTurns > 0 && options.transcriptEntries.length > 0,
+    );
+  const earlyMode = prefixedMode ?? (structuralFollowUp ? "follow_up" : null);
+  const persistedIndex = earlyMode
     ? null
     : await readCurrentPersistedEntityIndex(
       options.storage,
@@ -1072,7 +1086,7 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
   checkEntityRecallAbort(options.abortSignal);
   let nativeChunks: NativeKnowledgeChunk[] | undefined;
   if (
-    !prefixedMode &&
+    !earlyMode &&
     persistedIndex &&
     resolveLanguageIndependentExplicitCandidates(persistedIndex, options.query).length === 0
   ) {
@@ -1129,7 +1143,15 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
   const queryCandidates = prefixedMode
     ? explicitCandidates
     : resolveLanguageIndependentExplicitCandidates(index, options.query);
-  const mode = prefixedMode ?? (queryCandidates.length > 0 ? "direct" : null);
+  // Explicit mentions keep #2161 behavior (direct mode) even when the
+  // structural follow-up signal also fired; only name-less short questions
+  // fall through to coreference.
+  const mode = prefixedMode
+    ?? (queryCandidates.length > 0
+      ? "direct"
+      : structuralFollowUp
+        ? "follow_up"
+        : null);
   if (!mode) return entityRecallSectionAbsent(options.abortSignal);
 
   const candidates = queryCandidates.length > 0
