@@ -35,7 +35,6 @@
 
 import path from "node:path";
 import type { MemoryFile, PluginConfig } from "../types.js";
-import type { StorageManager } from "../storage.js";
 import { isActiveMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 import {
@@ -50,6 +49,25 @@ import {
 } from "../causal-trajectory.js";
 import { readJsonFile, writeJsonFileAtomic } from "../json-store.js";
 import { log } from "../logger.js";
+
+type ProcedureLibraryStorage = {
+  readAllMemories: () => Promise<MemoryFile[]>;
+  writeMemoryFrontmatter: (
+    memory: MemoryFile,
+    patch: Record<string, unknown>,
+    extras?: Record<string, unknown>,
+  ) => Promise<unknown>;
+  archiveMemory: (
+    memory: MemoryFile,
+    opts: {
+      at: Date;
+      actor: string;
+      reasonCode: string;
+      ruleVersion?: string;
+      relatedMemoryIds?: string[];
+    },
+  ) => Promise<string | null>;
+};
 
 const MAINTENANCE_ACTOR = "procedure-library-maintenance";
 const MAINTENANCE_RULE_VERSION = "procedure-library-maintenance:1";
@@ -203,7 +221,7 @@ function recentTrajectoryToolText(
  * Shadow mode performs NO writes (not even the state marker).
  */
 export async function runProcedureLibraryMaintenance(options: {
-  storage: StorageManager;
+  storage: ProcedureLibraryStorage,
   memoryDir: string;
   config: PluginConfig;
   apply?: boolean;
