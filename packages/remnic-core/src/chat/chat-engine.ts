@@ -85,10 +85,21 @@ export interface ChatEngineOptions {
 // Confirmation keywords — deterministic, not LLM-interpreted
 // ---------------------------------------------------------------------------
 
-const CONFIRMATION_KEYWORDS = new Set(["yes", "y", "apply", "confirm"]);
+// Exact-match confirmations. Unrecognized text keeps the conservative
+// no-apply default, so this stays a small fixed set (issue #2198).
+const CONFIRMATION_KEYWORDS: Record<string, true> = {
+  yes: true,
+  y: true,
+  apply: true,
+  confirm: true,
+  "はい": true, // Japanese
+  "sí": true, // Spanish
+  ja: true, // German/Dutch
+  "نعم": true, // Arabic
+};
 
 export function isConfirmationMessage(text: string): boolean {
-  return CONFIRMATION_KEYWORDS.has(text.trim().toLowerCase());
+  return CONFIRMATION_KEYWORDS[text.trim().toLowerCase()] === true;
 }
 
 // ---------------------------------------------------------------------------

@@ -1114,14 +1114,15 @@ export function buildRecentEntities(
     .slice(0, MAX_RECENT_ENTITIES);
 }
 
-function buildOpenCommitments(memories: MemoryFile[]): BriefingOpenCommitment[] {
+/** @internal — exported for testing only. */
+export function buildOpenCommitments(memories: MemoryFile[]): BriefingOpenCommitment[] {
   const commitments: BriefingOpenCommitment[] = [];
 
   for (const memory of memories) {
     const tags = memory.frontmatter.tags ?? [];
     const isPending = tags.some((t) => t.toLowerCase() === "pending");
     const isCommitment = memory.frontmatter.category === "commitment";
-    const isUnresolvedQuestion = /(?:\?$|\bfollow[- ]up\b|\btodo\b)/i.test(memory.content);
+    const isUnresolvedQuestion = /(?:[?？؟]$|\bfollow[- ]up\b|\btodo\b)/i.test(memory.content);
 
     if (isPending || isCommitment || isUnresolvedQuestion) {
       const kind: BriefingOpenCommitment["kind"] = isCommitment

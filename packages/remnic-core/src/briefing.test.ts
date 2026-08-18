@@ -17,6 +17,7 @@ import {
   buildActiveThreads,
   buildBriefing,
   buildChainFollowupGenerator,
+  buildOpenCommitments,
   BRIEFING_FOLLOWUP_DEFAULT_MODEL,
 } from "./briefing.js";
 import type {
@@ -1669,4 +1670,53 @@ test("buildActiveThreads: primary sort by updatedAt overrides id tiebreaker", ()
   const threads = buildActiveThreads([olderAlpha, newerBeta]);
   assert.equal(threads[0]!.id, "entity:beta", "newer timestamp must rank first, overriding id tiebreaker");
   assert.equal(threads[1]!.id, "entity:alpha");
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// buildOpenCommitments — non-English content (issue #2198)
+// ──────────────────────────────────────────────────────────────────────────
+function makeCommitmentMemory(overrides: {
+  content: string;
+  category?: MemoryFile["frontmatter"]["category"];
+  tags?: string[];
+}): MemoryFile {
+  return {
+    path: "/synthetic/mem.md",
+    frontmatter: {
+      id: "synthetic-commitment",
+      category: overrides.category ?? "fact",
+      created: "2026-08-17T00:00:00.000Z",
+      updated: "2026-08-17T00:00:00.000Z",
+      source: "test",
+      confidence: 0.9,
+      confidenceTier: "explicit",
+      tags: overrides.tags ?? [],
+    },
+    content: overrides.content,
+  };
+}
+
+test("buildOpenCommitments: fullwidth and Arabic question marks surface questions (issue #2198)", () => {
+  const fullwidth = makeCommitmentMemory({ content: "このAPIのレート制限はいくつですか？" });
+  const arabic = makeCommitmentMemory({ content: "ما هو موعد الاجتماع؟" });
+  const english = makeCommitmentMemory({ content: "What is the rate limit?" });
+
+  const commitments = buildOpenCommitments([fullwidth, arabic, english]);
+  assert.equal(commitments.length, 3);
+  assert.ok(commitments.every((c) => c.kind === "question"));
+});
+
+test("buildOpenCommitments: structured category is language-neutral (issue #2198)", () => {
+  const japanese = makeCommitmentMemory({
+    content: "金曜日までにレビューを提出する",
+    category: "commitment",
+  });
+  const commitments = buildOpenCommitments([japanese]);
+  assert.equal(commitments.length, 1);
+  assert.equal(commitments[0]!.kind, "commitment");
+});
+
+test("buildOpenCommitments: plain non-English statement without markers is not flagged", () => {
+  const plain = makeCommitmentMemory({ content: "会議は終わりました" });
+  assert.equal(buildOpenCommitments([plain]).length, 0);
 });

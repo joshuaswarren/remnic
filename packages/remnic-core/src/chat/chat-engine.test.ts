@@ -123,6 +123,21 @@ test("confirmation protocol: isConfirmationMessage recognizes exact-match keywor
   assert.ok(!isConfirmationMessage("please apply"));
 });
 
+test("confirmation protocol: non-English exact-match confirmations (issue #2198)", () => {
+  assert.ok(isConfirmationMessage("はい"));
+  assert.ok(isConfirmationMessage("sí"));
+  assert.ok(isConfirmationMessage("ja"));
+  assert.ok(isConfirmationMessage("نعم"));
+  assert.ok(isConfirmationMessage("  JA  "));
+  assert.ok(isConfirmationMessage("Sí"));
+  // Exact match only — partial or hedged text keeps the no-apply default.
+  assert.ok(!isConfirmationMessage("si")); // missing accent, not exact
+  assert.ok(!isConfirmationMessage("jam"));
+  assert.ok(!isConfirmationMessage("ja, aber"));
+  assert.ok(!isConfirmationMessage("نعم لا"));
+  assert.ok(!isConfirmationMessage("はい、しかし"));
+});
+
 test("citation guard: uncited memory assertion gets warning", async () => {
   const executor = makeStubExecutor();
   // The LLM makes an assertion without calling any tools first.
