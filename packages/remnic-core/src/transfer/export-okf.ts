@@ -1,4 +1,4 @@
-import { lstatSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -8,10 +8,21 @@ import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import { normalizeProjectionPreview } from "../memory-projection-format.js";
 import { lintOkfDir } from "../okf/lint.js";
 import { okfTypeForMemory, OKF_PROFILE_TYPE } from "../okf/type-mapping.js";
+import {
+  OKF_EXPORT_VERSION,
+  publishBundle,
+  renderFrontmatter,
+  rejectSymlinkPath,
+  writeBundleFile,
+} from "../okf/render.js";
+// Re-exported for the existing `@remnic/core/export-okf` consumers and tests
+// (one public surface; the value itself now lives in okf/render.ts).
+export { OKF_EXPORT_VERSION };
 import { StorageManager } from "../storage.js";
 import type { MemoryFile, MemoryLink, MemoryStatus } from "../types.js";
 
-export const OKF_EXPORT_VERSION = "0.1";
+// Shared bundle mechanics (frontmatter, publish, symlink guard, file write)
+// live in ../okf/render.ts — one source of truth for every OKF exporter.
 export const OKF_LOG_TRUNCATION_MARKER = "<!-- okf-log-truncated -->";
 export const DEFAULT_OKF_LOG_MAX_ENTRIES = 500;
 
@@ -146,44 +157,6 @@ export async function exportOkfBundle(opts: ExportOkfOptions): Promise<ExportOkf
   };
 }
 
-function publishBundle(staging: string, outDir: string, force: boolean): void {
-  let exists = false;
-  try {
-    const stat = lstatSync(outDir);
-    if (stat.isSymbolicLink()) throw new Error(`--out must not be a symlink: ${outDir}`);
-    exists = true;
-    const entries = listNonDot(outDir);
-    if (entries.length > 0 && !force) {
-      rmSync(staging, { recursive: true, force: true });
-      throw new Error(`--out ${outDir} is not empty; pass --force to replace it`);
-    }
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-  }
-  mkdirSync(path.dirname(outDir), { recursive: true });
-  if (exists && force) {
-    const backup = `${outDir}.okf-prev`;
-    try {
-      renameSync(outDir, backup);
-    } catch {
-      rmSync(staging, { recursive: true, force: true });
-      throw new Error(`cannot replace --out ${outDir}`);
-    }
-    try {
-      renameSync(staging, outDir);
-      rmSync(backup, { recursive: true, force: true });
-    } catch (err) {
-      try {
-        renameSync(backup, outDir);
-      } catch {
-        // Keep backup if restore fails.
-      }
-      throw err;
-    }
-    return;
-  }
-  renameSync(staging, outDir);
-}
 
 function renderMemory(memory: MemoryFile, rel: string, idToRel: Map<string, string>): string {
   const fm = memory.frontmatter;
@@ -286,38 +259,6 @@ function boldAction(raw: string): string {
   return "Update";
 }
 
-function renderFrontmatter(fields: Record<string, unknown>): string {
-  const keys = Object.keys(fields).sort((a, b) => {
-    const order = ["type", "title", "description", "tags", "timestamp"];
-    const ai = order.indexOf(a);
-    const bi = order.indexOf(b);
-    if (ai >= 0 || bi >= 0) return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
-    return a.localeCompare(b);
-  });
-  const lines = keys.flatMap((key) => yamlLine(key, fields[key]));
-  return `---\n${lines.join("\n")}\n---\n\n`;
-}
-
-function yamlLine(key: string, value: unknown): string[] {
-  if (value === undefined) return [];
-  if (Array.isArray(value)) {
-    if (value.length === 0) return [`${key}: []`];
-    if (value.every((item) => typeof item !== "object" || item === null)) {
-      return [`${key}:`, ...value.map((item) => `  - ${yamlScalar(item)}`)];
-    }
-    return [`${key}: ${JSON.stringify(value)}`];
-  }
-  if (typeof value === "object" && value !== null) return [`${key}: ${JSON.stringify(value)}`];
-  return [`${key}: ${yamlScalar(value)}`];
-}
-
-function yamlScalar(value: unknown): string {
-  if (typeof value === "string") {
-    if (value === "" || /[:#\n]/.test(value) || value !== value.trim()) return JSON.stringify(value);
-    return value;
-  }
-  return String(value);
-}
 
 function firstHeading(content: string): string | undefined {
   for (const line of content.split("\n")) {
@@ -331,15 +272,7 @@ function humanize(value: string): string {
   return value.replace(/[_-]/g, " ").replace(/\b\w/g, (ch) => ch.toUpperCase());
 }
 
-function toRel(abs: string, root: string): string {
-  return path.relative(path.resolve(root), path.resolve(abs)).split(path.sep).join("/");
-}
 
-function writeBundleFile(root: string, rel: string, content: string): void {
-  const dest = path.join(root, ...rel.split("/"));
-  mkdirSync(path.dirname(dest), { recursive: true });
-  writeFileSync(dest, content, "utf8");
-}
 
 function splitCsv(raw: unknown): string[] {
   if (raw === undefined || raw === null || raw === "") return [];
@@ -347,26 +280,7 @@ function splitCsv(raw: unknown): string[] {
   return parts.map((part) => part.trim()).filter((part) => part.length > 0);
 }
 
-function rejectSymlinkPath(target: string): void {
-  let current = path.resolve(target);
-  while (true) {
-    try {
-      if (lstatSync(current).isSymbolicLink()) {
-        throw new Error(`--out path component is a symlink: ${current}`);
-      }
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-    }
-    const parent = path.dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
+function toRel(abs: string, root: string): string {
+  return path.relative(path.resolve(root), path.resolve(abs)).split(path.sep).join("/");
 }
 
-function listNonDot(dir: string): string[] {
-  try {
-    return readdirSync(dir).filter((name) => name !== "." && name !== "..");
-  } catch {
-    return [];
-  }
-}

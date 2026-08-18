@@ -171,6 +171,7 @@ import { PLUGIN_ID as REMNIC_OPENCLAW_PLUGIN_ID, resolveRemnicPluginEntry } from
 import { runMeetingsBinaryCommand } from "./commands/meetings.js"; import { runWearablesBinaryCommand } from "./commands/wearables.js"; import { runLocationBinaryCommand } from "./commands/location.js";
 import { runOkfBinaryCommand } from "./commands/okf.js";
 import { runExportOkfBinaryCommand } from "./commands/export-okf.js";
+import { runCodegraphBinaryCommand } from "./commands/codegraph.js";
 import { runStandupBinaryCommand } from "./commands/standup.js";
 import { runExternalWikiBinaryCommand } from "./commands/external-wiki.js";
 import { runProceduralBinaryCommand } from "./commands/procedural.js";
@@ -437,7 +438,7 @@ type CommandName =
   | "promotion-candidates"
   | "security"
   | "wearables"
-  | "meetings" | "okf" | "location" | "export" | "standup"
+  | "meetings" | "okf" | "location" | "export" | "standup" | "codegraph"
   | "external-wiki"
   | "capsule"
   | "offline"
@@ -13092,6 +13093,9 @@ Other:
       break;
     case "standup":
       await runStandupBinaryCommand(rest);
+      break;
+    case "codegraph":
+      await runCodegraphBinaryCommand(rest);
       break;
 
     case "external-wiki": {

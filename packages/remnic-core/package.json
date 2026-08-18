@@ -2040,6 +2040,17 @@
       "remnic-source": "./src/transfer/export-okf.ts",
       "import": "./dist/transfer/export-okf.js"
     },
+    "./export-okf-codegraph": {
+      "types": "./dist/coding/export-okf-codegraph.d.ts",
+      "remnic-source": "./src/coding/export-okf-codegraph.ts",
+      "import": "./dist/coding/export-okf-codegraph.js"
+    },
+    "./export-okf-codegraph.js": {
+      "types": "./dist/coding/export-okf-codegraph.d.ts",
+      "remnic-source": "./src/coding/export-okf-codegraph.ts",
+      "import": "./dist/coding/export-okf-codegraph.js"
+    },
+
     "./standup": {
       "types": "./dist/standup/build.d.ts",
       "remnic-source": "./src/standup/build.ts",
