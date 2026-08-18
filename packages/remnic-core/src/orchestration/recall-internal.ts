@@ -25,6 +25,7 @@ import path from "node:path";
 import { type BoxFrontmatter } from "../boxes.js";
 import { type CapabilitySet, type GraphConstructionCapabilitySet, type MemoryLifecycleCapabilitySet, type SecurityCapabilitySet, resolveCapabilities, resolveCompressionCapabilities, resolveConsolidationCapabilities, resolveConversationContextCapabilities, resolveCreationMemoryCapabilities, resolveGraphConstructionCapabilities, resolveIdentityContinuityCapabilities, resolveIndexingCapabilities, resolveMemoryLifecycleCapabilities, resolveNamespaceCapabilities, resolveObjectiveStateCapabilities, resolvePipelineProcessingCapabilities, resolvePresentationCapabilities, resolveQmdCapabilities, resolveRecallAuxiliaryCapabilities, resolveRecallEnhancementCapabilities, resolveSecurityCapabilities } from "../capabilities.js";
 import { searchCausalTrajectories } from "../causal-trajectory.js";
+import { detectLanguageHint, dominantCorpusLanguage, planCrossScript } from "../cross-lingual-recall.js";
 import { buildEntityRecallSection, entityRecentTranscriptLookbackHours, readRecentEntityTranscriptEntries } from "../entity-retrieval.js";
 import { buildEventOrderRecallSection, shouldRecallEventOrderEvidence } from "../event-order-recall.js";
 import { buildExplicitCueRecallSection } from "../explicit-cue-recall.js";
@@ -261,34 +262,22 @@ export class RecallInternalCoordinator {
     // per-result explain data (e.g. reinforcementBoost) from the result that
     // was actually served.
     let xrayRecalledResults: QmdSearchResult[] = [];
-    // Issue #1577 — per-recall trust map (admitted + quarantined items).
-    // A LOCAL, not instance state, so concurrent recalls on the same
-    // orchestrator cannot race on it (review: shared-trust-map concurrency).
-    // Populated by applyTrustScoreRerank on whichever recall path runs;
-    // consumed by formatQmdResults (epistemic hedge), publishRecallResults
-    // (quarantine filtering on ALL paths), and the X-ray capture (trust
-    // projection + quarantined-item visibility — rule 34).
+    // Issue #1577 — per-recall trust map (admitted + quarantined). LOCAL, not
+    // instance state, so concurrent recalls cannot race on it. Consumed by
+    // formatQmdResults, publishRecallResults (quarantine filtering on ALL
+    // paths), and the X-ray capture (rule 34).
     let recallTrustByPath: Map<string, TrustStageResultItem> | null = null;
-    // Issue #1577 — sink for the cold-fallback pipeline's trust map. The cold
-    // pipeline scores internally (applyColdFallbackPipeline) and writes its
-    // per-path trust map here; each cold caller reads it back into
-    // recallTrustByPath so cold/embedding/recent paths feed the same X-ray +
-    // epistemic-rendering + publisher-quarantine consumers the hot path uses
-    // (rule 41: the feature gate applies across ALL parallel recall paths).
+    // Issue #1577 — sink for the cold pipeline's trust map: cold callers read
+    // it back into recallTrustByPath so every path feeds the same consumers
+    // (rule 41 parity).
     const trustByPathSink: { trustByPath: Map<string, TrustStageResultItem> | null } = {
       trustByPath: null,
     };
     const lcmStructuredXrayResults: RecallXrayResult[] = [];
-    // Per-branch pre-limit candidate pool size for the X-ray filter
-    // trace (issue #570 PR 1).  `recalledMemoryCount` is assigned
-    // AFTER MMR + truncation so using it alone would make the
-    // `recall-result-limit` trace report `considered == admitted`
-    // even when many candidates were dropped.  Each entry captures
-    // the pool size BEFORE truncation at that branch.  The X-ray
-    // capture block picks the pool that corresponds to the branch
-    // that actually produced the admitted results (via `recallSource`)
-    // so a pool from a branch whose candidates were killed by an
-    // earlier gate cannot leak into the `considered` count.
+    // Per-branch PRE-truncation pool size for the X-ray filter trace
+    // (issue #570 PR 1): `recalledMemoryCount` is post-truncation, so the
+    // trace would otherwise report considered == admitted. The capture block
+    // picks the branch that produced the admitted results via `recallSource`.
     const xrayBranchPoolSize: Record<
       "hot_qmd" | "hot_embedding" | "cold_fallback" | "recent_scan",
       number
@@ -298,11 +287,9 @@ export class RecallInternalCoordinator {
       cold_fallback: 0,
       recent_scan: 0,
     };
-    // Shared out-parameter sink the cold-fallback pipeline writes
-    // its pre-truncation pool size into (issue #570 PR 1).  Declared
-    // once so every call to `applyColdFallbackPipeline` (four call
-    // sites) updates the same counter; the X-ray capture block
-    // reads this as the cold-fallback pool.
+    // Sink the cold-fallback pipeline (four call sites) writes its
+    // pre-truncation pool size into (issue #570 PR 1); the X-ray capture
+    // block reads it as the cold-fallback pool.
     const xrayColdPoolSink = { size: 0 };
     let selectedResultPartition: RecallResultPartition | null = null;
     let identityInjectionModeUsed: IdentityInjectionMode | "none" = "none";
@@ -1908,6 +1895,21 @@ export class RecallInternalCoordinator {
       degradations?: SearchDegradation[];
     } | null;
 
+    // Cross-lingual recall (#2197): computed beside the prefilter; never
+    // throws — a failed corpus sample only skips the plan.
+    const crossScriptPlanPromise = (async () => {
+      const queryLanguage = detectLanguageHint(retrievalQuery);
+      if (queryLanguage === undefined) return null;
+      const corpusLanguage = await dominantCorpusLanguage(this.deps.storage);
+      if (corpusLanguage === undefined) return null;
+      return planCrossScript({
+        queryLanguage,
+        corpusLanguage,
+        vectorTierAvailable:
+          resolveMemoryLifecycleCapabilities(this.deps.config).embeddingFallback ||
+          (this.deps.qmd.isAvailable() && this.deps.config.qmdSearchStrategy !== "lex"),
+      });
+    })().catch(() => null);
     const qmdEnrichmentAbort = createEnrichmentAbortHandle(options.abortSignal);
     const qmdPromise = observeEnrichmentPromise(
       (async (): Promise<QmdPhaseResult> => {
@@ -1989,7 +1991,11 @@ export class RecallInternalCoordinator {
           }
           return cachedQmd.value;
         }
-
+        const crossScriptPlan = await crossScriptPlanPromise;
+        if (crossScriptPlan?.degradation) {
+          backendDegradations.push(crossScriptPlan.degradation);
+        }
+        const crossScript = crossScriptPlan?.crossScript === true;
         if (!this.deps.qmd.isAvailable()) {
           const now = Date.now();
           const QMD_REPROBE_COOLDOWN_MS = 60_000;
@@ -2141,6 +2147,7 @@ export class RecallInternalCoordinator {
                 resolveNamespace: (p) => this.deps.namespaceFromPath(p),
                 queryAwarePrefilter,
                 searchOptions: qmdSearchOptions,
+                crossScript,
                 abortSignal: qmdEnrichmentAbort.signal,
                 onDegradation: (degradation) => {
                   backendDegradations.push(degradation);
@@ -4105,8 +4112,6 @@ export class RecallInternalCoordinator {
               undefined,
               { asOfMs, requestingConnector: options.sourceConnector },
             );
-            // MMR runs on the pre-truncation pool so diverse candidates just
-            // below the cutoff can be promoted into the injected set.
             xrayBranchPoolSize.hot_embedding = Math.max(
               xrayBranchPoolSize.hot_embedding,
               boostedScoped.length,
@@ -4319,8 +4324,7 @@ export class RecallInternalCoordinator {
               undefined,
               { asOfMs, requestingConnector: options.sourceConnector },
             );
-            // MMR runs on the pre-truncation pool so diverse candidates just
-            // below the cutoff can be promoted into the injected set.
+            // MMR runs on the pre-truncation pool (see the hot-embedding branch).
             xrayBranchPoolSize.hot_embedding = Math.max(
               xrayBranchPoolSize.hot_embedding,
               boostedScoped.length,

@@ -27,7 +27,8 @@ export interface SearchDegradation {
     | "daemon_loading"
     | "subprocess_error"
     | "deadline_exceeded"
-    | "remote_error";
+    | "remote_error"
+    | "vector_tier_unavailable";
   detail?: string;
 }
 

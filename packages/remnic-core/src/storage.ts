@@ -244,6 +244,7 @@ import { normalizeProjectionPreview, normalizeProjectionTags } from "./memory-pr
 import { isSupportPassportPrivateMemory } from "./support-passport/card-projection.js";
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 import { parseOriginClass } from "./security/origin-authority.js";
+import { detectLanguageHint } from "./cross-lingual-recall.js";
 import {
   composeMemoryEnvelope,
   isSealedMemoryEnvelope,
@@ -322,6 +323,7 @@ function serializeFrontmatter(fm: MemoryFrontmatter): string {
     `tags: [${fm.tags.map((t) => `"${t}"`).join(", ")}]`,
   ];
   // OKF v0.1 interop (issue #1946): inert presentation metadata; `category` stays canonical.
+  if (fm.language) lines.push(`language: ${fm.language}`);
   if (fm.type !== undefined) lines.push(`type: ${fm.type}`);
   if (fm.origin) lines.push(`origin: ${/^[A-Za-z0-9:_.*-]+$/.test(fm.origin) ? fm.origin : JSON.stringify(fm.origin)}`);
   if (fm.entityRef) lines.push(`entityRef: ${fm.entityRef}`);
@@ -859,8 +861,9 @@ export function parseFrontmatter(raw: string): { frontmatter: MemoryFrontmatter;
     frontmatter: {
       id: fm.id ?? "",
       category: (fm.category ?? "fact") as MemoryCategory,
-      type: parseFrontmatterStringValue(fm.type),
       created: fm.created ?? new Date().toISOString(),
+      language: fm.language || undefined,
+      type: parseFrontmatterStringValue(fm.type),
       updated: fm.updated ?? new Date().toISOString(),
       source: fm.source ?? "unknown",
       confidence: conf,
@@ -3729,6 +3732,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       category,
       created: now.toISOString(),
       updated: now.toISOString(),
+      language: detectLanguageHint(content),
       source: options.source ?? "extraction",
       confidence: conf,
       confidenceTier: tier,
