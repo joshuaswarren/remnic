@@ -281,6 +281,8 @@ export class RecallSearchPipelineCoordinator {
       searchOptions?: SearchQueryOptions;
       onDebugSnapshot?: (snapshot: QmdRecallSnapshot) => Promise<void>;
       /** Backend degradation observer, threaded into every QMD call (#1536). */
+      /** Cross-lingual plan flag (#2197): supplement the lexical page with vector-tier hits. */
+      crossScript?: boolean;
       onDegradation?: (degradation: SearchDegradation) => void;
       abortSignal?: AbortSignal;
     },
@@ -334,6 +336,12 @@ export class RecallSearchPipelineCoordinator {
     const debugSearchOptions = backendHonorsQmdSearchSignals
       ? resolvedSearchOptions
       : undefined;
+    // Cross-lingual recall (#2197): lexical tiers cannot match a query whose
+    // dominant script differs from the corpus's, whatever the page fill.
+    // Supplement with the embedding-fallback tier ONCE, before widening.
+    const crossScriptVectorHits = options.crossScript
+      ? await this.searchEmbeddingFallback(prompt, fetchLimit)
+      : [];
     let bestFiltered = filterRecallCandidates(scopedSeedResults, {
       namespacesEnabled: options.namespacesEnabled,
       recallNamespaces: options.recallNamespaces,
@@ -475,6 +483,14 @@ export class RecallSearchPipelineCoordinator {
         }
       }
 
+      if (crossScriptVectorHits.length > 0) {
+        mergedResults = dedupeResultsByNamespace(
+          [...mergedResults, ...crossScriptVectorHits],
+          this.deps.namespaceFromPath,
+          fetchLimit,
+          { filter: recallable },
+        );
+      }
       if (scopedSeedResults.length > 0) {
         mergedResults = dedupeResultsByNamespace(
           [...scopedSeedResults, ...mergedResults],

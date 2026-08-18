@@ -219,6 +219,8 @@ export interface RecallInternalDeps {
       searchOptions?: SearchQueryOptions;
       onDebugSnapshot?: (snapshot: QmdRecallSnapshot) => Promise<void>;
       /** Backend degradation observer, threaded into every QMD call (#1536). */
+      /** Cross-lingual plan flag (#2197): supplement the lexical page with vector-tier hits. */
+      crossScript?: boolean;
       onDegradation?: (degradation: SearchDegradation) => void;
       abortSignal?: AbortSignal;
     },

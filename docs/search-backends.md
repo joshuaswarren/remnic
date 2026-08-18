@@ -486,13 +486,37 @@ To restore the pre-#2187 stock English tokenizer:
 }
 ```
 
-### Cross-script recall rides on embeddings
+### Multilingual deployments (cross-script recall)
 
 Whatever the backend, matching a query in one script against memories written
 in another (Japanese query against English memories, or the reverse) is a
 semantic task that the lexical tier cannot perform — it depends on the
 embedding model's multilingual coverage. Configure an embedding provider
 (see the Orama and LanceDB embedding sections) for cross-script recall.
+
+Remnic plans for this explicitly (issue #2197):
+
+1. **Write time.** Every memory is stamped with a dominant-script hint in
+   frontmatter `language`, using ISO 15924 codes (`latn`, `jpan`, `kore`,
+   `hani`, `cyrl`, `grek`, `arab`, `hebr`, `thai`, `deva`). Detection is a
+   codepoint scan, not a language model: kana anywhere means `jpan`, Hangul
+   means `kore`, and otherwise the most frequent script wins. Memories written
+   before this shipped have no `language` field; they are simply ignored when
+   the corpus script is sampled.
+2. **Recall time.** The planner compares the query's dominant script against
+   the corpus's (sampled from those hints, memoized per corpus generation).
+   When they differ, the lexical page is supplemented with vector-tier hits
+   from the embedding fallback — regardless of how full the lexical page is,
+   because token overlap across scripts is near zero.
+3. **Degradation signal.** When the scripts differ and embedding fallback
+   is disabled, recall records a
+   `vector_tier_unavailable` degradation on the recall snapshot instead of
+   silently returning nothing. Read it with `remnic recall explain` or the
+   `memory_last_recall` tool: an empty cross-lingual recall then reads as
+   "vectors missing", not "no such memory".
+
+A monolingual deployment never triggers any of this — the query and corpus
+scripts match, so the lexical path is unchanged.
 
 ## Global Search
 

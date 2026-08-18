@@ -2807,6 +2807,8 @@ export interface MemoryFrontmatter extends SourceConnectorProvenance, OriginMeta
   category: MemoryCategory;
   /** OKF v0.1 interop metadata (issue #1946). Inert: presentation only, never overrides `category`. */
   type?: string;
+  /** Dominant-script hint (ISO 15924, e.g. `latn`/`jpan`) for cross-lingual recall (#2197). Absent on legacy files. */
+  language?: string;
   created: string;
   updated: string;
   source: string;
