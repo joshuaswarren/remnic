@@ -6,6 +6,7 @@ import {
   applyNoveltyGate,
   DEFAULT_NOVELTY_ADD_THRESHOLD,
   DEFAULT_NOVELTY_NOOP_THRESHOLD,
+  embeddingsFromCosineHits,
   scoreNovelty,
   type NoveltyNeighbor,
 } from "./novelty-gate.js";
@@ -102,4 +103,41 @@ test("novelty gate: thrown lookup is uncertain", async () => {
     },
   });
   assert.equal(decision.decision, "uncertain");
+});
+
+test("novelty gate: cross-connector neighbor cannot noop (PR #2564 review)", () => {
+  // Identical content already stored by connector A (cosine ~1) must not
+  // suppress connector B's candidate: neighborhood scoped to same-connector
+  // neighbors only (mirrors the PR #1852 semantic skip gate).
+  const identicalFromA = { id: "a-dup", score: 1, sourceConnector: "connector-a" };
+  const { neighborhood } = embeddingsFromCosineHits([identicalFromA], {
+    candidateConnector: "connector-b",
+  });
+  assert.deepEqual(neighborhood, []);
+  const decision = scoreNovelty(CANDIDATE, neighborhood);
+  assert.equal(decision.decision, "add");
+});
+
+test("novelty gate: unattributed neighbor is scoped out when candidate has a connector", () => {
+  const unattributed = { id: "anon-dup", score: 1 };
+  const { neighborhood } = embeddingsFromCosineHits([unattributed], {
+    candidateConnector: "connector-b",
+  });
+  assert.deepEqual(neighborhood, []);
+});
+
+test("novelty gate: same-connector paraphrase still noops", () => {
+  const sameConnector = { id: "b-dup", score: 0.98, sourceConnector: "connector-b" };
+  const { neighborhood } = embeddingsFromCosineHits([sameConnector], {
+    candidateConnector: "connector-b",
+  });
+  assert.equal(neighborhood.length, 1);
+  assert.equal(scoreNovelty(CANDIDATE, neighborhood).decision, "noop");
+});
+
+test("novelty gate: candidate without connector keeps unscoped neighborhood", () => {
+  const foreign = { id: "a-dup", score: 0.98, sourceConnector: "connector-a" };
+  const { neighborhood } = embeddingsFromCosineHits([foreign]);
+  assert.equal(neighborhood.length, 1);
+  assert.equal(scoreNovelty(CANDIDATE, neighborhood).decision, "noop");
 });

@@ -91,11 +91,20 @@ export function parseWritePathDedupConfig(cfg: Record<string, unknown>): WritePa
 }
 
 export function embeddingsFromCosineHits(
-  hits: ReadonlyArray<{ id: string; score: number }>,
+  hits: ReadonlyArray<{ id: string; score: number; sourceConnector?: string }>,
+  opts: { candidateConnector?: string } = {},
 ): { embedding: number[]; neighborhood: NoveltyNeighbor[] } {
+  // Connector-aware scoping (PR #2564 review finding on 54d865cb9): a
+  // neighbor from a different (or unattributed) connector must not drive a
+  // noop — same contract as the semantic skip gate (PR #1852). Candidates
+  // without a connector keep the unscoped neighborhood.
+  const candidateConnector = opts.candidateConnector?.trim() || undefined;
+  const scoped = candidateConnector
+    ? hits.filter((hit) => (hit.sourceConnector?.trim() || undefined) === candidateConnector)
+    : hits;
   return {
     embedding: [1, 0],
-    neighborhood: hits.map((hit) => {
+    neighborhood: scoped.map((hit) => {
       const s = Number.isFinite(hit.score) ? Math.min(1, Math.max(-1, hit.score)) : 0;
       return { id: hit.id, embedding: [s, Math.sqrt(Math.max(0, 1 - s * s))] };
     }),
