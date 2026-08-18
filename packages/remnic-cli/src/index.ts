@@ -5524,11 +5524,6 @@ function xrayCliIo(
   };
 }
 
-/**
- * `remnic who-knows <topic>` core flow, IO-injected for unit tests.
- * `parseWhoKnowsCliOptions` throws listed-options errors for an empty
- * topic / bad --limit (CLAUDE.md rules 14, 51).
- */
 export async function runWhoKnowsCommand(
   rest: string[],
   io: {
@@ -5546,7 +5541,6 @@ export async function runWhoKnowsCommand(
   io.stdout(renderWhoKnows(result, parsed.json));
 }
 
-/** `remnic who-knows <topic>` handler — validates args, boots the local orchestrator. */
 async function cmdWhoKnows(rest: string[]): Promise<void> {
   extractWhoKnowsRawArgs(rest); // fail fast before any IO
   if (resolveRemoteDaemon(resolveConfigPath())) {
