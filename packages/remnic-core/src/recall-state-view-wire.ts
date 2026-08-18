@@ -3,9 +3,10 @@
  *
  * parseConfig cannot grow (fileSizeGrandfather). Operators set
  * `recallStateViews` on the live PluginConfig extra field. Default false
- * is identity. Use parseRecallStateViews — do not read
- * config.recallStateViewsEnabled.
+ * is identity. Use parseRecallStateViews — do not read a scattered
+ * config flag property here.
  */
+
 import {
   annotateStateView,
   parseRecallStateViews,
