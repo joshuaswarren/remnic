@@ -695,6 +695,7 @@ import "./support-passport/access-operations.js";
 import "./relay/mission-access.js";
 // Location sync surfaces (issue #2047).
 import "./location/access-operations.js";
+import "./standup/access-operations.js";
 
 export const REGISTERED_OPERATIONS = [
   memoryGetOperation.spec.name,

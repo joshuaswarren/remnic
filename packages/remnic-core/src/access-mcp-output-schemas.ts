@@ -82,6 +82,7 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
     skipped: T_NUMBER,
     removed: T_ARRAY,
   }),
+  standup: objectSchema({ date: T_STRING, yesterday: T_STRING, today: T_STRING, highlights: T_ARRAY, blockers: T_ARRAY, activityGrid: T_STRING, markdown: T_STRING }),
   action_confidence: objectSchema({
     schemaVersion: T_NUMBER,
     decision: T_STRING,

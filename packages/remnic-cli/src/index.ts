@@ -171,6 +171,7 @@ import { PLUGIN_ID as REMNIC_OPENCLAW_PLUGIN_ID, resolveRemnicPluginEntry } from
 import { runMeetingsBinaryCommand } from "./commands/meetings.js"; import { runWearablesBinaryCommand } from "./commands/wearables.js"; import { runLocationBinaryCommand } from "./commands/location.js";
 import { runOkfBinaryCommand } from "./commands/okf.js";
 import { runExportOkfBinaryCommand } from "./commands/export-okf.js";
+import { runStandupBinaryCommand } from "./commands/standup.js";
 import { runExternalWikiBinaryCommand } from "./commands/external-wiki.js";
 import { runProceduralBinaryCommand } from "./commands/procedural.js";
 import { runDriftBinaryCommand } from "./commands/drift.js";
@@ -436,7 +437,7 @@ type CommandName =
   | "promotion-candidates"
   | "security"
   | "wearables"
-  | "meetings" | "okf" | "location" | "export"
+  | "meetings" | "okf" | "location" | "export" | "standup"
   | "external-wiki"
   | "capsule"
   | "offline"
@@ -13089,6 +13090,9 @@ Other:
     case "export":
       await runExportOkfBinaryCommand(rest);
       break;
+    case "standup":
+      await runStandupBinaryCommand(rest);
+      break;
 
     case "external-wiki": {
       await runExternalWikiBinaryCommand(rest);
@@ -13347,6 +13351,8 @@ Usage:
     sweep backfills missing type values (okf.sweepEnabled).
   remnic export okf --out <dir>
     Write a portable OKF v0.1 knowledge bundle (plaintext interchange).
+  remnic standup [--date YYYY-MM-DD]
+    Deterministic yesterday/today/blockers brief plus an activity grid.
   remnic external-wiki search <query...> [--wiki-id <id>] [--limit <1-20>] [--max-chars-per-hit <100-8000>] [--json]
   remnic doctor                Run diagnostics
   remnic config                Show current config

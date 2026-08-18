@@ -2040,6 +2040,16 @@
       "remnic-source": "./src/transfer/export-okf.ts",
       "import": "./dist/transfer/export-okf.js"
     },
+    "./standup": {
+      "types": "./dist/standup/build.d.ts",
+      "remnic-source": "./src/standup/build.ts",
+      "import": "./dist/standup/build.js"
+    },
+    "./standup.js": {
+      "types": "./dist/standup/build.d.ts",
+      "remnic-source": "./src/standup/build.ts",
+      "import": "./dist/standup/build.js"
+    },
     "./active-context-transform": {
       "types": "./dist/active-context-transform.d.ts",
       "remnic-source": "./src/active-context-transform.ts",

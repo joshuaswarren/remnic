@@ -25,7 +25,7 @@ import {
 } from "./access-http-offline-stream.js";
 import { nonEmptyQueryParam, optionalNamespaceKindQueryParam, optionalQueryString, positiveIntQueryParam } from "./access-http-query.js";
 import { CorrectionContractError } from "./correction/correction-contract.js";
-import { respondWearablesErrorGlue } from "./wearables/http-glue.js"; import { respondMeetingsList, respondMeetingsGet, respondMeetingsBuild } from "./meetings/http-glue.js"; import { respondLocationStatus, respondLocationCheck, respondLocationSync, respondLocationBackfill, respondLocationDay } from "./location/http-glue.js";
+import { respondWearablesErrorGlue } from "./wearables/http-glue.js"; import { respondMeetingsList, respondMeetingsGet, respondMeetingsBuild } from "./meetings/http-glue.js"; import { respondLocationStatus, respondLocationCheck, respondLocationSync, respondLocationBackfill, respondLocationDay } from "./location/http-glue.js"; import { respondStandup } from "./standup/http-glue.js";
 import { EngramMcpServer, MCP_SUPPORTED_PROTOCOL_VERSIONS } from "./access-mcp.js";
 import { validateRequest, type SchemaName, type SchemaTypeFor } from "./access-schema.js";
 import {
@@ -1765,6 +1765,8 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       this.enforceTokenOp("location_backfill"); await respondLocationBackfill((await this.readJsonBody(req)) as Record<string, unknown>, res, this.respondJson.bind(this), this.service); return; }
     if (req.method === "GET" && (pathname === "/engram/v1/location/day" || pathname === "/remnic/v1/location/day")) {
       this.enforceTokenOp("location_day"); await respondLocationDay(parsed.searchParams.get("date"), res, this.respondJson.bind(this), this.service); return; }
+    if (req.method === "GET" && (pathname === "/engram/v1/standup" || pathname === "/remnic/v1/standup")) {
+      this.enforceTokenOp("standup"); await respondStandup(parsed.searchParams.get("date"), res, this.respondJson.bind(this), this.service); return; }
 
     if (req.method === "POST" && pathname === "/engram/v1/observe") {
       this.enforceTokenOp("observe"); // boundary dispatch (issue #1525)
