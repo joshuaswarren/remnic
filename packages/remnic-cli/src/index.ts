@@ -134,6 +134,10 @@ import {
   formatProcedureStatsText,
   parseXrayCliOptions,
   renderXray,
+  extractWhoKnowsRawArgs,
+  parseWhoKnowsCliOptions,
+  renderWhoKnows,
+  type WhoKnowsResult,
   runAuditMemoryCliCommand, formatAuditMemoryReport,
   OFFLINE_SYNC_APPLY_MAX_BODY_BYTES,
   OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES,
@@ -430,6 +434,7 @@ type CommandName =
   | "import-lossless-claw"
   | "action-confidence"
   | "xray"
+  | "who-knows"
   | "security"
   | "wearables"
   | "meetings"
@@ -5517,6 +5522,52 @@ function xrayCliIo(
     writeFile: (filePath, data) => fsWriteFile(filePath, data, "utf8"),
     stdout: (line) => console.log(line),
   };
+}
+
+/**
+ * `remnic who-knows <topic>` core flow, IO-injected for unit tests.
+ * `parseWhoKnowsCliOptions` throws listed-options errors for an empty
+ * topic / bad --limit (CLAUDE.md rules 14, 51).
+ */
+export async function runWhoKnowsCommand(
+  rest: string[],
+  io: {
+    whoKnows: (request: { topic: string; limit?: number; namespace?: string }) => Promise<WhoKnowsResult>;
+    stdout: (line: string) => void;
+  },
+): Promise<void> {
+  const { topic, options } = extractWhoKnowsRawArgs(rest);
+  const parsed = parseWhoKnowsCliOptions(topic, options);
+  const result = await io.whoKnows({
+    topic: parsed.topic,
+    limit: parsed.limit,
+    ...(parsed.namespace ? { namespace: parsed.namespace } : {}),
+  });
+  io.stdout(renderWhoKnows(result, parsed.json));
+}
+
+/** `remnic who-knows <topic>` handler — validates args, boots the local orchestrator. */
+async function cmdWhoKnows(rest: string[]): Promise<void> {
+  extractWhoKnowsRawArgs(rest); // fail fast before any IO
+  if (resolveRemoteDaemon(resolveConfigPath())) {
+    throw new Error("who-knows: remote daemon mode is not supported yet; run with a local config");
+  }
+  initLogger();
+  const configPath = resolveConfigPath();
+  const raw = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {};
+  const config = parseConfig(resolveRemnicConfigRecord(raw));
+  const orchestrator = new Orchestrator(config);
+  await orchestrator.initialize();
+  await orchestrator.deferredReady;
+  const service = new EngramAccessService(orchestrator);
+  try {
+    await runWhoKnowsCommand(rest, {
+      whoKnows: (request) => service.whoKnows(request),
+      stdout: (line) => console.log(line),
+    });
+  } finally {
+    orchestrator.abortDeferredInit();
+  }
 }
 
 // ── Page-level versioning (issue #371) ─────────────────────────────────────
@@ -12740,6 +12791,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       // `remnic xray "<query>"` — X-ray capture + snapshot print (issue #570).
       // Plugin-runtime registers the same surface; standalone wiring here.
       await cmdXray(rest);
+      break;
+
+    case "who-knows":
+      await cmdWhoKnows(rest); // `remnic who-knows "<topic>"` — expertise ranking (#2057).
       break;
 
     case "security":

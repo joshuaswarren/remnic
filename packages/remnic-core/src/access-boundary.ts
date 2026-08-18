@@ -67,6 +67,7 @@ export const OPERATION_NAMES = [
   "set_coding_context",
   "recall_tier_explain",
   "recall_xray",
+  "who_knows",
   "namespace_writable",
   "wearables_status",
   "wearables_sync",

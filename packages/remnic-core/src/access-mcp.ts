@@ -45,6 +45,7 @@ import { applyToolOutputSchemas } from "./access-mcp-output-schemas.js";
 import { MCP_READ_ONLY_TOOL_SUFFIXES } from "./mcp-read-only-tools.js";
 import { MEETINGS_MCP_TOOLS } from "./meetings/mcp-tools.js";
 import { WEARABLES_MCP_TOOLS } from "./wearables/mcp-tools.js";
+import { WHO_KNOWS_MCP_TOOLS } from "./who-knows.js";
 import { EXTERNAL_WIKI_MCP_TOOLS } from "./external-wiki-mcp-tools.js";
 import { abortError, isAbortError } from "./abort-error.js";
 import { SUPPORT_PASSPORT_MCP_MIGRATED_OPERATIONS, SUPPORT_PASSPORT_MCP_TOOLS } from "./support-passport/mcp-tools.js";
@@ -186,7 +187,7 @@ const MCP_MIGRATED_OPERATIONS: Readonly<Record<string, OperationName>> = {
   "engram.recall_explain": "recall_explain",
   "engram.set_coding_context": "set_coding_context",
   "engram.recall_tier_explain": "recall_tier_explain",
-  "engram.recall_xray": "recall_xray",
+  "engram.recall_xray": "recall_xray", "engram.who_knows": "who_knows",
   "engram.wearables_status": "wearables_status",
   "engram.wearables_sync": "wearables_sync",
   "engram.transcript_day": "transcript_day",
@@ -705,7 +706,7 @@ export class EngramMcpServer {
           additionalProperties: false,
         },
       },
-      ...WEARABLES_MCP_TOOLS, ...MEETINGS_MCP_TOOLS,
+      ...WEARABLES_MCP_TOOLS, ...MEETINGS_MCP_TOOLS, ...WHO_KNOWS_MCP_TOOLS,
       ...(service.supportPassportEnabled ? SUPPORT_PASSPORT_MCP_TOOLS : []),
       {
         name: "engram.action_confidence",

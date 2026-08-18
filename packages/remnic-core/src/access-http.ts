@@ -48,6 +48,7 @@ import { getOperation, type OperationName } from "./access-boundary.js";
 import { authorizationProbeNamespaces, authorizationProbeRequiresPrincipalNamespace, probeOperationAuthorization } from "./access-authorization-probe.js";
 import { resolveQueryNamespaceWritablePreflight } from "./access-namespace-preflight.js";
 import { respondAccessCapabilitiesHttp } from "./access-http-lcm-compaction.js";
+import { handleWhoKnowsHttpQuery } from "./who-knows.js";
 import {
   assertOperationAllowed,
   capabilityAllowsOp,
@@ -1606,6 +1607,20 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
         throw err;
       }
       this.respondJson(res, 200, payload);
+      return;
+    }
+
+    // who_knows (issue #2057): deterministic entity expertise ranking.
+    // Thin route — param parsing + 400 mapping live in who-knows.ts.
+    if (req.method === "GET" && (pathname === "/engram/v1/who-knows" || pathname === "/remnic/v1/who-knows")) {
+      this.enforceTokenOp("who_knows");
+      const outcome = await handleWhoKnowsHttpQuery({
+        getParam: (name) => parsed.searchParams.get(name),
+        resolveNamespace: (namespace) => this.resolveNamespace(req, namespace),
+        principal: this.resolveRequestPrincipal(req),
+        run: (request) => this.service.whoKnows(request),
+      });
+      this.respondJson(res, outcome.status, outcome.body);
       return;
     }
 
