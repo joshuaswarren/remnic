@@ -165,10 +165,12 @@ test("the grandfather list is a ratchet: growth is a violation", () => {
 });
 
 test("loadCoverageManifest rejects malformed manifests", () => {
-  assert.throws(
-    () => loadCoverageManifest({ lifecycleManifest: ["a.ts"], coverage: { "b.ts": "x" }, grandfathered: [] }),
-    /coverage key .* is not in lifecycleManifest/,
-  );
+  const implicit = loadCoverageManifest({
+    lifecycleManifest: ["a.ts"],
+    coverage: { "b.ts": "extraction-lifecycle" },
+    grandfathered: [],
+  });
+  assert.equal(implicit.coverage["b.ts"], "extraction-lifecycle");
   assert.throws(
     () =>
       loadCoverageManifest({

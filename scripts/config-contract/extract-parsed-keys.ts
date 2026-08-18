@@ -368,7 +368,7 @@ function extractParserKeys(
       const recursionKey = `map:${callback.text}@${itemPrefix.join(".")}`;
       if (recursion.seen.has(recursionKey)) return;
       recursion.seen.add(recursionKey);
-      const helper = findFunctionForCall(recursion.program, callback.text, 0);
+      const helper = findFunctionForCall(recursion.program, callback.text, 0, sourceFile);
       if (helper) {
         extractParserKeys(helper.fn, helper.sourceFile, repoRoot, out, itemPrefix, {
           program: recursion.program,
@@ -808,8 +808,9 @@ function findFunctionForCall(
   program: ts.Program,
   name: string,
   argIndex: number,
+  preferredFile?: ts.SourceFile,
 ): { fn: ts.FunctionDeclaration; sourceFile: ts.SourceFile } | null {
-  const found = findFunction(program, name);
+  const found = findFunction(program, name, preferredFile);
   if (!found) return null;
   if (found.fn.parameters.length <= argIndex) return null;
   return found;
@@ -818,8 +819,12 @@ function findFunctionForCall(
 function findFunction(
   program: ts.Program,
   name: string,
+  preferredFile?: ts.SourceFile,
 ): { fn: ts.FunctionDeclaration; sourceFile: ts.SourceFile } | null {
-  for (const sourceFile of program.getSourceFiles()) {
+  const files = preferredFile
+    ? [preferredFile, ...program.getSourceFiles().filter((file) => file !== preferredFile)]
+    : [...program.getSourceFiles()];
+  for (const sourceFile of files) {
     if (sourceFile.isDeclarationFile) continue;
     for (const stmt of sourceFile.statements) {
       if (ts.isFunctionDeclaration(stmt) && stmt.name?.text === name && stmt.body) {
