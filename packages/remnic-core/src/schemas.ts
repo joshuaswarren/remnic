@@ -181,7 +181,7 @@ export const ExtractedFactSchema = z.object({
     .optional()
     .nullable()
     .describe(
-      'For category "reasoning_trace" only: a stored solution chain with ordered steps, a final answer, and an optional observed outcome. Require at least two steps.',
+      'For category "reasoning_trace" only: a stored solution chain with ordered steps, a final answer, and an optional observed outcome. Require at least two steps. IMPORTANT: must include a non-empty finalAnswer (or final_answer) — the JSON Schema sent to providers cannot enforce this constraint.',
     ),
   eventTime: z
     .string()
@@ -348,6 +348,22 @@ export const ExtractionResultSchema = z.object({
     .describe(
       "Relationships between entities discovered in this conversation. Max 5 per extraction. Format: {source, target, label}.",
     ),
+});
+
+/**
+ * Provider-facing extraction contract. Keep this free of transforms/refinements:
+ * JSON Schema generators cannot faithfully represent salvageArray's ZodEffects.
+ * ExtractionResultSchema remains the authoritative tolerant parser after the
+ * provider returns.
+ */
+export const ExtractionProviderOutputSchema = z.object({
+  facts: z.array(ExtractedFactSchema),
+  profileUpdates: z.array(z.string()),
+  entities: z.array(EntityMentionSchema),
+  questions: z.array(ExtractedQuestionSchema),
+  identityReflection: z.string().optional().nullable(),
+  episodeTitle: z.string().optional().nullable(),
+  relationships: z.array(ExtractedRelationshipSchema).optional().nullable(),
 });
 
 export const ConsolidationItemSchema = z.object({

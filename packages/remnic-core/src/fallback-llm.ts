@@ -27,6 +27,8 @@ export interface FallbackLlmOptions {
   store?: boolean;
   /** Request strict JSON output when a route uses the Responses API. */
   responsesJsonSchema?: { name: string; schema: Record<string, unknown> };
+  /** Request provider-native structured output on supported JSON transports. */
+  jsonSchema?: { name: string; schema: Record<string, unknown>; strict?: boolean };
   /** Hide provider error details that could echo private request content. */
   redactProviderErrors?: boolean;
   /** Explicit "provider/model" override to try before the configured chain. */
@@ -106,6 +108,22 @@ interface ModelRef {
   modelId: string;
   providerConfig: ModelProviderConfig;
   modelString: string;
+}
+
+function isUnsupportedJsonSchemaError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  // Require an HTTP status plus explicit schema/format context. A bare
+  // "unsupported" (e.g. "'temperature' is unsupported with this model") must
+  // NOT trigger the schema-stripping retry, or we pay a duplicate request
+  // for unrelated provider errors.
+  if (!/\b(?:400|404|422)\b/.test(message)) {
+    return false;
+  }
+  if (/(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output)/i.test(message)) {
+    return true;
+  }
+  // "unsupported" only counts when adjacent to schema/format terminology.
+  return /\bunsupported\b[\s\S]{0,40}\b(?:schema|format)\b/i.test(message);
 }
 
 const PROVIDER_ALIASES: Record<string, readonly string[]> = {
@@ -199,8 +217,9 @@ export class FallbackLlmClient {
     }
 
     const runChain = async (
-      runOptions: FallbackLlmOptions,
+      initialOptions: FallbackLlmOptions,
     ): Promise<FallbackLlmResponse | null> => {
+      let runOptions = initialOptions;
       let lastRejectedResponse: FallbackLlmResponse | null = null;
       // Try each model in the chain
       for (let i = 0; i < models.length; i++) {
@@ -231,6 +250,47 @@ export class FallbackLlmClient {
         } catch (err) {
           if (runOptions.signal?.aborted) {
             throw abortReason(runOptions.signal);
+          }
+          if (
+            (runOptions.jsonSchema || runOptions.responsesJsonSchema) &&
+            isUnsupportedJsonSchemaError(err)
+          ) {
+            log.debug(`fallback LLM: ${model.modelString} rejected native JSON schema; retrying without it`);
+            // Degrade to prompt-only for the REST of the chain too, so an
+            // N-model chain where every provider rejects structured output
+            // costs N+1 requests instead of 2N.
+            runOptions = {
+              ...runOptions,
+              jsonSchema: undefined,
+              responsesJsonSchema: undefined,
+            };
+            try {
+              const result = await this.tryModel(model, messages, runOptions);
+              if (result) {
+                const response = {
+                  content: result.content,
+                  modelUsed: model.modelString,
+                  usage: result.usage,
+                };
+                if (!runOptions.acceptResponse || runOptions.acceptResponse(response)) {
+                  return response;
+                }
+                lastRejectedResponse = response;
+                log.debug(`fallback LLM: ${model.modelString} unstructured retry output rejected by acceptResponse, trying next model...`);
+                continue;
+              }
+            } catch (retryError) {
+              if (runOptions.signal?.aborted) throw abortReason(runOptions.signal);
+              const retryErrorMsg = runOptions.redactProviderErrors
+                ? "provider error details redacted"
+                : retryError instanceof Error
+                  ? retryError.message
+                  : String(retryError);
+              log.debug(
+                `fallback LLM: ${model.modelString} unstructured retry failed (${retryErrorMsg})`,
+              );
+            }
+            continue;
           }
           const errorMsg = runOptions.redactProviderErrors
             ? "provider error details redacted"
@@ -736,6 +796,18 @@ export class FallbackLlmClient {
       ...buildChatCompletionTokenLimit(modelId, options.maxTokens ?? 4096, {
         assumeOpenAI,
       }),
+      ...(options.jsonSchema
+        ? {
+            response_format: {
+              type: "json_schema",
+              json_schema: {
+                name: options.jsonSchema.name,
+                strict: options.jsonSchema.strict ?? false,
+                schema: options.jsonSchema.schema,
+              },
+            },
+          }
+        : {}),
     };
 
     const response = await fetch(url, {
@@ -891,14 +963,14 @@ export class FallbackLlmClient {
         assumeOpenAI: shouldAssumeOpenAiChatCompletions(config.baseUrl),
       }),
       ...(options.store === undefined ? {} : { store: options.store }),
-      ...(options.responsesJsonSchema
+      ...(options.jsonSchema || options.responsesJsonSchema
         ? {
             text: {
               format: {
                 type: "json_schema",
-                name: options.responsesJsonSchema.name,
-                strict: true,
-                schema: options.responsesJsonSchema.schema,
+                name: (options.jsonSchema ?? options.responsesJsonSchema)!.name,
+                strict: (options.jsonSchema?.strict ?? (options.responsesJsonSchema ? true : false)),
+                schema: (options.jsonSchema ?? options.responsesJsonSchema)!.schema,
               },
             },
           }

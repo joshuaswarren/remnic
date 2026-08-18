@@ -7,6 +7,7 @@ import { shouldRunProactivePass } from "./proactive-contention.js";
 import { FallbackLlmClient, fallbackLlmRuntimeContextFromConfig, gatewayTaskChainOptions } from "./fallback-llm.js";
 import { revalidateDependentsViaLlm, type RevalidationFastChatCompletion } from "./orchestration/dependency-revalidation.js";
 import {
+  ExtractionProviderOutputSchema,
   ExtractionResultSchema,
   ConsolidationResultSchema,
   IdentityConsolidationResultSchema,
@@ -60,6 +61,7 @@ import {
   buildProfileConsolidationSystemPrompt,
   eventTimePromptInstruction,
 } from "./extraction-prompt.js";
+import { zodToJsonSchema } from "zod-to-json-schema";
 import {
   containsExtractionPlaceholder,
   extractionAttributes,
@@ -76,6 +78,14 @@ type ExtractedEntityResult = ExtractionResult["entities"][number];
 type ExtractedRelationshipResult = NonNullable<ExtractionResult["relationships"]>[number];
 
 const PROACTIVE_MIN_CONFIDENCE = 0.8;
+
+const EXTRACTION_PROVIDER_JSON_SCHEMA = zodToJsonSchema(
+  ExtractionProviderOutputSchema,
+  {
+    $refStrategy: "none",
+    effectStrategy: "input",
+  },
+) as Record<string, unknown>;
 
 function extractionEntityType(value: unknown): ExtractedEntityResult["type"] | undefined {
   const type = extractionText(value);
@@ -1289,7 +1299,12 @@ export class ExtractionEngine {
     this.profiler.startSpan("gateway-fallback", extractionTraceId);
     try {
       const messages = [
-        { role: "system" as const, content: buildExtractionInstructions(this.config, existingEntities, ambientCapture) },
+        {
+          role: "system" as const,
+          content:
+            buildExtractionInstructions(this.config, existingEntities, ambientCapture) +
+            `\n\nReturn only valid JSON matching this shape. Placeholder text describes field shape only and is never source evidence:\n${EXTRACTION_RESPONSE_SHAPE}`,
+        },
         { role: "user" as const, content: conversation },
       ];
 
@@ -1302,6 +1317,11 @@ export class ExtractionEngine {
           temperature: 0.3,
           maxTokens: this.config.extractionMaxOutputTokens,
           timeoutMs: this.config.localLlmTimeoutMs,
+          jsonSchema: {
+            name: "extraction_result",
+            schema: EXTRACTION_PROVIDER_JSON_SCHEMA,
+            strict: false,
+          },
           signal,
         }),
       );
