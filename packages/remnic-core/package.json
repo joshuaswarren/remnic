@@ -2030,6 +2030,16 @@
       "remnic-source": "./src/token-estimate.ts",
       "import": "./dist/token-estimate.js"
     },
+    "./export-okf": {
+      "types": "./dist/transfer/export-okf.d.ts",
+      "remnic-source": "./src/transfer/export-okf.ts",
+      "import": "./dist/transfer/export-okf.js"
+    },
+    "./export-okf.js": {
+      "types": "./dist/transfer/export-okf.d.ts",
+      "remnic-source": "./src/transfer/export-okf.ts",
+      "import": "./dist/transfer/export-okf.js"
+    },
     "./active-context-transform": {
       "types": "./dist/active-context-transform.d.ts",
       "remnic-source": "./src/active-context-transform.ts",

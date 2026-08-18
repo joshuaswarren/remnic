@@ -170,6 +170,7 @@ import {
 import { PLUGIN_ID as REMNIC_OPENCLAW_PLUGIN_ID, resolveRemnicPluginEntry } from "@remnic/core/plugin-id.js";
 import { runMeetingsBinaryCommand } from "./commands/meetings.js"; import { runWearablesBinaryCommand } from "./commands/wearables.js"; import { runLocationBinaryCommand } from "./commands/location.js";
 import { runOkfBinaryCommand } from "./commands/okf.js";
+import { runExportOkfBinaryCommand } from "./commands/export-okf.js";
 import { runExternalWikiBinaryCommand } from "./commands/external-wiki.js";
 import { runProceduralBinaryCommand } from "./commands/procedural.js";
 import { runDriftBinaryCommand } from "./commands/drift.js";
@@ -13085,6 +13086,9 @@ Other:
     case "okf":
       await runOkfBinaryCommand(rest);
       break;
+    case "export":
+      await runExportOkfBinaryCommand(rest);
+      break;
 
     case "external-wiki": {
       await runExternalWikiBinaryCommand(rest);
@@ -13341,6 +13345,8 @@ Usage:
   remnic okf <lint|sweep> [--json]
     OKF v0.1 conformance: lint reports missing frontmatter/type findings,
     sweep backfills missing type values (okf.sweepEnabled).
+  remnic export okf --out <dir>
+    Write a portable OKF v0.1 knowledge bundle (plaintext interchange).
   remnic external-wiki search <query...> [--wiki-id <id>] [--limit <1-20>] [--max-chars-per-hit <100-8000>] [--json]
   remnic doctor                Run diagnostics
   remnic config                Show current config

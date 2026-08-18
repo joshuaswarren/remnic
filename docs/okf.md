@@ -10,6 +10,17 @@ Spec (v0.1 revision): https://github.com/GoogleCloudPlatform/knowledge-catalog/b
 |---|---|
 | `remnic okf lint` | Report missing frontmatter or `type`. Encrypted files are skipped. Exit 1 when findings remain. `--json` prints the result object. |
 | `remnic okf sweep` | Add missing `type` values without bumping `updated`. Gated by `okf.sweepEnabled`. |
+| `remnic export okf --out <dir>` | Write a portable OKF v0.1 bundle (lossy interchange). Capsules stay the lossless Remnic transport. |
+
+## Capsule vs OKF export
+
+| | Capsule | OKF export |
+|---|---|---|
+| Command | `remnic capsule export` | `remnic export okf --out <dir>` |
+| Shape | `.capsule.json.gz[.enc]` | Directory of markdown + `index.md` |
+| Fidelity | Lossless Remnic transport | Lossy interchange / publication |
+| Default contents | Full store | Active memories only; no profile, wearables, or `state/` |
+
 
 Lint walks every `.md` file under the memory directory, skipping `state/`, `.git/`, and symlinks. Findings carry a stable code:
 

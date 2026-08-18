@@ -417,6 +417,7 @@ See [docs/importers.md](docs/importers.md) for input formats, provenance metadat
 |---------|--------------|
 | `remnic okf lint` | Report files missing frontmatter or `type`; exit 1 when findings remain (`--json` for machine output) |
 | `remnic okf sweep` | Backfill missing `type` values from `category` without bumping `updated` (opt-in via `okf.sweepEnabled`) |
+| `remnic export okf --out <dir>` | Export a portable OKF v0.1 knowledge bundle (plaintext interchange; not a capsule) |
 
 Config gates, lint finding codes, and the full category-to-type mapping: [docs/okf.md](docs/okf.md).
 
