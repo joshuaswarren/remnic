@@ -9,6 +9,8 @@ import {
   isLocationDayPath,
   isMeetingRecordPath,
 } from "./orchestrator-helpers.js";
+import { OKF_RESERVED_BASENAMES } from "../okf/type-mapping.js";
+
 
 export interface GenericRecallPathPolicy {
   readonly memoryDir?: string;
@@ -230,9 +232,8 @@ export function isGenericRecallExcludedPath(
 ): boolean {
   return (
     isSearchExcludedPath(filePath, policy, source) ||
-    // Recall-only: archived memories are cold, but an explicit search is one
-    // of the surfaces they remain reachable through.
-    isTopLevelArchivePath(filePath, policy, source)
+    isTopLevelArchivePath(filePath, policy, source) ||
+    OKF_RESERVED_BASENAMES[path.basename(filePath)] === true
   );
 }
 

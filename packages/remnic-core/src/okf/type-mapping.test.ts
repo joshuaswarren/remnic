@@ -49,6 +49,7 @@ test("parseOkfConfig treats false as a real disable", () => {
   assert.deepEqual(parseOkfConfig({ conformanceEnabled: false, sweepEnabled: "false" }), {
     conformanceEnabled: false,
     sweepEnabled: false,
+    indexFilesEnabled: false,
   });
   assert.throws(() => parseOkfConfig("nope"), /okf must be an object/);
 });
@@ -164,6 +165,7 @@ test("runOkfCliCommand handles help and rejects unexpected tokens", async () => 
       memoryDir: "/tmp",
       conformanceEnabled: true,
       sweepEnabled: false,
+      indexFilesEnabled: false,
     });
     assert.equal(code, 0);
     assert.match(chunks.join(""), /usage: remnic okf/);
@@ -176,6 +178,7 @@ test("runOkfCliCommand handles help and rejects unexpected tokens", async () => 
       memoryDir: "/tmp",
       conformanceEnabled: true,
       sweepEnabled: false,
+      indexFilesEnabled: false,
     });
     assert.equal(code, 1);
     assert.match(errChunks.join(""), new RegExp(`unexpected argument '${token}'`));

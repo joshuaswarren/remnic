@@ -10,6 +10,7 @@ Spec (v0.1 revision): https://github.com/GoogleCloudPlatform/knowledge-catalog/b
 |---|---|
 | `remnic okf lint` | Report missing frontmatter or `type`. Encrypted files are skipped. Exit 1 when findings remain. `--json` prints the result object. |
 | `remnic okf sweep` | Add missing `type` values without bumping `updated`. Gated by `okf.sweepEnabled`. |
+| `remnic okf index` | Generate or remove `index.md` files. Gated by `okf.indexFilesEnabled` (default off). |
 | `remnic export okf --out <dir>` | Write a portable OKF v0.1 bundle (lossy interchange). Capsules stay the lossless Remnic transport. |
 
 ## Capsule vs OKF export
@@ -40,7 +41,8 @@ Sweep fixes only `missing_type` and `empty_type` findings, deriving the value fr
 {
   "okf": {
     "conformanceEnabled": true,
-    "sweepEnabled": false
+    "sweepEnabled": false,
+    "indexFilesEnabled": false
   }
 }
 ```

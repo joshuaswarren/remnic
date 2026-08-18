@@ -77,9 +77,10 @@ The location subsystem is off by default. It buckets place observations from reg
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `okf` | `{ conformanceEnabled: true, sweepEnabled: false }` | Open Knowledge Format conformance block. |
+| `okf` | `{ conformanceEnabled: true, sweepEnabled: false, indexFilesEnabled: false }` | Open Knowledge Format conformance block. |
 | `okf.conformanceEnabled` | `true` | Emit inert `type` on writes and add Profile frontmatter. `false` disables emission. |
 | `okf.sweepEnabled` | `false` | Opt-in backfill of missing `type` without bumping `updated`. |
+| `okf.indexFilesEnabled` | `false` | Generate `index.md` files in the live store. `false` removes generated indexes. |
 
 ## Wearables
 

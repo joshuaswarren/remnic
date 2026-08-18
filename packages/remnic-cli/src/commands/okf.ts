@@ -28,6 +28,7 @@ export async function runOkfBinaryCommand(rest: string[]): Promise<void> {
       memoryDir: config.memoryDir,
       conformanceEnabled: config.okf.conformanceEnabled,
       sweepEnabled: config.okf.sweepEnabled,
+      indexFilesEnabled: config.okf.indexFilesEnabled,
     });
     if (code !== 0) process.exitCode = code;
   } catch (err) {
