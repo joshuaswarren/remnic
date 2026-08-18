@@ -10,6 +10,6 @@ export async function respondStandup(
 ): Promise<void> {
   const op = getOperation("standup");
   if (!op) throw new Error("access-boundary: operation not registered: standup");
-  const output = (await op.run({ ...(date ? { date } : {}) }, { service })) as { result: unknown };
+  const output = (await op.run({ ...(date === null ? {} : { date }) }, { service })) as { result: unknown };
   respondJson(res, 200, output.result);
 }
