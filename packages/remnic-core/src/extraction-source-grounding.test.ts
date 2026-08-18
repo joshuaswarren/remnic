@@ -2665,3 +2665,55 @@ test("grounding preserves plural identifiers after a proper-name copular subject
     assert.deepEqual(result.facts, []);
   }
 });
+
+const JAPANESE_OBSERVED_TURN = {
+  role: "user" as const,
+  content: "田中さんは東京に住んでいます。毎日電車で会社に行きます。",
+  timestamp: "2026-07-25T12:00:00.000Z",
+};
+
+test("script-aware grounding keeps CJK paraphrased facts and embedded entity names", async () => {
+  const engine = fixtureEngine({
+    localLlmEnabled: true,
+    localLlmModel: "fixture-local",
+    localLlmFallback: false,
+  });
+  Object.assign(engine, {
+    localLlm: {
+      async chatCompletion() {
+        return {
+          content: JSON.stringify({
+            facts: [
+              {
+                category: "fact",
+                content: "田中さんは東京に住んでいる",
+                confidence: 0.9,
+                tags: [],
+              },
+              {
+                category: "fact",
+                content: "田中さんは大阪に住んでいる",
+                confidence: 0.9,
+                tags: [],
+              },
+            ],
+            profileUpdates: [],
+            entities: [{
+              name: "田中",
+              type: "person",
+              facts: ["東京に住んでいる"],
+            }],
+            questions: [],
+          }),
+        };
+      },
+    },
+  });
+
+  const result = await engine.extract([JAPANESE_OBSERVED_TURN]);
+
+  assert.deepEqual(result.facts.map((fact) => fact.content), ["田中さんは東京に住んでいる"]);
+  assert.equal(result.entities.length, 1);
+  assert.equal(result.entities[0]?.name, "田中");
+  assert.deepEqual(result.entities[0]?.facts, ["東京に住んでいる"]);
+});

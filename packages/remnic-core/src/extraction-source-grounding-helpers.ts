@@ -334,9 +334,9 @@ export interface GroundingLexeme {
 }
 
 export function groundingLexemes(text: string): GroundingLexeme[] {
-  const rawTokens = text.normalize("NFKC").match(
+  const rawTokens = (text.normalize("NFKC").match(
     /[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)?(?:\+\+[\p{L}\p{N}]*|#[\p{L}\p{N}]*)?/gu,
-  ) ?? [];
+  ) ?? []).flatMap(splitSpacelessScriptToken);
   const tokens = rawTokens.map((rawToken) =>
     rawToken.replaceAll("’", "'").toLocaleLowerCase());
   let predicateIndex = tokens.findIndex((token, index) => {
@@ -498,6 +498,116 @@ export function tokenize(text: string): Set<string> {
     if (GROUNDING_STOPWORDS[token] !== true) tokens.add(stemToken(token, preserveTerminalS, true));
   }
   return tokens;
+}
+
+const SPACELESS_SCRIPT_CHARACTER_PATTERN = new RegExp(
+  "[\\p{Script=Han}\\p{Script=Hiragana}\\p{Script=Katakana}\\p{Script=Hangul}"
+    + "\\p{Script=Thai}\\p{Script=Lao}\\p{Script=Khmer}\\p{Script=Myanmar}]",
+  "u",
+);
+const SPACELESS_SCRIPT_LCS_SOURCE_LIMIT = 4096;
+
+function containsSpacelessScriptCharacter(text: string): boolean {
+  return SPACELESS_SCRIPT_CHARACTER_PATTERN.test(text);
+}
+
+/**
+ * Scripts without word separators (CJK, Hangul, Thai, ...) must not become one
+ * whitespace-delimited token: a paraphrase never matches a whole-run token, so
+ * grounded CJK facts and entity names were dropped. Split those runs into
+ * per-character lexemes so contiguous-token matching behaves as substring
+ * matching for these scripts.
+ */
+function splitSpacelessScriptToken(rawToken: string): string[] {
+  if (!containsSpacelessScriptCharacter(rawToken)) return [rawToken];
+  const parts: string[] = [];
+  let otherScriptRun = "";
+  for (const character of rawToken) {
+    if (containsSpacelessScriptCharacter(character)) {
+      if (otherScriptRun.length > 0) {
+        parts.push(otherScriptRun);
+        otherScriptRun = "";
+      }
+      parts.push(character);
+    } else {
+      otherScriptRun += character;
+    }
+  }
+  if (otherScriptRun.length > 0) parts.push(otherScriptRun);
+  return parts;
+}
+
+function spacelessScriptCharacterSequence(text: string): string[] {
+  const characters: string[] = [];
+  for (const character of text.normalize("NFKC")) {
+    if (containsSpacelessScriptCharacter(character)) characters.push(character);
+  }
+  return characters;
+}
+
+function spacelessScriptCharacterNgrams(text: string): Set<string> {
+  const grams = new Set<string>();
+  let previousCharacter = "";
+  for (const character of spacelessScriptCharacterSequence(text)) {
+    if (previousCharacter !== "") grams.add(previousCharacter + character);
+    previousCharacter = character;
+  }
+  return grams;
+}
+
+function longestCommonSubstringLength(
+  left: ReadonlyArray<string>,
+  right: ReadonlyArray<string>,
+): number {
+  if (left.length === 0 || right.length === 0) return 0;
+  let longest = 0;
+  let previousRow = new Array<number>(right.length).fill(0);
+  for (const leftCharacter of left) {
+    const currentRow = new Array<number>(right.length).fill(0);
+    for (let index = 0; index < right.length; index += 1) {
+      if (leftCharacter !== right[index]) continue;
+      currentRow[index] = (index > 0 ? previousRow[index - 1] : 0) + 1;
+      if (currentRow[index] > longest) longest = currentRow[index];
+    }
+    previousRow = currentRow;
+  }
+  return longest;
+}
+
+/**
+ * Script-aware grounding score for candidates written in scripts without word
+ * separators. Returns null when the candidate has no such characters, so
+ * whitespace-delimited candidates keep the default scorer. The longest-common-
+ * span gate rejects topical overlap that shares mostly function characters.
+ * ponytail: n-grams and the common-span gate ignore argument order; swap in a
+ * segmentation-aware matcher if CJK role confusion surfaces.
+ */
+export function spacelessScriptGroundedTokenScore(candidate: string, source: string): number | null {
+  const candidateGrams = spacelessScriptCharacterNgrams(candidate);
+  if (candidateGrams.size === 0) return null;
+  const sourceGrams = spacelessScriptCharacterNgrams(source);
+  let sharedGrams = 0;
+  for (const gram of candidateGrams) {
+    if (sourceGrams.has(gram)) sharedGrams += 1;
+  }
+  if (sharedGrams < GROUNDING_MIN_SHARED_TOKENS) return 0;
+  const coverage = sharedGrams / candidateGrams.size;
+  if (coverage < GROUNDING_MIN_COVERAGE) return 0;
+  const candidateCharacters = spacelessScriptCharacterSequence(candidate);
+  const sourceCharacters = spacelessScriptCharacterSequence(source);
+  if (sourceCharacters.length <= SPACELESS_SCRIPT_LCS_SOURCE_LIMIT) {
+    const anchoredFraction = longestCommonSubstringLength(candidateCharacters, sourceCharacters)
+      / candidateCharacters.length;
+    if (anchoredFraction < GROUNDING_MIN_COVERAGE) return 0;
+  }
+  const sourceTokens = tokenize(source);
+  for (const token of tokenize(candidate)) {
+    if (containsSpacelessScriptCharacter(token)) continue;
+    if (![...sourceTokens].some((sourceToken) => areGroundingTokensCompatible(token, sourceToken))) {
+      return 0;
+    }
+  }
+  return coverage;
 }
 
 export function normalizeForExactMatch(text: string): string {
