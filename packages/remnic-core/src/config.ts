@@ -43,6 +43,7 @@ import { parseExtractionLivenessConfig } from "./extraction-liveness.js";
 import { parseReplicaPeersConfig } from "./replica-peers-config.js";
 import { parseDependencyPropagationConfig } from "./dependency-propagation-config.js";
 import { parseProceduralMaintenanceConfig } from "./procedural/maintenance-config.js";
+import { parseDriftDetectionConfig } from "./preferences/drift-config.js";
 import {
   parseContradictionLocalizationConfig,
   parseContradictionScanConfig,
@@ -1789,6 +1790,8 @@ export function parseConfig(
     contradictionAutoResolve: cfg.contradictionAutoResolve !== false,
     // Contradiction Scan cron (issue #520)
     contradictionScan: parseContradictionScanConfig(cfg.contradictionScan),
+    // Preference drift detection (issue #2371)
+    driftDetection: parseDriftDetectionConfig(cfg.driftDetection),
     dependencyPropagation: parseDependencyPropagationConfig(cfg),
     // Temporal Supersession (issue #375)
     temporalSupersessionEnabled: cfg.temporalSupersessionEnabled !== false, // On by default

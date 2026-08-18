@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
-  MCP_ADMIN_OPS_TOOLS,
+  MCP_ADMIN_OPS_MIGRATED_OPERATIONS, MCP_ADMIN_OPS_TOOLS,
   MCP_GIT_CONTEXT_SCHEMA_PROPS_IGNORED,
 } from "./access-mcp-admin-tools.js";
 import { readFile } from "node:fs/promises";
@@ -265,7 +265,7 @@ export const MCP_MIGRATED_OPERATIONS: Readonly<Record<string, OperationName>> = 
   "engram.console_state": "console_state",
   "engram.dreams_status": "dreams_status",
   "engram.dreams_run": "dreams_run",
-  ...SUPPORT_PASSPORT_MCP_MIGRATED_OPERATIONS,
+  ...SUPPORT_PASSPORT_MCP_MIGRATED_OPERATIONS, ...MCP_ADMIN_OPS_MIGRATED_OPERATIONS,
   "engram.memory_chat": "chat_message",
 };
 

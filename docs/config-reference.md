@@ -1308,6 +1308,35 @@ Stored as `category: procedure` markdown under `memoryDir/procedures/`. Narrativ
 | `procedural.maintenance.retireFailRatio` | `2` | `mw_fail` must exceed `mw_success × retireFailRatio` for failure-dominant retirement. |
 | `procedural.maintenance.mergeEnabled` | `true` | Whether duplicate-cluster merging runs within the maintenance gate. |
 
+## Preference drift detection (issue #2371)
+
+Covers the failure mode the agent-memory survey calls *stale preference reuse*: a `category: preference` memory keeps being injected at full prominence long after the last conversation that supported it. The contradiction scan and temporal supersession both need a new statement to arrive; this job looks instead at the *absence* of corroboration.
+
+Per active preference older than `minAgeDays`, the scan gathers recent same-namespace evidence within `lookbackDays` (half-open `[start, end)` window) and classifies it:
+
+- `corroborated` — recent evidence restates the preference. Apply mode stamps `lastCorroborated` and clears `driftState`.
+- `stale` — the window held nothing either way. Apply mode stamps `driftState: stale`. No lifecycle change, no deletion.
+- `drifted` — recent evidence points away from it (judge verdict `contradicts`). Apply mode opens one review-queue item with `kind: "preference-drift"`, rendered by the existing `review_list` / `review_resolve` surfaces. Resolution verbs: `keep` (stamps `lastCorroborated`), `supersede` (writes the corrected preference and retires the old one), `archive`.
+- `skipped` — the classification could not be made honestly. `backend_unavailable` means the evidence lookup failed and the preference was **not** marked stale (§22: empty and failed are different outcomes). `verification_unavailable` means evidence exists but no LLM could judge it, so neither a positive nor a negative claim is recorded.
+
+Nothing is ever auto-deleted or auto-superseded: drift is inference, and the least-privileged default for an inferred change to user state is to ask.
+
+Surfaces: `remnic drift scan [--apply]`, MCP `remnic.preference_drift_scan` (alias `engram.preference_drift_scan`). Shadow-first — a run without `--apply` / `apply: true` writes nothing, not even the run marker.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `driftDetection.enabled` | `false` | Master gate for classification and apply mode. With it off, the scan reports `skippedReason: "drift_disabled"` and recall is untouched. |
+| `driftDetection.minAgeDays` | `60` | A preference younger than this many days is never a scan candidate. |
+| `driftDetection.lookbackDays` | `45` | Evidence-gathering window, in days back from the run instant. |
+| `driftDetection.maxCandidatesPerRun` | `25` | Cap on preferences classified per run. **`0` disables the scan** (`skippedReason: "scan_disabled"`). |
+| `driftDetection.recallDamping` | `false` | When `true`, recall multiplies the rank score of `driftState: stale` preferences by `stalePenalty` in the same boost stage as the Memory Worth multiplier, on every recall branch. With it off, recall ordering is byte-identical to pre-#2371. |
+| `driftDetection.stalePenalty` | `0.8` | Multiplier in `(0, 1]`. **`1` disables the effect** without flipping `recallDamping`. `0` is rejected — it would erase a memory from recall rather than damp it. |
+| `driftDetection.annotateAfterDays` | `0` | Append a compact age note (for example `(stated 2026-01; not corroborated since)`) to an injected preference whose last corroboration is older than this many days. **`0` disables annotation.** The note is formatting-stage only and never mutates the stored memory. |
+
+Invalid values are rejected, never silently defaulted: a non-object `driftDetection`, an unrecognized boolean-like string, a non-integer day count, or a `stalePenalty` outside `(0, 1]` all throw at `parseConfig`.
+
+Frontmatter written by this job: `driftState` (`stale` | `drifted`) and `lastCorroborated` (ISO 8601). Both are derived provenance stamped after the fact, so — like `mw_success` / `mw_fail` — they are not part of the sealed write envelope.
+
 ## Extraction pipeline liveness (issue #2151)
 
 Surfaces a checkable liveness watermark for the implicit extraction pipeline so a daemon that has not persisted an extraction in a long time is distinguishable from one that simply has nothing to extract (the §22 error-vs-empty principle at the pipeline level). Exposed on the authenticated `/health` payload (the `extraction` object), the `remnic doctor` `extraction_liveness` check, and `remnic stats`. When the pipeline is degraded, a single aggregated WARN is logged per staleness window rather than one line per failed extraction attempt. The `extraction` block reflects the daemon's single extraction pipeline, so `/health` returns the same block for every namespace argument. Its last-successful-extraction watermark is the newest value across the root and every distinct namespace store. If namespace enumeration or any metadata read fails, the watermark reports an explicit unreadable outcome instead of publishing a surviving store's timestamp as fresh. A buffer that cannot be read is likewise reported degraded with a distinct reason.

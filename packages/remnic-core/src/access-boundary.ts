@@ -140,6 +140,7 @@ export const OPERATION_NAMES = [
   "review_list",
   "review_resolve",
   "contradiction_scan_run",
+  "preference_drift_scan",
   "memory_summarize_hourly",
   "conversation_index_update",
   "profiling_report",

@@ -35,6 +35,7 @@ import {
 import { listPairs, isDefaultReviewNamespace, readPair } from "./contradiction/contradiction-review.js";
 import { executeResolution, isValidResolutionVerb } from "./contradiction/resolution.js";
 import { runContradictionScan } from "./contradiction/contradiction-scan.js";
+import { runPreferenceDriftScan } from "./preferences/preference-drift.js";
 import { runGraphEdgeDecayMaintenanceAcrossNamespaces } from "./maintenance/graph-edge-decay.js";
 import { normalizeDreamsStatusWindowHours } from "./maintenance/dreams-ledger.js";
 
@@ -347,6 +348,7 @@ defineOperation({ name: "review_resolve", description: "Resolve pair.", schema: 
   },
 });
 defineOperation({ name: "contradiction_scan_run", description: "Run scan.", schema: strictSchema({ namespace: S.str }), handler: async (input, ctx) => ({ result: await runContradictionScan({ storage: ctx.service.storageRef, config: ctx.service.configRef, memoryDir: ctx.service.memoryDir, embeddingLookupFactory: ctx.service.embeddingLookupFactoryRef, storageForNamespace: (ns) => ctx.service.getWritableStorageForNamespace(ns ?? undefined, ctx.authenticatedPrincipal), localLlm: ctx.service.localLlmRef, fallbackLlm: ctx.service.fallbackLlmRef, namespace: optStr(input.namespace) }) }) });
+defineOperation({ name: "preference_drift_scan", description: "Run preference drift scan.", schema: strictSchema({ namespace: S.str, apply: S.bool }), handler: async (input, ctx) => ({ result: await runPreferenceDriftScan({ storage: ctx.service.storageRef, config: ctx.service.configRef, memoryDir: ctx.service.memoryDir, embeddingLookupFactory: ctx.service.embeddingLookupFactoryRef, storageForNamespace: (ns) => ctx.service.getWritableStorageForNamespace(ns ?? undefined, ctx.authenticatedPrincipal), localLlm: ctx.service.localLlmRef, fallbackLlm: ctx.service.fallbackLlmRef, namespace: optStr(input.namespace), apply: input.apply === true }) }) });
 defineOperation({ name: "graph_edge_decay_run", description: "Run edge decay.", fleetWide: true, schema: strictSchema({ dryRun: S.bool }), handler: async (input, ctx) => { const cfg = ctx.service.configRef; if (!cfg.graphEdgeDecayEnabled) return { result: { ranAt: new Date().toISOString(), disabled: true, reason: "graphEdgeDecayEnabled is false" } }; return { result: { results: await runGraphEdgeDecayMaintenanceAcrossNamespaces(ctx.service.memoryDir, { windowMs: cfg.graphEdgeDecayWindowMs, perWindow: cfg.graphEdgeDecayPerWindow, floor: cfg.graphEdgeDecayFloor, visibilityThreshold: cfg.graphEdgeDecayVisibilityThreshold, dryRun: input.dryRun === true, namespacesEnabled: cfg.namespacesEnabled === true, defaultNamespace: cfg.defaultNamespace }) } }; } });
 
 // === SUMMARIZE/PROFILING/PEERS/CONSOLE/DREAMS ===

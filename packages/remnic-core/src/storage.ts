@@ -13,11 +13,8 @@ import {
 } from "node:fs/promises";
 import { appendFileSync, createReadStream, mkdirSync, readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
-import {
-  computeContentHash,
-  computeLegacyContentHash,
-  normalizeContent,
-} from "./content-hash.js";
+import { computeLegacyContentHash, normalizeContent } from "./content-hash.js";
+import { parseDriftProvenance, serializeDriftProvenance } from "./preferences/drift-types.js";
 import { raceAbort } from "./abort-error.js";
 import { checkCorpusReadAbort, type CorpusReadOptions } from "./corpus-read-cancellation.js";
 import { selectArtifactMatches, type ArtifactSearchOptions } from "./artifact-search.js";
@@ -28,7 +25,6 @@ import { createMemorySnapshot } from "./memory-snapshot.js";
 import { assertMemoryFrontmatterId, warnProjectionFallback } from "./storage-guards.js";
 import { createTombstoneMigrationSourceContents } from "./storage/tombstone-migration-sources.js";
 import { MemoryReadStore, readWindowedMemories, type WindowedMemoryReadOptions, type WindowedMemoryReadResult } from "./storage/memory-read-store.js";
-import { hasSupersessionAudit } from "./storage/supersession-audit.js";
 import { runCommittedInvalidation } from "./storage/committed-invalidation.js";
 import { renderProfileWithLastUpdated, stripOkfProfileFrontmatter, withOkfProfileFrontmatter } from "./storage/profile-header.js";
 import { parseQuestionFile as parseQuestionFileText } from "./storage/questions-file.js";
@@ -408,6 +404,7 @@ function serializeFrontmatter(fm: MemoryFrontmatter): string {
     assertMemoryWorthCounter("mw_fail", fm.mw_fail);
     lines.push(`mw_fail: ${fm.mw_fail}`);
   }
+  lines.push(...serializeDriftProvenance(fm));
   // Importance scoring
   if (fm.importance) {
     lines.push(`importanceScore: ${fm.importance.score}`);
@@ -919,6 +916,7 @@ export function parseFrontmatter(raw: string): { frontmatter: MemoryFrontmatter;
       // Memory Worth counters (issue #560)
       mw_success,
       mw_fail,
+      ...parseDriftProvenance(fm),
       // Importance scoring
       importance,
       // Chunking
