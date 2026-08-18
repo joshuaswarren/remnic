@@ -6276,6 +6276,26 @@
                     "description": "Master gate for remnic journal seed/show. Default false."
                   }
                 }
+              },
+              "qa": {
+                "type": "object",
+                "additionalProperties": false,
+                "default": {},
+                "description": "Timeline range/search tools (issue #1983).",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Gate remnic timeline range|search. Default false."
+                  },
+                  "maxRangeDays": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 366,
+                    "default": 31,
+                    "description": "Maximum timeline_range span in days. Integer 1..366."
+                  }
+                }
               }
             }
           }

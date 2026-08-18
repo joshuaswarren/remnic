@@ -55,6 +55,8 @@ The activity subsystem is off by default. It synchronizes redacted text snapshot
 | `activity.sources.token` | `(unset)` | Literal bearer token sent to a trusted local capture daemon over loopback. This parser does not resolve secret references or `${ENV_VAR}` placeholders; omit the field when the daemon needs no auth. |
 | `activity.timeline.enabled` | `false` | Master gate for timeline-card derivation (issue #2049). When false, no timeline cards are built or exposed. |
 | `activity.timeline.journal.enabled` | `false` | Master gate for daily journal seed/show (issue #1984). Journal files live at `journal/<YYYY-MM-DD>.md` and are excluded from generic recall. |
+| `activity.timeline.qa.enabled` | `false` | Gate for `remnic timeline range|search` (issue #1983). |
+| `activity.timeline.qa.maxRangeDays` | `31` | Maximum `timeline_range` span in days. Integer 1..366. |
 
 ### Timeline cards (issue #2049)
 
@@ -2084,6 +2086,8 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `activity.maxMemoriesPerDay` | `0` | `0` (no count cap) |
 | `activity.timeline.enabled` | `false` | `false` |
 | `activity.timeline.journal.enabled` | `false` | `false` |
+| `activity.timeline.qa.enabled` | `false` | `false` |
+| `activity.timeline.qa.maxRangeDays` | `31` | `31` |
 
 ## Meetings (issue #1900)
 
