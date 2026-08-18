@@ -10,14 +10,18 @@
  *   - turn capture        → POST /engram/v1/observe (agent_end, last turn)
  *   - compaction/reset    → POST /engram/v1/lcm/compaction/flush
  *
- * Deliberately out of scope for delegate v1 (still embedded-only): tool and
- * CLI registration, heartbeat/dreams surfaces, hourly summary crons, public
- * artifacts, and the memory-capability object. The daemon already exposes the
- * tool surface over HTTP/MCP to any client that needs it. This keeps a
- * co-located gateway from running a second orchestrator over the daemon's
- * memory corpus (double maintenance crons, duplicate extraction load, shared
- * SQLite contention).
+ * Delegate also registers the host memory-capability surface (prompt builder,
+ * runtime, flush plan, public artifacts) and a support-passport model
+ * service. Those still call the daemon; this file does not start a second
+ * orchestrator.
+ *
+ * Still embedded-only: tool and CLI registration, heartbeat/dreams surfaces,
+ * hourly summary crons. The daemon already exposes the tool surface over
+ * HTTP/MCP. That keeps a co-located gateway from running a second
+ * orchestrator over the daemon's memory corpus (double maintenance crons,
+ * duplicate extraction load, shared SQLite contention).
  */
+
 
 import path from "node:path";
 import {
