@@ -16,13 +16,16 @@ export interface SupportPassportServerRuntime {
 export function createSupportPassportServerRuntime(
   orchestrator: Orchestrator,
   config: PluginConfig,
-  fallbackHandler?: SupportPassportExternalRequestHandler
+  fallbackHandler?: SupportPassportExternalRequestHandler,
+  accessOptions?: { reviewDeckEnabled?: boolean },
 ): SupportPassportServerRuntime {
   const bridge = config.supportPassport.enabled ? new SupportPassportModelBridge() : null;
+  const serviceOptions = {
+    supportPassportGatewayRoute: bridge?.route,
+    reviewDeckEnabled: accessOptions?.reviewDeckEnabled === true,
+  };
   return {
-    service: new EngramAccessService(orchestrator, {
-      supportPassportGatewayRoute: bridge?.route,
-    }),
+    service: new EngramAccessService(orchestrator, serviceOptions),
     externalRequestHandler: composeSupportPassportExternalRequestHandlers(bridge?.requestHandler, fallbackHandler),
     close: () => bridge?.close(),
   };

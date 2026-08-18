@@ -68,7 +68,7 @@ import { cleanupExpiredChatSessions, enforceChatSessionNamespace } from "./chat/
 import { isDefaultReviewNamespace, listPairs, readPair } from "./contradiction/contradiction-review.js";
 import { isValidResolutionVerb, executeResolution } from "./contradiction/resolution.js";
 import { RelayMissionStoreError } from "./relay/mission.js";
-import { SupportPassportAccessHttpBase } from "./support-passport/access-http-base.js";
+import { ReviewDeckAccessHttpBase } from "./review/review-deck-http-base.js";
 import { serializeInlineScriptValue } from "./inline-script.js";
 import type { SupportPassportExternalRequestHandler } from "./support-passport/public-http.js";
 export interface AccessHttpReadinessState {
@@ -386,7 +386,7 @@ function codingContextFromProjectTag(projectTag: string): {
   };
 }
 
-export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
+export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
   protected readonly service: EngramAccessService;
   private readonly host: string;
   private readonly requestedPort: number;
@@ -396,7 +396,7 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
   private readonly authTokenEntriesGetter?: () => ReadonlyArray<{ token: string; connector?: string; capabilities?: TokenCapabilities }>;
   private readonly tokenPathPolicy?: (connector: string, pathname: string | undefined) => boolean;
   private readonly authenticatedPrincipal?: string;
-  private readonly maxBodyBytes: number;
+  protected readonly maxBodyBytes: number;
   private readonly adminConsoleEnabled: boolean;
   protected readonly adminConsolePublicDir: string;
   private readonly adminConsolePrefillToken?: string;
@@ -730,7 +730,7 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
   /** Resolve namespace: only use the explicit body value. Adapter-inferred namespace
    *  is intentionally NOT used as a fallback for REST requests — omitting namespace
    *  should default to the server's global namespace, not silently scope to an adapter. */
-  private resolveNamespace(_req: IncomingMessage, bodyNamespace?: string): string | undefined {
+  protected resolveNamespace(_req: IncomingMessage, bodyNamespace?: string): string | undefined {
     const namespace = bodyNamespace || undefined;
     // Per-token namespace enforcement (issues #1837/#1850): every HTTP
     // namespace-scoped route routes through this helper so none can dodge the
@@ -901,6 +901,7 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
     if (req.method === "POST" && pathname === "/mcp") return this.handleMcpRequest(req, res, abortSignal);
 
     if (await this.handleSupportPassportOwnerRequest(req, res, pathname, parsed.search.length > 0, abortSignal)) return;
+    if (await this.handleReviewDeckRequest(req, res, pathname, abortSignal)) return;
 
     if (req.method === "GET" && pathname === "/engram/v1/live") return this.respondJson(res, 200, { ok: true, ready: true });
     if (req.method === "GET" && pathname === "/engram/v1/health") {
@@ -3906,7 +3907,7 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
    * pass. Throws {@link EngramAccessForbiddenError} (→ 403) when a scoped
    * token calls a non-permitted op (issue #1837).
    */
-  private enforceTokenOp(op: OperationName): void {
+  protected enforceTokenOp(op: OperationName): void {
     void getOperation(op); // preserve the registration side-effect assertion
     assertOperationAllowed(tokenCapabilityStore.getStore(), op);
   }

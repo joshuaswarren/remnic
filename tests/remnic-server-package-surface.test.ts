@@ -34,6 +34,7 @@ test("@remnic/server build emits and advertises TypeScript declarations", async 
     "bin/*.js",
     "dist",
     "src/index.ts",
+    "src/admin-console-config.ts",
     "src/oauth.ts",
     "src/server-env.ts",
     "src/startup-readiness.ts",
