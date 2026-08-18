@@ -436,7 +436,7 @@ type CommandName =
   | "promotion-candidates"
   | "security"
   | "wearables"
-  | "meetings" | "okf" | "location"
+  | "meetings" | "okf" | "location" | "export"
   | "external-wiki"
   | "capsule"
   | "offline"
