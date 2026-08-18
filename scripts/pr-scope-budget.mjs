@@ -126,8 +126,13 @@ export function extractIssueRefs(text) {
     .replace(/<!--[\s\S]*?-->/g, " ")
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/`[^`]*`/g, " ");
-  for (const match of prose.matchAll(/(?<![0-9A-Za-z_#])#(\d+)(?![0-9A-Za-z_])/g)) {
+  for (const match of prose.matchAll(
+    /\b(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s+#(\d+)((?:\s*(?:,|and)\s*#\d+)*)/gi,
+  )) {
     issues.add(Number(match[1]));
+    for (const extra of match[2].matchAll(/#(\d+)/g)) {
+      issues.add(Number(extra[1]));
+    }
   }
   return issues;
 }

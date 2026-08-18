@@ -44,7 +44,11 @@ test("root typecheck covers package tsconfigs", () => {
     })
     .sort();
 
-  assert.deepEqual(packagesMissingCheckTypes, []);
+  assert.deepEqual(
+    packagesMissingCheckTypes,
+    [],
+    packagesMissingCheckTypes.length ? `add scripts.check-types to: ${packagesMissingCheckTypes.join(", ")}` : "",
+  );
 
   const packagesMissingCorePrecheck = packageNamesWithTsconfig
     .filter((name) => {
@@ -61,5 +65,11 @@ test("root typecheck covers package tsconfigs", () => {
     })
     .sort();
 
-  assert.deepEqual(packagesMissingCorePrecheck, []);
+  assert.deepEqual(
+    packagesMissingCorePrecheck,
+    [],
+    packagesMissingCorePrecheck.length
+      ? `add scripts.precheck-types (copy packages/connector-limitless) to: ${packagesMissingCorePrecheck.join(", ")}`
+      : "",
+  );
 });

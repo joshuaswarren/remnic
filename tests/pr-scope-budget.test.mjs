@@ -173,19 +173,31 @@ test("renames out of core paths still count against the budget (round 3)", () =>
 // --- Subsystem-group / multi-issue detection (issue #2067) ---
 
 test("issue references are extracted, deduped, boundary-checked, and code-stripped", () => {
-  const issues = extractIssueRefs("Closes #12, part of #34 and see #12 again (no digits: #).");
+  const issues = extractIssueRefs("Closes #12, Fixes #12 again, and Resolves #99.");
   assert.deepEqual(
     [...issues].sort((a, b) => a - b),
-    [12, 34]
+    [12, 99]
   );
   assert.equal(extractIssueRefs("").size, 0);
   assert.equal(extractIssueRefs(undefined).size, 0);
-  // Non-issue hashes must not count: hex color / commit-ish in code spans are
-  // stripped, and alphanumeric neighbours break the reference boundary.
   const filtered = extractIssueRefs(
-    "real #42, hidden <!-- see #77 -->, color `#123456`, block ```\n#999\n```, run#7 x#8y ##9"
+    "Fixes #42, hidden <!-- Closes #77 -->, color `#123456`, block ```\nFixes #999\n```, run#7 x#8y ##9"
   );
   assert.deepEqual([...filtered], [42]);
+});
+
+test("extractIssueRefs ignores see/part-of/pull URLs (this-run #2550)", () => {
+  const issues = extractIssueRefs(
+    "Fixes #2387.\nSupport-passport recovery from https://github.com/joshuaswarren/remnic/pull/2360. See #12, part of #34."
+  );
+  assert.deepEqual([...issues], [2387]);
+});
+
+test("extractIssueRefs accepts GitHub Fixes #1 and #2 lists", () => {
+  assert.deepEqual(
+    [...extractIssueRefs("Fixes #111 and #222, also Closes #333, #444")].sort((a, b) => a - b),
+    [111, 222, 333, 444],
+  );
 });
 
 test("classifySubsystem picks the longest matching prefix", () => {
@@ -232,7 +244,7 @@ test(">=3 related groups + >=2 issues warns without failing (shared package ance
     thresholds: THRESHOLDS,
     ignorePatterns: NO_IGNORES,
     subsystemGroups: GROUPS,
-    prText: "Part of #111 and #222",
+    prText: "Fixes #111. Fixes #222",
   });
   assert.equal(result.verdict, "warn");
   assert.match(result.detail, /span 3 subsystem groups/);
@@ -246,7 +258,7 @@ test("unrelated groups (no package ancestor) + >=2 issues fails; exempt bypasses
     thresholds: THRESHOLDS,
     ignorePatterns: NO_IGNORES,
     subsystemGroups: GROUPS,
-    prText: "Fixes #111, also #222",
+    prText: "Fixes #111. Fixes #222",
   };
   const fail = evaluateScopeBudget({ ...base, labels: [] });
   assert.equal(fail.verdict, "fail");
