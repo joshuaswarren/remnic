@@ -4,7 +4,7 @@ import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, wri
 import os from "node:os";
 import path from "node:path";
 
-import { clampGraphRecallExpandedEntries, LastRecallStore } from "./recall-state.js";
+import { clampGraphRecallExpandedEntries, LastRecallStore, RecallHandleHistoryStore } from "./recall-state.js";
 import type { RecallTierExplain } from "./types.js";
 import { listContainedSpillFiles } from "./utils/path-containment.js";
 
@@ -1132,4 +1132,57 @@ test("LastRecallStore.drainPendingImpressions reports pendingDeferred when a spi
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
++
+test("LastRecallStore rejects unsafe session keys on every read/write path", async () => {
+  const { store, dir } = await freshStore();
+  for (const key of ["__proto__", "constructor", "prototype"]) {
+    await store.record({ sessionKey: key, query: "q", memoryIds: ["m-1"] });
+    assert.equal(store.get(key), null, `get(${key}) must not surface prototype junk`);
+  }
+  assert.equal(store.getMostRecent(), null);
+
+  await store.annotateTierExplain("__proto__", {
+    tier: "direct-answer",
+    tierReason: "",
+    filteredBy: [],
+    candidatesConsidered: 0,
+    latencyMs: 0,
+  });
+  assert.equal(store.get("__proto__"), null);
+  const persistedKeys = await readFile(path.join(dir, "state", "last_recall.json"), "utf-8")
+    .then((raw) => Object.keys(JSON.parse(raw) as object))
+    .catch(() => [] as string[]);
+  assert.deepEqual(persistedKeys, [], "no unsafe key persisted");
+});
+
+test("RecallHandleHistoryStore rejects unsafe session keys", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "engram-handle-history-"));
+  const store = new RecallHandleHistoryStore(dir);
+  await store.load();
+
+  await store.record("__proto__", ["m-1"]);
+  await store.record("constructor", ["m-2"]);
+  assert.deepEqual(store.recent("__proto__"), []);
+  assert.deepEqual(store.recent("constructor"), []);
+
+  await store.record("ok", ["m-3"]);
+  assert.deepEqual(store.recent("ok"), [["m-3"]]);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("RecallHandleHistoryStore.load drops unsafe and malformed entries from persisted state", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "engram-handle-history-"));
+  await mkdir(path.join(dir, "state"), { recursive: true });
+  // JSON.parse materializes "__proto__" as an OWN key; load must not adopt it.
+  const poisoned =
+    '{"__proto__": [{"at": "t", "ids": ["evil"]}], "bad": "not-an-array", "ok": [{"at": "t", "ids": ["m-1"]}]}';
+  await writeFile(path.join(dir, "state", "handle_history.json"), poisoned, "utf-8");
+
+  const store = new RecallHandleHistoryStore(dir);
+  await store.load();
+  assert.deepEqual(store.recent("__proto__"), []);
+  assert.deepEqual(store.recent("bad"), []);
+  assert.deepEqual(store.recent("ok"), [["m-1"]]);
+  await rm(dir, { recursive: true, force: true });
 });

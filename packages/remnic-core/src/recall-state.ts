@@ -24,10 +24,8 @@ export { coerceIncludedMemories } from "./included-memories.js";
 // assignments on plain-object state. A key matching one of these would
 // pollute Object.prototype (or read junk off it), so every read/write
 // through this module rejects them — same contract load() already enforced.
-const UNSAFE_STATE_KEYS: ReadonlySet<string> = new Set(["__proto__", "constructor", "prototype"]);
-
 function isUnsafeStateKey(key: string): boolean {
-  return UNSAFE_STATE_KEYS.has(key);
+  return key === "__proto__" || key === "constructor" || key === "prototype";
 }
 
 
@@ -377,6 +375,7 @@ export class LastRecallStore {
   get(sessionKey: string): LastRecallSnapshot | null {
     // Defensive copy: callers must not be able to mutate internal state
     // by reaching into array/object fields on the returned snapshot.
+    if (isUnsafeStateKey(sessionKey)) return null;
     return cloneLastRecallSnapshot(this.state[sessionKey] ?? null);
   }
 
@@ -435,6 +434,10 @@ export class LastRecallStore {
      */
     backendDegradations?: SearchDegradation[];
   }): Promise<void> {
+    if (isUnsafeStateKey(opts.sessionKey)) {
+      log.debug("last recall record skipped: unsafe session key");
+      return;
+    }
     const now = new Date().toISOString();
     const queryHash = createHash("sha256").update(opts.query).digest("hex");
 
@@ -859,6 +862,7 @@ export class LastRecallStore {
     tierExplain: RecallTierExplain,
     expected?: { writeNonce?: string; traceId?: string; recordedAt?: string },
   ): Promise<void> {
+    if (isUnsafeStateKey(sessionKey)) return;
     const current = this.state[sessionKey];
     if (!current) return;
     if (!snapshotMatchesExpectedIdentity(current, expected)) return;
@@ -1001,7 +1005,15 @@ export class RecallHandleHistoryStore {
     try {
       const raw = await readFile(this.statePath, "utf-8");
       const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === "object") this.state = parsed as typeof this.state;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const next: Record<string, Array<{ at: string; ids: string[] }>> = {};
+        for (const [sessionKey, entries] of Object.entries(parsed)) {
+          if (isUnsafeStateKey(sessionKey)) continue;
+          if (!Array.isArray(entries)) continue;
+          next[sessionKey] = entries;
+        }
+        this.state = next;
+      }
     } catch {
       this.state = {};
     }
@@ -1012,7 +1024,7 @@ export class RecallHandleHistoryStore {
    * The ring is capped at {@link maxDepth}; older entries drop off the tail.
    */
   async record(sessionKey: string, memoryIds: readonly string[]): Promise<void> {
-    if (!sessionKey) return;
+    if (!sessionKey || isUnsafeStateKey(sessionKey)) return;
     const ids = memoryIds.filter((id): id is string => typeof id === "string" && id.length > 0);
     const entry = { at: new Date().toISOString(), ids };
     const prior = this.state[sessionKey] ?? [];
@@ -1031,6 +1043,7 @@ export class RecallHandleHistoryStore {
    * Empty array when the session has no recorded history.
    */
   recent(sessionKey: string, depth: number = this.maxDepth): Array<readonly string[]> {
+    if (isUnsafeStateKey(sessionKey)) return [];
     const entries = this.state[sessionKey];
     if (!entries || entries.length === 0) return [];
     const limit = Math.max(0, Math.min(depth, entries.length));
