@@ -1130,8 +1130,7 @@ export function parseConfig(
       : 2;
   const maintenance = parseProceduralMaintenanceConfig(rawProcedural.maintenance);
   const skillProjection = parseSkillProjectionConfig(rawProcedural.skillProjection);
-  // Default-on procedural memory (issue #567 PR 4/5). Explicit false-ish
-  // values stay off. Unknown values throw.
+  // Default-on procedural memory (issue #567 PR 4/5). Explicit false-ish values stay off. Unknown values throw.
   const rawEnabledValue = rawProcedural.enabled;
   let proceduralEnabled: boolean;
   if (rawEnabledValue === undefined) {
