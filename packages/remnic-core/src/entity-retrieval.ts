@@ -10,6 +10,11 @@ import { normalizeEntityText, resolveRequestedEntitySectionKeys } from "./entity
 import type { EntityStructuredSection, MemoryFile, PluginConfig, TranscriptEntry } from "./types.js";
 import { truncateGraphemeSafe } from "./whitespace.js";
 import { containsPhrase } from "./entity-retrieval-boundaries.js";
+import {
+  detectEntityQueryMode,
+  isStructuralEntityFollowUpQuery,
+  type EntityQueryMode,
+} from "./entity-retrieval-i18n.js";
 import { buildOriginStructuredSections, sanitizeOriginatedFacts, type EntityOriginStructuredSection } from "./entity-origin-fields.js";
 import {
   checkEntityRecallAbort,
@@ -21,10 +26,8 @@ const ENTITY_INDEX_VERSION = 3;
 const RECENT_TRANSCRIPT_LOOKBACK_HOURS = 24;
 const INSTRUCTION_LIKE_RE = /\b(always|never|must|should|remember to|do not|don't|process|workflow|template|checklist|instruction)\b/i;
 const METADATA_WRAPPER_RE = /^(source|context|metadata|notes?):/i;
-const ENTITY_PRONOUN_RE = /\b(he|him|his|she|her|they|them|their|it|its)\b/i;
 const BELIEF_LEDGER_SECTION_KEY = "belief_ledger";
 const BELIEF_LEDGER_FACT_RE = /^claim=([^;]+);\s*status=([^;]+);\s*updatedAt=([^;]+);\s*(.+)$/;
-type EntityQueryMode = "direct" | "timeline" | "follow_up";
 type EntityMentionIndexEntry = {
   canonicalId: string;
   name: string;
@@ -170,35 +173,6 @@ function relationLine(entry: EntityMentionIndexEntry, relationship: { target: st
   const normalizedLabel = relationship.label.replace(/\s+/g, " ").trim();
   if (normalizedLabel.length === 0) return `${entry.name} is connected to ${relationship.target}`;
   return `${entry.name} ${normalizedLabel} ${relationship.target}`;
-}
-function detectEntityQueryMode(query: string): EntityQueryMode | null {
-  const normalized = normalizeEntityText(query);
-  if (!normalized) return null;
-  if (
-    /^(what about|and what about|how about|what happened (with|to) (he|him|his|she|her|they|them|their|it|its)|did (he|she|they|it)|is (he|she|they|it)|was (he|she|they|it))\b/.test(normalized)
-  ) {
-    return "follow_up";
-  }
-  if (
-    /^(who is|who s|what do we know about|what does|tell me about|what can you tell me about|what s new with|what happened with|what happened to|status of|where is|how is)\b/.test(normalized)
-  ) {
-    if (/^what does\b/.test(normalized)) {
-      if (/^what does (?:this|that|it|the|a|an|my|our|your|their)\b/.test(normalized)) {
-        return null;
-      }
-      if (
-        /^what does [a-z0-9-]+ (?:error|warning|exception|failure|stack|trace|code|message|log)\b/.test(normalized)
-        && /\b(mean|means|indicate|indicates|imply|implies)\b/.test(normalized)
-      ) {
-        return null;
-      }
-    }
-    return /what happened|what s new|status of|how is|where is/.test(normalized) ? "timeline" : "direct";
-  }
-  if (ENTITY_PRONOUN_RE.test(normalized) && normalized.split(/\s+/).length <= 8) {
-    return "follow_up";
-  }
-  return null;
 }
 function scoreAliasMatch(query: string, alias: string): number {
   const normalizedQuery = normalizeEntityText(query);
@@ -1061,7 +1035,18 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
   // during a scan is observed here (issue #2291).
   checkEntityRecallAbort(options.abortSignal);
   const prefixedMode = detectEntityQueryMode(options.query);
-  const persistedIndex = prefixedMode
+  // #2193: in zero-pronoun scripts a short question with no entity name
+  // never trips a pronoun word list, so the structural signal routes it
+  // into the same coreference path as an English "what about him?".
+  // Latin-script queries stay on the cue tables / English rules so the
+  // generic technical-question guard keeps working. Resolution gates.
+  const structuralFollowUp = prefixedMode === null
+    && isStructuralEntityFollowUpQuery(
+      options.query,
+      options.recentTurns > 0 && options.transcriptEntries.length > 0,
+    );
+  const earlyMode = prefixedMode ?? (structuralFollowUp ? "follow_up" : null);
+  const persistedIndex = earlyMode
     ? null
     : await readCurrentPersistedEntityIndex(
       options.storage,
@@ -1072,7 +1057,7 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
   checkEntityRecallAbort(options.abortSignal);
   let nativeChunks: NativeKnowledgeChunk[] | undefined;
   if (
-    !prefixedMode &&
+    !earlyMode &&
     persistedIndex &&
     resolveLanguageIndependentExplicitCandidates(persistedIndex, options.query).length === 0
   ) {
@@ -1129,7 +1114,22 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
   const queryCandidates = prefixedMode
     ? explicitCandidates
     : resolveLanguageIndependentExplicitCandidates(index, options.query);
-  const mode = prefixedMode ?? (queryCandidates.length > 0 ? "direct" : null);
+  if (
+    queryCandidates.length === 0
+    && /^what does (?:this|that|it|the|a|an|my|our|your|their)\b/i.test(normalizeEntityText(options.query))
+  ) {
+    return entityRecallSectionAbsent(options.abortSignal);
+  }
+
+  // Explicit mentions keep #2161 behavior (direct mode) even when the
+  // structural follow-up signal also fired; only name-less short questions
+  // fall through to coreference.
+  const mode = prefixedMode
+    ?? (queryCandidates.length > 0
+      ? "direct"
+      : structuralFollowUp
+        ? "follow_up"
+        : null);
   if (!mode) return entityRecallSectionAbsent(options.abortSignal);
 
   const candidates = queryCandidates.length > 0
