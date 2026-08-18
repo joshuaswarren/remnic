@@ -911,12 +911,13 @@ export function stripOkfProfileFrontmatter(content: string): string {
   const lines = content.split("\n");
   for (let index = 1; index < lines.length; index += 1) {
     const line = lines[index]!;
-    if (line === "---" || line === "---\r") {
-      return lines.slice(1, index).some((l) => l.startsWith("type: Profile"))
+    const bare = line.endsWith("\r") ? line.slice(0, -1) : line;
+    if (bare === "---") {
+      return lines.slice(1, index).some((l) => (l.endsWith("\r") ? l.slice(0, -1) : l) === "type: Profile")
         ? lines.slice(index + 1).join("\n")
         : content;
     }
-    if (line === "" || line === "\r" || line === "...") return content;
+    if (bare === "" || bare === "...") return content;
   }
   return content;
 }

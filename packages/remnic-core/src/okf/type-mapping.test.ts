@@ -153,6 +153,13 @@ test("profile OKF frontmatter strip tolerates CRLF-rewritten files", () => {
   // Hand-written CRLF frontmatter without the marker round-trips untouched.
   const handWritten = "---\r\ntitle: mine\r\n---\r\n\r\nbody\r\n";
   assert.equal(stripOkfProfileFrontmatter(handWritten), handWritten);
+  // Prefix look-alikes are not the marker: nothing is stripped.
+  const lookalike = "---\ntype: ProfileExtra\n---\n\nbody\n";
+  assert.equal(stripOkfProfileFrontmatter(lookalike), lookalike);
+  // A CRLF document-end marker ends the scan: a later --- in the body is not
+  // treated as the frontmatter close.
+  const docEnd = "---\r\n...\r\n---\r\ntype: Profile\r\n---\r\nbody\r\n";
+  assert.equal(stripOkfProfileFrontmatter(docEnd), docEnd);
 });
 
 test("runOkfCliCommand handles help and rejects unexpected tokens", async () => {
