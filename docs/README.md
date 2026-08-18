@@ -26,6 +26,7 @@ packaged adapter is.
 - [ChatGPT (developer mode)](integration/chatgpt.md) — Give ChatGPT persistent, governed memory on your own infrastructure via MCP and OAuth 2.1.
 - [Pi coding agent](integration/pi.md) — Native Pi extension using Pi's hooks, slash commands, and compaction coordination.
 - [Oh My Pi (omp)](integration/omp.md) — omp rules, MCP server config, and the native omp extension.
+- [Prime Agent](integration/prime-agent.md) — Pi-fork coding agent; `remnic connectors install prime-agent` and the shared Pi-family extension.
 - [Hermes setup](integration/hermes-setup.md) — Hermes Agent via the `remnic-hermes` package or session-id auto-detection.
 - [Deployment topologies](integration/deployment-topologies.md) — Localhost, LAN, remote, containerized, and standalone layouts.
 - [Plugin ID and memory namespaces](integration/plugin-id-and-memory-namespaces.md) — The OpenClaw plugin id split, the memory-slot gate, and namespace isolation.

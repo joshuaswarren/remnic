@@ -81,3 +81,21 @@ export function resolveOmpAgentHome(env: NodeJS.ProcessEnv): string {
 export function resolveOmpExtensionRoot(env: NodeJS.ProcessEnv): string {
   return path.join(resolveOmpAgentHome(env), "extensions", REMNIC_PI_EXTENSION_DIR_NAME);
 }
+
+/**
+ * Prime Agent agent home (a Pi-fork coding agent). Honors only
+ * `PRIME_AGENT_CODING_AGENT_DIR`; the Pi-family env vars (`PI_CODING_AGENT_DIR`,
+ * `PI_CONFIG_DIR`, …) deliberately do NOT apply — Prime Agent is a separate
+ * install tree at `~/.prime/agent`.
+ */
+export function resolvePrimeAgentAgentHome(env: NodeJS.ProcessEnv): string {
+  const explicitCodingAgentDir = env.PRIME_AGENT_CODING_AGENT_DIR?.trim();
+  if (explicitCodingAgentDir) {
+    return path.resolve(expandTildePath(explicitCodingAgentDir));
+  }
+  return path.join(env.HOME ?? env.USERPROFILE ?? os.homedir(), ".prime", "agent");
+}
+
+export function resolvePrimeAgentExtensionRoot(env: NodeJS.ProcessEnv): string {
+  return path.join(resolvePrimeAgentAgentHome(env), "extensions", REMNIC_PI_EXTENSION_DIR_NAME);
+}

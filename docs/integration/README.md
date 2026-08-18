@@ -15,6 +15,7 @@ layer; `docs/plugins/` is the *what each adapter is* layer.
 - [ChatGPT (developer mode)](chatgpt.md) — Give ChatGPT persistent, governed memory on your own infrastructure via MCP and OAuth 2.1.
 - [Pi coding agent](pi.md) — Native Pi extension (`@remnic/plugin-pi`) using Pi's hooks, slash commands, and compaction coordination.
 - [Oh My Pi (omp)](omp.md) — omp rules, MCP server config, and the native omp extension.
+- [Prime Agent](prime-agent.md) — Pi-fork coding agent; `remnic connectors install prime-agent` installs the shared Pi-family extension under `~/.prime/agent`.
 - [Hermes setup](hermes-setup.md) — Hermes Agent via the `remnic-hermes` Python package or `X-Hermes-Session-Id` auto-detection.
 
 ## Deploy and scope

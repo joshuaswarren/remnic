@@ -337,13 +337,14 @@ export type { PairedAnswerReplayCache };
 type PiPublisherModule = {
   PiMemoryExtensionPublisher: new () => MemoryExtensionPublisher;
   OmpMemoryExtensionPublisher: new () => MemoryExtensionPublisher;
+  PrimeAgentMemoryExtensionPublisher: new () => MemoryExtensionPublisher;
 };
 
 /**
  * Lazily loads a Pi-family publisher class from the optional @remnic/plugin-pi
- * package so it is only imported when a Pi-family connector (pi, omp) is
- * actually installed. Both hosts share one runtime extension module; only the
- * publisher class (install location + token) differs.
+ * package so it is only imported when a Pi-family connector (pi, omp,
+ * prime-agent) is actually installed. All hosts share one runtime extension
+ * module; only the publisher class (install location + token) differs.
  */
 class LazyPluginPiPublisher implements MemoryExtensionPublisher {
   private delegate: Promise<MemoryExtensionPublisher> | undefined;
@@ -396,6 +397,8 @@ registerPublisher("claude-code", () => new ClaudeCodeMemoryExtensionPublisher())
 registerPublisher("hermes", () => new HermesMemoryExtensionPublisher());
 registerPublisher("pi", () => new LazyPluginPiPublisher("pi", (mod) => mod.PiMemoryExtensionPublisher));
 registerPublisher("omp", () => new LazyPluginPiPublisher("omp", (mod) => mod.OmpMemoryExtensionPublisher));
+registerPublisher("prime-agent", () =>
+  new LazyPluginPiPublisher("prime-agent", (mod) => mod.PrimeAgentMemoryExtensionPublisher));
 
 type CommandName =
   | "init"
