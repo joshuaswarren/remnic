@@ -13,6 +13,9 @@
 
 export { collapseWhitespace, displayWidth, graphemeUnits, padEndDisplay, truncateCodePointSafe, truncateGraphemeSafe } from "./whitespace.js";
 
+export * from "./context-summary.js";
+export * from "./active-context-transform.js";
+
 // ---------------------------------------------------------------------------
 // Plugin entry resolution
 // ---------------------------------------------------------------------------

@@ -43,12 +43,10 @@ import { parseExtractionLivenessConfig } from "./extraction-liveness.js";
 import { parseReplicaPeersConfig } from "./replica-peers-config.js";
 import { parseDependencyPropagationConfig } from "./dependency-propagation-config.js";
 import { parseProceduralMaintenanceConfig } from "./procedural/maintenance-config.js";
+import { parseActiveContextFields } from "./active-context-config.js";
 import { parseSkillProjectionConfig } from "./procedural/skill-projection.js";
 import { parseDriftDetectionConfig } from "./preferences/drift-config.js";
-import {
-  parseContradictionLocalizationConfig,
-  parseContradictionScanConfig,
-} from "./contradiction-config.js";
+import { parseContradictionLocalizationConfig, parseContradictionScanConfig } from "./contradiction-config.js";
 import { parseGraphPathScoringConfig } from "./graph-path-scoring-config.js";
 import { hasLegacyConnectorEntries } from "./connectors/paths.js";
 import {
@@ -699,7 +697,6 @@ function resolveMemoryOsPreset(value: unknown): MemoryOsPresetName | undefined {
   }
   return MEMORY_OS_PRESET_ALIASES[normalized];
 }
-
 export function parseConfig(
   raw: unknown,
   rawOperatorConfig?: Record<string, unknown> | null,
@@ -3306,6 +3303,7 @@ export function parseConfig(
       typeof cfg.maxCompressionTokensPerHour === "number"
         ? Math.max(0, Math.floor(cfg.maxCompressionTokensPerHour))
         : 1500,
+    ...parseActiveContextFields(cfg),
     behaviorLoopAutoTuneEnabled: cfg.behaviorLoopAutoTuneEnabled === true,
     behaviorLoopLearningWindowDays:
       typeof cfg.behaviorLoopLearningWindowDays === "number"

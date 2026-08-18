@@ -2030,6 +2030,26 @@
       "remnic-source": "./src/token-estimate.ts",
       "import": "./dist/token-estimate.js"
     },
+    "./active-context-transform": {
+      "types": "./dist/active-context-transform.d.ts",
+      "remnic-source": "./src/active-context-transform.ts",
+      "import": "./dist/active-context-transform.js"
+    },
+    "./active-context-transform.js": {
+      "types": "./dist/active-context-transform.d.ts",
+      "remnic-source": "./src/active-context-transform.ts",
+      "import": "./dist/active-context-transform.js"
+    },
+    "./context-summary": {
+      "types": "./dist/context-summary.d.ts",
+      "remnic-source": "./src/context-summary.ts",
+      "import": "./dist/context-summary.js"
+    },
+    "./context-summary.js": {
+      "types": "./dist/context-summary.d.ts",
+      "remnic-source": "./src/context-summary.ts",
+      "import": "./dist/context-summary.js"
+    },
     "./recall-xray": {
       "types": "./dist/recall-xray.d.ts",
       "remnic-source": "./src/recall-xray.ts",

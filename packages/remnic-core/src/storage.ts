@@ -29,6 +29,8 @@ import { runCommittedInvalidation } from "./storage/committed-invalidation.js";
 import { renderProfileWithLastUpdated, stripOkfProfileFrontmatter, withOkfProfileFrontmatter } from "./storage/profile-header.js";
 import { parseQuestionFile as parseQuestionFileText } from "./storage/questions-file.js";
 import { assertNotOkfReservedBasename, OKF_QUESTION_TYPE, okfTypeForEntityKind, okfTypeForMemory } from "./okf/type-mapping.js";
+import { appendContextTransformRecords, readContextTransformRecords } from "./storage/context-transform-ledger.js";
+import type { ContextTransformTelemetryRecord } from "./active-context-transform.js";
 import { readMaybeEncryptedLines, readMemoryActionEventRowsFromLines } from "./storage/secure-line-reader.js";
 import {
   appendLifecycleEventsSerialized,
@@ -5595,7 +5597,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     await this.appendStorageSecureFile(this.memoryActionsPath, payload);
     return events.length;
   }
-
+  async appendContextTransformRecords(records: ContextTransformTelemetryRecord[]) { return appendContextTransformRecords(this as never, records); }
+  async readContextTransformRecords(limit = 200) { return readContextTransformRecords(this as never, limit); }
   async appendMemoryLifecycleEvents(events: MemoryLifecycleEvent[]): Promise<number> {
     if (events.length === 0) return 0;
     await this.ensureDirectories();
