@@ -411,6 +411,15 @@ The search index lives separately and is rebuildable from these files at any tim
 
 See [docs/importers.md](docs/importers.md) for input formats, provenance metadata, and the full privacy breakdown.
 
+**Open Knowledge Format (OKF).** The memory directory doubles as an OKF v0.1 knowledge bundle: every memory file ships an inert `type` field next to Remnic's canonical `category`, so OKF-aware consumers can read your store without a converter. `category` stays authoritative — `type` is interop metadata and never overrides it on parse. Two commands keep the bundle conformant:
+
+| Command | What it does |
+|---------|--------------|
+| `remnic okf lint` | Report files missing frontmatter or `type`; exit 1 when findings remain (`--json` for machine output) |
+| `remnic okf sweep` | Backfill missing `type` values from `category` without bumping `updated` (opt-in via `okf.sweepEnabled`) |
+
+Config gates, lint finding codes, and the full category-to-type mapping: [docs/okf.md](docs/okf.md).
+
 **Live connectors: Google Drive and Notion.** Beyond one-time imports, Remnic can *continuously* sync external sources into memory. The Google Drive and Notion connectors poll for changed documents on a schedule and ingest them incrementally — connect once (`remnic connectors run google-drive` / `remnic connectors run notion` for a manual sync, `remnic connectors status` to inspect), and your docs stay searchable alongside everything else your agents know. Gmail and GitHub connectors run on the hosted scheduler as well. Setup, OAuth, and polling details: [docs/live-connectors.md](docs/live-connectors.md).
 
 **Wearables.** Three optional connectors ingest AI-wearable recordings, clean and speaker-label the transcripts, apply your personal corrections, store searchable per-day transcript files, and create memories under strict per-source trust gates: `@remnic/connector-limitless` (Limitless Pendant), `@remnic/connector-bee` (Bee bracelet), and `@remnic/connector-omi` (Omi necklace). See [docs/wearables.md](docs/wearables.md).

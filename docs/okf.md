@@ -6,8 +6,22 @@ Spec (v0.1 revision): https://github.com/GoogleCloudPlatform/knowledge-catalog/b
 
 ## Commands
 
-- `remnic okf lint` — report missing frontmatter or `type`. Encrypted files are skipped. Exit 1 when findings remain. `--json` prints the result object.
-- `remnic okf sweep` — add missing `type` values without bumping `updated`. Gated by `okf.sweepEnabled`.
+| Command | Behavior |
+|---|---|
+| `remnic okf lint` | Report missing frontmatter or `type`. Encrypted files are skipped. Exit 1 when findings remain. `--json` prints the result object. |
+| `remnic okf sweep` | Add missing `type` values without bumping `updated`. Gated by `okf.sweepEnabled`. |
+
+Lint walks every `.md` file under the memory directory, skipping `state/`, `.git/`, and symlinks. Findings carry a stable code:
+
+| Code | Meaning |
+|---|---|
+| `missing_frontmatter` | File has no YAML frontmatter block. |
+| `missing_type` | Frontmatter has no `type` key. |
+| `empty_type` | `type` is present but empty. |
+| `reserved_basename` | `index.md` or `log.md` at any depth — OKF §6/§7 reserves these basenames for bundle-level files, and Remnic writes targeting them are rejected. |
+| `skipped_encrypted` | File is a secure-store encrypted envelope. Informational; does not affect the exit code. |
+
+Sweep fixes only `missing_type` and `empty_type` findings, deriving the value from the file's `category`.
 
 ## Config
 
@@ -24,4 +38,43 @@ Spec (v0.1 revision): https://github.com/GoogleCloudPlatform/knowledge-catalog/b
 
 ## Mapping
 
-See `packages/remnic-core/src/okf/type-mapping.ts`. `category: fact` → `type: Memory Fact`. Unknown categories → `Memory`. Entity kinds map to Person/Company/Project/Entity. Profile → `Profile`.
+Source of truth: `packages/remnic-core/src/okf/type-mapping.ts`. The tables below mirror it exactly; change both together.
+
+### Memory categories
+
+| `category` | `type` |
+|---|---|
+| `fact` | `Memory Fact` |
+| `decision` | `Decision` |
+| `preference` | `Preference` |
+| `commitment` | `Commitment` |
+| `relationship` | `Relationship` |
+| `principle` | `Principle` |
+| `moment` | `Moment` |
+| `skill` | `Skill` |
+| `correction` | `Correction` |
+| `rule` | `Rule` |
+| any other category | `Memory` |
+
+Memories carrying an `artifactType` report `Artifact` regardless of category.
+
+### Entity kinds
+
+| Entity `kind` | `type` |
+|---|---|
+| `person` | `Person` |
+| `company` | `Company` |
+| `organization` | `Organization` |
+| `project` | `Project` |
+| `topic` | `Topic` |
+| `technology` | `Technology` |
+| `place` | `Place` |
+| `event` | `Event` |
+| any other or missing kind | `Entity` |
+
+### Other written files
+
+| File | `type` |
+|---|---|
+| `profile.md` | `Profile` (frontmatter header on the profile body) |
+| question files | `Question` |
