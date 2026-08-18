@@ -256,10 +256,11 @@ function provenanceFromRow(row: ReviewDeckSourceRow): ReviewDeckEvidence[] {
 }
 
 function parseFrontmatterFields(content: string): Record<string, string> {
-  const match = content.match(/^---\n([\s\S]*?)\n---/);
-  if (!match) return {};
+  if (!content.startsWith("---\n")) return {};
+  const end = content.indexOf("\n---", 4);
+  if (end === -1) return {};
   const fields: Record<string, string> = {};
-  for (const line of match[1].split("\n")) {
+  for (const line of content.slice(4, end).split("\n")) {
     const colonIdx = line.indexOf(":");
     if (colonIdx === -1) continue;
     fields[line.slice(0, colonIdx).trim()] = line.slice(colonIdx + 1).trim();
