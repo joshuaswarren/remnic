@@ -30,7 +30,9 @@ import { createTombstoneMigrationSourceContents } from "./storage/tombstone-migr
 import { MemoryReadStore, readWindowedMemories, type WindowedMemoryReadOptions, type WindowedMemoryReadResult } from "./storage/memory-read-store.js";
 import { hasSupersessionAudit } from "./storage/supersession-audit.js";
 import { runCommittedInvalidation } from "./storage/committed-invalidation.js";
-import { renderProfileWithLastUpdated } from "./storage/profile-header.js";
+import { renderProfileWithLastUpdated, stripOkfProfileFrontmatter, withOkfProfileFrontmatter } from "./storage/profile-header.js";
+import { parseQuestionFile as parseQuestionFileText } from "./storage/questions-file.js";
+import { assertNotOkfReservedBasename, OKF_QUESTION_TYPE, okfTypeForEntityKind, okfTypeForMemory } from "./okf/type-mapping.js";
 import { readMaybeEncryptedLines, readMemoryActionEventRowsFromLines } from "./storage/secure-line-reader.js";
 import {
   appendLifecycleEventsSerialized,
@@ -319,6 +321,8 @@ function serializeFrontmatter(fm: MemoryFrontmatter): string {
     `confidenceTier: ${fm.confidenceTier}`,
     `tags: [${fm.tags.map((t) => `"${t}"`).join(", ")}]`,
   ];
+  // OKF v0.1 interop (issue #1946): inert presentation metadata; `category` stays canonical.
+  if (fm.type !== undefined) lines.push(`type: ${fm.type}`);
   if (fm.origin) lines.push(`origin: ${/^[A-Za-z0-9:_.*-]+$/.test(fm.origin) ? fm.origin : JSON.stringify(fm.origin)}`);
   if (fm.entityRef) lines.push(`entityRef: ${fm.entityRef}`);
   if (fm.sourceConnector) {
@@ -855,6 +859,7 @@ export function parseFrontmatter(raw: string): { frontmatter: MemoryFrontmatter;
     frontmatter: {
       id: fm.id ?? "",
       category: (fm.category ?? "fact") as MemoryCategory,
+      type: parseFrontmatterStringValue(fm.type),
       created: fm.created ?? new Date().toISOString(),
       updated: fm.updated ?? new Date().toISOString(),
       source: fm.source ?? "unknown",
@@ -1099,15 +1104,16 @@ function parseEntityFrontmatter(raw: string): {
 
   const values: Record<string, string> = {};
   const extraLines: string[] = [];
-  const recognizedKeys = new Set([
-    "created",
-    "updated",
-    "synthesis_updated_at",
-    "synthesis_timeline_count",
-    "synthesis_structured_fact_count",
-    "synthesis_structured_fact_digest",
-    "synthesis_version",
-  ]);
+  const recognizedKeys: Record<string, true> = {
+    created: true,
+    updated: true,
+    type: true,
+    synthesis_updated_at: true,
+    synthesis_timeline_count: true,
+    synthesis_structured_fact_count: true,
+    synthesis_structured_fact_digest: true,
+    synthesis_version: true,
+  };
   for (const line of match[1].split(/\r?\n/)) {
     if (/^\s/.test(line)) {
       extraLines.push(line);
@@ -1119,7 +1125,7 @@ function parseEntityFrontmatter(raw: string): {
       continue;
     }
     const key = line.slice(0, colonIdx).trim();
-    if (!recognizedKeys.has(key)) {
+    if (recognizedKeys[key] !== true) {
       extraLines.push(line);
       continue;
     }
@@ -1413,7 +1419,11 @@ export function parseEntityFile(content: string, entitySchemas?: PluginConfig["e
  * Writes the compiled-truth + timeline format while remaining parse-compatible
  * with the legacy in-memory `summary` and `facts` fields.
  */
-export function serializeEntityFile(entity: EntityFile, entitySchemas?: PluginConfig["entitySchemas"]): string {
+export function serializeEntityFile(
+  entity: EntityFile,
+  entitySchemas?: PluginConfig["entitySchemas"],
+  okfType?: boolean,
+): string {
   const synthesis = entity.synthesis || entity.summary || "";
   const created = entity.created?.trim() || entity.updated || new Date().toISOString();
   const updated = entity.updated || created;
@@ -1457,7 +1467,10 @@ export function serializeEntityFile(entity: EntityFile, entitySchemas?: PluginCo
       : [`synthesis_structured_fact_count: ${synthesisStructuredFactCount}`]),
     ...(synthesisStructuredFactDigest ? [`synthesis_structured_fact_digest: "${synthesisStructuredFactDigest}"`] : []),
     `synthesis_version: ${synthesisVersion}`,
-    ...(entity.extraFrontmatterLines ?? []),
+    ...(okfType === false ? [] : [`type: ${okfTypeForEntityKind(entity.type)}`]),
+    ...(okfType === false
+      ? (entity.extraFrontmatterLines ?? [])
+      : (entity.extraFrontmatterLines ?? []).filter((line) => !line.startsWith("type:"))),
     "---",
     "",
     `# ${entity.name}`,
@@ -2261,6 +2274,24 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     StorageManager.scopedCacheInvalidationByDir.set(memoryDir, enabled !== false);
   }
 
+  /** OKF `type` emission gate registrations per memory dir (issue #1946). */
+  private static readonly okfConformanceByDir = new Map<string, boolean>();
+
+  /** Register the OKF conformance gate for a memory dir. Unregistered dirs default to
+   *  conformance-on; namespace child dirs (<memoryDir>/namespaces/<tok>) inherit the
+   *  nearest registered ancestor. Only an explicit `false` disables. */
+  static setOkfConformanceDefault(memoryDir: string, enabled: boolean | undefined): void {
+    StorageManager.okfConformanceByDir.set(memoryDir, enabled !== false);
+  }
+
+  okfConformanceEnabled(): boolean {
+    for (let dir = this.baseDir; ; dir = path.dirname(dir)) {
+      const registered = StorageManager.okfConformanceByDir.get(dir);
+      if (registered !== undefined) return registered;
+      if (dir === path.dirname(dir)) return true;
+    }
+  }
+
   /**
    * The LIVE class object of this instance (issue #1809 review of the
    * storage decomposition): extracted store modules must read/write the
@@ -2648,6 +2679,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return this.writeStorageSecureFile(target, content);
   }
   protected writeStorageSecureFile(filePath: string, content: string | Buffer, forceEncrypt = false): Promise<void> {
+    assertNotOkfReservedBasename(filePath);
     const writeKey = this.resolveWriteKey(forceEncrypt);
     return writeMaybeEncryptedFile(filePath, content, writeKey, {}, this.baseDir).then(() => {
       // No manual sniff-cache update needed (issue #1909 round 10): this rewrite
@@ -3577,7 +3609,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const completionFingerprint = await runLegacyEntityCanonicalIdMigration(
       this as unknown as EntityCanonicalIdMigrationHost,
       (content) => parseEntityFile(content, this.entitySchemas),
-      (entity) => serializeEntityFile(entity, this.entitySchemas),
+      (entity) => serializeEntityFile(entity, this.entitySchemas, this.okfConformanceEnabled()),
       createMemoryEntityRefSerializer(serializeFrontmatter)
     );
     return completionFingerprint;
@@ -3658,6 +3690,13 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         );
       }) ?? null
     );
+  }
+
+  /** Derive the inert OKF `type` at the serialization choke point when conformance is on
+   *  and the parsed frontmatter carried none (issue #1946). Never touches `category`. */
+  private withOkfType(fm: MemoryFrontmatter): MemoryFrontmatter {
+    if (this.okfConformanceEnabled() && fm.type === undefined) fm.type = okfTypeForMemory(fm);
+    return fm;
   }
   async writeMemory(
     category: MemoryCategory,
@@ -3812,7 +3851,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     };
     await applyTombstoneGate();
 
-    const fileContent = `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`;
+    const fileContent = `${serializeFrontmatter(this.withOkfType(fm))}\n\n${sanitized.text}\n`;
 
     const filePath = await this.resolveCategoryWritePath(category, id, today);
     const persistFile = async (): Promise<MemoryFile | null> => {
@@ -3837,7 +3876,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
               await applyTombstoneGate();
               await this.writeTombstoneBlockedMemory(
                 filePath,
-                `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`,
+                `${serializeFrontmatter(this.withOkfType(fm))}\n\n${sanitized.text}\n`,
                 fm,
                 sanitized.text,
                 async () => this.invalidateAllMemoriesCache()
@@ -4172,7 +4211,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       return "";
     }
     const filePath = path.join(dir, `${id}.md`);
-    await this.writeStorageSecureFile(filePath, `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`);
+    await this.writeStorageSecureFile(filePath, `${serializeFrontmatter(this.withOkfType(fm))}\n\n${sanitized.text}\n`);
     const actor =
       typeof options.actor === "string" && options.actor.length > 0 ? options.actor : "storage.writeArtifact";
     await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.writeArtifact", {
@@ -4225,7 +4264,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
   async readProfile(): Promise<string> {
     try {
-      return await readMaybeEncryptedFile(this.profilePath, this._secureStoreKey, this.baseDir);
+      return stripOkfProfileFrontmatter(await readMaybeEncryptedFile(this.profilePath, this._secureStoreKey, this.baseDir));
     } catch (error) {
       if (error instanceof SecureStoreLockedError) {
         throw error;
@@ -4236,7 +4275,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   }
 
   async writeProfile(content: string): Promise<void> {
-    const stampedContent = renderProfileWithLastUpdated(content, new Date().toISOString());
+    const timestamp = new Date().toISOString();
+    const stampedContent = withOkfProfileFrontmatter(
+      renderProfileWithLastUpdated(content, timestamp),
+      timestamp,
+      this.okfConformanceEnabled(),
+    );
     await this.ensureDirectories();
     await this.snapshotBeforeWrite(this.profilePath, "consolidation");
     await this.writeStorageSecureFile(this.profilePath, stampedContent);
@@ -4912,6 +4956,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return path.join(root, dir, this.resolveMemoryDateDir(memory), `${memory.frontmatter.id}.md`);
   }
   private async writeMemoryFileAtomic(targetPath: string, memory: MemoryFile): Promise<void> {
+    assertNotOkfReservedBasename(targetPath);
     // Whole-record rewrite (tier moves) — #2213. Repair, not just detect:
     // the source is unlinked after the move, so a mapping parked across this
     // write would strand the moved copy with nothing left to reconcile from.
@@ -4921,7 +4966,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const persist = (): Promise<void> =>
       writeMaybeEncryptedFile(
         targetPath,
-        `${serializeFrontmatter(frontmatter)}\n\n${memory.content}\n`,
+        `${serializeFrontmatter(this.withOkfType(frontmatter))}\n\n${memory.content}\n`,
         this.resolveWriteKey(),
         {},
         this.baseDir
@@ -5070,7 +5115,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
           },
           refIdsAtWrite
         );
-        const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${current.content}\n`;
+        const fileContent = `${serializeFrontmatter(this.withOkfType(updatedFm))}\n\n${current.content}\n`;
         const destPath = path.join(destDir, path.basename(current.path));
         // Snapshot a pre-existing destination (retried archive) so a repair
         // failure restores it instead of deleting the only archived copy (§14).
@@ -5260,7 +5305,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (!sanitized.clean) {
       log.warn(`updated memory content sanitized for ${memory.frontmatter.id}; violations=${sanitized.violations.join(", ")}`);
     }
-    const fileContent = `${serializeFrontmatter(updated)}\n\n${sanitized.text}\n`;
+    const fileContent = `${serializeFrontmatter(this.withOkfType(updated))}\n\n${sanitized.text}\n`;
     await this.writeTombstoneBlockedUpdate(memory, fileContent, updated, sanitized.text, async () => {
       this.invalidateAllMemoriesCache();
       if (this.isColdOrArchiveTierPath(memory.path)) this.invalidateColdMemoriesCache();
@@ -5350,7 +5395,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const refIds = typeof updated.entityRef === "string" ? resolveIds : null;
     const afterStatus = updated.status ?? "active";
 
-    const fileContent = `${serializeFrontmatter(updated)}\n\n${memory.content}\n`;
+    const fileContent = `${serializeFrontmatter(this.withOkfType(updated))}\n\n${memory.content}\n`;
     await this.writeTombstoneBlockedFrontmatter(memory, fileContent, updated, async () => {
       this.invalidateAllMemoriesCache();
       // Rebuild the blocked index from the post-write cold-tier cache.
@@ -6038,11 +6083,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     await mkdir(this.questionsDir, { recursive: true });
 
     const id = this.generateId("q");
-    const frontmatter = {
+    const frontmatter: Record<string, unknown> = {
       id,
       created: new Date().toISOString(),
       priority,
       resolved: false,
+      ...(this.okfConformanceEnabled() ? { type: OKF_QUESTION_TYPE } : {}),
     };
 
     const content = `---\n${Object.entries(frontmatter)
@@ -6076,41 +6122,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     StorageManager.questionsCache.delete(this.questionsDir);
   }
 
-  private parseQuestionFile(
-    raw: string,
-    filePath: string
-  ): {
-    id: string;
-    question: string;
-    context: string;
-    priority: number;
-    resolved: boolean;
-    created: string;
-    filePath: string;
-  } | null {
-    const match = raw.match(/^---\n([\s\S]*?)\n---\n\n([\s\S]*)$/);
-    if (!match) return null;
-
-    const frontmatterStr = match[1];
-    const body = match[2].trim();
-
-    // Parse frontmatter
-    const id = this.extractFrontmatterValue(frontmatterStr, "id") ?? path.basename(filePath, ".md");
-    const created = this.extractFrontmatterValue(frontmatterStr, "created") ?? "";
-    const priority = parseFloat(this.extractFrontmatterValue(frontmatterStr, "priority") ?? "0.5");
-    const resolved = this.extractFrontmatterValue(frontmatterStr, "resolved") === "true";
-
-    // Extract question and context from body
-    const contextMatch = body.match(/\*\*Context:\*\*\s*(.*)/);
-    const question = contextMatch ? body.slice(0, contextMatch.index).trim() : body;
-    const context = contextMatch ? contextMatch[1].trim() : "";
-
-    return { id, question, context, priority, resolved, created, filePath };
-  }
-
-  private extractFrontmatterValue(frontmatter: string, key: string): string | null {
-    const match = frontmatter.match(new RegExp(`^${key}:\\s*"?([^"\\n]*)"?`, "m"));
-    return match ? match[1] : null;
+  private parseQuestionFile(raw: string, filePath: string) {
+    return parseQuestionFileText(raw, filePath);
   }
 
   async resolveQuestion(id: string): Promise<boolean> {
@@ -6534,7 +6547,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
             { ...current.frontmatter, accessCount: entry.newCount, lastAccessed: entry.lastAccessed },
             rowIds
           );
-          const fileContent = `${serializeFrontmatter(newFm)}\n\n${current.content}\n`;
+          const fileContent = `${serializeFrontmatter(this.withOkfType(newFm))}\n\n${current.content}\n`;
           await this.writeTombstoneBlockedFrontmatter(current, fileContent, newFm);
           if (typeof current.frontmatter.entityRef === "string") {
             await this.entityRefRepair.repair(
@@ -6855,7 +6868,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     };
 
     const filePath = await this.resolveCategoryWritePath(category, id, today);
-    const fileContent = `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`;
+    const fileContent = `${serializeFrontmatter(this.withOkfType(fm))}\n\n${sanitized.text}\n`;
 
     const written = await this.writeTombstoneBlockedChunk(
       filePath,
@@ -6999,7 +7012,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
           },
           refIdsAtWrite
         );
-        const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${current.content}\n`;
+        const fileContent = `${serializeFrontmatter(this.withOkfType(updatedFm))}\n\n${current.content}\n`;
         await this.writeTombstoneBlockedFrontmatter(current, fileContent, updatedFm);
         if (this.isColdOrArchiveTierPath(current.path)) this.invalidateColdMemoriesCache();
         if (typeof current.frontmatter.entityRef === "string") {
@@ -7147,7 +7160,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
             { ...current.frontmatter, status: "archived", archivedAt: now, updated: now },
             rowIds
           );
-          const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${current.content}\n`;
+          const fileContent = `${serializeFrontmatter(this.withOkfType(updatedFm))}\n\n${current.content}\n`;
           await this.writeTombstoneBlockedFrontmatter(current, fileContent, updatedFm);
           if (typeof current.frontmatter.entityRef === "string") {
             await this.entityRefRepair.repair(

@@ -67,6 +67,7 @@ export interface EntityStoreDeps {
   getMemoryStatusVersion(): number;
   invalidateKnowledgeIndexCache(): void;
   knowledgeIndexCache: { result: string; builtAt: number } | null;
+  okfConformanceEnabled(): boolean;
   normalizeEntityName(raw: string, type: string): string;
   readAllEntityFiles(): Promise<EntityFile[]>;
   readStorageSecureFile(filePath: string): Promise<string>;
@@ -145,7 +146,7 @@ export class EntityStore {
         located.entity.updated = new Date().toISOString();
         await this.deps.writeStorageSecureFile(
           located.filePath,
-          serializeEntityFile(located.entity, this.deps.entitySchemas),
+          serializeEntityFile(located.entity, this.deps.entitySchemas, this.deps.okfConformanceEnabled()),
         );
         reconcileIfJournalMovedSync(stateDir, idsAtResolve, this.deps.currentHistoricalIds());
         this.deps.invalidateKnowledgeIndexCache();
@@ -355,7 +356,7 @@ export class EntityStore {
     entity.updated = new Date().toISOString();
 
     await this.deps.snapshotBeforeWrite(filePath, "write");
-    await this.deps.writeStorageSecureFile(filePath, serializeEntityFile(entity, this.deps.entitySchemas));
+    await this.deps.writeStorageSecureFile(filePath, serializeEntityFile(entity, this.deps.entitySchemas, this.deps.okfConformanceEnabled()));
     this.deps.invalidateKnowledgeIndexCache();
     this.deps.bumpMemoryStatusVersion(); // invalidate entity cache
     this.deps.bumpEntityMutationVersion();
@@ -404,7 +405,7 @@ export class EntityStore {
       const wrote = await withEntityCanonicalMutationLock(stateDir, async () => {
         const raw = await this.readEntity(entityName);
         if (!raw) return false;
-        const serialized = serializeEntityFile(parseEntityFile(raw, this.deps.entitySchemas), this.deps.entitySchemas);
+        const serialized = serializeEntityFile(parseEntityFile(raw, this.deps.entitySchemas), this.deps.entitySchemas, this.deps.okfConformanceEnabled());
         if (raw.trimEnd() === serialized.trimEnd()) return false;
         const filePath = this.deps.resolveEntityFilePath(entityName);
         if (filePath === null) return false;
@@ -487,7 +488,7 @@ export class EntityStore {
     entity.synthesisVersion = Math.max(0, entity.synthesisVersion ?? 0)
       + (options.incrementVersion === false ? 0 : 1);
     entity.updated = entityUpdatedAt;
-    await this.deps.writeStorageSecureFile(filePath, serializeEntityFile(entity, this.deps.entitySchemas));
+    await this.deps.writeStorageSecureFile(filePath, serializeEntityFile(entity, this.deps.entitySchemas, this.deps.okfConformanceEnabled()));
     await this.deps.removeEntitySynthesisQueueEntries([
       ...new Set([name, this.deps.normalizeEntityName(entity.name, entity.type)]),
     ]);
@@ -901,7 +902,7 @@ export class EntityStore {
         mergedEntity.updated = mergedEntity.updated || new Date().toISOString();
 
         const canonicalPath = path.join(this.deps.entitiesDir, `${canonical}.md`);
-        await this.deps.writeStorageSecureFile(canonicalPath, serializeEntityFile(mergedEntity, this.deps.entitySchemas));
+        await this.deps.writeStorageSecureFile(canonicalPath, serializeEntityFile(mergedEntity, this.deps.entitySchemas, this.deps.okfConformanceEnabled()));
         this.deps.bumpEntityMutationVersion();
 
         // Remove non-canonical files

@@ -6485,6 +6485,16 @@
           }
         }
       },
+      "okf": {
+        "type": "object",
+        "additionalProperties": false,
+        "default": {},
+        "description": "OKF v0.1 conformance (issue #1946).",
+        "properties": {
+          "conformanceEnabled": { "type": "boolean", "default": true, "description": "Emit inert type on writes." },
+          "sweepEnabled": { "type": "boolean", "default": false, "description": "Opt-in type backfill. false disables." }
+        }
+      },
       "workIndexAutoRebuildDebounceMs": {
         "type": "number",
         "default": 1000,

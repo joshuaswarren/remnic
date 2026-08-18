@@ -245,12 +245,6 @@ function findHtmlTagPrefix(line: string): HtmlTag | null {
   return null;
 }
 
-function isRawHtmlBlockTerminator(line: string): boolean {
-  const normalizedLine = line.toLowerCase();
-  return RAW_HTML_BLOCK_TAGS.some((name) =>
-    hasRawHtmlBlockEndMarker(normalizedLine, `</${name}>`),
-  );
-}
 
 function findHtmlTags(line: string): HtmlTag[] {
   const tags: HtmlTag[] = [];
@@ -429,9 +423,6 @@ function shouldCloseHtmlBlock(line: string, endMarker: string): boolean {
 }
 
 
-function hasRawHtmlBlockEndMarker(line: string, endMarker: string): boolean {
-  return line.includes(endMarker);
-}
 function canStartGenericHtmlBlock(
   lines: ProfileLine[],
   index: number,
@@ -895,4 +886,37 @@ export function renderProfileWithLastUpdated(content: string, updatedAt: string)
 
   insertHeaderAfter(lines, titleIndex, header);
   return renderProfileLines(lines);
+}
+
+/**
+ * OKF v0.1 profile frontmatter (issue #1946). `profile.md` gains a leading
+ * frontmatter block so the memory directory is a conformant OKF knowledge
+ * bundle; every reader strips it so the bytes injected into prompts are
+ * unchanged. Line-scan based (no regex) per the regex-safety rule.
+ */
+
+/** Prepend the OKF block when enabled and not already present. No-op otherwise. */
+export function withOkfProfileFrontmatter(content: string, timestamp: string, enabled: boolean): string {
+  if (!enabled || stripOkfProfileFrontmatter(content) !== content) return content;
+  return `---\ntype: Profile\ntitle: User Profile\ntimestamp: ${timestamp}\n---\n${content}`;
+}
+
+/**
+ * Strip the OKF profile block from the start of `profile.md` content.
+ * Only a leading block whose keys include `type: Profile` is removed, so
+ * hand-written content without the marker round-trips byte-identically.
+ */
+export function stripOkfProfileFrontmatter(content: string): string {
+  if (!content.startsWith("---\n") && !content.startsWith("---\r\n")) return content;
+  const lines = content.split("\n");
+  for (let index = 1; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    if (line === "---" || line === "---\r") {
+      return lines.slice(1, index).some((l) => l.startsWith("type: Profile"))
+        ? lines.slice(index + 1).join("\n")
+        : content;
+    }
+    if (line === "" || line === "\r" || line === "...") return content;
+  }
+  return content;
 }

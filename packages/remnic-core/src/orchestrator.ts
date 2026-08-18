@@ -1410,6 +1410,8 @@ export class Orchestrator {
     // StorageManager over it (including ephemeral recall sub-stage instances)
     // honors the operator's rollback lever.
     StorageManager.setScopedCacheInvalidationDefault(config.memoryDir, scopedCacheInvalidationEnabled);
+    // OKF conformance gate (issue #1946): child dirs (namespaces, cold roots) inherit via ancestor walk.
+    StorageManager.setOkfConformanceDefault(config.memoryDir, config.okf?.conformanceEnabled);
     this.profiler = new ProfilingCollector({
       enabled: resolvePipelineProcessingCapabilities(this.config).profiling,
       storageDir: config.profilingStorageDir || path.join(config.memoryDir, "profiling"),

@@ -6,6 +6,7 @@ import path from "node:path";
 
 import { parseConfig } from "../src/config.js";
 import { Orchestrator } from "../src/orchestrator.js";
+import { stripOkfProfileFrontmatter } from "../packages/remnic-core/src/storage/profile-header.js";
 import type { ExtractionResult } from "../src/types.js";
 
 const WRITE_TIME = "2030-01-02T03:04:05.000Z";
@@ -70,7 +71,7 @@ test("extraction persistence refreshes profile.md before appending profile updat
     );
 
     assert.equal(
-      await readFile(path.join(memoryDir, "profile.md"), "utf8"),
+      stripOkfProfileFrontmatter(await readFile(path.join(memoryDir, "profile.md"), "utf8")),
       [
         "# Behavioral Profile",
         "",
@@ -114,7 +115,7 @@ test("smart consolidation refreshes profile.md before appending consolidated upd
 
     assert.equal(stats.memoriesProcessed, 5);
     assert.equal(
-      await readFile(path.join(memoryDir, "profile.md"), "utf8"),
+      stripOkfProfileFrontmatter(await readFile(path.join(memoryDir, "profile.md"), "utf8")),
       [
         "# Behavioral Profile",
         "",
