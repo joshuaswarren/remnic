@@ -477,6 +477,7 @@ test("MCP server advertises tools and dispatches recall", async () => {
     "engram.procedure_mining_run",
     "engram.pattern_reinforcement_run",
     "engram.procedural_stats",
+    "engram.procedure_library_maintenance",
     "engram.memory_get",
     "engram.memory_timeline",
     "engram.memory_store",

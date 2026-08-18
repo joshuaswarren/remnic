@@ -11,6 +11,7 @@ import type { ContradictionLocalizationConfig, ContradictionScanConfig } from ".
 import type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
 export type { ContradictionLocalizationConfig, ContradictionScanConfig } from "./contradiction-config.js";
 export type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
+import type { ProceduralMaintenanceConfig } from "./procedural/maintenance-config.js";
 
 import type { AmbientCaptureProvenance, BufferTurnOwner, SecurityConfig, OriginMetadata } from "./security/types.js";
 export type ReasoningEffort = "none" | "low" | "medium" | "high";
@@ -383,7 +384,6 @@ export interface DreamsPhasesConfig {
   deepSleep: DreamsDeepSleepConfig;
 }
 
-/** Procedural memory (issue #519): mining + recall gates. All sub-features default off. */
 export interface ProceduralConfig {
   enabled: boolean;
   /** Minimum cluster size before emitting a candidate; `0` disables mining (`minOccurrences_zero`). */
@@ -396,8 +396,8 @@ export interface ProceduralConfig {
   lookbackDays: number;
   /** When true, installer may register the nightly procedural mining cron (default off). */
   proceduralMiningCronAutoRegister: boolean;
-  /** Max procedure memories to inject on task-initiation recall (1–10). */
   recallMaxProcedures: number;
+  maintenance: ProceduralMaintenanceConfig;
 }
 
 /**

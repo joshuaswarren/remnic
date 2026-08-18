@@ -12,6 +12,8 @@
  */
 import type { MemoryFile, MemoryStatus, PluginConfig } from "../types.js";
 import type { StorageManager } from "../storage.js";
+import { isActiveMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
+import { readProcedureMaintenanceMarker } from "./library-maintenance.js";
 
 export interface ProcedureStatusCounts {
   total: number;
@@ -50,6 +52,10 @@ export interface ProcedureStatsReport {
   counts: ProcedureStatusCounts;
   recent: ProcedureStatsRecent;
   config: ProcedureStatsConfigSnapshot;
+  /** ISO timestamp of the last library-maintenance run marker, or null (issue #2370). */
+  lastMaintenanceAt: string | null;
+  /** Active procedures currently carrying a `needsRepair` flag (issue #2370). */
+  needsRepairFlags: number;
 }
 
 function snapshotConfig(config: PluginConfig): ProcedureStatsConfigSnapshot {
@@ -102,6 +108,7 @@ export async function computeProcedureStats(options: {
   let lastWriteMs: number | null = null;
   let writesLast7Days = 0;
   let minerSourced = 0;
+  let needsRepairFlags = 0;
 
   const known: MemoryStatus[] = [
     "active",
@@ -159,8 +166,15 @@ export async function computeProcedureStats(options: {
     if (m.frontmatter.source === "procedure-miner") {
       minerSourced += 1;
     }
+    if (
+      m.frontmatter.structuredAttributes?.needsRepair !== undefined &&
+      isActiveMemoryStatus(m.frontmatter.status)
+    ) {
+      needsRepairFlags += 1;
+    }
   }
 
+  const maintenanceMarker = await readProcedureMaintenanceMarker(storage.dir);
   return {
     schemaVersion: 1,
     generatedAt: new Date(nowMs).toISOString(),
@@ -171,6 +185,8 @@ export async function computeProcedureStats(options: {
       minerSourced,
     },
     config: snapshotConfig(config),
+    lastMaintenanceAt: maintenanceMarker?.lastRunAt ?? null,
+    needsRepairFlags,
   };
 }
 
@@ -210,5 +226,9 @@ export function formatProcedureStatsText(report: ProcedureStatsReport): string {
   lines.push(`    lastWriteAt:      ${recent.lastWriteAt ?? "(none)"}`);
   lines.push(`    writesLast7Days:  ${recent.writesLast7Days}`);
   lines.push(`    minerSourced:     ${recent.minerSourced}`);
+  lines.push("");
+  lines.push(`  maintenance:`);
+  lines.push(`    lastMaintenanceAt: ${report.lastMaintenanceAt ?? "(never)"}`);
+  lines.push(`    needsRepairFlags:  ${report.needsRepairFlags}`);
   return lines.join("\n") + "\n";
 }

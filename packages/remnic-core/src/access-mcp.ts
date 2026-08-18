@@ -203,7 +203,7 @@ const MCP_MIGRATED_OPERATIONS: Readonly<Record<string, OperationName>> = {
   "engram.entity_synthesis_run": "entity_synthesis_run",
   "engram.procedure_mining_run": "procedure_mining_run",
   "engram.pattern_reinforcement_run": "pattern_reinforcement_run",
-  "engram.procedural_stats": "procedural_stats",
+  "engram.procedural_stats": "procedural_stats", "engram.procedure_library_maintenance": "procedure_library_maintenance",
   "engram.memory_timeline": "memory_timeline",
   "engram.suggestion_submit": "suggestion_submit",
   "engram.entity_get": "entity_get",

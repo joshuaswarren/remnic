@@ -72,9 +72,69 @@ The report includes:
 
 - `counts` — procedure files by status: `total`, `active`, `pending_review`, `rejected`, `quarantined`, `superseded`, `archived`, `other`.
 - `recent` — `lastWriteAt` (ISO 8601 or `null`), `writesLast7Days` (exclusive upper bound per CLAUDE.md rule 35), and `minerSourced` count (procedures whose `source=procedure-miner`).
-- `config` — snapshot of the active `procedural.*` config so the caller can confirm the gate state and threshold floor in the same payload.
+- `maintenance` — `lastMaintenanceAt` (ISO 8601 or `null`, from the library-maintenance run marker, issue #2370) and `needsRepairFlags` (active procedures carrying a `needsRepair` structured attribute).
 
 All three surfaces are read-only and namespace-scoped (CLAUDE.md rule 42). The HTTP endpoint resolves the namespace through the same layer used by `/recall/explain` and `/trust-zones/status`; the MCP tool uses the authenticated principal. The CLI reads from whatever `memoryDir` the current config / active-space resolves to, or an explicit `--memory-dir` override.
+
+## Library health maintenance (issue #2370)
+
+The store only growing was the gap: the miner adds, auto-promote activates,
+and nothing ever merged, repaired, or retired. The maintenance job consumes
+telemetry Remnic already records — `mw_success` / `mw_fail` counters,
+`lastAccessed`, causal trajectories — and proposes transitions for ACTIVE
+procedures only. `pending_review`, `rejected`, `quarantined`, `superseded`,
+and `archived` procedures are never candidates.
+
+Shadow-first: a run without `apply` produces a report and writes nothing —
+not even the run marker. Applying requires `apply: true` (CLI `--apply`)
+**and** `procedural.maintenance.enabled: true` in config. Like mining, the
+job is deliberately not part of `runMemoryGovernance` (same isolation
+decision).
+
+Actions, in evaluation order per run:
+
+1. **Merge** — clusters active procedures by normalized trigger phrase +
+   step signature (ordered intents + tool calls). The most-recently-updated
+   member becomes canonical; the rest are `superseded` with `supersededBy`.
+   The canonical is stamped with the issue-#687 contract (`reinforcement_count`,
+   `last_reinforced_at`, `derived_via: pattern-reinforcement`, `derived_from`)
+   so `patterns explain` reads procedure canonicals unchanged. Clusters with
+   user-edited bodies are flagged, never merged.
+2. **Repair flag** — procedures whose step tools no longer appear in the
+   last `lookbackDays` of causal trajectories get
+   `structuredAttributes.needsRepair` (`{ reason, detectedAt }`). Bodies are
+   never rewritten — autonomous revision underperforms curation, so repair
+   is a review action.
+3. **Retire** — demote to `archived` (never delete; page versioning
+   snapshots every overwrite) when EITHER failure-dominant
+   (`mw_fail >= retireMinOutcomes` AND `mw_fail > mw_success × retireFailRatio`)
+   OR idle (`retireIdleDays` without an access signal AND zero recorded
+   outcomes; `retireIdleDays: 0` disables idle retirement). User-edited
+   procedures are exempt and flagged instead.
+
+A procedure counts as user-edited when its body no longer round-trips
+through the miner's own step serializer — the stateless equivalent of "body
+hash differs from last mined write".
+
+Procedures are eligible for `memory_outcome` (issue #2370): injected
+procedures flow into the same per-recall bookkeeping as other memories
+(`LastRecallSnapshot.memoryIds`, access tracking), so success/failure
+judgments land on their `mw_*` counters.
+
+Surfaces:
+
+- CLI: `remnic procedural maintain [--apply] [--format json|text]`
+- MCP: `remnic.procedure_library_maintenance` (alias
+  `engram.procedure_library_maintenance`), args `{ namespace?, apply?, dryRun? }`
+  — the authenticated principal drives the namespace, never a client-supplied actor.
+
+Config (see [config-reference.md](config-reference.md) for the full table):
+`procedural.maintenance.{enabled, retireIdleDays, retireMinOutcomes,
+retireFailRatio, mergeEnabled}`.
+
+Out of scope: automatic body rewriting, outcome-weighted recall ranking
+(hypothesis H1, #1958), and non-procedural pattern reinforcement (#687
+scope unchanged).
 
 ## Pattern reinforcement CLI (issue #687 PR 4/4)
 

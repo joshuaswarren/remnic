@@ -88,6 +88,7 @@ export const OPERATION_NAMES = [
   "procedure_mining_run",
   "pattern_reinforcement_run",
   "procedural_stats",
+  "procedure_library_maintenance",
   "memory_timeline",
   "suggestion_submit",
   "entity_get",

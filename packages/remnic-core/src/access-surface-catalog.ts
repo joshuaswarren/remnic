@@ -76,6 +76,7 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { tool: "procedure_mining_run", operation: "procedure_mining_run" },
   { tool: "pattern_reinforcement_run", operation: "pattern_reinforcement_run" },
   { tool: "procedural_stats", operation: "procedural_stats" },
+  { tool: "procedure_library_maintenance", operation: "procedure_library_maintenance" },
   { tool: "memory_get", operation: "memory_get" },
   { tool: "memory_timeline", operation: "memory_timeline" },
   { tool: "memory_store", operation: "memory_store" },

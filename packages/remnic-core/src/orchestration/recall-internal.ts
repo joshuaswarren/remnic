@@ -39,7 +39,7 @@ import { canReadNamespace, resolvePrincipal } from "../namespaces/principal.js";
 import { collectNativeKnowledgeChunks, formatNativeKnowledgeSection, searchNativeKnowledge } from "../native-knowledge.js";
 import { objectiveStateStoreOverrideForNamespace, searchObjectiveStateSnapshots } from "../objective-state.js";
 import { type GraphRecallRankedResult, type GraphRecallShadowComparison, mergeGraphExpandedResults } from "./graph-recall-coordinator.js";
-import { buildProcedureRecallSection } from "../procedural/procedure-recall.js";
+import { buildProcedureRecallSection, mergeProcedureInjections } from "../procedural/procedure-recall.js";
 import { canRecallToolScopedMemory } from "../tool-scoped-memory.js";
 import { buildQmdRecallCacheKey, getCachedQmdRecall, setCachedQmdRecall } from "../qmd-recall-cache.js";
 import { MEMORY_ID_PATTERN } from "../recall-handles.js";
@@ -2671,6 +2671,7 @@ export class RecallInternalCoordinator {
       return section;
     })();
 
+    const procedureInjectedMemories: Array<{ id: string; path: string; namespace?: string }> = [];
     const procedureRecallPromise = (async (): Promise<string | null> => {
       if (this.deps.config.procedural?.enabled !== true) return null;
       if (!this.deps.isRecallSectionEnabled("procedure-recall", true)) return null;
@@ -2679,10 +2680,7 @@ export class RecallInternalCoordinator {
           profileStorage,
           retrievalQuery,
           this.deps.config,
-          {
-            partitionToolScoped: lifecycleCaps.extractionScopeClassification,
-            requestingConnector: options.sourceConnector,
-          },
+          { partitionToolScoped: lifecycleCaps.extractionScopeClassification, requestingConnector: options.sourceConnector, injectedMemories: procedureInjectedMemories },
         );
       } catch (err) {
         log.debug(
@@ -4946,6 +4944,9 @@ export class RecallInternalCoordinator {
     const assembledRecall = this.deps.assembleRecallSections(
       sectionBuckets, contextBudgetForFooter(recallBudgetChars, curiosityFooter),
     );
+    if (procedureRecallSection !== null && assembledRecall.includedIds.includes("procedure-recall")) {
+      assembledRecall.includedMemories = mergeProcedureInjections(assembledRecall.includedMemories, procedureInjectedMemories);
+    }
     recalledMemoryIds = assembledRecall.includedMemories.map((memory) => memory.id);
     recalledMemoryPaths = assembledRecall.includedMemories.map((memory) => memory.path);
     recalledMemoryNamespaces = assembledRecall.includedMemories.map((memory) => memory.namespace);

@@ -47,7 +47,18 @@ export async function buildProcedureRecallSection(
   storage: StorageManager,
   prompt: string,
   config: PluginConfig,
-  options?: { partitionToolScoped?: boolean; requestingConnector?: string },
+  options?: {
+    partitionToolScoped?: boolean;
+    requestingConnector?: string;
+    /**
+     * Out-param (issue #2370): populated with the injected procedures
+     * (id + path, in injection order) so the recall pipeline can fold them
+     * into the same per-recall bookkeeping as QMD-served memories —
+     * access tracking and `LastRecallSnapshot.memoryIds`. Only populated
+     * when a section is returned.
+     */
+    injectedMemories?: Array<{ id: string; path: string; namespace?: string }>;
+  },
 ): Promise<string | null> {
   if (config.procedural?.enabled !== true) return null;
   const trimmed = typeof prompt === "string" ? prompt.trim() : "";
@@ -87,6 +98,12 @@ export async function buildProcedureRecallSection(
 
   if (scored.length === 0) return null;
 
+  if (options?.injectedMemories) {
+    for (const { m } of scored) {
+      options.injectedMemories.push({ id: m.frontmatter.id, path: m.path });
+    }
+  }
+
   // #1955: procedure bodies are model-visible instructions by nature — an
   // untrusted-origin procedure must render inside the data-only authority
   // fence like every other recall surface.
@@ -104,4 +121,15 @@ export async function buildProcedureRecallSection(
   });
 
   return `## Relevant procedures\n\n${blocks.join("\n\n")}`;
+}
+
+export function mergeProcedureInjections<T extends { id: string }>(existing: T[], injected: T[]): T[] {
+  if (injected.length === 0) return existing;
+  const seen = new Set(existing.map((memory) => memory.id));
+  const extra = injected.filter((memory) => {
+    if (seen.has(memory.id)) return false;
+    seen.add(memory.id);
+    return true;
+  });
+  return extra.length === 0 ? existing : [...existing, ...extra];
 }

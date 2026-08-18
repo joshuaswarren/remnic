@@ -229,7 +229,7 @@ export type {
   ProcedureStatsConfigSnapshot,
   ProcedureStatsRecent,
 } from "./procedural/procedure-stats.js";
-
+export { runProcedureLibraryMaintenance, type ProcedureLibraryMaintenanceReport, type ProcedureMaintenanceAction, type ProcedureMaintenanceActionKind, type ProcedureMaintenanceReasonCode, type ProcedureMaintenanceEvidence, type ProcedureMaintenanceMarker } from "./procedural/library-maintenance.js";
 // ---------------------------------------------------------------------------
 // Direct-answer retrieval tier (issue #518)
 // ---------------------------------------------------------------------------

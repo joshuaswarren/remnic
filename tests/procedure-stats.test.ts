@@ -306,6 +306,8 @@ test("formatProcedureStatsText is deterministic for a known report", () => {
       writesLast7Days: 2,
       minerSourced: 1,
     },
+    lastMaintenanceAt: "2026-04-20T06:00:00.000Z",
+    needsRepairFlags: 1,
     config: {
       enabled: true,
       minOccurrences: 3,
@@ -322,6 +324,8 @@ test("formatProcedureStatsText is deterministic for a known report", () => {
   assert.match(text, /pending_review:\s+1/);
   assert.match(text, /enabled:\s+true/);
   assert.match(text, /lastWriteAt:\s+2026-04-19T23:59:59\.000Z/);
+  assert.match(text, /lastMaintenanceAt:\s+2026-04-20T06:00:00\.000Z/);
+  assert.match(text, /needsRepairFlags:\s+1/);
   // No ANSI escapes — CLI output is deterministic and pipe-safe.
   assert.doesNotMatch(text, /\u001b\[/);
 });

@@ -201,6 +201,10 @@ import type {
   RecallInvocationOptions,
 } from "./orchestrator.js";
 import { type ProcedureStatsReport, computeProcedureStats } from "./procedural/procedure-stats.js";
+import {
+  runProcedureLibraryMaintenance,
+  type ProcedureLibraryMaintenanceReport,
+} from "./procedural/library-maintenance.js";
 import type { RecallContextComposition } from "./recall-context-composition.js";
 import type { LastRecallSnapshot } from "./recall-state.js";
 import {
@@ -3578,6 +3582,51 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       config: this.orchestrator.config,
     });
     return { namespace: resolvedNamespace, ...report };
+  }
+
+  /**
+   * Procedure library health maintenance (issue #2370). Shadow-first: the
+   * gate is checked BEFORE any storage read, so `maintenance.enabled=false`
+   * returns `{ enabled: false }` having touched nothing but config. Apply
+   * mode additionally requires `apply: true`; `dryRun: true` forces shadow.
+   *
+   * The authenticated principal (never a client-supplied actor) drives the
+   * namespace via the same writable resolver `procedureMiningRun` uses, so
+   * cross-tenant writes are impossible.
+   */
+  async procedureLibraryMaintenance(
+    request: {
+      namespace?: string;
+      apply?: boolean;
+      dryRun?: boolean;
+      authenticatedPrincipal?: string;
+    },
+    principal?: string
+  ): Promise<
+    | { enabled: false }
+    | {
+        enabled: true;
+        namespace: string;
+        report: ProcedureLibraryMaintenanceReport;
+      }
+  > {
+    const procedural = this.orchestrator.config.procedural;
+    if (procedural?.enabled !== true || procedural.maintenance?.enabled !== true) {
+      return { enabled: false };
+    }
+    const resolvedNamespace = this.writableNamespaceFor(
+      request.namespace,
+      undefined,
+      request.authenticatedPrincipal ?? principal
+    );
+    const storage = await this.orchestrator.getStorage(resolvedNamespace);
+    const report = await runProcedureLibraryMaintenance({
+      memoryDir: storage.dir,
+      storage,
+      config: this.orchestrator.config,
+      apply: request.apply === true && request.dryRun !== true,
+    });
+    return { enabled: true, namespace: resolvedNamespace, report };
   }
 
   async memorySummarizeHourly(): Promise<{

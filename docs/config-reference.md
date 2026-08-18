@@ -1285,6 +1285,11 @@ Stored as `category: procedure` markdown under `memoryDir/procedures/`. Narrativ
 | `procedural.lookbackDays` | `14` | Trajectory lookback window for mining (days). Lowered from `30` in issue #567 PR 3/5. |
 | `procedural.proceduralMiningCronAutoRegister` | `false` | When `true`, installer may register the nightly procedural mining cron entry. |
 | `procedural.recallMaxProcedures` | `2` | Max procedure previews injected on task-initiation recall (`1`–`10`). Lowered from `3` in issue #567 PR 3/5 so procedural injection does not crowd other recall sections. |
+| `procedural.maintenance.enabled` | `false` | Master gate for the library-health maintenance job (issue #2370): merge near-duplicate active procedures, flag stale-tool procedures (`needsRepair`), retire failure-dominant or idle ones. Shadow-first: without `--apply`/`apply: true` the run only reports. |
+| `procedural.maintenance.retireIdleDays` | `90` | Days without an access signal and with zero recorded outcomes before an active procedure retires as idle. **`0` disables idle-based retirement.** |
+| `procedural.maintenance.retireMinOutcomes` | `5` | Minimum `mw_fail` before failure-dominant retirement is considered. |
+| `procedural.maintenance.retireFailRatio` | `2` | `mw_fail` must exceed `mw_success × retireFailRatio` for failure-dominant retirement. |
+| `procedural.maintenance.mergeEnabled` | `true` | Whether duplicate-cluster merging runs within the maintenance gate. |
 
 ## Extraction pipeline liveness (issue #2151)
 
@@ -1840,6 +1845,11 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `procedural.lookbackDays` | `14` | `14` (lowered from `30` in issue #567 PR 3/5) |
 | `procedural.proceduralMiningCronAutoRegister` | `false` | `false` unless you intentionally want installer cron registration |
 | `procedural.recallMaxProcedures` | `2` | `2` (lowered from `3` in issue #567 PR 3/5) |
+| `procedural.maintenance.enabled` | `false` | `false` until you have observed shadow reports (`remnic procedural maintain`) on your corpus; flip to `true` only when the proposals look right |
+| `procedural.maintenance.retireIdleDays` | `90` | `90`; `0` disables idle-based retirement entirely |
+| `procedural.maintenance.retireMinOutcomes` | `5` | `5` (raise for noisier corpora) |
+| `procedural.maintenance.retireFailRatio` | `2` | `2` (require failures to outnumber successes 2:1) |
+| `procedural.maintenance.mergeEnabled` | `true` | `true` within the maintenance gate |
 | `patternReinforcementEnabled` | `false` | `false` until you have enough cross-session data to observe clustering benefits. See [pattern-reinforcement.md](pattern-reinforcement.md). |
 | `patternReinforcementCadenceMs` | `604800000` | `604800000` (7 days). Lower to `86400000` (1 day) for faster iteration during evaluation; set to `0` to disable cadence gating entirely. |
 | `patternReinforcementMinCount` | `3` | `3` (minimum meaningful pattern; clusters of 2 are allowed but `3` reduces false positives on small corpora) |
