@@ -23,6 +23,8 @@ export const MCP_READ_ONLY_TOOL_SUFFIXES: Readonly<Record<string, true>> = {
   transcript_day: true,
   transcript_search: true,
   transcript_memories: true,
+  location_status: true,
+  location_day: true,
   meetings_list: true,
   meetings_get: true,
   action_confidence: true,

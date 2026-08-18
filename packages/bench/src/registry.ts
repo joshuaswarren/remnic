@@ -143,6 +143,10 @@ import {
   boundedMemoryContractsDefinition,
   runBoundedMemoryContractsBenchmark,
 } from "./benchmarks/remnic/bounded-memory-contracts/runner.js";
+import {
+  stagedMemorySyntheticV1Definition,
+  runStagedMemoryBenchmark,
+} from "./benchmarks/remnic/staged-memory/runner.js";
 
 interface RegisteredBenchmark extends BenchmarkDefinition {
   run?: (options: ResolvedRunBenchmarkOptions) => Promise<BenchmarkResult>;
@@ -288,6 +292,10 @@ const REGISTERED_BENCHMARKS: RegisteredBenchmark[] = [
   {
     ...boundedMemoryContractsDefinition,
     run: runBoundedMemoryContractsBenchmark,
+  },
+  {
+    ...stagedMemorySyntheticV1Definition,
+    run: runStagedMemoryBenchmark,
   },
 ];
 

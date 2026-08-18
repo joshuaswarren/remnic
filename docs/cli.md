@@ -77,6 +77,7 @@ remnic briefing --since 7d --focus project:acme-webshop --format markdown --save
 | `remnic openclaw <install\|upgrade\|migrate-engram>` | Wire Remnic into OpenClaw, upgrade the plugin, or migrate a legacy `openclaw-engram` install |
 | `remnic oauth <pending\|approve\|deny> [--format <fmt>] [--yes]` | Manage pending OAuth authorizations (used by the ChatGPT MCP connector) |
 | `remnic wearables <status\|check\|sync\|transcript\|search\|memories\|speakers\|corrections\|fuse\|fused>` | Pull, clean, and store wearable transcripts (Limitless / Bee / Omi) |
+| `remnic location <status\|check\|sync\|backfill\|day>` | Location day sync from registered providers (issue #2047; e.g. a self-hosted Reitti instance) |
 
 `connectors install <id>` writes the config a host tool needs to talk to Remnic. Built-in adapter ids include `claude-code`, `codex-cli`, `cursor`, `cline`, `github-copilot`, `roo-code`, `windsurf`, `amp`, `pi`, `omp`, `replit`, `generic-mcp`, `weclone`, and `hermes`. `connectors status` and `connectors run` operate on *live* connectors (background sync sources) rather than host adapters. `connectors marketplace <generate|validate|install>` manages Codex marketplace manifests.
 
@@ -89,6 +90,8 @@ remnic connectors status
 `remnic openclaw` subcommands take the usual safety flags: `--yes`/`--force` to skip prompts, `--dry-run` to preview, plus `--memory-dir`, `--config`, `--version`, `--plugin-dir`, `--legacy-plugin-dir`, and `--no-restart`.
 
 `remnic wearables speakers` has its own `list|self|set|remove` actions and `corrections` has `list|add|remove`; `fuse`/`fused` merge and read cross-source fused transcripts for a day. Each source ships as an à la carte connector package (for example `npm install @remnic/connector-limitless`).
+
+`remnic location` runs the same shared runner as the MCP/HTTP location surfaces. Credentials for built-in providers come from the environment (`REITTI_BASE_URL`, `REITTI_TOKEN`, optional `REITTI_AUTH_MODE=x-api-token|bearer`); an absent provider package reports `provider-not-registered` instead of failing. `sync` covers `location.syncDays` ending yesterday (or `--date`/`--days`), `backfill --from --to` is capped at 90 days, and coordinates are never stored or printed unless `location.retainCoordinates` is enabled.
 
 ## Memory management
 

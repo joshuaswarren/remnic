@@ -3,6 +3,7 @@ import { lstat, open } from "node:fs/promises";
 import { createInterface } from "node:readline";
 
 import { isEncryptedFile, MAGIC_HEADER_SIZE } from "../secure-store/secure-fs.js";
+import type { ContextTransformTelemetryRecord } from "../active-context-transform.js";
 import type { MemoryActionEvent, MemoryLifecycleEvent } from "../types.js";
 
 /**
@@ -89,7 +90,11 @@ export async function readMemoryActionEventRowsFromLines(
     const line = row.trim();
     if (!line) continue;
     try {
-      const parsed = JSON.parse(line) as Partial<MemoryActionEvent>;
+      const parsed = JSON.parse(line) as Partial<MemoryActionEvent> & { recordKind?: unknown };
+      // Ledger discriminated union (#2347): any row carrying a `recordKind`
+      // belongs to another record family (e.g. context_transform) and must
+      // be ignored here — the legacy parser stays strict for its own kind.
+      if (parsed.recordKind !== undefined) continue;
       const outcome = parsed.outcome === "applied" || parsed.outcome === "skipped" || parsed.outcome === "failed"
         ? parsed.outcome
         : null;
@@ -101,6 +106,50 @@ export async function readMemoryActionEventRowsFromLines(
         const entry = {
           line: lineNumber,
           event: { ...parsed, outcome } as MemoryActionEvent,
+        };
+        if (out.length < limit) {
+          out.push(entry);
+        } else {
+          out[writeIndex] = entry;
+          writeIndex = (writeIndex + 1) % limit;
+        }
+      }
+    } catch {
+      // Ignore malformed rows (fail-open).
+    }
+  }
+  return writeIndex === 0 ? out : [...out.slice(writeIndex), ...out.slice(0, writeIndex)];
+}
+
+/**
+ * Tail read for context-transform telemetry rows (#2347). Selects ONLY
+ * records discriminated by `recordKind: "context_transform"` — the sibling
+ * of `readMemoryActionEventRowsFromLines`, with the same O(limit) ring
+ * buffer and line-number semantics. Malformed rows are skipped fail-open;
+ * legacy action rows are never returned here.
+ */
+export async function readContextTransformRecordRowsFromLines(
+  lines: AsyncIterable<string>,
+  limit: number,
+): Promise<Array<{ line: number; record: ContextTransformTelemetryRecord }>> {
+  const out: Array<{ line: number; record: ContextTransformTelemetryRecord }> = [];
+  let writeIndex = 0;
+  let lineNumber = 0;
+  for await (const row of lines) {
+    lineNumber += 1;
+    const line = row.trim();
+    if (!line) continue;
+    try {
+      const parsed = JSON.parse(line) as Partial<ContextTransformTelemetryRecord>;
+      if (
+        parsed.recordKind === "context_transform" &&
+        typeof parsed.timestamp === "string" &&
+        typeof parsed.actionId === "string" &&
+        typeof parsed.planHash === "string"
+      ) {
+        const entry = {
+          line: lineNumber,
+          record: parsed as ContextTransformTelemetryRecord,
         };
         if (out.length < limit) {
           out.push(entry);
