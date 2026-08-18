@@ -177,6 +177,7 @@ import { runJournalBinaryCommand } from "./commands/journal.js";
 import { runExternalWikiBinaryCommand } from "./commands/external-wiki.js";
 import { runProceduralBinaryCommand } from "./commands/procedural.js";
 import { runDriftBinaryCommand } from "./commands/drift.js";
+import { runRecallNavigateCommand } from "./commands/recall-navigate.js";
 // @remnic/export-weclone is an optional install surface (training:export
 // only uses it). Load lazily so the CLI works without it — see
 // optional-weclone-export.ts for the install-hint behaviour.
@@ -406,6 +407,7 @@ type CommandName =
   | "migrate"
   | "status"
   | "query"
+  | "recall"
   | "doctor"
   | "config"
   | "daemon"
@@ -12699,6 +12701,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       await cmdQuery(queryText, json, explain);
       break;
     }
+    case "recall":
+      await runRecallNavigateCommand(rest);
+      break;
 
     case "action-confidence":
       await cmdActionConfidence(rest);
