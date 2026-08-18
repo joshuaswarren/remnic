@@ -511,6 +511,7 @@ export {
   type RemnicChatGptMemoryInspectorResult,
 } from "./mcp-memory-inspector-app.js";
 export * from "./coding/pre-action-gate.js";
+export * from "./coding/action-gate.js";
 export * from "./causal-trajectory.js";
 // Coding-agent subsystem (issue #569)
 export {

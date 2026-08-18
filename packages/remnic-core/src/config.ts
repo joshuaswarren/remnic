@@ -70,6 +70,7 @@ import { parseLocationConfig } from "./location/config.js";
 import { parseOkfConfig } from "./okf/config.js";
 import { parseBoundedJsonlStateConfig } from "./bounded-jsonl-state.js";
 import { parseCodingKnowledgeConfig } from "./coding/coding-knowledge-config.js";
+import { parseActionGateConfig } from "./coding/action-gate.js";
 import { parseChatConfig } from "./chat/chat-config.js";
 import { parseSupportPassportConfig } from "./support-passport/config.js";
 import { parseCorrectionIntentConfig, parseFaithfulnessGateConfig } from "./faithfulness-config.js";
@@ -2335,6 +2336,7 @@ export function parseConfig(
     bridgeMode: cfg.bridgeMode === undefined ? "embedded" : String(cfg.bridgeMode),
     codexCompat,
     codingKnowledge: parseCodingKnowledgeConfig(cfg.codingKnowledge),
+    actionGate: parseActionGateConfig(cfg.actionGate),
     chat: parseChatConfig(cfg.chat),
     supportPassport: parseSupportPassportConfig(cfg.supportPassport),
     hourlySummariesEnabled: cfg.hourlySummariesEnabled !== false, // default: true
