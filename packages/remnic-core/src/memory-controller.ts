@@ -314,13 +314,15 @@ export async function evaluateActiveGates(input: {
   if (report.version !== config.reportVersion) reasons.push("report_version_mismatch");
   if (report.configHash !== controllerConfigHash(config)) reasons.push("report_config_unbound");
   if (!verifyEvidenceReport(report)) reasons.push("report_hash_invalid");
-  if (now.getTime() - Date.parse(report.generatedAt) > config.evidenceMaxAgeMs) {
+  const reportGeneratedAt = Date.parse(report.generatedAt);
+  if (!Number.isFinite(reportGeneratedAt) || now.getTime() - reportGeneratedAt > config.evidenceMaxAgeMs) {
     reasons.push("report_stale");
   }
 
   if (pairedSeed.status !== "pass") reasons.push("paired_seed_not_passing");
   if (pairedSeed.seedCount < config.minPairedSeeds) reasons.push("paired_seed_count_low");
-  if (now.getTime() - Date.parse(pairedSeed.generatedAt) > config.evidenceMaxAgeMs) {
+  const seedGeneratedAt = Date.parse(pairedSeed.generatedAt);
+  if (!Number.isFinite(seedGeneratedAt) || now.getTime() - seedGeneratedAt > config.evidenceMaxAgeMs) {
     reasons.push("paired_seed_stale");
   }
 
