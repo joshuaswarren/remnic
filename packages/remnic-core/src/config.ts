@@ -61,9 +61,7 @@ import {
   resolveNamespaceCatalogEnabled,
 } from "./emit-legacy-tools.js";
 import { parseWearablesConfig } from "./wearables/config.js";
-import { parseMeetingsConfig } from "./meetings/config.js";
-import { parseActivityConfig } from "./activity/config.js";
-import { parseProvenanceConfig } from "./provenance.js";
+import { parseCaptureCompanionConfigs } from "./location/parse-companions.js";
 import { parseBoundedJsonlStateConfig } from "./bounded-jsonl-state.js";
 import { parseCodingKnowledgeConfig } from "./coding/coding-knowledge-config.js";
 import { parseChatConfig } from "./chat/chat-config.js";
@@ -1159,9 +1157,7 @@ export function parseConfig(
     recallMaxProcedures,
   };
   const wearables = parseWearablesConfig(cfg.wearables);
-  const activity = parseActivityConfig(cfg.activity);
-  const meetings = parseMeetingsConfig(cfg.meetings);
-  const provenance = parseProvenanceConfig(cfg.provenance);
+  const { activity, meetings, provenance, location } = parseCaptureCompanionConfigs(cfg);
   // Coding-agent project/branch scoping (issue #569)
   const rawCodingMode =
     cfg.codingMode && typeof cfg.codingMode === "object" && !Array.isArray(cfg.codingMode)
@@ -2323,6 +2319,7 @@ export function parseConfig(
     wearables,
     meetings,
     activity,
+    location,
     provenance,
     // At-rest encryption (#690): coerceBool handles CLI string "true" (#36).
     secureStoreEnabled: coerceBool(cfg.secureStoreEnabled) === true,

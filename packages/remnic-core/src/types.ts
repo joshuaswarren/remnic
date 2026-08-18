@@ -1,5 +1,6 @@
 import type { BoundedJsonlStateConfig } from "./bounded-jsonl-state.js";
 import type { MeetingsConfig } from "./meetings/types.js";
+import type { LocationConfig } from "./location/types.js";
 import type { ActivityConfig } from "./activity/types.js";
 import type { WearablesConfig } from "./wearables/types.js";
 import type { ExtractionLivenessConfig } from "./extraction-liveness.js";
@@ -1232,10 +1233,8 @@ export interface PluginConfig extends BoundedJsonlStateConfig, SecurityConfig {
    */
   wearables: WearablesConfig;
   activity: ActivityConfig;
-  /** Retrospective meeting intelligence (issue #1900): detect + fuse meetings
-   * from already-ingested audio + screen activity. Disabled by default.
-   */
   meetings: MeetingsConfig;
+  location: LocationConfig;
   /**
    * At-rest encryption configuration (issue #690 PR 3/4).
    *

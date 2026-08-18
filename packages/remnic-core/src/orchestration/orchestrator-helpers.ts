@@ -643,6 +643,28 @@ export function isActivityDigestPath(filePath: string, memoryRoot?: string): boo
   return ACTIVITY_DIGEST_ANYWHERE.test(filePath);
 }
 
+/** Exactly `locations/<YYYY-MM-DD>.md`, at the top level of a memory root. */
+const LOCATION_DAY_TOPLEVEL = /^locations[\\/]\d{4}-\d{2}-\d{2}\.md$/i;
+/** The day-file shape anywhere in a path (root-unaware best-effort). */
+const LOCATION_DAY_ANYWHERE = /(?:^|[\\/])locations[\\/]\d{4}-\d{2}-\d{2}\.md$/i;
+
+/**
+ * Location day documents (issue #2044) live at
+ * `<memoryRoot>/locations/<YYYY-MM-DD>.md` — a dedicated searchable surface,
+ * never generic recall (place history must not auto-inject into ordinary
+ * prompts). Root-aware exactly like `isActivityDigestPath`: with a root, only
+ * the top-level `locations/<date>.md` matches, so an ordinary memory nested
+ * under a category (e.g. `facts/locations-note.md`) stays recallable; without
+ * a root, falls back to the day-file shape anywhere (best-effort).
+ */
+export function isLocationDayPath(filePath: string, memoryRoot?: string): boolean {
+  if (memoryRoot !== undefined && memoryRoot.length > 0) {
+    const relative = path.relative(memoryRoot, path.resolve(memoryRoot, filePath));
+    return LOCATION_DAY_TOPLEVEL.test(relative);
+  }
+  return LOCATION_DAY_ANYWHERE.test(filePath);
+}
+
 export function buildCompressionGuidelinesMarkdown(
   events: MemoryActionEvent[],
   generatedAtIso: string = new Date().toISOString(),

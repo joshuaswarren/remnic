@@ -54,6 +54,20 @@ The activity subsystem is off by default. It synchronizes redacted text snapshot
 | `activity.sources.baseUrl` | `(required)` | HTTP or HTTPS URL of the local capture daemon; must target a loopback host (`localhost`, `127.0.0.0/8`, or `::1`) since the bearer token travels in the request. |
 | `activity.sources.token` | `(unset)` | Literal bearer token sent to a trusted local capture daemon over loopback. This parser does not resolve secret references or `${ENV_VAR}` placeholders; omit the field when the daemon needs no auth. |
 
+## Location
+
+The location subsystem is off by default. It buckets place observations from registered providers into local-day documents; core ships no provider client — a host adapter registers providers (issue #2044).
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `location.enabled` | `false` | Master gate. When false, Remnic neither contacts location providers nor reads or writes any location state. |
+| `location.timezone` | `UTC` | IANA timezone for local-day bucketing of observations. |
+| `location.syncDays` | `1` | Number of local days to synchronize per run; integer from 1 through 90. |
+| `location.retainCoordinates` | `false` | When false (default), place coordinates are dropped before any persistence or rendering; only place labels are kept. |
+| `location.sources` | `[]` | Location sources. Required when `location.enabled` is true. |
+| `location.sources.id` | `(required)` | Registered provider id (lowercase kebab: `a-z`, `0-9`, hyphens); must be unique across sources. |
+| `location.sources.enabled` | `true` | Set false to short-circuit this source only; other sources still sync. |
+
 ## Wearables
 
 | Setting | Default | Description |
