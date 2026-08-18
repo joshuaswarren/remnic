@@ -20,7 +20,7 @@ import type { ObjectiveStateSearchResult } from "../objective-state.js";
 import type { IntentDebugSnapshot, QmdRecallSnapshot, QueryAwarePrefilter } from "../orchestrator.js";
 import type { CorpusReadOptions } from "../corpus-read-cancellation.js";
 import type { ProfilingCollector } from "../profiling.js";
-import type { GraphRecallExpandedEntry, LastRecallBudgetSummary, LastRecallStore, RecallHandleHistoryStore } from "../recall-state.js";
+import type { GraphRecallExpandedEntry, IncludedMemory, LastRecallBudgetSummary, LastRecallStore, RecallHandleHistoryStore } from "../recall-state.js";
 import type { RecallXraySnapshot } from "../recall-xray.js";
 import type { RerankCache } from "../rerank.js";
 import type { SearchBackend, SearchDegradation, SearchQueryOptions } from "../search/port.js";
@@ -115,6 +115,7 @@ export interface RecallInternalDeps {
     omittedIds: string[];
     truncated: boolean;
     finalChars: number;
+    includedMemories: IncludedMemory[];
     includedMemoryIds: string[];
     includedMemoryPaths: string[];
     includedMemoryNamespaces: Array<string | undefined>;
@@ -168,9 +169,6 @@ export interface RecallInternalDeps {
     truncated?: boolean;
     includedSections?: string[];
     omittedSections?: string[];
-    includedMemoryIds?: string[];
-    includedMemoryPaths?: string[];
-    includedMemoryNamespaces?: Array<string | undefined>;
     omittedMemoryIds?: string[];
   }): LastRecallBudgetSummary;
   buildQueryAwarePrefilter(

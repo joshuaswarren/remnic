@@ -259,7 +259,7 @@ test("last recall serialization resolves namespace collection-prefixed result pa
       queryLen: 4,
       memoryIds: [],
       namespace: "default",
-      resultPaths: [`${collection}/archive/facts/2026-06-16/fact-001.md`],
+      includedMemories: [{ id: "", path: `${collection}/archive/facts/2026-06-16/fact-001.md` }],
     },
     "summary",
   );
@@ -355,7 +355,7 @@ test("last recall serialization does not fall back after namespace collection mi
       queryLen: 4,
       memoryIds: [],
       namespace: "default",
-      resultPaths: [`${collection}/2026-06-16/fact-001.md`],
+      includedMemories: [{ id: "", path: `${collection}/2026-06-16/fact-001.md` }],
     },
     "summary",
   );
@@ -428,7 +428,7 @@ test("last recall serialization resolves cold collection paths through snapshot 
       queryLen: 4,
       memoryIds: [],
       namespace: "default",
-      resultPaths: ["test-memory-cold/facts/2026-06-16/fact-001.md"],
+      includedMemories: [{ id: "", path: "test-memory-cold/facts/2026-06-16/fact-001.md" }],
     },
     "summary",
   );
@@ -503,7 +503,7 @@ test("last recall serialization propagates locked namespace collection errors", 
           queryLen: 4,
           memoryIds: [],
           namespace: "default",
-          resultPaths: [`${collection}/2026-06-16/fact-001.md`],
+          includedMemories: [{ id: "", path: `${collection}/2026-06-16/fact-001.md` }],
         },
         "summary",
       ),
@@ -563,7 +563,7 @@ test("last recall serialization does not treat date paths as collection prefixes
       queryLen: 4,
       memoryIds: [],
       namespace: "default",
-      resultPaths: ["2026-06-16/fact-001.md"],
+      includedMemories: [{ id: "", path: "2026-06-16/fact-001.md" }],
     },
     "summary",
   );
@@ -632,7 +632,7 @@ test("last recall serialization does not strip invalid collection prefixes", asy
       queryLen: 4,
       memoryIds: [],
       namespace: "default",
-      resultPaths: ["test-memory--not-a-token/2026-06-16/fact-001.md"],
+      includedMemories: [{ id: "", path: "test-memory--not-a-token/2026-06-16/fact-001.md" }],
     },
     "summary",
   );
@@ -733,7 +733,7 @@ test("last recall serialization preserves absolute paths from readable namespace
       queryLen: 4,
       memoryIds: [],
       namespace: "team",
-      resultPaths: [sharedMemoryPath],
+      includedMemories: [{ id: "", path: sharedMemoryPath }],
     },
     "summary",
   );
@@ -817,7 +817,7 @@ test("last recall serialization preserves absolute paths from dynamic namespace 
       queryLen: 4,
       memoryIds: [],
       namespace: "team",
-      resultPaths: [dynamicMemoryPath],
+      includedMemories: [{ id: "", path: dynamicMemoryPath }],
     },
     "summary",
   );
@@ -905,7 +905,7 @@ test("last recall serialization rejects traversing collection paths", async () =
       queryLen: 4,
       memoryIds: [],
       namespace: "default",
-      resultPaths: [`${collection}/../../facts/2026-06-16/fact-001.md`],
+      includedMemories: [{ id: "", path: `${collection}/../../facts/2026-06-16/fact-001.md` }],
     },
     "summary",
   );

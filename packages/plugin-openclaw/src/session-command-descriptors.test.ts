@@ -40,6 +40,10 @@ test("buildSessionCommandDescriptors wires toggle and status handlers", async ()
         queryHash: "test-query",
         queryLen: 12,
         memoryIds: ["mem-1", "mem-2"],
+        includedMemories: [
+          { id: "mem-1", path: "facts/mem-1.md" },
+          { id: "mem-2", path: "facts/mem-2.md" },
+        ],
         latencyMs: 33,
         plannerMode: "minimal" as const,
       };

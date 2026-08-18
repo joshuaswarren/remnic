@@ -4,7 +4,7 @@ import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, wri
 import os from "node:os";
 import path from "node:path";
 
-import { clampGraphRecallExpandedEntries, LastRecallStore } from "./recall-state.js";
+import { clampGraphRecallExpandedEntries, LastRecallStore, RecallHandleHistoryStore } from "./recall-state.js";
 import type { RecallTierExplain } from "./types.js";
 import { listContainedSpillFiles } from "./utils/path-containment.js";
 
@@ -83,19 +83,69 @@ test("LastRecallStore.record persists tierExplain and round-trips to JSON on dis
   assert.deepEqual(parsed["s1"]?.tierExplain, tierExplain);
 });
 
-test("LastRecallStore.record persists per-result namespaces", async () => {
+test("LastRecallStore.record shims legacy resultPaths/resultNamespaces into includedMemories", async () => {
   const { store } = await freshStore();
-  const resultNamespaces = ["main", "shared"] as Array<string | undefined>;
   await store.record({
     sessionKey: "s1",
     query: "namespaced recall",
     memoryIds: ["same-id", "same-id"],
     resultPaths: ["facts/same-id.md", "facts/same-id.md"],
-    resultNamespaces,
+    resultNamespaces: ["main", "shared"],
   });
   const snap = store.get("s1");
   assert.ok(snap);
-  assert.deepEqual(snap.resultNamespaces, resultNamespaces);
+  assert.deepEqual(snap.includedMemories, [
+    { id: "same-id", path: "facts/same-id.md", namespace: "main" },
+    { id: "same-id", path: "facts/same-id.md", namespace: "shared" },
+  ]);
+  assert.deepEqual(snap.memoryIds, ["same-id", "same-id"]);
+});
+
+// ── Legacy on-disk shapes hydrate to includedMemories (#2476) ─────────────
+
+test("LastRecallStore.load shims legacy last_recall.json shapes to includedMemories", async () => {
+  const { dir } = await freshStore();
+  const fixturePath = path.resolve(
+    import.meta.dirname,
+    "../../../tests/fixtures/last-recall-legacy-shape.json",
+  );
+  const fixture = JSON.parse(await readFile(fixturePath, "utf-8")) as Record<string, unknown>;
+
+  await mkdir(path.join(dir, "state"), { recursive: true });
+  await writeFile(
+    path.join(dir, "state", "last_recall.json"),
+    JSON.stringify(fixture),
+    "utf-8",
+  );
+  const store = new LastRecallStore(dir);
+  await store.load();
+
+  const full = store.get("legacy-full");
+  assert.ok(full);
+  assert.deepEqual(full.includedMemories, [
+    {
+      id: "fact-alpha",
+      path: "/memory-under-test/namespaces/team-alpha/facts/2026-08-01/fact-alpha.md",
+      namespace: "team-alpha",
+    },
+    { id: "fact-beta", path: "/memory-under-test/facts/2026-08-01/fact-beta.md" },
+    {
+      id: "fact-gamma",
+      path: "/memory-under-test/namespaces/team-alpha/facts/2026-08-01/fact-gamma.md",
+      namespace: "team-alpha",
+    },
+  ]);
+  assert.deepEqual(full.memoryIds, ["fact-alpha", "fact-beta", "fact-gamma"]);
+  assert.deepEqual(
+    full.resultPaths,
+    full.includedMemories?.map((memory) => memory.path),
+  );
+  assert.deepEqual(full.budgetsApplied?.omittedMemoryIds, ["fact-dropped"]);
+
+  const idsOnly = store.get("legacy-ids-only");
+  assert.ok(idsOnly);
+  assert.deepEqual(idsOnly.includedMemories, [{ id: "fact-delta", path: "" }]);
+  assert.deepEqual(idsOnly.memoryIds, ["fact-delta"]);
 });
 
 // ── Defensive copies isolate the stored snapshot from caller mutation ──────
@@ -1082,4 +1132,57 @@ test("LastRecallStore.drainPendingImpressions reports pendingDeferred when a spi
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
++
+test("LastRecallStore rejects unsafe session keys on every read/write path", async () => {
+  const { store, dir } = await freshStore();
+  for (const key of ["__proto__", "constructor", "prototype"]) {
+    await store.record({ sessionKey: key, query: "q", memoryIds: ["m-1"] });
+    assert.equal(store.get(key), null, `get(${key}) must not surface prototype junk`);
+  }
+  assert.equal(store.getMostRecent(), null);
+
+  await store.annotateTierExplain("__proto__", {
+    tier: "direct-answer",
+    tierReason: "",
+    filteredBy: [],
+    candidatesConsidered: 0,
+    latencyMs: 0,
+  });
+  assert.equal(store.get("__proto__"), null);
+  const persistedKeys = await readFile(path.join(dir, "state", "last_recall.json"), "utf-8")
+    .then((raw) => Object.keys(JSON.parse(raw) as object))
+    .catch(() => [] as string[]);
+  assert.deepEqual(persistedKeys, [], "no unsafe key persisted");
+});
+
+test("RecallHandleHistoryStore rejects unsafe session keys", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "engram-handle-history-"));
+  const store = new RecallHandleHistoryStore(dir);
+  await store.load();
+
+  await store.record("__proto__", ["m-1"]);
+  await store.record("constructor", ["m-2"]);
+  assert.deepEqual(store.recent("__proto__"), []);
+  assert.deepEqual(store.recent("constructor"), []);
+
+  await store.record("ok", ["m-3"]);
+  assert.deepEqual(store.recent("ok"), [["m-3"]]);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("RecallHandleHistoryStore.load drops unsafe and malformed entries from persisted state", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "engram-handle-history-"));
+  await mkdir(path.join(dir, "state"), { recursive: true });
+  // JSON.parse materializes "__proto__" as an OWN key; load must not adopt it.
+  const poisoned =
+    '{"__proto__": [{"at": "t", "ids": ["evil"]}], "bad": "not-an-array", "ok": [{"at": "t", "ids": ["m-1"]}]}';
+  await writeFile(path.join(dir, "state", "handle_history.json"), poisoned, "utf-8");
+
+  const store = new RecallHandleHistoryStore(dir);
+  await store.load();
+  assert.deepEqual(store.recent("__proto__"), []);
+  assert.deepEqual(store.recent("bad"), []);
+  assert.deepEqual(store.recent("ok"), [["m-1"]]);
+  await rm(dir, { recursive: true, force: true });
 });

@@ -260,6 +260,7 @@ import { NegativeExampleStore } from "./negative.js";
 import {
   LastRecallStore,
   RecallHandleHistoryStore,
+  type IncludedMemory,
   type LastRecallBudgetSummary,
   TierMigrationStatusStore,
   clampGraphRecallExpandedEntries,
@@ -2716,7 +2717,7 @@ export class Orchestrator {
     includedIds: string[];
     omittedIds: string[];
     truncated: boolean;
-    finalChars: number;
+    includedMemories: IncludedMemory[];
     includedMemoryIds: string[];
     includedMemoryPaths: string[];
     includedMemoryNamespaces: Array<string | undefined>;
@@ -3542,9 +3543,6 @@ export class Orchestrator {
     finalContextChars?: number;
     truncated?: boolean;
     includedSections?: string[];
-    includedMemoryIds?: string[];
-    includedMemoryPaths?: string[];
-    includedMemoryNamespaces?: Array<string | undefined>;
     omittedMemoryIds?: string[];
     omittedSections?: string[];
   }): LastRecallBudgetSummary {

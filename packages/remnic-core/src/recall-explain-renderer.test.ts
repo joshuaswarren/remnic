@@ -17,6 +17,10 @@ function legacySnapshot(
     queryHash: "deadbeef",
     queryLen: 21,
     memoryIds: ["mem-1", "mem-2"],
+    includedMemories: [
+      { id: "mem-1", path: "" },
+      { id: "mem-2", path: "" },
+    ],
     source: "hot_qmd",
     sourcesUsed: ["hot_qmd", "memories"],
     namespace: "workspace-a",

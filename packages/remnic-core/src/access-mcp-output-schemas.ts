@@ -313,7 +313,7 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
     fallbackUsed: T_BOOLEAN,
     sourcesUsed: T_ARRAY,
     latencyMs: T_NUMBER,
-    resultPaths: T_ARRAY,
+    includedMemories: T_ARRAY,
     message: T_NULLABLE_STRING,
   }),
   memory_intent_debug: objectSchema({

@@ -622,7 +622,7 @@ export class RecallInternalCoordinator {
               qmdHybridFetchLimit,
             }),
             latencyMs: Date.now() - recallStart,
-            resultPaths: [],
+            includedMemories: [],
             policyVersion,
             appendImpression: this.deps.config.recordEmptyRecallImpressions,
             identityInjection: {
@@ -4944,14 +4944,14 @@ export class RecallInternalCoordinator {
     const assembledRecall = this.deps.assembleRecallSections(
       sectionBuckets, contextBudgetForFooter(recallBudgetChars, curiosityFooter),
     );
-    recalledMemoryIds = assembledRecall.includedMemoryIds;
-    recalledMemoryPaths = assembledRecall.includedMemoryPaths;
-    recalledMemoryNamespaces = assembledRecall.includedMemoryNamespaces;
-    recalledMemoryCount = assembledRecall.includedMemoryIds.length;
+    recalledMemoryIds = assembledRecall.includedMemories.map((memory) => memory.id);
+    recalledMemoryPaths = assembledRecall.includedMemories.map((memory) => memory.path);
+    recalledMemoryNamespaces = assembledRecall.includedMemories.map((memory) => memory.namespace);
+    recalledMemoryCount = assembledRecall.includedMemories.length;
     this.deps.trackMemoryAccess(
-      assembledRecall.includedMemoryIds,
-      assembledRecall.includedMemoryPaths,
-      assembledRecall.includedMemoryNamespaces,
+      recalledMemoryIds,
+      recalledMemoryPaths,
+      recalledMemoryNamespaces,
     );
     const recalledContext = assembledRecall.sections.join("\n\n---\n\n");
     const composition = boundRecallContextComposition({
@@ -4987,9 +4987,6 @@ export class RecallInternalCoordinator {
       truncated: assembledRecall.truncated || compositionTruncated || curiosityFooterTruncated,
       includedSections,
       omittedSections,
-      includedMemoryIds: assembledRecall.includedMemoryIds,
-      includedMemoryPaths: assembledRecall.includedMemoryPaths,
-      includedMemoryNamespaces: assembledRecall.includedMemoryNamespaces,
       omittedMemoryIds: assembledRecall.omittedMemoryIds,
     });
     // X-ray capture (issue #570 PR 1).  Only fires when the caller
@@ -5241,8 +5238,7 @@ export class RecallInternalCoordinator {
           sourcesUsed,
           budgetsApplied,
           latencyMs: Date.now() - recallStart,
-          resultPaths: recalledMemoryPaths,
-          resultNamespaces: recalledMemoryNamespaces,
+          includedMemories: assembledRecall.includedMemories,
           policyVersion,
           appendImpression:
             recalledMemoryIds.length > 0 ||

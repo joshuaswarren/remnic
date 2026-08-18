@@ -12,6 +12,22 @@ import type {
   RecallPlanMode,
   RecallTierExplain,
 } from "./types.js";
+import {
+  coerceIncludedMemories,
+  type IncludedMemory,
+} from "./included-memories.js";
+
+export type { IncludedMemory } from "./included-memories.js";
+export { coerceIncludedMemories } from "./included-memories.js";
+
+// Session keys are caller-supplied (host session IDs) and land in indexed
+// assignments on plain-object state. A key matching one of these would
+// pollute Object.prototype (or read junk off it), so every read/write
+// through this module rejects them — same contract load() already enforced.
+function isUnsafeStateKey(key: string): boolean {
+  return key === "__proto__" || key === "constructor" || key === "prototype";
+}
+
 
 export interface LastRecallBudgetSummary {
   requestedTopK?: number;
@@ -36,6 +52,7 @@ export interface LastRecallSnapshot {
   queryHash: string;
   queryLen: number;
   memoryIds: string[];
+  includedMemories?: IncludedMemory[];
   namespace?: string;
   recallNamespaces?: string[];
   traceId?: string;
@@ -172,6 +189,13 @@ type StateFileWriter = (filePath: string, content: string) => Promise<void>;
  * recordedAt are compared. Extracted so every annotation surface applies
  * identical guards (CLAUDE.md rule 22).
  */
+function cloneTierExplain(
+  tierExplain: RecallTierExplain | undefined,
+): RecallTierExplain | undefined {
+  if (!tierExplain) return undefined;
+  return structuredClone(tierExplain);
+}
+
 function snapshotMatchesExpectedIdentity(
   current: LastRecallSnapshot,
   expected?: { writeNonce?: string; traceId?: string; recordedAt?: string },
@@ -182,33 +206,41 @@ function snapshotMatchesExpectedIdentity(
   }
   const hasExpectedTraceId =
     typeof expected.traceId === "string" && expected.traceId.length > 0;
-  if (hasExpectedTraceId) {
-    return current.traceId === expected.traceId;
-  }
-  if (expected.recordedAt !== undefined) {
+  if (hasExpectedTraceId && current.traceId !== expected.traceId) return false;
+  if (typeof expected.recordedAt === "string" && expected.recordedAt.length > 0) {
     return current.recordedAt === expected.recordedAt;
   }
   return true;
 }
 
-function cloneTierExplain(
-  tierExplain: RecallTierExplain | undefined,
-): RecallTierExplain | undefined {
-  if (!tierExplain) return undefined;
-  return structuredClone(tierExplain);
+function hydrateLastRecallSnapshot(snapshot: LastRecallSnapshot): LastRecallSnapshot {
+  const includedMemories = coerceIncludedMemories(snapshot);
+  const budgets = snapshot.budgetsApplied
+    ? {
+        ...snapshot.budgetsApplied,
+        includedMemoryIds: includedMemories.map((memory) => memory.id),
+        includedMemoryPaths: includedMemories.map((memory) => memory.path),
+        includedMemoryNamespaces: includedMemories.map((memory) => memory.namespace),
+      }
+    : undefined;
+  return {
+    ...snapshot,
+    includedMemories,
+    memoryIds: includedMemories.map((memory) => memory.id),
+    resultPaths: includedMemories.map((memory) => memory.path),
+    resultNamespaces: includedMemories.map((memory) => memory.namespace),
+    ...(budgets ? { budgetsApplied: budgets } : {}),
+  };
 }
 
-/**
- * Deep-copy a LastRecallSnapshot so callers that receive it cannot
- * mutate the store's internal state through mutable array/object
- * fields.  Same structuredClone rationale as cloneTierExplain above.
- */
 function cloneLastRecallSnapshot(
   snapshot: LastRecallSnapshot | null,
 ): LastRecallSnapshot | null {
   if (!snapshot) return null;
-  return structuredClone(snapshot);
+  return structuredClone(hydrateLastRecallSnapshot(snapshot));
 }
+
+
 
 export interface TierMigrationCycleSummary {
   trigger: "extraction" | "maintenance" | "manual";
@@ -319,8 +351,22 @@ export class LastRecallStore {
   async load(): Promise<void> {
     try {
       const raw = await readFile(this.statePath, "utf-8");
-      const parsed = JSON.parse(raw) as LastRecallState;
-      if (parsed && typeof parsed === "object") this.state = parsed;
+      const parsed: unknown = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        this.state = {};
+        return;
+      }
+      const next: LastRecallState = {};
+      for (const [sessionKey, snapshot] of Object.entries(parsed)) {
+        if (sessionKey === "__proto__" || sessionKey === "constructor" || sessionKey === "prototype") {
+          continue;
+        }
+        if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+          continue;
+        }
+        next[sessionKey] = hydrateLastRecallSnapshot(snapshot as LastRecallSnapshot);
+      }
+      this.state = next;
     } catch {
       this.state = {};
     }
@@ -329,6 +375,7 @@ export class LastRecallStore {
   get(sessionKey: string): LastRecallSnapshot | null {
     // Defensive copy: callers must not be able to mutate internal state
     // by reaching into array/object fields on the returned snapshot.
+    if (isUnsafeStateKey(sessionKey)) return null;
     return cloneLastRecallSnapshot(this.state[sessionKey] ?? null);
   }
 
@@ -352,7 +399,8 @@ export class LastRecallStore {
   async record(opts: {
     sessionKey: string;
     query: string;
-    memoryIds: string[];
+    memoryIds?: string[];
+    includedMemories?: IncludedMemory[];
     namespace?: string;
     recallNamespaces?: string[];
     traceId?: string;
@@ -386,6 +434,10 @@ export class LastRecallStore {
      */
     backendDegradations?: SearchDegradation[];
   }): Promise<void> {
+    if (isUnsafeStateKey(opts.sessionKey)) {
+      log.debug("last recall record skipped: unsafe session key");
+      return;
+    }
     const now = new Date().toISOString();
     const queryHash = createHash("sha256").update(opts.query).digest("hex");
 
@@ -393,13 +445,15 @@ export class LastRecallStore {
     // cloneLastRecallSnapshot so caller arrays/objects passed in
     // `opts` cannot retain a live reference to the persisted state and
     // tear it after `record()` returns.
+    const includedMemories = coerceIncludedMemories(opts);
     const liveSnapshot: LastRecallSnapshot = {
       sessionKey: opts.sessionKey,
       recordedAt: now,
       queryHash,
       writeNonce: randomUUID(),
       queryLen: opts.query.length,
-      memoryIds: opts.memoryIds,
+      includedMemories,
+      memoryIds: includedMemories.map((memory) => memory.id),
       namespace: opts.namespace,
       recallNamespaces: opts.recallNamespaces,
       traceId: opts.traceId,
@@ -410,8 +464,6 @@ export class LastRecallStore {
       sourcesUsed: opts.sourcesUsed,
       budgetsApplied: opts.budgetsApplied,
       latencyMs: opts.latencyMs,
-      resultPaths: opts.resultPaths,
-      resultNamespaces: opts.resultNamespaces,
       policyVersion: opts.policyVersion,
       identityInjectionMode: opts.identityInjection?.mode,
       identityInjectedChars: opts.identityInjection?.injectedChars,
@@ -810,6 +862,7 @@ export class LastRecallStore {
     tierExplain: RecallTierExplain,
     expected?: { writeNonce?: string; traceId?: string; recordedAt?: string },
   ): Promise<void> {
+    if (isUnsafeStateKey(sessionKey)) return;
     const current = this.state[sessionKey];
     if (!current) return;
     if (!snapshotMatchesExpectedIdentity(current, expected)) return;
@@ -952,7 +1005,15 @@ export class RecallHandleHistoryStore {
     try {
       const raw = await readFile(this.statePath, "utf-8");
       const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === "object") this.state = parsed as typeof this.state;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const next: Record<string, Array<{ at: string; ids: string[] }>> = {};
+        for (const [sessionKey, entries] of Object.entries(parsed)) {
+          if (isUnsafeStateKey(sessionKey)) continue;
+          if (!Array.isArray(entries)) continue;
+          next[sessionKey] = entries;
+        }
+        this.state = next;
+      }
     } catch {
       this.state = {};
     }
@@ -963,7 +1024,7 @@ export class RecallHandleHistoryStore {
    * The ring is capped at {@link maxDepth}; older entries drop off the tail.
    */
   async record(sessionKey: string, memoryIds: readonly string[]): Promise<void> {
-    if (!sessionKey) return;
+    if (!sessionKey || isUnsafeStateKey(sessionKey)) return;
     const ids = memoryIds.filter((id): id is string => typeof id === "string" && id.length > 0);
     const entry = { at: new Date().toISOString(), ids };
     const prior = this.state[sessionKey] ?? [];
@@ -982,6 +1043,7 @@ export class RecallHandleHistoryStore {
    * Empty array when the session has no recorded history.
    */
   recent(sessionKey: string, depth: number = this.maxDepth): Array<readonly string[]> {
+    if (isUnsafeStateKey(sessionKey)) return [];
     const entries = this.state[sessionKey];
     if (!entries || entries.length === 0) return [];
     const limit = Math.max(0, Math.min(depth, entries.length));
