@@ -761,10 +761,12 @@ if [[ -n "$ALLOW_LISTS" ]]; then
     if [[ -n "$VAR_NAME" ]]; then
       # Count values in the allow list
       ALLOWED_VALUES=$(grep -A5 "$VAR_NAME" "$FILE" 2>/dev/null | grep -oE '"[^"]+"' | sort -u || true)
-      ALLOWED_COUNT=$(echo "$ALLOWED_VALUES" | grep -c '"' 2>/dev/null || echo "0")
+      ALLOWED_COUNT=$(echo "$ALLOWED_VALUES" | grep -c '"' 2>/dev/null || true)
+      ALLOWED_COUNT=${ALLOWED_COUNT:-0}
       if [[ "$ALLOWED_COUNT" -gt 2 ]]; then
         # Check if there's a corresponding switch/if chain with same number of branches
-        HANDLED=$(grep -c "case\|===\|==" "$FILE" 2>/dev/null || echo "0")
+        HANDLED=$(grep -c "case\|===\|==" "$FILE" 2>/dev/null || true)
+        HANDLED=${HANDLED:-0}
         if [[ "$HANDLED" -lt "$ALLOWED_COUNT" ]]; then
           warn "$FILE — $VAR_NAME has $ALLOWED_COUNT values but file only has $HANDLED case/branch handlers. Validator may accept values that code doesn't handle."
         fi

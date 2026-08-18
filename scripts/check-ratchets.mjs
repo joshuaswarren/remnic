@@ -746,7 +746,8 @@ function main() {
         if (inScope(file)) {
           failures.push(
             `${file} grew from its grandfathered ceiling ${ceiling} to ${lines} lines (issue #1995). ` +
-              "Extract the addition into a sibling module, or shrink the file elsewhere by at least the addition.",
+              "Extract the addition into a sibling module, or shrink the file elsewhere by at least the addition. " +
+              "If this is a merge with main, rebase first — CI measures the merge commit, not the branch tip.",
           );
         }
       } else if (lines < ceiling) {

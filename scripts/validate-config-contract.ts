@@ -3,6 +3,7 @@ import path from "node:path";
 import ts from "typescript";
 import { runContractCheck } from "./config-contract/contract-check.js";
 import { runDisableValueCheck } from "./config-contract/disable-value-check.js";
+import { extractRealConfigKeys } from "./config-contract/extract-parsed-keys.js";
 
 type Failure = {
   message: string;
@@ -365,6 +366,31 @@ function main() {
   for (const stale of disableValue.staleGrandfatherEntries) {
     failures.push({
       message: `[§33:stale-grandfather] ${stale.kind}:${stale.key} (${stale.issue}) no longer violates — prune it from scripts/config-contract/disable-value-grandfathered.json`,
+    });
+  }
+
+  const snapshotPath = path.join(repoRoot, "scripts", "config-contract", "parsed-keys.snapshot.json");
+  const snapshot = JSON.parse(fs.readFileSync(snapshotPath, "utf8")) as {
+    keys: string[];
+    unparseable: Array<{ file: string; reason: string; id: string }>;
+    ambiguousValueMembers: string[];
+  };
+  const extracted = extractRealConfigKeys(repoRoot);
+  const extractedUnparseable = extracted.unparseable.map(({ file, reason, id }) => ({ file, reason, id }));
+  if (JSON.stringify(extracted.keys) !== JSON.stringify(snapshot.keys)) {
+    failures.push({
+      message:
+        "[snapshot] parsed-keys.snapshot.json is stale — regenerate with `npx tsx scripts/config-contract/extract-parsed-keys.ts > scripts/config-contract/parsed-keys.snapshot.json`",
+    });
+  }
+  if (JSON.stringify(extractedUnparseable) !== JSON.stringify(snapshot.unparseable)) {
+    failures.push({
+      message: "[snapshot] parsed-keys.snapshot.json unparseable list drifted — regenerate the snapshot",
+    });
+  }
+  if (JSON.stringify(extracted.ambiguousValueMembers) !== JSON.stringify(snapshot.ambiguousValueMembers)) {
+    failures.push({
+      message: "[snapshot] parsed-keys.snapshot.json ambiguousValueMembers drifted — regenerate the snapshot",
     });
   }
 
