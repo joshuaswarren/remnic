@@ -278,6 +278,26 @@ test("rate limit and abort are provider_failed", async () => {
   assert.equal(aborted.cards, cards);
 });
 
+test("pre-aborted caller signal skips provider dispatch", async () => {
+  const cards = sampleCards();
+  let dispatched = false;
+  const result = await analyzeTimelineCards({
+    enabled: true,
+    cards,
+    observations: [observation()],
+    provider: "openai",
+    model: "gpt-4.1",
+    signal: AbortSignal.abort(),
+    complete: async () => {
+      dispatched = true;
+      return '{"ops":[]}';
+    },
+  });
+  assert.equal(dispatched, false);
+  assert.equal(result.status, "provider_failed");
+  assert.equal(result.cards, cards);
+});
+
 test("valid op updates allowed fields and preserves evidence and manual edits", async () => {
   const locked = card({
     id: "locked",

@@ -191,9 +191,12 @@ async function callComplete(
     reject(Object.assign(new Error(message), { name }));
   };
   const timer = setTimeout(() => failOnce("timeline analysis timed out", "TimeoutError"), timeoutMs);
+  if (parent?.aborted) {
+    clearTimeout(timer);
+    throw Object.assign(new Error("timeline analysis aborted"), { name: "AbortError" });
+  }
   const onAbort = () => failOnce("timeline analysis aborted", "AbortError");
-  if (parent?.aborted) onAbort();
-  else parent?.addEventListener("abort", onAbort, { once: true });
+  parent?.addEventListener("abort", onAbort, { once: true });
   const signal = parent ? AbortSignal.any([parent, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs);
   try {
     return await Promise.race([complete({ prompt, provider, model, signal }), timeoutPromise]);
