@@ -147,11 +147,20 @@ function readFileSafe(filePath: string): string | null {
   }
 }
 
+function splitFrontmatter(content: string): { fields: string; body: string } | null {
+  if (!content.startsWith("---\n")) return null;
+  const end = content.indexOf("\n---", 4);
+  if (end === -1) return null;
+  const after = end + "\n---".length;
+  const body = content.startsWith("\n", after) ? content.slice(after + 1) : content.slice(after);
+  return { fields: content.slice(4, end), body };
+}
+
 function parseFrontmatter(content: string): Record<string, unknown> | null {
-  const match = content.match(/^---\n([\s\S]*?)\n---/);
-  if (!match) return null;
+  const split = splitFrontmatter(content);
+  if (!split) return null;
   const fm: Record<string, unknown> = {};
-  for (const line of match[1].split("\n")) {
+  for (const line of split.fields.split("\n")) {
     const colonIdx = line.indexOf(":");
     if (colonIdx === -1) continue;
     fm[line.slice(0, colonIdx).trim()] = line.slice(colonIdx + 1).trim();
@@ -160,8 +169,8 @@ function parseFrontmatter(content: string): Record<string, unknown> | null {
 }
 
 function extractBody(content: string): string {
-  const match = content.match(/^---\n[\s\S]*?\n---\n([\s\S]*)/);
-  return match ? match[1].trim() : content.trim();
+  const split = splitFrontmatter(content);
+  return split ? split.body.trim() : content.trim();
 }
 
 function parseBoolean(value: unknown): boolean {
