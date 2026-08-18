@@ -126,6 +126,23 @@ test("non-active memories are not evidence", () => {
   assert.equal(result.results[0]?.evidence[0]?.id, "m-ok");
 });
 
+test("authorship bonus is per entity: co-mentioned entity does not get the speaker bonus", () => {
+  const entities: WhoKnowsEntity[] = [
+    { id: "person-alice", name: "Alice", aliases: [] },
+    { id: "person-bob", name: "Bob", aliases: [] },
+  ];
+  const memories = [
+    mem({ id: "m-attr", content: "Alice explained the kafka rebalance with Bob", updated: "2026-08-10T00:00:00Z" }),
+  ];
+  const result = computeWhoKnows({ topic: "kafka", limit: 5, memories, entities });
+  const alice = result.results.find((hit) => hit.entityId === "person-alice");
+  const bob = result.results.find((hit) => hit.entityId === "person-bob");
+  assert.ok(alice && bob, "both co-mentioned entities rank");
+  assert.ok((alice?.score ?? 0) > (bob?.score ?? 0), "attributed speaker outranks the co-mentioned entity");
+  assert.match(alice?.rationale ?? "", /with direct attribution/);
+  assert.doesNotMatch(bob?.rationale ?? "", /with direct attribution/);
+});
+
 test("empty topic and invalid limit are validation errors", () => {
   assert.throws(() => validateWhoKnowsInput("   ", 5), /whoKnows: topic is required/);
   assert.throws(() => validateWhoKnowsInput("kafka", 0), /whoKnows: limit/);
@@ -169,6 +186,23 @@ test("empty topic 400: HTTP helper maps missing/invalid query params to 400 with
   });
   assert.equal(happy.status, 200);
   assert.equal(runCalls, 1);
+});
+
+test("namespace allow-list gate runs even when the namespace param is omitted", async () => {
+  const resolved: Array<string | undefined> = [];
+  const outcome = await handleWhoKnowsHttpQuery({
+    getParam: (name) => (name === "topic" ? "kafka" : null),
+    resolveNamespace: (namespace) => {
+      resolved.push(namespace);
+      return "default";
+    },
+    run: async (request) => {
+      assert.equal(request.namespace, "default", "resolved default namespace flows into the request");
+      return { topic: "kafka", results: [] };
+    },
+  });
+  assert.equal(outcome.status, 200);
+  assert.deepEqual(resolved, [undefined], "resolver (and its allow-list) ran once with the implicit namespace");
 });
 
 test("namespace restriction: storage is resolved per readable namespace and the ACL matches recall", async () => {

@@ -81,7 +81,7 @@ export function renderWhoKnowsText(result: WhoKnowsResult): string {
   }
   const lines = [`who knows "${result.topic}" (top ${result.results.length})`];
   result.results.forEach((hit, index) => {
-    const name = hit.entityName ?? hit.entityId;
+    const name = hit.entityName || hit.entityId;
     lines.push(`${index + 1}. ${name} [${hit.entityId}] — score ${hit.score.toFixed(4)} — ${hit.rationale}`);
     for (const ref of hit.evidence) {
       lines.push(`   - ${ref.id} (${ref.path}) updated ${ref.updated}`);

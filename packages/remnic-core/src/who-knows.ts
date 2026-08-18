@@ -30,6 +30,8 @@ import type { MemoryFile, PluginConfig } from "./types.js";
 export const WHO_KNOWS_DEFAULT_LIMIT = 5;
 /** Upper bound for `limit`. Rejects unbounded fan-out without silently clamping. */
 export const WHO_KNOWS_MAX_LIMIT = 50;
+/** Evidence refs retained per hit. Independent of the result limit. */
+export const WHO_KNOWS_MAX_EVIDENCE = 50;
 /** Multiplicative bonus for evidence with direct speaker attribution. */
 export const WHO_KNOWS_AUTHORSHIP_BONUS = 1.5;
 
@@ -132,6 +134,7 @@ interface ScoredCandidate {
   entityName: string | null;
   rawScore: number;
   evidence: WhoKnowsEvidence[];
+  matchCount: number;
   authorshipCount: number;
   lastSeen: string | null;
 }
@@ -177,18 +180,20 @@ export function computeWhoKnows(input: {
         entityName: byId.get(entityId)?.name ?? null,
         rawScore: 0,
         evidence: [],
+        matchCount: 0,
         authorshipCount: 0,
         lastSeen: null,
       };
       candidates.set(entityId, candidate);
     }
     candidate.rawScore += weight;
+    candidate.matchCount += 1;
     candidate.authorshipCount += authorship ? 1 : 0;
     const updated = memory.frontmatter.updated || memory.frontmatter.created;
     if (updated && (!candidate.lastSeen || updated > candidate.lastSeen)) {
       candidate.lastSeen = updated;
     }
-    if (candidate.evidence.length < WHO_KNOWS_MAX_LIMIT) {
+    if (candidate.evidence.length < WHO_KNOWS_MAX_EVIDENCE) {
       candidate.evidence.push({
         id: memory.frontmatter.id,
         path: memory.path,
@@ -216,11 +221,16 @@ export function computeWhoKnows(input: {
     }
     if (attributed.size === 0) continue;
 
-    const authorship = authorshipMatchers.some(
-      ({ entityId, matcher }) => attributed.has(entityId) && matcher.test(haystack),
-    );
-    if (authorship) weight *= WHO_KNOWS_AUTHORSHIP_BONUS;
-    for (const entityId of attributed) credit(entityId, memory, weight, authorship);
+    // Attribution is per entity: "Alice explained X with Bob" credits only
+    // Alice with authorship — Bob is a co-mention, not the speaker.
+    const attributedAuthors = new Set<string>();
+    for (const { entityId, matcher } of authorshipMatchers) {
+      if (attributed.has(entityId) && matcher.test(haystack)) attributedAuthors.add(entityId);
+    }
+    for (const entityId of attributed) {
+      const authorship = attributedAuthors.has(entityId);
+      credit(entityId, memory, authorship ? weight * WHO_KNOWS_AUTHORSHIP_BONUS : weight, authorship);
+    }
   }
 
   const ranked = [...candidates.values()].sort((a, b) => {
@@ -237,10 +247,10 @@ export function computeWhoKnows(input: {
     entityName: candidate.entityName,
     score: maxScore > 0 ? Math.round((candidate.rawScore / maxScore) * 10000) / 10000 : 0,
     rationale:
-      `${candidate.evidence.length} matching memor${candidate.evidence.length === 1 ? "y" : "ies"}` +
+      `${candidate.matchCount} matching memor${candidate.matchCount === 1 ? "y" : "ies"}` +
       ` (topic co-occurrence${candidate.authorshipCount > 0 ? `, ${candidate.authorshipCount} with direct attribution` : ""})` +
       `${candidate.lastSeen ? `; latest ${candidate.lastSeen}` : ""}`,
-    evidenceCount: candidate.evidence.length,
+    evidenceCount: candidate.matchCount,
     lastSeen: candidate.lastSeen,
     evidence: candidate.evidence,
   }));
@@ -297,7 +307,7 @@ export interface WhoKnowsHttpOutcome {
 
 export async function handleWhoKnowsHttpQuery(deps: {
   getParam: (name: string) => string | null;
-  resolveNamespace: (namespace: string) => string | undefined;
+  resolveNamespace: (namespace: string | undefined) => string | undefined;
   principal?: string;
   run: (request: { topic: string; limit?: number; namespace?: string; authenticatedPrincipal?: string }) => Promise<WhoKnowsResult>;
 }): Promise<WhoKnowsHttpOutcome> {
@@ -329,9 +339,10 @@ export async function handleWhoKnowsHttpQuery(deps: {
     limit = parsed;
   }
   const namespaceParam = deps.getParam("namespace");
-  const namespace = namespaceParam && namespaceParam.length > 0
-    ? deps.resolveNamespace(namespaceParam)
-    : undefined;
+  // Always resolve (and allow-list check) the effective namespace, even when
+  // the param is omitted — the implicit default namespace is still a
+  // namespace every other GET route gates the same way.
+  const namespace = deps.resolveNamespace(namespaceParam && namespaceParam.length > 0 ? namespaceParam : undefined);
   try {
     return {
       status: 200,

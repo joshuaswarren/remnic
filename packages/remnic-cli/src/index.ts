@@ -13471,8 +13471,6 @@ Usage:
     Retrospective meetings: list stored records, show one by id, or build
     (detect + fuse + store) a day's meetings from ingested audio + screen
     activity. Run "remnic meetings help" for details.
-  remnic who-knows <topic> [--limit <1-50>] [--namespace <ns>] [--json]
-    Rank entities by demonstrated expertise on a topic (issue #2057).
   remnic external-wiki search <query...> [--wiki-id <id>] [--limit <1-20>] [--max-chars-per-hit <100-8000>] [--json]
 
   remnic doctor                Run diagnostics
