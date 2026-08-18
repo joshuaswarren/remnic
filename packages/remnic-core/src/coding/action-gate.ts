@@ -437,6 +437,10 @@ export class ActionGateService {
     degradations: string[];
   }> {
     if (this.sources.length === 0) return { candidates: [], degradations: [] };
+    const timeoutAbort = new AbortController();
+    const signal = request.signal
+      ? AbortSignal.any([request.signal, timeoutAbort.signal])
+      : timeoutAbort.signal;
     const query: ActionGateCandidateQuery = {
       sessionKey: request.sessionKey,
       fingerprint,
@@ -447,17 +451,17 @@ export class ActionGateService {
       memoryDir: request.memoryDir,
       namespace: request.namespace,
       causalTrajectoryStoreDir: request.causalTrajectoryStoreDir,
-      signal: request.signal,
+      signal,
     };
     const remaining = Math.max(1, deadline - this.clock());
     let onTimeout!: (value: ActionGateSourceResult) => void;
     const timeoutResult = new Promise<ActionGateSourceResult>((resolve) => {
       onTimeout = resolve;
     });
-    const timer = setTimeout(
-      () => onTimeout({ ok: false, reason: `action gate timed out after ${this.config.timeoutMs}ms` }),
-      remaining
-    );
+    const timer = setTimeout(() => {
+      timeoutAbort.abort();
+      onTimeout({ ok: false, reason: `action gate timed out after ${this.config.timeoutMs}ms` });
+    }, remaining);
     try {
       const settled = await Promise.all(
         this.sources.map(async (source) => {
