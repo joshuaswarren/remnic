@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  type MergeJudgeVerdict,
+  type MergeOnWritePair,
   applyMergeOnWrite,
   judgeMergeDecision,
   shouldConsiderMerge,
-  type MergeJudgeVerdict,
-  type MergeOnWritePair,
 } from "./merge-on-write.js";
-
 
 function pair(overrides: Partial<MergeOnWritePair> = {}): MergeOnWritePair {
   return {
@@ -77,14 +76,8 @@ test("merge-on-write: disabled or mergeMin 0 creates", async () => {
   };
 
   assert.equal(await applyMergeOnWrite({ pair: pair(), judge }), "create");
-  assert.equal(
-    await applyMergeOnWrite({ enabled: false, pair: pair(), judge }),
-    "create",
-  );
-  assert.equal(
-    await applyMergeOnWrite({ enabled: true, mergeMin: 0, pair: pair(), judge }),
-    "create",
-  );
+  assert.equal(await applyMergeOnWrite({ enabled: false, pair: pair(), judge }), "create");
+  assert.equal(await applyMergeOnWrite({ enabled: true, mergeMin: 0, pair: pair(), judge }), "create");
   assert.equal(called, 0);
 });
 
