@@ -167,6 +167,64 @@ Exits with code `1` and a descriptive error if `<memoryId>` is not found or has 
 
 Invalid flag values (`--format xml`, `--limit 0`, `--since not-a-date`) throw a listed-options error rather than silently defaulting (CLAUDE.md rule 51).
 
+## Portable skill bundles (issue #2369)
+
+Active procedures project into the `skills/<slug>/SKILL.md` layout that Codex
+and Claude Code already load, so a procedure learned in one host is readable,
+versionable, and shareable rather than private agent state.
+
+What is projected: `category: procedure` memories with `status: active` and
+nothing else. `pending_review`, `rejected`, `quarantined`, `superseded`,
+`archived`, and `forgotten` procedures never reach a host skills directory.
+Slugs derive deterministically from the procedure title, collide-free within a
+batch, and get a `user-` prefix when they would shadow a built-in Remnic skill.
+Provenance rides in namespaced frontmatter keys (`x-remnic-memory-id`,
+`x-remnic-updated`, `x-remnic-source`) so re-projection is idempotent.
+
+### Codex materialization
+
+Set `procedural.skillProjection.enabled: true` (default `false`) to add a
+`skills/` section to the Codex materializer. It obeys every existing
+materializer invariant: the `.remnic-managed` sentinel opt-in, atomic
+tmp-then-rename writes, content-hash no-ops, and no writes outside
+`<codex_home>/memories`. Retired procedures lose their projected folder on the
+next run; the sentinel records which slugs Remnic projected, so a hand-created
+skill folder is never a removal candidate. `maxSkills: 0` disables projection.
+
+### Export
+
+```bash
+remnic export skills --out ./exported-skills [--max-skills 20] [--namespace <ns>]
+```
+
+Writes `<out>/<slug>/SKILL.md` for each projected procedure. Read-only with
+respect to memory, and it never deletes anything in the target directory. Works
+regardless of `procedural.skillProjection.enabled` (an explicit user action),
+but requires `procedural.enabled`.
+
+### Import (review-gated)
+
+```bash
+remnic import skills ./some-skills-dir [--namespace <ns>]
+```
+
+Walks `<dir>/<slug>/SKILL.md`, parses the frontmatter and `## Step N` sections
+(a step-less body is stored verbatim), and writes `category: procedure`
+memories with **`status: pending_review`** and `source: skill-import`. Imported
+procedures never auto-promote, whatever `procedural.autoPromoteOccurrences`
+says: recall injects only active procedures, so review is the promotion
+checkpoint. The import triggers a search reindex so approved procedures are
+discoverable.
+
+Import safety:
+
+- Imported skills are inert data. Nothing in a bundle is ever executed, and no
+  tool is registered. A bundle containing `scripts/` or other resources imports
+  the SKILL.md text only and sets `structuredAttributes.hasUnimportedResources`
+  so a reviewer can see what was left behind.
+- Symlinked roots, symlinked bundle directories, symlinked `SKILL.md` files, and
+  anything resolving outside the requested directory are skipped with a reason.
+
 ## Benchmark
 
 The **`procedural-recall`** benchmark in `@remnic/bench` scores:

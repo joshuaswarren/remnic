@@ -219,17 +219,12 @@ export {
 } from "./procedural/procedure-types.js";
 
 // Procedural stats surface (issue #567 PR 5/5).
-export {
-  computeProcedureStats,
-  formatProcedureStatsText,
-} from "./procedural/procedure-stats.js";
-export type {
-  ProcedureStatsReport,
-  ProcedureStatusCounts,
-  ProcedureStatsConfigSnapshot,
-  ProcedureStatsRecent,
-} from "./procedural/procedure-stats.js";
+export { computeProcedureStats, formatProcedureStatsText } from "./procedural/procedure-stats.js";
+export type { ProcedureStatsReport, ProcedureStatusCounts, ProcedureStatsConfigSnapshot, ProcedureStatsRecent } from "./procedural/procedure-stats.js";
 export { runProcedureLibraryMaintenance, type ProcedureLibraryMaintenanceReport, type ProcedureMaintenanceAction, type ProcedureMaintenanceActionKind, type ProcedureMaintenanceReasonCode, type ProcedureMaintenanceEvidence, type ProcedureMaintenanceMarker } from "./procedural/library-maintenance.js";
+// Portable procedural skill bundles (issue #2369).
+export { parseSkillProjectionConfig, projectProceduresToSkills, renderSkillBundle, parseSkillBundle, sanitizeSkillSlug, SKILL_FILE_NAME, type SkillBundle, type SkillProjectionConfig, type ParsedSkillBundle } from "./procedural/skill-projection.js";
+export { exportSkillBundles, readSkillBundlesFromDir, persistImportedSkills, type ExportSkillsResult, type ImportSkillsResult, type ReadSkillBundle } from "./procedural/skill-io.js";
 export * from "./preferences/index.js";
 // ---------------------------------------------------------------------------
 // Direct-answer retrieval tier (issue #518)

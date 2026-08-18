@@ -43,6 +43,7 @@ import { parseExtractionLivenessConfig } from "./extraction-liveness.js";
 import { parseReplicaPeersConfig } from "./replica-peers-config.js";
 import { parseDependencyPropagationConfig } from "./dependency-propagation-config.js";
 import { parseProceduralMaintenanceConfig } from "./procedural/maintenance-config.js";
+import { parseSkillProjectionConfig } from "./procedural/skill-projection.js";
 import { parseDriftDetectionConfig } from "./preferences/drift-config.js";
 import {
   parseContradictionLocalizationConfig,
@@ -1128,8 +1129,8 @@ export function parseConfig(
       ? Math.min(10, Math.max(1, Math.floor(recallMaxCoerced)))
       : 2;
   const maintenance = parseProceduralMaintenanceConfig(rawProcedural.maintenance);
-  // Default-on procedural memory (issue #567 PR 4/5). Explicit false-ish
-  // values stay off. Unknown values throw.
+  const skillProjection = parseSkillProjectionConfig(rawProcedural.skillProjection);
+  // Default-on procedural memory (issue #567 PR 4/5). Explicit false-ish values stay off. Unknown values throw.
   const rawEnabledValue = rawProcedural.enabled;
   let proceduralEnabled: boolean;
   if (rawEnabledValue === undefined) {
@@ -1154,6 +1155,7 @@ export function parseConfig(
     lookbackDays,
     proceduralMiningCronAutoRegister: coerceBool(rawProcedural.proceduralMiningCronAutoRegister) === true,
     recallMaxProcedures,
+    skillProjection,
   };
   const wearables = parseWearablesConfig(cfg.wearables);
   const { activity, meetings, provenance } = parseCaptureCompanionConfigs(cfg);

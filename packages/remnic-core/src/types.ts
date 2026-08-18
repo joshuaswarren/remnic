@@ -13,6 +13,7 @@ export type { ContradictionLocalizationConfig, ContradictionScanConfig } from ".
 export type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
 import type { DriftDetectionSettings, MemoryDriftProvenance, RecallDriftAnnotation } from "./preferences/drift-types.js";
 import type { ProceduralMaintenanceConfig } from "./procedural/maintenance-config.js";
+import type { SkillProjectionConfig } from "./procedural/skill-projection.js";
 import type { ActionGateConfig } from "./coding/action-gate.js";
 
 import type { AmbientCaptureProvenance, BufferTurnOwner, SecurityConfig, OriginMetadata } from "./security/types.js";
@@ -390,11 +391,8 @@ export interface DreamsPhasesConfig {
 
 export interface ProceduralConfig {
   enabled: boolean;
-  /** Minimum cluster size before emitting a candidate; `0` disables mining (`minOccurrences_zero`). */
   minOccurrences: number;
-  /** Minimum success rate from trajectory outcomes in [0, 1]. */
   successFloor: number;
-  /** When auto-promotion is enabled, promote pending_review → active after this many occurrences. */
   autoPromoteOccurrences: number;
   autoPromoteEnabled: boolean;
   lookbackDays: number;
@@ -402,6 +400,7 @@ export interface ProceduralConfig {
   proceduralMiningCronAutoRegister: boolean;
   recallMaxProcedures: number;
   maintenance: ProceduralMaintenanceConfig;
+  skillProjection: SkillProjectionConfig;
 }
 
 /**

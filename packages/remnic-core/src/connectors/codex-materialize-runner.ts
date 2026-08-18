@@ -14,6 +14,8 @@ import { existsSync } from "node:fs";
 import { log } from "../logger.js";
 import { resolveNamespaceChildRoot } from "../namespaces/path.js";
 import { isSafeRouteNamespace } from "../routing/engine.js";
+import { projectProceduresToSkills } from "../procedural/skill-projection.js";
+import { BUILTIN_SKILLS } from "../skills-registry.js";
 import { StorageManager } from "../storage.js";
 import { excludeSupportPassportPrivateMemories } from "../support-passport/card-projection.js";
 import type { PluginConfig, MemoryFile } from "../types.js";
@@ -109,6 +111,19 @@ export async function runCodexMaterialize(
   }
   memories = excludeSupportPassportPrivateMemories(memories);
 
+  // Skill projection (issue #2369). Gated on `procedural.enabled` AND
+  // `procedural.skillProjection.enabled`; `maxSkills: 0` disables it too.
+  // Passing `undefined` leaves `skills/` untouched, so a disabled gate never
+  // deletes a folder the user curated.
+  const skillProjection = cfg.procedural?.skillProjection;
+  const skills =
+    cfg.procedural?.enabled === true && skillProjection?.enabled === true
+      ? projectProceduresToSkills(memories, {
+          maxSkills: skillProjection.maxSkills,
+          reservedSlugs: BUILTIN_SKILLS.map((skill) => skill.slug),
+        })
+      : undefined;
+
   // Intentionally NOT catching here: per the JSDoc contract above,
   // schema-validation and I/O errors from `materializeForNamespace` must
   // surface to callers so they can exit non-zero (CLI) or log + recover
@@ -122,6 +137,7 @@ export async function runCodexMaterialize(
     maxSummaryTokens: cfg.codexMaterializeMaxSummaryTokens,
     rolloutRetentionDays: cfg.codexMaterializeRolloutRetentionDays,
     rolloutSummaries: options.rolloutSummaries,
+    skills,
     now: options.now,
   });
   if (options.reason) {

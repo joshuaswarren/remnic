@@ -48,7 +48,18 @@ import { log } from "../logger.js";
 import { readEnvVar, resolveHomeDir } from "../runtime/env.js";
 import type { MemoryFile } from "../types.js";
 import { estimateTokenCount } from "../token-estimate.js";
+import type { SkillBundle } from "../procedural/skill-projection.js";
 import { expandTildePath } from "../utils/path.js";
+import { ensureSafeManagedSubdir } from "./materialize-paths.js";
+import {
+  commitSkillFiles,
+  planSkillFiles,
+  retiredSkillsAlreadyRemoved,
+  skillFilePath,
+  skillFileRelPath,
+  stageSkillFiles,
+  type SkillFile,
+} from "./materialize-skills.js";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -67,6 +78,13 @@ export interface MaterializeOptions {
   rolloutRetentionDays?: number;
   /** Per-session rollout summaries to render. */
   rolloutSummaries?: RolloutSummaryInput[];
+  /**
+   * Projected procedural skill bundles (issue #2369). `undefined` leaves
+   * `skills/` untouched; an array — even an empty one — is authoritative for
+   * the slugs Remnic projected, so retired procedures get their folder
+   * removed. Folders this materializer never projected are never touched.
+   */
+  skills?: SkillBundle[];
   /** Current time, injected for deterministic tests. */
   now?: Date;
   /** Optional logger override for tests. */
@@ -115,6 +133,12 @@ interface SentinelFile {
   namespace: string;
   updated_at: string;
   content_hash: string;
+  /**
+   * Slugs under `skills/` that THIS materializer projected (issue #2369).
+   * Absent on sentinels written before skill projection existed, which reads
+   * as "we have projected nothing", so hand-created folders stay untouched.
+   */
+  projected_skills?: string[];
 }
 
 // ─── Constants ─────────────────────────────────────────────────────────────
@@ -297,6 +321,10 @@ export function materializeForNamespace(
   const destRolloutsDir = path.join(memoriesDir, ROLLOUT_SUBDIR);
   const retainedRolloutNames = new Set(rolloutFiles.map((r) => r.name));
 
+  // Skill bundles (issue #2369) — planning, ownership, and disk layout live in
+  // materialize-skills.ts.
+  const skillPlan = planSkillFiles(options.skills, existingSentinel.projected_skills ?? []);
+
   // ── Idempotence check ──────────────────────────────────────────────────
   const hash = computeContentHash({
     namespace,
@@ -304,6 +332,7 @@ export function materializeForNamespace(
     memoryMd,
     rawMemories,
     rolloutFiles,
+    skillFiles: skillPlan.files,
   });
 
   if (existingSentinel.content_hash === hash) {
@@ -318,15 +347,17 @@ export function materializeForNamespace(
       path.join(memoriesDir, "MEMORY.md"),
       path.join(memoriesDir, "raw_memories.md"),
       ...rolloutFiles.map((r) => path.join(memoriesDir, ROLLOUT_SUBDIR, r.name)),
+      ...skillPlan.files.map((s) => skillFilePath(memoriesDir, s.slug)),
     ];
     const allPresent = requiredFiles.every((f) => fs.existsSync(f));
     const rolloutsClean =
       !rolloutsSupplied ||
       rolloutDirectoryMatchesRetainedSet(
-        ensureSafeRolloutsDir(memoriesDir, destRolloutsDir),
+        ensureSafeManagedSubdir(memoriesDir, destRolloutsDir, ROLLOUT_SUBDIR),
         retainedRolloutNames,
       );
-    if (allPresent && rolloutsClean) {
+    const skillsClean = retiredSkillsAlreadyRemoved(memoriesDir, skillPlan.retiredSlugs);
+    if (allPresent && rolloutsClean && skillsClean) {
       logger.debug?.(`no-op materialization for namespace=${namespace} (hash unchanged)`);
       return {
         namespace,
@@ -403,6 +434,11 @@ export function materializeForNamespace(
     filesWritten.push(path.join(ROLLOUT_SUBDIR, rollout.name));
   }
 
+  stageSkillFiles(tmpDir, skillPlan.files);
+  for (const skill of skillPlan.files) {
+    filesWritten.push(skillFileRelPath(skill.slug));
+  }
+
   // Rename into place. Atomic per-file is sufficient — Codex reads each file
   // independently and tolerates an inconsistent in-between snapshot across
   // files for the duration of the rename loop (milliseconds).
@@ -412,7 +448,7 @@ export function materializeForNamespace(
     fs.renameSync(src, dest);
   }
 
-  const safeDestRolloutsDir = ensureSafeRolloutsDir(memoriesDir, destRolloutsDir);
+  const safeDestRolloutsDir = ensureSafeManagedSubdir(memoriesDir, destRolloutsDir, ROLLOUT_SUBDIR);
   // Only garbage-collect rollout files when the caller actually supplied a
   // `rolloutSummaries` array — otherwise we'd wipe legitimately
   // user/Codex-created recap files on every session-end run, since those
@@ -447,12 +483,17 @@ export function materializeForNamespace(
     fs.renameSync(src, dest);
   }
 
+  commitSkillFiles(memoriesDir, tmpDir, skillPlan);
+
   // Update sentinel last so a crash leaves hash mismatched → next run rewrites.
   const sentinel: SentinelFile = {
     version: MATERIALIZE_VERSION,
     namespace,
     updated_at: now.toISOString(),
     content_hash: hash,
+    projected_skills: skillPlan.supplied
+      ? skillPlan.files.map((s) => s.slug)
+      : (existingSentinel.projected_skills ?? []),
   };
   writeSentinelAtomically(sentinelPath, sentinel);
 
@@ -805,43 +846,6 @@ function rolloutDirectoryMatchesRetainedSet(
   return true;
 }
 
-function isPathInside(parent: string, child: string): boolean {
-  const relative = path.relative(parent, child);
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
-function ensureSafeRolloutsDir(memoriesDir: string, rolloutsDir: string): string {
-  const memoriesReal = fs.realpathSync(memoriesDir);
-
-  try {
-    const stat = fs.lstatSync(rolloutsDir);
-    if (stat.isSymbolicLink()) {
-      throw new Error("is a symbolic link");
-    }
-    if (!stat.isDirectory()) {
-      throw new Error("is not a directory");
-    }
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw new Error(
-        `codex-materialize: unsafe ${ROLLOUT_SUBDIR} directory at ${rolloutsDir}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
-    fs.mkdirSync(rolloutsDir, { recursive: true });
-  }
-
-  const rolloutsReal = fs.realpathSync(rolloutsDir);
-  if (!isPathInside(memoriesReal, rolloutsReal)) {
-    throw new Error(
-      `codex-materialize: unsafe ${ROLLOUT_SUBDIR} directory at ${rolloutsDir}: resolves outside ${memoriesDir}`,
-    );
-  }
-
-  return rolloutsDir;
-}
-
 function readSentinel(sentinelPath: string): SentinelFile | null {
   if (!fs.existsSync(sentinelPath)) return null;
   try {
@@ -857,11 +861,18 @@ function readSentinel(sentinelPath: string): SentinelFile | null {
     ) {
       throw new Error("invalid sentinel schema");
     }
+    // A sentinel written before issue #2369 has no `projected_skills`, which
+    // reads as "nothing projected" — so an unrelated skills/ folder written by
+    // a user or another tool is never treated as ours.
+    const projected = Array.isArray(parsed.projected_skills)
+      ? parsed.projected_skills.filter((slug): slug is string => typeof slug === "string")
+      : [];
     return {
       version: parsed.version,
       namespace: parsed.namespace,
       updated_at: parsed.updated_at,
       content_hash: parsed.content_hash,
+      projected_skills: projected,
     };
   } catch (err) {
     throw new Error(
@@ -1040,6 +1051,7 @@ function computeContentHash(input: {
   memoryMd: string;
   rawMemories: string;
   rolloutFiles: Array<{ name: string; body: string }>;
+  skillFiles: Array<{ slug: string; body: string }>;
 }): string {
   const hash = createHash("sha256");
   hash.update(`v${MATERIALIZE_VERSION}\n`);
@@ -1054,6 +1066,12 @@ function computeContentHash(input: {
   for (const r of sortedRollouts) {
     hash.update(`\n---rollout:${r.name}---\n`);
     hash.update(r.body);
+  }
+  // Sorted by slug so call order cannot flip the hash (§26).
+  const sortedSkills = [...input.skillFiles].sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+  for (const s of sortedSkills) {
+    hash.update(`\n---skill:${s.slug}---\n`);
+    hash.update(s.body);
   }
   return hash.digest("hex");
 }

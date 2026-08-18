@@ -4127,6 +4127,25 @@
             "default": false,
             "description": "When true, installer may register the nightly procedural mining cron job."
           },
+          "skillProjection": {
+            "type": "object",
+            "additionalProperties": false,
+            "default": {},
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "default": false,
+                "description": "Project active procedure memories into host-native `skills/<slug>/SKILL.md` bundles during Codex materialization (issue #2369). Off by default; the CLI export/import commands work regardless of this gate."
+              },
+              "maxSkills": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 500,
+                "default": 20,
+                "description": "Maximum projected skill bundles. 0 disables projection entirely."
+              }
+            }
+          },
           "maintenance": {
             "type": "object",
             "additionalProperties": false,

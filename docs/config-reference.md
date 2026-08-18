@@ -1326,6 +1326,8 @@ Stored as `category: procedure` markdown under `memoryDir/procedures/`. Narrativ
 | `procedural.maintenance.retireMinOutcomes` | `5` | Minimum `mw_fail` before failure-dominant retirement is considered. |
 | `procedural.maintenance.retireFailRatio` | `2` | `mw_fail` must exceed `mw_success × retireFailRatio` for failure-dominant retirement. |
 | `procedural.maintenance.mergeEnabled` | `true` | Whether duplicate-cluster merging runs within the maintenance gate. |
+| `procedural.skillProjection.enabled` | `false` | Project active procedures into host-native `skills/<slug>/SKILL.md` bundles during Codex materialization (issue #2369). Off by default. `remnic export skills` / `remnic import skills` are explicit user actions and work regardless of this gate. Only `status: active` procedures are ever projected. |
+| `procedural.skillProjection.maxSkills` | `20` | Maximum projected bundles per materialization, newest procedure first. **`0` disables projection entirely.** |
 
 ## Preference drift detection (issue #2371)
 
