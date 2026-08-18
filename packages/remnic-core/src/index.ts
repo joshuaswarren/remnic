@@ -1460,3 +1460,6 @@ export type {
 } from "./coding/coding-graph-types.js";
 export type { ResolvedScopeProfilePlan } from "./namespaces/scope-profiles.js";
 export * from "./maintenance/atomic-file.js";
+
+export { MemoryControllerCoordinator, chooseAction, computeEvidenceReportHash, controllerConfigHash, evaluateActiveGates, hashControllerState, verifyEvidenceReport } from "./memory-controller.js";
+export type { ActiveContextAdapter, ActiveContextMessage, ActiveContextPlan, MemoryControllerActionFamily, MemoryControllerChoice, MemoryControllerConfig, MemoryControllerDeps, MemoryControllerEvent, MemoryControllerEvidence, MemoryControllerEvidenceReport, MemoryControllerExecutors, MemoryControllerMode, MemoryControllerPairedSeedEvidence, MemoryControllerReceipt, MemoryControllerRecorder, MemoryControllerReportReader, MemoryControllerRunResult, MemoryControllerState } from "./memory-controller.js";
