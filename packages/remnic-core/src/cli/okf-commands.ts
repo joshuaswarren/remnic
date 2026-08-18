@@ -11,6 +11,7 @@ export function registerOkfCommands(cmd: CliCommand, orchestrator: Orchestrator)
       memoryDir: orchestrator.config.memoryDir,
       conformanceEnabled: orchestrator.config.okf.conformanceEnabled,
       sweepEnabled: orchestrator.config.okf.sweepEnabled,
+      indexFilesEnabled: orchestrator.config.okf.indexFilesEnabled,
     });
     if (code !== 0) process.exitCode = code;
   };

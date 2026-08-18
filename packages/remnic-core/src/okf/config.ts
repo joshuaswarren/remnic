@@ -10,11 +10,14 @@ export interface OkfConfig {
   conformanceEnabled: boolean;
   /** Opt-in governance sweep that backfills `type` on legacy files (default false). */
   sweepEnabled: boolean;
+  /** Generate OKF index.md files in the live store (default false). */
+  indexFilesEnabled: boolean;
 }
 
 export const DEFAULT_OKF_CONFIG: OkfConfig = Object.freeze({
   conformanceEnabled: true,
   sweepEnabled: false,
+  indexFilesEnabled: false,
 });
 
 export function parseOkfConfig(raw: unknown): OkfConfig {
@@ -27,8 +30,10 @@ export function parseOkfConfig(raw: unknown): OkfConfig {
   const record = raw as Record<string, unknown>;
   const conformance = coerceBooleanLike(record.conformanceEnabled, "okf.conformanceEnabled");
   const sweep = coerceBooleanLike(record.sweepEnabled, "okf.sweepEnabled");
+  const indexFiles = coerceBooleanLike(record.indexFilesEnabled, "okf.indexFilesEnabled");
   return {
     conformanceEnabled: conformance ?? DEFAULT_OKF_CONFIG.conformanceEnabled,
     sweepEnabled: sweep ?? DEFAULT_OKF_CONFIG.sweepEnabled,
+    indexFilesEnabled: indexFiles ?? DEFAULT_OKF_CONFIG.indexFilesEnabled,
   };
 }

@@ -6746,6 +6746,11 @@
             "type": "boolean",
             "default": false,
             "description": "Opt-in type backfill. false disables."
+          },
+          "indexFilesEnabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Generate index.md files in the live store. false removes generated indexes."
           }
         }
       },
