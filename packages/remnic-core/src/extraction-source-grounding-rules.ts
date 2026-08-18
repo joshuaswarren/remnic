@@ -14,12 +14,12 @@ import {
   groundingTokenSequence,
   hasContradictoryPolarity,
   hasExplicitRoleSubjectToken,
-  isAttachedNegatedAuxiliary,
   isInterrogativeSourceSentence,
   normalizeForExactMatch,
   normalizedGroundingAlignmentTokenSequence,
   normalizedGroundingTokenSequence,
   sourceSentences,
+  spacelessScriptGroundedTokenScore,
   splitGroundingClauses,
   stemToken,
   tokenize,
@@ -229,6 +229,8 @@ function groundedTokenScore(
   requireAlignedArguments = true,
   requireAllCandidateTokensGrounded = true,
 ): number {
+  const scriptAwareScore = spacelessScriptGroundedTokenScore(candidate, source);
+  if (scriptAwareScore !== null) return scriptAwareScore;
   const candidateTokens = tokenize(candidate);
   if (candidateTokens.size === 0) return 0;
   const sourceTokens = tokenize(source);
