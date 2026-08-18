@@ -571,6 +571,13 @@ The parser accepts boolean-like strings such as `"false"`, `"0"`, `"no"`, and `"
 |---------|---------|-------------|
 | `proactiveExtractionEnabled` | `false` | Enable proactive extraction second-pass paths (feature-gated). |
 | `contextCompressionActionsEnabled` | `false` | Enable context compression action tool paths and action telemetry wiring. |
+| `activeContextTransformLlmEnabled` | `false` | Permit `method=llm` SUMMARY plans; `auto` degrades to deterministic when off (issue #2347). |
+| `activeContextMaxMessages` | `200` | Max messages in one active-context snapshot (hard cap 1000). |
+| `activeContextMaxSnapshotChars` | `200000` | Max content chars in one active-context snapshot (hard cap 1000000). |
+| `activeContextSummaryMaxTokens` | `512` | Max output tokens for one SUMMARY replacement (hard cap 4096). |
+| `activeContextMinRetainedMessages` | `3` | Floor on messages retained after a plan applies (hard cap 50). |
+| `activeContextPlanTtlMinutes` | `15` | Plan and retained-snapshot TTL in minutes (hard cap 1440). |
+| `activeContextRetentionMaxBytes` | `1000000` | Max bytes for the adapter-local retained source snapshot (hard cap 10000000). |
 | `compressionGuidelineLearningEnabled` | `false` | Enable adaptive compression guideline learning loop. |
 | `maxProactiveQuestionsPerExtraction` | `2` | Hard cap on proactive self-questions per extraction (`0` disables). |
 | `proactiveExtractionTimeoutMs` | `2500` | Hard timeout for proactive question generation plus bounded answer synthesis (`0` disables the second pass). |
