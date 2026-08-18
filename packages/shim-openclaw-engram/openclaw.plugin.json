@@ -1,7 +1,7 @@
 {
   "id": "openclaw-engram",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.65.1",
+  "version": "9.65.2",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -5512,7 +5512,11 @@
       },
       "subjectGuard": {
         "type": "string",
-        "enum": ["off", "warn", "enforce"],
+        "enum": [
+          "off",
+          "warn",
+          "enforce"
+        ],
         "default": "warn",
         "description": "Guard for promoting user-subject (or unstamped — fail-closed) memories into shared layers (team-project, server-shared, team spaces). \"warn\" promotes with a recorded warning; \"enforce\" rejects naming the --allow-user-subject override; \"off\" disables. Default \"warn\" so enabling classification later warns without a second flag flip (issue #2372)."
       },
