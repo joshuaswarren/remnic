@@ -4,8 +4,10 @@ import {
   applyMergeOnWrite,
   judgeMergeDecision,
   shouldConsiderMerge,
+  type MergeJudgeVerdict,
   type MergeOnWritePair,
 } from "./merge-on-write.js";
+
 
 function pair(overrides: Partial<MergeOnWritePair> = {}): MergeOnWritePair {
   return {
@@ -63,7 +65,7 @@ test("merge-on-write: judge throw creates", async () => {
 });
 
 test("merge-on-write: uncertain judge creates", async () => {
-  const decision = await judgeMergeDecision(pair(), async () => "uncertain");
+  const decision = await judgeMergeDecision(pair(), async (): Promise<MergeJudgeVerdict> => "uncertain");
   assert.equal(decision, "create");
 });
 
