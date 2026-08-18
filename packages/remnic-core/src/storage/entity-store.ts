@@ -45,6 +45,9 @@ import {
   serializeEntityFile,
   StorageManager,
 } from "../storage.js";
+// Issue #1533 Phase B: importers take entity-file parsing from this storage/
+// subsystem module, not the storage.ts god file (see check-ratchets.mjs).
+export { parseEntityFile } from "../storage.js";
 import { parseOriginClass } from "../security/origin-authority.js";
 
 export interface EntityStoreDeps {
