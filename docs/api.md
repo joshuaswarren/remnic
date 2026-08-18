@@ -97,6 +97,14 @@ Two infrastructure routes carry no request envelope and sit outside the op-gated
 - `GET /engram/v1/wearables/transcripts/search` — search stored transcripts
 - `GET /engram/v1/wearables/memories` — transcript-derived memories
 
+**Location**
+
+- `GET /engram/v1/location/status` — location source status (gates, registration, last sync)
+- `GET /engram/v1/location/check` — probe every enabled location provider
+- `POST /engram/v1/location/sync` — sync recent location days (`date`, `days`)
+- `POST /engram/v1/location/backfill` — sync an explicit range (`from`, `to`; ≤ 90 days)
+- `GET /engram/v1/location/day?date=YYYY-MM-DD` — read one stored location day (404 when unstored)
+
 **Graph, peers, dreams, and console**
 
 - `GET /engram/v1/adapters` — host-adapter status

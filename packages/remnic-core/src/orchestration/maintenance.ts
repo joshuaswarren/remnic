@@ -51,6 +51,7 @@ import {
   graphEdgeDecayCadenceToCronExpr,
 } from "../maintenance/memory-governance-cron.js";
 import { rebuildMemoryLifecycleLedger } from "../maintenance/rebuild-memory-lifecycle-ledger.js";
+import { resolveDaySummaryCronModel } from "../maintenance/day-summary-cron.js";
 import {
   createProjectionRebuildScheduleState,
   maybeRebuildMemoryProjectionScheduled,
@@ -61,6 +62,7 @@ import {
   type LifecyclePendingIo,
 } from "../storage/memory-lifecycle-ledger-access.js";
 import { STATE_FILE_MAX_DECRYPT_BYTES } from "../storage/secure-line-reader.js";
+import { startLocationAutoSync, type LocationAutoSyncHandle } from "../location/scheduler.js";
 import { ActivitySyncRegistrar } from "../activity/sync-registration.js";
 import type { ActivitySyncRunSummary } from "../activity/runner.js";
 import { resolveHomeDir } from "../runtime/env.js";
@@ -152,6 +154,10 @@ export class MaintenanceScheduler {
   // ── Activity (screen-capture) sync scheduler (issue #1900) ──
   // The full arm/re-arm/teardown lifecycle lives in ActivitySyncRegistrar.
   private readonly activityRegistrar: ActivitySyncRegistrar;
+  // ── Location day-sync scheduler (issue #2047) — master default-off; the
+  // timer + lifecycle contract lives in location/scheduler.ts.
+  private locationAutoSync: LocationAutoSyncHandle | null = null;
+
 
   constructor(private readonly deps: MaintenanceSchedulerDeps) {
     this.activityRegistrar = new ActivitySyncRegistrar({
@@ -226,6 +232,18 @@ export class MaintenanceScheduler {
     // master default-off. The registrar owns the arm/re-arm/teardown contract
     // (stop-prior, abort/teardown guards, secure-store refusal, retry latch).
     await this.activityRegistrar.register(signal);
+    // Location day sync (issue #2047): same deferred lifecycle as activity;
+    // ticks run the SAME shared runner as the CLI/MCP/HTTP surfaces.
+    if (
+      !signal.aborted &&
+      this.deps.config.location.enabled &&
+      this.deps.config.location.sources.some((source) => source.enabled)
+    ) {
+      this.locationAutoSync = startLocationAutoSync({
+        config: this.deps.config.location,
+        memoryDir: this.deps.config.memoryDir,
+      });
+    }
   }
 
   async autoRegisterDaySummaryCron(): Promise<void> {
@@ -238,36 +256,7 @@ export class MaintenanceScheduler {
         return;
       }
 
-      // Resolve an OpenClaw cron-routing model only in gateway mode. In plugin
-      // mode, summaryModel is a direct-client model id for Remnic's own LLM
-      // calls and may be unroutable as an OpenClaw agentTurn model.
-      const rawSummaryModel = this.deps.config.summaryModel;
-      const taskPrimary = this.deps.config.taskModelChain?.primary;
-      const isGateway = this.deps.config.modelSource === "gateway";
-      const model = isGateway ? (rawSummaryModel || taskPrimary || undefined) : undefined;
-      // Attach task-chain fallbacks only when the model matches the task-chain
-      // primary. If summaryModel is a distinct override, its fallbacks would
-      // be unrelated to the task chain. Also append gateway default models as
-      // tail fallbacks (de-duped) so a task-chain outage doesn't stop the cron
-      // before reaching the gateway default chain. Mirrors hourly cron pattern.
-      const fallbacks: string[] = [];
-      if (model && taskPrimary && model === taskPrimary) {
-        const seen = new Set<string>(model ? [model] : []);
-        const addUnique = (value: string | undefined) => {
-          if (typeof value !== "string") return;
-          const trimmed = value.trim();
-          if (trimmed.length > 0 && !seen.has(trimmed)) {
-            seen.add(trimmed);
-            fallbacks.push(trimmed);
-          }
-        };
-        for (const fb of this.deps.config.taskModelChain?.fallbacks ?? []) addUnique(fb);
-        const gwDefaults = this.deps.config.gatewayConfig?.agents?.defaults?.model;
-        addUnique(gwDefaults?.primary);
-        if (Array.isArray(gwDefaults?.fallbacks)) {
-          for (const fb of gwDefaults.fallbacks) addUnique(fb);
-        }
-      }
+      const { model, fallbacks } = resolveDaySummaryCronModel(this.deps.config);
 
       const timezone =
         this.deps.config.daySummaryTimezone ||
@@ -1183,12 +1172,15 @@ export class MaintenanceScheduler {
     // re-arm QMD maintenance) and aborts+drains the sync. Capture its drain and
     // await it last so the rest of teardown runs while the aborted tick unwinds.
     const activityDrain = this.activityRegistrar.dispose();
+    const locationDrain = this.locationAutoSync?.stop() ?? Promise.resolve();
+    this.locationAutoSync = null;
     if (this.qmdMaintenanceTimer) {
       clearTimeout(this.qmdMaintenanceTimer);
       this.qmdMaintenanceTimer = null;
     }
     this.qmdMaintenancePending = false;
     await activityDrain;
+    await locationDrain;
     // Belt-and-suspenders: clear anything a late tick armed before the latch.
     if (this.qmdMaintenanceTimer) {
       clearTimeout(this.qmdMaintenanceTimer);

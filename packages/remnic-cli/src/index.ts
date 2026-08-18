@@ -9,6 +9,7 @@
  *   query/xray <text> Query memories; xray renders tier + filters + scores
  *   who-knows <topic> Rank entities by expertise on a topic
  *   wearables <cmd>   Wearable transcript sources (Limitless / Bee / Omi)
+ *   location <cmd>    Location day sync (status | check | sync | backfill | day)
  *   doctor            Run diagnostics
  *   config            Show current config
  *   daemon <cmd>      start | stop | restart | status | install | uninstall the system service
@@ -163,12 +164,11 @@ import {
   expandTildePath,
   forkCapsule,
   readForkLineage,
-  runWearablesCliCommand,
   OPERATION_NAMES,
   validateCapabilitiesForMint,
 } from "@remnic/core";
 import { PLUGIN_ID as REMNIC_OPENCLAW_PLUGIN_ID, resolveRemnicPluginEntry } from "@remnic/core/plugin-id.js";
-import { runMeetingsBinaryCommand } from "./commands/meetings.js";
+import { runMeetingsBinaryCommand } from "./commands/meetings.js"; import { runWearablesBinaryCommand } from "./commands/wearables.js"; import { runLocationBinaryCommand } from "./commands/location.js";
 import { runOkfBinaryCommand } from "./commands/okf.js";
 import { runExternalWikiBinaryCommand } from "./commands/external-wiki.js";
 import { runProceduralBinaryCommand } from "./commands/procedural.js";
@@ -435,7 +435,7 @@ type CommandName =
   | "promotion-candidates"
   | "security"
   | "wearables"
-  | "meetings" | "okf"
+  | "meetings" | "okf" | "location"
   | "external-wiki"
   | "capsule"
   | "offline"
@@ -13069,68 +13069,9 @@ Other:
 
     case "wearables": {
       // Wearable transcript sources (Limitless / Bee / Omi). All parsing,
-      // validation, and rendering live in @remnic/core's shared runner so
-      // this CLI and the OpenClaw host CLI never fork. Connector packages
-      // are optional à-la-carte installs loaded inside core via
-      // computed-specifier dynamic imports.
-      const wearablesArgs =
-        rest.length === 0 || rest[0] === "--help" || rest[0] === "-h"
-          ? ["help"]
-          : rest;
-      let wearablesOrchestrator: Orchestrator | undefined;
-      try {
-        // Config/bootstrap failures get a constant message: parseConfig
-        // error strings can embed config values, including API keys
-        // (CodeQL js/clear-text-logging), so they must never reach
-        // console output.
-        let wearablesService: ReturnType<Orchestrator["getWearablesService"]>;
-        try {
-          const configPath = resolveConfigPath();
-          const raw = fs.existsSync(configPath)
-            ? JSON.parse(fs.readFileSync(configPath, "utf8"))
-            : {};
-          const remnicCfg = resolveRemnicConfigRecord(raw);
-          const config = parseConfig(remnicCfg);
-          wearablesOrchestrator = new Orchestrator(config);
-          await wearablesOrchestrator.initialize();
-          await wearablesOrchestrator.deferredReady;
-          wearablesService = wearablesOrchestrator.getWearablesService();
-        } catch {
-          console.error(
-            "wearables: failed to load the Remnic config or start the memory engine — run `remnic doctor` and check the config file for errors",
-          );
-          process.exitCode = 1;
-          break;
-        }
-        const code = await runWearablesCliCommand(wearablesService, wearablesArgs, {
-          stdout: process.stdout,
-          stderr: process.stderr,
-        });
-        // Standalone one-shot: drain the debounced meeting build the sync scheduled
-        // before this short-lived process exits (mirrors cli.ts forwardWearables; NOT the auto-sync path). #2123.
-        if (wearablesArgs[0] === "sync" && code === 0 && wearablesOrchestrator.config.meetings.enabled) {
-          await (await wearablesOrchestrator.getMeetingsService()).flushBuilds();
-        }
-        if (code !== 0) process.exitCode = code;
-      } catch (err) {
-        // Runner errors are our own constructed messages (connector API
-        // errors, IO failures) — no config taint.
-        console.error(err instanceof Error ? err.message : String(err));
-        process.exitCode = 1;
-      } finally {
-        if (wearablesOrchestrator) {
-          const maybeShutdown = (
-            wearablesOrchestrator as unknown as { shutdown?: () => Promise<void> }
-          ).shutdown;
-          if (typeof maybeShutdown === "function") {
-            try {
-              await maybeShutdown.call(wearablesOrchestrator);
-            } catch {
-              // Best effort — shutdown errors must not mask command results.
-            }
-          }
-        }
-      }
+      // validation, and rendering live in @remnic/core's shared runner —
+      // commands/wearables.ts boots the one-shot orchestrator.
+      await runWearablesBinaryCommand(rest);
       break;
     }
 
@@ -13138,6 +13079,9 @@ Other:
       await runMeetingsBinaryCommand(rest);
       break;
     }
+    case "location":
+      await runLocationBinaryCommand(rest);
+      break;
     case "okf":
       await runOkfBinaryCommand(rest);
       break;
@@ -13391,6 +13335,9 @@ Usage:
   remnic meetings <list|show|build>
     Retrospective meetings: list, show, or build a day's meetings.
     Run "remnic meetings help" for details.
+  remnic location <status|check|sync|backfill|day>
+    Location day sync from registered providers (e.g. Reitti, issue #2047).
+    Run "remnic location help" for details.
   remnic okf <lint|sweep> [--json]
     OKF v0.1 conformance: lint reports missing frontmatter/type findings,
     sweep backfills missing type values (okf.sweepEnabled).
