@@ -12,7 +12,23 @@ export const TIMELINE_RESERVED_IDLE = "system.idle";
 export const TIMELINE_RESERVED_PAUSE = "system.pause";
 
 const COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
-const ID_PATTERN = /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)*$/;
+
+function isTimelineCategoryId(id: string): boolean {
+  const parts = id.split(".");
+  if (parts.length === 0) return false;
+  for (const part of parts) {
+    if (part.length === 0) return false;
+    const first = part.charCodeAt(0);
+    if (first < 97 || first > 122) return false;
+    for (let i = 1; i < part.length; i += 1) {
+      const code = part.charCodeAt(i);
+      const ok = (code >= 97 && code <= 122) || (code >= 48 && code <= 57) || code === 45;
+      if (!ok) return false;
+    }
+  }
+  return true;
+}
+
 
 /**
  * Default registry. User category orders step by 10 so a corrected registry
@@ -43,8 +59,8 @@ export function validateTimelineCategories(categories: readonly TimelineCategory
   }
   const seen = new Set<string>();
   for (const category of categories) {
-    if (typeof category.id !== "string" || !ID_PATTERN.test(category.id)) {
-      throw new RangeError(`timeline category id must match ${ID_PATTERN}: ${String(category.id)}`);
+    if (typeof category.id !== "string" || !isTimelineCategoryId(category.id)) {
+      throw new RangeError(`timeline category id must be dotted kebab-case: ${String(category.id)}`);
     }
     if (seen.has(category.id)) {
       throw new RangeError(`timeline category id must be unique: ${category.id}`);
