@@ -20,6 +20,7 @@ import { ProfilingCollector } from "../profiling.js";
 import { trustResultFor, type TrustStageResultItem } from "../trust-score-stage.js";
 import type { RecallResultFormatter } from "./recall-result-formatter.js";
 import type { IdentityInjectionMode, PluginConfig, QmdSearchResult } from "../types.js";
+import { applyRecallStateViews } from "../recall-state-view-wire.js";
 
 export interface RecallEntryDeps {
   appendRecallSection(
@@ -274,9 +275,13 @@ export class RecallEntryCoordinator {
   }): void {
     const sectionId = "memories";
     const trustByPath = options.trustByPath ?? null;
-    const injectable = trustByPath
-      ? options.results.filter((r) => !trustResultFor(trustByPath, r)?.quarantined)
-      : options.results;
+    const injectable = applyRecallStateViews(
+      trustByPath
+        ? options.results.filter((r) => !trustResultFor(trustByPath, r)?.quarantined)
+        : options.results,
+      options.retrievalQuery,
+      this.deps.config,
+    );
     if (injectable.length === 0) return;
 
     const formatted = this.deps.recallResultFormatter.formatQmdResultEntries(
