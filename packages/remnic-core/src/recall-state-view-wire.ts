@@ -15,9 +15,13 @@ import {
 export function applyRecallStateViews<T extends StateViewResult>(
   results: T[],
   query: string,
-  config: { ["recallStateViews"]?: unknown },
+  config: unknown,
 ): T[] {
+  const raw =
+    typeof config === "object" && config !== null && "recallStateViews" in config
+      ? (config as { recallStateViews?: unknown }).recallStateViews
+      : undefined;
   return annotateStateView(results, query, [], {
-    enabled: parseRecallStateViews(config["recallStateViews"]),
+    enabled: parseRecallStateViews(raw),
   });
 }
