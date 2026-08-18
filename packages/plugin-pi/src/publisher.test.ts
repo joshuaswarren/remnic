@@ -10,6 +10,7 @@ import { type PublishContext, loadTokenStore, saveTokenStore } from "@remnic/cor
 import {
   OmpMemoryExtensionPublisher,
   PiMemoryExtensionPublisher,
+  PrimeAgentMemoryExtensionPublisher,
   resolveBunBinary,
   resolveBunOnPath,
   resolveOmpWrapperImportSpecifier,
@@ -2030,4 +2031,127 @@ test("restore does not write through a symlink swapped in after the snapshot (TO
     externalOriginal,
     "symlink target must not be written through during restore (TOCTOU defense)",
   );
+});
+
+// ── prime-agent publisher ────────────────────────────────────────────────────
+
+test("prime-agent publisher exposes hostId prime-agent and resolves the ~/.prime/agent extension root", async () => {
+  const publisher = new PrimeAgentMemoryExtensionPublisher();
+  assert.equal(publisher.hostId, "prime-agent");
+  assert.equal(
+    await publisher.resolveExtensionRoot({ HOME: "/home/alice" }),
+    path.join("/home/alice", ".prime", "agent", "extensions", "remnic"),
+  );
+});
+
+test("prime-agent publisher honors PRIME_AGENT_CODING_AGENT_DIR and ignores Pi-family env vars", async () => {
+  const publisher = new PrimeAgentMemoryExtensionPublisher();
+  assert.equal(
+    await publisher.resolveExtensionRoot({
+      HOME: "/home/alice",
+      PRIME_AGENT_CODING_AGENT_DIR: "/custom/prime-agent",
+    }),
+    path.join("/custom/prime-agent", "extensions", "remnic"),
+  );
+  // Prime Agent is a separate install tree: the Pi-family overrides must NOT
+  // relocate it (unlike omp, which inherits PI_CODING_AGENT_DIR).
+  assert.equal(
+    await publisher.resolveExtensionRoot({
+      HOME: "/home/alice",
+      PI_CODING_AGENT_DIR: "/wrong/pi-agent",
+      PI_CONFIG_DIR: ".wrong-omp",
+    }),
+    path.join("/home/alice", ".prime", "agent", "extensions", "remnic"),
+  );
+});
+
+test("prime-agent publisher writes config, wrapper, and package.json; unpublish removes them", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-prime-agent-publisher-test-"));
+  const home = path.join(root, "home");
+  fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
+
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousPrimeDir = process.env.PRIME_AGENT_CODING_AGENT_DIR;
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  delete process.env.PRIME_AGENT_CODING_AGENT_DIR;
+  t.after(() => {
+    restoreEnv("HOME", previousHome);
+    restoreEnv("USERPROFILE", previousUserProfile);
+    restoreEnv("PRIME_AGENT_CODING_AGENT_DIR", previousPrimeDir);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  saveTokenStore({
+    tokens: [{ connector: "prime-agent", token: "prime-token", createdAt: "2026-08-17T00:00:00.000Z" }],
+  });
+
+  const publisher = new PrimeAgentMemoryExtensionPublisher();
+  const result = await publisher.publish({
+    config: {
+      daemonUrl: "http://new-daemon/",
+      memoryDir: path.join(root, "memory"),
+      namespace: "ns-prime",
+    },
+    skillsRoot: path.join(root, "memory", "skills"),
+    log: { info: () => undefined, warn: () => undefined, error: () => undefined },
+  });
+
+  const extensionRoot = path.join(home, ".prime", "agent", "extensions", "remnic");
+  assert.equal(result.extensionRoot, extensionRoot);
+  assert.equal(result.hostId, "prime-agent");
+
+  const cfg = JSON.parse(
+    fs.readFileSync(path.join(extensionRoot, "remnic.config.json"), "utf8"),
+  ) as Record<string, unknown>;
+  assert.equal(cfg.authToken, "prime-token");
+  assert.equal(cfg.namespace, "ns-prime");
+  assert.equal(cfg.remnicDaemonUrl, "http://new-daemon");
+
+  assert.ok(fs.existsSync(path.join(extensionRoot, "index.ts")), "index.ts was not written");
+  const readme = fs.readFileSync(path.join(extensionRoot, "README.md"), "utf8");
+  assert.match(readme, /Prime Agent/);
+
+  // Prime Agent reads the extension through a package manifest: the install
+  // must ship a package.json whose only dependency is @remnic/plugin-pi.
+  const pkg = JSON.parse(
+    fs.readFileSync(path.join(extensionRoot, "package.json"), "utf8"),
+  ) as { dependencies?: Record<string, string> };
+  const dependencyRange = pkg.dependencies?.["@remnic/plugin-pi"];
+  assert.ok(dependencyRange, "package.json must depend on @remnic/plugin-pi");
+  assert.match(dependencyRange, /^\^\d+\.\d+\.\d+/u, "dependency must be a caret range on a concrete version");
+
+  await publisher.unpublish();
+  assert.equal(
+    fs.existsSync(path.join(extensionRoot, "remnic.config.json")),
+    false,
+    "unpublish must remove remnic.config.json",
+  );
+  assert.equal(fs.existsSync(path.join(extensionRoot, "index.ts")), false, "unpublish must remove index.ts");
+  assert.equal(fs.existsSync(path.join(extensionRoot, "package.json")), false, "unpublish must remove package.json");
+});
+
+test("prime-agent publisher unpublish sweeps the PRIME_AGENT_CODING_AGENT_DIR install", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-prime-agent-remove-test-"));
+  const agentHome = path.join(root, "prime-agent");
+  const extensionRoot = path.join(agentHome, "extensions", "remnic");
+  fs.mkdirSync(extensionRoot, { recursive: true });
+  fs.writeFileSync(path.join(extensionRoot, "remnic.config.json"), "{}\n");
+  fs.writeFileSync(path.join(extensionRoot, "index.ts"), "export default {};\n");
+  fs.writeFileSync(path.join(extensionRoot, "package.json"), "{}\n");
+  fs.writeFileSync(path.join(extensionRoot, "README.md"), "notes\n");
+
+  const previousPrimeDir = process.env.PRIME_AGENT_CODING_AGENT_DIR;
+  process.env.PRIME_AGENT_CODING_AGENT_DIR = agentHome;
+  t.after(() => {
+    restoreEnv("PRIME_AGENT_CODING_AGENT_DIR", previousPrimeDir);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  await new PrimeAgentMemoryExtensionPublisher().unpublish();
+  assert.equal(fs.existsSync(path.join(extensionRoot, "remnic.config.json")), false);
+  assert.equal(fs.existsSync(path.join(extensionRoot, "index.ts")), false);
+  assert.equal(fs.existsSync(path.join(extensionRoot, "package.json")), false);
+  assert.equal(fs.existsSync(extensionRoot), false, "empty extension root must be removed");
 });

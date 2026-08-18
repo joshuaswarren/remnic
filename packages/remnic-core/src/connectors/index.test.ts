@@ -174,6 +174,30 @@ test("BUILTIN catalog includes the omp (oh-my-pi) connector", async (t) => {
   );
 });
 
+test("BUILTIN catalog includes the prime-agent connector", async (t) => {
+  const sandbox = makeSandbox(t);
+
+  await withEnv(
+    {
+      HOME: sandbox.home,
+      USERPROFILE: sandbox.home,
+      XDG_CONFIG_HOME: sandbox.xdgConfigHome,
+    },
+    () => {
+      const registry = loadRegistry();
+      const primeAgent = registry.connectors.find((connector) => connector.id === "prime-agent");
+
+      assert.ok(primeAgent, "prime-agent connector should be present in the built-in catalog");
+      assert.equal(primeAgent?.requiresToken, true);
+      assert.equal(primeAgent?.capabilities?.connectionType, "http");
+      assert.ok(
+        (primeAgent?.tags ?? []).includes("official"),
+        "prime-agent should be tagged official",
+      );
+    },
+  );
+});
+
 test("loadRegistry filters custom connectors with invalid IDs", async (t) => {
   const sandbox = makeSandbox(t);
 

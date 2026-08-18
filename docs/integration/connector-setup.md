@@ -97,6 +97,26 @@ See the [full Pi integration guide](pi.md) for hooks, slash commands, and compac
 
 ---
 
+## Prime Agent
+
+Prime Agent is a Pi-fork coding agent; the same native extension works there:
+
+```bash
+remnic connectors install prime-agent
+```
+
+This writes `~/.prime/agent/extensions/remnic/` — an `index.ts` auto-discovery
+wrapper, a `package.json` depending on `@remnic/plugin-pi`, and a private
+`remnic.config.json` with the daemon URL, namespace, and connector token.
+Relocate the install with `PRIME_AGENT_CODING_AGENT_DIR`; no bundling step, so
+`bun` is not required.
+
+See the [full Prime Agent guide](prime-agent.md) for configuration and removal.
+
+**Capabilities:** observe, recall, store, search, MCP tools, compaction coordination
+
+---
+
 ## Cursor
 
 Add to `.cursor/mcp.json` in your project root (or `~/.cursor/mcp.json` globally):

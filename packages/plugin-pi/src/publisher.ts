@@ -21,7 +21,14 @@ import {
   resolveOmpExtensionRoot,
   resolvePiAgentHome,
   resolvePiExtensionRoot,
+  resolvePrimeAgentAgentHome,
+  resolvePrimeAgentExtensionRoot,
 } from "./paths.js";
+import {
+  renderOmpLoader,
+  renderOmpPackageJson,
+  renderOmpPostinstall,
+} from "./omp-loader-templates.js";
 import { DEFAULT_CONFIG } from "./config.js";
 
 const DEFAULT_DAEMON_PORT = 4318;
@@ -84,6 +91,22 @@ const OMP_HOST: HostPublisherDescriptor = {
   listRemovalAgentHomes: ompRemovalAgentHomes,
 };
 
+const PRIME_AGENT_HOST: HostPublisherDescriptor = {
+  hostId: "prime-agent",
+  connectorId: "prime-agent",
+  displayName: "Prime Agent",
+  tokenGenerateHint: "remnic token generate prime-agent",
+  resolveAgentHome: resolvePrimeAgentAgentHome,
+  resolveExtensionRoot: resolvePrimeAgentExtensionRoot,
+  listRemovalAgentHomes: primeAgentRemovalAgentHomes,
+};
+
+function primeAgentRemovalAgentHomes(env: NodeJS.ProcessEnv): string[] {
+  const homes = new Set<string>([resolvePrimeAgentAgentHome(env)]);
+  homes.add(resolvePrimeAgentAgentHome({ HOME: env.HOME, USERPROFILE: env.USERPROFILE }));
+  return [...homes];
+}
+
 /**
  * Every omp agent home a stale extension might live under, so `unpublish` cleans
  * up regardless of the profile/env active at remove time: the env-resolved home,
@@ -115,7 +138,7 @@ function ompRemovalAgentHomes(env: NodeJS.ProcessEnv): string[] {
 }
 
 /**
- * Shared publisher for Pi-family hosts. Concrete hosts (Pi, omp) subclass this
+ * Shared publisher for Pi-family hosts. Concrete hosts (Pi, omp, Prime Agent) subclass this
  * with a {@link HostPublisherDescriptor}; the install/rollback machinery is
  * identical across hosts.
  */
@@ -387,6 +410,78 @@ export class PiMemoryExtensionPublisher extends HostMemoryExtensionPublisher {
 }
 
 /**
+ * Publisher for Prime Agent (`~/.prime/agent/extensions/remnic`), a Pi-fork
+ * coding agent. It loads the plain `index.ts` wrapper directly (no bun
+ * pre-bundle, so no loader/dist-bundle machinery), but discovers extensions
+ * through a package manifest — the install therefore also writes a
+ * `package.json` depending on `@remnic/plugin-pi`.
+ */
+export class PrimeAgentMemoryExtensionPublisher extends HostMemoryExtensionPublisher {
+  constructor() {
+    super(PRIME_AGENT_HOST);
+  }
+
+  protected get ownedFileNames(): readonly string[] {
+    return [...BASE_OWNED_FILES, "package.json"];
+  }
+
+  protected finalizePublish(
+    _ctx: PublishContext,
+    extensionRoot: string,
+  ): void {
+    atomicWriteFile(
+      path.join(extensionRoot, "package.json"),
+      renderPrimeAgentPackageJson(),
+      0o644,
+    );
+  }
+}
+
+/**
+ * Renders the extension `package.json` for Prime Agent: a private module whose
+ * only content is the `@remnic/plugin-pi` dependency, so a package install
+ * inside the extension root makes the wrapper's imports resolvable.
+ */
+function renderPrimeAgentPackageJson(): string {
+  const manifest = {
+    name: "remnic-prime-agent-extension",
+    version: "0.0.0",
+    private: true,
+    type: "module",
+    dependencies: {
+      "@remnic/plugin-pi": `^${readPluginPiVersion()}`,
+    },
+  };
+  return `${JSON.stringify(manifest, null, 2)}\n`;
+}
+
+/**
+ * Reads the running @remnic/plugin-pi package version so the generated
+ * dependency range tracks the publisher that wrote it. Works from both the
+ * compiled dist entry and the tsx-run source. Fails loudly: a package.json the
+ * publisher cannot read is an install-environment bug, not something to paper
+ * over with a wildcard.
+ */
+function readPluginPiVersion(): string {
+  const manifestPath = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "..",
+    "package.json",
+  );
+  try {
+    const parsed = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as { version?: unknown };
+    if (typeof parsed.version === "string" && parsed.version.length > 0) {
+      return parsed.version;
+    }
+  } catch {
+    // fall through to the error below
+  }
+  throw new Error(
+    `Remnic prime-agent extension: cannot read the @remnic/plugin-pi version from ${manifestPath}.`,
+  );
+}
+
+/**
  * Marks a failure originating from the omp pre-bundle step (bun missing, or the
  * `bun build` itself failing). {@link HostMemoryExtensionPublisher.publish}
  * catches this and rolls back the written files but SKIPS the connector-token
@@ -653,184 +748,6 @@ function renderWrapper(
     `export default createRemnicPiExtension({ configPath: ${JSON.stringify(configPath)} });`,
     "",
   ].join("\n");
-}
-
-/**
- * Generates the self-healing `loader.js` that omp loads via the package
- * manifest's `omp.extensions` entry. It mtime-compares the pre-bundled
- * `dist-bundle/index.js` against `index.ts` and the underlying @remnic/plugin-pi
- * dist, rebuilds via `bun build` when stale (e.g. after an `npm update`), then
- * imports the self-contained bundle so omp's embedded runtime never resolves
- * bare npm specifiers at load time.
- */
-function renderOmpLoader(pluginPiDistPath: string, bunBin: string): string {
-  return [
-    "// Auto-generated by Remnic's OmpMemoryExtensionPublisher.",
-    "// omp's embedded runtime cannot resolve bare npm specifiers from this",
-    "// extension's node_modules, so we pre-bundle with `bun build` and import",
-    "// the self-contained bundle here. Rebuilt automatically when index.ts or",
-    "// the underlying @remnic/plugin-pi dist changes.",
-    "",
-    'import { existsSync, renameSync, rmSync, statSync } from "node:fs";',
-    'import { spawnSync } from "node:child_process";',
-    'import { dirname, join } from "node:path";',
-    'import { fileURLToPath, pathToFileURL } from "node:url";',
-    "",
-    'const here = dirname(fileURLToPath(import.meta.url));',
-    'const bundleDir = join(here, "dist-bundle");',
-    'const bundleEntry = join(bundleDir, "index.js");',
-    'const sourceEntry = join(here, "index.ts");',
-    `const pluginPiEntry = ${JSON.stringify(pluginPiDistPath)};`,
-    // Reuse the bun path resolved at install time (REMNIC_OMP_BUN_BIN, PATH,
-    // or a common absolute location). Fall back to "bun" on PATH if the
-    // resolved path no longer exists (e.g. the extension tree was moved), so
-    // self-healing still works when bun is reachable only via PATH.
-    `const resolvedBunBin = ${JSON.stringify(bunBin)};`,
-    'const bunForRebuild = resolvedBunBin && existsSync(resolvedBunBin) ? resolvedBunBin : "bun";',
-    "",
-    "function bundleIsStale() {",
-    "  if (!existsSync(bundleEntry)) return true;",
-    "  const bundleMtime = statSync(bundleEntry).mtimeMs;",
-    "  if (existsSync(sourceEntry) && bundleMtime < statSync(sourceEntry).mtimeMs) return true;",
-    "  if (pluginPiEntry && existsSync(pluginPiEntry) && bundleMtime < statSync(pluginPiEntry).mtimeMs) return true;",
-    "  return false;",
-    "}",
-    "",
-    "function rebuildBundle() {",
-    "  // Build to a temp dir and swap, mirroring the install-time build, so a",
-    "  // failed self-heal rebuild never corrupts the working bundle.",
-    '  var tmp = join(here, ".dist-bundle.tmp-" + process.pid + "-" + Date.now());',
-    "  var result = spawnSync(bunForRebuild, [",
-    '    "build",',
-    "    sourceEntry,",
-    '    "--target=bun",',
-    '    "--outdir=" + tmp',
-    "  ], {",
-    "    cwd: here,",
-    '    stdio: "inherit",',
-    "  });",
-    "  if (result.status !== 0 || result.error) {",
-    "    try { rmSync(tmp, { recursive: true, force: true }); } catch (e) {}",
-    "    throw new Error(",
-    '      "Remnic omp extension: bundle is stale or missing and could not be rebuilt. " +',
-    '      "Install bun (https://bun.sh), then run " +',
-    '      "`bun build index.ts --target=bun --outdir=dist-bundle` inside " + here',
-    "    );",
-    "  }",
-    "  var backup = null;",
-    "  try {",
-    "    if (existsSync(bundleDir)) {",
-    '      backup = join(here, ".dist-bundle.bak-" + process.pid + "-" + Date.now());',
-    "      renameSync(bundleDir, backup);",
-    "    }",
-    "    renameSync(tmp, bundleDir);",
-    "    if (backup) { try { rmSync(backup, { recursive: true, force: true }); } catch (e) {} }",
-    "  } catch (err) {",
-    "    try { rmSync(tmp, { recursive: true, force: true }); } catch (e) {}",
-    "    if (backup && existsSync(backup) && !existsSync(bundleDir)) { try { renameSync(backup, bundleDir); } catch (e) {} }",
-    "    throw new Error(",
-    '      "Remnic omp extension: failed to finalize rebuilt bundle - " + (err && err.message ? err.message : err)',
-    "    );",
-    "  }",
-    "}",
-
-    "",
-    "if (bundleIsStale()) rebuildBundle();",
-    "",
-    "// Cache-bust so a freshly rebuilt bundle is loaded instead of a stale cached copy.",
-    'const bundle = await import(pathToFileURL(bundleEntry).href + "?t=" + Date.now());',
-    "export default bundle.default;",
-    "",
-  ].join("\n");
-}
-
-/**
- * Generates the `package.json` that tells omp to load `loader.js` (not
- * auto-discover `index.ts`) and re-bundles after `npm install` via postinstall.
- */
-function renderOmpPackageJson(): string {
-  // Postinstall re-bundles after `npm install` (e.g. a plugin-pi upgrade moved
-  // the dist mtime past the bundle). It delegates to postinstall-bundle.cjs — a
-  // Node-only helper — so npm's default cmd.exe shell on Windows runs it just as
-  // well as POSIX bash. The helper embeds the resolved bun path with a PATH
-  // fallback and swaps the bundle atomically.
-  const manifest = {
-    name: "remnic-omp-extension",
-    version: "0.0.0",
-    private: true,
-    type: "module",
-    omp: { extensions: ["./loader.js"] },
-    // Legacy key so older omp builds that only read `pi.extensions` also
-    // resolve loader.js instead of falling through to index.ts.
-    pi: { extensions: ["./loader.js"] },
-    scripts: { postinstall: "node postinstall-bundle.cjs" },
-  };
-  return `${JSON.stringify(manifest, null, 2)}\n`;
-}
-
-/**
- * Generates the cross-platform `postinstall-bundle.cjs` helper. Node-only, so
- * npm's default cmd.exe shell on Windows re-bundles after `npm install` just as
- * well as POSIX bash. Embeds the bun path resolved at install time with a PATH
- * fallback and writes the new bundle via a temp-dir swap so a failed rebuild
- * never corrupts the working bundle. The emitted script uses string
- * concatenation (no template literals) so it stays parseable everywhere.
- */
-function renderOmpPostinstall(bunBin: string): string {
-  // Single template literal: the emitted .cjs uses string concatenation (no
-  // template literals of its own), so this body has no backticks and the one
-  // ${JSON.stringify(bunBin)} interpolation is unambiguous.
-  return `// Auto-generated by Remnic's OmpMemoryExtensionPublisher.
-// Re-bundles the omp extension after npm install (e.g. a plugin-pi upgrade)
-// using the bun path resolved at install time, with a PATH fallback. Node-only
-// so it runs under npm's default cmd.exe shell on Windows as well as POSIX bash.
-"use strict";
-var fs = require("node:fs");
-var cp = require("node:child_process");
-var path = require("node:path");
-
-var RESOLVED_BUN = ${JSON.stringify(bunBin)};
-var dir = __dirname;
-var entry = path.join(dir, "index.ts");
-var out = path.join(dir, "dist-bundle");
-
-function pickBun() {
-  var env = process.env.REMNIC_OMP_BUN_BIN;
-  if (env && fs.existsSync(env)) return env;
-  if (RESOLVED_BUN && fs.existsSync(RESOLVED_BUN)) return RESOLVED_BUN;
-  return "bun";
-}
-
-function rebuild() {
-  var bun = pickBun();
-  var tmp = path.join(dir, ".dist-bundle.tmp-" + process.pid + "-" + Date.now());
-  var r = cp.spawnSync(bun, ["build", entry, "--target=bun", "--outdir=" + tmp], { cwd: dir, stdio: "inherit" });
-  if (r.error || r.status !== 0) {
-    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (e) {}
-    throw new Error("Remnic omp extension: postinstall bun build failed (bun=" + bun + "). Run bun build index.ts --target=bun --outdir=dist-bundle manually inside " + dir);
-  }
-  var backup = null;
-  try {
-    if (fs.existsSync(out)) {
-      backup = path.join(dir, ".dist-bundle.bak-" + process.pid + "-" + Date.now());
-      fs.renameSync(out, backup);
-    }
-    fs.renameSync(tmp, out);
-    if (backup) { try { fs.rmSync(backup, { recursive: true, force: true }); } catch (e) {} }
-  } catch (err) {
-    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (e) {}
-    if (backup && fs.existsSync(backup) && !fs.existsSync(out)) { try { fs.renameSync(backup, out); } catch (e) {} }
-    throw err;
-  }
-}
-
-try {
-  rebuild();
-} catch (err) {
-  console.error(err && err.message ? err.message : err);
-  process.exit(1);
-}
-`;
 }
 
 /**

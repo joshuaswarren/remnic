@@ -2,7 +2,7 @@
 
 Remnic is an open-source, local-first memory and context layer for AI agents. One
 memory store, every agent: OpenClaw, Claude Code, Codex CLI, Cursor, ChatGPT
-(developer mode), Hermes, Replit, Pi, omp, and any MCP client. All data lives on
+(developer mode), Hermes, Replit, Pi, omp, Prime Agent, and any MCP client. All data lives on
 your machine as plain markdown with YAML frontmatter. MIT licensed.
 
 This is the map of everything under `docs/`. New here? Read the
@@ -26,6 +26,7 @@ packaged adapter is.
 - [ChatGPT (developer mode)](integration/chatgpt.md) — Give ChatGPT persistent, governed memory on your own infrastructure via MCP and OAuth 2.1.
 - [Pi coding agent](integration/pi.md) — Native Pi extension using Pi's hooks, slash commands, and compaction coordination.
 - [Oh My Pi (omp)](integration/omp.md) — omp rules, MCP server config, and the native omp extension.
+- [Prime Agent](integration/prime-agent.md) — Pi-fork coding agent; `remnic connectors install prime-agent` and the shared Pi-family extension.
 - [Hermes setup](integration/hermes-setup.md) — Hermes Agent via the `remnic-hermes` package or session-id auto-detection.
 - [Deployment topologies](integration/deployment-topologies.md) — Localhost, LAN, remote, containerized, and standalone layouts.
 - [Plugin ID and memory namespaces](integration/plugin-id-and-memory-namespaces.md) — The OpenClaw plugin id split, the memory-slot gate, and namespace isolation.

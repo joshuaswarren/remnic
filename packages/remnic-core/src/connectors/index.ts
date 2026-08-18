@@ -38,6 +38,7 @@ import {
   droidMcpDoctorCheck as droidMcpDoctorCheckImpl,
   readDroidMcpProvenance,
 } from "./droid-mcp.js";
+import { PRIME_AGENT_CONNECTOR_MANIFEST } from "./prime-agent.js";
 
 // Native memory artifact materialization for Codex CLI (#378). Surfaced here
 // so downstream callers can `import { materializeForNamespace } from "@remnic/core/connectors"`.
@@ -464,6 +465,7 @@ export const BUILTIN_CONNECTORS: ConnectorManifest[] = [
     tags: ["official", "ai", "omp", "pi", "coding-agent"],
     requiresToken: true,
   },
+  PRIME_AGENT_CONNECTOR_MANIFEST,
   {
     id: "replit",
     name: "Replit Agent",
