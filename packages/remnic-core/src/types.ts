@@ -12,6 +12,7 @@ import type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
 export type { ContradictionLocalizationConfig, ContradictionScanConfig } from "./contradiction-config.js";
 export type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
 import type { ProceduralMaintenanceConfig } from "./procedural/maintenance-config.js";
+import type { SkillProjectionConfig } from "./procedural/skill-projection.js";
 
 import type { AmbientCaptureProvenance, BufferTurnOwner, SecurityConfig, OriginMetadata } from "./security/types.js";
 export type MemorySubject = "user" | "agent";
@@ -400,6 +401,8 @@ export interface ProceduralConfig {
   proceduralMiningCronAutoRegister: boolean;
   recallMaxProcedures: number;
   maintenance: ProceduralMaintenanceConfig;
+  /** Host-native `skills/<slug>/SKILL.md` projection of active procedures (issue #2369). */
+  skillProjection: SkillProjectionConfig;
 }
 
 /**

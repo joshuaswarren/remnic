@@ -16,6 +16,7 @@ import { padEndDisplay, truncateGraphemeSafe } from "./whitespace.js";
 import { runWearablesCliCommand } from "./wearables/cli.js";
 import { registerMeetingsCommands } from "./cli/meetings-commands.js";
 import { registerOkfCommands } from "./cli/okf-commands.js";
+import { registerSkillsCommands } from "./cli/skills-commands.js";
 import { registerResearchStatusCommands } from "./cli/research-status-commands.js";
 import { registerCreationLedgerCommands } from "./cli/creation-ledger-commands.js";
 import type {
@@ -4316,7 +4317,7 @@ export function registerCli(
           }
         });
 
-      cmd
+      const exportCmd = cmd
         .command("export")
         .description("Export Remnic memory to JSON, Markdown bundle, or SQLite")
         .option("--format <format>", "Export format: json|md|sqlite", "json")
@@ -4368,7 +4369,7 @@ export function registerCli(
           console.log("OK");
         });
 
-      cmd
+      const importCmd = cmd
         .command("import")
         .description("Import Remnic memory from JSON bundle, Markdown bundle, or SQLite")
         .option("--from <path>", "Import source path (dir or file)")
@@ -4424,6 +4425,7 @@ export function registerCli(
           }
           console.log("OK");
         });
+      registerSkillsCommands(exportCmd, importCmd, orchestrator);
 
       cmd
         .command("backup")
