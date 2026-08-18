@@ -1,12 +1,24 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  symlink,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import type { DelegateDaemonTarget } from "./bridge.js";
 import { ingestFlushPlanNotes } from "./delegate-flush-plan-ingest.js";
+import { descriptorDirectoryRoot } from "./delegate-flush-plan-directory.js";
 
 interface ObserveServer {
   port: number;
@@ -93,6 +105,53 @@ test("stops after lock loss during a flush instead of posting another chunk", as
     assert.equal(await readIfPresent(files.inflight), notes, "the new owner receives the untouched snapshot");
   } finally {
     await server?.close();
+    await rm(files.workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("keeps snapshot writes in the pinned directory when a parent is swapped mid-flush", async (t) => {
+  if (descriptorDirectoryRoot() === undefined) {
+    t.skip("no descriptor directory on this platform; path-based I/O is the only option");
+    return;
+  }
+  const files = await createFlushPlanFiles("parent-swap");
+  const stateDir = path.dirname(files.plan);
+  const movedStateDir = `${stateDir}.moved`;
+  const decoyDir = path.join(files.workspaceDir, "decoy");
+  const lockName = path.basename(files.lock);
+  // Two chunks, so a snapshot write still happens AFTER the swap below.
+  const notes = Array.from({ length: 2_000 }, (_, index) => `- note ${index} ${"x".repeat(70)}\n`).join("");
+  const observed: string[] = [];
+  let server: ObserveServer | undefined;
+  try {
+    await mkdir(stateDir, { recursive: true });
+    await mkdir(decoyDir, { recursive: true });
+    await writeFile(files.plan, notes, "utf8");
+    server = await startObserveServer(async (content) => {
+      observed.push(content);
+      if (observed.length !== 1) return;
+      // A local process with write access to the plugin-state directory copies
+      // the live lock, so our ownership checks keep passing, then replaces the
+      // checked PARENT directory with a symlink of its own. Path-based writes
+      // would now resolve into `decoyDir`; descriptor-anchored writes cannot.
+      await copyFile(files.lock, path.join(decoyDir, lockName));
+      await rename(stateDir, movedStateDir);
+      await symlink(decoyDir, stateDir);
+    });
+
+    await ingestFlushPlanNotes(optionsFor(server.port, files.workspaceDir, "parent-swap"));
+
+    assert.ok(observed.length > 1, "the flush keeps draining through the pinned directory");
+    assert.equal(observed.join(""), notes, "every note reaches the daemon exactly once");
+    assert.deepEqual(
+      (await readdir(decoyDir)).filter((entry) => entry !== lockName),
+      [],
+      "no snapshot file may land in the swapped-in directory",
+    );
+    assert.equal(await readIfPresent(path.join(movedStateDir, path.basename(files.inflight))), undefined);
+  } finally {
+    await server?.close();
+    await rm(stateDir, { force: true });
     await rm(files.workspaceDir, { recursive: true, force: true });
   }
 });
