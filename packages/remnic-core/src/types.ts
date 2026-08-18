@@ -12,6 +12,7 @@ import type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
 export type { ContradictionLocalizationConfig, ContradictionScanConfig } from "./contradiction-config.js";
 export type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
 import type { ProceduralMaintenanceConfig } from "./procedural/maintenance-config.js";
+import type { ActionGateConfig } from "./coding/action-gate.js";
 
 import type { AmbientCaptureProvenance, BufferTurnOwner, SecurityConfig, OriginMetadata } from "./security/types.js";
 export type MemorySubject = "user" | "agent";
@@ -1252,6 +1253,8 @@ export interface PluginConfig extends BoundedJsonlStateConfig, SecurityConfig {
   // by default — byte-for-byte pre-feature behaviour when `enabled === false`
   // (rule 39).
   codingKnowledge: CodingKnowledgeConfig;
+  /** Action-site failure gate (issue #2382). Off by default; advisory only. */
+  actionGate: ActionGateConfig;
   heartbeat: HeartbeatConfig;
   // Conversational memory inspection and correction (issue #1583). Off by
   // default — byte-identical pre-feature when enabled === false (rule 39).

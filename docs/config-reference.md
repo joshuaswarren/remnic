@@ -1288,6 +1288,19 @@ Injects a `## Peer Profile` section from the peer registered for the active sess
 | `peerProfileRecallEnabled` | `false` | Gate for peer-profile injection into recall context. Set to `true` to inject the active session's peer profile into every recall. |
 | `peerProfileRecallMaxFields` | `5` | Maximum number of profile fields injected per recall. Fields are selected by most-recently-updated provenance timestamp. **`0` disables injection** even when `peerProfileRecallEnabled` is `true`. |
 
+## Action-site failure gate (issue #2382)
+
+Delivers failure memories at the moment an action is proposed, instead of in the
+turn-start preamble. The gate is advisory only: it never blocks or delays an
+action, and every error path fails open. It removes a known repeated-failure
+mode; it does not improve task completion.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `actionGate.enabled` | `false` | Master gate. When `false` (or any of `"0"`, `"no"`, `"off"`) there are no gate lookups, no matching, and no suppression bookkeeping on any path. |
+| `actionGate.timeoutMs` | `50` | Hard latency cap in milliseconds for one gate evaluation (`1`–`5000`). Overrun fails open with an `ERROR_FAIL_OPEN` audit record and the action proceeds. |
+| `actionGate.maxAdvisoriesPerTurn` | `3` | Advisories injected per turn, deduplicated per memory per turn (`0`–`20`). **`0` disables injection and all gate lookups.** |
+
 ## Procedural memory (issue #519)
 
 Stored as `category: procedure` markdown under `memoryDir/procedures/`. Narrative overview: [procedural-memory.md](procedural-memory.md).
