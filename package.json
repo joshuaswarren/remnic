@@ -989,6 +989,8 @@
     "check:openclaw-plugin-sync": "node scripts/check-openclaw-plugin-sync.mjs",
     "sync:hook-runner": "node scripts/sync-hook-runner.mjs",
     "check:hook-runner-sync": "node scripts/check-hook-runner-sync.mjs",
+    "check:hook-grep-targets": "node scripts/check-hook-grep-targets.mjs",
+    "check:last-recall-json-load": "node scripts/check-last-recall-json-load.mjs",
     "check:openclaw-sdk-surface": "node scripts/check-openclaw-sdk-surface.mjs",
     "check:openclaw-sdk-surface:required": "node scripts/check-openclaw-sdk-surface.mjs --require",
     "check:ratchets": "node scripts/check-ratchets.mjs",
