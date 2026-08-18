@@ -179,8 +179,7 @@ import {
   validateCapabilitiesForMint,
 } from "@remnic/core";
 import { PLUGIN_ID as REMNIC_OPENCLAW_PLUGIN_ID, resolveRemnicPluginEntry } from "@remnic/core/plugin-id.js";
-import { runMeetingsBinaryCommand } from "./commands/meetings.js";
-import { runOkfBinaryCommand } from "./commands/okf.js";
+import { runMeetingsBinaryCommand } from "./commands/meetings.js"; import { runOkfBinaryCommand } from "./commands/okf.js";
 import { runExternalWikiBinaryCommand } from "./commands/external-wiki.js";
 // @remnic/export-weclone is an optional install surface (training:export
 // only uses it). Load lazily so the CLI works without it — see
@@ -442,8 +441,7 @@ type CommandName =
   | "who-knows"
   | "security"
   | "wearables"
-  | "meetings"
-  | "okf"
+  | "meetings" | "okf"
   | "external-wiki"
   | "capsule"
   | "offline"
@@ -13223,10 +13221,9 @@ Other:
       await runMeetingsBinaryCommand(rest);
       break;
     }
-    case "okf": {
+    case "okf":
       await runOkfBinaryCommand(rest);
       break;
-    }
 
     case "external-wiki": {
       await runExternalWikiBinaryCommand(rest);

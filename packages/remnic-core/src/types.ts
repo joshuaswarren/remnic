@@ -1228,10 +1228,6 @@ export interface PluginConfig extends BoundedJsonlStateConfig, SecurityConfig {
   converge: ConvergeConfig;
   /** Claim-level provenance spans (#1575); see `ProvenanceConfig` for defaults. */
   provenance: ProvenanceConfig;
-  /**
-   * Wearable transcript ingestion (Limitless / Bee / Omi connectors).
-   * Disabled by default; see docs/wearables.md.
-   */
   wearables: WearablesConfig;
   activity: ActivityConfig;
   meetings: MeetingsConfig;
