@@ -155,11 +155,14 @@ export interface AxSnapshotOptions {
  * The helper's `ax-snapshot` payload: the frontmost window's context (app,
  * title, optional browser URL) plus its accessibility tree. The tree is
  * permissive (see AxNode); window context lets the daemon build a capture
- * candidate without a separate frontmost-window query.
+ * candidate without a separate frontmost-window query. `windowId` is the
+ * stable native window id (macOS CGWindowID) so follow-up OCR can target
+ * the exact window this tree came from, not whatever is frontmost later.
  */
 export interface AxSnapshot {
   app: string;
   windowTitle: string;
+  windowId?: string;
   browserUrl?: string | null;
   tree: AxNode;
 }
@@ -193,12 +196,21 @@ export class NativeHelper {
     const app: unknown = json.app;
     const windowTitle: unknown = json.windowTitle;
     const browserUrl: unknown = "browserUrl" in json ? json.browserUrl : undefined;
+    const windowIdRaw: unknown = "windowId" in json ? json.windowId : undefined;
     const tree: unknown = json.tree;
     if (typeof app !== "string" || typeof windowTitle !== "string") {
       throw new CaptureInputError("native helper ax-snapshot app/windowTitle must be strings");
     }
     if (tree === null || typeof tree !== "object" || Array.isArray(tree)) {
       throw new CaptureInputError("native helper ax-snapshot tree must be an object");
+    }
+    // CGWindowID may arrive as a JSON number or string; null/absent means the
+    // helper could not resolve an id (OCR falls back to frontmost).
+    let windowId: string | undefined;
+    if (typeof windowIdRaw === "string") windowId = windowIdRaw;
+    else if (typeof windowIdRaw === "number" && Number.isFinite(windowIdRaw)) windowId = String(windowIdRaw);
+    else if (windowIdRaw !== undefined && windowIdRaw !== null) {
+      throw new CaptureInputError("native helper ax-snapshot windowId must be a string or number");
     }
     // Named cast (sanctioned): the tree is structurally an AxNode (all fields
     // optional) and extractAxText tolerates unknown shapes; a schema parse of an
@@ -207,6 +219,7 @@ export class NativeHelper {
     return {
       app,
       windowTitle,
+      ...(windowId !== undefined ? { windowId } : {}),
       ...(typeof browserUrl === "string" ? { browserUrl } : {}),
       tree: axTree,
     };

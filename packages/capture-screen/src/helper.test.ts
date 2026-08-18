@@ -63,6 +63,35 @@ test("ax-snapshot parses window context + tree from the fake helper", async () =
   assert.equal(snap.tree.role, "AXWindow");
 });
 
+const WIN = fakeHelper(
+  "win.js",
+  `const cmd = process.argv[2];
+if (cmd === "ax-snapshot") process.stdout.write(JSON.stringify({ app: "kitty", windowTitle: "shell", windowId: "A", tree: { role: "AXWindow" } }));
+else process.exit(2);`,
+);
+const WINNUM = fakeHelper(
+  "winnum.js",
+  `process.stdout.write(JSON.stringify({ app: "kitty", windowTitle: "shell", windowId: 4242, tree: { role: "AXWindow" } }));`,
+);
+const WINBAD = fakeHelper(
+  "winbad.js",
+  `process.stdout.write(JSON.stringify({ app: "kitty", windowTitle: "shell", windowId: true, tree: { role: "AXWindow" } }));`,
+);
+
+test("ax-snapshot threads the helper window id through to the snapshot", async () => {
+  const snap = await new NativeHelper(WIN).axSnapshot({ frontmost: true });
+  assert.equal(snap.windowId, "A");
+});
+
+test("ax-snapshot coerces a numeric window id (CGWindowID) to string", async () => {
+  const snap = await new NativeHelper(WINNUM).axSnapshot({ frontmost: true });
+  assert.equal(snap.windowId, "4242");
+});
+
+test("ax-snapshot rejects a malformed window id", async () => {
+  await assert.rejects(new NativeHelper(WINBAD).axSnapshot(), CaptureInputError);
+});
+
 test("ocr-window returns the text field", async () => {
   const helper = new NativeHelper(OK);
   assert.equal(await helper.ocrWindow({ frontmost: true }), "terminal ocr text");
