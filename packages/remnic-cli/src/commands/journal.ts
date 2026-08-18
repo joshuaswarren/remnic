@@ -42,11 +42,23 @@ export async function runJournalBinaryCommand(rest: string[]): Promise<void> {
     console.log(journalHelp());
     return;
   }
+  let memoryDir: string;
+  try {
+    // Config failures get a constant message: parseConfig error strings can
+    // embed config values (CodeQL js/clear-text-logging), so they must never
+    // reach console output.
+    memoryDir = loadMemoryDir();
+  } catch {
+    console.error(
+      "journal: failed to load the Remnic config — run `remnic doctor` and check the config file for errors",
+    );
+    process.exitCode = 1;
+    return;
+  }
   try {
     const action = rest[0];
     const date = takeFlag(rest, "--date") ?? todayJournalDate();
     const force = rest.includes("--force");
-    const memoryDir = loadMemoryDir();
     const filePath = journalPath(memoryDir, date);
     if (action === "edit-path") {
       console.log(filePath);
