@@ -1,14 +1,15 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import test from "node:test";
 
-import { StorageManager } from "./storage.js";
 import {
-  recordMemoryOutcome,
   memoryWorthOutcomeEligibleCategories,
+  recordMemoryOutcome,
+  toMemoryOutcomeObservation,
 } from "./memory-worth-outcomes.js";
+import { StorageManager } from "./storage.js";
 
 /**
  * Issue #560 PR 3 — tests for the outcome signal pipeline.
@@ -27,7 +28,7 @@ import {
 async function writeFactFile(
   storage: StorageManager,
   body: string,
-  extraFrontmatterLines: string[] = [],
+  extraFrontmatterLines: string[] = []
 ): Promise<{ id: string; filePath: string }> {
   const today = new Date().toISOString().slice(0, 10);
   const id = `fact-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -51,10 +52,7 @@ async function writeFactFile(
   return { id, filePath };
 }
 
-async function writeCorrectionFile(
-  storage: StorageManager,
-  body: string,
-): Promise<{ id: string; filePath: string }> {
+async function writeCorrectionFile(storage: StorageManager, body: string): Promise<{ id: string; filePath: string }> {
   const id = `correction-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const lines = [
     "---",
@@ -68,10 +66,7 @@ async function writeCorrectionFile(
     "tags: []",
     "---",
   ];
-  const correctionsDir = path.join(
-    (storage as unknown as { baseDir: string }).baseDir,
-    "corrections",
-  );
+  const correctionsDir = path.join((storage as unknown as { baseDir: string }).baseDir, "corrections");
   await mkdir(correctionsDir, { recursive: true });
   const filePath = path.join(correctionsDir, `${id}.md`);
   await writeFile(filePath, `${lines.join("\n")}\n\n${body}\n`, "utf-8");
@@ -140,10 +135,7 @@ test("consecutive outcomes accumulate independently", async () => {
   try {
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
-    const { id, filePath } = await writeFactFile(storage, "Accumulating outcomes.", [
-      "mw_success: 2",
-      "mw_fail: 0",
-    ]);
+    const { id, filePath } = await writeFactFile(storage, "Accumulating outcomes.", ["mw_success: 2", "mw_fail: 0"]);
 
     await recordMemoryOutcome(storage, { memoryPath: filePath, outcome: "success" });
     await recordMemoryOutcome(storage, { memoryPath: filePath, outcome: "failure" });
@@ -289,7 +281,7 @@ test("concurrent outcomes for the same memory do NOT lose updates", async () => 
 
     const N = 10;
     const calls = Array.from({ length: N }, () =>
-      recordMemoryOutcome(storage, { memoryPath: filePath, outcome: "success" }),
+      recordMemoryOutcome(storage, { memoryPath: filePath, outcome: "success" })
     );
     const results = await Promise.all(calls);
 
@@ -317,4 +309,47 @@ test("eligible-category set is exactly {fact, procedure}", () => {
   assert.equal(eligible.size, 2);
   assert.ok(eligible.has("fact"));
   assert.ok(eligible.has("procedure"));
+});
+
+// ---------------------------------------------------------------------------
+// Issue #2345 — pure MemoryOutcomeObservation view (no writes, no counters)
+// ---------------------------------------------------------------------------
+
+test("outcome facts with time and join data become observations", () => {
+  const view = toMemoryOutcomeObservation({
+    memoryId: "fact-1",
+    namespace: "test-ns",
+    outcome: "success",
+    observedAt: "2026-08-12T00:00:00.000Z",
+    joinId: "act-1",
+  });
+  assert.equal(view.status, "observed");
+  if (view.status === "observed") {
+    assert.equal(view.observation.schemaVersion, 1);
+    assert.equal(view.observation.observedAt, "2026-08-12T00:00:00.000Z");
+    assert.equal(view.observation.joinId, "act-1");
+    // Round-trips through public types (undefined optionals drop in JSON).
+    const roundTripped = JSON.parse(JSON.stringify(view.observation)) as Record<string, unknown>;
+    assert.equal(roundTripped.schemaVersion, 1);
+    assert.equal(roundTripped.memoryId, "fact-1");
+    assert.equal(roundTripped.joinId, "act-1");
+  }
+});
+
+test("counter-only rows stay missing_observation and never guess an action", () => {
+  const noTime = toMemoryOutcomeObservation({
+    memoryId: "fact-1",
+    namespace: "test-ns",
+    outcome: "success",
+    joinId: "act-1",
+  });
+  assert.deepEqual(noTime, { status: "missing_observation", memoryId: "fact-1", reason: "missing_observed_at" });
+
+  const noJoin = toMemoryOutcomeObservation({
+    memoryId: "fact-2",
+    namespace: "test-ns",
+    outcome: "failure",
+    observedAt: new Date("2026-08-12T00:00:00.000Z"),
+  });
+  assert.deepEqual(noJoin, { status: "missing_observation", memoryId: "fact-2", reason: "missing_join_data" });
 });

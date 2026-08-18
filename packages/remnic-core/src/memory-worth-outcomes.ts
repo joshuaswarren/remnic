@@ -86,7 +86,7 @@ function runSerialized<T>(key: string, task: () => Promise<T>): Promise<T> {
       },
       () => {
         if (outcomeLocks.get(key) === next) outcomeLocks.delete(key);
-      },
+      }
     )
     .catch(() => {
       // Defensive no-op in case a hook inside the cleanup branches throws.
@@ -104,8 +104,10 @@ function runSerialized<T>(key: string, task: () => Promise<T>): Promise<T> {
  * imports from this file's peers. The two constants are validated by a
  * test to stay in lockstep.
  */
-const MEMORY_WORTH_OUTCOME_ELIGIBLE_CATEGORIES: ReadonlySet<MemoryFrontmatter["category"]> =
-  new Set(["fact", "procedure"]);
+const MEMORY_WORTH_OUTCOME_ELIGIBLE_CATEGORIES: ReadonlySet<MemoryFrontmatter["category"]> = new Set([
+  "fact",
+  "procedure",
+]);
 
 /**
  * Exported so downstream tests / operators can query the allowlist without
@@ -170,11 +172,7 @@ export type RecordMemoryOutcomeResult =
     }
   | {
       ok: false;
-      reason:
-        | "not_found"
-        | "ineligible_category"
-        | "invalid_outcome"
-        | "invalid_path";
+      reason: "not_found" | "ineligible_category" | "invalid_outcome" | "invalid_path";
       message: string;
     };
 
@@ -208,7 +206,7 @@ function memoryIdFromPath(memoryPath: string): string | null {
  */
 export async function recordMemoryOutcome(
   storage: StorageManager,
-  input: RecordMemoryOutcomeInput,
+  input: RecordMemoryOutcomeInput
 ): Promise<RecordMemoryOutcomeResult> {
   if (input.outcome !== "success" && input.outcome !== "failure") {
     return {
@@ -287,4 +285,88 @@ export async function recordMemoryOutcome(
       mw_fail: nextFail,
     };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Issue #2345 — pure outcome-observation view (no writes, no counter changes)
+// ---------------------------------------------------------------------------
+
+/**
+ * A Memory Worth outcome that carries WHEN it was observed and WHAT it can
+ * join to — the facts the trajectory evaluator needs and plain counter rows
+ * lack. `mw_success` / `mw_fail` totals have no timestamp or join ID, so they
+ * cannot participate in delayed action-to-outcome joins.
+ */
+export interface MemoryOutcomeObservation {
+  schemaVersion: 1;
+  memoryId: string;
+  namespace: string;
+  outcome: MemoryOutcomeKind;
+  observedAt: string;
+  /** Stable join key shared with the action side (never free text). */
+  joinId?: string;
+  sessionKey?: string;
+}
+
+/**
+ * Discriminated view over outcome facts a caller can supply.
+ *
+ * - `missing_observation` — counter-only or incomplete rows. The evaluator
+ *   must never guess the action behind an aggregate counter, so these stay
+ *   visible as missing rather than being inferred.
+ */
+export type MemoryOutcomeObservationView =
+  | { status: "observed"; observation: MemoryOutcomeObservation }
+  | { status: "missing_observation"; memoryId: string; reason: "missing_observed_at" | "missing_join_data" };
+
+const OBSERVATION_ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+/**
+ * Build the pure observation view. Accepts exactly what a caller already
+ * knows; performs no storage reads and no writes, and does not alter the
+ * counter path — `recordMemoryOutcome` keeps its current behavior.
+ */
+export function toMemoryOutcomeObservation(raw: {
+  memoryId: string;
+  namespace: string;
+  outcome: MemoryOutcomeKind;
+  observedAt?: unknown;
+  joinId?: unknown;
+  sessionKey?: unknown;
+}): MemoryOutcomeObservationView {
+  if (
+    typeof raw.memoryId !== "string" ||
+    raw.memoryId.length === 0 ||
+    typeof raw.namespace !== "string" ||
+    raw.namespace.length === 0 ||
+    (raw.outcome !== "success" && raw.outcome !== "failure")
+  ) {
+    throw new Error("toMemoryOutcomeObservation requires memoryId, namespace, and outcome");
+  }
+  const observedAt =
+    typeof raw.observedAt === "string" && OBSERVATION_ISO_RE.test(raw.observedAt)
+      ? raw.observedAt
+      : raw.observedAt instanceof Date
+        ? raw.observedAt.toISOString()
+        : null;
+  if (observedAt === null) {
+    return { status: "missing_observation", memoryId: raw.memoryId, reason: "missing_observed_at" };
+  }
+  const joinId = typeof raw.joinId === "string" && raw.joinId.length > 0 ? raw.joinId : undefined;
+  const sessionKey = typeof raw.sessionKey === "string" && raw.sessionKey.length > 0 ? raw.sessionKey : undefined;
+  if (joinId === undefined && sessionKey === undefined) {
+    return { status: "missing_observation", memoryId: raw.memoryId, reason: "missing_join_data" };
+  }
+  return {
+    status: "observed",
+    observation: {
+      schemaVersion: 1,
+      memoryId: raw.memoryId,
+      namespace: raw.namespace,
+      outcome: raw.outcome,
+      observedAt,
+      joinId,
+      sessionKey,
+    },
+  };
 }

@@ -13,4 +13,7 @@ export * from "./config.js";
 export * from "./intervals.js";
 export * from "./store.js";
 export * from "./pipeline.js";
+export * from "./surfaces.js";
+export * from "./provider-setup.js";
+export * from "./scheduler.js";
 export * from "./cli.js";

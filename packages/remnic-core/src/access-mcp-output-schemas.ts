@@ -67,6 +67,11 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
   transcript_day: objectSchema({ transcripts: T_ARRAY }, ["transcripts"]),
   transcript_search: objectSchema({ results: T_ARRAY }, ["results"]),
   transcript_memories: objectSchema({ memories: T_ARRAY }, ["memories"]),
+  location_status: objectSchema({ enabled: T_BOOLEAN, timezone: T_STRING, sources: T_ARRAY, recentDays: T_ARRAY }),
+  location_check: objectSchema({ results: T_ARRAY }, ["results"]),
+  location_sync: objectSchema({ days: T_ARRAY }, ["days"]),
+  location_backfill: objectSchema({ days: T_ARRAY }, ["days"]),
+  location_day: objectSchema({ date: T_STRING, found: T_BOOLEAN, sources: T_ARRAY, observationCount: T_NUMBER }),
   meetings_list: objectSchema({ enabled: T_BOOLEAN, days: T_ARRAY }),
   meetings_get: objectSchema({ enabled: T_BOOLEAN, found: T_BOOLEAN, id: T_STRING, record: T_NULLABLE_STRING }),
   meetings_build: objectSchema({

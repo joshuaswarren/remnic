@@ -693,6 +693,8 @@ import "./access-operations-batch.js";
 import "./support-passport/access-operations.js";
 // Remnic Relay mission evidence operations (issue #1966).
 import "./relay/mission-access.js";
+// Location sync surfaces (issue #2047).
+import "./location/access-operations.js";
 
 export const REGISTERED_OPERATIONS = [
   memoryGetOperation.spec.name,

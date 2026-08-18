@@ -45,7 +45,7 @@ import { applyToolOutputSchemas } from "./access-mcp-output-schemas.js";
 import { MCP_READ_ONLY_TOOL_SUFFIXES } from "./mcp-read-only-tools.js";
 import { MEETINGS_MCP_TOOLS } from "./meetings/mcp-tools.js";
 import { WEARABLES_MCP_TOOLS } from "./wearables/mcp-tools.js";
-import { WHO_KNOWS_MCP_TOOLS } from "./who-knows.js";
+import { WHO_KNOWS_MCP_TOOLS } from "./who-knows.js"; import { LOCATION_MCP_TOOLS } from "./location/mcp-tools.js";
 import { PROMOTION_CANDIDATES_MCP_TOOLS } from "./memory-subject.js";
 import { EXTERNAL_WIKI_MCP_TOOLS } from "./external-wiki-mcp-tools.js";
 import { abortError, isAbortError } from "./abort-error.js";
@@ -188,10 +188,10 @@ export const MCP_MIGRATED_OPERATIONS: Readonly<Record<string, OperationName>> = 
   "engram.recall_explain": "recall_explain",
   "engram.set_coding_context": "set_coding_context", "engram.recall_tier_explain": "recall_tier_explain",
   "engram.recall_xray": "recall_xray", "engram.who_knows": "who_knows", "engram.promotion_candidates": "promotion_candidates",
-  "engram.wearables_status": "wearables_status",
-  "engram.wearables_sync": "wearables_sync",
-  "engram.transcript_day": "transcript_day",
-  "engram.transcript_search": "transcript_search",
+  "engram.wearables_status": "wearables_status", "engram.wearables_sync": "wearables_sync",
+  "engram.location_status": "location_status", "engram.location_check": "location_check", "engram.location_sync": "location_sync",
+  "engram.location_backfill": "location_backfill", "engram.location_day": "location_day",
+  "engram.transcript_day": "transcript_day", "engram.transcript_search": "transcript_search",
   "engram.transcript_memories": "transcript_memories", "engram.meetings_list": "meetings_list", "engram.meetings_get": "meetings_get", "engram.meetings_build": "meetings_build",
   "engram.action_confidence": "action_confidence",
   "engram.chatgpt_memory_inspector": "chatgpt_memory_inspector",
@@ -706,7 +706,7 @@ export class EngramMcpServer {
           additionalProperties: false,
         },
       },
-      ...WEARABLES_MCP_TOOLS, ...MEETINGS_MCP_TOOLS, ...WHO_KNOWS_MCP_TOOLS, ...PROMOTION_CANDIDATES_MCP_TOOLS,
+      ...WEARABLES_MCP_TOOLS, ...MEETINGS_MCP_TOOLS, ...WHO_KNOWS_MCP_TOOLS, ...PROMOTION_CANDIDATES_MCP_TOOLS, ...LOCATION_MCP_TOOLS,
       ...(service.supportPassportEnabled ? SUPPORT_PASSPORT_MCP_TOOLS : []),
       {
         name: "engram.action_confidence",

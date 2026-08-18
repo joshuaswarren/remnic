@@ -25,7 +25,7 @@ import {
 } from "./access-http-offline-stream.js";
 import { nonEmptyQueryParam, optionalNamespaceKindQueryParam, optionalQueryString, positiveIntQueryParam } from "./access-http-query.js";
 import { CorrectionContractError } from "./correction/correction-contract.js";
-import { WearablesInputError } from "./wearables/errors.js"; import { respondMeetingsList, respondMeetingsGet, respondMeetingsBuild } from "./meetings/http-glue.js";
+import { respondWearablesErrorGlue } from "./wearables/http-glue.js"; import { respondMeetingsList, respondMeetingsGet, respondMeetingsBuild } from "./meetings/http-glue.js"; import { respondLocationStatus, respondLocationCheck, respondLocationSync, respondLocationBackfill, respondLocationDay } from "./location/http-glue.js";
 import { EngramMcpServer, MCP_SUPPORTED_PROTOCOL_VERSIONS } from "./access-mcp.js";
 import { validateRequest, type SchemaName, type SchemaTypeFor } from "./access-schema.js";
 import {
@@ -1753,6 +1753,18 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     if (req.method === "GET" && meetingGetEngram) { this.enforceTokenOp("meetings_get"); await respondMeetingsGet(res, this.respondJson.bind(this), this.service, meetingGetEngram[1] ?? "", this.wearablesScope(req, parsed.searchParams.get("namespace") ?? undefined, parsed.searchParams.get("sessionKey") ?? undefined)); return; }
     const meetingGetRemnic = /^\/remnic\/v1\/meetings\/([^/]+)$/.exec(pathname);
     if (req.method === "GET" && meetingGetRemnic) { this.enforceTokenOp("meetings_get"); await respondMeetingsGet(res, this.respondJson.bind(this), this.service, meetingGetRemnic[1] ?? "", this.wearablesScope(req, parsed.searchParams.get("namespace") ?? undefined, parsed.searchParams.get("sessionKey") ?? undefined)); return; }
+    // Location sync surfaces (issue #2047): thin branches; bodies + boundary
+    // dispatch live in location/http-glue.ts.
+    if (req.method === "GET" && (pathname === "/engram/v1/location/status" || pathname === "/remnic/v1/location/status")) {
+      this.enforceTokenOp("location_status"); await respondLocationStatus(res, this.respondJson.bind(this), this.service); return; }
+    if (req.method === "GET" && (pathname === "/engram/v1/location/check" || pathname === "/remnic/v1/location/check")) {
+      this.enforceTokenOp("location_check"); await respondLocationCheck(res, this.respondJson.bind(this), this.service); return; }
+    if (req.method === "POST" && (pathname === "/engram/v1/location/sync" || pathname === "/remnic/v1/location/sync")) {
+      this.enforceTokenOp("location_sync"); await respondLocationSync((await this.readJsonBody(req)) as Record<string, unknown>, res, this.respondJson.bind(this), this.service); return; }
+    if (req.method === "POST" && (pathname === "/engram/v1/location/backfill" || pathname === "/remnic/v1/location/backfill")) {
+      this.enforceTokenOp("location_backfill"); await respondLocationBackfill((await this.readJsonBody(req)) as Record<string, unknown>, res, this.respondJson.bind(this), this.service); return; }
+    if (req.method === "GET" && (pathname === "/engram/v1/location/day" || pathname === "/remnic/v1/location/day")) {
+      this.enforceTokenOp("location_day"); await respondLocationDay(parsed.searchParams.get("date"), res, this.respondJson.bind(this), this.service); return; }
 
     if (req.method === "POST" && pathname === "/engram/v1/observe") {
       this.enforceTokenOp("observe"); // boundary dispatch (issue #1525)
@@ -3997,21 +4009,8 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     return response.dryRun !== true && response.idempotencyReplay !== true;
   }
 
-  /**
-   * Map wearables validation errors (WearablesInputError — invalid
-   * params, unknown/disabled sources, missing connector packages) to a
-   * 400 response. Returns false for everything else so backend faults
-   * keep flowing to the global 500 handler.
-   */
+  /** Map wearables validation errors to 400 (body lives in wearables/http-glue.ts). */
   private respondWearablesError(res: ServerResponse, err: unknown): boolean {
-    if (err instanceof WearablesInputError) {
-      this.respondJson(res, 400, {
-        error: "invalid_request",
-        code: "invalid_request",
-        message: err.message,
-      });
-      return true;
-    }
-    return false;
+    return respondWearablesErrorGlue(this.respondJson.bind(this), res, err);
   }
 }
