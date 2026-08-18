@@ -18,8 +18,8 @@ import test from "node:test";
 import type { PluginConfig } from "../types.js";
 import { StorageManager } from "../storage.js";
 import { serializeDecisionRecord, type DecisionRecord } from "./decision-records.js";
-import { tryLoadCodingGraphModule } from "./optional-coding-graph.js";
-import { resolveCodegraphDbPath } from "./codegraph-runtime.js";
+import { getCodegraphStore, resolveCodegraphDbPath } from "./codegraph-runtime.js";
+
 import {
   DEFAULT_OKF_CODEGRAPH_MAX_MODULE_CONCEPTS,
   OKF_CODEGRAPH_TRUNCATION_MARKER,
@@ -47,8 +47,6 @@ interface Fixture {
 }
 
 async function seedGraphStore(memoryDir: string): Promise<string> {
-  const mod = await tryLoadCodingGraphModule();
-  assert.notEqual(mod, null, "@remnic/coding-graph must be installed for this test");
   const dbPath = resolveCodegraphDbPath({
     config: GATE_ON_CONFIG,
     memoryDir,
@@ -56,50 +54,52 @@ async function seedGraphStore(memoryDir: string): Promise<string> {
     projectId: PROJECT_ID,
   });
   mkdirSync(path.dirname(dbPath), { recursive: true });
-  const store = await mod!.GraphStore.open({ dbPath });
-  try {
-    const big = await store.upsertFileBatch?.([
-      {
-        path: "src/big.ts",
-        language: "typescript" as const,
-        contentHash: "h-big",
-        symbols: [
-          { kind: "function" as const, name: "alpha", qualifiedName: "big.alpha", span: { startByte: 0, endByte: 10 } },
-          { kind: "function" as const, name: "beta", qualifiedName: "big.beta", span: { startByte: 10, endByte: 20 } },
-          { kind: "type" as const, name: "internal", qualifiedName: "big.internal", span: { startByte: 20, endByte: 30 } },
-        ],
-        exports: [{ name: "alpha", span: { startByte: 0, endByte: 5 } }],
-        edges: [
-          {
-            srcQualifiedName: "big.alpha",
-            dstQualifiedName: "small.zulu",
-            type: "CALLS",
-            confidence: 0.95,
-            provenance: "heuristic",
-          },
-          {
-            srcQualifiedName: "big.beta",
-            dstQualifiedName: "small.zulu",
-            type: "IMPORTS",
-            confidence: 0.4,
-            provenance: "heuristic",
-          },
-        ],
-      },
-      {
-        path: "src/small.ts",
-        language: "typescript" as const,
-        contentHash: "h-small",
-        symbols: [
-          { kind: "function" as const, name: "zulu", qualifiedName: "small.zulu", span: { startByte: 0, endByte: 8 } },
-        ],
-        exports: [{ name: "zulu", span: { startByte: 0, endByte: 4 } }],
-      },
-    ]);
-    assert.equal(big?.ok, true, `upsertFileBatch failed: ${JSON.stringify(big)}`);
-  } finally {
-    await store.close();
-  }
+  const store = await getCodegraphStore({
+    config: GATE_ON_CONFIG,
+    memoryDir,
+    principal: "default",
+    projectId: PROJECT_ID,
+  });
+
+  const big = await store.upsertFileBatch?.([
+    {
+      path: "src/big.ts",
+      language: "typescript" as const,
+      contentHash: "h-big",
+      symbols: [
+        { kind: "function" as const, name: "alpha", qualifiedName: "big.alpha", span: { startByte: 0, endByte: 10 } },
+        { kind: "function" as const, name: "beta", qualifiedName: "big.beta", span: { startByte: 10, endByte: 20 } },
+        { kind: "type" as const, name: "internal", qualifiedName: "big.internal", span: { startByte: 20, endByte: 30 } },
+      ],
+      exports: [{ name: "alpha", span: { startByte: 0, endByte: 5 } }],
+      edges: [
+        {
+          srcQualifiedName: "big.alpha",
+          dstQualifiedName: "small.zulu",
+          type: "CALLS",
+          confidence: 0.95,
+          provenance: "heuristic",
+        },
+        {
+          srcQualifiedName: "big.beta",
+          dstQualifiedName: "small.zulu",
+          type: "IMPORTS",
+          confidence: 0.4,
+          provenance: "heuristic",
+        },
+      ],
+    },
+    {
+      path: "src/small.ts",
+      language: "typescript" as const,
+      contentHash: "h-small",
+      symbols: [
+        { kind: "function" as const, name: "zulu", qualifiedName: "small.zulu", span: { startByte: 0, endByte: 8 } },
+      ],
+      exports: [{ name: "zulu", span: { startByte: 0, endByte: 4 } }],
+    },
+  ]);
+  assert.equal(big?.ok, true, `upsertFileBatch failed: ${JSON.stringify(big)}`);
   return dbPath;
 }
 
