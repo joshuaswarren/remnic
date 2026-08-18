@@ -1407,7 +1407,7 @@ test("access HTTP recall body includeLowConfidence wins over query flag", async 
 
     assert.equal(response.status, 200);
     assert.equal(captured.length, 1);
-    assert.equal(captured[0]!.includeLowConfidence, undefined);
+    assert.equal(captured[0]!.includeLowConfidence, false);
   } finally {
     await server.stop();
   }

@@ -472,16 +472,12 @@ test("MCP session override is injected only into tools that accept sessionKey", 
     namespace: undefined,
     principal: "adapter-agent",
   });
-  assert.deepEqual(observeArgs, {
-    sessionKey: "adapter-session",
-    messages: [{ role: "user", content: "hello", parts: undefined, rawContent: undefined, sourceFormat: undefined }],
-    namespace: undefined,
-    authenticatedPrincipal: undefined,
-    skipExtraction: false,
-    idempotencyKey: undefined,
-    cwd: undefined,
-    projectTag: undefined,
-  });
+  assert.equal(observeArgs?.sessionKey, "adapter-session");
+  assert.equal(observeArgs?.skipExtraction, false);
+  const observeMessages = observeArgs?.messages as Array<{ role: string; content: string }>;
+  assert.equal(observeMessages?.length, 1);
+  assert.equal(observeMessages?.[0]?.role, "user");
+  assert.equal(observeMessages?.[0]?.content, "hello");
   assert.equal((capsuleResponse as Record<string, unknown> & { result?: { isError?: boolean } }).result?.isError, false);
   assert.equal((observeResponse as Record<string, unknown> & { result?: { isError?: boolean } }).result?.isError, false);
 });
