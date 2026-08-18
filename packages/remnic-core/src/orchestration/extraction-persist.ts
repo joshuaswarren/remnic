@@ -83,6 +83,7 @@ import {
 } from "../fallback-llm.js";
 import { EmbeddingFallback } from "../embedding-fallback.js";
 import { decideSemanticDedup, type SemanticDedupDecision, type SemanticDedupHit } from "../dedup/semantic.js";
+import { applyNoveltyGate, embeddingsFromCosineHits } from "../dedup/novelty-gate.js";
 import { selectRouteRule, type RouteRule, type RoutingEngineOptions } from "../routing/engine.js";
 import { ThreadingManager } from "../threading.js";
 import { NamespaceStorageRouter } from "../namespaces/storage.js";
@@ -1919,26 +1920,21 @@ export class ExtractionPersistCoordinator {
           : undefined;
       const faithfulnessEnforceStatus = faithfulnessGateStatus ?? requireSpansPendingStatus ?? injectionScreenStatus;
 
-      // Issue #373 — write-time semantic similarity guard. Hook runs after
-      // the exact content-hash miss and the importance gate so that:
-      //   (a) paraphrased near-duplicates never reach writeMemory(), and
-      //   (b) low-importance facts that will be dropped never trigger an
-      //       embedding lookup (avoids unnecessary API latency/cost).
-      // Fails open when the embedding backend is unavailable.
-      //
-      // Defense in depth (PR #399 review): decideSemanticDedup already
-      // catches lookup errors internally, and the embedding fetch is
-      // bounded by a timeout in embedding-fallback.ts. We still wrap the
-      // whole call in its own try/catch here so that any unexpected
-      // rejection (future refactors, misbehaving custom backends, etc.)
-      // can never block the persist loop — a failure in the dedup path
-      // must always default to "not a duplicate".
-      // Track a pending semantic-skip decision (populated inside the block
-      // below). The actual drop happens AFTER contradiction detection so that
-      // a high-similarity update/correction is linked as a superseding
-      // contradiction rather than silently dropped.
+      const novelty = await applyNoveltyGate({
+        enabled: this.deps.config.noveltyGateEnabled,
+        addThreshold: this.deps.config.noveltyAddThreshold,
+        noopThreshold: this.deps.config.noveltyNoopThreshold,
+        lookup: async () =>
+          embeddingsFromCosineHits(
+            await this.deps.semanticDedupLookup(
+              fact.content,
+              this.deps.config.semanticDedupCandidates,
+              targetStorage,
+            ),
+          ),
+      });
       let pendingSemanticSkip: (SemanticDedupDecision & { action: "skip" }) | null = null;
-      if (resolvePipelineProcessingCapabilities(this.deps.config).semanticDedup && injectionScreenStatus !== "pending_review") {
+      if (novelty.decision !== "add" && resolvePipelineProcessingCapabilities(this.deps.config).semanticDedup && injectionScreenStatus !== "pending_review") {
         let semanticDecision: SemanticDedupDecision;
         // UUI2: skip embedding lookup for the rest of this batch once we know
         // the backend is unavailable. The flag is reset per-batch (set to false
@@ -2100,17 +2096,17 @@ export class ExtractionPersistCoordinator {
       // gate's contract is "persists with status: pending_review, never
       // silently dropped" (issue #1576).
       if (
-        pendingSemanticSkip &&
+        (pendingSemanticSkip || novelty.decision === "noop") &&
         !contradictionDetected &&
         !isCorrection &&
         faithfulnessEnforceStatus !== "pending_review"
       ) {
         log.debug(
-          `dedup: skipping semantic near-duplicate fact "${fact.content
+          `dedup: skipping ${pendingSemanticSkip ? "semantic near-duplicate" : "novelty-noop"} fact "${fact.content
             .slice(0, 60)
-            .replace(/\s+/g, " ")}…" score=${pendingSemanticSkip.topScore.toFixed(
+            .replace(/\s+/g, " ")}…" score=${(pendingSemanticSkip?.topScore ?? novelty.score).toFixed(
             3,
-          )} neighbor=${pendingSemanticSkip.topId}`,
+          )} neighbor=${pendingSemanticSkip?.topId ?? novelty.neighborId}`,
         );
         dedupedCount++;
         // Do NOT add fact.content to contentHashIndex here. No memory was

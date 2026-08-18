@@ -3885,6 +3885,25 @@
         "default": false,
         "description": "If true, Engram may attempt to auto-register the nightly governance cron job (default off)."
       },
+      "noveltyAddThreshold": {
+        "type": "number",
+        "default": 0.55,
+        "minimum": 0,
+        "maximum": 1,
+        "description": "Issue #1953 — novelty score at or above this value is ADD (skip semantic/LLM dedup). Keep well above noveltyNoopThreshold so UNCERTAIN stays wide."
+      },
+      "noveltyGateEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Issue #1953 — enable the write-path embedding-density novelty gate. Off by default. When off the persist path is unchanged."
+      },
+      "noveltyNoopThreshold": {
+        "type": "number",
+        "default": 0.15,
+        "minimum": 0,
+        "maximum": 1,
+        "description": "Issue #1953 — novelty score at or below this value is NOOP (drop before semantic dedup; does not touch contentHashIndex)."
+      },
       "objectiveStateMemoryEnabled": {
         "type": "boolean",
         "default": false,
