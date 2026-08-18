@@ -68,6 +68,7 @@ export const OPERATION_NAMES = [
   "recall_tier_explain",
   "recall_xray",
   "who_knows",
+  "promotion_candidates",
   "namespace_writable",
   "wearables_status",
   "wearables_sync",

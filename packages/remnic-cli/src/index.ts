@@ -6,33 +6,25 @@
  * Commands:
  *   init              Create remnic.config.json in the current directory
  *   status            Show server/daemon status
- *   query <text>      Query memories
- *   xray <query>      Recall with X-ray capture; renders tier + filters + scores
+ *   query/xray <text> Query memories; xray renders tier + filters + scores
  *   who-knows <topic> Rank entities by expertise on a topic
  *   wearables <cmd>   Wearable transcript sources (Limitless / Bee / Omi)
  *   doctor            Run diagnostics
  *   config            Show current config
- *   daemon start      Start background server
- *   daemon stop       Stop background server
- *   daemon restart    Restart background server
- *   daemon install    Install as system service (launchd/systemd)
- *   daemon uninstall  Remove system service
- *   daemon status     Show daemon status
- *   token generate    Generate auth token for a connector
- *   token list        List all auth tokens
- *   token revoke      Revoke auth token for a connector
+ *   daemon <cmd>      start | stop | restart | status | install | uninstall the system service
+ *   token <cmd>       generate | list | revoke auth tokens for a connector
  *   bench list        List published benchmark packs
  *   bench run         Run published benchmark packs
  *   bench publish     Generate the Remnic.ai benchmark feed
  *   bench ui          Launch the local benchmark overview UI
- *   bench attribute   Attribute operation-level benchmark failures to memory operations
- *   bench drift-gen   Generate or validate synthetic memory drift bench corpora
+ *   bench attribute   Attribute failures to memory operations; drift-gen validates drift corpora
  *   tree              Generate context tree
  *   onboard [dir]     Onboard project directory
  *   curate <path>     Curate files into memory
  *   review            Review inbox management
  *   sync              Diff-aware sync
  *   dedup             Find duplicate memories
+ *   promotion-candidates  List agent-subject memories ready to promote to a shared layer
  *   connectors        Manage host adapters
  *   oauth <cmd>       Manage pending OAuth authorizations (ChatGPT MCP)
  */
@@ -142,9 +134,8 @@ import {
   OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES,
   OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES,
   OFFLINE_SYNC_SNAPSHOT_BASE_MAX_BODY_BYTES,
-  applyOfflineSyncFileContentChunk,
-  applyOfflineSyncSnapshot,
-  buildOfflineSyncChangeset,
+  applyOfflineSyncFileContentChunk, applyOfflineSyncSnapshot,
+  buildOfflineSyncChangeset, runPromotionCandidatesCommand,
   buildOfflineSyncChangesetFromSnapshot,
   drainPendingLifecycleForOfflineSync,
   compileOfflineSyncExcludeGlobs,
@@ -439,6 +430,7 @@ type CommandName =
   | "action-confidence"
   | "xray"
   | "who-knows"
+  | "promotion-candidates"
   | "security"
   | "wearables"
   | "meetings" | "okf"
@@ -5545,31 +5537,42 @@ export async function runWhoKnowsCommand(
   io.stdout(renderWhoKnows(result, parsed.json));
 }
 
+/** Boot a local orchestrator + access service for one command, then tear down. */
+async function withLocalService<T>(fn: (service: EngramAccessService, orchestrator: Orchestrator) => Promise<T>): Promise<T> {
+  initLogger();
+  const configPath = resolveConfigPath();
+  const raw = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {};
+  const orchestrator = new Orchestrator(parseConfig(resolveRemnicConfigRecord(raw)));
+  await orchestrator.initialize();
+  await orchestrator.deferredReady;
+  const service = new EngramAccessService(orchestrator);
+  try {
+    return await fn(service, orchestrator);
+  } finally {
+    orchestrator.abortDeferredInit();
+    await orchestrator.destroy();
+  }
+}
+
 async function cmdWhoKnows(rest: string[]): Promise<void> {
   const { topic, options } = extractWhoKnowsRawArgs(rest);
   parseWhoKnowsCliOptions(topic, options); // validate topic/--limit before any IO
   if (resolveRemoteDaemon(resolveConfigPath())) {
     throw new Error("who-knows: remote daemon mode is not supported yet; run with a local config");
   }
-  initLogger();
-  const configPath = resolveConfigPath();
-  const raw = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {};
-  const config = parseConfig(resolveRemnicConfigRecord(raw));
-  const orchestrator = new Orchestrator(config);
-  await orchestrator.initialize();
-  await orchestrator.deferredReady;
-  const service = new EngramAccessService(orchestrator);
-  try {
-    await runWhoKnowsCommand(rest, {
-      whoKnows: (request) => service.whoKnows(request),
-      stdout: (line) => console.log(line),
-    });
-  } finally {
-    orchestrator.abortDeferredInit();
-    await orchestrator.destroy();
-  }
+  await withLocalService((service) => runWhoKnowsCommand(rest, {
+    whoKnows: (request) => service.whoKnows(request),
+    stdout: (line) => console.log(line),
+  }));
 }
-// ── Page-level versioning (issue #371) ─────────────────────────────────────
+
+async function cmdPromotionCandidates(rest: string[]): Promise<void> {
+  if (resolveRemoteDaemon(resolveConfigPath())) throw new Error("promotion-candidates: remote daemon mode is not supported yet; run with a local config");
+  await withLocalService((service) => runPromotionCandidatesCommand(rest, {
+    promotionCandidates: (request) => service.promotionCandidates(request),
+    stdout: (line) => console.log(line),
+  }));
+}
 
 async function cmdVersions(rest: string[]): Promise<void> {
   initLogger();
@@ -10294,11 +10297,13 @@ async function cmdSpace(action: string, rest: string[], json: boolean): Promise<
     const result = await promoteSpace(sourceId, targetId, {
       force: rest.includes("--force"),
       forceOverwrite: rest.includes("--force-overwrite"),
+      allowUserSubject: rest.includes("--allow-user-subject"),
     });
     if (json) {
       console.log(JSON.stringify(result, null, 2));
     } else {
       console.log(`Promoted ${result.memoriesPromoted} memories`);
+      if (result.subjectWarnings && result.subjectWarnings.length > 0) console.log(`Subject-guard warnings: ${result.subjectWarnings.length} (see --json)`);
       if (result.conflicts.length > 0) console.log(`Conflicts: ${result.conflicts.length}`);
       console.log(`Duration: ${result.durationMs}ms`);
     }
@@ -12694,17 +12699,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       break;
 
     case "xray":
-      // `remnic xray "<query>"` — X-ray capture + snapshot print (issue #570).
-      // Plugin-runtime registers the same surface; standalone wiring here.
       await cmdXray(rest);
       break;
-
     case "who-knows":
       await cmdWhoKnows(rest); // `remnic who-knows "<topic>"` — expertise ranking (#2057).
       break;
-
+    case "promotion-candidates":
+      await cmdPromotionCandidates(rest); // `remnic promotion-candidates` — #2372 candidate surfacing.
+      break;
     case "security":
-      // `remnic security audit-memory` — #1955; standalone wiring (plugin path in core).
       await cmdSecurity(rest);
       break;
     case "doctor":

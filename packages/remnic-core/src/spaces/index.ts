@@ -8,6 +8,8 @@
  * through push/pull and promotion workflows.
  */
 
+import { evaluateSubjectGuard } from "../memory-subject.js";
+import type { SubjectGuardMode } from "../types.js";
 import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -99,6 +101,8 @@ export interface SpacePromoteResult {
   memoriesPromoted: number;
   conflicts: ConflictEntry[];
   durationMs: number;
+  /** Subject-guard warnings (issue #2372): user-subject memories promoted to a shared team space under "warn". */
+  subjectWarnings?: string[];
 }
 
 export interface ConflictEntry {
@@ -748,7 +752,10 @@ export function shareSpace(spaceId: string, members: string[], baseDir?: string)
 export async function promoteSpace(
   sourceSpaceId: string,
   targetSpaceId: string,
-  options?: { memoryIds?: string[]; force?: boolean; forceOverwrite?: boolean; baseDir?: string }
+  options?: {
+    memoryIds?: string[]; force?: boolean; forceOverwrite?: boolean; baseDir?: string;
+    subjectGuard?: SubjectGuardMode; allowUserSubject?: boolean;
+  }
 ): Promise<SpacePromoteResult> {
   const startTime = Date.now();
   const manifest = loadManifest(options?.baseDir);
@@ -766,6 +773,33 @@ export async function promoteSpace(
     }
   }
 
+  // Subject guard (issue #2372): the SAME gate as the scope-profile promotion
+  // path — a user-subject (or unstamped, fail-closed) memory promoted into a
+  // TEAM space warns/rejects with the override named; recorded in the audit trail.
+  const subjectWarnings: string[] = [];
+  const warnedMemoryIds: string[] = [];
+  if (target.kind === "team") {
+    const sourceFiles = fs.existsSync(source.memoryDir) ? walkMd(fs.realpathSync(source.memoryDir)) : [];
+    for (const file of sourceFiles) {
+      const fm = parseSimpleFrontmatter(fs.readFileSync(file, "utf8"));
+      if (!fm?.id) continue;
+      if (options?.memoryIds?.length && !options.memoryIds.includes(fm.id)) continue;
+      const decision = evaluateSubjectGuard({
+        subject: fm.subject === "user" || fm.subject === "agent" ? fm.subject : undefined,
+        sharedTarget: true,
+        mode: options?.subjectGuard ?? "warn",
+        allowUserSubject: options?.allowUserSubject,
+      });
+      if (decision.action === "reject") {
+        throw new Error(`space promote blocked by subject guard: memory ${fm.id} — ${decision.reason}`);
+      }
+      if (decision.action === "warn") {
+        subjectWarnings.push(`memory ${fm.id}: ${decision.reason}`);
+        warnedMemoryIds.push(fm.id);
+      }
+    }
+  }
+
   const result = await copyMemories(source.memoryDir, target.memoryDir, {
     filterIds: options?.memoryIds,
     force: options?.forceOverwrite !== undefined ? options.forceOverwrite : (options?.force ?? false),
@@ -776,7 +810,8 @@ export async function promoteSpace(
       action: "space.promote",
       sourceSpaceId,
       targetSpaceId,
-      details: `Promoted ${result.merged} memories from "${source.name}" to "${target.name}"`,
+      details: `Promoted ${result.merged} memories from "${source.name}" to "${target.name}"${subjectWarnings.length > 0 ? `; subject-guard warned ${subjectWarnings.length} user-subject memories (${warnedMemoryIds.join(", ")})` : ""}${options?.allowUserSubject === true ? "; user-subject override: --allow-user-subject" : ""}`,
+      ...(warnedMemoryIds.length > 0 ? { memoryIds: warnedMemoryIds } : {}),
     },
     options?.baseDir
   );
@@ -787,6 +822,7 @@ export async function promoteSpace(
     memoriesPromoted: result.merged,
     conflicts: result.conflicts,
     durationMs: Date.now() - startTime,
+    ...(subjectWarnings.length > 0 ? { subjectWarnings } : {}),
   };
 }
 

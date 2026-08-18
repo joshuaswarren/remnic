@@ -147,6 +147,13 @@ defineOperation({ name: "who_knows", description: "Rank entities by demonstrated
     return { result: await ctx.service.whoKnows({ topic, ...(limit !== undefined ? { limit } : {}), namespace: optStr(input.namespace), authenticatedPrincipal: ctx.authenticatedPrincipal }) };
   },
 });
+defineOperation({ name: "promotion_candidates", description: "List agent-subject reuse-signaled promotion candidates (#2372).", schema: strictSchema({ namespace: S.str, targetNamespace: S.str, limit: S.flexNum }),
+  handler: async (input, ctx) => {
+    let limit: number | undefined;
+    if (input.limit !== undefined) { const p = typeof input.limit === "number" ? input.limit : Number(input.limit); if (!Number.isInteger(p) || p < 1 || p > 100) throw new EngramAccessInputError("promotion_candidates: limit expects an integer in [1, 100]"); limit = p; }
+    return { result: await ctx.service.promotionCandidates({ ...(limit !== undefined ? { limit } : {}), namespace: optStr(input.namespace), targetNamespace: optStr(input.targetNamespace), authenticatedPrincipal: ctx.authenticatedPrincipal }) };
+  },
+});
 defineOperation({ name: "namespace_writable", description: "Read-only preflight: is a namespace writable for the caller's principal?", allowedByOps: ["namespace_writable", "observe", "memory_store"], schema: strictSchema({ namespace: S.str, sessionKey: S.str, op: S.str, cwd: S.str, projectTag: S.str }), handler: async (input, ctx) => {
   const writeOp = parseNamespacePreflightWriteOp(optStr(input.op));
   const namespace = optStr(input.namespace);

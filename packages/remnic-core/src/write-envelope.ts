@@ -24,7 +24,8 @@
  * the write call sites onto this module (see #1989 for the slicing).
  */
 
-import type { MemoryCategory } from "./types.js";
+import { isMemorySubject } from "./memory-subject.js";
+import type { MemoryCategory, MemorySubject } from "./types.js";
 import { normalizeTags } from "./recall-tag-filter.js";
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 import { assemblePersistedBody } from "./structured-attributes.js";
@@ -61,6 +62,8 @@ export interface MemoryWriteInput {
   sourceConnector?: string;
   /** Origin class stamped at creation time (issue #1955). */
   origin?: string;
+  /** Whom the memory models (issue #2372): "user" or "agent". */
+  subject?: MemorySubject;
   /** Human-readable provenance note. */
   sourceReason?: string;
 }
@@ -184,6 +187,7 @@ export interface SealedMemoryEnvelope {
   readonly validAt: string | undefined;
   readonly sourceConnector: string | undefined;
   readonly origin: string | undefined;
+  readonly subject: MemorySubject | undefined;
   readonly sourceReason: string | undefined;
   readonly source: string;
   /** ISO timestamp the envelope was composed (from ctx.now). */
@@ -430,6 +434,18 @@ export function composeMemoryEnvelope(
     }
   }
 
+  let subject: MemorySubject | undefined;
+  if (input.subject !== undefined) {
+    if (!isMemorySubject(input.subject)) {
+      hygiene.flag(
+        "subject",
+        `must be "user" or "agent" (got ${JSON.stringify(input.subject)}) — dropped`,
+      );
+    } else {
+      subject = input.subject;
+    }
+  }
+
   // validAt stays FATAL in salvage too: legacy writeMemory throws on an
   // invalid validAt (normalizeMemoryWriteTimestamp), so salvage-dropping it
   // would CHANGE behavior rather than preserve it.
@@ -465,11 +481,12 @@ export function composeMemoryEnvelope(
     structuredAttributes: attributes?.canonical,
     rawStructuredAttributes: attributes?.raw,
     entityRef: normalizeOptionalString("entityRef", input.entityRef, hygiene),
+    origin: normalizeOptionalString("origin", input.origin, hygiene),
+    subject,
     confidence,
     ttl: normalizeOptionalString("ttl", input.ttl, hygiene),
     validAt,
     sourceConnector: normalizeOptionalString("sourceConnector", input.sourceConnector, hygiene),
-    origin: normalizeOptionalString("origin", input.origin, hygiene),
     sourceReason: normalizeOptionalString("sourceReason", input.sourceReason, hygiene),
     source: ctx.source.trim(),
     composedAt: now.toISOString(),
@@ -656,8 +673,9 @@ export function sealedWriteToLegacyArgs(
       // extras — a conditional spread let extras.sourceConnector smuggle
       // unvalidated connector provenance past the sealed envelope when the
       // envelope had none.
-      sourceConnector: envelope.sourceConnector,
       origin: envelope.origin,
+      sourceConnector: envelope.sourceConnector,
+      subject: envelope.subject,
     },
   };
 }
@@ -695,6 +713,9 @@ export const FINGERPRINT_EXEMPT_FIELDS = [
   // Free-text provenance note; carries no identity.
   // Origin is provenance metadata, not write identity (#1955).
   "origin",
+  // Subject is derived classification metadata (#2372): two writes identical
+  // except subject are the same memory for dedup purposes.
+  "subject",
   "sourceReason",
 ] as const satisfies readonly (keyof MemoryWriteInput)[];
 

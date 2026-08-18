@@ -312,6 +312,8 @@ export class ExtractionEngine {
               promptedByQuestion: extractionText(f.promptedByQuestion),
               scope:
                 f.scope === "global" || f.scope === "project" ? f.scope : undefined,
+              subject:
+                f.subject === "user" || f.subject === "agent" ? f.subject : undefined,
               structuredAttributes: extractionAttributes(f.structuredAttributes),
               procedureSteps,
               reasoningTrace,
@@ -1425,7 +1427,8 @@ Rules:
 - ${OUTPUT_LANGUAGE_POLICY}
 ${CUE_ANCHOR_PROMPT_INSTRUCTION}\n- Include at most five durable relationships.${this.config.provenance?.enabled ? `
 - Each fact must include a quote copied verbatim from one contiguous conversation span.` : ""}${lifecycleCaps.extractionScopeClassification ? `
-- Set each fact scope to "global" for cross-project knowledge or "project" for codebase-specific knowledge. Tool, command, or CLI-flag instructions tied to one agent are "project" (the same tool name can mean different things across agents); when keeping one, begin the fact with a leading "In <agent>," clause naming that agent.` : ""}${ambientCapture ? AMBIENT_CAPTURE_PROMPT_SECTION_COMPACT : ""}
+- Set each fact scope to "global" for cross-project knowledge or "project" for codebase-specific knowledge. Tool, command, or CLI-flag instructions tied to one agent are "project" (the same tool name can mean different things across agents); when keeping one, begin the fact with a leading "In <agent>," clause naming that agent.` : ""}${this.config.subjectClassification?.enabled === true ? `
+- Set each fact subject to "user" when it models the person (preferences, relationships, biography, moments, commitments about their life) or "agent" when it is reusable operating knowledge (procedures, principles, tool-usage lessons, debugging strategies, environment facts with no personal content).` : ""}${ambientCapture ? AMBIENT_CAPTURE_PROMPT_SECTION_COMPACT : ""}
 ${eventTimePromptInstruction(this.config)}
 Return only valid JSON matching this shape. Placeholder text describes field shape only and is never source evidence:
 ${EXTRACTION_RESPONSE_SHAPE}

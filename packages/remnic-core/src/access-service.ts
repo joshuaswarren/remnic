@@ -309,6 +309,7 @@ import { toRecallExplainJson } from "./recall-explain-renderer.js";
 import { type TagMatchMode, applyTagFilter, normalizeTags, parseTagMatch } from "./recall-tag-filter.js";
 import { type RecallXraySnapshot, estimateRecallTokens } from "./recall-xray.js";
 import { computeWhoKnows, loadWhoKnowsEntities, validateWhoKnowsInput, WHO_KNOWS_DEFAULT_LIMIT, type WhoKnowsResult } from "./who-knows.js";
+import { computePromotionCandidates, type PromotionCandidatesResult } from "./memory-subject.js";
 import { SupportPassportAccessServiceBase } from "./support-passport/access-service-base.js";
 import {
   type ExportCapsuleOptions,
@@ -2741,6 +2742,41 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       loadWhoKnowsEntities(storage, this.orchestrator.config.entitySchemas),
     ]);
     return computeWhoKnows({ topic, limit, memories, entities });
+  }
+  /**
+   * Read-only promotion-candidate surfacing (issue #2372): agent-subject,
+   * active, reuse-signaled memories in the caller's namespace with no
+   * equivalent in the target layer. No auto-promotion — callers use the
+   * existing promotion commands.
+   */
+  async promotionCandidates(request: {
+    namespace?: string;
+    targetNamespace?: string;
+    limit?: number;
+    authenticatedPrincipal?: string;
+  }): Promise<PromotionCandidatesResult> {
+    const limit = request.limit ?? 20;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new EngramAccessInputError(
+        `promotion_candidates: limit expects an integer in [1, 100] (got ${String(request.limit)})`,
+      );
+    }
+    const resolvedNamespace = this.resolveReadableNamespace(request.namespace, request.authenticatedPrincipal);
+    const resolvedTarget = this.resolveReadableNamespace(
+      request.targetNamespace ?? this.orchestrator.config.sharedNamespace,
+      request.authenticatedPrincipal,
+    );
+    const minAccessCount = this.orchestrator.config.promotionCandidates.minAccessCount;
+    const [memories, targetMemories] = await Promise.all([
+      (await this.orchestrator.getStorage(resolvedNamespace)).readAllMemories(),
+      (await this.orchestrator.getStorage(resolvedTarget)).readAllMemories(),
+    ]);
+    return {
+      namespace: resolvedNamespace,
+      targetNamespace: resolvedTarget,
+      minAccessCount,
+      candidates: computePromotionCandidates({ memories, targetMemories, minAccessCount, limit }),
+    };
   }
   async memoryStore(
     request: EngramAccessMemoryStoreRequest,

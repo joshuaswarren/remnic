@@ -175,6 +175,23 @@ Access-layer safety notes:
 | `extractionMaxProfileUpdatesPerRun` | `4` | Cap on profile update statements per LLM call |
 | `beforeResetTimeoutMs` | `2000` | Max time (ms, clamped to `[100, 30000]`) to wait for a reset-triggered flush before returning control to the host. Operators running a local LLM for extraction often want this higher — a 7B model on CPU can take 2–5s per extraction, and the default can abort the queued follow-up flush before it completes. See issue #549 for the error-vs-debug log-level behavior around these aborts. |
 
+## Memory Subjects (issue #2372)
+
+Subject says *whom* a memory is about — `user` (preferences, relationships,
+moments, commitments) or `agent` (procedures, principles, tool-usage lessons,
+debugging strategies). Scope says where a memory lives; subject is what
+decides where it may safely go.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `subjectClassification.enabled` | `false` | Stamp `subject` on new memories: deterministic category defaults with an optional extractor token for fact/decision-like facts. Off = no field written and behavior byte-identical to before. |
+| `subjectGuard` | `"warn"` | Promotion guard for `user`-subject (or unstamped — fail closed) memories into shared layers (`team-project`, `server-shared`, team spaces). `"warn"` promotes with a recorded warning, `"enforce"` rejects naming the `--allow-user-subject` override, `"off"` disables. Deliberately defaults on while classification defaults off, so enabling classification later warns without a second flag flip. |
+| `promotionCandidates.minAccessCount` | `3` | `accessCount` threshold that counts as a reuse signal for `remnic promotion-candidates` / `engram.promotion_candidates`. Reinforcement (`reinforcement_count > 0`) or Memory Worth (`mw_success > mw_fail`) also qualify. |
+
+Invalid values are rejected, never silently defaulted: a non-object
+`subjectClassification`, an unrecognized `subjectGuard`, or a negative
+`promotionCandidates.minAccessCount` fails config parsing.
+
 ## Search Backend (v9.0)
 
 | Setting | Default | Description |

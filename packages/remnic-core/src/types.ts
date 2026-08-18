@@ -1041,14 +1041,11 @@ export interface PluginConfig extends BoundedJsonlStateConfig, SecurityConfig {
   recallMaxConcurrentPerPrincipal: number;
   /** Coalesce identical concurrent recalls per principal; each caller gets its own clone. Default true. */
   recallSingleFlightEnabled: boolean;
-  // Memory Worth recall filter (issue #560 PR 4)
   /**
-   * When true, recall multiplies candidate scores by the Memory Worth
-   * factor computed from `mw_success` / `mw_fail` counters on each
-   * memory's frontmatter (see `computeMemoryWorth`). Memories with a
-   * history of failed sessions sink; neutral / uninstrumented memories
-   * are untouched (multiplier 1.0). Default false — flip to true in PR 5
-   * once the benchmark shows precision tie-or-win.
+   * When true, recall multiplies candidate scores by the Memory Worth factor
+   * from `mw_success` / `mw_fail` (see `computeMemoryWorth`): failed memories
+   * sink; neutral ones untouched (multiplier 1.0). Default false until the
+   * benchmark shows precision tie-or-win.
    */
   recallMemoryWorthFilterEnabled: boolean;
   /**
@@ -1265,6 +1262,10 @@ export interface PluginConfig extends BoundedJsonlStateConfig, SecurityConfig {
   codexCompat: CodexCompatConfig;
   /** When true (default), LLM classifies facts as `"project"` or `"global"` scope for promotion across projects. */
   extractionScopeClassificationEnabled: boolean;
+  subjectClassification: { enabled: boolean };
+  subjectGuard: SubjectGuardMode;
+  /** Min accessCount reuse signal for promotion candidates (issue #2372). Default 3. */
+  promotionCandidates: { minAccessCount: number };
   // Extraction judge (issue #376)
   /** Enable the LLM-as-judge fact-worthiness gate on extracted facts. Default false (opt-in). */
   extractionJudgeEnabled: boolean;
@@ -2800,10 +2801,15 @@ export interface ImportanceScore {
   keywords: string[];
 }
 
+/** Subject vocabulary lives with its guards/defaults in memory-subject.ts (issue #2372). */
+export type { MemorySubject, SubjectGuardMode } from "./memory-subject.js";
+
 export interface MemoryFrontmatter extends SourceConnectorProvenance, OriginMetadata {
   /** True when write-time classification ties this memory to its source connector's tools or commands. */
   toolScoped?: true;
   id: string;
+  /** Whom this memory models (issue #2372). The promotion guard treats absent as "user" (fail closed). */
+  subject?: MemorySubject;
   category: MemoryCategory;
   /** OKF v0.1 interop metadata (issue #1946). Inert: presentation only, never overrides `category`. */
   type?: string;
@@ -2824,12 +2830,8 @@ export interface MemoryFrontmatter extends SourceConnectorProvenance, OriginMeta
   /** Memory status: active (default), pending_review, rejected, quarantined, superseded, archived, or forgotten */
   status?: MemoryStatus;
   /**
-   * Tombstone block marker (issue #1579). When a new fact matches an active
-   * tombstone at the storage chokepoint, it is persisted with
-   * `status: "pending_review"` and this field set to the tombstone id — making
-   * the block VISIBLE (rule 34: never a silent drop) rather than silently
-   * discarding the extraction. Approving the memory through the review queue
-   * emits a revocation that re-allows the content.
+   * Tombstone block marker (issue #1579): persisted `pending_review` with this
+   * set to the tombstone id — a VISIBLE block (rule 34); approval revokes it.
    */
   blockedBy?: string;
   /** Which tombstone tier matched (`exact`/`normalized`/`keyed`/`semantic`). */
@@ -3234,29 +3236,25 @@ export interface ExtractedFact {
    */
   provenance?: "verified" | "unverified" | "none";
   /**
-   * Transient LLM-provided supporting quote (issue #1575 PR 2). Consumed by
-   * the post-parse validator to build `sources`, then stripped before the
-   * fact reaches persistence. NEVER included in content-hash dedup (rule 23 /
-   * checklist §13). Absent on facts that have already passed the validator.
+   * Transient LLM quote (issue #1575 PR 2): consumed by the post-parse
+   * validator to build `sources`, stripped before persistence, never in
+   * content-hash dedup (rule 23 / checklist §13).
    */
   quote?: string;
   /**
-   * Transient requireSpans signal (issue #1575 PR 2). Set by the provenance
-   * validator (`ProvenanceBuildResult.requireSpansPending`) when
-   * `provenance.requireSpans` is enabled and the quote could not be located
-   * in any source turn. Read by the persist path to route the fact to
-   * `pending_review` instead of `active`. Stripped before persistence —
-   * it never reaches frontmatter (chatgpt-codex-connector thread 4xB).
+   * Transient requireSpans signal (#1575 PR 2): quote unlocatable while
+   * `provenance.requireSpans` is on. Persist path routes the fact to
+   * `pending_review`. Stripped before persistence — never reaches frontmatter.
    */
   requireSpansPending?: boolean;
   promptedByQuestion?: string;
   /**
-   * Whether this fact is project-scoped or globally applicable.
-   * When `extractionScopeClassificationEnabled` is true, the extraction LLM
-   * classifies each fact. Default is `"project"` when a coding context is
-   * active, `"global"` when no coding context is present.
+   * Project- vs global-scoped; emitted when `extractionScopeClassificationEnabled`.
+   * Defaults to "project" with a coding context active, else "global".
    */
   scope?: MemoryScope;
+  /** Extractor-assigned subject, present only when subjectClassification.enabled (issue #2372). */
+  subject?: MemorySubject;
   /** Structured key-value attributes extracted from the content (e.g., product attributes, dates, quantities). */
   structuredAttributes?: Record<string, string>;
   /** When category is `procedure`, ordered steps with intents (persisted under procedures/). */
