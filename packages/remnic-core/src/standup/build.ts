@@ -24,13 +24,30 @@ export function parseStandupDate(raw: unknown, now = new Date()): string {
   return value;
 }
 
-export function previousDate(date: string): string {
+/** Look back at most this many days for the prior active day (issue #1981). */
+const STANDUP_PRIOR_DAY_LOOKBACK = 7;
+
+function shiftDays(date: string, days: number): string {
   const ms = Date.parse(`${date}T00:00:00Z`);
-  return new Date(ms - 86_400_000).toISOString().slice(0, 10);
+  return new Date(ms + days * 86_400_000).toISOString().slice(0, 10);
+}
+
+/**
+ * Prior active day: the most recent of the 7 days before `date` that has an
+ * activity digest (working-day lookback — Monday resolves to Friday, not
+ * Sunday, when the weekend has no digests). Calendar-previous day when no
+ * day in the window qualifies.
+ */
+export function previousActiveDate(memoryDir: string, date: string): string {
+  for (let back = 1; back <= STANDUP_PRIOR_DAY_LOOKBACK; back += 1) {
+    const candidate = shiftDays(date, -back);
+    if (readOptional(activityDigestPath(memoryDir, candidate)) !== null) return candidate;
+  }
+  return shiftDays(date, -1);
 }
 
 export function buildStandup(memoryDir: string, date: string): StandupBrief {
-  const yesterday = previousDate(date);
+  const yesterday = previousActiveDate(memoryDir, date);
   const todayBody = readOptional(activityDigestPath(memoryDir, date));
   const yesterdayBody = readOptional(activityDigestPath(memoryDir, yesterday));
   const highlights = extractHighlights(todayBody);

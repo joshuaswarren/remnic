@@ -18,13 +18,24 @@ export async function runStandupBinaryCommand(rest: string[]): Promise<void> {
   }
   let orchestrator: Orchestrator | undefined;
   try {
-    const configPath = resolveConfigPath();
-    const raw = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {};
-    const config = parseConfig(resolveRemnicConfigRecord(raw));
-    orchestrator = new Orchestrator(config);
-    await orchestrator.initialize();
-    await orchestrator.deferredReady;
-    const brief = buildStandup(orchestrator.config.memoryDir, parseStandupDate(takeFlag(rest, "--date")));
+    // Config/bootstrap failures get a constant message: parseConfig error
+    // strings can embed config values (CodeQL js/clear-text-logging), so
+    // they must never reach console output.
+    try {
+      const configPath = resolveConfigPath();
+      const raw = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {};
+      const config = parseConfig(resolveRemnicConfigRecord(raw));
+      orchestrator = new Orchestrator(config);
+      await orchestrator.initialize();
+      await orchestrator.deferredReady;
+    } catch {
+      console.error(
+        "standup: failed to load the Remnic config or start the memory engine — run `remnic doctor` and check the config file for errors",
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const brief = buildStandup(orchestrator!.config.memoryDir, parseStandupDate(takeFlag(rest, "--date")));
     console.log(brief.markdown);
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
