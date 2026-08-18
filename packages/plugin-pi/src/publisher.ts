@@ -98,7 +98,14 @@ const PRIME_AGENT_HOST: HostPublisherDescriptor = {
   tokenGenerateHint: "remnic token generate prime-agent",
   resolveAgentHome: resolvePrimeAgentAgentHome,
   resolveExtensionRoot: resolvePrimeAgentExtensionRoot,
+  listRemovalAgentHomes: primeAgentRemovalAgentHomes,
 };
+
+function primeAgentRemovalAgentHomes(env: NodeJS.ProcessEnv): string[] {
+  const homes = new Set<string>([resolvePrimeAgentAgentHome(env)]);
+  homes.add(resolvePrimeAgentAgentHome({ HOME: env.HOME, USERPROFILE: env.USERPROFILE }));
+  return [...homes];
+}
 
 /**
  * Every omp agent home a stale extension might live under, so `unpublish` cleans

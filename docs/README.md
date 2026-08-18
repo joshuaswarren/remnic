@@ -2,7 +2,7 @@
 
 Remnic is an open-source, local-first memory and context layer for AI agents. One
 memory store, every agent: OpenClaw, Claude Code, Codex CLI, Cursor, ChatGPT
-(developer mode), Hermes, Replit, Pi, omp, and any MCP client. All data lives on
+(developer mode), Hermes, Replit, Pi, omp, Prime Agent, and any MCP client. All data lives on
 your machine as plain markdown with YAML frontmatter. MIT licensed.
 
 This is the map of everything under `docs/`. New here? Read the
