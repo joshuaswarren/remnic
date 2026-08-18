@@ -62,6 +62,7 @@ import {
 } from "./emit-legacy-tools.js";
 import { parseWearablesConfig } from "./wearables/config.js";
 import { parseCaptureCompanionConfigs } from "./location/parse-companions.js";
+import { parseLocationConfig } from "./location/config.js";
 import { parseBoundedJsonlStateConfig } from "./bounded-jsonl-state.js";
 import { parseCodingKnowledgeConfig } from "./coding/coding-knowledge-config.js";
 import { parseChatConfig } from "./chat/chat-config.js";
@@ -1157,7 +1158,8 @@ export function parseConfig(
     recallMaxProcedures,
   };
   const wearables = parseWearablesConfig(cfg.wearables);
-  const { activity, meetings, provenance, location } = parseCaptureCompanionConfigs(cfg);
+  const { activity, meetings, provenance } = parseCaptureCompanionConfigs(cfg);
+  const location = parseLocationConfig(cfg.location);
   // Coding-agent project/branch scoping (issue #569)
   const rawCodingMode =
     cfg.codingMode && typeof cfg.codingMode === "object" && !Array.isArray(cfg.codingMode)

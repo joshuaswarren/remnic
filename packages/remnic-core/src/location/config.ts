@@ -28,7 +28,7 @@ function optionalNonEmptyString(value: unknown, name: string): string | undefine
   return value;
 }
 
-function parseSource(value: unknown): LocationSourceConfig {
+function parseLocationSource(value: unknown): LocationSourceConfig {
   const raw = asRecord(value, "location source");
   const id = optionalNonEmptyString(raw.id, "location source id");
   if (id === undefined) {
@@ -87,7 +87,7 @@ export function parseLocationConfig(raw: unknown): LocationConfig {
   if (config.sources !== undefined && !Array.isArray(config.sources)) {
     throw new TypeError("location.sources must be an array");
   }
-  const sources = (config.sources ?? []).map(parseSource);
+  const sources = (config.sources ?? []).map(parseLocationSource);
   // Day payloads and sync state are keyed on source id; two sources sharing
   // an id would overwrite each other's state. Reject the collision at parse.
   const ids = new Set<string>();
