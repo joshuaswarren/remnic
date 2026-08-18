@@ -499,6 +499,8 @@ export type {
   RecallXrayServedBy,
   RecallFilterTrace,
 } from "./recall-xray.js";
+export * from "./who-knows.js";
+export * from "./who-knows-cli.js";
 
 // ChatGPT Apps-compatible memory inspector demo.
 export {

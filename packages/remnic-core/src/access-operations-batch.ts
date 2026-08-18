@@ -139,6 +139,14 @@ defineOperation({ name: "recall_xray", description: "X-ray recall.", schema: str
     return { result: await ctx.service.recallXray({ query: defStr(input.query, ""), sessionKey: optStr(input.sessionKey), namespace: optStr(input.namespace), budget, authenticatedPrincipal: ctx.authenticatedPrincipal, sourceConnector: ctx.sourceConnector, ...(dr && dr !== "" ? { disclosure: dr as RecallDisclosure } : {}), ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}) }) };
   },
 });
+defineOperation({ name: "who_knows", description: "Rank entities by demonstrated expertise for a topic (#2057).", schema: strictSchema({ topic: S.str, limit: S.flexNum, namespace: S.str }),
+  handler: async (input, ctx) => {
+    const topic = defStr(input.topic, "");
+    let limit: number | undefined;
+    if (input.limit !== undefined) { const p = typeof input.limit === "number" ? input.limit : Number(input.limit); if (!Number.isInteger(p) || p < 1) throw new EngramAccessInputError("who_knows: limit expects a positive integer"); limit = p; }
+    return { result: await ctx.service.whoKnows({ topic, ...(limit !== undefined ? { limit } : {}), namespace: optStr(input.namespace), authenticatedPrincipal: ctx.authenticatedPrincipal }) };
+  },
+});
 defineOperation({ name: "namespace_writable", description: "Read-only preflight: is a namespace writable for the caller's principal?", allowedByOps: ["namespace_writable", "observe", "memory_store"], schema: strictSchema({ namespace: S.str, sessionKey: S.str, op: S.str, cwd: S.str, projectTag: S.str }), handler: async (input, ctx) => {
   const writeOp = parseNamespacePreflightWriteOp(optStr(input.op));
   const namespace = optStr(input.namespace);

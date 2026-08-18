@@ -54,6 +54,7 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
   }),
   recall_tier_explain: objectSchema({ snapshotFound: T_BOOLEAN, tierExplain: T_NULLABLE_OBJECT }),
   recall_xray: objectSchema({ snapshotFound: T_BOOLEAN, snapshot: T_OBJECT }),
+  who_knows: objectSchema({ topic: T_STRING, results: T_ARRAY }),
   set_coding_context: objectSchema({ ok: T_BOOLEAN }),
   wearables_status: objectSchema({
     enabled: T_BOOLEAN,

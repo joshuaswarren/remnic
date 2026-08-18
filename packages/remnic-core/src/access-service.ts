@@ -304,6 +304,7 @@ import { decideDisclosureEscalation } from "./recall-disclosure-escalation.js";
 import { toRecallExplainJson } from "./recall-explain-renderer.js";
 import { type TagMatchMode, applyTagFilter, normalizeTags, parseTagMatch } from "./recall-tag-filter.js";
 import { type RecallXraySnapshot, estimateRecallTokens } from "./recall-xray.js";
+import { computeWhoKnows, loadWhoKnowsEntities, validateWhoKnowsInput, WHO_KNOWS_DEFAULT_LIMIT, type WhoKnowsResult } from "./who-knows.js";
 import { SupportPassportAccessServiceBase } from "./support-passport/access-service-base.js";
 import {
   type ExportCapsuleOptions,
@@ -2711,6 +2712,31 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     recall?: EngramAccessRecallResponse;
   }> {
     return this.accessRecallSurface.recallXray(request);
+  }
+
+  /**
+   * Rank entities by demonstrated expertise for a topic (issue #2057).
+   * Deterministic — no LLM, no QMD. Reads the namespace-scoped corpus and
+   * entity files only; namespace resolution + ACL mirror recall semantics
+   * (`resolveReadableNamespace`), so a principal cannot rank outside a
+   * namespace it cannot read.
+   */
+  async whoKnows(request: {
+    topic: string;
+    limit?: number;
+    namespace?: string;
+    authenticatedPrincipal?: string;
+  }): Promise<WhoKnowsResult> {
+    const topic = request.topic?.trim() ?? "";
+    const limit = request.limit ?? WHO_KNOWS_DEFAULT_LIMIT;
+    validateWhoKnowsInput(topic, limit);
+    const resolvedNamespace = this.resolveReadableNamespace(request.namespace, request.authenticatedPrincipal);
+    const storage = await this.orchestrator.getStorage(resolvedNamespace);
+    const [memories, entities] = await Promise.all([
+      storage.readAllMemories(),
+      loadWhoKnowsEntities(storage, this.orchestrator.config.entitySchemas),
+    ]);
+    return computeWhoKnows({ topic, limit, memories, entities });
   }
   async memoryStore(
     request: EngramAccessMemoryStoreRequest,

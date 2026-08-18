@@ -8,6 +8,7 @@
  *   status            Show server/daemon status
  *   query <text>      Query memories
  *   xray <query>      Recall with X-ray capture; renders tier + filters + scores
+ *   who-knows <topic> Rank entities by expertise on a topic
  *   wearables <cmd>   Wearable transcript sources (Limitless / Bee / Omi)
  *   doctor            Run diagnostics
  *   config            Show current config
@@ -134,6 +135,10 @@ import {
   formatProcedureStatsText,
   parseXrayCliOptions,
   renderXray,
+  extractWhoKnowsRawArgs,
+  parseWhoKnowsCliOptions,
+  renderWhoKnows,
+  type WhoKnowsResult,
   runAuditMemoryCliCommand, formatAuditMemoryReport,
   OFFLINE_SYNC_APPLY_MAX_BODY_BYTES,
   OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES,
@@ -433,6 +438,7 @@ type CommandName =
   | "import-lossless-claw"
   | "action-confidence"
   | "xray"
+  | "who-knows"
   | "security"
   | "wearables"
   | "meetings"
@@ -5522,6 +5528,47 @@ function xrayCliIo(
   };
 }
 
+export async function runWhoKnowsCommand(
+  rest: string[],
+  io: {
+    whoKnows: (request: { topic: string; limit?: number; namespace?: string }) => Promise<WhoKnowsResult>;
+    stdout: (line: string) => void;
+  },
+): Promise<void> {
+  const { topic, options } = extractWhoKnowsRawArgs(rest);
+  const parsed = parseWhoKnowsCliOptions(topic, options);
+  const result = await io.whoKnows({
+    topic: parsed.topic,
+    limit: parsed.limit,
+    ...(parsed.namespace ? { namespace: parsed.namespace } : {}),
+  });
+  io.stdout(renderWhoKnows(result, parsed.json));
+}
+
+async function cmdWhoKnows(rest: string[]): Promise<void> {
+  const { topic, options } = extractWhoKnowsRawArgs(rest);
+  parseWhoKnowsCliOptions(topic, options); // validate topic/--limit before any IO
+  if (resolveRemoteDaemon(resolveConfigPath())) {
+    throw new Error("who-knows: remote daemon mode is not supported yet; run with a local config");
+  }
+  initLogger();
+  const configPath = resolveConfigPath();
+  const raw = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {};
+  const config = parseConfig(resolveRemnicConfigRecord(raw));
+  const orchestrator = new Orchestrator(config);
+  await orchestrator.initialize();
+  await orchestrator.deferredReady;
+  const service = new EngramAccessService(orchestrator);
+  try {
+    await runWhoKnowsCommand(rest, {
+      whoKnows: (request) => service.whoKnows(request),
+      stdout: (line) => console.log(line),
+    });
+  } finally {
+    orchestrator.abortDeferredInit();
+    await orchestrator.destroy();
+  }
+}
 // ── Page-level versioning (issue #371) ─────────────────────────────────────
 
 async function cmdVersions(rest: string[]): Promise<void> {
@@ -12745,6 +12792,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       await cmdXray(rest);
       break;
 
+    case "who-knows":
+      await cmdWhoKnows(rest); // `remnic who-knows "<topic>"` — expertise ranking (#2057).
+      break;
+
     case "security":
       // `remnic security audit-memory` — #1955; standalone wiring (plugin path in core).
       await cmdSecurity(rest);
@@ -13410,19 +13461,17 @@ Usage:
   remnic query <text> [--json] [--explain] Query memories (use --explain for tier breakdown)
   remnic xray <query> [--format text|markdown|json] [--budget <chars>] [--namespace <ns>] [--out <path>]
     Run a recall with X-ray capture and print the unified snapshot
-    (tier + audit + MMR + filters). Part of #570. Defaults to text
-    output on stdout.
+    (tier + audit + MMR + filters). Part of #570. Text output by default.
+  remnic who-knows <topic> [--limit N] [--json] [--namespace <ns>]  Rank entities by topic expertise
   remnic wearables <status|check|sync|transcript|search|memories|speakers|corrections>
     Wearable transcript sources (Limitless / Bee / Omi): pull + clean +
     store day transcripts, trust-gated memory creation, speaker labels,
     and per-user corrections. Run "remnic wearables help" for details.
     Connectors install à la carte: npm install @remnic/connector-limitless
   remnic meetings <list|show|build>
-    Retrospective meetings: list stored records, show one by id, or build
-    (detect + fuse + store) a day's meetings from ingested audio + screen
-    activity. Run "remnic meetings help" for details.
+    Retrospective meetings: list, show, or build a day's meetings.
+    Run "remnic meetings help" for details.
   remnic external-wiki search <query...> [--wiki-id <id>] [--limit <1-20>] [--max-chars-per-hit <100-8000>] [--json]
-
   remnic doctor                Run diagnostics
   remnic config                Show current config
   remnic openclaw install      Configure OpenClaw to use Remnic memory (sets slot + entry)
