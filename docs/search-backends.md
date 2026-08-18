@@ -508,9 +508,8 @@ Remnic plans for this explicitly (issue #2197):
    When they differ, the lexical page is supplemented with vector-tier hits
    from the embedding fallback — regardless of how full the lexical page is,
    because token overlap across scripts is near zero.
-3. **Degradation signal.** When the scripts differ and no vector tier is
-   configured (embedding fallback disabled, and QMD either unavailable or
-   pinned to `qmdSearchStrategy: "lex"`), recall records a
+3. **Degradation signal.** When the scripts differ and embedding fallback
+   is disabled, recall records a
    `vector_tier_unavailable` degradation on the recall snapshot instead of
    silently returning nothing. Read it with `remnic recall explain` or the
    `memory_last_recall` tool: an empty cross-lingual recall then reads as

@@ -1905,9 +1905,7 @@ export class RecallInternalCoordinator {
       return planCrossScript({
         queryLanguage,
         corpusLanguage,
-        vectorTierAvailable:
-          resolveMemoryLifecycleCapabilities(this.deps.config).embeddingFallback ||
-          (this.deps.qmd.isAvailable() && this.deps.config.qmdSearchStrategy !== "lex"),
+        vectorTierAvailable: resolveMemoryLifecycleCapabilities(this.deps.config).embeddingFallback,
       });
     })().catch(() => null);
     const qmdEnrichmentAbort = createEnrichmentAbortHandle(options.abortSignal);
