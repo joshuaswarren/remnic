@@ -153,6 +153,7 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { tool: "review_list", operation: "review_list" },
   { tool: "review_resolve", operation: "review_resolve" },
   { tool: "contradiction_scan_run", operation: "contradiction_scan_run" },
+  { tool: "preference_drift_scan", operation: "preference_drift_scan" },
   { tool: "memory_summarize_hourly", operation: "memory_summarize_hourly" },
   { tool: "conversation_index_update", operation: "conversation_index_update" },
   { tool: "profiling_report", operation: "profiling_report" },

@@ -10,7 +10,13 @@ import { composeMemoryEnvelope } from "../write-envelope.js";
 import type { StorageManager } from "../storage.js";
 import type { MemoryCategory, MemoryFile } from "../types.js";
 import type { ResolutionVerb } from "./contradiction-review.js";
-import { readPair, resolvePair } from "./contradiction-review.js";
+import {
+  CONTRADICTION_VERBS,
+  PREFERENCE_DRIFT_VERBS,
+  readPair,
+  resolvePair,
+} from "./contradiction-review.js";
+import { resolvePreferenceDrift } from "../preferences/preference-drift.js";
 
 export interface ResolutionResult {
   pairId: string;
@@ -50,7 +56,14 @@ export interface ExecuteResolutionOptions {
   onMergedMemoryWritten?: (namespace: string | undefined, storageDir: string) => void;
 }
 
-const VALID_VERBS: ResolutionVerb[] = ["keep-a", "keep-b", "merge", "both-valid", "needs-more-context"];
+/**
+ * Every verb the `review_resolve` surface accepts, across both review-item
+ * kinds (issue #2371). This is a *surface-level* gate only: per-kind validity
+ * is enforced inside {@link executeResolution}, which is the first place the
+ * item's `kind` is known. Callers therefore reject an unknown verb early and
+ * a cross-kind verb precisely.
+ */
+const VALID_VERBS: readonly ResolutionVerb[] = [...CONTRADICTION_VERBS, ...PREFERENCE_DRIFT_VERBS];
 
 export function isValidResolutionVerb(value: string): value is ResolutionVerb {
   return VALID_VERBS.includes(value as ResolutionVerb);
@@ -94,6 +107,41 @@ export async function executeResolution(
   if (pair.resolution && pair.resolution !== "needs-more-context") {
     return { pairId, verb, affectedIds: [], message: `Pair already resolved with verb "${pair.resolution}"` };
   }
+  // Verb validity is per review-item kind (issue #2371). A preference-drift
+  // item never accepts keep-a/keep-b/merge (there is no "B" to keep — the
+  // second id is witness evidence, not a competing claim), and a contradiction
+  // pair never accepts keep/supersede/archive. Rejecting the cross-kind verb
+  // here, after the record is loaded, is the only place both kinds are known.
+  const isDriftItem = pair.kind === "preference-drift";
+  const verbMatchesKind = isDriftItem
+    ? PREFERENCE_DRIFT_VERBS.includes(verb)
+    : CONTRADICTION_VERBS.includes(verb);
+  if (!verbMatchesKind) {
+    const allowed = (isDriftItem ? PREFERENCE_DRIFT_VERBS : CONTRADICTION_VERBS).join(", ");
+    return {
+      pairId,
+      verb,
+      affectedIds: [],
+      message: `Verb "${verb}" is not valid for a ${isDriftItem ? "preference-drift" : "contradiction"} item. Valid: ${allowed}`,
+    };
+  }
+
+  if (isDriftItem) {
+    const outcome = await resolvePreferenceDrift(
+      resolutionStorage,
+      pair,
+      verb as "keep" | "supersede" | "archive",
+      {
+        mergedContent: options.mergedContent,
+        onMemoryWritten: options.onMergedMemoryWritten,
+      },
+    );
+    // Only record the terminal resolution when memories actually changed;
+    // a refused resolution must stay actionable in the queue.
+    if (outcome.affectedIds.length > 0) resolvePair(memoryDir, pairId, verb);
+    return { pairId, verb, affectedIds: outcome.affectedIds, message: outcome.message };
+  }
+
 
   const [idA, idB] = pair.memoryIds;
   const affectedIds: string[] = [];

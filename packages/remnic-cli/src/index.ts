@@ -172,6 +172,7 @@ import { runMeetingsBinaryCommand } from "./commands/meetings.js";
 import { runOkfBinaryCommand } from "./commands/okf.js";
 import { runExternalWikiBinaryCommand } from "./commands/external-wiki.js";
 import { runProceduralBinaryCommand } from "./commands/procedural.js";
+import { runDriftBinaryCommand } from "./commands/drift.js";
 // @remnic/export-weclone is an optional install surface (training:export
 // only uses it). Load lazily so the CLI works without it — see
 // optional-weclone-export.ts for the install-hint behaviour.
@@ -422,6 +423,7 @@ type CommandName =
   | "taxonomy"
   | "enrich"
   | "procedural"
+  | "drift"
   | "openclaw"
   | "extensions"
   | "training:export"
@@ -13008,6 +13010,11 @@ Options:
       break;
     }
 
+    case "drift": {
+      await runDriftBinaryCommand(rest);
+      break;
+    }
+
     case "extensions": {
       const action = rest[0] ?? "help";
       await cmdExtensions(action, rest.slice(1));
@@ -13445,6 +13452,12 @@ Usage:
     merge / repair-flag / retire proposals from outcome telemetry; --apply
     executes them (requires procedural.maintenance.enabled). Mirrors the
     remnic.procedure_library_maintenance MCP tool.
+  remnic drift scan [--apply] [--namespace <ns>] [--format json|text] [--memory-dir <path>]
+    Run preference drift detection (issue #2371): classify aging preference
+    memories as corroborated / stale / drifted from recent evidence; --apply
+    stamps lastCorroborated / driftState and opens a review item per drifted
+    preference (requires driftDetection.enabled). Mirrors the
+    remnic.preference_drift_scan MCP tool.
   remnic training:export --format <name> --output <path> [options]
     Export memories as a fine-tuning dataset (issue #459). Run
     'remnic training:export --help' for the full option list.

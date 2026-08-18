@@ -25,6 +25,11 @@ import {
   type MemoryWorthCounters,
 } from "../memory-worth-filter.js";
 import {
+  applyPreferenceDriftRanking,
+  isPreferenceDriftStageActive,
+  type DriftRecallFrontmatter,
+} from "../preferences/drift-recall.js";
+import {
   applyTrustScoreStage,
   buildTrustSignalsForRerank,
   trustResultKey,
@@ -470,9 +475,16 @@ export class RecallRerankCoordinator {
     results: QmdSearchResult[];
     trustByPath: Map<string, TrustStageResultItem> | null;
   }> {
+    // The trust stage and the Memory Worth multiplier are mutually exclusive
+    // (rule 39); the preference-drift stage runs AFTER whichever one applied,
+    // on every branch, so its gate is uniform across recall paths (§27).
+    let staged = results;
+    let trustByPath: Map<string, TrustStageResultItem> | null = null;
     if (caps.recallTrustScore && results.length > 0) {
       try {
-        return await this.applyTrustScoreRerank(results, namespaces, preloadedFrontmatter, abortSignal);
+        const outcome = await this.applyTrustScoreRerank(results, namespaces, preloadedFrontmatter, abortSignal);
+        staged = outcome.results;
+        trustByPath = outcome.trustByPath;
       } catch (err) {
         log.debug(`trust-score stage (${label}) failed open`, {
           error: (err as Error).message,
@@ -480,20 +492,127 @@ export class RecallRerankCoordinator {
       }
     } else if (caps.recallMemoryWorthFilter && results.length > 0) {
       try {
-        const filtered = await this.applyMemoryWorthRerank(
+        staged = await this.applyMemoryWorthRerank(
           results,
           namespaces,
           preloadedFrontmatter,
           abortSignal,
         );
-        return { results: filtered, trustByPath: null };
       } catch (err) {
         log.debug(`memory-worth filter (${label}) failed open`, {
           error: (err as Error).message,
         });
       }
     }
-    return { results, trustByPath: null };
+    const damped = await this.applyPreferenceDriftStage(
+      staged,
+      namespaces,
+      preloadedFrontmatter,
+      abortSignal,
+    );
+    return { results: damped, trustByPath };
+  }
+
+  /**
+   * Issue #2371 — stale-preference damping + injection annotation.
+   *
+   * Runs immediately after the trust/Memory-Worth stage on EVERY recall branch
+   * (hot QMD, embedding fallback, recent scan, cold fallback), so the feature
+   * gate applies uniformly and fallback parity holds (§27, AGENTS.md retrieval
+   * guardrails). Fully inert on the default config: when neither damping nor
+   * annotation is active the input array is returned untouched and NO
+   * frontmatter is read, so recall ordering and injected text stay
+   * byte-identical to pre-#2371.
+   *
+   * Fail-open: any lookup error leaves the branch's results unchanged.
+   */
+  async applyPreferenceDriftStage(
+    results: QmdSearchResult[],
+    namespaces: string[],
+    preloadedFrontmatter?: ReadonlyMap<string, MemoryFile>,
+    abortSignal?: AbortSignal,
+  ): Promise<QmdSearchResult[]> {
+    const config = this.getConfig();
+    if (!isPreferenceDriftStageActive(config.driftDetection)) return results;
+    if (results.length === 0) return results;
+
+    try {
+      const frontmatterByKey = new Map<string, DriftRecallFrontmatter>();
+      const missing: QmdSearchResult[] = [];
+      for (const r of results) {
+        const key = memoryMapKey(r);
+        const preloaded = preloadedFrontmatter?.get(key) ?? preloadedFrontmatter?.get(r.path);
+        if (preloaded) {
+          frontmatterByKey.set(key, preloaded.frontmatter);
+        } else {
+          missing.push(r);
+        }
+      }
+
+      // Branches without a preloaded map (embedding fallback) read the
+      // candidates directly. Bounded-parallel at the same batch size the
+      // Memory Worth stage uses, and only for the handful of candidates the
+      // branch actually returned — never a corpus scan.
+      if (missing.length > 0) {
+        let reader: StorageManager | null = null;
+        for (const ns of namespaces) {
+          try {
+            reader = await this.getStorage(ns);
+            break;
+          } catch {
+            // try next namespace
+          }
+        }
+        if (reader) {
+          const readerNn = reader;
+          const BATCH = 16;
+          for (let off = 0; off < missing.length; off += BATCH) {
+            if (abortSignal?.aborted) break;
+            await Promise.all(
+              missing.slice(off, off + BATCH).map(async (r) => {
+                try {
+                  const memory = await this.readQmdResultMemory(r.path, readerNn, namespaces, r.namespace);
+                  if (memory) frontmatterByKey.set(memoryMapKey(r), memory.frontmatter);
+                } catch (err) {
+                  log.debug("preference-drift: direct path lookup failed", {
+                    path: r.path,
+                    error: (err as Error).message,
+                  });
+                }
+              }),
+            );
+          }
+        }
+      }
+
+      // Synthetic monotone-decreasing rank score so neutral candidates keep
+      // their upstream order and only the damped ones move — same technique the
+      // Memory Worth stage uses, for the same reason.
+      const ranked = results.map((r, i) => ({
+        key: memoryMapKey(r),
+        rank: results.length - i,
+        frontmatter: frontmatterByKey.get(memoryMapKey(r)),
+      }));
+      const ordered = applyPreferenceDriftRanking(ranked, {
+        config: config.driftDetection,
+        now: new Date(),
+      });
+
+      const byKey = new Map(results.map((r) => [memoryMapKey(r), r]));
+      const reordered: QmdSearchResult[] = [];
+      for (const item of ordered) {
+        const original = byKey.get(item.key);
+        if (!original) continue;
+        // `driftNote` is copied onto a NEW result object — never mutated in
+        // place — so a shared upstream result can't leak an annotation into an
+        // unrelated branch.
+        reordered.push(item.note ? { ...original, driftNote: item.note } : original);
+      }
+      return reordered;
+    } catch (err) {
+      log.debug("preference-drift stage failed open", { error: (err as Error).message });
+      return results;
+    }
   }
 
   diversifyRecallResultsWithHeadroom(

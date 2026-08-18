@@ -11,6 +11,7 @@ import type { ContradictionLocalizationConfig, ContradictionScanConfig } from ".
 import type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
 export type { ContradictionLocalizationConfig, ContradictionScanConfig } from "./contradiction-config.js";
 export type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
+import type { DriftDetectionSettings, MemoryDriftProvenance, RecallDriftAnnotation } from "./preferences/drift-types.js";
 import type { ProceduralMaintenanceConfig } from "./procedural/maintenance-config.js";
 import type { SkillProjectionConfig } from "./procedural/skill-projection.js";
 
@@ -685,7 +686,7 @@ export interface SemanticChunkingConfigShape {
 }
 
 
-export interface PluginConfig extends BoundedJsonlStateConfig, SecurityConfig {
+export interface PluginConfig extends BoundedJsonlStateConfig, SecurityConfig, DriftDetectionSettings {
   openaiApiKey: string | undefined;
   openaiBaseUrl: string | undefined;
   model: string;
@@ -2806,7 +2807,7 @@ export interface ImportanceScore {
   keywords: string[];
 }
 
-export interface MemoryFrontmatter extends SourceConnectorProvenance, OriginMetadata {
+export interface MemoryFrontmatter extends SourceConnectorProvenance, OriginMetadata, MemoryDriftProvenance {
   /** True when write-time classification ties this memory to its source connector's tools or commands. */
   toolScoped?: true;
   id: string;
@@ -3466,7 +3467,7 @@ export interface ConsolidationObservation {
   merged: number;
   invalidated: number;
 }
-export interface QmdSearchResult extends OriginMetadata {
+export interface QmdSearchResult extends OriginMetadata, RecallDriftAnnotation {
   docid: string;
   path: string;
   snippet: string;

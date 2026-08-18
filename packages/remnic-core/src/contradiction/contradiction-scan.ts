@@ -380,8 +380,16 @@ function normalizeScanNamespace(namespace: string | undefined): string | undefin
   return trimmed ? trimmed : undefined;
 }
 
-async function resolveScanStorage(
-  deps: ScanDependencies,
+/**
+ * Resolve the namespace-scoped storage a scan must read and write through.
+ *
+ * Exported and narrowed to the fields it actually reads so sibling scans
+ * (preference drift, issue #2371) share ONE namespace resolver rather than
+ * re-deriving the read/write namespace independently — the divergence the
+ * namespace/ACL scenario matrix in AGENTS.md exists to prevent.
+ */
+export async function resolveScanStorage(
+  deps: Pick<ScanDependencies, "config" | "storage" | "storageForNamespace">,
   namespace: string | undefined,
 ): Promise<ScanStorageResolution> {
   if (!resolveNamespaceCapabilities(deps.config).namespaces) {
@@ -427,7 +435,10 @@ function isStorageManagerLike(value: unknown): value is StorageManager {
   return typeof candidate.readAllMemories === "function";
 }
 
-function fallbackResolvedNamespace(deps: ScanDependencies, namespace: string | undefined): string | undefined {
+function fallbackResolvedNamespace(
+  deps: Pick<ScanDependencies, "config">,
+  namespace: string | undefined,
+): string | undefined {
   if (namespace) return namespace;
   return resolveNamespaceCapabilities(deps.config).namespaces ? deps.config.defaultNamespace : undefined;
 }

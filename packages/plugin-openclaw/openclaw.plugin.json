@@ -1,7 +1,7 @@
 {
   "id": "openclaw-remnic",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.65.1",
+  "version": "9.65.2",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -4158,6 +4158,58 @@
           }
         }
       },
+      "driftDetection": {
+        "type": "object",
+        "additionalProperties": false,
+        "default": {},
+        "description": "Preference drift detection (issue #2371): classify aging `preference` memories as corroborated / stale / drifted, review-gate drifted ones, and optionally damp stale ones at recall.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Master switch for drift classification and its apply mode. Default off."
+          },
+          "minAgeDays": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 36500,
+            "default": 60,
+            "description": "A preference younger than this many days is never a scan candidate."
+          },
+          "lookbackDays": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 36500,
+            "default": 45,
+            "description": "Evidence-gathering window, in days back from the run instant, using [start, end) bounds."
+          },
+          "maxCandidatesPerRun": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 25,
+            "description": "Cap on preferences classified per run. Set to 0 to disable the scan."
+          },
+          "recallDamping": {
+            "type": "boolean",
+            "default": false,
+            "description": "When true, recall multiplies the rank score of `driftState: stale` preference memories by stalePenalty. Default off; when off, recall ordering is byte-identical to pre-#2371."
+          },
+          "stalePenalty": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 1,
+            "default": 0.8,
+            "description": "Multiplier applied to stale preferences in (0, 1]. Set to 1 to disable the effect without flipping recallDamping."
+          },
+          "annotateAfterDays": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 36500,
+            "default": 0,
+            "description": "Annotate an injected preference whose last corroboration is older than this many days. 0 disables annotation."
+          }
+        }
+      },
       "extractionLiveness": {
         "type": "object",
         "additionalProperties": false,
@@ -5531,7 +5583,11 @@
       },
       "subjectGuard": {
         "type": "string",
-        "enum": ["off", "warn", "enforce"],
+        "enum": [
+          "off",
+          "warn",
+          "enforce"
+        ],
         "default": "warn",
         "description": "Guard for promoting user-subject (or unstamped — fail-closed) memories into shared layers (team-project, server-shared, team spaces). \"warn\" promotes with a recorded warning; \"enforce\" rejects naming the --allow-user-subject override; \"off\" disables. Default \"warn\" so enabling classification later warns without a second flag flip (issue #2372)."
       },

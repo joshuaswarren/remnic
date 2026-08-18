@@ -225,6 +225,7 @@ export { runProcedureLibraryMaintenance, type ProcedureLibraryMaintenanceReport,
 // Portable procedural skill bundles (issue #2369).
 export { parseSkillProjectionConfig, projectProceduresToSkills, renderSkillBundle, parseSkillBundle, sanitizeSkillSlug, SKILL_FILE_NAME, type SkillBundle, type SkillProjectionConfig, type ParsedSkillBundle } from "./procedural/skill-projection.js";
 export { exportSkillBundles, readSkillBundlesFromDir, persistImportedSkills, type ExportSkillsResult, type ImportSkillsResult, type ReadSkillBundle } from "./procedural/skill-io.js";
+export * from "./preferences/index.js";
 // ---------------------------------------------------------------------------
 // Direct-answer retrieval tier (issue #518)
 // ---------------------------------------------------------------------------
