@@ -303,6 +303,7 @@ import {
   readOfflineSyncFileContentChunk,
 } from "./offline-sync.js";
 import { selfDeps } from "./orchestration/self-deps.js";
+import { ReviewDeckSurface } from "./review/review-deck-surface.js";
 import { formatProfileTraceAscii } from "./profiling.js";
 import { decideDisclosureEscalation } from "./recall-disclosure-escalation.js";
 import { toRecallExplainJson } from "./recall-explain-renderer.js";
@@ -1243,6 +1244,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
   private readonly corpusWatermarkCache = new CorpusWatermarkCache();
   private readonly replicaDivergenceMonitor: ReplicaDivergenceMonitor;
   private readonly injectedSupportPassportGatewayRoute: SupportPassportModelRoute | null;
+  readonly reviewDeckEnabled: boolean;
 
   /** AccessObserveWriteSurface (access-service decomposition). Lazy; selfDeps live wiring. */
   private _accessObserveWriteSurface: AccessObserveWriteSurface | undefined;
@@ -1278,6 +1280,17 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     return this._accessAdminOpsSurface;
   }
 
+  private _reviewDeckSurface: ReviewDeckSurface | undefined;
+
+  private get reviewDeckSurface(): ReviewDeckSurface {
+    if (!this._reviewDeckSurface) {
+      this._reviewDeckSurface = new ReviewDeckSurface(
+        selfDeps<ConstructorParameters<typeof ReviewDeckSurface>[0]>(this)
+      );
+    }
+    return this._reviewDeckSurface;
+  }
+
   /** AccessRecallSurface (access-service decomposition). Lazy; selfDeps live wiring. */
   private _accessRecallSurface: AccessRecallSurface | undefined;
 
@@ -1308,6 +1321,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     options: {
       resolveSecretRef?: ResolveSecretRefFn | null;
       supportPassportGatewayRoute?: SupportPassportModelRoute | null;
+      reviewDeckEnabled?: boolean;
     } = {}
   ) {
     super();
@@ -1318,6 +1332,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     // per-peer `unreachable` (never a throw).
     this.replicaDivergenceMonitor = new ReplicaDivergenceMonitor({ resolveSecretRef: options.resolveSecretRef });
     this.injectedSupportPassportGatewayRoute = options.supportPassportGatewayRoute ?? null;
+    this.reviewDeckEnabled = options.reviewDeckEnabled === true;
     const accessCaps = resolveAccessSetupCapabilities(orchestrator.config); // #1566 Cluster B
     this.budget = new CrossNamespaceBudget({
       enabled: accessCaps.recallCrossNamespaceBudget,
@@ -5686,5 +5701,17 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     actor?: never; // ignored — actor is derived from the authenticated principal
   }) {
     return this.accessAdminOpsSurface.adminPromoteMemory(request);
+  }
+
+  async reviewDeckList(opts: Parameters<ReviewDeckSurface["list"]>[0]) {
+    return this.reviewDeckSurface.list(opts);
+  }
+
+  async reviewDeckAction(...args: Parameters<ReviewDeckSurface["action"]>) {
+    return this.reviewDeckSurface.action(...args);
+  }
+
+  async reviewDeckUndo(...args: Parameters<ReviewDeckSurface["undo"]>) {
+    return this.reviewDeckSurface.undo(...args);
   }
 }

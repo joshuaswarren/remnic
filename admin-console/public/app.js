@@ -299,6 +299,7 @@ async function fetchJson(url, options = {}) {
   if (!response.ok) {
     const error = new Error(payload.error || `HTTP ${response.status}`);
     error.payload = payload;
+    error.status = response.status;
     throw error;
   }
   return payload;
@@ -2055,6 +2056,458 @@ async function openGraphNodePanel(node) {
   }
 }
 
+// ── Memory check-in review deck (issue #2351) ─────────────────────────────
+// The queue, receipts, and counters live in review-deck.js; this section only
+// supplies the transport and paints the state it hands back. Nothing here
+// writes to browser storage: the state machine owns the (numbers-only) metrics.
+
+const reviewDeckState = {
+  deck: null,
+  lastFocusedBeforeDeck: null,
+  lastAnnouncementSeq: -1,
+};
+
+function reviewDeckQuery(namespace, cursor, limit) {
+  const params = new URLSearchParams();
+  if (namespace) params.set("namespace", namespace);
+  if (cursor) params.set("cursor", cursor);
+  if (limit) params.set("limit", String(limit));
+  const query = params.toString();
+  return query.length > 0 ? `?${query}` : "";
+}
+
+function createReviewDeckTransport() {
+  return {
+    list: (request) => fetchJson(`/remnic/v1/review/deck${reviewDeckQuery(request.namespace, request.cursor, request.limit)}`),
+    action: (body) => fetchJson("/remnic/v1/review/deck/action", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+    undo: (body) => fetchJson("/remnic/v1/review/deck/undo", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+    // Applying a prepared fix reuses the existing correction endpoint; the deck
+    // has no apply route of its own.
+    applyCorrection: (body) => fetchJson("/engram/v1/correction/apply", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  };
+}
+
+function prefersReducedMotion() {
+  try {
+    return window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
+  } catch {
+    return false;
+  }
+}
+
+function reviewDeckStorage() {
+  try {
+    return window.localStorage || null;
+  } catch {
+    // Private/sandboxed contexts throw on access; the deck degrades to no hint.
+    return null;
+  }
+}
+
+function setHidden(element, hidden) {
+  if (!element) return;
+  element.hidden = hidden === true;
+}
+
+function renderCheckinEntry(state) {
+  const card = $("memoryCheckinCard");
+  if (!card) return;
+  const entry = state.entryCard;
+  if (!entry) {
+    setHidden(card, true);
+    return;
+  }
+  setHidden(card, false);
+  const count = $("memoryCheckinCount");
+  if (count) count.textContent = entry.countLabel;
+  const line = $("memoryCheckinLine");
+  if (line) line.textContent = entry.line;
+  const hint = $("memoryCheckinHint");
+  if (hint) hint.textContent = entry.timeHint;
+}
+
+function renderDeckDepth(state) {
+  const holder = $("reviewDeckDepth");
+  if (!holder) return;
+  clearChildren(holder);
+  state.depth.forEach((card) => {
+    const layer = document.createElement("div");
+    layer.className = `deck-depth-card deck-depth-${card.depth}`;
+    const label = document.createElement("span");
+    label.className = "deck-depth-label";
+    label.textContent = card.reasonLabel;
+    layer.appendChild(label);
+    holder.appendChild(layer);
+  });
+}
+
+function renderDeckEffects(state) {
+  const list = $("reviewDeckEffects");
+  if (!list || !state.active) return;
+  clearChildren(list);
+  [
+    ["Keep", state.active.effects.keep],
+    ["Not true", state.active.effects.not_true],
+    ["Fix", state.active.effects.fix],
+    ["Later", state.active.effects.later],
+  ].forEach(([label, effect]) => {
+    const row = document.createElement("li");
+    const strong = document.createElement("strong");
+    strong.textContent = `${label}: `;
+    row.appendChild(strong);
+    row.appendChild(document.createTextNode(effect));
+    list.appendChild(row);
+  });
+}
+
+function renderDeckActions(state) {
+  const row = $("reviewDeckActions");
+  if (!row) return;
+  clearChildren(row);
+  const deck = reviewDeckState.deck;
+  state.actions.forEach((entry) => {
+    const button = document.createElement("button");
+    button.className = entry.action === "keep" ? "accent deck-action" : "secondary deck-action";
+    button.dataset.deckAction = entry.action;
+    button.disabled = entry.disabled === true;
+    const label = document.createElement("span");
+    label.className = "deck-action-label";
+    label.textContent = entry.label;
+    button.appendChild(label);
+    const hint = document.createElement("span");
+    hint.className = "deck-action-hint";
+    hint.textContent = entry.keyHint;
+    button.appendChild(hint);
+    button.setAttribute("aria-keyshortcuts", entry.keyHint);
+    button.addEventListener("click", () => {
+      if (!deck) return;
+      if (entry.action === "keep") void deck.keep();
+      else if (entry.action === "not_true") void deck.notTrue();
+      else if (entry.action === "later") deck.later();
+      else if (entry.action === "fix") deck.startFix();
+    });
+    row.appendChild(button);
+  });
+}
+
+function renderDeckEvidence(state) {
+  const drawer = $("reviewDeckEvidence");
+  const trigger = $("reviewDeckEvidenceButton");
+  if (trigger) trigger.setAttribute("aria-expanded", state.evidence.open ? "true" : "false");
+  if (!drawer) return;
+  setHidden(drawer, !state.evidence.open);
+  const list = $("reviewDeckEvidenceList");
+  if (!list) return;
+  clearChildren(list);
+  if (state.evidence.items.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "status";
+    empty.textContent = "No evidence was recorded for this memory.";
+    list.appendChild(empty);
+    return;
+  }
+  state.evidence.items.forEach((entry) => {
+    const article = document.createElement("article");
+    article.className = "deck-evidence-item";
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    appendPill(meta, entry.label);
+    appendPill(meta, entry.when);
+    article.appendChild(meta);
+    if (entry.detail) {
+      const detail = document.createElement("p");
+      detail.textContent = entry.detail;
+      article.appendChild(detail);
+    }
+    list.appendChild(article);
+  });
+}
+
+function renderDeckFix(state) {
+  const panel = $("reviewDeckFix");
+  if (!panel) return;
+  const fix = state.fix;
+  setHidden(panel, fix === null);
+  if (!fix) return;
+  const input = $("reviewDeckFixInput");
+  if (input && input.value !== fix.text) input.value = fix.text;
+  const busy = fix.stage === "preparing" || fix.stage === "applying";
+  const prepareButton = $("reviewDeckPrepareButton");
+  if (prepareButton) {
+    prepareButton.disabled = busy;
+    setHidden(prepareButton, fix.stage !== "input");
+  }
+  const previewBox = $("reviewDeckFixPreview");
+  const hasPreview = fix.stage === "preview" || fix.stage === "applying";
+  setHidden(previewBox, !hasPreview);
+  const previewText = $("reviewDeckFixPreviewText");
+  if (previewText) previewText.textContent = fix.preview || "";
+  const warnings = $("reviewDeckFixWarnings");
+  if (warnings) {
+    clearChildren(warnings);
+    (fix.warnings || []).forEach((warning) => {
+      const row = document.createElement("li");
+      row.textContent = warning;
+      warnings.appendChild(row);
+    });
+    setHidden(warnings, (fix.warnings || []).length === 0);
+  }
+  const confirmButton = $("reviewDeckConfirmFixButton");
+  if (confirmButton) {
+    setHidden(confirmButton, !hasPreview);
+    confirmButton.disabled = busy;
+  }
+  const fixStatus = $("reviewDeckFixStatus");
+  if (fixStatus) {
+    const stageMessage = fix.stage === "preparing"
+      ? "Preparing the correction..."
+      : fix.stage === "applying"
+        ? "Applying the correction..."
+        : fix.message || "";
+    fixStatus.textContent = stageMessage;
+    fixStatus.className = fix.message ? "status error" : "status";
+  }
+}
+
+function renderDeckNotice(state) {
+  const notice = $("reviewDeckNotice");
+  if (!notice) return;
+  const failure = state.failure;
+  const message = failure?.message || state.offlineNotice || state.listError?.message || "";
+  setHidden(notice, message.length === 0);
+  const label = $("reviewDeckNoticeText");
+  if (label) label.textContent = message;
+  if (notice.dataset) notice.dataset.tone = failure ? "error" : "warn";
+  notice.className = failure ? "deck-notice error" : "deck-notice";
+  const retry = $("reviewDeckRetryButton");
+  setHidden(retry, !(failure?.retryable === true));
+}
+
+function renderDeckStage(state) {
+  const reviewing = state.deckOpen && state.phase === "reviewing" && state.active !== null;
+  setHidden($("reviewDeckStage"), !reviewing);
+  setHidden($("reviewDeckActions"), !reviewing);
+  setHidden($("reviewDeckSkeleton"), !(state.deckOpen && state.phase === "loading"));
+  setHidden($("reviewDeckEmpty"), !(state.deckOpen && state.phase === "empty"));
+  setHidden($("reviewDeckSummary"), !(state.deckOpen && state.phase === "complete"));
+  if (!reviewing) return;
+  const reason = $("reviewDeckReason");
+  if (reason) reason.textContent = state.active.reasonLabel;
+  const sources = $("reviewDeckSources");
+  if (sources) sources.textContent = state.active.sourceLabel;
+  setHidden($("reviewDeckRefreshed"), state.active.refreshed !== true);
+  const content = $("reviewDeckContent");
+  if (content) content.textContent = state.active.content;
+  const why = $("reviewDeckWhy");
+  if (why) why.textContent = state.active.explanation;
+  renderDeckDepth(state);
+  renderDeckEffects(state);
+}
+
+function renderDeckSummary(state) {
+  const box = $("reviewDeckSummary");
+  if (!box || !state.summary) return;
+  const headline = $("reviewDeckSummaryHeadline");
+  if (headline) headline.textContent = state.summary.headline;
+  const list = $("reviewDeckSummaryLines");
+  if (!list) return;
+  clearChildren(list);
+  state.summary.lines.forEach((line) => {
+    const row = document.createElement("li");
+    row.textContent = line;
+    list.appendChild(row);
+  });
+}
+
+function deckFocusTarget(state) {
+  const map = {
+    card: "reviewDeckCard",
+    close: "reviewDeckCloseButton",
+    evidence: "reviewDeckEvidenceCloseButton",
+    summary: "reviewDeckDoneButton",
+    undo: "reviewDeckUndoButton",
+    "fix:input": "reviewDeckFixInput",
+    "fix:confirm": "reviewDeckConfirmFixButton",
+  };
+  const id = map[state.focusTarget]
+    || (state.focusTarget.startsWith("action:")
+      ? `deck-action-${state.focusTarget.slice("action:".length)}`
+      : null);
+  if (!id) return null;
+  if (id.startsWith("deck-action-")) {
+    const action = id.slice("deck-action-".length);
+    return document.querySelector?.(`[data-deck-action="${action}"]`) || null;
+  }
+  return $(id);
+}
+
+function applyDeckFocus(state) {
+  const element = deckFocusTarget(state);
+  if (!element || typeof element.focus !== "function" || element.hidden === true) return;
+  if (element.disabled === true) return;
+  element.focus();
+}
+
+function announceDeck(state) {
+  if (state.announcementSeq === reviewDeckState.lastAnnouncementSeq) return;
+  reviewDeckState.lastAnnouncementSeq = state.announcementSeq;
+  const live = $("reviewDeckLive");
+  if (live) live.textContent = state.announcement;
+}
+
+function renderReviewDeck(state) {
+  renderCheckinEntry(state);
+  const overlay = $("reviewDeckOverlay");
+  if (overlay) {
+    setHidden(overlay, !state.deckOpen);
+    overlay.dataset.motion = state.motion.reduced ? "reduced" : "full";
+    overlay.style.setProperty?.("--deck-motion-ms", `${state.motion.durationMs}ms`);
+  }
+  const progress = $("reviewDeckProgress");
+  if (progress) {
+    progress.textContent = state.progress.total > 0 ? state.progress.label : "";
+    setHidden(progress, state.progress.total === 0);
+  }
+  const undoButton = $("reviewDeckUndoButton");
+  if (undoButton) {
+    setHidden(undoButton, state.undo === null);
+    undoButton.textContent = state.undo ? state.undo.label : "Undo";
+  }
+  const pending = $("reviewDeckPending");
+  setHidden(pending, state.pending === null);
+  const pendingLabel = $("reviewDeckPendingLabel");
+  if (pendingLabel && state.pending) {
+    pendingLabel.textContent = state.pending.action === "undo" ? "Undoing..." : "Saving your answer...";
+  }
+  renderDeckStage(state);
+  renderDeckActions(state);
+  renderDeckEvidence(state);
+  renderDeckFix(state);
+  renderDeckNotice(state);
+  renderDeckSummary(state);
+  announceDeck(state);
+  if (state.deckOpen) applyDeckFocus(state);
+}
+
+/** Tab must not escape an open deck. */
+function trapDeckFocus(event) {
+  if (event.key !== "Tab") return;
+  const shell = $("reviewDeckShell");
+  if (!shell || typeof shell.querySelectorAll !== "function") return;
+  const focusable = Array.from(
+    shell.querySelectorAll("button:not([disabled]), textarea, input, [tabindex='0']"),
+  ).filter((element) => element.hidden !== true && element.offsetParent !== null);
+  if (focusable.length === 0) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function isTypingTarget(target) {
+  const tag = target?.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+}
+
+function handleDeckKeydown(event) {
+  const deck = reviewDeckState.deck;
+  if (!deck) return;
+  const state = deck.getState();
+  if (!state.deckOpen) return;
+  if (event.key === "Tab") {
+    trapDeckFocus(event);
+    return;
+  }
+  const typing = isTypingTarget(event.target);
+  if (typing && event.key !== "Escape") return;
+  // A focused button already handles Space itself; routing it again would
+  // double-fire the action.
+  if (event.key === " " && event.target?.tagName === "BUTTON") return;
+  const result = deck.handleKey(event);
+  if (result.handled) {
+    event.preventDefault();
+    if (result.intent === "close-deck") restoreFocusAfterDeck();
+    if (result.promise) void result.promise;
+  }
+}
+
+function restoreFocusAfterDeck() {
+  const previous = reviewDeckState.lastFocusedBeforeDeck;
+  reviewDeckState.lastFocusedBeforeDeck = null;
+  if (previous && typeof previous.focus === "function") previous.focus();
+  else $("memoryCheckinStartButton")?.focus?.();
+}
+
+function openReviewDeck() {
+  const deck = reviewDeckState.deck;
+  if (!deck) return;
+  reviewDeckState.lastFocusedBeforeDeck = document.activeElement || null;
+  deck.openDeck();
+}
+
+function closeReviewDeck() {
+  reviewDeckState.deck?.closeDeck();
+  restoreFocusAfterDeck();
+}
+
+function initReviewDeck() {
+  const factory = window.RemnicReviewDeck;
+  if (!factory || typeof factory.createReviewDeck !== "function") return;
+  const deck = factory.createReviewDeck({
+    transport: createReviewDeckTransport(),
+    storage: reviewDeckStorage(),
+    reducedMotion: prefersReducedMotion(),
+    online: navigator?.onLine !== false,
+    limit: 12,
+  });
+  reviewDeckState.deck = deck;
+  deck.subscribe(renderReviewDeck);
+
+  $("memoryCheckinStartButton")?.addEventListener("click", openReviewDeck);
+  $("reviewDeckCloseButton")?.addEventListener("click", closeReviewDeck);
+  $("reviewDeckDoneButton")?.addEventListener("click", closeReviewDeck);
+  $("reviewDeckUndoButton")?.addEventListener("click", () => void deck.undo());
+  $("reviewDeckRetryButton")?.addEventListener("click", () => void deck.retry());
+  $("reviewDeckEvidenceButton")?.addEventListener("click", () => {
+    if (deck.getState().evidence.open) deck.closeEvidence();
+    else deck.openEvidence();
+  });
+  $("reviewDeckEvidenceCloseButton")?.addEventListener("click", () => deck.closeEvidence());
+  $("reviewDeckFixInput")?.addEventListener("input", (event) => deck.setFixText(event.target.value));
+  $("reviewDeckPrepareButton")?.addEventListener("click", () => {
+    void deck.prepareFix($("reviewDeckFixInput")?.value || "");
+  });
+  $("reviewDeckConfirmFixButton")?.addEventListener("click", () => void deck.confirmFix());
+  $("reviewDeckCancelFixButton")?.addEventListener("click", () => deck.cancelFix());
+
+  if (typeof document.addEventListener === "function") {
+    document.addEventListener("keydown", handleDeckKeydown);
+  }
+  if (typeof window.addEventListener === "function") {
+    window.addEventListener("online", () => deck.setOnline(true));
+    window.addEventListener("offline", () => deck.setOnline(false));
+  }
+}
+
+async function loadReviewDeck() {
+  if (!reviewDeckState.deck) return;
+  await reviewDeckState.deck.load();
+}
+
 async function connectAndBootstrap() {
   const input = $("tokenInput");
   const token = input?.value?.trim() || readToken();
@@ -2077,6 +2530,7 @@ async function connectAndBootstrap() {
       loadMaintenance(),
       loadMemoryGraph(),
       loadAdminDashboard(),
+      loadReviewDeck(),
     ]);
   } catch (error) {
     setStatus("authStatus", error.message || String(error), "error");
@@ -2153,6 +2607,7 @@ function bootstrap() {
   });
   $("refreshRuntimeButton")?.addEventListener("click", () => void loadAdminDashboard());
   $("saveRuntimeConfigButton")?.addEventListener("click", () => void saveRuntimeConfig());
+  initReviewDeck();
 
   if (token) {
     void connectAndBootstrap();

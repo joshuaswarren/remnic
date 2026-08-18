@@ -26,6 +26,7 @@ import {
   type StartupReadinessState,
 } from "./startup-readiness.js";
 import { createSupportPassportServerRuntime } from "./support-passport-runtime.js";
+import { parseAdminConsoleConfig, type AdminConsoleServerFields, type ParsedAdminConsoleConfig } from "./admin-console-config.js";
 export { envOverrides };
 export {
   completeStartupReadiness,
@@ -48,9 +49,6 @@ export interface ServerConfig {
     writeRateLimitMaxRequests?: number;
     /** Rolling window for the write rate limit, in ms (issue #1937). */
     writeRateLimitWindowMs?: number;
-    adminConsoleEnabled?: boolean;
-    adminConsolePublicDir?: string;
-    adminConsolePrefillToken?: boolean;
     readinessOverride?: boolean;
     /**
      * Failed search warm-up attempts before the init gate opens in degraded
@@ -60,7 +58,7 @@ export interface ServerConfig {
     readinessDegradedAfterAttempts?: unknown;
     /** OAuth authorization-server facade for ChatGPT dev-mode apps (parsed by oauth.ts). */
     oauth?: unknown;
-  };
+  } & AdminConsoleServerFields;
 }
 
 function parseServerPort(value: unknown, source: string): number {
@@ -130,7 +128,7 @@ function parseOptionalNonNegativeInteger(value: unknown, source: string): number
   return parsed;
 }
 
-export interface ParsedServerConfig {
+export interface ParsedServerConfig extends ParsedAdminConsoleConfig {
   host: string;
   port: number;
   authToken?: string;
@@ -138,9 +136,6 @@ export interface ParsedServerConfig {
   maxBodyBytes?: number;
   writeRateLimitMaxRequests?: number;
   writeRateLimitWindowMs?: number;
-  adminConsoleEnabled: boolean;
-  adminConsolePublicDir?: string;
-  adminConsolePrefillToken: boolean;
   readinessOverride: boolean;
   readinessDegradedAfterAttempts: number;
 }
@@ -165,9 +160,7 @@ export function parseServerConfig(
       raw.writeRateLimitWindowMs,
       "server.writeRateLimitWindowMs",
     ),
-    adminConsoleEnabled: parseOptionalBoolean(raw.adminConsoleEnabled, "server.adminConsoleEnabled") ?? false,
-    adminConsolePublicDir: parseOptionalString(raw.adminConsolePublicDir, "server.adminConsolePublicDir"),
-    adminConsolePrefillToken: parseOptionalBoolean(raw.adminConsolePrefillToken, "server.adminConsolePrefillToken") ?? false,
+    ...parseAdminConsoleConfig(raw),
     readinessOverride: parseOptionalBoolean(raw.readinessOverride, "server.readinessOverride") ?? false,
     readinessDegradedAfterAttempts:
       parseOptionalNonNegativeInteger(
@@ -469,6 +462,7 @@ function normalizePatchValue(key: string, value: unknown): string | boolean | nu
 function publicConfigValues(config: PluginConfig, serverConfig: ParsedServerConfig): Record<string, string | number | boolean | null> {
   return {
     adminConsoleEnabled: serverConfig.adminConsoleEnabled,
+    reviewDeckEnabled: serverConfig.adminConsoleMemoryReviewEnabled,
     memoryDir: config.memoryDir,
     model: config.model,
     modelSource: config.modelSource,
@@ -833,7 +827,10 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
   // Parsed strictly — invalid values abort startup with a precise message.
   const oauthConfig = applyOAuthEnvOverrides((serverConfig as { oauth?: unknown }).oauth);
   const oauthRequestHandler = buildOAuthRequestHandler(oauthConfig);
-  const supportPassportRuntime = createSupportPassportServerRuntime(orchestrator, config, oauthRequestHandler), { service } = supportPassportRuntime;
+  const supportPassportRuntime = createSupportPassportServerRuntime(
+    orchestrator, config, oauthRequestHandler,
+    { reviewDeckEnabled: parsedServerConfig.adminConsoleMemoryReviewEnabled },
+  ), { service } = supportPassportRuntime;
   const httpServer = new EngramAccessHttpServer({
     service,
     host: parsedServerConfig.host,

@@ -30,6 +30,10 @@ export function envOverrides(): Partial<ServerConfig["server"]> & { remnic?: Rec
   const adminConsoleEnabled = readCompatEnv("REMNIC_ADMIN_CONSOLE_ENABLED", "ENGRAM_ADMIN_CONSOLE_ENABLED");
   const adminConsolePublicDir = readCompatEnv("REMNIC_ADMIN_CONSOLE_PUBLIC_DIR", "ENGRAM_ADMIN_CONSOLE_PUBLIC_DIR");
   const adminConsolePrefillToken = readCompatEnv("REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN", "ENGRAM_ADMIN_CONSOLE_PREFILL_TOKEN");
+  const adminConsoleMemoryReviewEnabled = readCompatEnv(
+    "REMNIC_ADMIN_CONSOLE_MEMORY_REVIEW_ENABLED",
+    "ENGRAM_ADMIN_CONSOLE_MEMORY_REVIEW_ENABLED",
+  );
   const readinessOverride = process.env.REMNIC_READY_OVERRIDE;
   const readinessDegradedAfterAttempts = readCompatEnv(
     "REMNIC_READY_DEGRADED_AFTER_ATTEMPTS",
@@ -52,6 +56,7 @@ export function envOverrides(): Partial<ServerConfig["server"]> & { remnic?: Rec
   if (adminConsoleEnabled) overrides.adminConsoleEnabled = adminConsoleEnabled;
   if (adminConsolePublicDir) overrides.adminConsolePublicDir = adminConsolePublicDir;
   if (adminConsolePrefillToken) overrides.adminConsolePrefillToken = adminConsolePrefillToken;
+  if (adminConsoleMemoryReviewEnabled) overrides.adminConsoleMemoryReviewEnabled = adminConsoleMemoryReviewEnabled;
   if (readinessOverride !== undefined) overrides.readinessOverride = readinessOverride;
   if (readinessDegradedAfterAttempts !== undefined) overrides.readinessDegradedAfterAttempts = readinessDegradedAfterAttempts;
   // Use `!== undefined` (not truthiness) so an explicitly-set empty/invalid

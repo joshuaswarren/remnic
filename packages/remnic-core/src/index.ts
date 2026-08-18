@@ -805,10 +805,7 @@ export {
   type SemanticDedupDecision,
 } from "./dedup/semantic.js";
 
-// ---------------------------------------------------------------------------
 // Review Inbox
-// ---------------------------------------------------------------------------
-
 export {
   listReviewItems,
   performReview,
@@ -818,6 +815,8 @@ export {
   type ReviewListResult,
   type ReviewOptions,
 } from "./review/index.js";
+export * from "./review/review-deck.js";
+export * from "./review/review-deck-snapshot.js";
 
 // ---------------------------------------------------------------------------
 // Diff-Aware Sync

@@ -345,3 +345,64 @@ test("envOverrides honors REMNIC_READY_DEGRADED_AFTER_ATTEMPTS with legacy fallb
     }
   }
 });
+
+test("server config parser disables the memory review deck by default (issue #2351)", () => {
+  assert.equal(parseServerConfig({}).adminConsoleMemoryReviewEnabled, false);
+  assert.equal(parseServerConfig({ adminConsoleMemoryReviewEnabled: true }).adminConsoleMemoryReviewEnabled, true);
+  assert.equal(parseServerConfig({ adminConsoleMemoryReviewEnabled: false }).adminConsoleMemoryReviewEnabled, false);
+  assert.equal(
+    parseServerConfig({ adminConsoleMemoryReviewEnabled: "false" as unknown as boolean }).adminConsoleMemoryReviewEnabled,
+    false,
+  );
+  assert.equal(
+    parseServerConfig({ adminConsoleMemoryReviewEnabled: "0" as unknown as boolean }).adminConsoleMemoryReviewEnabled,
+    false,
+  );
+  assert.equal(
+    parseServerConfig({ adminConsoleMemoryReviewEnabled: "true" as unknown as boolean }).adminConsoleMemoryReviewEnabled,
+    true,
+  );
+  assert.throws(
+    () => parseServerConfig({ adminConsoleMemoryReviewEnabled: "sometimes" as unknown as boolean }),
+    /server\.adminConsoleMemoryReviewEnabled: expected a boolean/,
+  );
+});
+
+test("envOverrides honors REMNIC_ADMIN_CONSOLE_MEMORY_REVIEW_ENABLED with legacy fallback (issue #2351)", () => {
+  const keys = [
+    "REMNIC_ADMIN_CONSOLE_MEMORY_REVIEW_ENABLED",
+    "ENGRAM_ADMIN_CONSOLE_MEMORY_REVIEW_ENABLED",
+  ];
+  const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+  const clear = () => {
+    for (const k of keys) delete process.env[k];
+  };
+  try {
+    clear();
+    assert.equal(parseServerConfig(envOverrides()).adminConsoleMemoryReviewEnabled, false);
+
+    process.env.REMNIC_ADMIN_CONSOLE_MEMORY_REVIEW_ENABLED = "true";
+    process.env.ENGRAM_ADMIN_CONSOLE_MEMORY_REVIEW_ENABLED = "false";
+    assert.equal(parseServerConfig(envOverrides()).adminConsoleMemoryReviewEnabled, true);
+
+    clear();
+    process.env.ENGRAM_ADMIN_CONSOLE_MEMORY_REVIEW_ENABLED = "true";
+    assert.equal(parseServerConfig(envOverrides()).adminConsoleMemoryReviewEnabled, true);
+
+    clear();
+    process.env.REMNIC_ADMIN_CONSOLE_MEMORY_REVIEW_ENABLED = "false";
+    assert.equal(parseServerConfig(envOverrides()).adminConsoleMemoryReviewEnabled, false);
+
+    clear();
+    process.env.REMNIC_ADMIN_CONSOLE_MEMORY_REVIEW_ENABLED = "sometimes";
+    assert.throws(
+      () => parseServerConfig(envOverrides()),
+      /server\.adminConsoleMemoryReviewEnabled: expected a boolean/,
+    );
+  } finally {
+    for (const k of keys) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+});

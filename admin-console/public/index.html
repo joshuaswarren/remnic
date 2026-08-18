@@ -434,6 +434,333 @@
       .graph-node-edges li strong {
         color: var(--ink);
       }
+      /* ── Memory check-in deck (issue #2351) ────────────────── */
+      .checkin-card {
+        display: grid;
+        gap: 10px;
+        margin-top: 16px;
+      }
+      .checkin-headline {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 10px;
+      }
+      .checkin-count {
+        font-size: 1.3rem;
+        font-weight: 600;
+      }
+      /* Every deck control has to stay tappable at 44x44 CSS px. */
+      .deck-touch {
+        min-height: 44px;
+        min-width: 44px;
+      }
+      .deck-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 40;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+        background: rgba(27, 29, 34, 0.52);
+      }
+      /* Both the entry card and the deck toggle the `hidden` attribute, and the
+         display:grid/flex rules above would otherwise defeat it. */
+      .checkin-card[hidden],
+      .deck-overlay[hidden],
+      .deck-overlay [hidden] {
+        display: none !important;
+      }
+      .deck-shell {
+        position: relative;
+        width: min(680px, 100%);
+        max-height: calc(100vh - 40px);
+        overflow: auto;
+        display: grid;
+        gap: 14px;
+        align-content: start;
+      }
+      .deck-header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .deck-header h2 {
+        margin: 0;
+      }
+      .deck-header-actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+      }
+      .deck-stage {
+        position: relative;
+        padding-bottom: 30px;
+      }
+      .deck-depth {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+      }
+      /* Shares the active card's box, then slides down far enough to leave a
+         sliver showing beneath it. scaleX only, so the bottom edge stays
+         predictable. */
+      .deck-depth-card {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: calc(100% - 30px);
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+        padding-bottom: 2px;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: var(--surface);
+        overflow: hidden;
+      }
+      .deck-depth-1 {
+        transform: translateY(15px) scaleX(0.986);
+        opacity: 0.72;
+      }
+      .deck-depth-2 {
+        transform: translateY(29px) scaleX(0.968);
+        opacity: 0.44;
+      }
+      /* One legible hint is enough; a second label is just noise. */
+      .deck-depth-2 .deck-depth-label {
+        display: none;
+      }
+      .deck-depth-label {
+        max-width: 78%;
+        font-size: 0.72rem;
+        line-height: 1;
+        color: var(--muted);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .deck-card {
+        position: relative;
+        z-index: 2;
+        display: grid;
+        gap: 12px;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: linear-gradient(180deg, var(--surface-strong) 0%, var(--surface) 100%);
+        box-shadow: var(--shadow);
+        padding: 18px;
+        transition:
+          transform var(--deck-motion-ms, 220ms) ease,
+          opacity var(--deck-motion-ms, 220ms) ease;
+      }
+      .deck-card h3 {
+        margin: 0 0 6px;
+        font-size: 0.82rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .deck-content {
+        margin: 0;
+        font-size: 1.05rem;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .deck-effects {
+        margin: 0;
+        padding-left: 18px;
+        font-size: 0.84rem;
+        color: var(--muted);
+        line-height: 1.6;
+      }
+      .deck-effects strong {
+        color: var(--ink);
+      }
+      .deck-evidence {
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: #fffdf9;
+        padding: 12px;
+      }
+      .deck-evidence-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .deck-evidence-head h3 {
+        margin: 0;
+      }
+      .deck-evidence-item {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.74);
+        padding: 10px 12px;
+        font-size: 0.86rem;
+      }
+      .deck-evidence-item p {
+        margin: 8px 0 0;
+        line-height: 1.5;
+        word-break: break-word;
+      }
+      .deck-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .deck-action {
+        display: grid;
+        gap: 2px;
+        justify-items: center;
+        flex: 1 1 120px;
+        min-height: 44px;
+        min-width: 44px;
+        padding: 8px 14px;
+      }
+      .deck-action-hint {
+        font-size: 0.7rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        opacity: 0.75;
+      }
+      .deck-fix,
+      .deck-summary {
+        display: grid;
+        gap: 10px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.74);
+        padding: 14px;
+      }
+      .deck-fix-preview {
+        display: grid;
+        gap: 10px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: #fffdf9;
+        padding: 12px;
+      }
+      .deck-fix-warnings {
+        margin: 0;
+        padding-left: 18px;
+        font-size: 0.84rem;
+        color: var(--warn);
+      }
+      .deck-summary h3 {
+        margin: 0;
+        font-size: 1.05rem;
+        letter-spacing: 0;
+        text-transform: none;
+      }
+      .deck-summary ul {
+        margin: 0;
+        padding-left: 18px;
+        font-size: 0.9rem;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+      /* Paired glyph + text so state is never carried by colour alone. */
+      .deck-notice {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.72);
+        padding: 10px 12px;
+        font-size: 0.88rem;
+        color: var(--muted);
+      }
+      .deck-notice.error {
+        border-color: var(--warn);
+        background: rgba(139, 58, 34, 0.08);
+        color: var(--warn);
+      }
+      .deck-notice-icon {
+        flex: 0 0 auto;
+        font-weight: 700;
+      }
+      /* Covers the shell without reflowing it, so the card cannot move while a
+         request is in flight. */
+      .deck-pending {
+        position: absolute;
+        inset: 0;
+        z-index: 5;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 18px;
+        background: rgba(251, 248, 242, 0.74);
+        font-size: 0.9rem;
+        color: var(--muted);
+      }
+      .deck-skeleton {
+        display: grid;
+        gap: 10px;
+      }
+      .deck-skeleton-line {
+        height: 14px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, #efe8dc 0%, #f8f4ec 50%, #efe8dc 100%);
+        background-size: 200% 100%;
+        animation: deck-shimmer 1.2s linear infinite;
+      }
+      .deck-skeleton-line.wide {
+        height: 58px;
+        border-radius: 14px;
+      }
+      @keyframes deck-shimmer {
+        from {
+          background-position: 200% 0;
+        }
+        to {
+          background-position: -200% 0;
+        }
+      }
+      .deck-live {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+      }
+      /* Reduced motion trades the card slide for a 150 ms opacity change. */
+      .deck-overlay[data-motion="reduced"] .deck-card {
+        transition: opacity var(--deck-motion-ms, 150ms) ease;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .deck-card {
+          transition: opacity 150ms ease;
+        }
+        .deck-skeleton-line {
+          animation: none;
+        }
+      }
+      @media (max-width: 480px) {
+        .deck-overlay {
+          padding: 0;
+          align-items: stretch;
+        }
+        .deck-shell {
+          width: 100%;
+          max-height: 100vh;
+          border-width: 0;
+          border-radius: 0;
+        }
+        .deck-actions {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+        }
+      }
       @media (max-width: 768px) {
         .graph-node-panel-body {
           grid-template-columns: 1fr;
@@ -477,6 +804,18 @@
         <div class="toolbar">
           <button class="accent" id="connectButton">Connect</button>
           <button class="secondary" id="clearTokenButton">Clear</button>
+        </div>
+      </section>
+
+      <section class="card checkin-card" id="memoryCheckinCard" hidden>
+        <h2>Memory check-in</h2>
+        <div class="checkin-headline">
+          <span class="checkin-count" id="memoryCheckinCount">0 memories to confirm</span>
+          <span class="pill" id="memoryCheckinHint">A quick review</span>
+        </div>
+        <div class="status" id="memoryCheckinLine">Confirm what Remnic should trust.</div>
+        <div class="toolbar">
+          <button class="accent deck-touch" id="memoryCheckinStartButton">Start check-in</button>
         </div>
       </section>
 
@@ -787,6 +1126,116 @@
         <div class="mono-box"><pre id="maintenanceJson">Maintenance summary will appear here.</pre></div>
       </section>
     </main>
+    <div class="deck-overlay" id="reviewDeckOverlay" data-motion="full" hidden>
+      <div
+        class="card deck-shell"
+        id="reviewDeckShell"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="reviewDeckTitle"
+      >
+        <div class="deck-header">
+          <h2 id="reviewDeckTitle">Memory check-in</h2>
+          <div class="deck-header-actions">
+            <span class="pill" id="reviewDeckProgress" hidden></span>
+            <button class="secondary deck-touch" id="reviewDeckUndoButton" hidden>Undo</button>
+            <button class="secondary deck-touch" id="reviewDeckCloseButton">Close</button>
+          </div>
+        </div>
+
+        <div class="deck-notice" id="reviewDeckNotice" hidden>
+          <span class="deck-notice-icon" aria-hidden="true">!</span>
+          <span id="reviewDeckNoticeText"></span>
+          <button class="secondary deck-touch" id="reviewDeckRetryButton" hidden>Retry</button>
+        </div>
+
+        <div class="deck-skeleton" id="reviewDeckSkeleton" aria-hidden="true" hidden>
+          <div class="deck-skeleton-line" style="width: 42%;"></div>
+          <div class="deck-skeleton-line wide"></div>
+          <div class="deck-skeleton-line" style="width: 68%;"></div>
+        </div>
+
+        <div class="deck-stage" id="reviewDeckStage" hidden>
+          <div class="deck-depth" id="reviewDeckDepth" aria-hidden="true"></div>
+          <article class="deck-card" id="reviewDeckCard" tabindex="-1">
+            <div class="meta">
+              <span class="pill" id="reviewDeckReason"></span>
+              <span class="pill" id="reviewDeckSources"></span>
+              <span class="pill" id="reviewDeckRefreshed" hidden>Refreshed &mdash; this memory changed</span>
+            </div>
+            <p class="deck-content" id="reviewDeckContent"></p>
+            <div class="callout">
+              <strong>Why this is here</strong>
+              <div id="reviewDeckWhy"></div>
+            </div>
+            <div class="toolbar">
+              <button
+                class="secondary deck-touch"
+                id="reviewDeckEvidenceButton"
+                aria-expanded="false"
+                aria-controls="reviewDeckEvidence"
+              >
+                See evidence
+              </button>
+            </div>
+            <div class="deck-evidence" id="reviewDeckEvidence" hidden>
+              <div class="deck-evidence-head">
+                <h3>Evidence</h3>
+                <button class="secondary deck-touch" id="reviewDeckEvidenceCloseButton">Hide evidence</button>
+              </div>
+              <div class="list" id="reviewDeckEvidenceList" style="margin-top: 10px;"></div>
+            </div>
+            <div>
+              <h3>What each answer does</h3>
+              <ul class="deck-effects" id="reviewDeckEffects"></ul>
+            </div>
+          </article>
+        </div>
+
+        <div class="deck-actions" id="reviewDeckActions" hidden></div>
+
+        <div class="deck-fix" id="reviewDeckFix" hidden>
+          <label>
+            What should this say instead?
+            <textarea
+              id="reviewDeckFixInput"
+              rows="3"
+              placeholder="Write the corrected version"
+              style="min-height: 88px;"
+            ></textarea>
+          </label>
+          <div class="toolbar">
+            <button class="accent deck-touch" id="reviewDeckPrepareButton">Prepare correction</button>
+            <button class="secondary deck-touch" id="reviewDeckCancelFixButton">Cancel</button>
+          </div>
+          <div class="deck-fix-preview" id="reviewDeckFixPreview" hidden>
+            <h3>Correction preview</h3>
+            <pre id="reviewDeckFixPreviewText"></pre>
+            <ul class="deck-fix-warnings" id="reviewDeckFixWarnings" hidden></ul>
+            <button class="accent deck-touch" id="reviewDeckConfirmFixButton" hidden>Confirm and apply</button>
+          </div>
+          <div class="status" id="reviewDeckFixStatus"></div>
+        </div>
+
+        <div class="callout" id="reviewDeckEmpty" hidden>
+          Nothing to confirm right now. Remnic will collect more as you keep working.
+        </div>
+
+        <div class="deck-summary" id="reviewDeckSummary" hidden>
+          <h3 id="reviewDeckSummaryHeadline"></h3>
+          <ul id="reviewDeckSummaryLines"></ul>
+          <div class="toolbar">
+            <button class="accent deck-touch" id="reviewDeckDoneButton">Done</button>
+          </div>
+        </div>
+
+        <div class="deck-pending" id="reviewDeckPending" hidden>
+          <span id="reviewDeckPendingLabel">Saving your answer...</span>
+        </div>
+      </div>
+      <div class="deck-live" id="reviewDeckLive" role="status" aria-live="polite" aria-atomic="true"></div>
+    </div>
+    <script src="review-deck.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

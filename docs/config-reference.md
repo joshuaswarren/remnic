@@ -135,8 +135,14 @@ Backward compatibility note:
 | `agentAccessHttp.writeRateLimitWindowMs` | `60000` | Rolling window for the write rate limit, in milliseconds. Positive integer (issue #1937). |
 | `supportPassport.enabled` | `false` | Enable What Helps Me owner routes, MCP tools, public helper grants, and browser assets. See [support-passport.md](support-passport.md). |
 | `supportPassport.trustedProxyAddresses` | `[]` | Exact reverse-proxy IP addresses allowed to supply `X-Forwarded-For` for public helper limits. Leave empty without a trusted proxy. |
+| `server.adminConsoleEnabled` | `false` | Standalone daemon: serve the browser admin console at `/remnic/ui/` (and `/engram/ui/`). Env: `REMNIC_ADMIN_CONSOLE_ENABLED` (legacy `ENGRAM_ADMIN_CONSOLE_ENABLED`). |
+| `server.adminConsolePublicDir` | `(unset)` | Standalone daemon: directory of packaged admin-console static assets. Env: `REMNIC_ADMIN_CONSOLE_PUBLIC_DIR` (legacy `ENGRAM_ADMIN_CONSOLE_PUBLIC_DIR`). |
+| `server.adminConsolePrefillToken` | `false` | Standalone daemon: inject the primary auth token into the admin console shell on trusted launch surfaces. Env: `REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN` (legacy `ENGRAM_ADMIN_CONSOLE_PREFILL_TOKEN`). |
+| `server.adminConsoleMemoryReviewEnabled` | `false` | Standalone daemon: enable the admin-console memory review deck UI and its three deck HTTP routes. Default off. Does not disable existing review operations. Env: `REMNIC_ADMIN_CONSOLE_MEMORY_REVIEW_ENABLED` (legacy `ENGRAM_ADMIN_CONSOLE_MEMORY_REVIEW_ENABLED`). |
 
 When `agentAccessHttp.enabled` is on (or `openclaw engram access http-serve` is running), the same loopback server also serves the browser-based admin console shell at `/engram/ui/`. The shell is static, ships with packaged plugin builds, and still requires the configured bearer token over `/engram/v1/...` for memory data and operator actions.
+
+The memory review deck is a separate gate. Set `server.adminConsoleMemoryReviewEnabled` (or `REMNIC_ADMIN_CONSOLE_MEMORY_REVIEW_ENABLED`; legacy `ENGRAM_ADMIN_CONSOLE_MEMORY_REVIEW_ENABLED`) to serve that UI and its three deck routes. Existing review operations stay available when the gate is off.
 
 Access-layer safety notes:
 
