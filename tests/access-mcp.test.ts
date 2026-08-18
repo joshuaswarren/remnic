@@ -457,6 +457,7 @@ test("MCP server advertises tools and dispatches recall", async () => {
     "engram.set_coding_context",
     "engram.recall_tier_explain",
     "engram.recall_xray",
+    "engram.who_knows",
     "engram.wearables_status",
     "engram.wearables_sync",
     "engram.transcript_day",
