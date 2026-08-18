@@ -127,6 +127,7 @@ export function observationSegments(
       startUtc: new Date(currentMs).toISOString(),
       endUtc: new Date(segmentEndMs).toISOString(),
       place: placeForSegment(current.place, options.retainCoordinates),
+      ...(current.confidence !== undefined ? { confidence: current.confidence } : {}),
     });
   }
   return segments;

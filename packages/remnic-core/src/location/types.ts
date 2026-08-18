@@ -21,7 +21,6 @@ export interface LocationPlace {
   longitude?: number;
 }
 
-/** One place observation at a single instant, from a single provider. */
 export interface LocationObservation {
   /** UTC ISO-8601 observation instant. */
   observedAtUtc: string;
@@ -85,6 +84,27 @@ export interface LocationConfig {
    */
   retainCoordinates: boolean;
   sources: LocationSourceConfig[];
+  /**
+   * Minimum dominant-place overlap (seconds) required to tag a memory.
+   * `0` disables the overlap floor. Integer ≥ 0; default 300.
+   */
+  minimumOverlapSeconds: number;
+  /**
+   * Minimum provider-reported place confidence in [0,1] for a tagging
+   * match. Providers that report no confidence pass this gate (there is
+   * nothing to doubt), reported values below it fail. Default 0.7.
+   */
+  minimumConfidence: number;
+  /** Provider-owned location tagging gates (issue #2046). */
+  tagging: LocationTaggingConfig;
+}
+
+/** Opt-in gates for attaching provider location context to memories. */
+export interface LocationTaggingConfig {
+  /** `false` (default) disables every memory-tagging path. */
+  enabled: boolean;
+  /** Extra gate for the historical backfill command; default `false`. */
+  backfillEnabled: boolean;
 }
 
 /** A time-resolved place visit derived from consecutive observations. */
@@ -92,4 +112,6 @@ export interface LocationSegment {
   startUtc: string;
   endUtc: string;
   place: LocationPlace;
+  /** Minimum contributing observation confidence, when any was reported. */
+  confidence?: number;
 }

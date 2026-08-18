@@ -194,7 +194,11 @@ test("validation is strict and shared: unknown flags, bad dates, bad ranges", as
 
     // Backfill range cap: 91 days rejects; 90 passes.
     assert.throws(() => parseLocationBackfillRange("2026-05-01", "2026-07-30"), /capped at 90 days/);
-    assert.deepEqual(parseLocationBackfillRange("2026-05-02", "2026-07-30"), { endDate: "2026-07-30", days: 90 });
+    assert.deepEqual(parseLocationBackfillRange("2026-05-02", "2026-07-30"), {
+      from: "2026-05-02",
+      endDate: "2026-07-30",
+      days: 90,
+    });
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
@@ -206,7 +210,16 @@ test("backfill syncs the explicit range oldest-first; empty days are synced, not
   try {
     const out = io();
     const code = await runLocationCliCommand(
-      { config: enabledConfig(), memoryDir },
+      {
+        config: parseLocationConfig({
+          enabled: true,
+          timezone: "UTC",
+          syncDays: 1,
+          sources: [{ id: "reitti" }],
+          tagging: { enabled: true, backfillEnabled: true },
+        }),
+        memoryDir,
+      },
       ["backfill", "--from", "2026-08-14", "--to", "2026-08-16", "--json"],
       out.cliIo,
     );

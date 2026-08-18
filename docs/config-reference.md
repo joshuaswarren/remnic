@@ -64,6 +64,11 @@ The location subsystem is off by default. It buckets place observations from reg
 | `location.timezone` | `UTC` | IANA timezone for local-day bucketing of observations. |
 | `location.syncDays` | `1` | Number of local days to synchronize per run; integer from 1 through 90. |
 | `location.retainCoordinates` | `false` | When false (default), place coordinates are dropped before any persistence or rendering; only place labels are kept. |
+| `location.minimumOverlapSeconds` | `300` | Minimum overlap in seconds for a location tag match. `0` disables the floor. |
+| `location.minimumConfidence` | `0.7` | Minimum provider-reported place confidence in `[0,1]` for a tagging match. |
+| `location.tagging` | `{ enabled: false, backfillEnabled: false }` | Provider-owned location tagging gates. |
+| `location.tagging.enabled` | `false` | When false, no memory is tagged with location context. Requires `location.enabled`. |
+| `location.tagging.backfillEnabled` | `false` | Extra gate for the historical backfill command. Requires `location.tagging.enabled`. |
 | `location.sources` | `[]` | Location sources. Required when `location.enabled` is true. |
 | `location.sources.id` | `(required)` | Registered provider id (lowercase kebab: `a-z`, `0-9`, hyphens); must be unique across sources. |
 | `location.sources.enabled` | `true` | Set false to short-circuit this source only; other sources still sync. |

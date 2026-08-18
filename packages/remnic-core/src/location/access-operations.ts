@@ -9,8 +9,9 @@
 import { z } from "zod";
 import { defineOperation } from "../access-boundary.js";
 import type { EngramAccessService } from "../access-service.js";
+import { backfillMemoryStorage } from "./backfill.js";
 import {
-  parseLocationBackfillRange,
+  runLocationBackfill,
   runLocationCheck,
   runLocationDay,
   runLocationStatus,
@@ -21,9 +22,14 @@ import {
 /** Zod shape shared by the location operations (null-for-absent tolerant). */
 const dateField = z.union([z.string(), z.null()]).optional();
 const daysField = z.union([z.number(), z.string(), z.null()]).optional();
+const dryRunField = z.union([z.boolean(), z.null()]).optional();
 
 function locationDeps(service: EngramAccessService): LocationSurfaceDeps {
-  return { config: service.configRef.location, memoryDir: service.memoryDir };
+  return {
+    config: service.configRef.location,
+    memoryDir: service.memoryDir,
+    getMemoryStorage: () => backfillMemoryStorage(service.configRef),
+  };
 }
 
 defineOperation({
@@ -63,13 +69,16 @@ defineOperation({
 
 defineOperation({
   name: "location_backfill",
-  description: "Sync an explicit historical day range (≤ 90 days).",
+  description: "Sync an explicit historical day range (≤ 90 days) and re-tag overlapping memories (issue #2046).",
   fleetWide: true,
-  schema: z.object({ from: dateField, to: dateField }).passthrough(),
-  handler: async (input, ctx) => {
-    const range = parseLocationBackfillRange(input.from, input.to);
-    return { result: { days: await runLocationSync(locationDeps(ctx.service), range) } };
-  },
+  schema: z.object({ from: dateField, to: dateField, dryRun: dryRunField }).passthrough(),
+  handler: async (input, ctx) => ({
+    result: await runLocationBackfill(locationDeps(ctx.service), {
+      from: input.from ?? null,
+      to: input.to ?? null,
+      dryRun: input.dryRun === true,
+    }),
+  }),
 });
 
 defineOperation({

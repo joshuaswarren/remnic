@@ -1,6 +1,6 @@
 /**
- * Location surface runners (issue #2047) — ONE implementation shared by the
- * CLI (`remnic location ...`), the MCP tools, the HTTP routes, and the
+ * Location surface runners (issues #2047, #2046) — ONE implementation shared
+ * by the CLI (`remnic location ...`), the MCP tools, the HTTP routes, and the
  * scheduler, so no surface can fork validation or disabled/empty/failure
  * semantics (same rule as the wearables runner). Parsing here is strict:
  * unknown flags reject with the valid list, invalid values reject loudly.
@@ -15,22 +15,23 @@ import {
   type LocationStatusReport,
 } from "./cli.js";
 import { isValidLocationDate } from "./intervals.js";
+import { backfillLocationTags, type LocationBackfillReport } from "./backfill.js";
 import type { LocationSourceSyncResult } from "./pipeline.js";
 import { ensureConfiguredLocationProviders } from "./provider-setup.js";
 import { parseLocationDaySummary, readLocationDay } from "./store.js";
 import type { LocationConfig } from "./types.js";
+import type { StorageManager } from "../index.js";
 
 export interface LocationSurfaceDeps {
   config: LocationConfig;
   memoryDir: string;
+  /**
+   * Memory storage for tag backfill (default-namespace store). Optional so
+   * pure day-sync surfaces (status/check/day) never construct one; hosts
+   * that expose backfill provide it (issue #2046).
+   */
+  getMemoryStorage?: () => Promise<StorageManager>;
 }
-
-export interface LocationSyncRun {
-  date: string;
-  results: LocationSourceSyncResult[];
-}
-
-export type LocationSyncRuns = LocationSyncRun[];
 
 export async function runLocationStatus(
   deps: LocationSurfaceDeps,
@@ -39,6 +40,12 @@ export async function runLocationStatus(
   return locationStatus(deps.config, deps.memoryDir);
 }
 
+export interface LocationSyncRun {
+  date: string;
+  results: LocationSourceSyncResult[];
+}
+
+export type LocationSyncRuns = LocationSyncRun[];
 export async function runLocationCheck(
   deps: LocationSurfaceDeps,
   signal?: AbortSignal,
@@ -113,7 +120,7 @@ function validatedSyncWindow(request: { endDate?: string; days?: number }): {
 export function parseLocationBackfillRange(
   rawFrom: unknown,
   rawTo: unknown,
-): { endDate: string; days: number } {
+): { from: string; endDate: string; days: number } {
   const from = requireLocationDate(rawFrom, "from");
   const to = requireLocationDate(rawTo, "to");
   const fromMs = Date.parse(`${from}T00:00:00Z`);
@@ -125,7 +132,48 @@ export function parseLocationBackfillRange(
   if (days > 90) {
     throw new EngramAccessInputError("location: backfill range is capped at 90 days");
   }
-  return { endDate: to, days };
+  return { from, endDate: to, days };
+}
+
+export interface LocationBackfillResult {
+  /** Per-day provider sync results (empty under `dryRun`). */
+  days: LocationSyncRuns;
+  /** Memory re-tag report; absent when no memory storage was provided. */
+  memory?: LocationBackfillReport;
+}
+
+/**
+ * Backfill an explicit historical range (issue #2046): sync the days (unless
+ * `dryRun`, which persists NOTHING — not day files, not memory patches), then
+ * re-run the shared tagging core over the stored segments. Requires
+ * `location.enabled` + `location.tagging.enabled` +
+ * `location.tagging.backfillEnabled`.
+ */
+export async function runLocationBackfill(
+  deps: LocationSurfaceDeps,
+  request: { from?: unknown; to?: unknown; dryRun?: boolean } = {},
+): Promise<LocationBackfillResult> {
+  const range = parseLocationBackfillRange(request.from, request.to);
+  if (!deps.config.enabled || !deps.config.tagging.enabled || !deps.config.tagging.backfillEnabled) {
+    throw new EngramAccessInputError(
+      "location: backfill requires location.enabled, location.tagging.enabled, and location.tagging.backfillEnabled",
+    );
+  }
+  await ensureConfiguredLocationProviders(deps.config);
+  const days =
+    request.dryRun === true ? [] : (await syncLocation({ ...deps, endDate: range.endDate, days: range.days })) as LocationSyncRuns;
+  let memory: LocationBackfillReport | undefined;
+  if (deps.getMemoryStorage !== undefined) {
+    memory = await backfillLocationTags({
+      storage: await deps.getMemoryStorage(),
+      memoryDir: deps.memoryDir,
+      config: deps.config,
+      from: range.from,
+      to: range.endDate,
+      dryRun: request.dryRun === true,
+    });
+  }
+  return { days, ...(memory !== undefined ? { memory } : {}) };
 }
 
 // ---------------------------------------------------------------------------
@@ -146,8 +194,12 @@ Commands:
                                    ending yesterday)
     --date <YYYY-MM-DD>          End the window on this day (inclusive)
     --days <n>                   Window size, 1..90 (default: location.syncDays)
-  backfill --from <date> --to <date>
+  backfill --from <date> --to <date> [--dry-run]
                                  Sync an explicit historical range (≤ 90 days)
+                                 and re-tag overlapping memories (requires
+                                 location.tagging.backfillEnabled). --dry-run
+                                 persists nothing: it only reports the memory
+                                 changes stored segments would produce.
   day <YYYY-MM-DD>               Print one stored location day
 
 Add --json to status/sync/backfill/day for machine-readable output.
@@ -156,7 +208,7 @@ Credentials for built-in providers come from the environment:
 `;
 
 const VALUE_FLAGS = new Set(["--date", "--days", "--from", "--to"]);
-const BOOLEAN_FLAGS = new Set(["--json"]);
+const BOOLEAN_FLAGS = new Set(["--json", "--dry-run"]);
 
 interface ParsedCliFlags {
   flags: Map<string, string | true>;
@@ -190,6 +242,26 @@ function parseCliFlags(args: string[]): ParsedCliFlags {
     );
   }
   return { flags, positional };
+}
+
+function renderBackfillReport(io: LocationCliIo, report: LocationBackfillReport): void {
+  for (const day of report.days) {
+    if (day.emptyDay) {
+      io.stdout.write(`${day.date}: no stored location observations (empty day)\n`);
+      continue;
+    }
+    if (day.failed !== undefined) {
+      io.stdout.write(`${day.date}: FAILED — ${day.failed}\n`);
+      continue;
+    }
+    const c = day.counts;
+    io.stdout.write(
+      `${day.date}: ${c.tagged} tagged, ${c.updated} updated, ${c.removed} removed, ` +
+        `${c.unchanged} unchanged, ${c.unmatched} unmatched (incl. ambiguous), ` +
+        `${c.manual} manual, ${c.untimed} untimed, ${c.failed} failed, ` +
+        `${day.considered} considered${report.dryRun ? " (dry run)" : ""}\n`,
+    );
+  }
 }
 
 function flagString(parsed: ParsedCliFlags, name: string): string | undefined {
@@ -294,14 +366,19 @@ export async function runLocationCliCommand(
       }
       case "backfill": {
         const parsed = parseCliFlags(rest);
-        const range = parseLocationBackfillRange(flagString(parsed, "--from"), flagString(parsed, "--to"));
-        const runs = await runLocationSync(deps, range);
+        const result = await runLocationBackfill(deps, {
+          from: flagString(parsed, "--from"),
+          to: flagString(parsed, "--to"),
+          dryRun: parsed.flags.has("--dry-run"),
+        });
         if (parsed.flags.has("--json")) {
-          io.stdout.write(`${JSON.stringify({ days: runs }, null, 2)}\n`);
+          io.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
         } else {
-          renderRuns(io, runs);
+          renderRuns(io, result.days);
+          if (result.memory !== undefined) renderBackfillReport(io, result.memory);
         }
-        return anySourceFailed(runs) ? 1 : 0;
+        const memoryFailed = result.memory?.days.some((day) => day.failed !== undefined) === true;
+        return anySourceFailed(result.days) || memoryFailed ? 1 : 0;
       }
       case "day": {
         const parsed = parseCliFlags(rest);

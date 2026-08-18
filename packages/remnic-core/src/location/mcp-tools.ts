@@ -55,12 +55,13 @@ export const LOCATION_MCP_TOOLS: McpTool[] = [
   {
     name: "engram.location_backfill",
     description:
-      "Sync an explicit historical day range (inclusive, capped at 90 days) for every enabled location provider. Same shared sync runner as location_sync; never makes an unbounded scan.",
+      "Sync an explicit historical day range (inclusive, capped at 90 days) for every enabled location provider, then re-tag overlapping memories with provider-owned location metadata (issue #2046; requires location.tagging.backfillEnabled). dryRun reports the memory changes without persisting anything — no day files, no memory patches. Never makes an unbounded scan and never calls the LLM.",
     inputSchema: {
       type: "object",
       properties: {
         from: { type: "string", description: "Range start day (YYYY-MM-DD)." },
         to: { type: "string", description: "Range end day (YYYY-MM-DD, inclusive)." },
+        dryRun: { type: "boolean", description: "Report only; persist nothing." },
       },
       required: ["from", "to"],
       additionalProperties: false,

@@ -9,6 +9,9 @@ test("parseLocationConfig defaults to an inert configuration", () => {
     timezone: "UTC",
     syncDays: 1,
     retainCoordinates: false,
+    minimumOverlapSeconds: 300,
+    minimumConfidence: 0.7,
+    tagging: { enabled: false, backfillEnabled: false },
     sources: [],
   });
   assert.deepEqual(parseLocationConfig(undefined), defaultLocationConfig());

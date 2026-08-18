@@ -40,6 +40,7 @@ import {
   type MemoryLifecycleCapabilitySet,
 } from "../capabilities.js";
 import { parseFlexibleIsoTimestamp } from "../utils/iso-timestamp.js";
+import { tagPersistedMemories } from "../location/tagging.js";
 import { log } from "../logger.js";
 import type { PluginConfig, BufferTurn, ExtractionResult, MetaState, ExtractionFailureClass } from "../types.js";
 import type { TierMigrationCycleSummary } from "../recall-state.js";
@@ -61,7 +62,6 @@ export class ExtractionDeadlineError extends Error {
     this.stage = stage;
   }
 }
-
 
 /** Dependencies injected by the orchestrator. All stable references or
  *  live accessors — lazy getters for anything tests reassign
@@ -1090,6 +1090,7 @@ export class ExtractionRunCoordinator {
       log.warn("runExtraction: durable-commit callback failed", error);
     }
     const runPostPersistBestEffort = runExtractionPostPersistBestEffort.bind(null, runDeadlineAware);
+    await tagPersistedMemories(storage, persistedIds, this.config);
     const postPersist = await runExtractionPostPersist({
       result,
       storage,
