@@ -6675,6 +6675,37 @@
             "default": false,
             "description": "When false (default), place coordinates are dropped before any persistence or rendering; only place labels are kept."
           },
+          "minimumOverlapSeconds": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 300,
+            "description": "Minimum overlap in seconds for a location tag match. 0 disables the floor."
+          },
+          "minimumConfidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.7,
+            "description": "Minimum provider-reported place confidence in [0,1] for a tagging match."
+          },
+          "tagging": {
+            "type": "object",
+            "additionalProperties": false,
+            "default": {},
+            "description": "Provider-owned location tagging gates (issue #2046).",
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "default": false,
+                "description": "When false, no memory is tagged with location context."
+              },
+              "backfillEnabled": {
+                "type": "boolean",
+                "default": false,
+                "description": "Extra gate for the historical backfill command."
+              }
+            }
+          },
           "sources": {
             "type": "array",
             "default": [],
