@@ -113,7 +113,10 @@ export interface RecallSearchPipelineDeps {
     recallNamespaces: string[],
   ): Promise<QueryAwarePrefilter>;
   readonly config: PluginConfig;
-  readonly recallRerankCoordinator: Pick<RecallRerankCoordinator, "diversifyRecallResultsWithHeadroom">;
+  readonly recallRerankCoordinator: Pick<
+    RecallRerankCoordinator,
+    "diversifyRecallResultsWithHeadroom" | "applyPreferenceDriftStage"
+  >;
   diversifyAndLimitRecallResults(
     sectionId: string,
     results: QmdSearchResult[],
@@ -953,6 +956,16 @@ export class RecallSearchPipelineCoordinator {
           error: (err as Error).message,
         });
       }
+    }
+    // Cold fallback boosts inline rather than through applyTrustScoreToBranch,
+    // so the preference-drift stage is applied here explicitly — otherwise
+    // damping would silently not apply to this branch (§27 fallback parity).
+    if (results.length > 0) {
+      results = await this.deps.recallRerankCoordinator.applyPreferenceDriftStage(
+        results,
+        options.recallNamespaces,
+        boostInput.memoryByPath,
+      );
     }
 
     if (options.xrayPoolSizeSink) {

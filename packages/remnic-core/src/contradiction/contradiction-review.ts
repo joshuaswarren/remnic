@@ -17,9 +17,31 @@ import type { ContradictionVerdict } from "./contradiction-judge.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
-export type ResolutionVerb = "keep-a" | "keep-b" | "merge" | "both-valid" | "needs-more-context";
+/**
+ * Resolution verbs. The first five are contradiction-pair verbs; the last
+ * three resolve a `kind: "preference-drift"` item (issue #2371). Verb validity
+ * is per-kind — `executeResolution` rejects a cross-kind verb — but the stored
+ * union is shared so one review queue, one `review_resolve` surface, and one
+ * resolution record serve both item kinds.
+ */
+export type ResolutionVerb =
+  | "keep-a"
+  | "keep-b"
+  | "merge"
+  | "both-valid"
+  | "needs-more-context"
+  | "keep"
+  | "supersede"
+  | "archive";
 
-const VALID_RESOLUTION_VERBS: readonly ResolutionVerb[] = [
+/** Review-item kind. Absent on every pair written before issue #2371. */
+export type ReviewItemKind = "contradiction" | "preference-drift";
+
+/** Verbs valid for a `kind: "preference-drift"` item. */
+export const PREFERENCE_DRIFT_VERBS: readonly ResolutionVerb[] = ["keep", "supersede", "archive"];
+
+/** Verbs valid for a contradiction pair. */
+export const CONTRADICTION_VERBS: readonly ResolutionVerb[] = [
   "keep-a",
   "keep-b",
   "merge",
@@ -27,11 +49,23 @@ const VALID_RESOLUTION_VERBS: readonly ResolutionVerb[] = [
   "needs-more-context",
 ];
 
+const VALID_RESOLUTION_VERBS: readonly ResolutionVerb[] = [
+  ...CONTRADICTION_VERBS,
+  ...PREFERENCE_DRIFT_VERBS,
+];
+
 export interface ContradictionPair {
   /** Deterministic pair ID: sha256(sorted(memoryIdA, memoryIdB) plus namespace when scoped). */
   pairId: string;
   /** Memory IDs (sorted). */
   memoryIds: [string, string];
+  /**
+   * Item kind (issue #2371). Absent on every pair written before drift
+   * detection existed, which reads as `"contradiction"`. A
+   * `"preference-drift"` item pairs the aging preference (first id) with the
+   * recent evidence that pointed away from it (second id).
+   */
+  kind?: ReviewItemKind;
   /** Judge verdict. */
   verdict: ContradictionVerdict;
   /** Judge rationale. */
@@ -85,8 +119,20 @@ export function isDefaultReviewNamespace(
   return !requested || requested === defaultNamespace || resolvedNamespace === defaultNamespace;
 }
 
+const TERMINAL_RESOLUTIONS: Partial<Record<ResolutionVerb, true>> = {
+  "keep-a": true,
+  "keep-b": true,
+  merge: true,
+  // Every preference-drift verb is terminal: the user has answered the "is
+  // this preference still true?" question, so the item must leave the
+  // unresolved queue and never be re-proposed by a later scan (issue #2371).
+  keep: true,
+  supersede: true,
+  archive: true,
+};
+
 function isTerminalResolution(resolution: ResolutionVerb | undefined): boolean {
-  return resolution === "keep-a" || resolution === "keep-b" || resolution === "merge";
+  return resolution !== undefined && TERMINAL_RESOLUTIONS[resolution] === true;
 }
 
 function preservesDirectResolution(resolution: ResolutionVerb | undefined): boolean {

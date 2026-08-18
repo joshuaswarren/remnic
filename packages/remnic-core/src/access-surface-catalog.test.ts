@@ -170,6 +170,14 @@ function extractMcpDispatchMap(): Map<string, string> {
       new URL("./support-passport/mcp-tools.ts", import.meta.url),
       "SUPPORT_PASSPORT_MCP_MIGRATED_OPERATIONS",
     ),
+    // Third dispatch home (issue #2371): the admin/maintenance tool table
+    // contributes its own map fragment, spread into MCP_MIGRATED_OPERATIONS.
+    // Every module that can register a dispatch entry must be read here, or
+    // this validator reports a false "no dispatch wiring".
+    ...extractMcpOperationMap(
+      new URL("./access-mcp-admin-tools.ts", import.meta.url),
+      "MCP_ADMIN_OPS_MIGRATED_OPERATIONS",
+    ),
   ]);
 }
 

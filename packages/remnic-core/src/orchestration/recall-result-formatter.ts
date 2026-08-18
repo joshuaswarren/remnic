@@ -230,14 +230,18 @@ export class RecallResultFormatter {
       const withHandle = handle ? `${head.trimEnd()} ${handle}` : head.trimEnd();
       const connectorLabel = renderConnectorLabel(r.sourceConnector);
       const withConnector = connectorLabel ? `${withHandle} [agent: ${connectorLabel}]` : withHandle;
+      // Preference age note (issue #2371). Set only when
+      // `driftDetection.annotateAfterDays` is on, so this suffix is absent —
+      // and the rendered line byte-identical to pre-#2371 — by default.
+      const withDrift = r.driftNote ? `${withConnector} ${r.driftNote}` : withConnector;
       if (hedgeMap) {
         const item = trustResultFor(hedgeMap, r);
         if (item) {
           const hedge = renderEpistemicHedge(item.trust);
-          if (hedge.length > 0) return `${withConnector} ${hedge}`;
+          if (hedge.length > 0) return `${withDrift} ${hedge}`;
         }
       }
-      return withConnector;
+      return withDrift;
     });
     return { heading: `## ${title}`, entries };
   }

@@ -182,4 +182,28 @@ export const MCP_ADMIN_OPS_TOOLS: Array<{
     additionalProperties: false,
   },
 },
+{
+  name: "engram.preference_drift_scan",
+  description:
+    "Run a preference drift scan (issue #2371): classify aging preference memories as corroborated / stale / drifted from recent same-namespace evidence. Shadow-first — the default run reports only. apply=true (and driftDetection.enabled) stamps lastCorroborated / driftState and opens one review item per drifted preference. Never auto-deletes and never auto-supersedes.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      namespace: { type: "string" },
+      apply: { type: "boolean" },
+    },
+    additionalProperties: false,
+  },
+},
 ];
+
+/**
+ * Tool-name → operation-name entries contributed by this module, spread into
+ * `MCP_MIGRATED_OPERATIONS` in access-mcp.ts. Declared here (rather than
+ * inline in the transport) for the same structural-ratchet reason the tool
+ * table above lives here. `remnic.*` aliases resolve by suffix, so only the
+ * `engram.*` name is listed.
+ */
+export const MCP_ADMIN_OPS_MIGRATED_OPERATIONS: Readonly<Record<string, string>> = {
+  "engram.preference_drift_scan": "preference_drift_scan",
+};
