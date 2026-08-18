@@ -24,6 +24,8 @@ All console calls require the same loopback bearer token as the rest of the
 
 ## Panes
 
+- **Memory check-in** — a guided queue for confirming what Remnic should
+  trust, one memory at a time (issue #2351).
 - **Memory Browser** — paginated list of `/engram/v1/memories` with
   query / status / category / sort filters.
 - **Memory Detail** — content + timeline for a selected memory, with
@@ -45,6 +47,70 @@ All console calls require the same loopback bearer token as the rest of the
   adjacency from `GET /engram/v1/graph/snapshot` plus incremental
   updates from `GET /engram/v1/graph/events` (issue #691).
 - **Maintenance** — JSON dump of the current maintenance summary.
+
+## Memory check-in pane (#2351)
+
+A dashboard card that opens a focused review deck. The card renders only when
+the queue is non-empty, and disappears entirely when
+`GET /remnic/v1/review/deck` answers `404` — that response is the feature
+gate, not an error, so nothing else is surfaced when the deck is turned off.
+
+The deck shows one active memory plus two quiet stacked cards behind it, so
+the depth of the queue is visible without pulling attention off the current
+question. Each card carries the reason it was flagged, how many sources back
+it, the memory content, a plain-language "Why this is here", a **See
+evidence** drawer with the provenance, and what each answer will do to
+recall.
+
+Answers:
+
+- **Keep** (Right arrow) — `keep`. Remnic keeps using it in recall.
+- **Not true** (Left arrow) — `not_true`. Remnic stops using it in recall.
+- **Fix** (`E`) — takes replacement text, calls `prepare_fix`, shows the
+  returned correction preview, and applies it through the existing
+  `POST /engram/v1/correction/apply` only after an explicit confirm.
+- **Later** (Space) — sends no request at all; the card moves to the end of
+  the session queue.
+- **Undo** (Ctrl+Z / Cmd+Z) — offered only while the last receipt reports
+  `undoAvailable: true`, and replays the stored `receiptId` plus
+  `appliedRevision` against the undo endpoint.
+
+Endpoints: `GET /remnic/v1/review/deck`,
+`POST /remnic/v1/review/deck/action`, `POST /remnic/v1/review/deck/undo`, and
+the existing correction-apply route. Revisions are opaque server tokens: the
+console echoes them back verbatim and never parses or compares them. Every
+action carries an `idempotencyKey`, and a retry after a failure reuses the
+same key so a request that already landed cannot be applied twice.
+
+Operator notes:
+
+- A rejected action restores the same card and the same focus, and does not
+  advance progress. A retry control appears inline.
+- An `outcome: "conflict"` receipt re-reads the deck and swaps in just that
+  memory's newest version, flagged with a `Refreshed` chip; the rest of the
+  queue is untouched.
+- While a request is in flight the card is covered rather than moved, and the
+  answer buttons are disabled, so nothing shifts under the pointer.
+- Going offline blocks the three server-backed answers but leaves **Later**
+  available.
+- The session ends with a neutral summary ("Reviewed N memories" plus
+  kept / fixed / not-true / left-for-later counts). There is deliberately no
+  score, streak, or other scoreboard.
+- Keyboard: the four answers have the shortcuts listed above, Escape closes
+  the evidence drawer first and then the deck, focus is trapped inside the
+  open deck, and every completed answer is announced through `aria-live`.
+  `prefers-reduced-motion` swaps the card movement for a 150 ms opacity
+  change.
+- Browser storage holds only the rolling review-duration median and bounded
+  counters under `remnic.reviewDeck.metrics` — never memory content,
+  provenance, ids, or namespace names. The time hint on the entry card comes
+  from that median; before any local history exists it reads "A quick
+  review" rather than inventing an estimate.
+
+The deck's queue, receipts, and counters live in a transport-injected state
+machine (`admin-console/public/review-deck.js`), which is covered directly by
+`node admin-console/public/review-deck.test.mjs`. `app.js` supplies the real
+transport and does the DOM rendering.
 
 ## Memory Graph pane (#691 PR 3/5)
 

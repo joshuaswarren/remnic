@@ -1,51 +1,37 @@
-# Theory: Preserve authority through derived entity fields
+# Theory: Review deck access is a gated HTTP facade
 
 ## Problem
 
-Entity recall copies facts and structured-section values from entity files into model context.
+The admin console needs a one-item review deck. The access god-files have no line budget for another route family.
 
-Memory writes already record extraction origins, but entity writes dropped that origin.
-
-Authority-aware recall therefore treated every entity field as `unknown`.
-
-That default protects against untrusted content but also fences user-derived facts.
+Existing review-queue and review-disposition routes already prove the boundary pattern. The new deck must reuse that pattern without growing `access-http.ts` or `access-service.ts` past their ratchets.
 
 ## Operating theory
 
-Origin is field provenance, not only record provenance.
+The deck is not a new store. It projects pending review files and writes through the existing review and lifecycle APIs.
 
-Each entity timeline entry and structured-section fact must retain the origin of the write batch.
+The access layer is only a facade:
 
-Missing or conflicting origin stays absent and renders as `unknown`.
+- HTTP matching, gate, validation, and write-quota live in `ReviewDeckAccessHttpBase`.
+- Namespace ACL, snapshot paging, and mutation context live in `ReviewDeckSurface`.
+- `EngramAccessService` exposes `reviewDeckEnabled` plus three one-line delegates.
 
-This preserves least privilege while allowing trusted user fields to remain readable.
+A disabled gate answers 404 before any op check or body read. That keeps an off switch from changing existing review routes.
+
+Principal and namespace come from the HTTP boundary. A POST body may carry those keys; the facade ignores them.
 
 ## Strategy
 
-Carry the classified extraction origin through `StorageManager.writeEntity` and `EntityStore`.
+Follow `review_queue_list` / `review_disposition` for names and catalog rows. Extract the handler body the way support-passport extracted its HTTP base, so `access-http.ts` grows by one dispatch line.
 
-Persist timeline origins as escaped metadata.
+Cursor errors stay client errors. A bad cursor must not restart at page one.
 
-Persist structured-section origins as escaped per-fact metadata.
+## Key discoveries
 
-Build the entity recall index with parallel origin arrays and pass each origin to the shared authority renderer.
+The catalog fitness test only scans `access-http.ts` unless a sibling extractor is added. A one-line dispatch would look unmigrated without teaching that scanner about `review-deck-http-base.ts`.
 
-When equal text has different origins, drop the origin rather than selecting the more trusted value.
+`storage.readMemoryLifecycleEvents` is a tail read. The per-memory bounded reader is `getMemoryTimeline`.
 
-## Audit boundary
+## Open questions
 
-The audit cutoff is inclusive.
-
-A memory at the exact `--since` timestamp belongs to the reported window.
-
-A memory before that timestamp does not.
-
-The boundary test uses a one-millisecond separation to guard both cases.
-
-## Verification state
-
-Core type checking passes.
-
-The entity hardening gate passes all 339 tests.
-
-Authority and audit regression tests pass all 13 tests.
+Whether ServerGate's boolean arrives already coerced. The service treats only `=== true` as enabled, which matches the other constructor flags.

@@ -325,6 +325,22 @@ function extractHttpRouteDispatchMap(): Map<string, Set<string>> {
       }
     }
   }
+  if (/\bawait\s+this\.handleReviewDeckRequest\(/.test(source)) {
+    const deckSource = readFileSync(
+      new URL("./review/review-deck-http-base.ts", import.meta.url),
+      "utf-8",
+    );
+    const deckRoutes = [
+      ["GET", "/engram/v1/review/deck", "review_deck_list"],
+      ["POST", "/engram/v1/review/deck/action", "review_deck_action"],
+      ["POST", "/engram/v1/review/deck/undo", "review_deck_undo"],
+    ] as const;
+    for (const [method, pathname, operation] of deckRoutes) {
+      if (deckSource.includes(`"${pathname}"`) && deckSource.includes(`enforceTokenOp("${operation}")`)) {
+        routeOps.set(`${method} ${pathname}`, new Set([operation]));
+      }
+    }
+  }
   for (const [sourcePath, routes] of [
     ["./support-passport/access-http.ts", SUPPORT_PASSPORT_OWNER_HTTP_ROUTES],
     ["./support-passport/public-http.ts", SUPPORT_PASSPORT_PUBLIC_HTTP_ROUTES],
