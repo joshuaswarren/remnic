@@ -278,6 +278,7 @@ import {
   recordMemoryOutcome,
 } from "./memory-worth-outcomes.js";
 import type { LcmMessagePartInput, MessagePartSourceFormat } from "./message-parts/index.js";
+import type { ObserveRequest, RecallRequest } from "./access-schema.js";
 import { recordObjectiveStateSnapshotsFromObservedMessages } from "./objective-state-writers.js";
 import { objectiveStateStoreOverrideForNamespace } from "./objective-state.js";
 import { offlineSyncStorageForSnapshot } from "./offline-sync-impression-drain.js";
@@ -373,17 +374,16 @@ function normalizeTrustZoneInputError(error: unknown): EngramAccessInputError | 
 
 export const ENGRAM_ACCESS_WRITE_SCHEMA_VERSION = 1;
 
-export interface EngramAccessRecallRequest {
-  query: string;
-  sessionKey?: string;
-  namespace?: string;
+/**
+ * Recall request. Wire fields derive from the canonical zod schema
+ * (`recallRequestSchema`, access-schema.ts — issue #2482) so the HTTP body,
+ * the MCP args, and the service share ONE model. The overlay below carries
+ * server-resolved transport fields no client may set.
+ */
+export interface EngramAccessRecallRequest extends RecallRequest {
   authenticatedPrincipal?: string;
   /** Trusted connector identity resolved at the transport boundary. */
   sourceConnector?: string;
-  idempotencyKey?: string;
-  topK?: number;
-  mode?: RecallPlanMode | "auto";
-  includeDebug?: boolean;
   abortSignal?: AbortSignal;
   /**
    * Internal, server-set field (issue #1906): wall-clock ms the caller
@@ -393,70 +393,6 @@ export interface EngramAccessRecallRequest {
    * (same pattern as `abortSignal`).
    */
   queueWaitMs?: number;
-  /**
-   * Recall disclosure depth. Omitting it preserves the `"chunk"` default.
-   * Other accepted values are `"section"` and `"raw"`.
-   */
-  disclosure?: RecallDisclosure;
-  /**
-   * Coding-agent context (issue #569). When a connector resolves a git
-   * context for the session's cwd, it passes it here and the access service
-   * attaches it to the orchestrator before recall so project- / branch-
-   * scoped namespace overlays apply.
-   *
-   * Keyed by `sessionKey`; ignored when `sessionKey` is absent.
-   */
-  codingContext?: {
-    projectId: string;
-    branch: string | null;
-    rootPath: string;
-    defaultBranch: string | null;
-  } | null;
-  /**
-   * Working directory of the calling agent session. When provided and no
-   * `codingContext` is already attached to the session, the service resolves
-   * git context from this path and attaches it automatically. This enables
-   * Claude Code hooks (and any connector that knows its cwd) to get
-   * project-scoped memory without explicitly constructing a `codingContext`.
-   */
-  cwd?: string;
-  /**
-   * Arbitrary project tag for non-git-based project scoping. When provided,
-   * creates a `CodingContext` with `projectId: "tag:<projectTag>"`.
-   * Useful for OpenClaw sessions where the whole workspace is one git repo
-   * but different conversations correspond to different client projects.
-   * Takes precedence over `cwd`-based git resolution but NOT over an
-   * explicit `codingContext`.
-   */
-  projectTag?: string;
-  /**
-   * Historical recall pin (issue #680).  ISO 8601 timestamp.  When set,
-   * the orchestrator filters out memories whose `valid_at` is after this
-   * instant OR whose `invalid_at` is at-or-before this instant, so the
-   * caller sees the corpus as it existed at `asOf`.  Invalid values are
-   * rejected here with `EngramAccessInputError` (CLAUDE.md rule 51).
-   */
-  asOf?: string;
-  /**
-   * Free-form recall tag filter (issue #689). When non-empty, recall results
-   * whose frontmatter `tags` do not match are removed from the response.
-   * Comparison is case-sensitive exact match against tags stored on each
-   * memory's frontmatter (see `storage.ts` and `docs/tags.md`).
-   */
-  tags?: string[];
-  /**
-   * Match mode for `tags` (issue #689). `"any"` (default when omitted)
-   * admits results that carry at least one filter tag. `"all"` requires
-   * every filter tag to be present. Ignored when `tags` is absent or empty.
-   */
-  tagMatch?: "any" | "all";
-  /**
-   * Issue #681 — when `true`, bypasses the configured
-   * `graphTraversalConfidenceFloor` for this recall and includes graph edges
-   * below the floor in traversal.  Useful for diagnostic queries that need to
-   * surface results pruned by confidence decay.  Default `false`.
-   */
-  includeLowConfidence?: boolean;
 }
 
 /**
@@ -1033,27 +969,18 @@ export interface EngramAccessObserveMessage {
   sourceFormat?: MessagePartSourceFormat;
 }
 
-export interface EngramAccessObserveRequest extends SourceConnectorProvenance {
-  sessionKey: string;
+/**
+ * Observe request. Wire fields derive from the canonical zod schema
+ * (`observeRequestSchema`, access-schema.ts — issue #2482); the service
+ * consumes the transport-cleaned message form (the wire schema tolerates
+ * nullable `parts`/`sourceFormat`, the service maps them to `undefined`).
+ */
+export interface EngramAccessObserveRequest
+  extends Omit<ObserveRequest, "messages">,
+    SourceConnectorProvenance {
   messages: EngramAccessObserveMessage[];
-  namespace?: string;
   authenticatedPrincipal?: string;
-  skipExtraction?: boolean;
-  /** Optional idempotency key (issue #1649): a retried POST with the same key is deduplicated server-side; divergent reuse is a conflict. */
-  idempotencyKey?: string;
-  /**
-   * Working directory of the calling agent session (issue #569 wiring).
-   * When provided and no `codingContext` is attached for this session,
-   * resolves git context from the path and attaches it so writes route to
-   * the correct project namespace.
-   */
-  cwd?: string;
-  /**
-   * Arbitrary project tag for non-git-based project scoping (issue #569).
-   * Creates a `CodingContext` with `projectId: "tag:<projectTag>"`.
-   */
-  projectTag?: string;
-  readonly suppressQuarantine?: boolean; // #1888: mirrors EngramAccessWriteEnvelope.suppressQuarantine (replay re-submit skips dead-lettering).
+  readonly suppressQuarantine?: boolean; // #1888: replay re-submit skips dead-lettering.
 }
 
 /**

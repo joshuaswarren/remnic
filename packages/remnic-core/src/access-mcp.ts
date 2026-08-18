@@ -326,6 +326,24 @@ const STRICT_MCP_SCHEMA_KEYS: Partial<Record<SchemaName, readonly string[]>> = {
   capsuleList: ["namespace", "sessionKey", "cwd", "projectTag"],
 };
 
+// Tools whose envelope parses through the canonical zod wire schema (issue
+// #2482) — the SAME validation the HTTP transport runs. Every other migrated
+// tool passes raw args; its boundary op schema validates them.
+const MCP_WIRE_SCHEMAS: Partial<Record<string, SchemaName>> = {
+  memory_store: "memoryStore",
+  suggestion_submit: "suggestionSubmit",
+  action_confidence: "actionConfidence",
+  day_summary: "daySummary",
+  capsule_export: "capsuleExport",
+  capsule_import: "capsuleImport",
+  capsule_list: "capsuleList",
+  observe: "observe",
+  recall: "recall",
+  lcm_compaction_flush: "lcmCompactionFlush",
+  extraction_force_flush: "extractionForceFlush",
+  lcm_compaction_record: "lcmCompactionRecord",
+};
+
 // Shared JSON-schema fragments for the client-injected git/project context
 // fields (#1434). Declared once to avoid drift across tool definitions.
 // `_SCOPED` is for write tools that resolve a project namespace from these
@@ -2669,28 +2687,9 @@ export class EngramMcpServer {
       throw new EngramAccessInputError(`access-boundary: operation not registered: ${migrated}`);
     }
     let envelope: Record<string, unknown>;
-    if (migrated === "memory_store") {
-      envelope = parseMcpRequest("memoryStore", args);
-    } else if (migrated === "suggestion_submit") {
-      envelope = parseMcpRequest("suggestionSubmit", args);
-    } else if (migrated === "action_confidence") {
-      envelope = parseMcpRequest("actionConfidence", args);
-    } else if (migrated === "day_summary") {
-      envelope = parseMcpRequest("daySummary", args);
-    } else if (migrated === "capsule_export") {
-      envelope = parseMcpRequest("capsuleExport", args);
-    } else if (migrated === "capsule_import") {
-      envelope = parseMcpRequest("capsuleImport", args);
-    } else if (migrated === "capsule_list") {
-      envelope = parseMcpRequest("capsuleList", args);
-    } else if (migrated === "observe") {
-      envelope = parseMcpRequest("observe", args);
-    } else if (migrated === "lcm_compaction_flush") {
-      envelope = parseMcpRequest("lcmCompactionFlush", args);
-    } else if (migrated === "extraction_force_flush") {
-      envelope = parseMcpRequest("extractionForceFlush", args);
-    } else if (migrated === "lcm_compaction_record") {
-      envelope = parseMcpRequest("lcmCompactionRecord", args);
+    const wireSchema = MCP_WIRE_SCHEMAS[migrated];
+    if (wireSchema) {
+      envelope = parseMcpRequest(wireSchema, args) as Record<string, unknown>;
     } else if (migrated.startsWith("codegraph_")) {
       envelope = { ...args, tool: migrated.slice("codegraph_".length) };
     } else if (migrated === "chat_message") {
