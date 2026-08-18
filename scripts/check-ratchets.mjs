@@ -217,14 +217,20 @@ const SKIPPED_DIR_NAMES = new Set(["node_modules", "dist", ".git"]);
 // prevent (round-13 finding).
 const STRICT_SKIPPED_DIR_NAMES = new Set([".git"]);
 /**
- * Direct imports of the main `storage.ts` module (issue #1533 Phase B): counts
- * non-test source files that import from `./storage.js` or `../storage.js` (the
- * 7.7k-LOC god file) rather than the extracted `storage/*` interface modules.
- * The ratchet may only DECREASE as Phase B migrates the 51+ importers to the
- * `MemoryStorage` interface. Matches relative imports ending in exactly
- * `storage.js` — not sub-paths like `namespaces/storage.js` or `secure-fs.js`.
+ * Direct value imports of the main `storage.ts` module (issue #1533 Phase B).
+ * `import type` does not load the 7.7k-LOC module and must not count.
  */
 const DIRECT_STORAGE_IMPORT_RE = /from\s+"(?:\.\.?\/)+storage\.js"/;
+const TYPE_ONLY_IMPORT_RE = /^\s*import\s+type\s/;
+
+function hasValueStorageImport(content) {
+  for (const line of content.split("\n")) {
+    if (!DIRECT_STORAGE_IMPORT_RE.test(line)) continue;
+    if (TYPE_ONLY_IMPORT_RE.test(line)) continue;
+    return true;
+  }
+  return false;
+}
 
 function usage() {
   return [
@@ -391,7 +397,7 @@ function collectMetrics(oversizeThresholdLoc) {
       // external importers, and importing the barrel instead creates a
       // module-initialization cycle (index -> access-* -> ... -> storage).
       !relPosix.startsWith("packages/remnic-core/src/storage/") &&
-      DIRECT_STORAGE_IMPORT_RE.test(content)
+      hasValueStorageImport(content)
     ) {
       directStorageImports++;
     }

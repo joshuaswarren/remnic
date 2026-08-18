@@ -157,7 +157,7 @@ function withToolAliases(tool: McpTool, emitLegacyTools = true): McpTool[] {
   return emitLegacyTools ? [canonicalTool, tool] : [canonicalTool];
 }
 
-const MCP_MIGRATED_OPERATIONS: Readonly<Record<string, OperationName>> = {
+export const MCP_MIGRATED_OPERATIONS: Readonly<Record<string, OperationName>> = {
   "engram.memory_get": "memory_get",
   "engram.memory_search": "memory_search",
   "engram.external_wiki_search": "external_wiki_search",
