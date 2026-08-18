@@ -1,6 +1,6 @@
 {
   "name": "@remnic/connector-weclone",
-  "version": "9.65.2",
+  "version": "9.65.3",
   "description": "OpenAI-compatible proxy adding Remnic persistent memory to WeClone avatars",
   "type": "module",
   "main": "dist/index.js",

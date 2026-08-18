@@ -1,7 +1,7 @@
 {
   "id": "openclaw-remnic",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.65.2",
+  "version": "9.65.3",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -923,7 +923,7 @@
         "type": "object",
         "additionalProperties": false,
         "default": {},
-        "description": "Action-site failure gate (issue #2382): advisory delivery of failure memories at the moment an action is proposed. Advisory only \u2014 it never blocks or delays an action.",
+        "description": "Action-site failure gate (issue #2382): advisory delivery of failure memories at the moment an action is proposed. Advisory only — it never blocks or delays an action.",
         "properties": {
           "enabled": {
             "type": "boolean",
