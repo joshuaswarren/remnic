@@ -41,7 +41,7 @@ export interface LastRecallSnapshot {
   queryHash: string;
   queryLen: number;
   memoryIds: string[];
-  includedMemories: IncludedMemory[];
+  includedMemories?: IncludedMemory[];
   namespace?: string;
   recallNamespaces?: string[];
   traceId?: string;
@@ -341,15 +341,22 @@ export class LastRecallStore {
   async load(): Promise<void> {
     try {
       const raw = await readFile(this.statePath, "utf-8");
-      const parsed = JSON.parse(raw) as LastRecallState;
-      if (parsed && typeof parsed === "object") {
-        this.state = Object.fromEntries(
-          Object.entries(parsed).map(([sessionKey, snapshot]) => [
-            sessionKey,
-            hydrateLastRecallSnapshot(snapshot),
-          ]),
-        );
+      const parsed: unknown = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        this.state = {};
+        return;
       }
+      const next: LastRecallState = {};
+      for (const [sessionKey, snapshot] of Object.entries(parsed)) {
+        if (sessionKey === "__proto__" || sessionKey === "constructor" || sessionKey === "prototype") {
+          continue;
+        }
+        if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+          continue;
+        }
+        next[sessionKey] = hydrateLastRecallSnapshot(snapshot as LastRecallSnapshot);
+      }
+      this.state = next;
     } catch {
       this.state = {};
     }
