@@ -7,6 +7,7 @@
 
 import type { MemoryCategory } from "../types.js";
 import type { ResolverDecision, Taxonomy, TaxonomyCategory } from "./types.js";
+import { cjkBigrams } from "../utils/script-aware-text.js";
 
 const DEFAULT_CATEGORY_ID = "facts";
 
@@ -148,13 +149,12 @@ function computeKeywordScoreForTokens(contentTokens: Set<string>, cat: TaxonomyC
 }
 
 function tokenizeKeywordText(value: string): Set<string> {
-  return new Set(
-    value
-      .toLowerCase()
-      .split(/[^a-z0-9]+/)
-      .map((word) => word.trim())
-      .filter((word) => word.length >= 3 && !TAXONOMY_KEYWORD_STOPWORDS.has(word)),
-  );
+  // CJK bigrams tokenize BOTH sides (content and filing rules), so a
+  // taxonomy written in a CJK language matches CJK content; Latin-only
+  // taxonomies see no change (issue #2192).
+  const latin = (value.toLowerCase().match(/[a-z0-9]+/g) ?? [])
+    .filter((word) => word.length >= 3 && !TAXONOMY_KEYWORD_STOPWORDS.has(word));
+  return new Set([...latin, ...cjkBigrams(value)]);
 }
 
 function selectFallbackCategory(

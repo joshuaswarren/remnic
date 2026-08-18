@@ -7,6 +7,7 @@
  */
 
 import type { ImportanceLevel, ImportanceScore, MemoryCategory, MemoryFile } from "./types.js";
+import { cjkBigrams, hasLatinWord, informationalLength } from "./utils/script-aware-text.js";
 
 // ---------------------------------------------------------------------------
 // Marker patterns for each tier
@@ -48,18 +49,6 @@ const HIGH_PATTERNS = [
   /\b(scheduled|appointment|meeting|call)\b/i,
 ];
 
-/** Normal importance markers (0.4-0.7) */
-const NORMAL_PATTERNS = [
-  // Factual content
-  /\b(is|are|was|were|has|have|does|do)\b/i,
-  /\b(because|since|therefore|thus|so)\b/i,
-  // Emotional content
-  /\b(happy|sad|frustrated|excited|worried|anxious)\b/i,
-  /\b(feel|feeling|felt)\b/i,
-  // Technical details
-  /\b(version|api|endpoint|database|server|config)\b/i,
-  /\b(function|class|method|variable|parameter)\b/i,
-];
 
 /** Low importance markers (0.2-0.4) */
 const LOW_PATTERNS = [
@@ -82,8 +71,6 @@ const TRIVIAL_PATTERNS = [
   /^(bye|goodbye|later|see ya|ttyl)[.!]?\s*$/i,
   /^(lol|haha|hehe|lmao|rofl)[.!]?\s*$/i,
   /^(hmm+|uhh*|ahh*|err*|umm*)[.!]?\s*$/i,
-  // Very short content
-  /^.{1,10}$/,
 ];
 
 // ---------------------------------------------------------------------------
@@ -134,16 +121,20 @@ const STOP_WORDS = new Set([
  * Returns top N keywords sorted by relevance.
  */
 function extractKeywords(content: string, maxKeywords: number = 5): string[] {
-  // Tokenize and normalize
-  const words = content
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, " ")
-    .split(/\s+/)
-    .filter((w) => w.length >= 3 && !STOP_WORDS.has(w));
+  // Latin words plus CJK bigrams, so non-Latin content still yields
+  // keywords (pure-CJK prose returned none before #2192).
+  const candidates = [
+    ...content
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length >= 3 && !STOP_WORDS.has(w)),
+    ...cjkBigrams(content),
+  ];
 
   // Count frequencies
   const freq = new Map<string, number>();
-  for (const word of words) {
+  for (const word of candidates) {
     freq.set(word, (freq.get(word) ?? 0) + 1);
   }
 
@@ -170,7 +161,6 @@ export function scoreImportance(
   const reasons: string[] = [];
   let score = 0.5; // Start at normal baseline
 
-  const lowerContent = content.toLowerCase();
   const contentLength = content.length;
 
   // Check for trivial content first (short-circuit)
@@ -183,6 +173,26 @@ export function scoreImportance(
         keywords: [],
       };
     }
+  }
+
+  // Very short content. informationalLength weights CJK/Hangul 3:1, so a
+  // dense non-Latin sentence ("予約しました") is not trivial for being
+  // under 10 raw characters while its English equivalent is not (#2192).
+  const weightedLength = informationalLength(content);
+  if (weightedLength >= 1 && weightedLength <= 10) {
+    return {
+      score: 0.1,
+      level: "trivial",
+      reasons: ["Trivial content (greeting, filler, or very short)"],
+      keywords: [],
+    };
+  }
+
+  // Documented non-Latin fallback (#2192): the English keyword tiers below
+  // cannot fire without Latin words, so the score rests on the 0.5 baseline
+  // plus script-agnostic signals (category boost, length, digits, tags).
+  if (!hasLatinWord(content)) {
+    reasons.push("Non-Latin script: keyword tiers not applicable; script-agnostic signals only");
   }
 
   // Check critical patterns

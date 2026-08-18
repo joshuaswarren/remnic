@@ -6,6 +6,7 @@
  */
 
 import type { MemoryFile, TopicScore } from "./types.js";
+import { cjkBigrams } from "./utils/script-aware-text.js";
 
 /** Stop words to exclude from topic extraction */
 const STOP_WORDS = new Set([
@@ -28,14 +29,16 @@ const STOP_WORDS = new Set([
 
 /**
  * Extract terms from content.
- * Returns normalized lowercase terms >= 3 chars.
+ * Returns normalized lowercase terms >= 3 chars, plus CJK bigrams so
+ * non-Latin memories contribute topics instead of none (issue #2192).
  */
 function extractTerms(content: string): string[] {
-  return content
+  const latin = content
     .toLowerCase()
     .replace(/[^a-z0-9\s-]/g, " ")
     .split(/\s+/)
     .filter((w) => w.length >= 3 && !STOP_WORDS.has(w));
+  return [...latin, ...cjkBigrams(content)];
 }
 
 /**
