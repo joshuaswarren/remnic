@@ -7,6 +7,7 @@ import type {
   ActivitySourceConfig,
   ActivityTimelineConfig,
   ActivityTimelineJournalConfig,
+  ActivityTimelineQaConfig,
 } from "./types.js";
 
 const EXTRACTION_MODES: readonly ActivityExtractionMode[] = ["off", "smart"];
@@ -28,7 +29,7 @@ export function defaultActivityConfig(): ActivityConfig {
     minConfidence: 0.7,
     minImportance: "normal",
     maxMemoriesPerDay: 0,
-    timeline: { enabled: false, journal: { enabled: false } },
+    timeline: { enabled: false, journal: { enabled: false }, qa: { enabled: false, maxRangeDays: 31 } },
   };
 }
 
@@ -199,7 +200,7 @@ export function parseActivityConfig(raw: unknown): ActivityConfig {
  * is malformed and must fail rather than silently disabling the layer.
  */
 function parseTimelineConfig(raw: unknown): ActivityTimelineConfig {
-  if (raw === undefined) return { enabled: false, journal: { enabled: false } };
+  if (raw === undefined) return { enabled: false, journal: { enabled: false }, qa: parseTimelineQaConfig(undefined) };
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     throw new TypeError("activity.timeline must be an object");
   }
@@ -208,7 +209,11 @@ function parseTimelineConfig(raw: unknown): ActivityTimelineConfig {
   if (timeline.enabled !== undefined && enabledValue === undefined) {
     throw new TypeError("activity.timeline.enabled must be a boolean");
   }
-  return { enabled: enabledValue ?? false, journal: parseTimelineJournalConfig(timeline.journal) };
+  return {
+    enabled: enabledValue ?? false,
+    journal: parseTimelineJournalConfig(timeline.journal),
+    qa: parseTimelineQaConfig(timeline.qa),
+  };
 }
 
 function parseTimelineJournalConfig(raw: unknown): ActivityTimelineJournalConfig {
@@ -222,4 +227,25 @@ function parseTimelineJournalConfig(raw: unknown): ActivityTimelineJournalConfig
     throw new TypeError("activity.timeline.journal.enabled must be a boolean");
   }
   return { enabled: enabledValue ?? false };
+}
+
+function parseTimelineQaConfig(raw: unknown): ActivityTimelineQaConfig {
+  if (raw === undefined) return { enabled: false, maxRangeDays: 31 };
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new TypeError("activity.timeline.qa must be an object");
+  }
+  const qa = raw as Record<string, unknown>;
+  const enabledValue = coerceBooleanLike(qa.enabled, "activity.timeline.qa.enabled");
+  if (qa.enabled !== undefined && enabledValue === undefined) {
+    throw new TypeError("activity.timeline.qa.enabled must be a boolean");
+  }
+  const maxRangeDaysValue = coerceNumber(qa.maxRangeDays, "activity.timeline.qa.maxRangeDays");
+  if (qa.maxRangeDays !== undefined && maxRangeDaysValue === undefined) {
+    throw new TypeError("activity.timeline.qa.maxRangeDays must be an integer from 1 to 366");
+  }
+  const maxRangeDays = maxRangeDaysValue ?? 31;
+  if (!Number.isInteger(maxRangeDays) || maxRangeDays < 1 || maxRangeDays > 366) {
+    throw new RangeError("activity.timeline.qa.maxRangeDays must be an integer from 1 to 366");
+  }
+  return { enabled: enabledValue ?? false, maxRangeDays };
 }

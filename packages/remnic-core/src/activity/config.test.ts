@@ -17,7 +17,7 @@ test("parseActivityConfig defaults to an inert, search-only configuration", () =
     minConfidence: 0.7,
     minImportance: "normal",
     maxMemoriesPerDay: 0,
-    timeline: { enabled: false, journal: { enabled: false } },
+    timeline: { enabled: false, journal: { enabled: false }, qa: { enabled: false, maxRangeDays: 31 } },
   });
   assert.deepEqual(parseActivityConfig(undefined), defaultActivityConfig());
 });

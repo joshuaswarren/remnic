@@ -101,10 +101,18 @@ export interface ActivityTimelineJournalConfig {
   enabled: boolean;
 }
 
+/** Opt-in timeline Q&A range/search settings (issue #1983 PR1). Default off. */
+export interface ActivityTimelineQaConfig {
+  enabled: boolean;
+  /** Inclusive max half-open range length in 24h days. Integer 1..366. */
+  maxRangeDays: number;
+}
+
 /** Opt-in timeline-card derivation settings (issue #2049). Default off. */
 export interface ActivityTimelineConfig {
   enabled: boolean;
   journal: ActivityTimelineJournalConfig;
+  qa: ActivityTimelineQaConfig;
 }
 
 /** Opt-in activity synchronization + trust-gated extraction settings. */

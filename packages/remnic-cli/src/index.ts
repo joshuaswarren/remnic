@@ -168,7 +168,7 @@ import {
   validateCapabilitiesForMint,
 } from "@remnic/core";
 import { PLUGIN_ID as REMNIC_OPENCLAW_PLUGIN_ID, resolveRemnicPluginEntry } from "@remnic/core/plugin-id.js";
-import { runMeetingsBinaryCommand } from "./commands/meetings.js"; import { runWearablesBinaryCommand } from "./commands/wearables.js"; import { runLocationBinaryCommand } from "./commands/location.js";
+import { runMeetingsBinaryCommand } from "./commands/meetings.js"; import { runTimelineBinaryCommand } from "./commands/timeline.js"; import { runWearablesBinaryCommand } from "./commands/wearables.js"; import { runLocationBinaryCommand } from "./commands/location.js";
 import { runOkfBinaryCommand } from "./commands/okf.js";
 import { runExportOkfBinaryCommand } from "./commands/export-okf.js";
 import { runCodegraphBinaryCommand } from "./commands/codegraph.js";
@@ -439,7 +439,7 @@ type CommandName =
   | "promotion-candidates"
   | "security"
   | "wearables"
-  | "meetings" | "okf" | "location" | "export" | "standup" | "journal" | "codegraph"
+  | "meetings" | "timeline" | "okf" | "location" | "export" | "standup" | "journal" | "codegraph"
   | "external-wiki"
   | "capsule"
   | "offline"
@@ -13081,6 +13081,10 @@ Other:
 
     case "meetings": {
       await runMeetingsBinaryCommand(rest);
+      break;
+    }
+    case "timeline": {
+      await runTimelineBinaryCommand(rest);
       break;
     }
     case "location":
