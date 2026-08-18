@@ -17,27 +17,34 @@ export interface ParsedQuestionFile {
 }
 
 export function parseQuestionFile(raw: string, filePath: string): ParsedQuestionFile | null {
-  const match = raw.match(/^---\n([\s\S]*?)\n---\n\n([\s\S]*)$/);
-  if (!match) return null;
+  if (!raw.startsWith("---\n")) return null;
+  const close = raw.indexOf("\n---\n\n", 4);
+  if (close === -1) return null;
+  const frontmatterStr = raw.slice(4, close);
+  const body = raw.slice(close + 6).trim();
 
-  const frontmatterStr = match[1];
-  const body = match[2].trim();
-
-  // Parse frontmatter. Unknown keys (e.g. the inert OKF `type`) are tolerated.
   const id = extractFrontmatterValue(frontmatterStr, "id") ?? path.basename(filePath, ".md");
   const created = extractFrontmatterValue(frontmatterStr, "created") ?? "";
   const priority = parseFloat(extractFrontmatterValue(frontmatterStr, "priority") ?? "0.5");
   const resolved = extractFrontmatterValue(frontmatterStr, "resolved") === "true";
 
-  // Extract question and context from body
-  const contextMatch = body.match(/\*\*Context:\*\*\s*(.*)/);
-  const question = contextMatch ? body.slice(0, contextMatch.index).trim() : body;
-  const context = contextMatch ? contextMatch[1].trim() : "";
+  const contextMarker = "**Context:**";
+  const contextAt = body.indexOf(contextMarker);
+  const question = contextAt === -1 ? body : body.slice(0, contextAt).trim();
+  const context = contextAt === -1 ? "" : body.slice(contextAt + contextMarker.length).trim();
 
   return { id, question, context, priority, resolved, created, filePath };
 }
 
 function extractFrontmatterValue(frontmatter: string, key: string): string | null {
-  const match = frontmatter.match(new RegExp(`^${key}:\\s*"?([^"\\n]*)"?`, "m"));
-  return match ? match[1] : null;
+  const prefix = `${key}:`;
+  for (const line of frontmatter.split("\n")) {
+    if (!line.startsWith(prefix)) continue;
+    let value = line.slice(prefix.length).trim();
+    if (value.startsWith('"') && value.endsWith('"') && value.length >= 2) {
+      value = value.slice(1, -1);
+    }
+    return value;
+  }
+  return null;
 }
