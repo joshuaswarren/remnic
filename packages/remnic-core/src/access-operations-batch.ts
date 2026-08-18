@@ -15,6 +15,7 @@ import type { DreamsPhase, RecallDisclosure, RecallPlanMode } from "./types.js";
 import type { RemnicChatGptMemoryInspectorInput } from "./mcp-memory-inspector-app.js";
 import { defineOperation } from "./access-boundary.js";
 import { EngramAccessForbiddenError } from "./access-errors.js";
+import { type ObserveRequest, observeRequestSchema, type RecallRequest, recallRequestSchema } from "./access-schema.js";
 import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
 import { enforceNamespaceAllowList, tokenCapabilityStore } from "./access-token-capabilities.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
@@ -57,6 +58,24 @@ function strictSchema<T extends z.ZodRawShape>(shape: T): z.ZodType<Record<strin
   return z.preprocess(stripNulls, z.object(shape).passthrough()) as unknown as z.ZodType<Record<string, unknown>>;
 }
 
+/**
+ * stripNulls, but keys listed in `preserve` keep their null values. Used by
+ * boundary schemas whose wire contract treats an explicit `null` as a
+ * meaningful value (e.g. recall `codingContext: null` clears the session
+ * context — it must not be collapsed into "absent").
+ */
+function stripNullsExcept(data: unknown, preserve: readonly string[]): unknown {
+  if (data !== null && typeof data === "object" && !Array.isArray(data)) {
+    const cleaned: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+      if (value !== null || preserve.includes(key)) cleaned[key] = value;
+    }
+    return cleaned;
+  }
+  return data;
+}
+
+
 function optStr(v: unknown): string | undefined { return typeof v === "string" ? v : undefined; }
 function reqStr(v: unknown, field: string): string {
   if (typeof v !== "string" || v.length === 0) throw new EngramAccessInputError(field + " is required and must be a non-empty string");
@@ -77,24 +96,26 @@ const S = {
 };
 
 // === RECALL ===
-defineOperation({ name: "recall", description: "Semantic recall.", schema: strictSchema({ query: S.str, sessionKey: S.str, namespace: S.str, topK: S.num, mode: S.str, includeDebug: S.bool, disclosure: S.str, cwd: S.str, projectTag: S.str, asOf: S.str, tags: S.strArr, tagMatch: S.str }),
-  handler: async (input, ctx) => {
-    let disclosure: RecallDisclosure | undefined;
-    if (input.disclosure !== undefined) { if (typeof input.disclosure !== "string") throw new EngramAccessInputError("disclosure must be a string"); disclosure = input.disclosure as RecallDisclosure; }
-    if (input.cwd !== undefined && typeof input.cwd !== "string") throw new EngramAccessInputError("cwd must be a string");
-    if (input.projectTag !== undefined && typeof input.projectTag !== "string") throw new EngramAccessInputError("projectTag must be a string");
-    if (input.asOf !== undefined && typeof input.asOf !== "string") throw new EngramAccessInputError("asOf must be a string");
-    let tags: string[] | undefined;
-    if (input.tags !== undefined) { if (!Array.isArray(input.tags) || !input.tags.every((t) => typeof t === "string")) throw new EngramAccessInputError("tags must be an array of strings"); tags = input.tags; }
-    let tagMatch: "any" | "all" | undefined;
-    if (input.tagMatch !== undefined) { if (input.tagMatch !== "any" && input.tagMatch !== "all") throw new EngramAccessInputError("tagMatch must be one of: any, all"); tagMatch = input.tagMatch; }
-    const result = await ctx.service.recall({ query: typeof input.query === "string" ? input.query : "", sessionKey: optStr(input.sessionKey), authenticatedPrincipal: ctx.authenticatedPrincipal, sourceConnector: ctx.sourceConnector, namespace: optStr(input.namespace), topK: optNum(input.topK), mode: optStr(input.mode) as RecallPlanMode | "auto" | undefined, includeDebug: input.includeDebug === true, disclosure, cwd: optStr(input.cwd), projectTag: optStr(input.projectTag), asOf: optStr(input.asOf), ...(tags ? { tags } : {}), ...(tagMatch ? { tagMatch } : {}), ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}) });
-    return { result };
-  },
+// Issue #2482: the boundary validates against the SAME canonical zod schema
+// the HTTP transport uses (recallRequestSchema). No parallel field list, no
+// silent defaults — a missing `query` or a bad enum is a 400 at the boundary.
+// `codingContext: null` survives the null-strip (explicit session-context
+// clear); every other null is the MCP null-for-absent idiom.
+defineOperation({
+  name: "recall",
+  description: "Semantic recall.",
+  schema: z.preprocess((data) => stripNullsExcept(data, ["codingContext"]), recallRequestSchema) as unknown as z.ZodType<RecallRequest>,
+  handler: async (input, ctx) => ({
+    result: await ctx.service.recall({
+      ...input,
+      authenticatedPrincipal: ctx.authenticatedPrincipal,
+      ...(ctx.sourceConnector ? { sourceConnector: ctx.sourceConnector } : {}),
+      ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
+    }),
+  }),
 });
 defineOperation({ name: "recall_explain", description: "Explain recall plan.", schema: strictSchema({ sessionKey: S.str, namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.recallExplain({ sessionKey: optStr(input.sessionKey), namespace: optStr(input.namespace), authenticatedPrincipal: ctx.authenticatedPrincipal }) }) });
-defineOperation({ name: "set_coding_context", description: "Set coding context.", schema: z.preprocess((data) => { // Strip null from all fields EXCEPT codingContext (null = clear context).
-    if (data !== null && typeof data === "object" && !Array.isArray(data)) { const o = data as Record<string, unknown>; const c: Record<string, unknown> = {}; for (const [k, v] of Object.entries(o)) { if (v !== null || k === "codingContext") c[k] = v; } return c; } return data; }, z.object({ sessionKey: S.str, codingContext: z.union([z.null(), z.object({ projectId: S.str, branch: z.union([z.string(), z.null()]).optional(), rootPath: S.str, defaultBranch: z.union([z.string(), z.null()]).optional() }).passthrough()]).optional(), projectTag: S.str }).passthrough()) as unknown as z.ZodType<Record<string, unknown>>,
+defineOperation({ name: "set_coding_context", description: "Set coding context.", schema: z.preprocess((data) => stripNullsExcept(data, ["codingContext"]), z.object({ sessionKey: S.str, codingContext: z.union([z.null(), z.object({ projectId: S.str, branch: z.union([z.string(), z.null()]).optional(), rootPath: S.str, defaultBranch: z.union([z.string(), z.null()]).optional() }).passthrough()]).optional(), projectTag: S.str }).passthrough()) as unknown as z.ZodType<Record<string, unknown>>, // codingContext: null = clear context (preserved).
   handler: async (input, ctx) => {
     const sessionKey = defStr(input.sessionKey, "");
     const projectTag = optStr(input.projectTag);
@@ -190,8 +211,35 @@ defineOperation({ name: "memory_timeline", description: "Memory timeline.", sche
 defineOperation({ name: "suggestion_submit", description: "Submit suggestion.", schema: strictSchema({ schemaVersion: S.num, idempotencyKey: S.str, dryRun: S.bool, sessionKey: S.str, content: S.str, category: S.str, confidence: S.num, namespace: S.str, tags: S.strArr, entityRef: S.str, ttl: S.str, sourceReason: S.str, cwd: S.str, projectTag: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.suggestionSubmit({ schemaVersion: optNum(input.schemaVersion), idempotencyKey: optStr(input.idempotencyKey), dryRun: input.dryRun === true, sessionKey: optStr(input.sessionKey), authenticatedPrincipal: ctx.authenticatedPrincipal, ...(ctx.sourceConnector ? { sourceConnector: ctx.sourceConnector } : {}), content: optStr(input.content) ?? "", category: optStr(input.category), confidence: optNum(input.confidence), namespace: optStr(input.namespace), tags: optStrArr(input.tags), entityRef: optStr(input.entityRef), ttl: optStr(input.ttl), sourceReason: optStr(input.sourceReason), cwd: optStr(input.cwd), projectTag: optStr(input.projectTag) }) }) });
 defineOperation({ name: "entity_get", description: "Get entity.", schema: strictSchema({ name: S.str, namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.entityGet(optStr(input.name) ?? "", optStr(input.namespace)) }) });
 defineOperation({ name: "review_queue_list", description: "List review queue.", schema: strictSchema({ runId: S.str, namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.reviewQueue(optStr(input.runId) ?? "", optStr(input.namespace), ctx.authenticatedPrincipal) }) });
-defineOperation({ name: "observe", description: "Observe messages.", schema: strictSchema({ sessionKey: S.str, messages: z.array(z.object({ role: z.string(), content: z.string(), parts: z.array(z.unknown()).optional(), rawContent: z.unknown().optional(), sourceFormat: z.string().optional() }).passthrough()), skipExtraction: S.bool, idempotencyKey: S.str, namespace: S.str, cwd: S.str, projectTag: S.str }),
-  handler: async (input, ctx) => ({ result: await ctx.service.observe({ sessionKey: defStr(input.sessionKey, ""), messages: (input.messages as unknown[]).map((m: unknown) => { const r = m as Record<string, unknown>; return { role: String(r.role), content: String(r.content), parts: r.parts as unknown[], rawContent: r.rawContent as string | undefined, sourceFormat: r.sourceFormat as string | undefined }; }) as never, skipExtraction: input.skipExtraction === true, idempotencyKey: optStr(input.idempotencyKey), namespace: optStr(input.namespace), authenticatedPrincipal: ctx.authenticatedPrincipal, cwd: optStr(input.cwd), projectTag: optStr(input.projectTag), ...(ctx.sourceConnector ? { sourceConnector: ctx.sourceConnector } : {}) }, ctx.hooks?.enforceWriteQuota ? { enforceWriteQuota: ctx.hooks.enforceWriteQuota } : undefined) }),
+// Issue #2482: observe validates through the canonical observeRequestSchema
+// (same as HTTP/MCP wire validation). Nullable wire fields (parts /
+// sourceFormat) map to undefined for the service's cleaned message form.
+defineOperation({
+  name: "observe",
+  description: "Observe messages.",
+  schema: z.preprocess(stripNulls, observeRequestSchema) as unknown as z.ZodType<ObserveRequest>,
+  handler: async (input, ctx) => ({
+    result: await ctx.service.observe(
+      {
+        sessionKey: input.sessionKey,
+        messages: input.messages.map((message) => ({
+          role: message.role,
+          content: message.content,
+          ...(message.parts ? { parts: message.parts } : {}),
+          ...(message.rawContent !== undefined ? { rawContent: message.rawContent } : {}),
+          ...(message.sourceFormat ? { sourceFormat: message.sourceFormat } : {}),
+        })),
+        skipExtraction: input.skipExtraction === true,
+        idempotencyKey: input.idempotencyKey,
+        namespace: input.namespace,
+        authenticatedPrincipal: ctx.authenticatedPrincipal,
+        cwd: input.cwd,
+        projectTag: input.projectTag,
+        ...(ctx.sourceConnector ? { sourceConnector: ctx.sourceConnector } : {}),
+      },
+      ctx.hooks?.enforceWriteQuota ? { enforceWriteQuota: ctx.hooks.enforceWriteQuota } : undefined,
+    ),
+  }),
 });
 defineOperation({ name: "lcm_search", description: "Search LCM.", schema: strictSchema({ query: S.str, sessionKey: S.str, sessionPrefix: S.str, namespace: S.str, limit: S.num }), handler: async (input, ctx) => ({ result: await ctx.service.lcmSearch({ query: defStr(input.query, ""), sessionKey: optStr(input.sessionKey), sessionPrefix: optStr(input.sessionPrefix), namespace: optStr(input.namespace), limit: optNum(input.limit), authenticatedPrincipal: ctx.authenticatedPrincipal }) }) });
 defineOperation({ name: "lcm_compaction_flush", description: "Flush LCM compaction.", schema: strictSchema({ sessionKey: S.str, namespace: S.str, cwd: S.str, projectTag: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.lcmCompactionFlush({ sessionKey: optStr(input.sessionKey) ?? "", namespace: optStr(input.namespace), cwd: optStr(input.cwd), projectTag: optStr(input.projectTag), authenticatedPrincipal: ctx.authenticatedPrincipal }) }) });

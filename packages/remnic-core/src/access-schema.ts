@@ -706,9 +706,20 @@ export function validateRequest<T = unknown>(
       },
     };
   }
-  const result = schema.safeParse(body);
+  const result = schema.safeParse(stripNullsExceptCodingContext(body));
   if (result.success) {
     return { success: true, data: result.data as T };
   }
   return { success: false, error: formatZodError(result.error) };
 }
+
+function stripNullsExceptCodingContext(data: unknown): unknown {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return data;
+  const cleaned: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+    if (value === null && key !== "codingContext") continue;
+    cleaned[key] = value;
+  }
+  return cleaned;
+}
+

@@ -16,6 +16,7 @@ import {
   type WearablesMeetingsScope,
   type EngramAccessMemoryResponse,
   type EngramAccessWriteResponse,
+  type EngramAccessRecallResponse,
 } from "./access-service.js";
 import { maybeHandleLifecycleFlush, type LifecycleFlushHttpDeps } from "./access-http-lifecycle-flush.js";
 import {
@@ -32,7 +33,7 @@ import {
   OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES,
   OFFLINE_SYNC_SNAPSHOT_BASE_MAX_BODY_BYTES,
 } from "./offline-sync.js";
-import type { RecallDisclosure, RecallPlanMode } from "./types.js";
+import type { RecallDisclosure } from "./types.js";
 import { isRecallDisclosure } from "./types.js";
 import { isTrustZoneName, type TrustZoneName, type TrustZoneRecordKind, type TrustZoneSourceClass } from "./trust-zones.js";
 import { AdapterRegistry, type ResolvedIdentity } from "./adapters/index.js";
@@ -1020,13 +1021,8 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
     if (req.method === "POST" && pathname === "/engram/v1/recall") {
       this.enforceTokenOp("recall"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "recall");
-      // Preserve the distinction between `codingContext: null` (explicit
-      // clear) and `codingContext` missing from the JSON payload
-      // (untouched). The previous `?? undefined` collapsed both into
-      // undefined, so callers lost the ability to clear the session's
-      // attached context through the recall endpoint.
-      const codingContext =
-        "codingContext" in body ? body.codingContext : undefined;
+      // `codingContext` presence (null = explicit clear vs absent = untouched)
+      // is preserved by spreading the parsed body into the boundary envelope.
       // Disclosure resolution (issue #677 PR 2/4): accept the value from
       // the validated body OR the `?disclosure=` query parameter, with
       // the body taking precedence so an explicit JSON payload is never
@@ -1109,31 +1105,31 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
         bodyIncludeLowConfidence === true ||
         (bodyIncludeLowConfidence === undefined &&
           queryIncludeLowConfidence === "true");
-      const response = await this.service.recall({
-        query: body.query ?? "",
-        sessionKey: body.sessionKey,
-        authenticatedPrincipal: this.resolveRequestPrincipal(req),
-        sourceConnector: this.resolveConnector(req),
-        idempotencyKey: body.idempotencyKey,
-        namespace: this.resolveNamespace(req, body.namespace),
-        topK: body.topK,
-        mode: body.mode as RecallPlanMode | "auto" | undefined,
-        includeDebug: body.includeDebug === true,
-        // Forward the validated disclosure depth to the service layer
-        // (issue #677).  The zod schema accepts/rejects body values;
-        // `resolveRecallDisclosure()` validates the query-param fallback.
-        disclosure,
-        codingContext,
-        // Forward cwd/projectTag for auto git-context resolution (issue #569).
-        cwd: body.cwd,
-        projectTag: body.projectTag,
-        ...(asOf !== undefined ? { asOf } : {}),
-        ...(tags !== undefined ? { tags } : {}),
-        ...(tagMatch !== undefined ? { tagMatch } : {}),
-        ...(includeLowConfidence ? { includeLowConfidence: true } : {}),
-        abortSignal,
-      });
-      this.respondJson(res, 200, response);
+      // Boundary dispatch (issue #2482): same registry path as memory_store —
+      // the canonical recallRequestSchema re-validates the envelope the
+      // transport assembled (resolved namespace + query-param overlays).
+      const op = getOperation("recall");
+      if (!op) {
+        throw new EngramAccessInputError("access-boundary: operation not registered: recall");
+      }
+      const output = (await op.run(
+        {
+          ...body,
+          namespace: this.resolveNamespace(req, body.namespace),
+          ...(disclosure !== undefined ? { disclosure } : {}),
+          ...(asOf !== undefined ? { asOf } : {}),
+          ...(tags !== undefined ? { tags } : {}),
+          ...(tagMatch !== undefined ? { tagMatch } : {}),
+          ...(includeLowConfidence ? { includeLowConfidence: true } : {}),
+        },
+        {
+          service: this.service,
+          authenticatedPrincipal: this.resolveRequestPrincipal(req),
+          sourceConnector: this.resolveConnector(req),
+          ...(abortSignal ? { abortSignal } : {}),
+        },
+      )) as { result: EngramAccessRecallResponse };
+      this.respondJson(res, 200, output.result);
       return;
     }
 
@@ -1745,43 +1741,34 @@ export class EngramAccessHttpServer extends SupportPassportAccessHttpBase {
     if (req.method === "POST" && pathname === "/engram/v1/observe") {
       this.enforceTokenOp("observe"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "observe");
-      const response = await this.service.observe(
+      // Boundary dispatch (issue #2482): same registry path as memory_store.
+      // The write-quota hook is forwarded via ctx.hooks so it fires INSIDE
+      // the service's idempotency lock (beforeExecute, only on a real miss).
+      // A retried observe that hits the replay path must NOT be rejected with
+      // 429 — the original attempt may have consumed the last quota slot; the
+      // retry returns the cached response without requiring another (#1434
+      // invariant, preserved by the boundary migration).
+      const op = getOperation("observe");
+      if (!op) {
+        throw new EngramAccessInputError("access-boundary: operation not registered: observe");
+      }
+      const output = (await op.run(
+        { ...body, namespace: this.resolveNamespace(req, body.namespace) },
         {
-          sessionKey: body.sessionKey,
-          messages: body.messages.map((message) => ({
-            role: message.role,
-            content: message.content,
-            sourceFormat: message.sourceFormat ?? undefined,
-            rawContent: message.rawContent ?? undefined,
-            parts: message.parts ?? undefined,
-          })),
-          namespace: this.resolveNamespace(req, body.namespace),
+          service: this.service,
           authenticatedPrincipal: this.resolveRequestPrincipal(req),
-          skipExtraction: body.skipExtraction === true,
-          // Issue #1649: optional server-side dedup key for retried POSTs.
-          idempotencyKey: body.idempotencyKey,
-          // Forward cwd/projectTag for auto git-context resolution (issue #569).
-          cwd: body.cwd,
-          projectTag: body.projectTag,
+          hooks: { enforceWriteQuota: () => this.ensureWriteRateLimitAvailable(req) },
           // Phase 1 provenance: server-resolved connector identity from the
           // bearer token (REST path, mirroring the MCP tools/call dispatch).
           sourceConnector: this.resolveConnector(req),
         },
-        // Enforce the write-quota INSIDE the service's idempotency lock
-        // (beforeExecute, only on a real miss). A retried observe that hits the
-        // replay path must NOT be rejected with 429 — that is exactly the
-        // response-lost-after-process case the dedup exists for. The original
-        // attempt may have consumed the last quota slot; the retry returns the
-        // cached response without requiring another. Matches memory_store's
-        // hook-in-the-lock pattern (#1434 invariant).
-        { enforceWriteQuota: () => this.ensureWriteRateLimitAvailable(req) },
-      );
+      )) as { result: { dryRun?: boolean; idempotencyReplay?: boolean } };
       // A replayed (deduplicated) observe must not consume a second write-quota
       // slot — same invariant as memory_store/suggestion_submit (#1434).
-      if (this.shouldCountWriteRateLimit(response as { dryRun?: boolean; idempotencyReplay?: boolean })) {
+      if (this.shouldCountWriteRateLimit(output.result)) {
         this.recordWriteRateLimitHit(req);
       }
-      this.respondJson(res, 202, response);
+      this.respondJson(res, 202, output.result);
       return;
     }
 

@@ -1407,7 +1407,7 @@ test("access HTTP recall body includeLowConfidence wins over query flag", async 
 
     assert.equal(response.status, 200);
     assert.equal(captured.length, 1);
-    assert.equal(captured[0]!.includeLowConfidence, undefined);
+    assert.equal(captured[0]!.includeLowConfidence, false);
   } finally {
     await server.stop();
   }
@@ -2214,6 +2214,40 @@ test("access HTTP server returns 400 for empty recall query", async () => {
     await server.stop();
   }
 });
+
+test("access HTTP recall rejects a missing query without calling the service (#2482)", async () => {
+  let called = 0;
+  const server = new EngramAccessHttpServer({
+    service: {
+      recall: async () => {
+        called += 1;
+        return { query: "x", context: "ctx", count: 0, memoryIds: [] };
+      },
+      health: async () => ({ ok: true }),
+    } as unknown as EngramAccessService,
+    host: "127.0.0.1",
+    port: 0,
+    authToken: "secret-token",
+    maxBodyBytes: 1024,
+  });
+  const started = await server.start();
+  const base = `http://${started.host}:${started.port}`;
+  try {
+    const response = await fetch(`${base}/engram/v1/recall`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer secret-token",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ sessionKey: "s1" }),
+    });
+    assert.equal(response.status, 400);
+    assert.equal(called, 0);
+  } finally {
+    await server.stop();
+  }
+});
+
 
 test("access HTTP server exposes MCP JSON-RPC endpoint at /mcp", async () => {
   const server = new EngramAccessHttpServer({

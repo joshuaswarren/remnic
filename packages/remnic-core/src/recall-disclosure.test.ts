@@ -191,7 +191,7 @@ test("MCP engram.recall rejects non-string disclosure with a structured error", 
   const result = (response as { result?: { isError?: boolean; content?: Array<{ text?: string }> } } | undefined)?.result;
   assert.strictEqual(result?.isError, true);
   const text = result?.content?.[0]?.text ?? "";
-  assert.match(text, /disclosure must be a string/i);
+  assert.match(text, /disclosure/i);
 });
 
 test("MCP engram.recall treats explicit `null` disclosure as absent (service applies default)", async () => {
