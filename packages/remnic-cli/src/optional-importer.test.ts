@@ -23,6 +23,7 @@ describe("optional-importer loader", () => {
       "gemini",
       "mem0",
       "supermemory",
+      "okf",
     ]);
   });
 

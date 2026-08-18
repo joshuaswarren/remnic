@@ -95,7 +95,7 @@ describe("parseImportArgs", () => {
   it("rejects an unknown adapter with the valid list", () => {
     assert.throws(
       () => parseImportArgs(["--adapter", "bogus"]),
-      /chatgpt, claude, gemini, mem0, supermemory/,
+      /chatgpt, claude, gemini, mem0, supermemory, okf/,
     );
   });
 
@@ -106,6 +106,7 @@ describe("parseImportArgs", () => {
       "gemini",
       "mem0",
       "supermemory",
+      "okf",
     ] as const) {
       const parsed = parseImportArgs(["--adapter", name]);
       assert.equal(parsed.adapter, name);
@@ -179,9 +180,15 @@ describe("parseImportArgs", () => {
 
   it("rejects stray positional arguments rather than silently dropping them", () => {
     assert.throws(
-      () => parseImportArgs(["--adapter", "chatgpt", "/tmp/export.json"]),
-      /positional argument '\/tmp\/export\.json'/,
+      () => parseImportArgs(["--adapter", "chatgpt", "/tmp/a.json", "/tmp/b.json"]),
+      /positional argument '\/tmp\/b\.json'/,
     );
+  });
+
+  it("accepts remnic import okf <dir>", () => {
+    const parsed = parseImportArgs(["okf", "/tmp/okf-bundle"]);
+    assert.equal(parsed.adapter, "okf");
+    assert.equal(parsed.file, "/tmp/okf-bundle");
   });
 
   // Cursor bugbot on PR #583: boolean flags must not be consumed before
@@ -360,7 +367,7 @@ describe("runImportCommand — slice 1 integration", () => {
             },
           },
         ),
-      /ZIP imports are not supported by --file yet/,
+      /unpack first/,
     );
   });
 });
