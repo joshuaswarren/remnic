@@ -13,6 +13,8 @@ const expectedPublishDirs = [
   "packages/coding-graph",
   "packages/capture-audio",
   "packages/capture-screen",
+  "packages/capture-native-darwin-arm64",
+  "packages/capture-native-darwin-x64",
   "packages/export-weclone",
   "packages/import-weclone",
   "packages/import-chatgpt",
@@ -57,6 +59,15 @@ test("release workflow publish order matches the supported npm install surfaces"
   assert.match(workflow, /cp scripts\/publish-order\.mjs "\$\{RUNNER_TEMP\}\/publish-order\.mjs"/);
   assert.match(workflow, /node "\$\{RUNNER_TEMP\}\/publish-order\.mjs" --repo-root "\$PWD" --output/);
   assert.match(workflow, /mapfile -t PUBLISH_ORDER/);
+});
+
+test("capture-native-helper publishes darwin platform packages on release", async () => {
+  const helper = await readFile(".github/workflows/capture-native-helper.yml", "utf8");
+  const release = await readFile(".github/workflows/release-and-publish.yml", "utf8");
+  assert.match(helper, /if: github\.event_name == 'release'/);
+  assert.match(helper, /id-token: write/);
+  assert.match(helper, /pnpm publish --access public --provenance --no-git-checks/);
+  assert.match(release, /os-restricted; published by capture-native-helper\.yml/);
 });
 
 test("release workflow verifies the OpenClaw ClawHub packlist after build", async () => {
