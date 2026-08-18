@@ -1461,34 +1461,5 @@ export type {
 export type { ResolvedScopeProfilePlan } from "./namespaces/scope-profiles.js";
 export * from "./maintenance/atomic-file.js";
 
-// Gated unified memory controller with shadow-to-active promotion (#2348).
-
-export {
-  MemoryControllerCoordinator,
-  chooseAction,
-  computeEvidenceReportHash,
-  controllerConfigHash,
-  evaluateActiveGates,
-  hashControllerState,
-  verifyEvidenceReport,
-} from "./memory-controller.js";
-export type {
-  ActiveContextAdapter,
-  ActiveContextMessage,
-  ActiveContextPlan,
-  MemoryControllerActionFamily,
-  MemoryControllerChoice,
-  MemoryControllerConfig,
-  MemoryControllerDeps,
-  MemoryControllerEvent,
-  MemoryControllerEvidence,
-  MemoryControllerEvidenceReport,
-  MemoryControllerExecutors,
-  MemoryControllerMode,
-  MemoryControllerPairedSeedEvidence,
-  MemoryControllerReceipt,
-  MemoryControllerRecorder,
-  MemoryControllerReportReader,
-  MemoryControllerRunResult,
-  MemoryControllerState,
-} from "./memory-controller.js";
+export { MemoryControllerCoordinator, chooseAction, computeEvidenceReportHash, controllerConfigHash, evaluateActiveGates, hashControllerState, verifyEvidenceReport } from "./memory-controller.js";
+export type { ActiveContextAdapter, ActiveContextMessage, ActiveContextPlan, MemoryControllerActionFamily, MemoryControllerChoice, MemoryControllerConfig, MemoryControllerDeps, MemoryControllerEvent, MemoryControllerEvidence, MemoryControllerEvidenceReport, MemoryControllerExecutors, MemoryControllerMode, MemoryControllerPairedSeedEvidence, MemoryControllerReceipt, MemoryControllerRecorder, MemoryControllerReportReader, MemoryControllerRunResult, MemoryControllerState } from "./memory-controller.js";
