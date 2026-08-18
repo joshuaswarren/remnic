@@ -9,6 +9,7 @@ import {
   isLocationDayPath,
   isMeetingRecordPath,
 } from "./orchestrator-helpers.js";
+import { isJournalDayPath } from "../activity/journal.js";
 import { OKF_RESERVED_BASENAMES } from "../okf/type-mapping.js";
 
 
@@ -137,6 +138,7 @@ export function isSearchExcludedPath(
       isArtifactMemoryPath(candidate) ||
       isNamespacedActivityDigestPath(candidate, policy.memoryDir) ||
       isNamespacedLocationDayPath(candidate, policy.memoryDir) ||
+      isNamespacedJournalDayPath(candidate, policy.memoryDir) ||
       isMeetingRecordPath(candidate)
     ) {
       return true;
@@ -177,6 +179,15 @@ function isNamespacedLocationDayPath(candidate: string, memoryDir?: string): boo
   const namespaced = /^namespaces[\\/]([^\\/]+)[\\/](.*)$/.exec(relative);
   if (namespaced === null) return false;
   return isLocationDayPath(namespaced[2] ?? "", memoryDir);
+}
+
+function isNamespacedJournalDayPath(candidate: string, memoryDir?: string): boolean {
+  if (isJournalDayPath(candidate, memoryDir)) return true;
+  if (memoryDir === undefined || memoryDir.length === 0) return false;
+  const relative = path.relative(memoryDir, path.resolve(memoryDir, candidate));
+  const namespaced = /^namespaces[\\/]([^\\/]+)[\\/](.*)$/.exec(relative);
+  if (namespaced === null) return false;
+  return isJournalDayPath(namespaced[2] ?? "", memoryDir);
 }
 
 /** A path as given, plus its form with a leading COLLECTION segment removed. */

@@ -173,6 +173,7 @@ import { runOkfBinaryCommand } from "./commands/okf.js";
 import { runExportOkfBinaryCommand } from "./commands/export-okf.js";
 import { runCodegraphBinaryCommand } from "./commands/codegraph.js";
 import { runStandupBinaryCommand } from "./commands/standup.js";
+import { runJournalBinaryCommand } from "./commands/journal.js";
 import { runExternalWikiBinaryCommand } from "./commands/external-wiki.js";
 import { runProceduralBinaryCommand } from "./commands/procedural.js";
 import { runDriftBinaryCommand } from "./commands/drift.js";
@@ -438,7 +439,7 @@ type CommandName =
   | "promotion-candidates"
   | "security"
   | "wearables"
-  | "meetings" | "okf" | "location" | "export" | "standup" | "codegraph"
+  | "meetings" | "okf" | "location" | "export" | "standup" | "journal" | "codegraph"
   | "external-wiki"
   | "capsule"
   | "offline"
@@ -13093,6 +13094,9 @@ Other:
       break;
     case "standup":
       await runStandupBinaryCommand(rest);
+      break;
+    case "journal":
+      await runJournalBinaryCommand(rest);
       break;
     case "codegraph":
       await runCodegraphBinaryCommand(rest);
