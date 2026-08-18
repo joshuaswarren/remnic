@@ -550,6 +550,10 @@ test("MCP server advertises tools and dispatches recall", async () => {
     listed,
     legacyListed.flatMap((name, index) => [canonicalListed[index], name])
   );
+  for (const tool of ["who_knows"]) {
+    assert.ok(listed.includes(`engram.${tool}`), `engram.${tool} must be advertised`);
+    assert.ok(listed.includes(`remnic.${tool}`), `remnic.${tool} must be advertised`);
+  }
 
   const recall = await server.handleRequest({
     jsonrpc: "2.0",

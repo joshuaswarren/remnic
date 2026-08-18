@@ -745,6 +745,11 @@ function main() {
         }
       } else if (lines < ceiling) {
         improvements.push(`file-size ceiling ${file}: ${ceiling} -> ${lines} lines`);
+        if (inScope(file) && ceiling - lines < 20) {
+          improvements.push(`${file} has ${ceiling - lines} LOC of grandfather headroom (${lines}/${ceiling})`);
+        }
+      } else if (inScope(file) && lines === ceiling) {
+        improvements.push(`${file} is at its grandfather ceiling ${ceiling} — extract before adding lines`);
       }
     }
     for (const file of Object.keys(baselineCeilings).sort()) {
