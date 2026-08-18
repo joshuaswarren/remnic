@@ -2464,6 +2464,49 @@ function closeReviewDeck() {
   restoreFocusAfterDeck();
 }
 
+// ── Timeline pane (issue #1986) ───────────────────────────────────────────
+// State and date math live in timeline-pane.js. This hook only supplies
+// transport and paints the state it hands back.
+const timelinePaneState = { pane: null };
+
+function createTimelineTransport() {
+  return {
+    enabled: () =>
+      runtimeState.dashboard?.features?.some(
+        (feature) => feature.key === "activity.timeline.enabled" && feature.enabled === true,
+      ) === true,
+    getDay: (date) => fetchJson(`/engram/v1/timeline/day?date=${encodeURIComponent(date)}`),
+  };
+}
+
+function paintTimelinePane() {
+  const api = window.RemnicTimelinePane;
+  const pane = timelinePaneState.pane;
+  if (!api || !pane) return;
+  api.renderTimelinePane($("timelinePane"), pane.getState());
+}
+
+function initTimelinePane() {
+  const api = window.RemnicTimelinePane;
+  if (!api || typeof api.createTimelinePane !== "function") return;
+  const pane = api.createTimelinePane({
+    transport: createTimelineTransport(),
+    now: () => Date.now(),
+  });
+  timelinePaneState.pane = pane;
+  pane.subscribe(paintTimelinePane);
+  paintTimelinePane();
+  $("timelinePrevButton")?.addEventListener("click", () => void pane.prev());
+  $("timelineNextButton")?.addEventListener("click", () => void pane.next());
+  $("timelineTodayButton")?.addEventListener("click", () => void pane.today());
+  $("timelineDateInput")?.addEventListener("change", (event) => void pane.setDate(event.target.value));
+}
+
+async function loadTimelinePane() {
+  if (!timelinePaneState.pane) return;
+  await timelinePaneState.pane.load();
+}
+
 function initReviewDeck() {
   const factory = window.RemnicReviewDeck;
   if (!factory || typeof factory.createReviewDeck !== "function") return;
@@ -2532,6 +2575,7 @@ async function connectAndBootstrap() {
       loadAdminDashboard(),
       loadReviewDeck(),
     ]);
+    await loadTimelinePane();
   } catch (error) {
     setStatus("authStatus", error.message || String(error), "error");
   }
@@ -2608,6 +2652,7 @@ function bootstrap() {
   $("refreshRuntimeButton")?.addEventListener("click", () => void loadAdminDashboard());
   $("saveRuntimeConfigButton")?.addEventListener("click", () => void saveRuntimeConfig());
   initReviewDeck();
+  initTimelinePane();
 
   if (token) {
     void connectAndBootstrap();

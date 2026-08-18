@@ -778,6 +778,13 @@
           grid-template-columns: 1fr;
         }
       }
+      .timeline-card {
+        border-left: 4px solid var(--accent);
+        background: #fffefb;
+        border-radius: 10px;
+        padding: 10px 12px;
+        margin: 8px 0;
+      }
     </style>
   </head>
   <body>
@@ -1120,6 +1127,22 @@
         </div>
       </section>
 
+      <section class="card" style="margin-top: 16px;" id="timelinePane">
+        <h2>Timeline</h2>
+        <div class="toolbar" id="timelineNav">
+          <button class="secondary" id="timelinePrevButton">Previous</button>
+          <button class="secondary" id="timelineTodayButton">Today</button>
+          <button class="secondary" id="timelineNextButton">Next</button>
+          <label>
+            Date
+            <input id="timelineDateInput" type="date" />
+          </label>
+        </div>
+        <div class="status" id="timelineStatus">Timeline will load after connect.</div>
+        <h3 id="timelineWeekHeading">Week</h3>
+        <div class="list" id="timelineCards"></div>
+      </section>
+
       <section class="card" style="margin-top: 16px;">
         <h2>Maintenance</h2>
         <div class="status" id="maintenanceStatus">Not loaded.</div>
@@ -1236,6 +1259,7 @@
       <div class="deck-live" id="reviewDeckLive" role="status" aria-live="polite" aria-atomic="true"></div>
     </div>
     <script src="review-deck.js"></script>
+    <script src="timeline-pane.js"></script>
     <script src="app.js"></script>
   </body>
 </html>
