@@ -1461,5 +1461,7 @@ export type {
 export type { ResolvedScopeProfilePlan } from "./namespaces/scope-profiles.js";
 export * from "./maintenance/atomic-file.js";
 
+// Privacy-safe action-to-outcome trajectory eval (issue #2345)
+export * from "./eval-trajectory.js";
 export { MemoryControllerCoordinator, chooseAction, computeEvidenceReportHash, controllerConfigHash, evaluateActiveGates, hashControllerState, verifyEvidenceReport } from "./memory-controller.js";
 export type { ActiveContextAdapter, ActiveContextMessage, ActiveContextPlan, MemoryControllerActionFamily, MemoryControllerChoice, MemoryControllerConfig, MemoryControllerDeps, MemoryControllerEvent, MemoryControllerEvidence, MemoryControllerEvidenceReport, MemoryControllerExecutors, MemoryControllerMode, MemoryControllerPairedSeedEvidence, MemoryControllerReceipt, MemoryControllerRecorder, MemoryControllerReportReader, MemoryControllerRunResult, MemoryControllerState } from "./memory-controller.js";
