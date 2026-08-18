@@ -1,6 +1,6 @@
 {
   "name": "@remnic/core",
-  "version": "9.64.2",
+  "version": "9.64.4",
   "description": "Framework-agnostic Remnic memory engine — orchestrator, storage, extraction, search, trust zones",
   "type": "module",
   "main": "dist/index.js",
@@ -1364,6 +1364,16 @@
       "types": "./dist/local-llm.d.ts",
       "remnic-source": "./src/local-llm.ts",
       "import": "./dist/local-llm.js"
+    },
+    "./location": {
+      "types": "./dist/location/index.d.ts",
+      "remnic-source": "./src/location/index.ts",
+      "import": "./dist/location/index.js"
+    },
+    "./location.js": {
+      "types": "./dist/location/index.d.ts",
+      "remnic-source": "./src/location/index.ts",
+      "import": "./dist/location/index.js"
     },
     "./logger": {
       "types": "./dist/logger.d.ts",
@@ -3163,7 +3173,7 @@
     "core"
   ],
   "peerDependencies": {
-    "@remnic/coding-graph": "^9.64.2"
+    "@remnic/coding-graph": "^9.64.4"
   },
   "peerDependenciesMeta": {
     "@remnic/coding-graph": {
