@@ -75,9 +75,9 @@ export function locationTaggingEnabled(config: LocationConfig): boolean {
 export async function tagPersistedMemories(
   storage: StorageManager,
   memoryIds: string[],
-  config: { memoryDir: string; location: LocationConfig },
+  config: { memoryDir: string; location?: LocationConfig },
 ): Promise<void> {
-  if (memoryIds.length === 0 || !locationTaggingEnabled(config.location)) return;
+  if (memoryIds.length === 0 || !config.location || !locationTaggingEnabled(config.location)) return;
   try {
     await enrichMemoriesWithLocation({
       storage,
