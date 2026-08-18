@@ -3803,9 +3803,9 @@ test("a symlinked snapshot sidecar is refused before it is read", async () => {
 });
 
 test("a daemon limit below the chunk floor splits instead of quarantining good notes", async () => {
-  // With maxBodyBytes under MIN_OBSERVE_CHUNK_BYTES, reaching the floor does
-  // NOT mean the chunk is one line — it can still be a multi-line batch. The
-  // trigger for quarantine is the chunk's shape, not a byte floor (#2303).
+  // With maxBodyBytes under the observe chunk size, a small daemon limit
+  // does NOT mean the chunk is one line — it can still be a multi-line batch.
+  // The trigger for quarantine is the chunk's shape, not a byte floor (#2303).
   const delivered: string[] = [];
   const limit = 200;
   const overLimit = (body: Record<string, unknown>): boolean =>

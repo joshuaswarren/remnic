@@ -48,8 +48,7 @@ import { postJsonWithStatus } from "./delegate-http.js";
  * `maxBodyBytes` (131072) so the JSON envelope around the notes still fits.
  */
 const MAX_OBSERVE_CHUNK_BYTES = 96 * 1024;
-/** The floor the adaptive halving stops at — below this a single note. */
-const MIN_OBSERVE_CHUNK_BYTES = 4 * 1024;
+
 /** Bounded wait for the flush-plan lock; a contended flush declines instead. */
 const LOCK_MAX_WAIT_MS = 5_000;
 const LOCK_STALE_MS = 60_000;
