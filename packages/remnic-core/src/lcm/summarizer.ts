@@ -148,10 +148,11 @@ export class LcmSummarizer {
     text: string,
     targetTokens: number,
   ): Promise<{ text: string; escalation: number }> {
+    const { deterministicMaxTokens, telemetryPrefilterEnabled } = this.config;
     const result = await summarizeContextPure(text, targetTokens, "auto", {
       llm: this.summarizeFn,
-      deterministicMaxTokens: this.config.deterministicMaxTokens,
-      telemetryPrefilterEnabled: this.config.telemetryPrefilterEnabled,
+      deterministicMaxTokens,
+      telemetryPrefilterEnabled,
     });
     return { text: result.text, escalation: result.escalation ?? 2 };
   }

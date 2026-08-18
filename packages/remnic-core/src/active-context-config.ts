@@ -37,17 +37,17 @@ export type ActiveContextConfigProjection = ActiveContextConfigFields & {
 };
 
 export function resolveActiveContextCapabilities(
-  config: ActiveContextConfigProjection,
+  projection: ActiveContextConfigProjection,
 ): ActiveContextCapabilitySet {
   return Object.freeze({
-    activeContextTransforms: config.contextCompressionActionsEnabled,
-    activeContextMaxMessages: config.activeContextMaxMessages,
-    activeContextMaxSnapshotChars: config.activeContextMaxSnapshotChars,
-    activeContextSummaryMaxTokens: config.activeContextSummaryMaxTokens,
-    activeContextMinRetainedMessages: config.activeContextMinRetainedMessages,
-    activeContextPlanTtlMinutes: config.activeContextPlanTtlMinutes,
-    activeContextRetentionMaxBytes: config.activeContextRetentionMaxBytes,
-    activeContextLlm: config.activeContextTransformLlmEnabled,
+    activeContextTransforms: projection.contextCompressionActionsEnabled,
+    activeContextMaxMessages: projection.activeContextMaxMessages,
+    activeContextMaxSnapshotChars: projection.activeContextMaxSnapshotChars,
+    activeContextSummaryMaxTokens: projection.activeContextSummaryMaxTokens,
+    activeContextMinRetainedMessages: projection.activeContextMinRetainedMessages,
+    activeContextPlanTtlMinutes: projection.activeContextPlanTtlMinutes,
+    activeContextRetentionMaxBytes: projection.activeContextRetentionMaxBytes,
+    activeContextLlm: projection.activeContextTransformLlmEnabled,
   });
 }
 
