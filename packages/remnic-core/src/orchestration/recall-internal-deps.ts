@@ -116,6 +116,9 @@ export interface RecallInternalDeps {
     truncated: boolean;
     finalChars: number;
     includedMemories: IncludedMemory[];
+    includedMemoryIds: string[];
+    includedMemoryPaths: string[];
+    includedMemoryNamespaces: Array<string | undefined>;
     omittedMemoryIds: string[];
   };
   boostSearchResults(

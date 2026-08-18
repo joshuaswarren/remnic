@@ -274,6 +274,9 @@ export class RecallSectionCoordinator {
     truncated: boolean;
     finalChars: number;
     includedMemories: IncludedMemory[];
+    includedMemoryIds: string[];
+    includedMemoryPaths: string[];
+    includedMemoryNamespaces: Array<string | undefined>;
     omittedMemoryIds: string[];
   } {
     type OrderedSection = { id: string; chunks: RecallSectionChunk[] };
@@ -339,6 +342,9 @@ export class RecallSectionCoordinator {
         truncated: orderedSections.length > 0,
         finalChars: 0,
         includedMemories: [],
+        includedMemoryIds: [],
+        includedMemoryPaths: [],
+        includedMemoryNamespaces: [],
         omittedMemoryIds: candidateMemoryIds,
       };
     }
@@ -571,6 +577,9 @@ export class RecallSectionCoordinator {
       truncated,
       finalChars: usedChars,
       includedMemories,
+      includedMemoryIds: includedMemories.map((memory) => memory.id),
+      includedMemoryPaths: includedMemories.map((memory) => memory.path),
+      includedMemoryNamespaces: includedMemories.map((memory) => memory.namespace),
       omittedMemoryIds: (() => {
         const includedKeys = new Set(
           includedMemories.map(

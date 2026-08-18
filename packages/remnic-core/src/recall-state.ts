@@ -20,6 +20,16 @@ import {
 export type { IncludedMemory } from "./included-memories.js";
 export { coerceIncludedMemories } from "./included-memories.js";
 
+// Session keys are caller-supplied (host session IDs) and land in indexed
+// assignments on plain-object state. A key matching one of these would
+// pollute Object.prototype (or read junk off it), so every read/write
+// through this module rejects them — same contract load() already enforced.
+const UNSAFE_STATE_KEYS: ReadonlySet<string> = new Set(["__proto__", "constructor", "prototype"]);
+
+function isUnsafeStateKey(key: string): boolean {
+  return UNSAFE_STATE_KEYS.has(key);
+}
+
 
 export interface LastRecallBudgetSummary {
   requestedTopK?: number;
@@ -32,6 +42,9 @@ export interface LastRecallBudgetSummary {
   truncated?: boolean;
   includedSections?: string[];
   omittedSections?: string[];
+  includedMemoryIds?: string[];
+  includedMemoryPaths?: string[];
+  includedMemoryNamespaces?: Array<string | undefined>;
   omittedMemoryIds?: string[];
 }
 
@@ -52,6 +65,8 @@ export interface LastRecallSnapshot {
   sourcesUsed?: string[];
   budgetsApplied?: LastRecallBudgetSummary;
   latencyMs?: number;
+  resultPaths?: string[];
+  resultNamespaces?: Array<string | undefined>;
   policyVersion?: string;
   identityInjectionMode?: IdentityInjectionMode | "none";
   identityInjectedChars?: number;

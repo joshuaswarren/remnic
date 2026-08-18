@@ -2717,8 +2717,10 @@ export class Orchestrator {
     includedIds: string[];
     omittedIds: string[];
     truncated: boolean;
-    finalChars: number;
     includedMemories: IncludedMemory[];
+    includedMemoryIds: string[];
+    includedMemoryPaths: string[];
+    includedMemoryNamespaces: Array<string | undefined>;
     omittedMemoryIds: string[];
   } {
     return this.recallSectionCoordinator.assembleRecallSections(

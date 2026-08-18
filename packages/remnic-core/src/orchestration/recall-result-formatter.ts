@@ -33,7 +33,7 @@ import type { WorkProductLedgerSearchResult } from "../work-product-ledger.js";
 import { trustResultFor, type TrustStageResultItem } from "../trust-score-stage.js";
 import { CONNECTOR_ID_PATTERN, CONNECTOR_LABEL_MAX_LENGTH } from "../connectors/label.js";
 import { isValidConnectorId } from "../connectors/index.js";
-import type { IncludedMemory } from "../included-memories.js";
+import { coerceIncludedMemories, type IncludedMemory } from "../included-memories.js";
 import type {
   ContinuityIncidentRecord,
   IdentityInjectionMode,
@@ -128,22 +128,27 @@ export function displayResultPath(
 export function displaySafeRecallSnapshot<
   T extends {
     includedMemories?: IncludedMemory[];
+    memoryIds?: string[];
+    resultPaths?: string[];
+    resultNamespaces?: Array<string | undefined>;
+    budgetsApplied?: {
+      includedMemoryIds?: string[];
+      includedMemoryPaths?: string[];
+      includedMemoryNamespaces?: Array<string | undefined>;
+    };
     tierExplain?: {
       sourceAnchors?: Array<{ path: string; lineRange?: [number, number] }>;
     };
   },
 >(snapshot: T, memoryDir: string): T {
-  const includedMemories = snapshot.includedMemories?.map((memory) => ({
+  const includedMemories = coerceIncludedMemories(snapshot).map((memory) => ({
     ...memory,
     path: displayResultPath(memory.path, memoryDir, memory.namespace),
   }));
-  // Authoritative absolute-path -> namespace map recorded at capture time, so
-  // a tier anchor that coincides with an included memory renders under the
-  // SAME namespace as that memory instead of the raw storage segment (#2077).
   const namespaceByPath = new Map<string, string | undefined>();
-  snapshot.includedMemories?.forEach((memory) => {
+  for (const memory of coerceIncludedMemories(snapshot)) {
     if (!namespaceByPath.has(memory.path)) namespaceByPath.set(memory.path, memory.namespace);
-  });
+  }
   const tierExplain =
     snapshot.tierExplain?.sourceAnchors
       ? {
@@ -154,9 +159,22 @@ export function displaySafeRecallSnapshot<
           })),
         }
       : undefined;
+  const resultPaths = includedMemories.map((memory) => memory.path);
+  const resultNamespaces = includedMemories.map((memory) => memory.namespace);
   return {
     ...snapshot,
-    ...(includedMemories ? { includedMemories } : {}),
+    includedMemories,
+    resultPaths,
+    resultNamespaces,
+    ...(snapshot.budgetsApplied
+      ? {
+          budgetsApplied: {
+            ...snapshot.budgetsApplied,
+            includedMemoryPaths: resultPaths,
+            includedMemoryNamespaces: resultNamespaces,
+          },
+        }
+      : {}),
     ...(tierExplain ? { tierExplain } : {}),
   };
 }
