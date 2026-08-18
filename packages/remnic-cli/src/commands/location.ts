@@ -3,12 +3,13 @@
  * commands/meetings.ts. All parsing, validation, provider registration, and
  * rendering live in @remnic/core's shared runner (`location/surfaces.ts`) so
  * this CLI and every other surface never fork. No orchestrator is booted:
- * location sync needs only the parsed config + memory dir.
+ * location sync needs only the parsed config + memory dir; tag backfill
+ * (#2046) constructs the default-namespace storage on demand.
  */
 
 import fs from "node:fs";
 import { parseConfig, resolveRemnicConfigRecord } from "@remnic/core";
-import { runLocationCliCommand } from "@remnic/core/location";
+import { backfillMemoryStorage, runLocationCliCommand } from "@remnic/core/location";
 import { resolveConfigPath } from "../index.js";
 
 export async function runLocationBinaryCommand(rest: string[]): Promise<void> {
@@ -35,7 +36,11 @@ export async function runLocationBinaryCommand(rest: string[]): Promise<void> {
       return;
     }
     const code = await runLocationCliCommand(
-      { config: config.location, memoryDir: config.memoryDir },
+      {
+        config: config.location,
+        memoryDir: config.memoryDir,
+        getMemoryStorage: () => backfillMemoryStorage(config),
+      },
       locationArgs,
       { stdout: process.stdout, stderr: process.stderr },
     );

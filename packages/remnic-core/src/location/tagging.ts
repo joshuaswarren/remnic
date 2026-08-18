@@ -172,9 +172,14 @@ export async function enrichMemoriesWithLocation(
   for (const memory of memories) {
     try {
       const plan = planForMemory(memory.frontmatter, index, options.config);
-      countOutcome(counts, plan.outcome);
-      if (plan.patch === undefined || options.dryRun === true) continue;
+      // Count patch outcomes (tagged/updated/removed) only after the write
+      // lands — a rejected write is `failed`, never also `tagged`.
+      if (plan.patch === undefined || options.dryRun === true) {
+        countOutcome(counts, plan.outcome);
+        continue;
+      }
       await options.storage.writeMemoryFrontmatter(memory, plan.patch, { actor: "location-tagging" });
+      countOutcome(counts, plan.outcome);
     } catch {
       counts.failed += 1;
     }
