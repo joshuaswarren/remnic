@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/joshuaswarren-remnic-badge.png)](https://mseep.ai/app/joshuaswarren-remnic)
+
 # Remnic
 
 [![npm version](https://img.shields.io/npm/v/@remnic/cli)](https://www.npmjs.com/package/@remnic/cli)
