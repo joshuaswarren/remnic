@@ -14,9 +14,14 @@
  * legacy files without the field simply do not vote for the corpus script.
  */
 
-import type { StorageManager } from "./storage.js";
 import type { MemoryFile } from "./types.js";
 import type { SearchDegradation } from "./search/port.js";
+
+type CorpusLanguageStorage = {
+  dir: string;
+  readAllMemories: () => Promise<MemoryFile[]>;
+  getCorpusScanVersion: () => string;
+};
 
 /** Script classes the cheap detector can distinguish. ISO 15924 codes. */
 export type LanguageHint =
@@ -162,7 +167,7 @@ const corpusLanguageCache = new Map<string, { version: string; language: Languag
  * Read failures degrade to `undefined` — never break recall.
  */
 export async function dominantCorpusLanguage(
-  storage: Pick<StorageManager, "dir" | "readAllMemories" | "getCorpusScanVersion">,
+  storage: CorpusLanguageStorage,
 ): Promise<LanguageHint | undefined> {
   try {
     const version = storage.getCorpusScanVersion();
