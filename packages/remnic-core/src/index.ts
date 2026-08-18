@@ -1217,6 +1217,7 @@ export { runAuditMemoryCliCommand, runBulkImportCliCommand, type BulkImportCliCo
 export * from "./wearables/index.js";
 export * from "./activity/index.js";
 export * from "./meetings/index.js";
+export * from "./okf/cli.js";
 
 // ---------------------------------------------------------------------------
 // Shared importer base (issue #568)

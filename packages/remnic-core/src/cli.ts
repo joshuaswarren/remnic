@@ -15,6 +15,7 @@ import { utcDayRange } from "./transcript.js";
 import { padEndDisplay, truncateGraphemeSafe } from "./whitespace.js";
 import { runWearablesCliCommand } from "./wearables/cli.js";
 import { registerMeetingsCommands } from "./cli/meetings-commands.js";
+import { registerOkfCommands } from "./cli/okf-commands.js";
 import { registerResearchStatusCommands } from "./cli/research-status-commands.js";
 import { registerCreationLedgerCommands } from "./cli/creation-ledger-commands.js";
 import type {
@@ -6227,7 +6228,7 @@ export function registerCli(
 
       registerResearchStatusCommands(cmd, orchestrator);
 
-      registerCreationLedgerCommands(cmd, orchestrator); registerMeetingsCommands(cmd, orchestrator);
+      registerCreationLedgerCommands(cmd, orchestrator); registerMeetingsCommands(cmd, orchestrator); registerOkfCommands(cmd, orchestrator);
 
       cmd
         .command("trust-zone-promote")

@@ -63,6 +63,7 @@ import {
 import { parseWearablesConfig } from "./wearables/config.js";
 import { parseCaptureCompanionConfigs } from "./location/parse-companions.js";
 import { parseLocationConfig } from "./location/config.js";
+import { parseOkfConfig } from "./okf/config.js";
 import { parseBoundedJsonlStateConfig } from "./bounded-jsonl-state.js";
 import { parseCodingKnowledgeConfig } from "./coding/coding-knowledge-config.js";
 import { parseChatConfig } from "./chat/chat-config.js";
@@ -514,7 +515,6 @@ function normalizeMemoryRelativeDir(raw: unknown, fallback: string): string {
     .join("/");
   return normalized.length > 0 ? normalized : fallback;
 }
-
 
 function parseSemanticChunkingConfig(
   raw: unknown,
@@ -2320,6 +2320,7 @@ export function parseConfig(
     converge: parseConvergeConfig(cfg.converge),
     wearables,
     meetings,
+    okf: parseOkfConfig(cfg.okf),
     activity,
     location,
     provenance,

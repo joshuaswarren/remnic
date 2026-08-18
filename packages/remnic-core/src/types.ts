@@ -1,6 +1,7 @@
 import type { BoundedJsonlStateConfig } from "./bounded-jsonl-state.js";
 import type { MeetingsConfig } from "./meetings/types.js";
 import type { LocationConfig } from "./location/types.js";
+import type { OkfConfig } from "./okf/config.js";
 import type { ActivityConfig } from "./activity/types.js";
 import type { WearablesConfig } from "./wearables/types.js";
 import type { ExtractionLivenessConfig } from "./extraction-liveness.js";
@@ -1235,9 +1236,9 @@ export interface PluginConfig extends BoundedJsonlStateConfig, SecurityConfig {
   activity: ActivityConfig;
   meetings: MeetingsConfig;
   location: LocationConfig;
+  okf: OkfConfig;
   /**
    * At-rest encryption configuration (issue #690 PR 3/4).
-   *
    * When `secureStoreEnabled` is true, `StorageManager` reads and
    * writes memory files through the `secure-fs` encryption layer.
    * The store must be unlocked via `remnic secure-store unlock` before
@@ -2808,6 +2809,8 @@ export interface MemoryFrontmatter extends SourceConnectorProvenance, OriginMeta
   toolScoped?: true;
   id: string;
   category: MemoryCategory;
+  /** OKF v0.1 interop metadata (issue #1946). Inert: presentation only, never overrides `category`. */
+  type?: string;
   created: string;
   updated: string;
   source: string;
