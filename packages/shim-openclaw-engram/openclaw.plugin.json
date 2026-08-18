@@ -4099,6 +4099,43 @@
             "type": "boolean",
             "default": false,
             "description": "When true, installer may register the nightly procedural mining cron job."
+          },
+          "maintenance": {
+            "type": "object",
+            "additionalProperties": false,
+            "default": {},
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "default": false,
+                "description": "Master gate for the procedure library-health maintenance job (issue #2370): merge near-duplicate active procedures, flag stale-tool procedures, retire failure-dominant or idle ones. Shadow-first: runs without apply write nothing."
+              },
+              "retireIdleDays": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 36500,
+                "default": 90,
+                "description": "Days without an access signal (and with zero recorded outcomes) before an active procedure is retired as idle. 0 disables idle-based retirement."
+              },
+              "retireMinOutcomes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100000,
+                "default": 5,
+                "description": "Minimum mw_fail count before failure-dominant retirement is considered."
+              },
+              "retireFailRatio": {
+                "type": "number",
+                "minimum": 0,
+                "default": 2,
+                "description": "mw_fail must exceed mw_success times this ratio for failure-dominant retirement."
+              },
+              "mergeEnabled": {
+                "type": "boolean",
+                "default": true,
+                "description": "Whether duplicate-cluster merging runs within the maintenance gate (issue #2370)."
+              }
+            }
           }
         }
       },

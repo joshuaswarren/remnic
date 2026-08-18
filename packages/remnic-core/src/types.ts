@@ -11,6 +11,7 @@ import type { ContradictionLocalizationConfig, ContradictionScanConfig } from ".
 import type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
 export type { ContradictionLocalizationConfig, ContradictionScanConfig } from "./contradiction-config.js";
 export type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
+import type { ProceduralMaintenanceConfig } from "./procedural/maintenance-config.js";
 
 import type { AmbientCaptureProvenance, BufferTurnOwner, SecurityConfig, OriginMetadata } from "./security/types.js";
 export type ReasoningEffort = "none" | "low" | "medium" | "high";
@@ -398,6 +399,7 @@ export interface ProceduralConfig {
   proceduralMiningCronAutoRegister: boolean;
   /** Max procedure memories to inject on task-initiation recall (1–10). */
   recallMaxProcedures: number;
+  maintenance: ProceduralMaintenanceConfig;
 }
 
 /**

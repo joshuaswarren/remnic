@@ -168,4 +168,18 @@ export const MCP_ADMIN_OPS_TOOLS: Array<{
     additionalProperties: false,
   },
 },
+{
+  name: "engram.procedure_library_maintenance",
+  description:
+    "Run procedure library health maintenance (issue #2370): merge near-duplicate active procedures, flag stale-tool procedures for repair, and retire failure-dominant or idle ones — from Memory Worth + trajectory telemetry. Shadow-first: default run writes nothing and returns a proposed-transition report. apply=true (and procedural.maintenance.enabled) executes transitions; dryRun=true forces shadow.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      namespace: { type: "string" },
+      apply: { type: "boolean" },
+      dryRun: { type: "boolean" },
+    },
+    additionalProperties: false,
+  },
+},
 ];

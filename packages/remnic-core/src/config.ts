@@ -41,6 +41,7 @@ import { parseRecallConcurrencyConfig } from "./recall-concurrency-config.js";
 import { parseExtractionLivenessConfig } from "./extraction-liveness.js";
 import { parseReplicaPeersConfig } from "./replica-peers-config.js";
 import { parseDependencyPropagationConfig } from "./dependency-propagation-config.js";
+import { parseProceduralMaintenanceConfig } from "./procedural/maintenance-config.js";
 import {
   parseContradictionLocalizationConfig,
   parseContradictionScanConfig,
@@ -1123,16 +1124,9 @@ export function parseConfig(
     recallMaxCoerced !== undefined && Number.isFinite(recallMaxCoerced)
       ? Math.min(10, Math.max(1, Math.floor(recallMaxCoerced)))
       : 2;
-  // Default-on procedural memory (issue #567 PR 4/5): if the user has NOT
-  // explicitly set `procedural.enabled`, enable it. Explicit `false` (or any
-  // value coerceBool reads as false: `"0"`, `"no"`, `"off"`, `false`) keeps
-  // the feature off. CLAUDE.md rules:
-  //   - #30 — escape hatch remains for operators who want to stay opt-out.
-  //   - #36 — "false"-ish strings coerce to false via coerceBool.
-  //   - #51 — when the key IS present but the value can't be understood
-  //     (typo like `"fales"` or a number like `0`), reject loudly instead
-  //     of silently flipping the default. Silent fallback on bad input is
-  //     how procedural memory would end up "fail-open" for typos.
+  const maintenance = parseProceduralMaintenanceConfig(rawProcedural.maintenance);
+  // Default-on procedural memory (issue #567 PR 4/5). Explicit false-ish
+  // values stay off. Unknown values throw.
   const rawEnabledValue = rawProcedural.enabled;
   let proceduralEnabled: boolean;
   if (rawEnabledValue === undefined) {
@@ -1147,6 +1141,7 @@ export function parseConfig(
     proceduralEnabled = enabledCoerced;
   }
   const procedural: ProceduralConfig = {
+    maintenance,
     enabled: proceduralEnabled,
     /** `0` skips all mining (`minOccurrences_zero`); otherwise clusters need at least this many members. */
     minOccurrences: Math.min(1000, Math.max(0, proceduralMinRaw)),

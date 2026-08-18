@@ -1580,7 +1580,7 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
  * alongside the scoring/increment logic so the doctor audit stays in sync.
  */
 const MEMORY_WORTH_ELIGIBLE_CATEGORIES: ReadonlySet<MemoryFile["frontmatter"]["category"]> =
-  new Set(["fact"]);
+  new Set(["fact", "procedure"]);
 
 /**
  * Count memories that pre-date the Memory Worth counters introduced in issue

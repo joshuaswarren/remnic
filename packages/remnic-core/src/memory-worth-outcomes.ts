@@ -20,8 +20,9 @@
  *     preserved. The PR 1 serializer rejects negative / non-integer counters,
  *     so we rely on that for defensive validation rather than duplicating it.
  *   - Only instruments categories in `MEMORY_WORTH_OUTCOME_ELIGIBLE_CATEGORIES`
- *     (currently `fact`, matching `MEMORY_WORTH_ELIGIBLE_CATEGORIES` in
- *     operator-toolkit.ts for the doctor audit). Non-eligible memories return
+ *     (currently `fact` and `procedure` — procedures joined in issue #2370 —
+ *     matching `MEMORY_WORTH_ELIGIBLE_CATEGORIES` in operator-toolkit.ts for
+ *     the doctor audit). Non-eligible memories return
  *     `{ ok: false, reason: "ineligible_category" }` rather than throwing so
  *     the caller — typically a ledger consumer draining heterogeneous events
  *     — doesn't need to pre-filter by category.
@@ -94,14 +95,17 @@ function runSerialized<T>(key: string, task: () => Promise<T>): Promise<T> {
 }
 
 /**
- * Categories currently instrumented for Memory Worth counters. Must be kept
- * in sync with `MEMORY_WORTH_ELIGIBLE_CATEGORIES` in `operator-toolkit.ts`.
- * Declared here (not imported) to avoid a circular dep with operator-toolkit,
- * which imports from this file's peers. The two constants are validated by a
+ * Categories currently instrumented for Memory Worth counters. `procedure`
+ * joined in issue #2370 — the procedure library-health maintenance loop
+ * retires on failure-dominant `mw_*` counters, so injected procedures must
+ * be able to accrue outcomes. Must be kept in sync with
+ * `MEMORY_WORTH_ELIGIBLE_CATEGORIES` in `operator-toolkit.ts`. Declared
+ * here (not imported) to avoid a circular dep with operator-toolkit, which
+ * imports from this file's peers. The two constants are validated by a
  * test to stay in lockstep.
  */
 const MEMORY_WORTH_OUTCOME_ELIGIBLE_CATEGORIES: ReadonlySet<MemoryFrontmatter["category"]> =
-  new Set(["fact"]);
+  new Set(["fact", "procedure"]);
 
 /**
  * Exported so downstream tests / operators can query the allowlist without

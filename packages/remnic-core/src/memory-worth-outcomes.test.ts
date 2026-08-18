@@ -306,11 +306,15 @@ test("concurrent outcomes for the same memory do NOT lose updates", async () => 
   }
 });
 
-test("eligible-category set is exactly {fact}", () => {
+test("eligible-category set is exactly {fact, procedure}", () => {
   // Pinning this keeps PR 3 in lockstep with the PR 1 doctor allowlist in
   // operator-toolkit.ts (MEMORY_WORTH_ELIGIBLE_CATEGORIES). If either side
   // expands, this test and the doctor test must both be updated.
+  // `procedure` joined in issue #2370: the procedure library-health loop
+  // retires on failure-dominant mw_* counters, so injected procedures must
+  // accrue outcomes.
   const eligible = memoryWorthOutcomeEligibleCategories();
-  assert.equal(eligible.size, 1);
+  assert.equal(eligible.size, 2);
   assert.ok(eligible.has("fact"));
+  assert.ok(eligible.has("procedure"));
 });

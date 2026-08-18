@@ -132,6 +132,11 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
     duplicatesSuperseded: T_NUMBER,
   }),
   procedural_stats: objectSchema({ namespace: T_STRING, counts: T_OBJECT, recent: T_OBJECT }),
+  procedure_library_maintenance: objectSchema({
+    enabled: T_BOOLEAN,
+    namespace: T_STRING,
+    report: T_OBJECT,
+  }),
   memory_get: objectSchema({ found: T_BOOLEAN, namespace: T_STRING, memory: T_NULLABLE_OBJECT }),
   memory_timeline: objectSchema({ found: T_BOOLEAN, namespace: T_STRING, count: T_NUMBER, timeline: T_ARRAY }),
   memory_store: objectSchema({
