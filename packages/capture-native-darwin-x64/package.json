@@ -1,10 +1,14 @@
 {
   "name": "@remnic/capture-native-darwin-x64",
-  "version": "9.65.8",
+  "version": "9.66.0",
   "description": "macOS Intel native capture helper for Remnic — audio, screen accessibility (AX), and window OCR",
   "type": "module",
-  "os": ["darwin"],
-  "cpu": ["x64"],
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
   "main": "index.js",
   "types": "index.d.ts",
   "exports": {
@@ -16,7 +20,12 @@
   "bin": {
     "remnic-capture-helper": "bin/remnic-capture-helper"
   },
-  "files": ["index.js", "index.d.ts", "bin/remnic-capture-helper", "README.md"],
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "bin/remnic-capture-helper",
+    "README.md"
+  ],
   "scripts": {
     "prepack": "node -e \"require('node:fs').accessSync('bin/remnic-capture-helper')\"",
     "test": "node test.mjs"
@@ -31,5 +40,15 @@
     "url": "https://github.com/joshuaswarren/remnic.git",
     "directory": "packages/capture-native-darwin-x64"
   },
-  "keywords": ["remnic", "audio", "screen", "ax", "ocr", "capture", "macos", "darwin", "x64"]
+  "keywords": [
+    "remnic",
+    "audio",
+    "screen",
+    "ax",
+    "ocr",
+    "capture",
+    "macos",
+    "darwin",
+    "x64"
+  ]
 }

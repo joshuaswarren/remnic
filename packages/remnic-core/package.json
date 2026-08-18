@@ -1,6 +1,6 @@
 {
   "name": "@remnic/core",
-  "version": "9.65.8",
+  "version": "9.66.0",
   "description": "Framework-agnostic Remnic memory engine — orchestrator, storage, extraction, search, trust zones",
   "type": "module",
   "main": "dist/index.js",
@@ -2050,7 +2050,6 @@
       "remnic-source": "./src/coding/export-okf-codegraph.ts",
       "import": "./dist/coding/export-okf-codegraph.js"
     },
-
     "./standup": {
       "types": "./dist/standup/build.d.ts",
       "remnic-source": "./src/standup/build.ts",
@@ -3225,7 +3224,7 @@
     "core"
   ],
   "peerDependencies": {
-    "@remnic/coding-graph": "^9.65.8"
+    "@remnic/coding-graph": "^9.66.0"
   },
   "peerDependenciesMeta": {
     "@remnic/coding-graph": {
