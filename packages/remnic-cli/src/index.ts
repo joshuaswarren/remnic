@@ -5566,7 +5566,6 @@ async function cmdWhoKnows(rest: string[]): Promise<void> {
     await orchestrator.destroy();
   }
 }
-
 // ── Page-level versioning (issue #371) ─────────────────────────────────────
 
 async function cmdVersions(rest: string[]): Promise<void> {
