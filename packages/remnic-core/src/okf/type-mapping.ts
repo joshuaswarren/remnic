@@ -57,6 +57,8 @@ export function okfTypeForEntityKind(kind: string | undefined): string {
 export const OKF_PROFILE_TYPE = "Profile";
 export const OKF_QUESTION_TYPE = "Question";
 export const OKF_DECISION_RECORD_TYPE = "Decision Record";
+export const OKF_ARCHITECTURE_CARD_TYPE = "Architecture Card";
+export const OKF_CODE_MODULE_TYPE = "Code Module";
 
 /**
  * OKF §6/§7 reserve `index.md` and `log.md` for bundle-level files with a
