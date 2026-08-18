@@ -93,6 +93,18 @@ export async function loadDaySummaryPrompt(): Promise<string> {
   return EMBEDDED_DAY_SUMMARY_PROMPT;
 }
 
+const FSI = "\u2068"; // FIRST STRONG ISOLATE
+const PDI = "\u2069"; // POP DIRECTIONAL ISOLATE
+
+/**
+ * Wrap user content in Unicode bidi isolates so RTL text (Arabic, Hebrew)
+ * cannot reorder the surrounding Latin labels on the same composed line.
+ * No visible change for LTR content (issue #2198).
+ */
+function bidiIsolate(text: string): string {
+  return `${FSI}${text}${PDI}`;
+}
+
 export function formatDaySummaryMemories(memories: string | MemoryFile[]): string {
   if (typeof memories === "string") {
     return memories.trim();
@@ -102,7 +114,7 @@ export function formatDaySummaryMemories(memories: string | MemoryFile[]): strin
     .map((memory) => {
       const category = memory.frontmatter.category || "fact";
       const created = memory.frontmatter.created || "unknown";
-      return `[${memory.frontmatter.id}] (${category}, ${created})\n${memory.content}`;
+      return `[${memory.frontmatter.id}] (${category}, ${created})\n${bidiIsolate(memory.content)}`;
     })
     .join("\n\n")
     .trim();
