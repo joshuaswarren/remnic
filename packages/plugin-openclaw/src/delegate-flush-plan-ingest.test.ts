@@ -18,7 +18,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { ingestFlushPlanNotes } from "./delegate-flush-plan-ingest.js";
-import { descriptorDirectoryRoot } from "./delegate-flush-plan-directory.js";
+import { buildSnapshotPaths, pinSnapshotDirectory } from "./delegate-flush-plan-directory.js";
 
 interface ObserveServer {
   port: number;
@@ -110,37 +110,33 @@ test("stops after lock loss during a flush instead of posting another chunk", as
 });
 
 test("keeps snapshot writes in the pinned directory when a parent is swapped mid-flush", async (t) => {
-  if (descriptorDirectoryRoot() === undefined) {
-    t.skip("no descriptor directory on this platform; path-based I/O is the only option");
-    return;
-  }
   const files = await createFlushPlanFiles("parent-swap");
   const stateDir = path.dirname(files.plan);
+  await mkdir(stateDir, { recursive: true });
+  const probe = await pinSnapshotDirectory(buildSnapshotPaths(files.plan));
+  if (probe.kind !== "pinned") {
+    t.skip("descriptor directory does not resolve the held fd; path-based I/O is the only option");
+    await rm(files.workspaceDir, { recursive: true, force: true });
+    return;
+  }
+  await probe.close();
   const movedStateDir = `${stateDir}.moved`;
   const decoyDir = path.join(files.workspaceDir, "decoy");
   const lockName = path.basename(files.lock);
-  // Two chunks, so a snapshot write still happens AFTER the swap below.
   const notes = Array.from({ length: 2_000 }, (_, index) => `- note ${index} ${"x".repeat(70)}\n`).join("");
   const observed: string[] = [];
   let server: ObserveServer | undefined;
   try {
-    await mkdir(stateDir, { recursive: true });
     await mkdir(decoyDir, { recursive: true });
     await writeFile(files.plan, notes, "utf8");
     server = await startObserveServer(async (content) => {
       observed.push(content);
       if (observed.length !== 1) return;
-      // A local process with write access to the plugin-state directory copies
-      // the live lock, so our ownership checks keep passing, then replaces the
-      // checked PARENT directory with a symlink of its own. Path-based writes
-      // would now resolve into `decoyDir`; descriptor-anchored writes cannot.
       await copyFile(files.lock, path.join(decoyDir, lockName));
       await rename(stateDir, movedStateDir);
       await symlink(decoyDir, stateDir);
     });
-
     await ingestFlushPlanNotes(optionsFor(server.port, files.workspaceDir, "parent-swap"));
-
     assert.ok(observed.length > 1, "the flush keeps draining through the pinned directory");
     assert.equal(observed.join(""), notes, "every note reaches the daemon exactly once");
     assert.deepEqual(
