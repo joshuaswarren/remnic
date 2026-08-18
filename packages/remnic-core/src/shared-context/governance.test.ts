@@ -29,7 +29,7 @@ test("isExpired treats expiresAt as a half-open upper bound", () => {
   const envelope = { authority: "informational" as const, expiresAt };
   assert.equal(isExpired(envelope, at - 1), false);
   assert.equal(isExpired(envelope, at), true);
-  assert.equal(isExpired({ authority: "informational" }, at), false);
+  assert.equal(isExpired({}, at), false);
 });
 
 test("parseSharedEnvelope treats a missing legacy envelope as informational with no expiry", () => {
