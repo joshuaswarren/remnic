@@ -109,6 +109,7 @@ const DOCUMENTED_COMMANDS = [
   "xray",
   "wearables",
   "meetings",
+  "location",
   "capsule",
   "offline",
   "oauth",
@@ -197,6 +198,7 @@ test("every recognised command dispatches to its own handler, not the banner", a
     "action-confidence": ["action-confidence"],
     capsule: ["capsule"],
     offline: ["offline", "status"],
+    location: ["location", "--help"],
     oauth: ["oauth", "--help"],
    };
 
