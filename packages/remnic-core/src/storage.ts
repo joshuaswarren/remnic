@@ -1112,6 +1112,7 @@ function parseEntityFrontmatter(raw: string): {
     "synthesis_structured_fact_count",
     "synthesis_structured_fact_digest",
     "synthesis_version",
+    "type",
   ]);
   for (const line of match[1].split(/\r?\n/)) {
     if (/^\s/.test(line)) {
@@ -1465,6 +1466,7 @@ export function serializeEntityFile(
       ? []
       : [`synthesis_structured_fact_count: ${synthesisStructuredFactCount}`]),
     ...(synthesisStructuredFactDigest ? [`synthesis_structured_fact_digest: "${synthesisStructuredFactDigest}"`] : []),
+    `synthesis_version: ${synthesisVersion}`,
     ...(okfType === false ? [] : [`type: ${okfTypeForEntityKind(entity.type)}`]),
     ...(okfType === false
       ? (entity.extraFrontmatterLines ?? [])

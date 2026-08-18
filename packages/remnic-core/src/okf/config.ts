@@ -17,11 +17,6 @@ export const DEFAULT_OKF_CONFIG: OkfConfig = Object.freeze({
   sweepEnabled: false,
 });
 
-const OKF_CONFIG_KEYS: Readonly<Record<string, true>> = Object.freeze({
-  conformanceEnabled: true,
-  sweepEnabled: true,
-});
-
 export function parseOkfConfig(raw: unknown): OkfConfig {
   if (raw === undefined || raw === null) return { ...DEFAULT_OKF_CONFIG };
   if (typeof raw !== "object" || Array.isArray(raw)) {
@@ -30,13 +25,6 @@ export function parseOkfConfig(raw: unknown): OkfConfig {
     );
   }
   const record = raw as Record<string, unknown>;
-  for (const key of Object.keys(record)) {
-    if (OKF_CONFIG_KEYS[key] !== true) {
-      throw new Error(
-        `okf config contains unknown key '${key}'; valid keys are ${Object.keys(OKF_CONFIG_KEYS).join(", ")}.`,
-      );
-    }
-  }
   const conformance = coerceBooleanLike(record.conformanceEnabled, "okf.conformanceEnabled");
   const sweep = coerceBooleanLike(record.sweepEnabled, "okf.sweepEnabled");
   return {

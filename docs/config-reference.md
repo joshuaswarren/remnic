@@ -68,6 +68,14 @@ The location subsystem is off by default. It buckets place observations from reg
 | `location.sources.id` | `(required)` | Registered provider id (lowercase kebab: `a-z`, `0-9`, hyphens); must be unique across sources. |
 | `location.sources.enabled` | `true` | Set false to short-circuit this source only; other sources still sync. |
 
+## OKF
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `okf` | `{ conformanceEnabled: true, sweepEnabled: false }` | Open Knowledge Format conformance block. |
+| `okf.conformanceEnabled` | `true` | Emit inert `type` on writes and add Profile frontmatter. `false` disables emission. |
+| `okf.sweepEnabled` | `false` | Opt-in backfill of missing `type` without bumping `updated`. |
+
 ## Wearables
 
 | Setting | Default | Description |
