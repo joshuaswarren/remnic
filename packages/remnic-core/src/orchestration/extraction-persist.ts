@@ -1921,7 +1921,7 @@ export class ExtractionPersistCoordinator {
       const faithfulnessEnforceStatus = faithfulnessGateStatus ?? requireSpansPendingStatus ?? injectionScreenStatus;
 
       const novelty = await applyNoveltyGate({
-        enabled: this.deps.config.noveltyGateEnabled,
+        enabled: this.deps.config["noveltyGateEnabled"] === true,
         addThreshold: this.deps.config.noveltyAddThreshold,
         noopThreshold: this.deps.config.noveltyNoopThreshold,
         lookup: async () =>
@@ -1931,6 +1931,9 @@ export class ExtractionPersistCoordinator {
               this.deps.config.semanticDedupCandidates,
               targetStorage,
             ),
+            // Same connector scoping as decideSemanticDedup below: a
+            // cross-connector neighbor must not noop this candidate.
+            { candidateConnector: sourceContext?.sourceConnector },
           ),
       });
       let pendingSemanticSkip: (SemanticDedupDecision & { action: "skip" }) | null = null;
