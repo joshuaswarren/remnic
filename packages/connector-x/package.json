@@ -1,0 +1,55 @@
+{
+  "name": "@remnic/connector-x",
+  "version": "9.65.7",
+  "description": "X (Twitter) connector for Remnic — remember the user's posts and bookmarks via the official X MCP, a local corpus, or a CLI",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "remnic-x": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts src/cli.ts --format esm --dts",
+    "precheck-types": "node ../../scripts/ensure-bench-build-deps.mjs",
+    "check-types": "tsc --noEmit",
+    "test": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx --test src/config.test.ts src/mcp-client.test.ts src/token-store.test.ts src/normalize.test.ts src/sources.test.ts src/sync.test.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "peerDependencies": {
+    "@remnic/core": "^9.65.7"
+  },
+  "devDependencies": {
+    "@remnic/core": "workspace:*",
+    "tsup": "^8.0.0",
+    "typescript": "^5.7.0",
+    "tsx": "^4.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joshuaswarren/remnic.git",
+    "directory": "packages/connector-x"
+  },
+  "keywords": [
+    "remnic",
+    "memory",
+    "x",
+    "twitter",
+    "bookmarks",
+    "mcp",
+    "connector"
+  ]
+}

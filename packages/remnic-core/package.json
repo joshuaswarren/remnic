@@ -1,6 +1,6 @@
 {
   "name": "@remnic/core",
-  "version": "9.65.7",
+  "version": "9.65.8",
   "description": "Framework-agnostic Remnic memory engine — orchestrator, storage, extraction, search, trust zones",
   "type": "module",
   "main": "dist/index.js",
@@ -2030,6 +2030,16 @@
       "remnic-source": "./src/token-estimate.ts",
       "import": "./dist/token-estimate.js"
     },
+    "./export-okf": {
+      "types": "./dist/transfer/export-okf.d.ts",
+      "remnic-source": "./src/transfer/export-okf.ts",
+      "import": "./dist/transfer/export-okf.js"
+    },
+    "./export-okf.js": {
+      "types": "./dist/transfer/export-okf.d.ts",
+      "remnic-source": "./src/transfer/export-okf.ts",
+      "import": "./dist/transfer/export-okf.js"
+    },
     "./active-context-transform": {
       "types": "./dist/active-context-transform.d.ts",
       "remnic-source": "./src/active-context-transform.ts",
@@ -3193,7 +3203,7 @@
     "core"
   ],
   "peerDependencies": {
-    "@remnic/coding-graph": "^9.65.7"
+    "@remnic/coding-graph": "^9.65.8"
   },
   "peerDependenciesMeta": {
     "@remnic/coding-graph": {

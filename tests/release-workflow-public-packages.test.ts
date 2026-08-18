@@ -30,6 +30,7 @@ const expectedPublishDirs = [
   "packages/connector-granola",
   "packages/connector-droid",
   "packages/connector-reitti",
+  "packages/connector-x",
   "packages/hermes-provider",
   "packages/belief-ledger",
   "packages/remnic-server",
