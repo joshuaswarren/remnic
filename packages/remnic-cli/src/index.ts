@@ -440,6 +440,7 @@ type CommandName =
   | "meetings" | "okf" | "location" | "export" | "standup"
   | "external-wiki"
   | "capsule"
+  | "offline"
   | "capture"
   | "oauth"
   | "converge";
