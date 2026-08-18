@@ -1262,9 +1262,7 @@ export interface PluginConfig extends BoundedJsonlStateConfig, SecurityConfig {
   codexCompat: CodexCompatConfig;
   /** When true (default), LLM classifies facts as `"project"` or `"global"` scope for promotion across projects. */
   extractionScopeClassificationEnabled: boolean;
-  /** Write-time user/agent subject stamping on memories (issue #2372). Default off. */
   subjectClassification: { enabled: boolean };
-  /** Guard for promoting user-subject memories into shared layers (issue #2372). Default "warn". */
   subjectGuard: SubjectGuardMode;
   /** Min accessCount reuse signal for promotion candidates (issue #2372). Default 3. */
   promotionCandidates: { minAccessCount: number };
@@ -2803,10 +2801,8 @@ export interface ImportanceScore {
   keywords: string[];
 }
 
-/** Whom a memory primarily models and serves (issue #2372). */
-export type MemorySubject = "user" | "agent";
-/** Guard mode for promoting user-subject memories into shared layers. */
-export type SubjectGuardMode = "off" | "warn" | "enforce";
+/** Subject vocabulary lives with its guards/defaults in memory-subject.ts (issue #2372). */
+export type { MemorySubject, SubjectGuardMode } from "./memory-subject.js";
 
 export interface MemoryFrontmatter extends SourceConnectorProvenance, OriginMetadata {
   /** True when write-time classification ties this memory to its source connector's tools or commands. */
