@@ -190,12 +190,12 @@ function renderMemory(memory: MemoryFile, rel: string, idToRel: Map<string, stri
   const title = firstHeading(memory.content) ?? `${humanize(fm.category)} ${fm.created.slice(0, 10)}`;
   const type = fm.type ?? okfTypeForMemory(fm);
   const fields: Record<string, unknown> = {
+    ...fm,
     type,
     title,
     description: normalizeProjectionPreview(memory.content),
     tags: fm.tags ?? [],
     timestamp: fm.updated,
-    ...fm,
   };
   if (fm.artifactType) fields.resource = rel;
   let body = memory.content.trim();
