@@ -15,7 +15,7 @@ import { utcDayRange } from "./transcript.js";
 import { padEndDisplay, truncateGraphemeSafe } from "./whitespace.js";
 import { runWearablesCliCommand } from "./wearables/cli.js";
 import { registerMeetingsCommands } from "./cli/meetings-commands.js";
-import { registerOkfCommands } from "./cli/okf-commands.js";
+import { registerExportOkfCommand, registerOkfCommands } from "./cli/okf-commands.js";
 import { registerSkillsCommands } from "./cli/skills-commands.js";
 import { registerResearchStatusCommands } from "./cli/research-status-commands.js";
 import { registerCreationLedgerCommands } from "./cli/creation-ledger-commands.js";
@@ -4367,7 +4367,7 @@ export function registerCli(
             return;
           }
           console.log("OK");
-        });
+        }); registerExportOkfCommand(exportCmd, orchestrator);
 
       const importCmd = cmd
         .command("import")

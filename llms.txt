@@ -106,8 +106,10 @@ Every memory file carries an inert `type` field alongside the canonical
 reports conformance findings (exit 1 when any remain; --json supported).
 `remnic okf sweep` backfills missing `type` values without bumping
 `updated` (opt-in via okf.sweepEnabled, default false; `type` emission
-itself is gated by okf.conformanceEnabled, default true). Full mapping
-and finding codes: docs/okf.md.
+itself is gated by okf.conformanceEnabled, default true).
+`remnic export okf --out <dir>` writes a portable plaintext OKF bundle
+(lossy interchange). Capsules remain the lossless Remnic transport.
+Full mapping and finding codes: docs/okf.md.
 
 SEARCH BACKENDS
 
