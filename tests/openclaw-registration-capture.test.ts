@@ -135,7 +135,7 @@ test("flush plan pins configured gateway task model", async () => {
   });
 });
 
-test("flush plan prompt constrains writes to the allowed flush-plan file", async () => {
+test("flush plan advertises writeRestrictPrefix and does not ban workspace writes", async () => {
   await withCapturedRegistration((plugin) => {
     const capture = captureOpenClawRegistrationApi();
 
@@ -148,8 +148,11 @@ test("flush plan prompt constrains writes to the allowed flush-plan file", async
     const prompt = `${String(plan.prompt)}\n${String(plan.systemPrompt)}`;
 
     assert.equal(plan.relativePath, "state/plugins/openclaw-remnic/flush-plan.md");
-    assert.match(prompt, /allowed flush-plan file/i);
-    assert.match(prompt, /Do not create files, directories, or dated paths/i);
+    assert.equal(plan.writeRestrictPrefix, "state/plugins/openclaw-remnic/");
+    assert.match(prompt, /flush-plan file/i);
+    assert.match(prompt, /dated memory paths/i);
+    assert.match(prompt, /credentials/i);
+    assert.doesNotMatch(prompt, /\bonly\b/i);
     assert.doesNotMatch(prompt, /memory-candidates/i);
     assert.doesNotMatch(prompt, /memory candidates/i);
   });
