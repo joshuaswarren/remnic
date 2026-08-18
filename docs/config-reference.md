@@ -1133,6 +1133,9 @@ See [compounding.md](compounding.md).
 | `semanticDedupEnabled` | `true` | Write-time semantic similarity guard (issue #373) — embeds each candidate fact, queries the top-K nearest neighbors, and skips the write when cosine similarity ≥ `semanticDedupThreshold`. Fails open when the embedding backend is unavailable. |
 | `semanticDedupThreshold` | `0.92` | Cosine similarity threshold in `[0, 1]` above which a candidate fact is treated as a near-duplicate and skipped. |
 | `semanticDedupCandidates` | `5` | Number of nearest-neighbor candidates to compare against during the write-time semantic dedup check. |
+| `noveltyGateEnabled` | `false` | Write-path embedding-density novelty gate (issue #1953). Off = unchanged persist path. |
+| `noveltyAddThreshold` | `0.55` | Novelty score ≥ this value is ADD (skip semantic/LLM dedup). |
+| `noveltyNoopThreshold` | `0.15` | Novelty score ≤ this value is NOOP (drop; do not write contentHashIndex). Between the two thresholds is UNCERTAIN. |
 | `factArchivalEnabled` | `false` | Archive old, low-value facts |
 | `factArchivalAgeDays` | `90` | Minimum age to archive |
 | `factArchivalMaxImportance` | `0.3` | Maximum importance to archive |

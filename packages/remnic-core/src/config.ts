@@ -48,6 +48,7 @@ import { parseSkillProjectionConfig } from "./procedural/skill-projection.js";
 import { parseDriftDetectionConfig } from "./preferences/drift-config.js";
 import { parseContradictionLocalizationConfig, parseContradictionScanConfig } from "./contradiction-config.js";
 import { parseGraphPathScoringConfig } from "./graph-path-scoring-config.js";
+import { parseWritePathDedupConfig } from "./dedup/novelty-gate.js";
 import { hasLegacyConnectorEntries } from "./connectors/paths.js";
 import {
   parseQmdChunkStrategy,
@@ -3190,28 +3191,7 @@ export function parseConfig(
 
     // v6.0 Fact deduplication & archival
     factDeduplicationEnabled: cfg.factDeduplicationEnabled !== false,
-    // Issue #373 — write-time semantic similarity guard
-    semanticDedupEnabled: cfg.semanticDedupEnabled !== false,
-    // Guard against NaN / Infinity — Number.isFinite rejects both and falls
-    // back to the documented default so the semantic dedup guard cannot be
-    // silently disabled by a malformed config value.
-    semanticDedupThreshold:
-      typeof cfg.semanticDedupThreshold === "number" &&
-      Number.isFinite(cfg.semanticDedupThreshold)
-        ? Math.min(1, Math.max(0, cfg.semanticDedupThreshold))
-        : 0.92,
-    // Zero is a valid "disable candidate lookup" signal and must be preserved.
-    // Only negative or non-finite values fall back to the default of 5.
-    // Fractional values in (0, 1) floor to 0, which would silently disable
-    // semantic dedup despite a clearly non-zero operator intent — clamp to 1.
-    semanticDedupCandidates: (() => {
-      const raw = cfg.semanticDedupCandidates;
-      if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 0) return 5;
-      const n = Math.floor(raw);
-      // Positive fractional input (e.g. 0.5) should mean "at least 1 candidate",
-      // not "disabled". Only explicit 0 is the operator's disable signal.
-      return raw > 0 && n === 0 ? 1 : n;
-    })(),
+    ...parseWritePathDedupConfig(cfg),
     factArchivalEnabled: cfg.factArchivalEnabled === true,
     factArchivalAgeDays:
       typeof cfg.factArchivalAgeDays === "number" ? cfg.factArchivalAgeDays : 90,

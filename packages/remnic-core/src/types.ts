@@ -1939,19 +1939,12 @@ export interface PluginConfig extends BoundedJsonlStateConfig, SecurityConfig, D
   // v6.0 Fact deduplication & archival
   /** Enable content-hash deduplication to prevent storing semantically identical facts. */
   factDeduplicationEnabled: boolean;
-  /**
-   * Issue #373 — Write-time semantic similarity guard. When enabled (default),
-   * the orchestrator embeds each candidate fact and queries the existing
-   * embedding index for its top-K nearest neighbors. If the best cosine
-   * similarity is at or above `semanticDedupThreshold`, the fact is dropped
-   * as a near-duplicate. Fails open (keeps the fact) if the embedding backend
-   * is unavailable.
-   */
   semanticDedupEnabled: boolean;
-  /** Cosine similarity threshold in [0, 1] above which a candidate fact is skipped. */
   semanticDedupThreshold: number;
-  /** Number of nearest-neighbor candidates to consider during semantic dedup. */
   semanticDedupCandidates: number;
+  noveltyGateEnabled: boolean;
+  noveltyAddThreshold: number;
+  noveltyNoopThreshold: number;
   /** Enable automatic archival of old, low-importance, rarely-accessed facts. */
   factArchivalEnabled: boolean;
   /** Minimum age in days before a fact is eligible for archival. */
