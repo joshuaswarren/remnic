@@ -53,6 +53,38 @@ The activity subsystem is off by default. It synchronizes redacted text snapshot
 | `activity.sources.machineLabel` | `(required)` | Stable capture-machine label used to isolate rows and cursors. |
 | `activity.sources.baseUrl` | `(required)` | HTTP or HTTPS URL of the local capture daemon; must target a loopback host (`localhost`, `127.0.0.0/8`, or `::1`) since the bearer token travels in the request. |
 | `activity.sources.token` | `(unset)` | Literal bearer token sent to a trusted local capture daemon over loopback. This parser does not resolve secret references or `${ENV_VAR}` placeholders; omit the field when the daemon needs no auth. |
+| `activity.timeline.enabled` | `false` | Master gate for timeline-card derivation (issue #2049). When false, no timeline cards are built or exposed. |
+
+### Timeline cards (issue #2049)
+
+The timeline layer derives replayable day cards from stored activity
+snapshots — it never creates a second evidence store. All intervals are
+half-open `[start, end)` UTC; day bounds reuse the digest's DST-aware window,
+so a spring-forward day is 23 hours and a fall-back day is 25. Determinism
+rules, in order:
+
+- Cards are built per capture machine from observations sorted by capture
+  instant and content hash, never by array position.
+  Two adjacent observations merge only when they share the exact
+  `(app, windowTitle)` pair and are at most 2 minutes apart; a user pause
+  between them also closes the card.
+- A card ends at its last observation plus at most 15 minutes of dwell
+  (matching the digest dwell cap), clipped by the next observation on the
+  machine, a pause, or the day end — cards never overlap on a track.
+- Any uncovered remainder between cards on a machine becomes a derived idle
+  card with no evidence; a user-declared pause becomes a pause card and wins
+  over idle covering the same minutes. Nothing is invented for gaps: idle and
+  pause cards are flagged by `kind` and carry no evidence references, and the
+  day's leading/trailing uncovered ranges stay card-free.
+- Card ids hash machine, first/last evidence identity, and bounds — not
+  wall-clock or position — so identical evidence replays into byte-identical
+  cards across runs and process restarts.
+- Classification is a deterministic first pass over app / browser-domain /
+  window-title signals; unmatched activity stays visible in the reserved
+  `system.unknown` category (confidence 0) instead of being reassigned.
+- Manual category/title corrections are keyed by stable card id, stored in
+  `state/activity-timeline.sqlite`, survive rebuilds, and are reverted by an
+  explicit reset.
 
 ## Location
 
@@ -2049,6 +2081,7 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `activity.minConfidence` | `0.7` | `0.7` |
 | `activity.minImportance` | `"normal"` | `"normal"` |
 | `activity.maxMemoriesPerDay` | `0` | `0` (no count cap) |
+| `activity.timeline.enabled` | `false` | `false` |
 
 ## Meetings (issue #1900)
 

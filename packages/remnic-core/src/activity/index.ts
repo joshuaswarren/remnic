@@ -14,4 +14,5 @@ export * from "./runner.js";
 export * from "./scheduler.js";
 export * from "./config.js";
 export * from "./reindex.js";
+export * from "./timeline/index.js";
 export * from "./memory-gen.js";

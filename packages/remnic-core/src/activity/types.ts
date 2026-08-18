@@ -96,6 +96,11 @@ export interface ActivitySourceConfig {
   token?: string;
 }
 
+/** Opt-in timeline-card derivation settings (issue #2049). Default off. */
+export interface ActivityTimelineConfig {
+  enabled: boolean;
+}
+
 /** Opt-in activity synchronization + trust-gated extraction settings. */
 export interface ActivityConfig {
   enabled: boolean;
@@ -114,4 +119,5 @@ export interface ActivityConfig {
   minImportance: ImportanceLevel;
   /** `0` means no count cap. */
   maxMemoriesPerDay: number;
+  timeline: ActivityTimelineConfig;
 }
