@@ -7,20 +7,21 @@ export async function runOkfCliCommand(
   ctx: { memoryDir: string; conformanceEnabled: boolean; sweepEnabled: boolean },
 ): Promise<number> {
   const [subcommand, ...rest] = argv;
+  if (subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
+    io.stdout.write(`usage: remnic okf <lint|sweep> [--json]
+  lint   report OKF conformance findings (exit 1 when findings remain)
+  sweep  backfill missing type values (requires okf.sweepEnabled)
+`);
+    return 0;
+  }
   if (subcommand !== "lint" && subcommand !== "sweep") {
     io.stderr.write("okf: expected lint or sweep\n");
     return 1;
   }
-  const jsonIndex = rest.indexOf("--json");
-  if (jsonIndex !== -1 && rest[jsonIndex + 1] === undefined && rest.includes("--json") && rest.some((t) => t.startsWith("--json="))) {
-    // keep --json as a boolean flag; value-taking flags are rejected below
-  }
   for (const token of rest) {
     if (token === "--json") continue;
-    if (token.startsWith("--") && !token.includes("=") && rest[rest.indexOf(token) + 1] === undefined) {
-      io.stderr.write(`okf: ${token} expects a value\n`);
-      return 1;
-    }
+    io.stderr.write(`okf: unexpected argument '${token}' — usage: remnic okf <lint|sweep> [--json]\n`);
+    return 1;
   }
   const json = rest.includes("--json");
   if (subcommand === "sweep") {

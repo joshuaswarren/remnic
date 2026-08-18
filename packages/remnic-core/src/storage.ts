@@ -1104,16 +1104,16 @@ function parseEntityFrontmatter(raw: string): {
 
   const values: Record<string, string> = {};
   const extraLines: string[] = [];
-  const recognizedKeys = new Set([
-    "created",
-    "updated",
-    "synthesis_updated_at",
-    "synthesis_timeline_count",
-    "synthesis_structured_fact_count",
-    "synthesis_structured_fact_digest",
-    "synthesis_version",
-    "type",
-  ]);
+  const recognizedKeys: Record<string, true> = {
+    created: true,
+    updated: true,
+    type: true,
+    synthesis_updated_at: true,
+    synthesis_timeline_count: true,
+    synthesis_structured_fact_count: true,
+    synthesis_structured_fact_digest: true,
+    synthesis_version: true,
+  };
   for (const line of match[1].split(/\r?\n/)) {
     if (/^\s/.test(line)) {
       extraLines.push(line);
@@ -1125,7 +1125,7 @@ function parseEntityFrontmatter(raw: string): {
       continue;
     }
     const key = line.slice(0, colonIdx).trim();
-    if (!recognizedKeys.has(key)) {
+    if (recognizedKeys[key] !== true) {
       extraLines.push(line);
       continue;
     }
@@ -3609,7 +3609,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const completionFingerprint = await runLegacyEntityCanonicalIdMigration(
       this as unknown as EntityCanonicalIdMigrationHost,
       (content) => parseEntityFile(content, this.entitySchemas),
-      (entity) => serializeEntityFile(entity, this.entitySchemas),
+      (entity) => serializeEntityFile(entity, this.entitySchemas, this.okfConformanceEnabled()),
       createMemoryEntityRefSerializer(serializeFrontmatter)
     );
     return completionFingerprint;

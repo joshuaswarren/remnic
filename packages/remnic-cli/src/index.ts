@@ -179,7 +179,8 @@ import {
   validateCapabilitiesForMint,
 } from "@remnic/core";
 import { PLUGIN_ID as REMNIC_OPENCLAW_PLUGIN_ID, resolveRemnicPluginEntry } from "@remnic/core/plugin-id.js";
-import { runMeetingsBinaryCommand } from "./commands/meetings.js"; import { runOkfBinaryCommand } from "./commands/okf.js";
+import { runMeetingsBinaryCommand } from "./commands/meetings.js";
+import { runOkfBinaryCommand } from "./commands/okf.js";
 import { runExternalWikiBinaryCommand } from "./commands/external-wiki.js";
 // @remnic/export-weclone is an optional install surface (training:export
 // only uses it). Load lazily so the CLI works without it — see
@@ -13474,6 +13475,9 @@ Usage:
   remnic meetings <list|show|build>
     Retrospective meetings: list, show, or build a day's meetings.
     Run "remnic meetings help" for details.
+  remnic okf <lint|sweep> [--json]
+    OKF v0.1 conformance: lint reports missing frontmatter/type findings,
+    sweep backfills missing type values (okf.sweepEnabled).
   remnic external-wiki search <query...> [--wiki-id <id>] [--limit <1-20>] [--max-chars-per-hit <100-8000>] [--json]
   remnic doctor                Run diagnostics
   remnic config                Show current config
@@ -13481,14 +13485,7 @@ Usage:
   remnic openclaw upgrade      Safe OpenClaw npm upgrade with backups and gateway restart
   remnic openclaw migrate-engram
     Migrate legacy @joshuaswarren/openclaw-engram installs with legacy extension backup
-    --yes / -y / --force       Skip prompts
-    --dry-run                  Preview changes without writing
-    --memory-dir <path>        Custom memory directory
-    --config <path>            Custom OpenClaw config path
-    --version <tag>            Upgrade @remnic/plugin-openclaw from a specific npm tag/version
-    --plugin-dir <path>        Custom OpenClaw extension directory
-    --legacy-plugin-dir <path> Custom legacy extension directory for migration backup
-    --no-restart               Skip the final launchctl kickstart after upgrade
+    Run "remnic openclaw migrate-engram" for the full option list.
   remnic daemon <start|stop|restart|install|uninstall|status>  Manage background server
   remnic token <generate|list|revoke> [connector-id]  Manage auth tokens
   remnic tree <generate|watch|validate>  Generate context tree

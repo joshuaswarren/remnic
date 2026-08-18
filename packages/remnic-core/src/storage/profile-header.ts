@@ -245,12 +245,6 @@ function findHtmlTagPrefix(line: string): HtmlTag | null {
   return null;
 }
 
-function isRawHtmlBlockTerminator(line: string): boolean {
-  const normalizedLine = line.toLowerCase();
-  return RAW_HTML_BLOCK_TAGS.some((name) =>
-    hasRawHtmlBlockEndMarker(normalizedLine, `</${name}>`),
-  );
-}
 
 function findHtmlTags(line: string): HtmlTag[] {
   const tags: HtmlTag[] = [];
@@ -429,9 +423,6 @@ function shouldCloseHtmlBlock(line: string, endMarker: string): boolean {
 }
 
 
-function hasRawHtmlBlockEndMarker(line: string, endMarker: string): boolean {
-  return line.includes(endMarker);
-}
 function canStartGenericHtmlBlock(
   lines: ProfileLine[],
   index: number,
@@ -916,15 +907,16 @@ export function withOkfProfileFrontmatter(content: string, timestamp: string, en
  * hand-written content without the marker round-trips byte-identically.
  */
 export function stripOkfProfileFrontmatter(content: string): string {
-  if (!content.startsWith("---\n")) return content;
+  if (!content.startsWith("---\n") && !content.startsWith("---\r\n")) return content;
   const lines = content.split("\n");
   for (let index = 1; index < lines.length; index += 1) {
-    if (lines[index] === "---") {
-      return lines.slice(1, index).some((line) => line.startsWith("type: Profile"))
+    const line = lines[index]!;
+    if (line === "---" || line === "---\r") {
+      return lines.slice(1, index).some((l) => l.startsWith("type: Profile"))
         ? lines.slice(index + 1).join("\n")
         : content;
     }
-    if (lines[index] === "" || lines[index] === "...") return content;
+    if (line === "" || line === "\r" || line === "...") return content;
   }
   return content;
 }

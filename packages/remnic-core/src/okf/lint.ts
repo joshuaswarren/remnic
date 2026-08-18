@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { MAGIC_BYTES } from "../secure-store/secure-fs.js";
 import { OKF_RESERVED_BASENAMES } from "./type-mapping.js";
 
 export interface OkfLintFinding {
@@ -16,7 +17,9 @@ export interface OkfLintResult {
 }
 
 function isEncryptedBlob(raw: string): boolean {
-  return raw.startsWith("-----BEGIN REMNIC") || raw.includes("enc:v1");
+  // secure-store writes a binary envelope starting with MAGIC_BYTES at offset
+  // 0 — match that fixed position, never a substring anywhere in the file.
+  return raw.startsWith(MAGIC_BYTES.toString("ascii"));
 }
 
 function hasFrontmatter(raw: string): boolean {
@@ -27,7 +30,7 @@ function readType(raw: string): string | undefined {
   const close = raw.indexOf("\n---", 4);
   if (close === -1) return undefined;
   const block = raw.slice(4, close);
-  const match = /^type:\s*(.*)$/m.exec(block);
+  const match = /^type:[ \t]*(.*)$/m.exec(block);
   if (!match) return undefined;
   const value = match[1]!.trim().replace(/^["']|["']$/g, "");
   return value;

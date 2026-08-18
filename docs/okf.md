@@ -2,7 +2,7 @@
 
 Remnic memory directories are OKF v0.1 knowledge bundles: markdown files with YAML frontmatter. `category` stays the canonical Remnic field. `type` is inert interop metadata.
 
-Spec: https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md
+Spec (v0.1 revision): https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/ee67a5ca27044ebe7c38385f5b6cffc2305a9c1a/okf/SPEC.md
 
 ## Commands
 
