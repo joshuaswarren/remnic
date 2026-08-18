@@ -411,7 +411,7 @@ The search index lives separately and is rebuildable from these files at any tim
 
 See [docs/importers.md](docs/importers.md) for input formats, provenance metadata, and the full privacy breakdown.
 
-**Open Knowledge Format (OKF).** The memory directory doubles as an OKF v0.1 knowledge bundle: every memory file ships an inert `type` field next to Remnic's canonical `category`, so OKF-aware consumers can read your store without a converter. `category` stays authoritative — `type` is interop metadata and never overrides it on parse. Two commands keep the bundle conformant:
+**Open Knowledge Format (OKF).** The memory directory doubles as an OKF v0.1 knowledge bundle: every memory file ships an inert `type` field next to Remnic's canonical `category`, so OKF-aware consumers can read your store without a converter. `category` stays authoritative — `type` is interop metadata and never overrides it on parse. Two commands keep the bundle conformant, and a third exports a portable copy for interchange:
 
 | Command | What it does |
 |---------|--------------|

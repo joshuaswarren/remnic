@@ -28,7 +28,7 @@ Published npm packages:
   @remnic/core             Memory engine: orchestrator, storage, extraction,
                            search, entity graph, trust zones, LCM.
                            Framework-agnostic; every adapter builds on it.
-  @remnic/cli              Standalone `remnic` CLI (35 top-level commands).
+  @remnic/cli              Standalone `remnic` CLI (36 top-level commands).
                            Ships `remnic` and legacy `engram` bins.
   @remnic/server           Standalone HTTP + MCP server. Multi-token auth,
                            daemon mode, OAuth facade. Ships `remnic-server`
@@ -181,13 +181,13 @@ MCP tools:
   inspection, observation, correction planning, peers, wearables, and
   maintenance. Every MCP tool ships an outputSchema.
 
-Standalone CLI (`remnic`, 35 top-level commands, plus a
+Standalone CLI (`remnic`, 36 top-level commands, plus a
 `benchmark` alias of `bench`):
   init, migrate, status, query, action-confidence, xray, doctor, config,
   daemon, token, tree, onboard, curate, review, sync, offline, oauth, dedup,
   connectors, space, bench (alias benchmark), briefing, versions, binary,
   taxonomy, enrich, procedural, openclaw, extensions, training:export, import,
-  import-lossless-claw, wearables, capsule.
+  import-lossless-claw, wearables, capsule, export.
   Full reference: docs/cli.md.
 
 OpenClaw-hosted surface (`openclaw engram <command>`):
