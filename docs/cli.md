@@ -22,7 +22,7 @@ New to Remnic? Start with the [quickstart](guides/quickstart.md), then come back
 - Placeholders use `<angle-brackets>`. Optional arguments use `[square-brackets]`.
 - Run any command with `--help` for its full option list.
 
-Remnic ships 35 top-level command names (`benchmark` is a compatibility alias of `bench`), grouped below by what you reach for them.
+Remnic ships 36 top-level command names (`benchmark` is a compatibility alias of `bench`), grouped below by what you reach for them.
 
 ## Setup & health
 
@@ -120,6 +120,7 @@ remnic capsule lineage --fork-id <id> --root <memory-dir>
 | `remnic import --adapter <name> --file <path> [--dry-run] [--batch-size <n>]` | Import from a supported export file |
 | `remnic import-lossless-claw --src <path> [--dry-run] [--session-filter <id>]` | Migrate a lossless-claw LCM database into Remnic's LCM mode |
 | `remnic training:export --format <name> --output <path>` | Export memories as a fine-tuning dataset |
+| `remnic export okf --out <dir> [--namespace <ns>] [--include-status <list>] [--force]` | Export the memory store as a portable plaintext OKF v0.1 knowledge bundle (`--log` adds log.md; `--include-profile` opts in) |
 
 `remnic import --adapter` supports exactly these adapters: `chatgpt`, `claude`, `gemini`, `mem0`, and `supermemory`. WeClone is not an import adapter — it is hosted-only via `openclaw engram bulk-import --source weclone`. Lossless-claw has its own dedicated `remnic import-lossless-claw` command above.
 

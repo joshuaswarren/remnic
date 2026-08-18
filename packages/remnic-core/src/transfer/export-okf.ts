@@ -1,11 +1,12 @@
 import { lstatSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import type { Stats } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 
 import { parseOaiMemCitation } from "../citations.js";
 import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import { normalizeProjectionPreview } from "../memory-projection-format.js";
+import { resolveNamespaceChildRoot } from "../namespaces/path.js";
 import { lintOkfDir } from "../okf/lint.js";
 import { okfTypeForMemory, OKF_PROFILE_TYPE } from "../okf/type-mapping.js";
 import { StorageManager } from "../storage.js";
@@ -27,6 +28,7 @@ const MEMORY_STATUSES: readonly MemoryStatus[] = [
 
 export interface ExportOkfOptions {
   memoryDir: string;
+  namespace?: string;
   outDir: string;
   includeStatus?: readonly string[];
   includeCategories?: readonly string[];
@@ -60,15 +62,19 @@ export function parseIncludeStatus(raw: unknown): MemoryStatus[] {
 export async function exportOkfBundle(opts: ExportOkfOptions): Promise<ExportOkfResult> {
   const outDir = path.resolve(opts.outDir);
   rejectSymlinkPath(outDir);
+  const replaceExisting = inspectOutDir(outDir, opts.force === true);
+  const memoryDir = opts.namespace
+    ? resolveNamespaceChildRoot(opts.memoryDir, opts.namespace)
+    : opts.memoryDir;
   const includeStatus = new Set(parseIncludeStatus(opts.includeStatus));
   const includeCategories = opts.includeCategories?.length ? new Set(opts.includeCategories) : null;
   const excludeTags = new Set(opts.excludeTags ?? []);
-  const storage = new StorageManager(opts.memoryDir);
+  const storage = new StorageManager(memoryDir);
   const memories = await storage.readAllMemories();
   const included: MemoryFile[] = [];
   let excluded = 0;
   for (const memory of memories) {
-    const rel = toRel(memory.path, opts.memoryDir);
+    const rel = toRel(memory.path, memoryDir);
     if (!opts.includeWearables && rel.startsWith("wearables/")) {
       excluded += 1;
       continue;
@@ -88,17 +94,21 @@ export async function exportOkfBundle(opts: ExportOkfOptions): Promise<ExportOkf
     }
     included.push(memory);
   }
-  included.sort((a, b) => toRel(a.path, opts.memoryDir).localeCompare(toRel(b.path, opts.memoryDir)));
+  included.sort((a, b) => toRel(a.path, memoryDir).localeCompare(toRel(b.path, memoryDir)));
 
-  const staging = await mkdtemp(path.join(os.tmpdir(), "remnic-okf-export-"));
+  const outParent = path.dirname(outDir);
+  mkdirSync(outParent, { recursive: true });
+  // Stage as a hidden sibling of --out so the publish rename never crosses
+  // a filesystem boundary (EXDEV when /tmp and --out live on different mounts).
+  const staging = await mkdtemp(path.join(outParent, ".remnic-okf-export-"));
   const byCategory: Record<string, number> = {};
   const idToRel = new Map<string, string>();
   for (const memory of included) {
-    const rel = toRel(memory.path, opts.memoryDir);
+    const rel = toRel(memory.path, memoryDir);
     idToRel.set(memory.frontmatter.id, rel);
   }
   for (const memory of included) {
-    const rel = toRel(memory.path, opts.memoryDir);
+    const rel = toRel(memory.path, memoryDir);
     const rendered = renderMemory(memory, rel, idToRel);
     writeBundleFile(staging, rel, rendered);
     const category = memory.frontmatter.category;
@@ -129,7 +139,7 @@ export async function exportOkfBundle(opts: ExportOkfOptions): Promise<ExportOkf
     writeBundleFile(staging, "log.md", renderLog(events, idToRel, opts.logMaxEntries ?? DEFAULT_OKF_LOG_MAX_ENTRIES));
   }
 
-  writeIndexes(staging, included, opts.memoryDir);
+  writeIndexes(staging, included, memoryDir);
   const lint = lintOkfDir(staging);
   const blocking = lint.findings.filter((f) => f.code !== "skipped_encrypted" && f.code !== "reserved_basename");
   if (blocking.length > 0) {
@@ -137,7 +147,7 @@ export async function exportOkfBundle(opts: ExportOkfOptions): Promise<ExportOkf
     throw new Error(`OKF export failed lint: ${blocking.map((f) => `${f.file}: ${f.message}`).join("; ")}`);
   }
 
-  publishBundle(staging, outDir, opts.force === true);
+  publishBundle(staging, outDir, replaceExisting);
   return {
     exported: included.length,
     excluded,
@@ -146,43 +156,45 @@ export async function exportOkfBundle(opts: ExportOkfOptions): Promise<ExportOkf
   };
 }
 
-function publishBundle(staging: string, outDir: string, force: boolean): void {
-  let exists = false;
+function inspectOutDir(outDir: string, force: boolean): boolean {
+  let stat: Stats;
   try {
-    const stat = lstatSync(outDir);
-    if (stat.isSymbolicLink()) throw new Error(`--out must not be a symlink: ${outDir}`);
-    exists = true;
-    const entries = listNonDot(outDir);
-    if (entries.length > 0 && !force) {
-      rmSync(staging, { recursive: true, force: true });
-      throw new Error(`--out ${outDir} is not empty; pass --force to replace it`);
-    }
+    stat = lstatSync(outDir);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw err;
   }
-  mkdirSync(path.dirname(outDir), { recursive: true });
-  if (exists && force) {
-    const backup = `${outDir}.okf-prev`;
-    try {
-      renameSync(outDir, backup);
-    } catch {
-      rmSync(staging, { recursive: true, force: true });
-      throw new Error(`cannot replace --out ${outDir}`);
-    }
-    try {
-      renameSync(staging, outDir);
-      rmSync(backup, { recursive: true, force: true });
-    } catch (err) {
-      try {
-        renameSync(backup, outDir);
-      } catch {
-        // Keep backup if restore fails.
-      }
-      throw err;
-    }
+  if (stat.isSymbolicLink()) throw new Error(`--out must not be a symlink: ${outDir}`);
+  if (!stat.isDirectory()) throw new Error(`--out exists and is not a directory: ${outDir}`);
+  if (!force && listNonDot(outDir).length > 0) {
+    throw new Error(`--out ${outDir} is not empty; pass --force to replace it`);
+  }
+  return true;
+}
+
+function publishBundle(staging: string, outDir: string, exists: boolean): void {
+  if (!exists) {
+    renameSync(staging, outDir);
     return;
   }
-  renameSync(staging, outDir);
+  const backup = `${outDir}.okf-prev`;
+  try {
+    renameSync(outDir, backup);
+  } catch {
+    rmSync(staging, { recursive: true, force: true });
+    throw new Error(`cannot replace --out ${outDir}`);
+  }
+  try {
+    renameSync(staging, outDir);
+    rmSync(backup, { recursive: true, force: true });
+  } catch (err) {
+    try {
+      renameSync(backup, outDir);
+    } catch {
+      // Keep backup if restore fails.
+    }
+    throw err;
+  }
 }
 
 function renderMemory(memory: MemoryFile, rel: string, idToRel: Map<string, string>): string {
@@ -224,31 +236,46 @@ function renderRelated(link: MemoryLink, idToRel: Map<string, string>): string {
 
 function writeIndexes(root: string, memories: MemoryFile[], memoryDir: string): void {
   const groups = new Map<string, MemoryFile[]>();
+  const byDir = new Map<string, MemoryFile[]>();
   for (const memory of memories) {
     const rel = toRel(memory.path, memoryDir);
     const dir = path.posix.dirname(rel);
-    const key = dir === "." ? "" : dir.split("/")[0] ?? "";
-    const list = groups.get(key) ?? [];
+    const key = dir === "." ? "" : (dir.split("/")[0] ?? "");
+    const section = groups.get(key) ?? [];
+    section.push(memory);
+    groups.set(key, section);
+    if (dir === ".") continue;
+    const list = byDir.get(dir) ?? [];
     list.push(memory);
-    groups.set(key, list);
+    byDir.set(dir, list);
   }
+  const entry = (memory: MemoryFile): string => {
+    const rel = toRel(memory.path, memoryDir);
+    const title = firstHeading(memory.content) ?? memory.frontmatter.id;
+    const description = normalizeProjectionPreview(memory.content);
+    return `* [${title}](/${rel}) - ${description}`;
+  };
+  const byPath = (a: MemoryFile, b: MemoryFile): number =>
+    toRel(a.path, memoryDir).localeCompare(toRel(b.path, memoryDir));
   const sections = [...groups.keys()].sort().map((key) => {
     const heading = key === "" ? "Root" : humanize(key);
-    const lines = (groups.get(key) ?? [])
-      .sort((a, b) => toRel(a.path, memoryDir).localeCompare(toRel(b.path, memoryDir)))
-      .map((memory) => {
-        const rel = toRel(memory.path, memoryDir);
-        const title = firstHeading(memory.content) ?? memory.frontmatter.id;
-        const description = normalizeProjectionPreview(memory.content);
-        return `* [${title}](/${rel}) - ${description}`;
-      });
+    const lines = (groups.get(key) ?? []).sort(byPath).map(entry);
     return `## ${heading}\n\n${lines.join("\n")}`;
   });
   writeBundleFile(root, "index.md", `---\nokf_version: "${OKF_EXPORT_VERSION}"\n---\n\n${sections.join("\n\n")}\n`);
+  // OKF spec section 8: an index MAY appear in any directory. Give every
+  // directory that directly holds exported concepts a child index — one
+  // section, no frontmatter (only the bundle root may carry okf_version).
+  for (const dir of [...byDir.keys()].sort()) {
+    const lines = (byDir.get(dir) ?? []).sort(byPath).map(entry);
+    const name = dir.split("/").at(-1) ?? dir;
+    const heading = /^\d{4}-\d{2}-\d{2}$/.test(name) ? name : humanize(name);
+    writeBundleFile(root, `${dir}/index.md`, `# ${heading}\n\n${lines.join("\n")}\n`);
+  }
 }
 
 function renderLog(
-  events: Array<{ timestamp?: string; type?: string; action?: string; memoryId?: string }>,
+  events: Array<{ timestamp?: string; eventType?: string; type?: string; action?: string; memoryId?: string }>,
   idToRel: Map<string, string>,
   maxEntries: number,
 ): string {
@@ -267,7 +294,7 @@ function renderLog(
   for (const day of days) {
     parts.push(`## ${day}`, "");
     for (const event of byDay.get(day) ?? []) {
-      const action = boldAction(event.type ?? event.action ?? "Update");
+      const action = boldAction(event.eventType ?? event.type ?? event.action ?? "Update");
       const id = event.memoryId;
       const rel = id ? idToRel.get(id) : undefined;
       const target = rel ? `[${id}](/${rel})` : id ?? "";
@@ -312,17 +339,19 @@ function yamlLine(key: string, value: unknown): string[] {
 }
 
 function yamlScalar(value: unknown): string {
-  if (typeof value === "string") {
-    if (value === "" || /[:#\n]/.test(value) || value !== value.trim()) return JSON.stringify(value);
-    return value;
-  }
+  if (typeof value === "string") return JSON.stringify(value);
   return String(value);
 }
 
 function firstHeading(content: string): string | undefined {
   for (const line of content.split("\n")) {
-    const match = /^#\s+(.+)$/.exec(line.trim());
-    if (match) return match[1]!.trim();
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("#") || trimmed.startsWith("##")) continue;
+    const heading = trimmed.slice(1);
+    const separator = heading[0];
+    if (separator !== " " && separator !== "\t") continue;
+    const title = heading.trim();
+    if (title) return title;
   }
   return undefined;
 }

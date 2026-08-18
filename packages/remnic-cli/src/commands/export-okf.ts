@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import path from "node:path";
 import { Orchestrator, parseConfig, resolveRemnicConfigRecord } from "@remnic/core";
 import { exportOkfBundle, parseIncludeStatus } from "@remnic/core/export-okf";
 import { resolveConfigPath } from "../index.js";
@@ -27,20 +26,29 @@ export async function runExportOkfBinaryCommand(rest: string[]): Promise<void> {
   const args = rest.slice(1);
   let orchestrator: Orchestrator | undefined;
   try {
+    // Config/bootstrap failures get a constant message: parseConfig error
+    // strings can embed config values (CodeQL js/clear-text-logging), so
+    // they must never reach console output.
+    try {
+      const configPath = resolveConfigPath();
+      const raw = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {};
+      const config = parseConfig(resolveRemnicConfigRecord(raw));
+      orchestrator = new Orchestrator(config);
+      await orchestrator.initialize();
+      await orchestrator.deferredReady;
+    } catch {
+      console.error(
+        "export okf: failed to load the Remnic config or start the memory engine — run `remnic doctor` and check the config file for errors",
+      );
+      process.exitCode = 1;
+      return;
+    }
     const out = takeFlag(args, "--out");
     if (!out) throw new Error("Missing --out");
-    const namespace = takeFlag(args, "--namespace") ?? "";
-    const configPath = resolveConfigPath();
-    const raw = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {};
-    const config = parseConfig(resolveRemnicConfigRecord(raw));
-    orchestrator = new Orchestrator(config);
-    await orchestrator.initialize();
-    await orchestrator.deferredReady;
-    const memoryDir = namespace
-      ? path.join(orchestrator.config.memoryDir, "namespaces", namespace)
-      : orchestrator.config.memoryDir;
+    const namespace = takeFlag(args, "--namespace");
     const result = await exportOkfBundle({
-      memoryDir,
+      memoryDir: orchestrator.config.memoryDir,
+      namespace: namespace || undefined,
       outDir: out,
       includeStatus: parseIncludeStatus(takeFlag(args, "--include-status")),
       includeCategories: takeFlag(args, "--include-categories")?.split(","),
