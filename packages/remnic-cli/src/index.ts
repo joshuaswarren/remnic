@@ -13458,8 +13458,7 @@ Usage:
   remnic query <text> [--json] [--explain] Query memories (use --explain for tier breakdown)
   remnic xray <query> [--format text|markdown|json] [--budget <chars>] [--namespace <ns>] [--out <path>]
     Run a recall with X-ray capture and print the unified snapshot
-    (tier + audit + MMR + filters). Part of #570. Defaults to text
-    output on stdout.
+    (tier + audit + MMR + filters). Part of #570. Text output by default.
   remnic who-knows <topic> [--limit N] [--json] [--namespace <ns>]  Rank entities by topic expertise
   remnic wearables <status|check|sync|transcript|search|memories|speakers|corrections>
     Wearable transcript sources (Limitless / Bee / Omi): pull + clean +
@@ -13467,11 +13466,9 @@ Usage:
     and per-user corrections. Run "remnic wearables help" for details.
     Connectors install à la carte: npm install @remnic/connector-limitless
   remnic meetings <list|show|build>
-    Retrospective meetings: list stored records, show one by id, or build
-    (detect + fuse + store) a day's meetings from ingested audio + screen
-    activity. Run "remnic meetings help" for details.
+    Retrospective meetings: list, show, or build a day's meetings.
+    Run "remnic meetings help" for details.
   remnic external-wiki search <query...> [--wiki-id <id>] [--limit <1-20>] [--max-chars-per-hit <100-8000>] [--json]
-
   remnic doctor                Run diagnostics
   remnic config                Show current config
   remnic openclaw install      Configure OpenClaw to use Remnic memory (sets slot + entry)
