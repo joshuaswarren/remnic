@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { parseFrontmatterFields } from "./frontmatter.js";
 
 export type ReviewDeckChoice = "keep" | "prepare_fix" | "not_true";
 export type ReviewDeckRisk = "reversible";
@@ -255,18 +256,6 @@ function provenanceFromRow(row: ReviewDeckSourceRow): ReviewDeckEvidence[] {
   return provenance;
 }
 
-function parseFrontmatterFields(content: string): Record<string, string> {
-  if (!content.startsWith("---\n")) return {};
-  const end = content.indexOf("\n---", 4);
-  if (end === -1) return {};
-  const fields: Record<string, string> = {};
-  for (const line of content.slice(4, end).split("\n")) {
-    const colonIdx = line.indexOf(":");
-    if (colonIdx === -1) continue;
-    fields[line.slice(0, colonIdx).trim()] = line.slice(colonIdx + 1).trim();
-  }
-  return fields;
-}
 
 function idList(value: string | undefined): string[] {
   if (value === undefined || value.length === 0) return [];

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -30,16 +30,11 @@ test("@remnic/server build emits and advertises TypeScript declarations", async 
   assert.equal(pkg.exports?.["."]?.types, "./dist/index.d.ts");
   assert.equal(pkg.exports?.["."]?.import, "./dist/index.js");
   assert.equal(pkg.exports?.["."]?.["remnic-source"], "./src/index.ts");
-  assert.deepEqual(pkg.files, [
-    "bin/*.js",
-    "dist",
-    "src/index.ts",
-    "src/admin-console-config.ts",
-    "src/oauth.ts",
-    "src/server-env.ts",
-    "src/startup-readiness.ts",
-    "src/support-passport-runtime.ts",
-  ]);
+  const srcTs = readdirSync(path.join(SERVER_DIR, "src"))
+    .filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"))
+    .map((name) => `src/${name}`)
+    .sort();
+  assert.deepEqual([...(pkg.files ?? [])].sort(), ["bin/*.js", "dist", ...srcTs].sort());
   assert.match(pkg.scripts?.build ?? "", /\s--dts(\s|$)/);
 
   const pack = spawnSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
