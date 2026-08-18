@@ -1,7 +1,13 @@
 import { coerceBooleanLike, coerceNumber } from "../connectors/coerce.js";
 import { assertValidTimezone } from "./digest.js";
 import type { ImportanceLevel } from "../types.js";
-import type { ActivityConfig, ActivityExtractionMode, ActivitySourceConfig, ActivityTimelineConfig } from "./types.js";
+import type {
+  ActivityConfig,
+  ActivityExtractionMode,
+  ActivitySourceConfig,
+  ActivityTimelineConfig,
+  ActivityTimelineJournalConfig,
+} from "./types.js";
 
 const EXTRACTION_MODES: readonly ActivityExtractionMode[] = ["off", "smart"];
 const IMPORTANCE_LEVELS: readonly ImportanceLevel[] = ["critical", "high", "normal", "low", "trivial"];
@@ -22,7 +28,7 @@ export function defaultActivityConfig(): ActivityConfig {
     minConfidence: 0.7,
     minImportance: "normal",
     maxMemoriesPerDay: 0,
-    timeline: { enabled: false },
+    timeline: { enabled: false, journal: { enabled: false } },
   };
 }
 
@@ -193,7 +199,7 @@ export function parseActivityConfig(raw: unknown): ActivityConfig {
  * is malformed and must fail rather than silently disabling the layer.
  */
 function parseTimelineConfig(raw: unknown): ActivityTimelineConfig {
-  if (raw === undefined) return { enabled: false };
+  if (raw === undefined) return { enabled: false, journal: { enabled: false } };
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     throw new TypeError("activity.timeline must be an object");
   }
@@ -201,6 +207,19 @@ function parseTimelineConfig(raw: unknown): ActivityTimelineConfig {
   const enabledValue = coerceBooleanLike(timeline.enabled, "activity.timeline.enabled");
   if (timeline.enabled !== undefined && enabledValue === undefined) {
     throw new TypeError("activity.timeline.enabled must be a boolean");
+  }
+  return { enabled: enabledValue ?? false, journal: parseTimelineJournalConfig(timeline.journal) };
+}
+
+function parseTimelineJournalConfig(raw: unknown): ActivityTimelineJournalConfig {
+  if (raw === undefined) return { enabled: false };
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new TypeError("activity.timeline.journal must be an object");
+  }
+  const journal = raw as Record<string, unknown>;
+  const enabledValue = coerceBooleanLike(journal.enabled, "activity.timeline.journal.enabled");
+  if (journal.enabled !== undefined && enabledValue === undefined) {
+    throw new TypeError("activity.timeline.journal.enabled must be a boolean");
   }
   return { enabled: enabledValue ?? false };
 }

@@ -96,9 +96,15 @@ export interface ActivitySourceConfig {
   token?: string;
 }
 
+/** Opt-in daily journal settings (issue #1984). Default off. */
+export interface ActivityTimelineJournalConfig {
+  enabled: boolean;
+}
+
 /** Opt-in timeline-card derivation settings (issue #2049). Default off. */
 export interface ActivityTimelineConfig {
   enabled: boolean;
+  journal: ActivityTimelineJournalConfig;
 }
 
 /** Opt-in activity synchronization + trust-gated extraction settings. */

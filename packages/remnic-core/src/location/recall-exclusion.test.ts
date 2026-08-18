@@ -17,6 +17,7 @@ test("isLocationDayPath matches only the top-level day-file shape", () => {
 
 test("isSearchExcludedPath keeps location day documents out of generic search and recall", () => {
   assert.equal(isSearchExcludedPath("locations/2026-08-17.md"), true);
+  assert.equal(isSearchExcludedPath("journal/2026-08-17.md"), true);
   assert.equal(
     isSearchExcludedPath("qmd://collection/locations/2026-08-17.md", {}, "qmd"),
     true,

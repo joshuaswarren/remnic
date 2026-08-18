@@ -6263,6 +6263,19 @@
                 "type": "boolean",
                 "default": false,
                 "description": "Master gate for timeline-card derivation. Default false."
+              },
+              "journal": {
+                "type": "object",
+                "additionalProperties": false,
+                "default": {},
+                "description": "User-owned daily journal files under journal/ (issue #1984).",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Master gate for remnic journal seed/show. Default false."
+                  }
+                }
               }
             }
           }

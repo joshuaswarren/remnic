@@ -54,6 +54,7 @@ The activity subsystem is off by default. It synchronizes redacted text snapshot
 | `activity.sources.baseUrl` | `(required)` | HTTP or HTTPS URL of the local capture daemon; must target a loopback host (`localhost`, `127.0.0.0/8`, or `::1`) since the bearer token travels in the request. |
 | `activity.sources.token` | `(unset)` | Literal bearer token sent to a trusted local capture daemon over loopback. This parser does not resolve secret references or `${ENV_VAR}` placeholders; omit the field when the daemon needs no auth. |
 | `activity.timeline.enabled` | `false` | Master gate for timeline-card derivation (issue #2049). When false, no timeline cards are built or exposed. |
+| `activity.timeline.journal.enabled` | `false` | Master gate for daily journal seed/show (issue #1984). Journal files live at `journal/<YYYY-MM-DD>.md` and are excluded from generic recall. |
 
 ### Timeline cards (issue #2049)
 
@@ -2082,6 +2083,7 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `activity.minImportance` | `"normal"` | `"normal"` |
 | `activity.maxMemoriesPerDay` | `0` | `0` (no count cap) |
 | `activity.timeline.enabled` | `false` | `false` |
+| `activity.timeline.journal.enabled` | `false` | `false` |
 
 ## Meetings (issue #1900)
 
