@@ -103,6 +103,13 @@ export const ExtractedFactSchema = z.object({
     .describe(
       'Scope classification: "global" for cross-project knowledge (framework bugs, library behavior, API patterns, user preferences, general coding patterns); "project" for project-specific knowledge (file paths, env configs, deployment details, project workarounds) and for tool, command, or CLI-flag instructions tied to one agent, since the same tool name can mean different things across agents. When keeping such an agent-tied instruction, begin the fact with a leading "In <agent>," clause naming that agent. Defaults to "project" when a coding context is active.',
     ),
+  subject: z
+    .enum(["user", "agent"])
+    .optional()
+    .nullable()
+    .describe(
+      'Memory subject: "user" when the fact models the person (preferences, relationships, biography, moments, commitments about their life); "agent" when it is reusable operating knowledge (procedures, principles, tool-usage lessons, debugging strategies, environment facts with no personal content). Emit only for fact/decision-like facts; the category defaults cover preference, relationship, moment, commitment, procedure, principle, and skill.',
+    ),
   quote: z
     .string()
     .optional()

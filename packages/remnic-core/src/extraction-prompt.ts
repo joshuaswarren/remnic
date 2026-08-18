@@ -22,6 +22,7 @@ export const EXTRACTION_RESPONSE_SHAPE = `{
     "promptedByQuestion": "<optional source-grounded question>",
     "quote": "<optional exact contiguous source span>",
     "scope": "<optional project-or-global>",
+    "subject": "<optional user-or-agent>",
     "structuredAttributes": {"<key>": "<value>"},
     "procedureSteps": [{"order": 1, "intent": "<step>"}, {"order": 2, "intent": "<step>"}],
     "reasoningTrace": {

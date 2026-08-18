@@ -37,6 +37,7 @@ import { expandTildePath } from "./utils/path.js";
 // lives in connectors/coerce.ts (a tiny, dependency-free module) so neither
 // config.ts → connectors/index.ts nor the reverse circular import arises.
 import { coerceBool, coerceBooleanLike, coerceInstallExtension, coerceNumber } from "./connectors/coerce.js";
+import { parseSubjectRuntimeConfig } from "./subject-config.js";
 import { parseRecallConcurrencyConfig } from "./recall-concurrency-config.js";
 import { parseExtractionLivenessConfig } from "./extraction-liveness.js";
 import { parseReplicaPeersConfig } from "./replica-peers-config.js";
@@ -2755,11 +2756,11 @@ export function parseConfig(
       }
       return "low";
     })(),
-    // Extraction scope classification. When enabled, the extraction prompt
-    // asks the LLM to classify each fact as "project" or "global". Global
-    // facts are promoted to the shared namespace. Default true (rule 30 gate).
+    // Extraction scope classification (rule 30 gate): "global" facts promote
+    // to the shared namespace. Default true.
     extractionScopeClassificationEnabled:
       coerceBool(cfg.extractionScopeClassificationEnabled) !== false,
+    ...parseSubjectRuntimeConfig(cfg),
     // Extraction judge (issue #376). Opt-in LLM-as-judge fact-worthiness gate.
     extractionJudgeEnabled: cfg.extractionJudgeEnabled === true,
     extractionJudgeModel:
@@ -2778,10 +2779,7 @@ export function parseConfig(
         ? Math.floor(cfg.extractionJudgeMaxDeferrals)
         : 2,
     // Judge telemetry (issue #562 PR 3): opt-in structured emit to the
-    // observation ledger for defer-rate / latency metrics.
-    // Uses `coerceBool` so CLI-style string inputs (`"true"`, `"false"`,
-    // `"1"`, `"0"`) are accepted consistently with the rest of the
-    // codebase (CLAUDE.md gotcha 36).
+    // observation ledger; `coerceBool` accepts CLI-style strings (gotcha 36).
     extractionJudgeTelemetryEnabled:
       coerceBool(cfg.extractionJudgeTelemetryEnabled) === true,
     // Judge training-pair collection (issue #562 PR 4): opt-in shim for a

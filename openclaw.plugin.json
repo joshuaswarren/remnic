@@ -4238,6 +4238,18 @@
         "default": false,
         "description": "Enable outcome-aware promotion controls that consume learned utility signals when later rollout slices activate them."
       },
+      "promotionCandidates": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "minAccessCount": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 3,
+            "description": "Minimum accessCount before an agent-subject memory qualifies as reuse-signaled for promotion-candidates (issue #2372)."
+          }
+        }
+      },
       "provenance": {
         "type": "object",
         "description": "Claim-level provenance spans (issue #1575). When enabled, extracted facts carry verbatim source-utterance excerpts plus a coarse strength tag (verified/unverified/none) consumed by the faithfulness gate, correction UX, tombstone matching, and TrustScore.",
@@ -5449,6 +5461,23 @@
         "type": "number",
         "default": 30000,
         "description": "Threshold for slow operation logging (ms)"
+      },
+      "subjectClassification": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Stamp a `subject` (user|agent) on extracted memories: category defaults (preference/relationship/moment/commitment → user; procedure/principle/skill → agent) with an optional extractor override for fact/decision-like facts (issue #2372). Default off — writes stay byte-identical until enabled."
+          }
+        }
+      },
+      "subjectGuard": {
+        "type": "string",
+        "enum": ["off", "warn", "enforce"],
+        "default": "warn",
+        "description": "Guard for promoting user-subject (or unstamped — fail-closed) memories into shared layers (team-project, server-shared, team spaces). \"warn\" promotes with a recorded warning; \"enforce\" rejects naming the --allow-user-subject override; \"off\" disables. Default \"warn\" so enabling classification later warns without a second flag flip (issue #2372)."
       },
       "summarizationEnabled": {
         "type": "boolean",

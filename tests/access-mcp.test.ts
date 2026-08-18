@@ -466,6 +466,7 @@ test("MCP server advertises tools and dispatches recall", async () => {
     "engram.meetings_get",
     "engram.meetings_build",
     "engram.who_knows",
+    "engram.promotion_candidates",
     "engram.action_confidence",
     "engram.chatgpt_memory_inspector",
     "engram.day_summary",

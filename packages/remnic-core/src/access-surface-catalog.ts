@@ -57,6 +57,7 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { tool: "recall_tier_explain", operation: "recall_tier_explain" },
   { tool: "recall_xray", operation: "recall_xray" },
   { tool: "who_knows", operation: "who_knows" },
+  { tool: "promotion_candidates", operation: "promotion_candidates" },
   { tool: "wearables_status", operation: "wearables_status" },
   { tool: "wearables_sync", operation: "wearables_sync" },
   { tool: "transcript_day", operation: "transcript_day" },

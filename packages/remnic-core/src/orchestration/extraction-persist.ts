@@ -74,6 +74,7 @@ import {
 } from "../behavior-signals.js";
 import { buildProcedurePersistBody } from "../procedural/procedure-types.js";
 import { stripAttributesSuffix } from "../structured-attributes.js";
+import { evaluateSubjectGuard, isSharedPromotionTarget, resolveWriteSubject } from "../memory-subject.js";
 import { LocalLlmClient } from "../local-llm.js";
 import type { ExtractionEngine } from "../extraction.js";
 import {
@@ -94,6 +95,7 @@ import type {
   MemoryFile,
   MemoryFrontmatter,
   MemoryLink,
+  MemorySubject,
   PluginConfig,
   ProvenanceSource,
   MemoryCategory,
@@ -338,6 +340,19 @@ export class ExtractionPersistCoordinator {
     // introduced (ratchet scatteredConfigFlagReads; see #1523).
     const namespacesEnabled = resolveNamespaceCapabilities(this.deps.config).namespaces;
     const sourceConnector = sourceContext?.sourceConnector; const origin = classifyExtractionOrigin(sourceContext);
+    // Subject guard (issue #2372): the ONE gate shared by every extraction-side
+    // promotion path so behavior matches the spaces surface (§27).
+    const subjectGuardAllows = (subject: MemorySubject | undefined, target: string, label: string): boolean => {
+      const decision = evaluateSubjectGuard({
+        subject,
+        sharedTarget: isSharedPromotionTarget(target),
+        mode: this.deps.config.subjectGuard,
+      });
+      if (decision.action !== "allow") {
+        log.warn(`subject-guard(${decision.action}) ${label}: ${decision.reason}`);
+      }
+      return decision.action !== "reject";
+    };
     const promoteMemoryToProfileTargets = async (options: {
       sourceStorage: StorageManager;
       category: string;
@@ -353,8 +368,7 @@ export class ExtractionPersistCoordinator {
       intentEntityTypes?: string[];
       memoryKind?: MemoryFrontmatter["memoryKind"];
       validAt?: string;
-      // #1578 — bi-temporal bounds + ingestion provenance forwarded to profile-
-      // target copies (same defect class as shared promotion; cursor bugbot).
+      // #1578 — bi-temporal bounds + provenance forwarded to profile-target copies.
       invalidAt?: string;
       observedAt?: string;
       eventTimeSource?: "extracted" | "assumed";
@@ -362,6 +376,7 @@ export class ExtractionPersistCoordinator {
       sources?: ProvenanceSource[];
       provenance?: "verified" | "unverified" | "none";
       toolScoped?: true;
+      subject?: MemorySubject;
       harmonicFact?: Omit<
         HarmonicConstructionInput["persistedFacts"][number],
         "memoryId"
@@ -392,6 +407,7 @@ export class ExtractionPersistCoordinator {
         try {
           const targetStorage = await this.deps.getStorageRouter().storageFor(target.namespace);
           if (targetStorage.dir === options.sourceStorage.dir) continue;
+          if (!subjectGuardAllows(options.subject, target.target, `profile promotion to ${target.target}`)) continue;
           // Compose BEFORE the dedup gate (#2014 round 2): salvage mode may
           // drop or clamp attributes, and the dedup hash, contentHashSource,
           // and supersession keys below must all describe the SURVIVING
@@ -406,6 +422,7 @@ export class ExtractionPersistCoordinator {
               structuredAttributes: options.structuredAttributes,
               validAt: options.validAt,
               ...(sourceContext?.sourceConnector ? { sourceConnector: sourceContext.sourceConnector } : {}),
+              ...(options.subject !== undefined ? { subject: options.subject } : {}),
             },
             { source: `${options.source}-${target.target}-promotion` },
           );
@@ -557,8 +574,7 @@ export class ExtractionPersistCoordinator {
       memoryKind?: MemoryFrontmatter["memoryKind"];
       validAt?: string;
       // #1578 — bi-temporal bounds + ingestion provenance forwarded to the
-      // shared-namespace copy so shared recall honours the same invalid_at
-      // window as the source fact (cursor bugbot).
+      // shared-namespace copy (cursor bugbot).
       invalidAt?: string;
       observedAt?: string;
       eventTimeSource?: "extracted" | "assumed";
@@ -568,6 +584,7 @@ export class ExtractionPersistCoordinator {
       /** Claim-level provenance spans (issue #1575 PR 2). */
       sources?: ProvenanceSource[];
       provenance?: "verified" | "unverified" | "none";
+      subject?: MemorySubject;
       harmonicFact?: Omit<
         HarmonicConstructionInput["persistedFacts"][number],
         "memoryId"
@@ -591,43 +608,19 @@ export class ExtractionPersistCoordinator {
         )
       )
         return;
+      if (!subjectGuardAllows(options.subject, "serverShared", "shared promotion")) return;
       try {
         const sharedStorage = await this.deps.getStorageRouter().storageFor(
           this.deps.config.sharedNamespace,
         );
-        // Dedup gate: canonicalize content before hashing.
-        // Issue #369 (PR #401): When inline attribution is enabled,
-        // `applyInlineCitation` appends a timestamp-bearing marker (e.g.
-        // `[Source: ..., ts=2026-04-11T...]`).  Because the timestamp changes
-        // on every call, hashing cited content produces a unique hash each
-        // time — defeating dedup entirely and allowing the same logical fact to
-        // be promoted repeatedly.  Also, both promotion call sites pass
-        // `fact.content`, which can already carry an inline citation (e.g. a
-        // relayed or reprocessed fact).  Strip any pre-existing citation so the
-        // dedup key matches the hash stored from the original un-cited write.
-        // PR #402 round-6 (Fix #2 / chatgpt-codex P1 PRRT_kwDORJXyws56U74n):
-        // Compute the enriched content before the hash-dedup check so the
-        // lookup uses the same content that writeMemory will actually store.
-        // When structuredAttributes are present, writeMemory appends an
-        // "[Attributes: ...]" suffix before hashing; hasFactContentHash must
-        // receive the same enriched body or the check is against a different
-        // hash and dedup fails to fire (letting duplicates through) or fires
-        // when it shouldn't (collapsing memories with different enrichments).
-        // Fix #1 (P2 PRRT_kwDORJXyws56VHZc): use normalizeAttributePairs so
-        // key order and casing are canonical — identical to the enrichment
-        // applied by storage.writeMemory — preventing spurious hash misses
-        // when attribute maps arrive with different insertion orders or casing.
-        // Fix #4 (Low PRRT_kwDORJXyws56VHth): sanitize the base content before
-        // building dedupContent.  writeMemory runs sanitizeMemoryContent on the
-        // enriched body before hashing; if sanitization redacts the content to
-        // REDACTED_PLACEHOLDER the stored hash is for the redacted form, not
-        // the raw form.  Computing dedupContent from sanitized.text here ensures
-        // the hash lookup and the normalizedIncoming comparison both use the
-        // same content that writeMemory will actually store.
-        // Combined fix: strip any pre-existing citation FIRST to obtain
-        // rawContent (the canonical body), then sanitize rawContent (not
-        // options.content) when building dedupContent, so that citation
-        // stripping and sanitization are applied in a consistent order.
+        // Dedup gate: canonicalize content before hashing. Strip any
+        // pre-existing citation FIRST (applyInlineCitation appends a
+        // timestamped marker, so hashing cited content defeats dedup and
+        // call sites may pass already-cited content), then sanitize the base
+        // and build the attribute-enriched body with normalizeAttributePairs
+        // — the same canonicalization writeMemory applies — so the hash
+        // lookup uses the exact body writeMemory stores (#369/#401, #402
+        // round-6 fixes; PRRT_kwDORJXyws56VHZc / VHth).
         const rawContent =
           citationEnabled &&
           hasCitationForTemplate(options.content, citationTemplate)
@@ -649,6 +642,7 @@ export class ExtractionPersistCoordinator {
             structuredAttributes: options.structuredAttributes,
             validAt: options.validAt,
             ...(sourceContext?.sourceConnector ? { sourceConnector: sourceContext.sourceConnector } : {}),
+            ...(options.subject !== undefined ? { subject: options.subject } : {}),
           },
           { source: `${options.source}-shared-promotion` },
         );
@@ -1330,7 +1324,8 @@ export class ExtractionPersistCoordinator {
             profileAllowsSharedWrites &&
             this.deps.storageDirNamespace(storage.dir) !== this.deps.config.sharedNamespace &&
             shouldPromoteGlobalFactToShared({ scope: f.scope, content: f.content,
-              sourceConnector, procedureSteps: f.procedureSteps })
+              sourceConnector, procedureSteps: f.procedureSteps }) &&
+            subjectGuardAllows(f.subject, "serverShared", "pre-judge shared routing")
           ) {
             factNs = this.deps.config.sharedNamespace;
           }
@@ -1577,10 +1572,13 @@ export class ExtractionPersistCoordinator {
           );
         }
       }
-
-      // Scope-based namespace routing: a `global` fact (scope classification
-      // on, no explicit routing-rule namespace) is promoted to the shared
-      // namespace unless the tool-scope guard withholds it (#2183).
+      // Write-time subject stamp (issue #2372): extractor token over the
+      // category default; absent when classification is disabled (byte-identical).
+      const factSubject = this.deps.config.subjectClassification?.enabled === true
+        ? resolveWriteSubject(writeCategory, fact.subject)
+        : undefined;
+      // Scope-based namespace routing: a `global` fact (no explicit routing
+      // rule) promotes to the shared namespace unless a guard withholds it.
       if (
         lifecycleCaps.extractionScopeClassification &&
         namespacesEnabled &&
@@ -1590,7 +1588,7 @@ export class ExtractionPersistCoordinator {
         const currentNs = this.deps.storageDirNamespace(targetStorage.dir);
         if (currentNs !== this.deps.config.sharedNamespace && profileAllowsSharedWrites) {
           if (shouldPromoteGlobalFactToShared({ scope: fact.scope, content: fact.content,
-            sourceConnector, procedureSteps: fact.procedureSteps })) {
+            sourceConnector, procedureSteps: fact.procedureSteps }) && subjectGuardAllows(fact.subject, "serverShared", "scope-routing")) {
             try {
               targetStorage = await this.deps.getStorageRouter().storageFor(
                 this.deps.config.sharedNamespace,
@@ -2383,6 +2381,7 @@ export class ExtractionPersistCoordinator {
             sourceStorage: targetStorage,
             category: writeCategory,
             content: fact.content,
+            subject: factSubject,
             confidence: fact.confidence,
             tags: fact.tags,
             entityRef: fact.entityRef,
@@ -2579,6 +2578,7 @@ export class ExtractionPersistCoordinator {
           structuredAttributes: fact.structuredAttributes,
           validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt,
           ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
+          ...(factSubject !== undefined ? { subject: factSubject } : {}),
         },
         { source: extractionWriteSource },
 );
@@ -2697,6 +2697,7 @@ export class ExtractionPersistCoordinator {
           category: writeCategory,
           content: fact.content,
           confidence: fact.confidence,
+          subject: factSubject,
           tags: fact.tags,
           entityRef:
             typeof (fact as any).entityRef === "string"
@@ -2822,11 +2823,10 @@ export class ExtractionPersistCoordinator {
       }
     }
 
-    // Tracks whether THIS extraction persisted any durable, non-fact output to the
-    // BASE namespace's storage (entity / relationship / profile / question). The
-    // per-fact catalog touch (storage chokepoint #1522) only fires inside the fact write loop, so a
-    // fact-less extraction that still persists durable data must record exactly one
-    // base-namespace catalog touch after all writes complete (NHZEZ, codex P2).
+    // Tracks whether THIS extraction persisted any durable, non-fact output
+    // (entity / relationship / profile / question) to the BASE namespace.
+    // A fact-less extraction still records exactly one base-namespace catalog
+    // touch after all writes complete (NHZEZ, codex P2).
     let durableNonFactWritten = false;
     let durableNonFactTouchRecorded = false;
     const touchBaseNonFactNamespace = () => {

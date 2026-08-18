@@ -493,14 +493,13 @@ export {
   type RecallXrayFormat,
 } from "./recall-xray-renderer.js";
 export type {
-  RecallXraySnapshot,
-  RecallXrayResult,
-  RecallXrayScoreDecomposition,
-  RecallXrayServedBy,
-  RecallFilterTrace,
+  RecallXraySnapshot, RecallXrayResult, RecallXrayScoreDecomposition, RecallXrayServedBy, RecallFilterTrace,
 } from "./recall-xray.js";
 export * from "./who-knows.js";
 export * from "./who-knows-cli.js";
+export * from "./memory-subject.js";
+export * from "./memory-subject-cli.js";
+export * from "./subject-config.js";
 
 // ChatGPT Apps-compatible memory inspector demo.
 export {

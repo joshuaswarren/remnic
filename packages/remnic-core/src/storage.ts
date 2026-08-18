@@ -166,6 +166,7 @@ import type {
   VerificationState,
   PolicyClass,
   MemoryStatus,
+  MemorySubject,
   MemoryActionEvent,
   MemoryLifecycleEvent,
   MemoryLifecycleEventType,
@@ -324,6 +325,7 @@ function serializeFrontmatter(fm: MemoryFrontmatter): string {
   // OKF v0.1 interop (issue #1946): inert presentation metadata; `category` stays canonical.
   if (fm.type !== undefined) lines.push(`type: ${fm.type}`);
   if (fm.origin) lines.push(`origin: ${/^[A-Za-z0-9:_.*-]+$/.test(fm.origin) ? fm.origin : JSON.stringify(fm.origin)}`);
+  if (fm.subject) lines.push(`subject: ${fm.subject}`);
   if (fm.entityRef) lines.push(`entityRef: ${fm.entityRef}`);
   if (fm.sourceConnector) {
     // YAML-injection guard (review thread QMPsP): emit unquoted for
@@ -868,6 +870,7 @@ export function parseFrontmatter(raw: string): { frontmatter: MemoryFrontmatter;
       tags,
       entityRef: fm.entityRef || undefined,
       origin: fm.origin !== undefined ? parseOriginClass(decodeYamlScalar(fm.origin)) : undefined,
+      subject: fm.subject === "user" || fm.subject === "agent" ? fm.subject : undefined,
       sourceConnector: fm.sourceConnector ? decodeYamlScalar(fm.sourceConnector) || undefined : undefined,
       toolScoped: fm.toolScoped === "true" ? true : undefined,
       supersedes: fm.supersedes || undefined,
@@ -1736,6 +1739,7 @@ export interface WriteMemoryOptions {
   origin?: string;
   sourceConnector?: string;
   toolScoped?: true;
+  subject?: MemorySubject;
 }
 
 /**
@@ -1744,7 +1748,7 @@ export interface WriteMemoryOptions {
  */
 export type SealedWriteExtras = Omit<
   WriteMemoryOptions,
-  "confidence" | "tags" | "entityRef" | "source" | "expiresAt" | "validAt" | "structuredAttributes" | "sourceConnector" | "origin"
+  "confidence" | "tags" | "entityRef" | "source" | "expiresAt" | "validAt" | "structuredAttributes" | "sourceConnector" | "origin" | "subject"
 >;
 
 export class StorageManager extends TombstoneBlockedCaptureIndexHost {
@@ -3787,7 +3791,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       fm.sourceConnector = options.sourceConnector;
     }
     if (options.origin !== undefined) fm.origin = parseOriginClass(options.origin);
-
+    if (options.subject !== undefined) fm.subject = options.subject;
     // Assemble the persisted body (attribute-suffix enrichment + combined
     // sanitize) via the SHARED helper — the sealed-envelope composer uses the
     // same one, so the two write paths cannot diverge (issue #1989 PR2).
