@@ -101,7 +101,7 @@ export interface ReittiVisitDetail {
 
 /** A validated `/api/v1/visits` place summary. */
 export interface ReittiPlaceVisitSummary {
-  place: ReittiSignificantPlace;
+  place: ReittiSignificantPlace | null;
   visits: ReittiVisitDetail[];
 }
 
@@ -202,7 +202,7 @@ export function normalizeReittiBaseUrl(raw: string): string {
 
 function assertFiniteInstant(iso: unknown, what: string): string {
   if (typeof iso !== "string" || iso.length === 0 || !Number.isFinite(Date.parse(iso))) {
-    throw new ReittiApiError(`Reitti timeline entry has an invalid ${what}`, "schema");
+    throw new ReittiApiError(`Reitti response has an invalid ${what}`, "schema");
   }
   return iso;
 }
@@ -295,13 +295,7 @@ function parseVisitSummary(value: unknown): ReittiPlaceVisitSummary {
       endTime: assertFiniteInstant(visit.endTime, "visit endTime"),
     };
   });
-  return { place: parsePlace(value.placeInfo, "visit summary") ?? {
-    id: null,
-    name: null,
-    address: null,
-    city: null,
-    type: null,
-  }, visits };
+  return { place: parsePlace(value.placeInfo, "visit summary"), visits };
 }
 
 export class ReittiClient {
@@ -474,7 +468,7 @@ function discardBody(response: Response): void {
 }
 
 
-/** Loop instead of `/\/+$/` — CodeQL js/polynomial-redos on user-set URLs. */
+/** Exponential retry delay for a transient GET, capped at MAX_RETRY_DELAY_MS. */
 function backoffMs(attempt: number): number {
   return Math.min(MAX_RETRY_DELAY_MS, 1_000 * 2 ** attempt);
 }

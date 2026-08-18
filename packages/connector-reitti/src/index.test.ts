@@ -206,3 +206,15 @@ test("observations always fall inside the requested window", async () => {
   assert.ok(page.observations.every((o) => o.observedAtUtc >= "2026-08-17T00:00:00.000Z"));
   assert.ok(page.observations.every((o) => o.observedAtUtc < "2026-08-18T00:00:00.000Z"));
 });
+
+test("verify rethrows a caller abort instead of reporting the provider unavailable", async () => {
+  const controller = new AbortController();
+  const { provider } = providerWith(() => {
+    controller.abort();
+    throw new DOMException("This operation was aborted", "AbortError");
+  });
+  await assert.rejects(
+    provider.verify(controller.signal),
+    (err: unknown) => err instanceof Error && err.name === "AbortError",
+  );
+});

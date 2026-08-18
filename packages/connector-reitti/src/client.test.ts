@@ -273,6 +273,7 @@ test("a request timeout is a retryable timeout error, distinct from the caller's
 test("the caller's abort propagates unwrapped, unretried, and before any request", async () => {
   const { promise, reject } = Promise.withResolvers<never>();
   reject(new DOMException("This operation was aborted", "AbortError"));
+  void promise.catch(() => {});
   const { fetchImpl, requests } = capturingFetch(() => promise as Promise<Response>);
   const controller = new AbortController();
   controller.abort();
@@ -282,7 +283,6 @@ test("the caller's abort propagates unwrapped, unretried, and before any request
     (err: unknown) => err instanceof DOMException && err.name === "AbortError",
   );
   assert.equal(requests.length, 0, "an aborted caller must not fire even one request");
-  void promise.catch(() => {});
 });
 
 test("an abort mid-flight rethrows the caller's error raw and is never retried", async () => {

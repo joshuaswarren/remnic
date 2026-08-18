@@ -126,6 +126,8 @@ export function createReittiProvider(options: ReittiProviderOptions): LocationPr
         await client.fetchTimeline({ date, timezone, signal });
         return { ok: true };
       } catch (error) {
+        // A caller-driven abort is cancellation, not provider unavailability.
+        if (error instanceof Error && error.name === "AbortError") throw error;
         if (error instanceof ReittiApiError && error.kind === "auth") {
           return {
             ok: false,

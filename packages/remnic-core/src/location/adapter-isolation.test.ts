@@ -28,7 +28,9 @@ function collectSourceFiles(dir: string, files: string[] = []): string[] {
 }
 
 test("core source never statically imports @remnic/connector-reitti", () => {
-  const coreSrc = join(import.meta.dirname);
+  // The whole core tree, not just src/location: a static import anywhere in
+  // core would break a base install.
+  const coreSrc = join(import.meta.dirname, "..");
   const offenders: string[] = [];
   for (const file of collectSourceFiles(coreSrc)) {
     const content = readFileSync(file, "utf8");

@@ -152,3 +152,22 @@ test("visit summaries normalize per visit interval under the summary's place", (
     ],
   );
 });
+
+test("two unresolved visit places keep distinct identities", () => {
+  const summaries: ReittiPlaceVisitSummary[] = [
+    { place: null, visits: [{ startTime: "2026-08-17T08:00:00Z", endTime: "2026-08-17T09:00:00Z" }] },
+    { place: null, visits: [{ startTime: "2026-08-17T20:00:00Z", endTime: "2026-08-17T21:00:00Z" }] },
+  ];
+  const ids = new Set(visitSummaryObservations(summaries, WINDOW).map((o) => o.place.id));
+  assert.equal(ids.size, 2, "distinct unresolved places must not merge into one segment");
+});
+
+test("a place Reitti left without an id does not collapse with another", () => {
+  const nameless = { id: null, name: null, address: null, city: null, type: null } as const;
+  const summaries: ReittiPlaceVisitSummary[] = [
+    { place: { ...nameless }, visits: [{ startTime: "2026-08-17T08:00:00Z", endTime: "2026-08-17T09:00:00Z" }] },
+    { place: { ...nameless }, visits: [{ startTime: "2026-08-17T20:00:00Z", endTime: "2026-08-17T21:00:00Z" }] },
+  ];
+  const ids = new Set(visitSummaryObservations(summaries, WINDOW).map((o) => o.place.id));
+  assert.equal(ids.size, 2, "a null upstream id must not become one shared identity");
+});

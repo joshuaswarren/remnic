@@ -23,9 +23,9 @@ location registry — ideally via a computed-specifier dynamic import so
 bundlers cannot statically resolve the optional package:
 
 ```ts
-import { registerLocationProvider } from "@remnic/core/location";
+import { getLocationProvider } from "@remnic/core/location";
 
-const mod = await import("@remnic/connector-reitti");
+const mod = await import("@remnic/" + "connector-reitti");
 mod.ensureReittiProviderRegistered({
   baseUrl: "https://reitti.example.invalid",
   token: resolvedToken, // from Remnic's secret reference mechanism

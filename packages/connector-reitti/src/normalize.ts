@@ -49,9 +49,13 @@ function placeLabel(place: ReittiSignificantPlace): string {
   return place.name ?? place.address ?? place.city ?? `Place ${place.id ?? "?"}`;
 }
 
-function namedPlace(place: ReittiSignificantPlace): LocationPlace {
+/**
+ * `fallbackKey` discriminates places Reitti left without an id: a shared
+ * `unknown` id would let core's segment merging join two distinct places.
+ */
+function namedPlace(place: ReittiSignificantPlace, fallbackKey: string): LocationPlace {
   return {
-    id: `reitti:place:${place.id ?? "unknown"}`,
+    id: place.id !== null ? `reitti:place:${place.id}` : `reitti:place:unresolved:${fallbackKey}`,
     label: placeLabel(place),
     kind: PLACE_KIND_BY_REITTI_TYPE[place.type ?? ""] ?? "poi",
   };
@@ -63,13 +67,13 @@ function tripPlace(entry: ReittiTimelineEntry): LocationPlace {
   return { id: `reitti:trip:${entry.id}`, label: `Trip (${mode}${km})`, kind: "transit" };
 }
 
-function unnamedVisitPlace(entry: ReittiTimelineEntry): LocationPlace {
-  return { id: `reitti:visit:${entry.id}`, label: "Unnamed place", kind: "other" };
+function unnamedPlace(key: string): LocationPlace {
+  return { id: `reitti:visit:${key}`, label: "Unnamed place", kind: "other" };
 }
 
 function entryPlace(entry: ReittiTimelineEntry): LocationPlace {
   if (entry.type === "TRIP") return tripPlace(entry);
-  return entry.place !== null ? namedPlace(entry.place) : unnamedVisitPlace(entry);
+  return entry.place !== null ? namedPlace(entry.place, entry.id) : unnamedPlace(entry.id);
 }
 
 /**
@@ -131,7 +135,8 @@ export function visitSummaryObservations(
   const bounds = windowBounds(window);
   const observations: LocationObservation[] = [];
   for (const summary of summaries) {
-    const place = namedPlace(summary.place);
+    const fallbackKey = summary.visits[0]?.startTime ?? "";
+    const place = summary.place !== null ? namedPlace(summary.place, fallbackKey) : unnamedPlace(fallbackKey);
     for (const visit of summary.visits) {
       const startMs = Date.parse(visit.startTime);
       const endMs = Date.parse(visit.endTime);
