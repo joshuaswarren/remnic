@@ -131,34 +131,34 @@ export function estimateTokens(text: string): number {
  * ------------------------------------------------------------------------- */
 
 const CLAUSE_PATTERNS: readonly { attribute: string; pattern: RegExp }[] = [
-  { attribute: "employer", pattern: /^(.+?) works at (.+?)\.?$/ },
-  { attribute: "project", pattern: /^(.+?) is leading (.+?)\.?$/ },
-  { attribute: "hobby", pattern: /^(.+?) has gotten into (.+?)\.?$/ },
+  { attribute: "employer", pattern: /^(.{1,256}?) works at (.{1,256}?)\.?$/ },
+  { attribute: "project", pattern: /^(.{1,256}?) is leading (.{1,256}?)\.?$/ },
+  { attribute: "hobby", pattern: /^(.{1,256}?) has gotten into (.{1,256}?)\.?$/ },
   {
     attribute: "favorite-tool",
-    pattern: /^(.+?) relies on the (.+?) for daily planning\.?$/,
+    pattern: /^(.{1,256}?) relies on the (.{1,256}?) for daily planning\.?$/,
   },
-  { attribute: "pet", pattern: /^(.+?) has (.+?)\.?$/ },
-  { attribute: "role", pattern: /^(.+?) is an? (.+?)\.?$/ },
-  { attribute: "city", pattern: /^(.+?) lives in (.+?)\.?$/ },
+  { attribute: "pet", pattern: /^(.{1,256}?) has (.{1,256}?)\.?$/ },
+  { attribute: "role", pattern: /^(.{1,256}?) is an? (.{1,256}?)\.?$/ },
+  { attribute: "city", pattern: /^(.{1,256}?) lives in (.{1,256}?)\.?$/ },
 ];
 
 const QUESTION_PATTERNS: readonly { attribute: string; pattern: RegExp }[] = [
-  { attribute: "employer", pattern: /^Where does (.+?) work these days\?$/ },
-  { attribute: "role", pattern: /^What does (.+?) do for a living now\?$/ },
-  { attribute: "city", pattern: /^Which city is (.+?) living in currently\?$/ },
-  { attribute: "hobby", pattern: /^What pastime is (.+?) into at the moment\?$/ },
+  { attribute: "employer", pattern: /^Where does (.{1,256}?) work these days\?$/ },
+  { attribute: "role", pattern: /^What does (.{1,256}?) do for a living now\?$/ },
+  { attribute: "city", pattern: /^Which city is (.{1,256}?) living in currently\?$/ },
+  { attribute: "hobby", pattern: /^What pastime is (.{1,256}?) into at the moment\?$/ },
   {
     attribute: "pet",
-    pattern: /^What animal companion does (.+?) keep right now\?$/,
+    pattern: /^What animal companion does (.{1,256}?) keep right now\?$/,
   },
   {
     attribute: "favorite-tool",
-    pattern: /^Which planning app does (.+?) rely on at the moment\?$/,
+    pattern: /^Which planning app does (.{1,256}?) rely on at the moment\?$/,
   },
   {
     attribute: "project",
-    pattern: /^Which initiative is (.+?) leading right now\?$/,
+    pattern: /^Which initiative is (.{1,256}?) leading right now\?$/,
   },
 ];
 

@@ -201,10 +201,12 @@ export function assertSafeSourceManifestName(value: string): void {
   if (value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value)) {
     throw new Error("source.manifestName must be repo-relative, not absolute");
   }
-  if (value.split(/[/\\]/).includes("..")) {
+  const segments = value.split(/[/\\]/);
+  if (segments.includes("..")) {
     throw new Error("source.manifestName must not contain '..' segments");
   }
-  if (/(?:^|[/\\])(?:home|Users)[/\\][^/\\]+/.test(value)) {
+  const homeIdx = segments.findIndex((s) => s === "home" || s === "Users");
+  if (homeIdx >= 0 && homeIdx + 1 < segments.length && segments[homeIdx + 1] !== "") {
     throw new Error("source.manifestName must not be a home-directory path");
   }
 }
