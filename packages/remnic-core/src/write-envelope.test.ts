@@ -9,6 +9,7 @@ import {
   WRITE_FINGERPRINT_FIELDS,
   buildWriteIdempotencyPayload,
   composeMemoryEnvelope,
+  sealedWriteToLegacyArgs,
   isSealedMemoryEnvelope,
   type FingerprintScope,
   type MemoryWriteInput,
@@ -682,4 +683,16 @@ test("structural fallback rejects prototype-inherited accessors (round 13)", () 
     false,
     "prototype-inherited getter lookalike must be rejected",
   );
+});
+
+test("sealedWriteToLegacyArgs always copies sourceConnector from the envelope", () => {
+  const envelope = composeMemoryEnvelope(
+    minimalInput({ sourceConnector: "chatgpt" }),
+    CTX,
+  );
+  const mapped = sealedWriteToLegacyArgs(envelope, { sourceConnector: "smuggled" });
+  assert.equal(mapped.options.sourceConnector, "chatgpt");
+  const empty = composeMemoryEnvelope(minimalInput(), CTX);
+  const cleared = sealedWriteToLegacyArgs(empty, { sourceConnector: "smuggled" });
+  assert.equal(cleared.options.sourceConnector, undefined);
 });

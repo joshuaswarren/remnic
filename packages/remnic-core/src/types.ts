@@ -14,6 +14,8 @@ export type { GraphPathScoringConfig } from "./graph-path-scoring-config.js";
 import type { ProceduralMaintenanceConfig } from "./procedural/maintenance-config.js";
 
 import type { AmbientCaptureProvenance, BufferTurnOwner, SecurityConfig, OriginMetadata } from "./security/types.js";
+export type MemorySubject = "user" | "agent";
+export type SubjectGuardMode = "off" | "warn" | "enforce";
 export type ReasoningEffort = "none" | "low" | "medium" | "high";
 export type TriggerMode = "smart" | "every_n" | "time_based";
 export type ConvergeConflictPolicy = "newest-wins" | "manual";
@@ -2800,9 +2802,6 @@ export interface ImportanceScore {
   /** Salient keywords extracted */
   keywords: string[];
 }
-
-/** Subject vocabulary lives with its guards/defaults in memory-subject.ts (issue #2372). */
-export type { MemorySubject, SubjectGuardMode } from "./memory-subject.js";
 
 export interface MemoryFrontmatter extends SourceConnectorProvenance, OriginMetadata {
   /** True when write-time classification ties this memory to its source connector's tools or commands. */

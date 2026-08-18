@@ -786,3 +786,22 @@ test("file-size ratchet: --update never creates a NEW ceiling, even out of scope
     assert.match(empty.stderr, /legacy-big\.ts \(1400 -> 1410\)/);
   });
 });
+
+test("type-only storage.ts imports do not grow the direct-import ratchet", () => {
+  withFixture((fixture) => {
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    writeFileSync(
+      path.join(fixture.src, "hint.ts"),
+      'import type { StorageManager } from "./storage.js";\nexport type T = StorageManager;\n',
+    );
+    const typeOnly = runRatchets([], fixture);
+    assert.equal(typeOnly.status, 0, typeOnly.stderr);
+    writeFileSync(
+      path.join(fixture.src, "hint.ts"),
+      'import { StorageManager } from "./storage.js";\nexport const x = StorageManager;\n',
+    );
+    const valueImport = runRatchets([], fixture);
+    assert.equal(valueImport.status, 1);
+    assert.match(valueImport.stderr, /direct storage\.ts imports grew/);
+  });
+});
