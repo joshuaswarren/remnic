@@ -82,7 +82,7 @@ export function ratioMetric(
 export function holmAdjust(
   pValues: ReadonlyMap<string, number | "NA">,
   primaryMetrics: readonly string[]
-): { adjustedPValues: Record<string, number | "NA"> } {
+): { adjustedPValues: Record<string, number | "NA">; primaryMetrics: string[] } {
   const adjusted: Record<string, number | "NA"> = {};
   const testable = [...pValues.entries()]
     .filter((entry): entry is [string, number] => entry[1] !== "NA")
@@ -107,5 +107,5 @@ export function holmAdjust(
       adjusted[metric] = "NA";
     }
   }
-  return { adjustedPValues: adjusted };
+  return { adjustedPValues: adjusted, primaryMetrics: [...primaryMetrics] };
 }

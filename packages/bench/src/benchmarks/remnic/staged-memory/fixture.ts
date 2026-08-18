@@ -465,9 +465,20 @@ export async function validateStagedMemoryFixture(fixtureDir: string): Promise<S
       stats: { users: 0, cases: 0, distractorsPerCase: 0, transitions: 0 },
     };
   }
-  const manifestParse = StagedMemoryFixtureManifestV1Schema.safeParse(
-    typeof rawManifest === "string" ? JSON.parse(rawManifest) : rawManifest
-  );
+  let parsedManifest: unknown = rawManifest;
+  if (typeof rawManifest === "string") {
+    try {
+      parsedManifest = JSON.parse(rawManifest);
+    } catch {
+      return {
+        ok: false,
+        errors: ["fixture manifest.json is not valid JSON"],
+        warnings,
+        stats: { users: 0, cases: 0, distractorsPerCase: 0, transitions: 0 },
+      };
+    }
+  }
+  const manifestParse = StagedMemoryFixtureManifestV1Schema.safeParse(parsedManifest);
   if (!manifestParse.success) {
     return {
       ok: false,
@@ -583,7 +594,7 @@ export async function validateStagedMemoryFixture(fixtureDir: string): Promise<S
     ) {
       errors.push(`case ${fixtureCase.caseId} goldMemories disagree with goldFacts`);
     }
-    if (new Set([...goldFactIds]).size !== goldFactIds.size) {
+    if (fixtureCase.exposure.goldFacts.length !== goldFactIds.size) {
       errors.push(`case ${fixtureCase.caseId} goldFacts contain duplicate fact IDs`);
     }
     for (const factId of fixtureCase.exposure.salientFactIds) {
