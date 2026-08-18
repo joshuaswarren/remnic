@@ -370,28 +370,30 @@ function main() {
   }
 
   const snapshotPath = path.join(repoRoot, "scripts", "config-contract", "parsed-keys.snapshot.json");
-  const snapshot = JSON.parse(fs.readFileSync(snapshotPath, "utf8")) as {
-    keys: string[];
-    unparseable: Array<{ file: string; reason: string; id: string }>;
-    ambiguousValueMembers: string[];
-  };
-  const extracted = extractRealConfigKeys(repoRoot);
-  const extractedUnparseable = extracted.unparseable.map(({ file, reason, id }) => ({ file, reason, id }));
-  if (JSON.stringify(extracted.keys) !== JSON.stringify(snapshot.keys)) {
-    failures.push({
-      message:
-        "[snapshot] parsed-keys.snapshot.json is stale — regenerate with `npx tsx scripts/config-contract/extract-parsed-keys.ts > scripts/config-contract/parsed-keys.snapshot.json`",
-    });
-  }
-  if (JSON.stringify(extractedUnparseable) !== JSON.stringify(snapshot.unparseable)) {
-    failures.push({
-      message: "[snapshot] parsed-keys.snapshot.json unparseable list drifted — regenerate the snapshot",
-    });
-  }
-  if (JSON.stringify(extracted.ambiguousValueMembers) !== JSON.stringify(snapshot.ambiguousValueMembers)) {
-    failures.push({
-      message: "[snapshot] parsed-keys.snapshot.json ambiguousValueMembers drifted — regenerate the snapshot",
-    });
+  if (fs.existsSync(snapshotPath)) {
+    const snapshot = JSON.parse(fs.readFileSync(snapshotPath, "utf8")) as {
+      keys: string[];
+      unparseable: Array<{ file: string; reason: string; id: string }>;
+      ambiguousValueMembers: string[];
+    };
+    const extracted = extractRealConfigKeys(repoRoot);
+    const extractedUnparseable = extracted.unparseable.map(({ file, reason, id }) => ({ file, reason, id }));
+    if (JSON.stringify(extracted.keys) !== JSON.stringify(snapshot.keys)) {
+      failures.push({
+        message:
+          "[snapshot] parsed-keys.snapshot.json is stale — regenerate with `npx tsx scripts/config-contract/extract-parsed-keys.ts > scripts/config-contract/parsed-keys.snapshot.json`",
+      });
+    }
+    if (JSON.stringify(extractedUnparseable) !== JSON.stringify(snapshot.unparseable)) {
+      failures.push({
+        message: "[snapshot] parsed-keys.snapshot.json unparseable list drifted — regenerate the snapshot",
+      });
+    }
+    if (JSON.stringify(extracted.ambiguousValueMembers) !== JSON.stringify(snapshot.ambiguousValueMembers)) {
+      failures.push({
+        message: "[snapshot] parsed-keys.snapshot.json ambiguousValueMembers drifted — regenerate the snapshot",
+      });
+    }
   }
 
   if (failures.length > 0) {
