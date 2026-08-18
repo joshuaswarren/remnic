@@ -8,6 +8,9 @@
  */
 
 export * from "./types.js";
+export * from "./matching.js";
+export * from "./tagging.js";
+export * from "./backfill.js";
 export * from "./registry.js";
 export * from "./config.js";
 export * from "./intervals.js";

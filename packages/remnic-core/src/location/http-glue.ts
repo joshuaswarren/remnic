@@ -65,7 +65,7 @@ export async function respondLocationBackfill(
   service: EngramAccessService,
 ): Promise<void> {
   const output = (await requireLocationOperation("location_backfill").run(
-    { from: body.from ?? null, to: body.to ?? null },
+    { from: body.from ?? null, to: body.to ?? null, dryRun: body.dryRun === true },
     { service },
   )) as { result: unknown };
   respondJson(res, 200, output.result);
