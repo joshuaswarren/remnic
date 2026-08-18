@@ -108,6 +108,10 @@ jobs:
       - name: Lint
         run: pnpm run lint
 
+      - name: Package typecheck scripts
+        run: node scripts/check-package-typecheck-scripts.mjs
+
+
       - name: Typecheck
         run: pnpm run check-types
 
