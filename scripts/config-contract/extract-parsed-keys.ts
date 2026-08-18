@@ -1089,27 +1089,34 @@ export function extractRealConfigKeys(repoRoot: string): ExtractedConfigKeys {
   };
 }
 
-// ---------------------------------------------------------------------------
-// CLI entry: print the extraction for the REAL config surface as sorted JSON.
-// ---------------------------------------------------------------------------
+// CLI: print JSON, or `npx tsx scripts/config-contract/extract-parsed-keys.ts --write`
+// to replace the snapshot atomically. Never redirect stdout onto the snapshot —
+// a failed extract would empty the file (this run, 8d64a716a).
 const invokedDirectly =
   process.argv[1] !== undefined &&
-  // pathToFileURL normalizes drive letters and separators on every
-  // platform — `URL.pathname` comparison broke on Windows (review finding).
   pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
 
 if (invokedDirectly) {
   const repoRoot = process.cwd();
   const result = extractRealConfigKeys(repoRoot);
-  // Omit the volatile `line` from the committed snapshot: the stable `id`
-  // identifies each construct, so an unrelated edit that merely shifts lines no
-  // longer forces snapshot churn / a preflight failure (issue #1990 review).
   const snapshot = {
     ...result,
     unparseable: result.unparseable.map(({ file, reason, id }) => ({ file, reason, id })),
   };
-  process.stdout.write(`${JSON.stringify(snapshot, null, 2)}\n`);
+  if (snapshot.keys.length === 0) {
+    throw new Error("extract-parsed-keys: refused to emit an empty key list");
+  }
+  const json = `${JSON.stringify(snapshot, null, 2)}\n`;
+  if (process.argv.includes("--write")) {
+    const target = path.join(repoRoot, "scripts", "config-contract", "parsed-keys.snapshot.json");
+    const tmp = `${target}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, json);
+    fs.renameSync(tmp, target);
+  } else {
+    process.stdout.write(json);
+  }
 }
+
 
 /** All module-parser files the real extraction should include. */
 export function collectModuleParserFiles(repoRoot: string): string[] {
