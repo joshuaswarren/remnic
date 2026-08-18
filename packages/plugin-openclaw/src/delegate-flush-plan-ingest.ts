@@ -21,6 +21,10 @@
  *  3. Recovery is part of the claim. A `.rotating` or `.inflight` file found
  *     while holding the lock is residue from a dead run and is merged ahead of
  *     the newly claimed notes, preserving write order.
+ *
+ * Every snapshot create, rename, and unlink is finally addressed through a held
+ * descriptor for the snapshot directory (issue #2380), so a parent directory
+ * swapped in after the link-free walk cannot redirect them.
  */
 
 import { constants } from "node:fs";
@@ -31,6 +35,11 @@ import { log } from "@remnic/core/logger";
 import { withHeldFileLock, type HeldFileLockController } from "@remnic/core/utils/serialize-mutations";
 
 import type { DelegateDaemonTarget } from "./bridge.js";
+import {
+  buildSnapshotPaths,
+  pinSnapshotDirectory,
+  type SnapshotPaths,
+} from "./delegate-flush-plan-directory.js";
 import { buildMemoryFlushPlan } from "./memory-flush-plan.js";
 import { postJsonWithStatus } from "./delegate-http.js";
 
@@ -51,14 +60,6 @@ const LOCK_STALE_MS = 60_000;
  */
 const MAX_RECLAIM_PASSES = 4;
 
-interface SnapshotPaths {
-  plan: string;
-  inflight: string;
-  rotating: string;
-  oversized: string;
-  lock: string;
-}
-
 export async function ingestFlushPlanNotes(options: {
   target: DelegateDaemonTarget;
   serviceId: string;
@@ -74,13 +75,7 @@ export async function ingestFlushPlanNotes(options: {
     workspaceDir,
     ...buildMemoryFlushPlan({ serviceId: options.serviceId }).relativePath.split("/"),
   );
-  const paths: SnapshotPaths = {
-    plan: planPath,
-    inflight: `${planPath}.inflight`,
-    rotating: `${planPath}.rotating`,
-    oversized: `${planPath}.oversized`,
-    lock: `${planPath}.lock`,
-  };
+  const paths = buildSnapshotPaths(planPath);
   // The embedded processor refuses a symlinked plan file or parent, and so must
   // this one: following a link would send another file's contents to the daemon
   // and then truncate that file. EVERY path this module reads or writes is
@@ -124,7 +119,22 @@ export async function ingestFlushPlanNotes(options: {
         );
         return;
       }
-      await ingestUnderLock(options, paths, lock);
+      // The walk above answers for the tree as it was; `O_NOFOLLOW` covers only
+      // final components. Pin the snapshot directory by descriptor so a parent
+      // swapped in from here on cannot redirect a create, rename, or unlink
+      // (issue #2380).
+      const pinned = await pinSnapshotDirectory(paths);
+      if (pinned.kind === "unstable") {
+        log.warn(
+          `[${options.serviceId}] flush-plan ingestion skipped: the snapshot directory changed identity while it was being opened`,
+        );
+        return;
+      }
+      try {
+        await ingestUnderLock(options, pinned.kind === "pinned" ? pinned.paths : paths, lock);
+      } finally {
+        if (pinned.kind === "pinned") await pinned.close();
+      }
     },
   );
 }
@@ -424,7 +434,7 @@ async function quarantineOversizedLine(
     await handle.close();
   }
   log.warn(
-    `[${serviceId}] a flush-plan note exceeds the daemon's body limit; moved it to ${paths.oversized} so the remaining notes can drain`,
+    `[${serviceId}] a flush-plan note exceeds the daemon's body limit; moved it to ${paths.oversizedLabel} so the remaining notes can drain`,
   );
   return rest;
 }
