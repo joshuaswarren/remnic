@@ -1775,3 +1775,73 @@ test("fallback llm redacts provider error bodies for sensitive calls", { concurr
 function disableGatewaySecretResolverForTest(): void {
   __setGatewayResolverForTest(async () => null);
 }
+
+test("fallback llm does not retry schema-stripping for unrelated unsupported errors", { concurrency: false }, async () => {
+  clearModelsJsonCache();
+  clearSecretCache();
+  const llm = new FallbackLlmClient({
+    agents: { defaults: { model: { primary: "openai/test-model" } } },
+    models: { providers: { openai: { baseUrl: "https://openai.example/v1", api: "openai-completions", apiKey: "key", models: [] } } },
+  });
+  const originalFetch = globalThis.fetch;
+  const bodies: Array<Record<string, unknown>> = [];
+  globalThis.fetch = (async (_url, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    bodies.push(body);
+    // Unrelated provider error: "unsupported" without schema/format context.
+    return new Response(JSON.stringify({ error: { message: "'temperature' is unsupported with this model" } }), { status: 400 });
+  }) as typeof fetch;
+  try {
+    const response = await llm.chatCompletion([{ role: "user", content: "test" }], {
+      jsonSchema: { name: "test_result", schema: { type: "object" } },
+    });
+    assert.equal(response, null);
+    // Exactly one request: no schema-stripping duplicate for unrelated errors.
+    assert.equal(bodies.length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearModelsJsonCache();
+    clearSecretCache();
+  }
+});
+
+test("fallback llm retries without responsesJsonSchema when the Responses API rejects it and degrades the rest of the chain", { concurrency: false }, async () => {
+  clearModelsJsonCache();
+  clearSecretCache();
+  const llm = new FallbackLlmClient({
+    agents: { defaults: { model: { primary: "openai/test-model", fallbacks: ["openai/test-model-2"] } } },
+    models: { providers: { openai: { baseUrl: "https://openai.example/v1", api: "openai-responses", apiKey: "key", models: [] } } },
+  });
+  const originalFetch = globalThis.fetch;
+  const bodies: Array<Record<string, unknown>> = [];
+  globalThis.fetch = (async (_url, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    bodies.push(body);
+    if ((body as { text?: { format?: unknown } }).text?.format) {
+      return new Response('text.format json_schema is unsupported', { status: 400 });
+    }
+    // Model 1 always fails content-wise; model 2 succeeds.
+    const model = String(body.model ?? "");
+    if (model.endsWith("test-model")) {
+      return new Response(JSON.stringify({ output_text: "not json" }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ output_text: '{"ok":true}' }), { status: 200 });
+  }) as typeof fetch;
+  try {
+    const response = await llm.chatCompletion([{ role: "user", content: "test" }], {
+      responsesJsonSchema: { name: "test_result", schema: { type: "object" } },
+      acceptResponse: (r) => r.content.includes("ok"),
+    });
+    assert.ok(response?.content.includes("ok"));
+    // model1: schema attempt (rejected) + unstructured retry (bad output)
+    // model2: unstructured only — the schema must NOT be re-sent chain-wide.
+    assert.equal(bodies.length, 3);
+    assert.ok((bodies[0] as { text?: { format?: unknown } }).text?.format);
+    assert.equal((bodies[1] as { text?: { format?: unknown } }).text?.format, undefined);
+    assert.equal((bodies[2] as { text?: { format?: unknown } }).text?.format, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearModelsJsonCache();
+    clearSecretCache();
+  }
+});

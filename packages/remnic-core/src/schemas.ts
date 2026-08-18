@@ -181,7 +181,7 @@ export const ExtractedFactSchema = z.object({
     .optional()
     .nullable()
     .describe(
-      'For category "reasoning_trace" only: a stored solution chain with ordered steps, a final answer, and an optional observed outcome. Require at least two steps.',
+      'For category "reasoning_trace" only: a stored solution chain with ordered steps, a final answer, and an optional observed outcome. Require at least two steps. IMPORTANT: must include a non-empty finalAnswer (or final_answer) — the JSON Schema sent to providers cannot enforce this constraint.',
     ),
   eventTime: z
     .string()
