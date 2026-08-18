@@ -12,6 +12,70 @@ import {
   clearSecretCache,
 } from "./resolve-provider-secret.js";
 
+test("fallback llm sends native JSON schema to chat completions", { concurrency: false }, async () => {
+  clearModelsJsonCache();
+  clearSecretCache();
+  const llm = new FallbackLlmClient({
+    agents: { defaults: { model: { primary: "openai/test-model" } } },
+    models: { providers: { openai: { baseUrl: "https://openai.example/v1", api: "openai-completions", apiKey: "key", models: [] } } },
+  });
+  const originalFetch = globalThis.fetch;
+  let captured: Record<string, unknown> = {};
+  globalThis.fetch = (async (_url, init) => {
+    captured = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    return new Response(JSON.stringify({ choices: [{ message: { content: '{"ok":true}' } }] }), { status: 200 });
+  }) as typeof fetch;
+  try {
+    await llm.chatCompletion([{ role: "user", content: "test" }], {
+      jsonSchema: { name: "test_result", schema: { type: "object", properties: { ok: { type: "boolean" } } }, strict: false },
+    });
+    assert.deepEqual(captured.response_format, {
+      type: "json_schema",
+      json_schema: {
+        name: "test_result",
+        strict: false,
+        schema: { type: "object", properties: { ok: { type: "boolean" } } },
+      },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearModelsJsonCache();
+    clearSecretCache();
+  }
+});
+
+test("fallback llm retries without native schema when the provider rejects it", { concurrency: false }, async () => {
+  clearModelsJsonCache();
+  clearSecretCache();
+  const llm = new FallbackLlmClient({
+    agents: { defaults: { model: { primary: "openai/test-model" } } },
+    models: { providers: { openai: { baseUrl: "https://openai.example/v1", api: "openai-completions", apiKey: "key", models: [] } } },
+  });
+  const originalFetch = globalThis.fetch;
+  const bodies: Array<Record<string, unknown>> = [];
+  globalThis.fetch = (async (_url, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    bodies.push(body);
+    if (body.response_format) {
+      return new Response('response_format json_schema is unsupported', { status: 400 });
+    }
+    return new Response(JSON.stringify({ choices: [{ message: { content: '{"ok":true}' } }] }), { status: 200 });
+  }) as typeof fetch;
+  try {
+    const response = await llm.chatCompletion([{ role: "user", content: "test" }], {
+      jsonSchema: { name: "test_result", schema: { type: "object" } },
+    });
+    assert.equal(response?.content, '{"ok":true}');
+    assert.equal(bodies.length, 2);
+    assert.ok(bodies[0]?.response_format);
+    assert.equal(bodies[1]?.response_format, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearModelsJsonCache();
+    clearSecretCache();
+  }
+});
+
 test("fallback llm prefers the active gateway provider config over models.json", { concurrency: false }, async () => {
   __setModelsJsonForTest({
     "custom-provider": {

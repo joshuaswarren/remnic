@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { FallbackLlmOptions } from "./fallback-llm.js";
 
 import { parseConfig } from "./config.js";
 import { ExtractionEngine } from "./extraction.js";
@@ -111,7 +112,11 @@ type LocalLlmFixture = {
 };
 
 type GatewayFixture = {
-  parseWithSchemaDetailed(messages: ChatMessage[]): Promise<unknown>;
+  parseWithSchemaDetailed(
+    messages: ChatMessage[],
+    schema: unknown,
+    options?: FallbackLlmOptions,
+  ): Promise<unknown>;
 };
 
 type DirectClientFixture = {
@@ -283,11 +288,13 @@ test("gateway extraction prompt uses placeholders and accepts an empty question 
   const engine = new ExtractionEngine(parseConfig({ modelSource: "gateway" }));
   let calls = 0;
   let prompt = "";
+  let nativeSchema: Record<string, unknown> | undefined;
 
   const fallbackLlm: GatewayFixture = {
-    async parseWithSchemaDetailed(messages: ChatMessage[]) {
+    async parseWithSchemaDetailed(messages: ChatMessage[], _schema, options) {
       calls += 1;
       prompt = messages[0]?.content ?? "";
+      nativeSchema = options?.jsonSchema?.schema;
       return { modelUsed: "fixture-gateway", result: SOURCE_GROUNDED_EXTRACTION };
     },
   };
@@ -298,6 +305,11 @@ test("gateway extraction prompt uses placeholders and accepts an empty question 
   assert.equal(calls, 1);
   assertSourceGroundedResult(result);
   assertSafeExtractionPrompt(prompt);
+  assert.match(prompt, /Return only valid JSON matching this shape/);
+  assert.equal(nativeSchema?.type, "object");
+  const properties = nativeSchema?.properties as Record<string, Record<string, unknown>>;
+  assert.equal(properties.facts?.type, "array");
+  assert.equal((properties.facts?.items as Record<string, unknown>)?.type, "object");
 });
 
 test("direct extraction prompt uses placeholders and accepts an empty question list", async () => {

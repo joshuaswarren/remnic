@@ -27,6 +27,8 @@ export interface FallbackLlmOptions {
   store?: boolean;
   /** Request strict JSON output when a route uses the Responses API. */
   responsesJsonSchema?: { name: string; schema: Record<string, unknown> };
+  /** Request provider-native structured output on supported JSON transports. */
+  jsonSchema?: { name: string; schema: Record<string, unknown>; strict?: boolean };
   /** Hide provider error details that could echo private request content. */
   redactProviderErrors?: boolean;
   /** Explicit "provider/model" override to try before the configured chain. */
@@ -106,6 +108,11 @@ interface ModelRef {
   modelId: string;
   providerConfig: ModelProviderConfig;
   modelString: string;
+}
+
+function isUnsupportedJsonSchemaError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /(?:400|404|422).*?(?:response[_ ]?format|json[_ ]?schema|structured output|unsupported)/i.test(message);
 }
 
 const PROVIDER_ALIASES: Record<string, readonly string[]> = {
@@ -231,6 +238,31 @@ export class FallbackLlmClient {
         } catch (err) {
           if (runOptions.signal?.aborted) {
             throw abortReason(runOptions.signal);
+          }
+          if (runOptions.jsonSchema && isUnsupportedJsonSchemaError(err)) {
+            log.debug(`fallback LLM: ${model.modelString} rejected native JSON schema; retrying without it`);
+            try {
+              const result = await this.tryModel(model, messages, {
+                ...runOptions,
+                jsonSchema: undefined,
+              });
+              if (result) {
+                const response = {
+                  content: result.content,
+                  modelUsed: model.modelString,
+                  usage: result.usage,
+                };
+                if (!runOptions.acceptResponse || runOptions.acceptResponse(response)) {
+                  return response;
+                }
+                lastRejectedResponse = response;
+              }
+            } catch (retryError) {
+              if (runOptions.signal?.aborted) throw abortReason(runOptions.signal);
+              log.debug(
+                `fallback LLM: ${model.modelString} unstructured retry failed (${retryError instanceof Error ? retryError.message : String(retryError)})`,
+              );
+            }
           }
           const errorMsg = runOptions.redactProviderErrors
             ? "provider error details redacted"
@@ -736,6 +768,18 @@ export class FallbackLlmClient {
       ...buildChatCompletionTokenLimit(modelId, options.maxTokens ?? 4096, {
         assumeOpenAI,
       }),
+      ...(options.jsonSchema
+        ? {
+            response_format: {
+              type: "json_schema",
+              json_schema: {
+                name: options.jsonSchema.name,
+                strict: options.jsonSchema.strict ?? false,
+                schema: options.jsonSchema.schema,
+              },
+            },
+          }
+        : {}),
     };
 
     const response = await fetch(url, {
@@ -891,14 +935,14 @@ export class FallbackLlmClient {
         assumeOpenAI: shouldAssumeOpenAiChatCompletions(config.baseUrl),
       }),
       ...(options.store === undefined ? {} : { store: options.store }),
-      ...(options.responsesJsonSchema
+      ...(options.jsonSchema || options.responsesJsonSchema
         ? {
             text: {
               format: {
                 type: "json_schema",
-                name: options.responsesJsonSchema.name,
-                strict: true,
-                schema: options.responsesJsonSchema.schema,
+                name: (options.jsonSchema ?? options.responsesJsonSchema)!.name,
+                strict: options.jsonSchema?.strict ?? true,
+                schema: (options.jsonSchema ?? options.responsesJsonSchema)!.schema,
               },
             },
           }
