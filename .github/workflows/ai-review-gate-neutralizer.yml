@@ -138,6 +138,47 @@ jobs:
               core.notice(`No older cancelled ai-reviewers suites to clear on head ${headSha.slice(0, 7)}.`);
               return;
             }
+            // Rulesets take the newest ai-reviewers check-run. Posting a neutral
+            // stamp after the gate's success verdict makes merge block forever
+            // (#2711). When success is already the latest completed check, the
+            // dead workflow cancellations do not need a newer neutral overlay.
+            let existingChecks;
+            try {
+              existingChecks = await github.paginate(github.rest.checks.listForRef, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: headSha,
+                filter: 'all',
+                check_name: 'ai-reviewers',
+                per_page: 100,
+              });
+            } catch (error) {
+              core.notice(
+                `Could not list ai-reviewers check runs for ${headSha.slice(0, 7)} (${error && error.message ? error.message : error}); not neutralizing.`,
+              );
+              return;
+            }
+            const completedChecks = existingChecks
+              .filter((check) => check.status === 'completed' && check.completed_at)
+              .sort((a, b) => Date.parse(b.completed_at) - Date.parse(a.completed_at));
+            const latestCheck = completedChecks[0];
+            if (latestCheck?.conclusion === 'success') {
+              const latestAt = Date.parse(latestCheck.completed_at);
+              const hasNewerBlockingCheck = completedChecks.some(
+                (check) =>
+                  check.id !== latestCheck.id &&
+                  Date.parse(check.completed_at) > latestAt &&
+                  (check.conclusion === 'cancelled' ||
+                    check.conclusion === 'failure' ||
+                    check.conclusion === 'neutral'),
+              );
+              if (!hasNewerBlockingCheck) {
+                core.notice(
+                  `Latest ai-reviewers check on ${headSha.slice(0, 7)} is already success; skipping neutral stamp (#2711).`,
+                );
+                return;
+              }
+            }
             // Post ONE neutral ai-reviewers check-run for the head. A newer,
             // FINAL positive verdict (run ${run.id}) already evaluated this head,
             // so this only clears dead cancelled suites - it never substitutes for
