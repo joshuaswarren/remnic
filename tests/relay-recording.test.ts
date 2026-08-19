@@ -462,7 +462,7 @@ test("Relay recording is sanitized, run-scoped, and integrity checked", async ()
     codexToolSurface: {
       accountLinkedAppsDisabled: true,
       mcpServers: ["relay"],
-      mcpTools: ["relay.remnic.recall"],
+      mcpTools: ["relay.remnic_recall"],
     },
     fixtureManifestSha256: fixtureManifest.rootSha256,
     isolation: {
@@ -475,7 +475,7 @@ test("Relay recording is sanitized, run-scoped, and integrity checked", async ()
     remnic: {
       loopbackOnly: true,
       namespace: "relay-build-week",
-      advertisedTools: ["remnic.recall"],
+      advertisedTools: ["remnic_recall"],
       isolatedMemoryDir: true,
     },
     productionDataRead: false,

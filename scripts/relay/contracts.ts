@@ -175,7 +175,9 @@ export const RelayPreflightReceiptSchema = z
       .object({
         accountLinkedAppsDisabled: z.literal(true),
         mcpServers: z.tuple([z.literal("relay")]),
-        mcpTools: z.tuple([z.literal("relay.remnic_recall")]),
+        // #2705: advertised names became remnic_*; recordings made before the
+        // rename still carry the dotted form and stay valid.
+        mcpTools: z.tuple([z.union([z.literal("relay.remnic_recall"), z.literal("relay.remnic.recall")])]),
       })
       .strict(),
     fixtureManifestSha256: z.string().regex(/^[a-f0-9]{64}$/),
@@ -192,7 +194,7 @@ export const RelayPreflightReceiptSchema = z
       .object({
         loopbackOnly: z.literal(true),
         namespace: z.literal(RELAY_NAMESPACE),
-        advertisedTools: z.tuple([z.literal("remnic_recall")]),
+        advertisedTools: z.tuple([z.union([z.literal("remnic_recall"), z.literal("remnic.recall")])]),
         isolatedMemoryDir: z.literal(true),
       })
       .strict(),
