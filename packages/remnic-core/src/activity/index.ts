@@ -21,3 +21,4 @@ export * from "./memory-gen.js";
 export * from "./privacy.js";
 export * from "./vault-path.js";
 export * from "./vault-publish.js";
+export * from "./vault-frontmatter.js";
