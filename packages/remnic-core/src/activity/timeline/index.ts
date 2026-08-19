@@ -17,3 +17,4 @@ export * from "./week-snapshot.js";
 export * from "./analysis-batch.js";
 export * from "./analysis-evidence.js";
 export * from "./analysis-prompt.js";
+export * from "./analysis-claim.js";
