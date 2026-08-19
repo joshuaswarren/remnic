@@ -87,7 +87,7 @@ function renderJournalSeed(date: string, cards: readonly JournalSeedCard[]): str
 }
 
 /** The only journal write. Stats first; existing files are a no-op unless force. */
-function writeJournalFile(filePath: string, content: string, force: boolean): boolean {
+export function writeJournalFile(filePath: string, content: string, force: boolean): boolean {
   let exists = false;
   try {
     statSync(filePath);
