@@ -1,14 +1,18 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { filterLiveEnvelopes, markSupersededCirculation } from "./staleness.js";
+import {
+  filterLiveEnvelopes,
+  markSupersededCirculation,
+  type SharedStalenessItem,
+} from "./staleness.js";
 
 test("filterLiveEnvelopes drops at the expiry instant (half-open)", () => {
   const expiresAt = "2026-08-18T12:00:00.000Z";
   const at = Date.parse(expiresAt);
-  const live = { id: "keep", expiresAt };
-  const forever = { id: "legacy" };
-  const items = [live, forever];
+  const live: SharedStalenessItem = { id: "keep", expiresAt };
+  const forever: SharedStalenessItem = { id: "legacy" };
+  const items: SharedStalenessItem[] = [live, forever];
 
   assert.deepEqual(filterLiveEnvelopes(items, at - 1), items);
   assert.deepEqual(filterLiveEnvelopes(items, at), [forever]);
@@ -17,10 +21,11 @@ test("filterLiveEnvelopes drops at the expiry instant (half-open)", () => {
 });
 
 test("markSupersededCirculation flags targets that still circulate", () => {
-  const older = { id: "item-1", expiresAt: "2026-08-19T00:00:00.000Z" };
-  const newer = { id: "item-2", supersedes: "item-1" };
-  const other = { id: "item-3" };
-  const items = [older, newer, other];
+  const older: SharedStalenessItem = { id: "item-1", expiresAt: "2026-08-19T00:00:00.000Z" };
+  const newer: SharedStalenessItem = { id: "item-2", supersedes: "item-1" };
+  const other: SharedStalenessItem = { id: "item-3" };
+  const items: SharedStalenessItem[] = [older, newer, other];
+
 
   const marked = markSupersededCirculation(items);
   assert.equal(marked[0]?.circulating, true);
