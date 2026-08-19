@@ -19,6 +19,7 @@ export * from "./journal.js";
 export * from "./journal-vault-read.js";
 export * from "./memory-gen.js";
 export * from "./privacy.js";
+export * from "./privacy-status.js";
 export * from "./privacy-window.js";
 export * from "./vault-path.js";
 export * from "./vault-publish.js";
