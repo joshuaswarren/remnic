@@ -59,6 +59,19 @@ conditions without new evidence; each baseline below is the receipt.
   importing `storage.ts` directly is separately ratchet-managed as
   `directStorageImports`. See the note in
   `remnic-no-cross-package-src-imports.md`.
+- **`): x is <Type>[] {` (any array type predicate)** — 10 occurrences
+  across 7 files (`search/orama-backend.ts`, `search/lancedb-backend.ts`,
+  `boxes.ts`, `access-token-capabilities.ts`, `wearables/fusion/store.ts`,
+  and two bench runners) are ordinary element-shape guards that correctly
+  reject nullish, so the broad form is noise. The narrow
+  `is readonly []` slice — the `isEmpty*` guard family whose body returns
+  `true` for nullish — is zero-match against the current tree and ships as
+  `remnic-type-predicate-nullish`.
+- **`.some((x) => Array.isArray(x) && …)`** — an "any non-empty" check
+  where nullish → `false` is the correct answer
+  (`access-service.ts:843`). Only the `.every(...)` "all empty" shape can
+  disagree with a nullish top-level branch, so
+  `remnic-guard-inner-nullish` conditions on `.every(` alone.
 
 The dominant review clusters in the 2026-06-20..07-04 subset (605
 findings across 40 PRs; the full derivation corpus spans four weeks) —

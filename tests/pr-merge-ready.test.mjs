@@ -481,3 +481,31 @@ test("evaluateMergeReadiness: unknown checks and non-array input are not blocker
   assert.equal(evaluateMergeReadiness([...GREEN_PRODUCT_CHECKS, { name: "analyze", state: "FAILURE" }]).ready, true);
   assert.equal(evaluateMergeReadiness(undefined).ready, false, "no rows -> product gates missing");
 });
+
+// Rulesets evaluate the LATEST check-run per context. A duplicate name must
+// therefore resolve by completedAt, not by array position: a stale SUCCESS
+// arriving after a newer FAILURE previously won and reported a red PR ready.
+test("evaluateMergeReadiness: the newest run per context decides, whatever the row order", () => {
+  const base = GREEN_PRODUCT_CHECKS.filter((c) => c.name !== "build");
+  const staleSuccess = { name: "build", state: "SUCCESS", completedAt: "2026-08-19T10:00:00Z" };
+  const freshFailure = { name: "build", state: "FAILURE", completedAt: "2026-08-19T12:00:00Z" };
+
+  for (const rows of [
+    [...base, staleSuccess, freshFailure],
+    [...base, freshFailure, staleSuccess],
+  ]) {
+    const verdict = evaluateMergeReadiness(rows);
+    assert.equal(verdict.ready, false, "a newer FAILURE must block regardless of row order");
+    assert.deepEqual(verdict.blockers, ["build: FAILURE"]);
+  }
+});
+
+test("evaluateMergeReadiness: a newer SUCCESS clears an older FAILURE on the same context", () => {
+  const base = GREEN_PRODUCT_CHECKS.filter((c) => c.name !== "build");
+  const rows = [
+    ...base,
+    { name: "build", state: "FAILURE", completedAt: "2026-08-19T10:00:00Z" },
+    { name: "build", state: "SUCCESS", completedAt: "2026-08-19T12:00:00Z" },
+  ];
+  assert.equal(evaluateMergeReadiness(rows).ready, true);
+});
