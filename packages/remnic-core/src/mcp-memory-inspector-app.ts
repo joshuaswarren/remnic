@@ -7,7 +7,7 @@ import type { RetrievedMemoryProvenance } from "./memory-provenance.js";
 export const REMNIC_CHATGPT_MEMORY_INSPECTOR_TOOL =
   "engram.chatgpt_memory_inspector" as const;
 export const REMNIC_CHATGPT_MEMORY_INSPECTOR_CANONICAL_TOOL =
-  "remnic.chatgpt_memory_inspector" as const;
+  "remnic_chatgpt_memory_inspector" as const;
 export const REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_URI =
   "ui://remnic/memory-inspector.v1.html" as const;
 export const REMNIC_CHATGPT_MEMORY_INSPECTOR_MIME_TYPE =

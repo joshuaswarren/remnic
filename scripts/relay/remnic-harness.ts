@@ -342,7 +342,7 @@ export async function callRelayMcpRecall(
       id: 2,
       method: "tools/call",
       params: {
-        name: "remnic.recall",
+        name: "remnic_recall",
         arguments: {
           query: RELAY_QUERY,
           namespace: RELAY_NAMESPACE,

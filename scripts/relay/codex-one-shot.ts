@@ -124,7 +124,7 @@ export function buildRelayCodexConfigArgs(mcpUrl: string): string[] {
     'shell_environment_policy.set={ PATH="/usr/bin:/bin", HOME="/tmp/relay-model-home", TMPDIR="/tmp", LANG="C.UTF-8", LC_ALL="C.UTF-8" }',
     `mcp_servers.relay.url=${tomlString(mcpUrl)}`,
     'mcp_servers.relay.bearer_token_env_var="REMNIC_RELAY_MCP_TOKEN"',
-    'mcp_servers.relay.enabled_tools=["remnic.recall"]',
+    'mcp_servers.relay.enabled_tools=["remnic_recall"]',
     "mcp_servers.relay.required=true",
     "mcp_servers.relay.startup_timeout_sec=10",
     "mcp_servers.relay.tool_timeout_sec=30",
@@ -166,7 +166,7 @@ function classifyCodexFailure(stdout: string, stderr: string): string[] {
   };
   add("authentication", /\b(?:401|403|authentication|not logged in|unauthori[sz]ed)\b/i);
   add("cli-arguments", /\b(?:unknown|unexpected|invalid) argument\b|\bUsage:/i);
-  add("mcp-startup", /\bMCP\b|mcp_servers|remnic\.recall/i);
+  add("mcp-startup", /\bMCP\b|mcp_servers|remnic[._]recall/i);
   add("model-availability", /\bmodel\b.{0,80}\b(?:not found|unsupported|unavailable|does not exist)\b/i);
   add("network", /\b(?:connection|DNS|network|websocket).{0,80}(?:failed|refused|timed out|unreachable)\b/i);
   add("output-schema", /\b(?:output|json|response).{0,40}schema\b|response_format|structured output/i);
@@ -252,7 +252,7 @@ export function countRecallToolCalls(jsonl: string): number {
       };
       if (event.type !== "item.completed" || event.item?.type !== "mcp_tool_call") continue;
       const tool = event.item.tool ?? event.item.name;
-      if (tool !== "remnic.recall" && tool !== "relay.remnic.recall") continue;
+      if (tool !== "remnic_recall" && tool !== "relay.remnic_recall") continue;
       if (event.item.server !== "relay") continue;
       if (event.item.status !== "completed") continue;
       if (typeof event.item.id === "string") completedIds.add(event.item.id);
@@ -291,7 +291,7 @@ export function parseRelayRecallReceipts(
     }
     if (event.type !== "item.completed" || event.item?.type !== "mcp_tool_call") continue;
     const tool = event.item.tool ?? event.item.name;
-    if (event.item.server !== "relay" || (tool !== "remnic.recall" && tool !== "relay.remnic.recall")) continue;
+    if (event.item.server !== "relay" || (tool !== "remnic_recall" && tool !== "relay.remnic_recall")) continue;
     if (event.item.status !== "completed") continue;
     if (typeof event.item.id === "string") {
       if (completedIds.has(event.item.id)) continue;

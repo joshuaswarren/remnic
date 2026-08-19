@@ -23,7 +23,7 @@ test("Codex JSONL proof counts only completed Remnic MCP recalls", () => {
     { type: "thread.started", thread_id: "019f62b9-3200-7df1-99fb-cbb35fc28573" },
     {
       type: "item.completed",
-      item: { id: "item-1", type: "mcp_tool_call", server: "relay", tool: "remnic.recall", status: "failed" },
+      item: { id: "item-1", type: "mcp_tool_call", server: "relay", tool: "remnic_recall", status: "failed" },
     },
     {
       type: "item.completed",
@@ -31,7 +31,7 @@ test("Codex JSONL proof counts only completed Remnic MCP recalls", () => {
         id: "item-2",
         type: "mcp_tool_call",
         server: "relay",
-        tool: "remnic.recall",
+        tool: "remnic_recall",
         status: "completed",
         arguments: {
           query: RELAY_QUERY,
@@ -92,7 +92,7 @@ test("Codex JSONL recall proof rejects missing structured MCP evidence", () => {
       id: "item-1",
       type: "mcp_tool_call",
       server: "relay",
-      tool: "remnic.recall",
+      tool: "remnic_recall",
       status: "completed",
       arguments: {
         query: RELAY_QUERY,
@@ -119,7 +119,7 @@ test("Codex JSONL recall proof rejects a missing transcript-free session key bef
       id: "item-1",
       type: "mcp_tool_call",
       server: "relay",
-      tool: "remnic.recall",
+      tool: "remnic_recall",
       status: "completed",
       arguments: {
         query: RELAY_QUERY,

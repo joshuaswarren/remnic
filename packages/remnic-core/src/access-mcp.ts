@@ -42,6 +42,14 @@ import { readEnvVar } from "./runtime/env.js";
 import type { RecallDisclosure, RecallPlanMode } from "./types.js";
 import { expandTildePath } from "./utils/path.js";
 import { applyToolOutputSchemas } from "./access-mcp-output-schemas.js";
+import {
+  CANONICAL_MCP_PREFIX,
+  LEGACY_MCP_PREFIX,
+  toCanonicalToolName,
+  toLegacyToolName,
+  toolNameSuffix,
+  withToolAliases,
+} from "./access-mcp-tool-names.js";
 import { MCP_READ_ONLY_TOOL_SUFFIXES } from "./mcp-read-only-tools.js";
 import { MEETINGS_MCP_TOOLS } from "./meetings/mcp-tools.js";
 import { WEARABLES_MCP_TOOLS } from "./wearables/mcp-tools.js";
@@ -119,42 +127,15 @@ type McpResource = {
  */
 export const MCP_SUPPORTED_PROTOCOL_VERSIONS: readonly string[] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const MCP_DEFAULT_PROTOCOL_VERSION: string = MCP_SUPPORTED_PROTOCOL_VERSIONS[0] ?? "2025-06-18";
-const LEGACY_MCP_PREFIX = "engram.";
-const CANONICAL_MCP_PREFIX = "remnic.";
-
-function toCanonicalToolName(name: string): string {
-  return name.startsWith(LEGACY_MCP_PREFIX) ? `${CANONICAL_MCP_PREFIX}${name.slice(LEGACY_MCP_PREFIX.length)}` : name;
-}
-function toLegacyToolName(name: string): string {
-  return name.startsWith(CANONICAL_MCP_PREFIX)
-    ? `${LEGACY_MCP_PREFIX}${name.slice(CANONICAL_MCP_PREFIX.length)}`
-    : name;
-}
-
 /**
  * Suffix-based allowlist matcher. Returns true for tools whose canonical
- * suffix (after stripping `remnic.` or `engram.`) is in
+ * suffix (after stripping `remnic_`, `remnic.`, or `engram.`) is in
  * {@link MCP_READ_ONLY_TOOL_SUFFIXES}. Unprefixed names are treated as
  * unannotated.
  */
 function isReadOnlyToolName(name: string): boolean {
-  for (const prefix of [CANONICAL_MCP_PREFIX, LEGACY_MCP_PREFIX]) {
-    if (name.startsWith(prefix)) {
-      return MCP_READ_ONLY_TOOL_SUFFIXES[name.slice(prefix.length)] === true;
-    }
-  }
-  return false;
-}
-
-function withToolAliases(tool: McpTool, emitLegacyTools = true): McpTool[] {
-  const canonicalName = toCanonicalToolName(tool.name);
-  const canonicalTool = canonicalName === tool.name ? tool : { ...tool, name: canonicalName };
-  if (canonicalName === tool.name) return [canonicalTool];
-  // Issue #1427: when legacy aliases are opted out, advertise only the
-  // canonical `remnic.*` name and drop the `engram.*` duplicate. Tool *calls*
-  // still accept both names (the dispatch canonicalizes), so suppressing the
-  // alias only trims `tools/list`, not callability.
-  return emitLegacyTools ? [canonicalTool, tool] : [canonicalTool];
+  const suffix = toolNameSuffix(name);
+  return suffix !== null && MCP_READ_ONLY_TOOL_SUFFIXES[suffix] === true;
 }
 
 export const MCP_MIGRATED_OPERATIONS: Readonly<Record<string, OperationName>> = {
@@ -2247,7 +2228,7 @@ export class EngramMcpServer {
     // allowlist. Done as a final pass so every spread (chat, codegraph,
     // coding_*, correction, etc.) inherits the annotation without
     // scattering the same logic across every `withToolAliases` call site.
-    // Suffix-based matching covers both the `remnic.*` and `engram.*`
+    // Suffix-based matching covers both the `remnic_*` and `engram.*`
     // naming forms emitted by `withToolAliases`.
     this.tools = this.tools.map((tool) =>
       isReadOnlyToolName(tool.name) && tool.annotations?.readOnlyHint !== true
@@ -2256,7 +2237,7 @@ export class EngramMcpServer {
     );
     // Apply `outputSchema` declarations from the registry. Like the
     // readOnlyHint pass above, this is a final suffix-based pass so every
-    // tool (including both `remnic.*` and `engram.*` aliases) gets a
+    // tool (including both `remnic_*` and `engram.*` aliases) gets a
     // schema. Tools that already declare an outputSchema (e.g.
     // chatgpt_memory_inspector) are left untouched.
     this.tools = applyToolOutputSchemas(this.tools, CANONICAL_MCP_PREFIX, LEGACY_MCP_PREFIX);
@@ -2589,9 +2570,9 @@ export class EngramMcpServer {
 
   private toolAcceptsArgument(name: string, key: string): boolean {
     // Match by canonical name so argument validation resolves whether the
-    // caller used the `engram.*` or `remnic.*` name and regardless of whether
-    // legacy aliases are advertised (issue #1427) — a tool stays callable under
-    // both names even when only the canonical alias appears in `tools/list`.
+    // caller used `engram.*`, `remnic.*`, or `remnic_*` and regardless of
+    // whether legacy aliases are advertised (issue #1427) — a tool stays
+    // callable under those names even when only remnic_* appears in tools/list.
     const target = toCanonicalToolName(name);
     const tool = this.tools.find((entry) => toCanonicalToolName(entry.name) === target);
     const inputSchema = getObjectProperties(tool?.inputSchema);

@@ -546,7 +546,7 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
 /**
  * Apply outputSchema from the registry to every tool that lacks one.
  * Suffix resolution strips the canonical or legacy prefix so both
- * `remnic.*` and `engram.*` aliases inherit the same schema.
+ * `remnic_*` and `engram.*` aliases inherit the same schema.
  * Tools that already have an explicit outputSchema are skipped.
  */
 export function applyToolOutputSchemas<T extends { name: string; outputSchema?: unknown }>(

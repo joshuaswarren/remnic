@@ -2309,9 +2309,9 @@ test("access HTTP server exposes MCP JSON-RPC endpoint at /mcp", async () => {
       result: { tools: Array<{ name: string }> };
     };
     const toolNames = toolsPayload.result.tools.map((t) => t.name);
-    assert.ok(toolNames.includes("remnic.recall"));
-    assert.ok(toolNames.includes("remnic.memory_store"));
-    assert.ok(toolNames.includes("remnic.entity_get"));
+    assert.ok(toolNames.includes("remnic_recall"));
+    assert.ok(toolNames.includes("remnic_memory_store"));
+    assert.ok(toolNames.includes("remnic_entity_get"));
     assert.ok(toolNames.includes("engram.recall"));
 
     // call remnic.recall tool

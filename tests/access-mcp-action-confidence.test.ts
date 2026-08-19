@@ -42,7 +42,7 @@ test("MCP advertises action_confidence under engram and remnic names", async () 
   const names = (tools?.result as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name);
 
   assert.ok(names.includes("engram.action_confidence"));
-  assert.ok(names.includes("remnic.action_confidence"));
+  assert.ok(names.includes("remnic_action_confidence"));
 });
 
 test("MCP action_confidence validates and dispatches to service", async () => {

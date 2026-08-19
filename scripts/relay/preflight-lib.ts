@@ -167,7 +167,7 @@ async function probeChroot(
 interface IsolatedCodexToolSurface {
   accountLinkedAppsDisabled: true;
   mcpServers: ["relay"];
-  mcpTools: ["relay.remnic.recall"];
+  mcpTools: ["relay.remnic_recall"];
 }
 
 async function probeIsolatedCodexToolSurface(
@@ -321,14 +321,14 @@ async function probeIsolatedCodexToolSurface(
     servers.length !== 1 ||
     servers[0]?.name !== "relay" ||
     servers[0].authStatus !== "bearerToken" ||
-    JSON.stringify(Object.keys(servers[0].tools ?? {}).sort()) !== JSON.stringify(["remnic.recall"])
+    JSON.stringify(Object.keys(servers[0].tools ?? {}).sort()) !== JSON.stringify(["remnic_recall"])
   ) {
-    throw new Error("Relay isolated Codex tool surface exposed something other than relay.remnic.recall");
+    throw new Error("Relay isolated Codex tool surface exposed something other than relay.remnic_recall");
   }
   return {
     accountLinkedAppsDisabled: true,
     mcpServers: ["relay"],
-    mcpTools: ["relay.remnic.recall"],
+    mcpTools: ["relay.remnic_recall"],
   };
 }
 
@@ -531,7 +531,7 @@ export async function runRelayPreflight(options: RelayPreflightOptions): Promise
   try {
     harness = await startRelayRemnicHarness(probeMemoryDir);
     const tools = await listRelayMcpTools(harness.mcpUrl, harness.mcpToken);
-    if (JSON.stringify(tools) !== JSON.stringify(["remnic.recall"])) {
+    if (JSON.stringify(tools) !== JSON.stringify(["remnic_recall"])) {
       throw new Error(`Relay capability token advertised unexpected tools: ${tools.join(", ")}`);
     }
     codexToolSurface = await probeIsolatedCodexToolSurface(
@@ -577,7 +577,7 @@ export async function runRelayPreflight(options: RelayPreflightOptions): Promise
     remnic: {
       loopbackOnly: true,
       namespace: RELAY_NAMESPACE,
-      advertisedTools: ["remnic.recall"],
+      advertisedTools: ["remnic_recall"],
       isolatedMemoryDir: true,
     },
     productionDataRead: false,

@@ -48,7 +48,7 @@ function fakeService(capture: {
   } as unknown as EngramAccessService;
 }
 
-test("MCP advertises both engram.recall_xray and remnic.recall_xray", async () => {
+test("MCP advertises both engram.recall_xray and remnic_recall_xray", async () => {
   const server = new EngramMcpServer(fakeService({ calls: [] }));
   await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
   const tools = await server.handleRequest({
@@ -61,7 +61,7 @@ test("MCP advertises both engram.recall_xray and remnic.recall_xray", async () =
     (t) => t.name,
   );
   assert.ok(names.includes("engram.recall_xray"), "legacy engram.* name is advertised");
-  assert.ok(names.includes("remnic.recall_xray"), "canonical remnic.* alias is advertised");
+  assert.ok(names.includes("remnic_recall_xray"), "canonical remnic_* alias is advertised");
 });
 
 test("MCP engram.recall_xray dispatches to recallXray with threaded params", async () => {

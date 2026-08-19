@@ -543,7 +543,7 @@ test("tools/list: engram.coding_architecture absent when gate off (byte-identica
   const response = await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "tools/list" });
   const names = extractToolNames(response);
   assert.equal(names.has("engram.coding_architecture"), false, "tool must be absent when gate is off");
-  assert.equal(names.has("remnic.coding_architecture"), false, "alias must be absent when gate is off");
+  assert.equal(names.has("remnic_coding_architecture"), false, "alias must be absent when gate is off");
 });
 
 test("tools/list: engram.coding_architecture present when gate on", async () => {
@@ -552,7 +552,7 @@ test("tools/list: engram.coding_architecture present when gate on", async () => 
   const response = await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "tools/list" });
   const names = extractToolNames(response);
   assert.equal(names.has("engram.coding_architecture"), true, "tool must be advertised when gate is on");
-  assert.equal(names.has("remnic.coding_architecture"), true, "alias must be advertised when gate is on");
+  assert.equal(names.has("remnic_coding_architecture"), true, "alias must be advertised when gate is on");
 });
 
 // ──────────────────────────────────────────────────────────────────────────
