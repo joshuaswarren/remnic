@@ -11,5 +11,7 @@ export function isEmptyAnalysisBatches(batches: unknown): boolean {
     throw new TypeError("batches must be an array");
   }
   if (batches.length === 0) return true;
-  return batches.every((batch) => Array.isArray(batch) && batch.length === 0);
+  return batches.every(
+    (batch) => batch == null || (Array.isArray(batch) && batch.length === 0),
+  );
 }

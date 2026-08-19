@@ -11,6 +11,9 @@ test("null, undefined, and empty list are empty", () => {
 
 test("only empty inner batches are empty", () => {
   assert.equal(isEmptyAnalysisBatches([[], []]), true);
+  assert.equal(isEmptyAnalysisBatches([null]), true);
+  assert.equal(isEmptyAnalysisBatches([undefined]), true);
+  assert.equal(isEmptyAnalysisBatches([null, []]), true);
 });
 
 test("a non-empty inner batch is not empty", () => {
