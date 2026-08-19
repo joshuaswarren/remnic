@@ -168,7 +168,7 @@ test("tools/list: engram.coding_decision absent when gate off (byte-identical to
   const tools = (response as { result?: { tools?: Array<{ name: string }> } }).result?.tools ?? [];
   const names = new Set(tools.map((t) => t.name));
   assert.equal(names.has("engram.coding_decision"), false, "tool must be absent when gate is off");
-  assert.equal(names.has("remnic.coding_decision"), false, "alias must be absent when gate is off");
+  assert.equal(names.has("remnic_coding_decision"), false, "alias must be absent when gate is off");
 });
 
 // ──────────────────────────────────────────────────────────────────────────

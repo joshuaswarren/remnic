@@ -40,7 +40,7 @@ function createBriefingOnlyService(captured: CapturedBriefingCall[]): EngramAcce
   return stub as unknown as EngramAccessService;
 }
 
-test("remnic.briefing MCP tool appears in tools/list alongside the engram.* alias", async () => {
+test("remnic_briefing MCP tool appears in tools/list alongside the engram.* alias", async () => {
   const server = new EngramMcpServer(createBriefingOnlyService([]));
   const tools = await server.handleRequest({
     jsonrpc: "2.0",
@@ -50,8 +50,8 @@ test("remnic.briefing MCP tool appears in tools/list alongside the engram.* alia
   });
   const listed = (tools?.result as { tools: Array<{ name: string }> }).tools.map((t) => t.name);
   assert.ok(
-    listed.includes("remnic.briefing"),
-    "tools/list should include the canonical remnic.briefing name",
+    listed.includes("remnic_briefing"),
+    "tools/list should include the canonical remnic_briefing name",
   );
   assert.ok(
     listed.includes("engram.briefing"),
@@ -131,8 +131,8 @@ test("engram.briefing and remnic.briefing are absent from tools/list when briefi
     "engram.briefing must not appear in tools/list when briefing is disabled",
   );
   assert.equal(
-    listed.includes("remnic.briefing"),
+    listed.includes("remnic_briefing"),
     false,
-    "remnic.briefing must not appear in tools/list when briefing is disabled",
+    "remnic_briefing must not appear in tools/list when briefing is disabled",
   );
 });

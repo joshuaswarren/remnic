@@ -910,9 +910,9 @@ test("MCP tools/list exposes LCM compaction tools under remnic aliases", async (
     (tool) => tool.name,
   );
 
-  assert.ok(listed.includes("remnic.lcm_compaction_flush"));
+  assert.ok(listed.includes("remnic_lcm_compaction_flush"));
   assert.ok(listed.includes("engram.lcm_compaction_flush"));
-  assert.ok(listed.includes("remnic.lcm_compaction_record"));
+  assert.ok(listed.includes("remnic_lcm_compaction_record"));
   assert.ok(listed.includes("engram.lcm_compaction_record"));
 });
 
@@ -977,10 +977,10 @@ function listToolNames(response: unknown): string[] {
 
 const TOOLS_LIST_REQUEST = { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} };
 
-test("tools/list advertises both remnic.* and engram.* by default (back-compat)", async () => {
+test("tools/list advertises remnic_* and engram.* by default (back-compat)", async () => {
   const server = new EngramMcpServer(makeMockService());
   const names = listToolNames(await server.handleRequest(TOOLS_LIST_REQUEST));
-  assert.ok(names.includes("remnic.recall"), "canonical name present");
+  assert.ok(names.includes("remnic_recall"), "canonical name present");
   assert.ok(names.includes("engram.recall"), "legacy alias present by default");
   const legacyCount = names.filter((n) => n.startsWith("engram.")).length;
   assert.ok(legacyCount > 0, "legacy aliases advertised by default");
@@ -989,26 +989,31 @@ test("tools/list advertises both remnic.* and engram.* by default (back-compat)"
 test("tools/list omits engram.* aliases when emitLegacyTools is false", async () => {
   const server = new EngramMcpServer(makeMockService(), { emitLegacyTools: false });
   const names = listToolNames(await server.handleRequest(TOOLS_LIST_REQUEST));
-  assert.ok(names.includes("remnic.recall"), "canonical name still present");
+  assert.ok(names.includes("remnic_recall"), "canonical name still present");
   assert.equal(
     names.filter((n) => n.startsWith("engram.")).length,
     0,
     "no engram.* aliases advertised when opted out",
   );
-  // Every advertised tool uses the canonical prefix; the surface is halved.
-  assert.ok(names.every((n) => n.startsWith("remnic.")), "all advertised tools are canonical");
+  // Every advertised tool uses the Anthropic-safe remnic_* prefix.
+  assert.ok(names.every((n) => n.startsWith("remnic_")), "all advertised tools are canonical");
+  assert.ok(names.every((n) => /^[a-zA-Z0-9_-]{1,64}$/.test(n)), "Anthropic tool-name pattern");
 });
 
 test("emitLegacyTools=false still allows calling tools under BOTH names (advertising-only opt-out)", async () => {
   const server = new EngramMcpServer(makeMockService(), { emitLegacyTools: false });
-  // Canonical call works.
-  const canonical = await server.handleRequest(makeToolRequest("remnic.recall", { query: "hello" }));
+  const advertised = await server.handleRequest(makeToolRequest("remnic_recall", { query: "hello" }));
   assert.notEqual(
-    (canonical as { result?: { isError?: boolean } }).result?.isError,
+    (advertised as { result?: { isError?: boolean } }).result?.isError,
     true,
-    "canonical remnic.recall call succeeds",
+    "advertised remnic_recall call succeeds",
   );
-  // Legacy call still dispatches even though it is no longer advertised.
+  const dotted = await server.handleRequest(makeToolRequest("remnic.recall", { query: "hello" }));
+  assert.notEqual(
+    (dotted as { result?: { isError?: boolean } }).result?.isError,
+    true,
+    "dotted remnic.recall call still dispatches",
+  );
   const legacy = await server.handleRequest(makeToolRequest("engram.recall", { query: "hello" }));
   assert.notEqual(
     (legacy as { result?: { isError?: boolean } }).result?.isError,
@@ -1034,10 +1039,10 @@ test("tools/list: ops-scoped token sees ONLY its permitted tools (issue #1850 fi
   const names = await tokenCapabilityStore.run({ version: 1, ops: ["recall", "memory_get"] }, async () =>
     listToolNames(await server.handleRequest(TOOLS_LIST_REQUEST)),
   );
-  assert.ok(names.includes("remnic.recall"), "permitted recall tool advertised");
-  assert.ok(names.includes("remnic.memory_get"), "permitted memory_get tool advertised");
-  assert.ok(!names.includes("remnic.memory_store"), "non-permitted tool must NOT be advertised");
-  assert.ok(!names.includes("remnic.observe"), "non-permitted tool must NOT be advertised");
+  assert.ok(names.includes("remnic_recall"), "permitted recall tool advertised");
+  assert.ok(names.includes("remnic_memory_get"), "permitted memory_get tool advertised");
+  assert.ok(!names.includes("remnic_memory_store"), "non-permitted tool must NOT be advertised");
+  assert.ok(!names.includes("remnic_observe"), "non-permitted tool must NOT be advertised");
   assert.equal(names.length, 2, "exactly the two permitted tools advertised");
 });
 
@@ -1330,11 +1335,11 @@ test("MCP external_wiki_search exposes aliases and dispatches the stable result"
         ? [tool.name]
         : []
     );
-    assert.ok(toolNames.includes("remnic.external_wiki_search"));
+    assert.ok(toolNames.includes("remnic_external_wiki_search"));
     assert.ok(toolNames.includes("engram.external_wiki_search"));
 
     let canonicalResult: unknown;
-    for (const name of ["remnic.external_wiki_search", "engram.external_wiki_search"]) {
+    for (const name of ["remnic_external_wiki_search", "engram.external_wiki_search", "remnic.external_wiki_search"]) {
       const response = await server.handleRequest(makeToolRequest(name, {
         query: "hybrid retrieval",
         limit: 3,

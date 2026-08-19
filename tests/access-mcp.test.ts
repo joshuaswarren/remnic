@@ -416,7 +416,7 @@ test("MCP tools/list marks read-only tools with readOnlyHint and leaves write to
   const byName = new Map(result.tools.map((tool) => [tool.name, tool]));
 
   // Pure reads carry the hint in both naming forms.
-  for (const name of ["remnic.recall", "engram.recall", "remnic.memory_get", "engram.memory_search"]) {
+  for (const name of ["remnic_recall", "engram.recall", "remnic_memory_get", "engram.memory_search"]) {
     const tool = byName.get(name);
     assert.ok(tool, `${name} must be listed`);
     assert.equal(tool.annotations?.readOnlyHint, true, `${name} must carry readOnlyHint`);
@@ -424,7 +424,7 @@ test("MCP tools/list marks read-only tools with readOnlyHint and leaves write to
 
   // Mutating tools must NOT carry it — ChatGPT treats unannotated tools as
   // write actions requiring confirmation, which is the safe default.
-  for (const name of ["remnic.memory_store", "engram.memory_store", "remnic.wearables_sync", "engram.observe"]) {
+  for (const name of ["remnic_memory_store", "engram.memory_store", "remnic_wearables_sync", "engram.observe"]) {
     const tool = byName.get(name);
     assert.ok(tool, `${name} must be listed`);
     assert.notEqual(tool.annotations?.readOnlyHint, true, `${name} must not be marked read-only`);
@@ -451,17 +451,17 @@ test("MCP server advertises tools and dispatches recall", async () => {
     params: {},
   });
   const listed = (tools?.result as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name);
-  const remnicNames = listed.filter((name) => name.startsWith("remnic."));
+  const remnicNames = listed.filter((name) => name.startsWith("remnic_"));
   const engramNames = listed.filter((name) => name.startsWith("engram."));
   assert.equal(remnicNames.length, engramNames.length);
   for (const name of remnicNames) {
     assert.ok(
-      listed.includes(name.replace(/^remnic\./, "engram.")),
+      listed.includes(name.replace(/^remnic_/, "engram.")),
       `${name} must have an engram.* alias`,
     );
   }
   assert.ok(listed.includes("engram.recall"));
-  assert.ok(listed.includes("remnic.recall"));
+  assert.ok(listed.includes("remnic_recall"));
 
   const recall = await server.handleRequest({
     jsonrpc: "2.0",
@@ -1354,12 +1354,12 @@ test("MCP tools/list: key tools have outputSchema with declared properties", asy
   const resp = await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
   const tools = fieldOf(fieldOf(resp, "result"), "tools") as unknown as Array<Record<string, unknown>>;
   const keyTools = [
-    "remnic.recall",
-    "remnic.memory_store",
-    "remnic.memory_get",
-    "remnic.briefing",
-    "remnic.action_confidence",
-    "remnic.memory_search",
+    "remnic_recall",
+    "remnic_memory_store",
+    "remnic_memory_get",
+    "remnic_briefing",
+    "remnic_action_confidence",
+    "remnic_memory_search",
   ];
   for (const name of keyTools) {
     const tool = tools.find((t) => fieldOf(t, "name") === name);

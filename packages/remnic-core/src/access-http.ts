@@ -3273,7 +3273,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       params?: Record<string, unknown>;
     };
 
-    const toolName = typeof request.params?.name === "string" ? request.params.name : "";
+    const toolName = (typeof request.params?.name === "string" ? request.params.name : "").replace(/^remnic_/, "remnic.");
     const toolArgs = request.params?.arguments;
     const dreamsRunDryRun =
       (toolName === "engram.dreams_run" || toolName === "remnic.dreams_run") &&

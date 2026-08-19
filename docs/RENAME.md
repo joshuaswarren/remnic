@@ -154,7 +154,7 @@ What is **not** done yet:
 | systemd unit | `engram.service` | `remnic.service` |
 | HTTP port | 4318 | unchanged |
 | Memory store | `~/.openclaw/workspace/memory/local/` | unchanged (OpenClaw-owned path) |
-| MCP tool names | `engram_recall`, `engram_observe`, … | **dual-registered**: both `remnic_*` and `engram_*` work through v1.x, removed in v2.0.0 |
+| MCP tool names | `engram.recall`, `engram.observe`, … | Advertised as `remnic_*` (`^[a-zA-Z0-9_-]{1,64}$`). `remnic.*` and `engram.*` stay callable. `emitLegacyTools` still advertises `engram.*`. |
 
 ---
 
@@ -348,9 +348,9 @@ $ engram recall "typescript preferences"
 
 ## MCP Tool Dual-Registration
 
-All tools registered under both `engram_*` and `remnic_*` names. Same handler,
-same signature. On `engram_*` invocation, the server log emits a one-shot
-warning (not returned to the model — would spam prompts).
+Advertised names are `remnic_*` so Claude Chat accepts the Anthropic tool-name
+pattern. `remnic.*` and `engram.*` stay callable. When `emitLegacyTools` is
+true, `tools/list` also advertises `engram.*`. Same handler, same signature.
 
 ```typescript
 const canonicalTools = [
@@ -360,22 +360,19 @@ const canonicalTools = [
   // … all tools
 ];
 
-// Register canonical
+// Advertise remnic_* (Anthropic-safe). remnic.* still dispatches.
 for (const tool of canonicalTools) server.registerTool(tool);
 
-// Register engram_* aliases (deprecated)
+// Advertise engram.* aliases when emitLegacyTools is true
 for (const tool of canonicalTools) {
   server.registerTool({
-    name: tool.name.replace(/^remnic_/, "engram_"),
-    impl: (args) => {
-      logger.warnOnce(`[remnic] MCP tool ${tool.name.replace(/^remnic_/, "engram_")} is deprecated — use ${tool.name}`);
-      return tool.impl(args);
-    },
+    name: tool.name.replace(/^remnic_/, "engram."),
+    impl: tool.impl,
   });
 }
 ```
 
-`engram_*` aliases removed in v2.0.0 alongside the CLI forwarder and env var fallback.
+`engram.*` aliases are removed from `tools/list` in v2.0.0. Dispatch stays.
 
 ---
 
@@ -510,7 +507,7 @@ conditions are evidence-based, not calendar-based.
 ## Decisions Locked
 
 - ✅ Repo: `joshuaswarren/remnic` (drop "openclaw" from repo name)
-- ✅ MCP tools: dual-register `remnic_*` and `engram_*` through v1.x, removed in v2.0.0
+- ✅ MCP tools: advertise `remnic_*`; keep `remnic.*` and `engram.*` callable through v1.x
 - ✅ Timeline: hours and days, not weeks or months
 - ✅ Four migration surfaces (npm warn, postinstall, runtime, CLI forwarder)
 - ✅ Shim package `@joshuaswarren/openclaw-engram` (9.3.x series) stays on registry forever

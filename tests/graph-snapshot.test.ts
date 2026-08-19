@@ -640,8 +640,8 @@ test("MCP graph_snapshot tool is exposed under both prefixes", async () => {
     `expected engram.graph_snapshot in ${listed.join(",")}`,
   );
   assert.ok(
-    listed.includes("remnic.graph_snapshot"),
-    `expected remnic.graph_snapshot in ${listed.join(",")}`,
+    listed.includes("remnic_graph_snapshot"),
+    `expected remnic_graph_snapshot in ${listed.join(",")}`,
   );
 });
 

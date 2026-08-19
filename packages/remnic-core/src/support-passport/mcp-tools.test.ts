@@ -42,10 +42,10 @@ test("support passport MCP tools are hidden until the feature is enabled", async
     false
   );
   assert.equal(enabledNames.filter((name) => name.includes("support_passport")).length, 22);
-  assert.ok(enabledNames.includes("remnic.support_passport_memory_preview"));
-  assert.ok(enabledNames.includes("remnic.support_passport_cards_list"));
+  assert.ok(enabledNames.includes("remnic_support_passport_memory_preview"));
+  assert.ok(enabledNames.includes("remnic_support_passport_cards_list"));
   assert.ok(enabledNames.includes("engram.support_passport_grant_revoke"));
-  for (const name of ["remnic.support_passport_memory_preview", "engram.support_passport_memory_preview"]) {
+  for (const name of ["remnic_support_passport_memory_preview", "engram.support_passport_memory_preview"]) {
     assert.equal(enabledTools.find((tool) => tool.name === name)?.annotations?.readOnlyHint, true);
   }
 });

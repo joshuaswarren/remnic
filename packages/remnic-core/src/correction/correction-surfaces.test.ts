@@ -114,8 +114,8 @@ test("tools/list gate: correction tools absent when correctionVisible off (byte-
   const names = extractToolNames(response);
   assert.equal(names.has("engram.memory_correct_plan"), false, "plan tool must be absent when gate off");
   assert.equal(names.has("engram.memory_correct_apply"), false, "apply tool must be absent when gate off");
-  assert.equal(names.has("remnic.memory_correct_plan"), false, "plan alias must be absent when gate off");
-  assert.equal(names.has("remnic.memory_correct_apply"), false, "apply alias must be absent when gate off");
+  assert.equal(names.has("remnic_memory_correct_plan"), false, "plan alias must be absent when gate off");
+  assert.equal(names.has("remnic_memory_correct_apply"), false, "apply alias must be absent when gate off");
 });
 
 test("tools/list gate: correction tools present when correctionVisible on (default)", async () => {
@@ -126,8 +126,8 @@ test("tools/list gate: correction tools present when correctionVisible on (defau
   const names = extractToolNames(response);
   assert.equal(names.has("engram.memory_correct_plan"), true, "plan tool must be present by default");
   assert.equal(names.has("engram.memory_correct_apply"), true, "apply tool must be present by default");
-  assert.equal(names.has("remnic.memory_correct_plan"), true, "plan alias must be present");
-  assert.equal(names.has("remnic.memory_correct_apply"), true, "apply alias must be present");
+  assert.equal(names.has("remnic_memory_correct_plan"), true, "plan alias must be present");
+  assert.equal(names.has("remnic_memory_correct_apply"), true, "apply alias must be present");
 });
 
 // ---------------------------------------------------------------------------

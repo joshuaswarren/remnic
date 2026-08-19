@@ -277,9 +277,9 @@ test("tools/list gate: all 14 codegraph tools absent when codegraphVisible off (
       `engram.codegraph_${suffix} must be absent when gate is off`,
     );
     assert.equal(
-      names.has(`remnic.codegraph_${suffix}`),
+      names.has(`remnic_codegraph_${suffix}`),
       false,
-      `remnic.codegraph_${suffix} must be absent when gate is off`,
+      `remnic_codegraph_${suffix} must be absent when gate is off`,
     );
   }
 });
@@ -296,9 +296,9 @@ test("tools/list gate: all 14 codegraph tools present when codegraphVisible on",
       `engram.codegraph_${suffix} must be present when gate is on`,
     );
     assert.equal(
-      names.has(`remnic.codegraph_${suffix}`),
+      names.has(`remnic_codegraph_${suffix}`),
       true,
-      `remnic.codegraph_${suffix} alias must be present when gate is on`,
+      `remnic_codegraph_${suffix} alias must be present when gate is on`,
     );
   }
 });

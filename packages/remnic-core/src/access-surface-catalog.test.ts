@@ -53,9 +53,9 @@ void getOperation;
 // ---------------------------------------------------------------------------
 
 const LEGACY_PREFIX = "engram.";
-const CANONICAL_PREFIX = "remnic.";
+const CANONICAL_PREFIX = "remnic_";
 
-/** Strip the `engram.`/`remnic.` prefix to get the canonical short name. */
+/** Strip the `engram.`/`remnic_` prefix to get the canonical short name. */
 function shortToolName(advertised: string): string {
   if (advertised.startsWith(LEGACY_PREFIX)) return advertised.slice(LEGACY_PREFIX.length);
   if (advertised.startsWith(CANONICAL_PREFIX)) return advertised.slice(CANONICAL_PREFIX.length);
