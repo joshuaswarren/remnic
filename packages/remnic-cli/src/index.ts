@@ -176,6 +176,7 @@ import { runStandupBinaryCommand } from "./commands/standup.js";
 import { runJournalBinaryCommand } from "./commands/journal.js";
 import { runJournalVaultBinaryCommand } from "./commands/journal-vault.js";
 import { runActivityPrivacyBinaryCommand } from "./commands/activity-privacy.js";
+import { runActivityExportBinaryCommand } from "./commands/activity-export.js";
 import { runVaultPublishBinaryCommand } from "./commands/vault-publish.js";
 import { runExternalWikiBinaryCommand } from "./commands/external-wiki.js";
 import { runProceduralBinaryCommand } from "./commands/procedural.js";
@@ -444,7 +445,7 @@ type CommandName =
   | "promotion-candidates"
   | "security"
   | "wearables"
-  | "meetings" | "timeline" | "okf" | "location" | "export" | "standup" | "journal" | "journal-vault" | "activity-privacy" | "vault-publish" | "codegraph"
+  | "meetings" | "timeline" | "okf" | "location" | "export" | "standup" | "journal" | "journal-vault" | "activity-privacy" | "activity-export" | "vault-publish" | "codegraph"
   | "external-wiki"
   | "capsule"
   | "offline"
@@ -13115,6 +13116,9 @@ Other:
       break;
     case "activity-privacy":
       await runActivityPrivacyBinaryCommand(rest);
+      break;
+    case "activity-export":
+      await runActivityExportBinaryCommand(rest);
       break;
     case "vault-publish":
       await runVaultPublishBinaryCommand(rest);
