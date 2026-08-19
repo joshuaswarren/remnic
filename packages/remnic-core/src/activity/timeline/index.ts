@@ -8,3 +8,4 @@ export * from "./query.js";
 export * from "./journal-recap.js";
 export * from "./weekly.js";
 export * from "./weekly-persist.js";
+export * from "./analysis.js";
