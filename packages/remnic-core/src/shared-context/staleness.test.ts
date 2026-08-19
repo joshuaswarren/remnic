@@ -1,0 +1,36 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import {
+  filterLiveEnvelopes,
+  markSupersededCirculation,
+  type SharedStalenessItem,
+} from "./staleness.js";
+
+test("filterLiveEnvelopes drops at the expiry instant (half-open)", () => {
+  const expiresAt = "2026-08-18T12:00:00.000Z";
+  const at = Date.parse(expiresAt);
+  const live: SharedStalenessItem = { id: "keep", expiresAt };
+  const forever: SharedStalenessItem = { id: "legacy" };
+  const items: SharedStalenessItem[] = [live, forever];
+
+  assert.deepEqual(filterLiveEnvelopes(items, at - 1), items);
+  assert.deepEqual(filterLiveEnvelopes(items, at), [forever]);
+  assert.deepEqual(filterLiveEnvelopes(items, at + 1), [forever]);
+  assert.equal(items.length, 2);
+});
+
+test("markSupersededCirculation flags targets that still circulate", () => {
+  const older: SharedStalenessItem = { id: "item-1", expiresAt: "2026-08-19T00:00:00.000Z" };
+  const newer: SharedStalenessItem = { id: "item-2", supersedes: "item-1" };
+  const other: SharedStalenessItem = { id: "item-3" };
+  const items: SharedStalenessItem[] = [older, newer, other];
+
+
+  const marked = markSupersededCirculation(items);
+  assert.equal(marked[0]?.circulating, true);
+  assert.equal(marked[1]?.circulating, undefined);
+  assert.equal(marked[2]?.circulating, undefined);
+  assert.equal(older.circulating, undefined);
+  assert.notEqual(marked[0], older);
+});
