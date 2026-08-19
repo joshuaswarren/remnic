@@ -3,6 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/@remnic/cli)](https://www.npmjs.com/package/@remnic/cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink)](https://github.com/sponsors/joshuaswarren)
+[![OKF BundleDex](https://bundledex.net/static-badge.svg)](https://bundledex.net)
 
 Open-source, local-first memory and context for AI agents. One memory store, every agent.
 
