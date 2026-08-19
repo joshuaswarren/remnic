@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { MergeOnWritePair } from "./merge-on-write.js";
+import type { MergeJudge, MergeJudgeVerdict, MergeOnWritePair } from "./merge-on-write.js";
 import { applyMergeOnWriteAtPersist } from "./merge-on-write-wire.js";
+
+type PersistResult = { action: "merged"; id: string } | { action: "created" };
 
 function pair(overrides: Partial<MergeOnWritePair> = {}): MergeOnWritePair {
   return {
@@ -20,16 +22,19 @@ function trackers() {
   return {
     merged,
     created,
-    writeMerged: async (id: string) => {
+    writeMerged: async (id: string): Promise<PersistResult> => {
       merged.push(id);
-      return { action: "merged" as const, id };
+      return { action: "merged", id };
     },
-    writeNew: async () => {
+    writeNew: async (): Promise<PersistResult> => {
       created.push(1);
-      return { action: "created" as const };
+      return { action: "created" };
     },
   };
 }
+
+const mergeJudge: MergeJudge = async (): Promise<MergeJudgeVerdict> => "merge";
+const createJudge: MergeJudge = async (): Promise<MergeJudgeVerdict> => "create";
 
 test("merge-on-write-wire: disabled writes a new fact", async () => {
   let judged = 0;
@@ -37,7 +42,7 @@ test("merge-on-write-wire: disabled writes a new fact", async () => {
   const result = await applyMergeOnWriteAtPersist({
     enabled: false,
     pair: pair(),
-    judge: async () => {
+    judge: async (): Promise<MergeJudgeVerdict> => {
       judged += 1;
       return "merge";
     },
@@ -57,10 +62,7 @@ test("merge-on-write-wire: mergeMin 0 writes a new fact", async () => {
     enabled: true,
     mergeMin: 0,
     pair: pair(),
-    judge: async () => {
-      judged += 1;
-      return "merge";
-    },
+    judge: mergeJudge,
     writeMerged: io.writeMerged,
     writeNew: io.writeNew,
   });
@@ -75,7 +77,7 @@ test("merge-on-write-wire: merge updates the existing id", async () => {
   const result = await applyMergeOnWriteAtPersist({
     enabled: true,
     pair: pair(),
-    judge: async () => "merge",
+    judge: mergeJudge,
     writeMerged: io.writeMerged,
     writeNew: io.writeNew,
   });
@@ -89,7 +91,7 @@ test("merge-on-write-wire: create writes a new fact", async () => {
   const result = await applyMergeOnWriteAtPersist({
     enabled: true,
     pair: pair(),
-    judge: async () => "create",
+    judge: createJudge,
     writeMerged: io.writeMerged,
     writeNew: io.writeNew,
   });
