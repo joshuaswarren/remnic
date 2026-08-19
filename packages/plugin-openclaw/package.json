@@ -22,6 +22,7 @@
   "files": [
     "dist",
     "openclaw.plugin.json",
+    "scripts/ensure-better-sqlite3.mjs",
     "scripts/faiss_index.py",
     "scripts/faiss_requirements.txt"
   ],
@@ -87,6 +88,7 @@
     "plugin:inspect:runtime": "pnpm run build && PLUGIN_INSPECTOR_EXECUTE_ISOLATED=1 plugin-inspector check --config plugin-inspector.config.json --no-openclaw --runtime --mock-sdk",
     "prepublishOnly": "npm run build",
     "prepack": "node ../../scripts/openclaw-manifest-pack.mjs minify",
+    "postinstall": "node ./scripts/ensure-better-sqlite3.mjs",
     "postpack": "node ../../scripts/openclaw-manifest-pack.mjs restore"
   },
   "dependencies": {
