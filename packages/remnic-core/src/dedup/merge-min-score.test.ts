@@ -25,3 +25,13 @@ test("non-finite minScore throws", () => {
   assert.throws(() => parseMinMergeScore(Number.POSITIVE_INFINITY), RangeError);
   assert.throws(() => parseMinMergeScore("0.5"), RangeError);
 });
+
+test("bigint minScore throws RangeError, not TypeError", () => {
+  assert.throws(() => parseMinMergeScore(10n), RangeError);
+});
+
+test("cyclic object minScore throws RangeError, not TypeError", () => {
+  const cyclic: Record<string, unknown> = {};
+  cyclic.self = cyclic;
+  assert.throws(() => parseMinMergeScore(cyclic), RangeError);
+});
