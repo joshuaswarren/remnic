@@ -175,7 +175,7 @@ export const RelayPreflightReceiptSchema = z
       .object({
         accountLinkedAppsDisabled: z.literal(true),
         mcpServers: z.tuple([z.literal("relay")]),
-        mcpTools: z.tuple([z.literal("relay.remnic.recall")]),
+        mcpTools: z.tuple([z.literal("relay.remnic_recall")]),
       })
       .strict(),
     fixtureManifestSha256: z.string().regex(/^[a-f0-9]{64}$/),
@@ -192,7 +192,7 @@ export const RelayPreflightReceiptSchema = z
       .object({
         loopbackOnly: z.literal(true),
         namespace: z.literal(RELAY_NAMESPACE),
-        advertisedTools: z.tuple([z.literal("remnic.recall")]),
+        advertisedTools: z.tuple([z.literal("remnic_recall")]),
         isolatedMemoryDir: z.literal(true),
       })
       .strict(),

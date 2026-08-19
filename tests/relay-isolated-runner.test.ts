@@ -219,7 +219,7 @@ test("Codex one-shot arguments ignore user state and expose only loopback Remnic
   assert.equal(args.includes("workspace-write"), false);
   assert.ok(args.includes("--ephemeral"));
   assert.ok(args.includes("--output-schema"));
-  assert.ok(args.includes('mcp_servers.relay.enabled_tools=["remnic.recall"]'));
+  assert.ok(args.includes('mcp_servers.relay.enabled_tools=["remnic_recall"]'));
   assert.ok(args.includes('shell_environment_policy.inherit="none"'));
   assert.ok(args.includes('web_search="disabled"'));
   assert.deepEqual(RELAY_DISABLED_CODEX_FEATURES, [
@@ -602,7 +602,7 @@ test("isolated Remnic token lists only recall and the real Correction Contract r
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "relay-remnic-harness-"));
   const harness = await startRelayRemnicHarness(memoryDir);
   try {
-    assert.deepEqual(await listRelayMcpTools(harness.mcpUrl, harness.mcpToken), ["remnic.recall"]);
+    assert.deepEqual(await listRelayMcpTools(harness.mcpUrl, harness.mcpToken), ["remnic_recall"]);
     const staleMemoryId = await harness.seedStaleDecision();
     const staleProof = await harness.proveMcpRecall(staleMemoryId, RELAY_STALE_PROBE_SESSION_KEY);
     assert.deepEqual(staleProof.memoryIds, [staleMemoryId]);
