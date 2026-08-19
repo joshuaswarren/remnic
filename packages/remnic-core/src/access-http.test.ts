@@ -2354,7 +2354,7 @@ test("HTTP 401 www-authenticate is the bare Bearer challenge when resourceMetada
   }
 });
 
-test("HTTP /mcp returns 405 with Allow: POST for GET and DELETE (authorized requests)", async () => {
+test("HTTP /mcp serves GET SSE, DELETE 204, and 405 without SSE Accept (issue #2718)", async () => {
   const service = {} as EngramAccessService;
   const server = new EngramAccessHttpServer({
     service,
@@ -2364,23 +2364,47 @@ test("HTTP /mcp returns 405 with Allow: POST for GET and DELETE (authorized requ
   });
   const status = await server.start();
   try {
-    for (const method of ["GET", "DELETE"]) {
-      const response = await fetch(`http://127.0.0.1:${status.port}/mcp`, {
-        method,
-        headers: { authorization: "Bearer test-token" },
-      });
-      assert.equal(response.status, 405, `${method} /mcp must be 405`);
-      assert.equal(
-        response.headers.get("allow"),
-        "POST",
-        `${method} /mcp must advertise Allow: POST`,
-      );
-      const body = (await response.json()) as { code?: string };
-      assert.equal(body.code, "method_not_allowed");
-    }
-    // Unauthenticated GET /mcp still gets 401 first (auth gate beats method-conformance).
+    // Authorized GET with SSE Accept → 200 text/event-stream whose first
+    // bytes are comment-only heartbeats (never JSON-RPC). Read one bounded
+    // chunk, then cancel so the open stream cannot hang the test.
+    const controller = new AbortController();
+    const sse = await fetch(`http://127.0.0.1:${status.port}/mcp`, {
+      headers: { authorization: "Bearer test-token", accept: "text/event-stream" },
+      signal: controller.signal,
+    });
+    assert.equal(sse.status, 200, "GET /mcp with SSE Accept must be 200");
+    assert.match(
+      sse.headers.get("content-type") ?? "",
+      /^text\/event-stream/,
+      "GET /mcp SSE stream must advertise text/event-stream",
+    );
+    const reader = sse.body!.getReader();
+    const { value: firstChunk } = await reader.read();
+    const firstBytes = Buffer.from(firstChunk ?? []).toString("utf8");
+    assert.ok(
+      !firstBytes.includes("jsonrpc"),
+      `GET /mcp stream must carry no JSON-RPC payload: ${JSON.stringify(firstBytes)}`,
+    );
+    controller.abort();
+
+    // Authorized GET without the SSE Accept → 405 + full method set.
+    const rejected = await fetch(`http://127.0.0.1:${status.port}/mcp`, {
+      headers: { authorization: "Bearer test-token" },
+    });
+    assert.equal(rejected.status, 405);
+    assert.equal(rejected.headers.get("allow"), "GET, POST, DELETE");
+
+    // Authorized DELETE → 204 with empty body.
+    const deleted = await fetch(`http://127.0.0.1:${status.port}/mcp`, {
+      method: "DELETE",
+      headers: { authorization: "Bearer test-token" },
+    });
+    assert.equal(deleted.status, 204);
+    assert.equal(await deleted.text(), "");
+
+    // Unauthenticated GET /mcp still gets 401 first (auth gate beats method handling).
     const unauth = await fetch(`http://127.0.0.1:${status.port}/mcp`, {
-      method: "GET",
+      headers: { accept: "text/event-stream" },
     });
     assert.equal(unauth.status, 401);
   } finally {

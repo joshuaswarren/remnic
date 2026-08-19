@@ -27,6 +27,7 @@ import { nonEmptyQueryParam, optionalNamespaceKindQueryParam, optionalQueryStrin
 import { CorrectionContractError } from "./correction/correction-contract.js";
 import { respondWearablesErrorGlue } from "./wearables/http-glue.js"; import { respondMeetingsList, respondMeetingsGet, respondMeetingsBuild } from "./meetings/http-glue.js"; import { respondLocationStatus, respondLocationCheck, respondLocationSync, respondLocationBackfill, respondLocationDay } from "./location/http-glue.js"; import { respondStandup } from "./standup/http-glue.js";
 import { EngramMcpServer, MCP_SUPPORTED_PROTOCOL_VERSIONS } from "./access-mcp.js";
+import { handleMcpGetSse } from "./access-mcp-sse.js";
 import { validateRequest, type SchemaName, type SchemaTypeFor } from "./access-schema.js";
 import {
   OFFLINE_SYNC_APPLY_MAX_BODY_BYTES,
@@ -884,17 +885,16 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     correlationId: string,
     abortSignal: AbortSignal,
   ): Promise<void> {
-    // Method-conformance for the streamable-HTTP MCP endpoint:
-    // GET/DELETE on /mcp must return 405 + Allow: POST instead of
-    // silently falling through to the generic 404. POST continues
-    // to the normal handler below.
-    if (pathname === "/mcp" && (req.method === "GET" || req.method === "DELETE")) {
+    // Method-conformance for the streamable-HTTP MCP endpoint (issue #2718):
+    // DELETE → 204, GET upgrades to the comment-only SSE stream in
+    // access-mcp-sse.ts when the client accepts text/event-stream, else 405
+    // with the full method set. POST continues to the handler below.
+    if (pathname === "/mcp" && req.method === "DELETE") { res.writeHead(204); res.end(); return; }
+    if (pathname === "/mcp" && req.method === "GET") {
+      if ((req.headers.accept ?? "").includes("text/event-stream"))
+        return handleMcpGetSse(req, res, this.sseCleanupFns);
       const body = JSON.stringify({ error: "method_not_allowed", code: "method_not_allowed" });
-      res.writeHead(405, {
-        "content-type": "application/json; charset=utf-8",
-        allow: "POST",
-        "x-request-id": correlationId,
-      });
+      res.writeHead(405, { "content-type": "application/json; charset=utf-8", allow: "GET, POST, DELETE", "x-request-id": correlationId });
       res.end(body);
       return;
     }
