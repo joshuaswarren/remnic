@@ -7,12 +7,20 @@ test("empty input returns an empty array", () => {
   assert.deepEqual(sortObservationIds([]), []);
 });
 
-test("sorts ids with localeCompare", () => {
+test("sorts ids deterministically by code unit", () => {
   assert.deepEqual(sortObservationIds(["obs-c", "obs-a", "obs-b"]), [
     "obs-a",
     "obs-b",
     "obs-c",
   ]);
+});
+
+test("sorts uppercase before lowercase regardless of host locale", () => {
+  assert.deepEqual(sortObservationIds(["b", "A", "a", "B"]), ["A", "B", "a", "b"]);
+});
+
+test("sorts non-ascii ids by code unit, not locale collation", () => {
+  assert.deepEqual(sortObservationIds(["é", "z", "e"]), ["e", "z", "é"]);
 });
 
 test("does not mutate the input array", () => {
