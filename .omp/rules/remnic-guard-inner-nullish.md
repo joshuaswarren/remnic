@@ -2,7 +2,7 @@
 name: remnic-guard-inner-nullish
 description: "Array.isArray on nested elements silently treats inner null/undefined as non-empty"
 condition:
-  - '\.every\(\([^)]*\)\s*=>\s*Array\.isArray\('
+  - '\.every\(\([^)]*\)\s*=>\s*Array\.isArray\([^)]*\)\s*&&\s*[^)]*\.length\s*===\s*0'
 globs:
   - "**/*.ts"
   - "**/*.tsx"

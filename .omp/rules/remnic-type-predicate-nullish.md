@@ -2,7 +2,7 @@
 name: remnic-type-predicate-nullish
 description: "A type predicate that returns true for null/undefined must include them in the narrowed type"
 condition:
-  - '\):\s*\w+\s+is\s+readonly\s*\[\]'
+  - '\):\s*\w+\s+is\s+readonly\s*\[\]\s*\{'
 globs:
   - "**/*.ts"
   - "**/*.tsx"

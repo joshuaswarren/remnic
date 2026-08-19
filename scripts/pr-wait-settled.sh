@@ -297,7 +297,10 @@ fetch_and_evaluate() {
   local checks_raw reviews_raw issue_comments_raw check_runs_raw
 
   local checks_status=0
-  checks_raw="$(gh pr checks "$PR_NUMBER" --repo "$REPO" --required --json name,state --jq 'if length == 0 then "__NO_REQUIRED_CHECKS__" else .[] | [.name, (.state // "unknown")] | @tsv end' 2>&1)" || checks_status=$?
+  # Newest completed result per required context. A ruleset evaluates the
+  # latest check-run for a context, so collapsing by name and accepting any
+  # historical pass would let a stale SUCCESS mask the current FAILURE.
+  checks_raw="$(gh pr checks "$PR_NUMBER" --repo "$REPO" --required --json name,state,completedAt --jq 'if length == 0 then "__NO_REQUIRED_CHECKS__" else (group_by(.name) | map(max_by(.completedAt // "")) | .[] | [.name, (.state // "unknown")] | @tsv) end' 2>&1)" || checks_status=$?
   if (( checks_status != 0 )); then
     if [[ "$checks_raw" == *"checks reported"* ]]; then
       checks_raw="__NO_REQUIRED_CHECKS__"
