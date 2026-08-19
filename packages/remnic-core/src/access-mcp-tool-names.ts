@@ -28,9 +28,18 @@ export function toLegacyToolName(name: string): string {
   return suffix === null ? name : `${LEGACY_MCP_PREFIX}${suffix}`;
 }
 
+export function toDottedRemnicName(name: string): string {
+  const suffix = toolNameSuffix(name);
+  return suffix === null ? name : `${DOTTED_REMNIC_PREFIX}${suffix}`;
+}
+
 export function withToolAliases<T extends { name: string }>(tool: T, emitLegacyTools = true): T[] {
-  const canonicalName = toCanonicalToolName(tool.name);
+  const suffix = toolNameSuffix(tool.name);
+  if (suffix === null) return [tool];
+  const canonicalName = `${CANONICAL_MCP_PREFIX}${suffix}`;
   const canonicalTool = canonicalName === tool.name ? tool : { ...tool, name: canonicalName };
-  if (canonicalName === tool.name) return [canonicalTool];
-  return emitLegacyTools ? [canonicalTool, tool] : [canonicalTool];
+  if (!emitLegacyTools) return [canonicalTool];
+  const legacyName = `${LEGACY_MCP_PREFIX}${suffix}`;
+  const legacyTool = legacyName === tool.name ? tool : { ...tool, name: legacyName };
+  return [canonicalTool, legacyTool];
 }

@@ -38,3 +38,19 @@ test("withToolAliases advertises remnic_<suffix> and optional engram.*", () => {
   assert.ok(canonicalOnly.every((entry) => ANTHROPIC_TOOL_NAME.test(entry.name)));
   assert.equal(CANONICAL_MCP_PREFIX, "remnic_");
 });
+
+test("withToolAliases emits the engram.* alias for canonical-named tools too", () => {
+  const tool = { name: "remnic_recall" };
+  assert.deepEqual(
+    withToolAliases(tool, true).map((entry) => entry.name),
+    ["remnic_recall", "engram.recall"],
+  );
+  assert.deepEqual(
+    withToolAliases(tool, false).map((entry) => entry.name),
+    ["remnic_recall"],
+  );
+  assert.deepEqual(
+    withToolAliases({ name: "remnic.recall" }, true).map((entry) => entry.name),
+    ["remnic_recall", "engram.recall"],
+  );
+});

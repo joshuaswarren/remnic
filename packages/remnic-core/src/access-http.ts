@@ -70,7 +70,7 @@ import { isValidResolutionVerb, executeResolution } from "./contradiction/resolu
 import { RelayMissionStoreError } from "./relay/mission.js";
 import { ReviewDeckAccessHttpBase } from "./review/review-deck-http-base.js";
 import { serializeInlineScriptValue } from "./inline-script.js";
-import type { SupportPassportExternalRequestHandler } from "./support-passport/public-http.js";
+import { toDottedRemnicName } from "./access-mcp-tool-names.js";
 export interface AccessHttpReadinessState {
   ready: boolean;
   warmupAttempts: number;
@@ -3273,7 +3273,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       params?: Record<string, unknown>;
     };
 
-    const toolName = (typeof request.params?.name === "string" ? request.params.name : "").replace(/^remnic_/, "remnic.");
+    const toolName = toDottedRemnicName(typeof request.params?.name === "string" ? request.params.name : "");
     const toolArgs = request.params?.arguments;
     const dreamsRunDryRun =
       (toolName === "engram.dreams_run" || toolName === "remnic.dreams_run") &&
