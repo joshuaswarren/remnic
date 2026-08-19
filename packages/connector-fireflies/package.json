@@ -1,6 +1,6 @@
 {
   "name": "@remnic/connector-fireflies",
-  "version": "9.66.8",
+  "version": "9.66.9",
   "description": "Fireflies.ai meeting-transcript connector for Remnic — pull, clean, and remember meeting transcripts",
   "type": "module",
   "main": "dist/index.js",
@@ -26,7 +26,7 @@
     "provenance": true
   },
   "peerDependencies": {
-    "@remnic/core": "^9.66.8"
+    "@remnic/core": "^9.66.9"
   },
   "devDependencies": {
     "@remnic/core": "workspace:*",

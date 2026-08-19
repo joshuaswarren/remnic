@@ -1,7 +1,7 @@
 {
   "id": "openclaw-engram",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.66.8",
+  "version": "9.66.9",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -6296,7 +6296,10 @@
                   },
                   "source": {
                     "type": "string",
-                    "enum": ["file", "vault"],
+                    "enum": [
+                      "file",
+                      "vault"
+                    ],
                     "default": "file",
                     "description": "Where a day's journal body is read from (issue #1987). 'file' uses journal/<date>.md under the memory dir; 'vault' reads a designated heading in the vault daily note. An unrecognized value is rejected at config load."
                   },
