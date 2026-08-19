@@ -19,3 +19,11 @@ test("rejects strings that are not YYYY-MM-DD", () => {
   assert.deepEqual(parseIsoDate("2026-08-19T00:00:00Z"), { ok: false, error: "invalid_date" });
   assert.deepEqual(parseIsoDate("not-a-date"), { ok: false, error: "invalid_date" });
 });
+
+test("rejects impossible calendar days", () => {
+  assert.deepEqual(parseIsoDate("2026-02-30"), { ok: false, error: "invalid_date" });
+  assert.deepEqual(parseIsoDate("2026-13-01"), { ok: false, error: "invalid_date" });
+  assert.deepEqual(parseIsoDate("2026-00-10"), { ok: false, error: "invalid_date" });
+  // Real leap day still passes the round-trip.
+  assert.deepEqual(parseIsoDate("2024-02-29"), { ok: true, date: "2024-02-29" });
+});
