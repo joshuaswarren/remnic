@@ -22,6 +22,14 @@ export function clipCardsToRecapWindow(
   windowStartMs: number,
   windowEndMs: number,
 ): ClippedRecapCard[] {
+  // NaN fails every comparison, so an unchecked non-finite bound slips past the
+  // ordering guard and emits NaN timestamps and durations — `durationMs <= 0`
+  // is also false for NaN, so the card is not even dropped.
+  if (!Number.isFinite(windowStartMs) || !Number.isFinite(windowEndMs)) {
+    throw new RangeError(
+      `recap window bounds must be finite; got start ${windowStartMs} and end ${windowEndMs}`,
+    );
+  }
   if (windowEndMs <= windowStartMs) {
     throw new RangeError(
       `recap window end ${windowEndMs} must be greater than start ${windowStartMs}`,

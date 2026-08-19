@@ -39,8 +39,9 @@ describe("clipCardsToRecapWindow", () => {
     assert.equal(result[0]?.durationMs, DAY_END - DAY_START);
 
     // Each midnight-touching card lands in exactly one adjacent window.
-    const prevDay = clipCardsToRecapWindow([before], DAY_START - DAY_END, DAY_START);
-    const nextDay = clipCardsToRecapWindow([after], DAY_END, DAY_END + (DAY_END - DAY_START));
+    const windowMs = DAY_END - DAY_START;
+    const prevDay = clipCardsToRecapWindow([before], DAY_START - windowMs, DAY_START);
+    const nextDay = clipCardsToRecapWindow([after], DAY_END, DAY_END + windowMs);
     assert.equal(prevDay[0]?.id, "before");
     assert.equal(nextDay[0]?.id, "after");
   });
@@ -92,6 +93,19 @@ describe("clipCardsToRecapWindow", () => {
       () => clipCardsToRecapWindow([], DAY_START, DAY_START),
       RangeError,
     );
+  });
+
+  it("throws RangeError on non-finite window bounds", () => {
+    // NaN and Infinity pass `end <= start`, so without an explicit finite
+    // check they would produce NaN timestamps instead of an error.
+    for (const [start, end] of [
+      [Number.NaN, DAY_END],
+      [DAY_START, Number.NaN],
+      [Number.POSITIVE_INFINITY, DAY_END],
+      [DAY_START, Number.POSITIVE_INFINITY],
+    ] as const) {
+      assert.throws(() => clipCardsToRecapWindow([], start, end), /finite/);
+    }
   });
 
   it("sorts by startMs then id, byte-identical across calls", () => {
