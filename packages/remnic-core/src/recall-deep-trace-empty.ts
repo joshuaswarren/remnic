@@ -7,7 +7,9 @@
 import type { DeepRecallTraceStep } from "./recall-deep.js";
 
 /** True when the trace is absent or has no steps. */
-export function isEmptyDeepRecallTrace(trace: unknown): trace is readonly [] {
+export function isEmptyDeepRecallTrace(
+  trace: unknown,
+): trace is null | undefined | readonly [] {
   if (trace == null) return true;
   if (!Array.isArray(trace)) {
     throw new TypeError("trace must be an array");
