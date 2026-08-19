@@ -4,7 +4,7 @@
  * Pure helpers. Expired items drop; superseded items that still circulate
  * get a marker. Callers never `rm`.
  */
-import { isExpired, type SharedEnvelope } from "./governance.js";
+import { isExpired } from "./governance.js";
 
 export interface SharedStalenessItem {
   id: string;
@@ -14,7 +14,7 @@ export interface SharedStalenessItem {
 }
 
 /** Drop expired items. Half-open: `nowMs >= expiresAt` is expired. */
-export function filterLiveEnvelopes<T extends Pick<SharedEnvelope, "expiresAt">>(
+export function filterLiveEnvelopes<T extends { expiresAt?: string }>(
   items: readonly T[],
   nowMs: number,
 ): T[] {
