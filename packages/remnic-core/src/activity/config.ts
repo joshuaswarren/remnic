@@ -1,5 +1,6 @@
 import { coerceBooleanLike, coerceNumber } from "../connectors/coerce.js";
 import { assertValidTimezone } from "./digest.js";
+import { resolveJournalSource } from "./journal-source.js";
 import type { ImportanceLevel } from "../types.js";
 import type {
   ActivityConfig,
@@ -29,7 +30,7 @@ export function defaultActivityConfig(): ActivityConfig {
     minConfidence: 0.7,
     minImportance: "normal",
     maxMemoriesPerDay: 0,
-    timeline: { enabled: false, journal: { enabled: false }, qa: { enabled: false, maxRangeDays: 31 } },
+    timeline: { enabled: false, journal: { enabled: false, source: "file" }, qa: { enabled: false, maxRangeDays: 31 } },
   };
 }
 
@@ -200,7 +201,7 @@ export function parseActivityConfig(raw: unknown): ActivityConfig {
  * is malformed and must fail rather than silently disabling the layer.
  */
 function parseTimelineConfig(raw: unknown): ActivityTimelineConfig {
-  if (raw === undefined) return { enabled: false, journal: { enabled: false }, qa: parseTimelineQaConfig(undefined) };
+  if (raw === undefined) return { enabled: false, journal: { enabled: false, source: "file" }, qa: parseTimelineQaConfig(undefined) };
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     throw new TypeError("activity.timeline must be an object");
   }
@@ -217,7 +218,7 @@ function parseTimelineConfig(raw: unknown): ActivityTimelineConfig {
 }
 
 function parseTimelineJournalConfig(raw: unknown): ActivityTimelineJournalConfig {
-  if (raw === undefined) return { enabled: false };
+  if (raw === undefined) return { enabled: false, source: "file" };
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     throw new TypeError("activity.timeline.journal must be an object");
   }
@@ -226,7 +227,22 @@ function parseTimelineJournalConfig(raw: unknown): ActivityTimelineJournalConfig
   if (journal.enabled !== undefined && enabledValue === undefined) {
     throw new TypeError("activity.timeline.journal.enabled must be a boolean");
   }
-  return { enabled: enabledValue ?? false };
+  const heading = journal.heading;
+  if (heading !== undefined && typeof heading !== "string") {
+    throw new TypeError("activity.timeline.journal.heading must be a string");
+  }
+  const source = journal.source === undefined ? "file" : typeof journal.source === "string" ? journal.source : "";
+  const resolved = resolveJournalSource({ source, heading: heading ?? "" });
+  if (!resolved.ok) {
+    if (resolved.error === "unknown_source") {
+      throw new RangeError('activity.timeline.journal.source must be one of "file", "vault"');
+    }
+    throw new RangeError('activity.timeline.journal.heading must be a non-empty string when source is "vault"');
+  }
+  if (resolved.mode === "vault") {
+    return { enabled: enabledValue ?? false, source: "vault", heading: resolved.heading };
+  }
+  return { enabled: enabledValue ?? false, source: "file" };
 }
 
 function parseTimelineQaConfig(raw: unknown): ActivityTimelineQaConfig {

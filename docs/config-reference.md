@@ -55,6 +55,8 @@ The activity subsystem is off by default. It synchronizes redacted text snapshot
 | `activity.sources.token` | `(unset)` | Literal bearer token sent to a trusted local capture daemon over loopback. This parser does not resolve secret references or `${ENV_VAR}` placeholders; omit the field when the daemon needs no auth. |
 | `activity.timeline.enabled` | `false` | Master gate for timeline-card derivation (issue #2049). When false, no timeline cards are built or exposed. |
 | `activity.timeline.journal.enabled` | `false` | Master gate for daily journal seed/show (issue #1984). Journal files live at `journal/<YYYY-MM-DD>.md` and are excluded from generic recall. |
+| `activity.timeline.journal.source` | `"file"` | Where journal text is read from (issue #1987): `"file"` reads `journal/<YYYY-MM-DD>.md`; `"vault"` reads a section of the daily vault note named by `heading`. |
+| `activity.timeline.journal.heading` | `(unset)` | Vault section heading required when `source` is `"vault"`; trimmed on parse, rejected when empty or whitespace-only. Ignored (not stored) in `"file"` mode. |
 | `activity.timeline.qa.enabled` | `false` | Gate for `remnic timeline range|search` (issue #1983). |
 | `activity.timeline.qa.maxRangeDays` | `31` | Maximum `timeline_range` span in days. Integer 1..366. |
 
@@ -2089,6 +2091,8 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `activity.maxMemoriesPerDay` | `0` | `0` (no count cap) |
 | `activity.timeline.enabled` | `false` | `false` |
 | `activity.timeline.journal.enabled` | `false` | `false` |
+| `activity.timeline.journal.source` | `"file"` | `"file"`; `"vault"` only once vault-section journals are deliberately adopted |
+| `activity.timeline.journal.heading` | `(unset)` | `(unset)`; required non-empty when `source` is `"vault"` |
 | `activity.timeline.qa.enabled` | `false` | `false` |
 | `activity.timeline.qa.maxRangeDays` | `31` | `31` |
 

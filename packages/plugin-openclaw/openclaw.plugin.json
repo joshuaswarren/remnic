@@ -6293,6 +6293,16 @@
                     "type": "boolean",
                     "default": false,
                     "description": "Master gate for remnic journal seed/show. Default false."
+                  },
+                  "source": {
+                    "type": "string",
+                    "enum": ["file", "vault"],
+                    "default": "file",
+                    "description": "Where a day's journal body is read from (issue #1987). 'file' uses journal/<date>.md under the memory dir; 'vault' reads a designated heading in the vault daily note. An unrecognized value is rejected at config load."
+                  },
+                  "heading": {
+                    "type": "string",
+                    "description": "Heading whose section holds the journal body when source is 'vault' (issue #1987). Required and non-blank in vault mode, trimmed before use, ignored in file mode."
                   }
                 }
               },

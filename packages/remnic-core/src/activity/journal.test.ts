@@ -32,6 +32,46 @@ test("activity.timeline.journal.enabled defaults off", () => {
   );
 });
 
+test("activity.timeline.journal source defaults to file with no heading", () => {
+  const journal = parseActivityConfig(undefined).timeline.journal;
+  assert.equal(journal.source, "file");
+  assert.equal(journal.heading, undefined);
+});
+
+test("activity.timeline.journal vault mode trims and stores the heading", () => {
+  const journal = parseActivityConfig({ timeline: { journal: { enabled: true, source: "vault", heading: " Journal " } } }).timeline.journal;
+  assert.deepEqual(journal, { enabled: true, source: "vault", heading: "Journal" });
+});
+
+test("activity.timeline.journal vault mode requires a non-empty heading", () => {
+  for (const heading of [undefined, "", "   "]) {
+    assert.throws(
+      () => parseActivityConfig({ timeline: { journal: { source: "vault", heading } } }),
+      RangeError,
+    );
+  }
+});
+
+test("activity.timeline.journal rejects an unknown source", () => {
+  assert.throws(
+    () => parseActivityConfig({ timeline: { journal: { source: "memoryDir" } } }),
+    /activity\.timeline\.journal\.source must be one of "file", "vault"/,
+  );
+});
+
+test("activity.timeline.journal rejects a non-string heading", () => {
+  assert.throws(
+    () => parseActivityConfig({ timeline: { journal: { heading: 5 } } }),
+    /activity\.timeline\.journal\.heading must be a string/,
+  );
+});
+
+test("activity.timeline.journal file mode ignores a provided heading", () => {
+  const journal = parseActivityConfig({ timeline: { journal: { source: "file", heading: "Ignored" } } }).timeline.journal;
+  assert.deepEqual(journal, { enabled: false, source: "file" });
+  assert.equal("heading" in journal, false);
+});
+
 test("seed is a hard no-op without force", () => {
   withMemoryDir((memoryDir) => {
     const first = seedJournal({

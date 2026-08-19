@@ -116,11 +116,6 @@
   },
   {
     "kind": "undocumented-key",
-    "key": "agentAccessHttp.authToken.source",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
     "key": "briefing",
     "issue": "#1990"
   },
