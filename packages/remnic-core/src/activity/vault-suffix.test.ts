@@ -15,6 +15,10 @@ test("stripVaultMdSuffix throws on empty input", () => {
   assert.throws(() => stripVaultMdSuffix(""), /empty/i);
 });
 
+test("stripVaultMdSuffix throws on a path that is only the suffix", () => {
+  assert.throws(() => stripVaultMdSuffix(".md"), /note/i);
+});
+
 test("stripVaultMdSuffix does not strip .markdown", () => {
   assert.equal(stripVaultMdSuffix("Daily Notes/2026-08-18.markdown"), "Daily Notes/2026-08-18.markdown");
 });
