@@ -8,6 +8,9 @@ test("assertBeginEndPair accepts a matching pair", () => {
   assert.deepEqual(assertBeginEndPair({ beginName: "  timeline  ", endName: "timeline" }), {
     ok: true,
   });
+  assert.deepEqual(assertBeginEndPair({ beginName: "timeline", endName: "  timeline  " }), {
+    ok: true,
+  });
 });
 
 test("assertBeginEndPair rejects a name mismatch", () => {
