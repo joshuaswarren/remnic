@@ -99,6 +99,10 @@ export interface ActivitySourceConfig {
 /** Opt-in daily journal settings (issue #1984). Default off. */
 export interface ActivityTimelineJournalConfig {
   enabled: boolean;
+  /** Where the journal text is read from (issue #1987). */
+  source: "file" | "vault";
+  /** Vault section heading, trimmed. Required when `source` is `"vault"`; not stored in `"file"` mode. */
+  heading?: string;
 }
 
 /** Opt-in timeline Q&A range/search settings (issue #1983 PR1). Default off. */

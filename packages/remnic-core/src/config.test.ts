@@ -2569,7 +2569,7 @@ test("parseConfig forwards activity source settings", () => {
     minConfidence: 0.7,
     minImportance: "normal",
     maxMemoriesPerDay: 0,
-    timeline: { enabled: false, journal: { enabled: false }, qa: { enabled: false, maxRangeDays: 31 } },
+    timeline: { enabled: false, journal: { enabled: false, source: "file" }, qa: { enabled: false, maxRangeDays: 31 } },
   });
 });
 
