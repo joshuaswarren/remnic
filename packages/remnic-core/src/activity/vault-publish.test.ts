@@ -164,3 +164,105 @@ test("publishVaultRegion never creates a missing file", () => {
     assert.equal(existsSync(path.join(vaultPath, relativeFile)), false);
   });
 });
+
+test("applyManagedRegion heading replaces only the named section", () => {
+  const fileText = [
+    "---",
+    "title: daily",
+    "---",
+    "",
+    "scratchpad",
+    "## Timeline",
+    "old cards",
+    "## Notes",
+    "keep me",
+    "",
+  ].join("\n");
+  const result = applyManagedRegion(fileText, {
+    strategy: "heading",
+    name: "Timeline",
+    content: "new cards",
+  });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(
+    result.text,
+    [
+      "---",
+      "title: daily",
+      "---",
+      "",
+      "scratchpad",
+      "## Timeline",
+      "new cards",
+      "## Notes",
+      "keep me",
+      "",
+    ].join("\n"),
+  );
+
+  const crlf = fileText.replace(/\n/g, "\r\n");
+  const crlfResult = applyManagedRegion(crlf, {
+    strategy: "heading",
+    name: "Timeline",
+    content: "new cards\nline two",
+  });
+  assert.equal(crlfResult.ok, true);
+  if (!crlfResult.ok) return;
+  assert.equal(
+    crlfResult.text,
+    [
+      "---",
+      "title: daily",
+      "---",
+      "",
+      "scratchpad",
+      "## Timeline",
+      "new cards",
+      "line two",
+      "## Notes",
+      "keep me",
+      "",
+    ].join("\r\n"),
+  );
+
+  const prefix = "---\nkeep: me\n---\n\nscratchpad\n## Timeline";
+  const suffix = "\n## Notes\nkeep me\n";
+  const outside = `${prefix}\nold\n${suffix}`;
+  const headingAt = outside.indexOf("## Timeline");
+  const notesAt = outside.indexOf("\n## Notes");
+  const headingLineEnd = headingAt + "## Timeline".length;
+  const before = Buffer.from(outside.slice(0, headingLineEnd), "utf8");
+  const after = Buffer.from(outside.slice(notesAt), "utf8");
+  const byteResult = applyManagedRegion(outside, {
+    strategy: "heading",
+    name: "Timeline",
+    content: "replacement",
+  });
+  assert.equal(byteResult.ok, true);
+  if (!byteResult.ok) return;
+  const nextHeading = byteResult.text.indexOf("## Timeline");
+  const nextNotes = byteResult.text.indexOf("\n## Notes");
+  assert.deepEqual(Buffer.from(byteResult.text.slice(0, nextHeading + "## Timeline".length), "utf8"), before);
+  assert.deepEqual(Buffer.from(byteResult.text.slice(nextNotes), "utf8"), after);
+});
+
+test("applyManagedRegion heading is a no-op when the heading is missing", () => {
+  const fileText = "# Daily\n\nno timeline here\n";
+  const result = applyManagedRegion(fileText, {
+    strategy: "heading",
+    name: "Timeline",
+    content: "new cards",
+  });
+  assert.deepEqual(result, { ok: false, reason: "no_heading", text: fileText });
+});
+
+test("applyManagedRegion heading refuses duplicate headings and lists line numbers", () => {
+  const fileText = ["# Daily", "", "## Timeline", "first", "", "## Timeline", "second", ""].join("\n");
+  const result = applyManagedRegion(fileText, {
+    strategy: "heading",
+    name: "Timeline",
+    content: "new cards",
+  });
+  assert.deepEqual(result, { ok: false, reason: "duplicate_heading", lines: [3, 6], text: fileText });
+});
