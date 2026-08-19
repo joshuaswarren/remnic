@@ -9,6 +9,7 @@
  * bundles are byte-compatible in convention (rule 38 — deterministic
  * rendering discipline; rule 9 — stable seam over shared mechanics).
  */
+import { randomUUID } from "node:crypto";
 import { lstatSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
@@ -76,6 +77,7 @@ export function publishBundle(staging: string, outDir: string, force: boolean): 
   try {
     const stat = lstatSync(outDir);
     if (stat.isSymbolicLink()) throw new Error(`--out must not be a symlink: ${outDir}`);
+    if (!stat.isDirectory()) throw new Error(`--out exists and is not a directory: ${outDir}`);
     exists = true;
     const entries = readdirSync(outDir).filter((name) => name !== "." && name !== "..");
     if (entries.length > 0 && !force) {
@@ -87,7 +89,12 @@ export function publishBundle(staging: string, outDir: string, force: boolean): 
   }
   mkdirSync(path.dirname(outDir), { recursive: true });
   if (exists && force) {
-    const backup = `${outDir}.okf-prev`;
+    // A fixed backup name is not reusable: an earlier crash between the two
+    // renames, or an unrelated directory a user created, leaves the path
+    // occupied and every later --force export fails on the rename. Each
+    // attempt takes its own name and removes it on both the success and the
+    // rollback path.
+    const backup = `${outDir}.okf-prev-${randomUUID().slice(0, 8)}`;
     try {
       renameSync(outDir, backup);
     } catch {
@@ -100,8 +107,10 @@ export function publishBundle(staging: string, outDir: string, force: boolean): 
     } catch (err) {
       try {
         renameSync(backup, outDir);
+        rmSync(staging, { recursive: true, force: true });
       } catch {
-        // Keep backup if restore fails.
+        // Keep the backup when the restore itself fails: it is the only
+        // surviving copy of the operator's previous bundle.
       }
       throw err;
     }

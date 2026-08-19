@@ -1,6 +1,5 @@
-import { rmSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 
 import { parseOaiMemCitation } from "../citations.js";
@@ -8,6 +7,7 @@ import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import { normalizeProjectionPreview } from "../memory-projection-format.js";
 import { lintOkfDir } from "../okf/lint.js";
 import { okfTypeForMemory, OKF_PROFILE_TYPE } from "../okf/type-mapping.js";
+import { resolveNamespaceChildRoot } from "../namespaces/path.js";
 import {
   OKF_EXPORT_VERSION,
   publishBundle,
@@ -38,6 +38,14 @@ const MEMORY_STATUSES: readonly MemoryStatus[] = [
 
 export interface ExportOkfOptions {
   memoryDir: string;
+  /**
+   * Optional namespace segment. Resolved here, once, through the shared
+   * containment guard: both CLI entry points used to join the raw operator
+   * value onto `memoryDir/namespaces`, so `--namespace ../../..` escaped the
+   * namespace root and exported an arbitrary tree (rule 9 — one resolver, not
+   * a per-caller guard).
+   */
+  namespace?: string;
   outDir: string;
   includeStatus?: readonly string[];
   includeCategories?: readonly string[];
@@ -71,15 +79,19 @@ export function parseIncludeStatus(raw: unknown): MemoryStatus[] {
 export async function exportOkfBundle(opts: ExportOkfOptions): Promise<ExportOkfResult> {
   const outDir = path.resolve(opts.outDir);
   rejectSymlinkPath(outDir);
+  const namespace = (opts.namespace ?? "").trim();
+  const memoryDir = namespace
+    ? resolveNamespaceChildRoot(opts.memoryDir, namespace, "--namespace")
+    : opts.memoryDir;
   const includeStatus = new Set(parseIncludeStatus(opts.includeStatus));
   const includeCategories = opts.includeCategories?.length ? new Set(opts.includeCategories) : null;
   const excludeTags = new Set(opts.excludeTags ?? []);
-  const storage = new StorageManager(opts.memoryDir);
+  const storage = new StorageManager(memoryDir);
   const memories = await storage.readAllMemories();
   const included: MemoryFile[] = [];
   let excluded = 0;
   for (const memory of memories) {
-    const rel = toRel(memory.path, opts.memoryDir);
+    const rel = toRel(memory.path, memoryDir);
     if (!opts.includeWearables && rel.startsWith("wearables/")) {
       excluded += 1;
       continue;
@@ -99,17 +111,21 @@ export async function exportOkfBundle(opts: ExportOkfOptions): Promise<ExportOkf
     }
     included.push(memory);
   }
-  included.sort((a, b) => toRel(a.path, opts.memoryDir).localeCompare(toRel(b.path, opts.memoryDir)));
+  included.sort((a, b) => toRel(a.path, memoryDir).localeCompare(toRel(b.path, memoryDir)));
 
-  const staging = await mkdtemp(path.join(os.tmpdir(), "remnic-okf-export-"));
+  // Stage inside the destination's parent, not the OS temp dir: publishBundle
+  // finishes with a rename, and a rename across filesystems fails with EXDEV
+  // whenever --out lives on a different mount than /tmp.
+  mkdirSync(path.dirname(outDir), { recursive: true });
+  const staging = await mkdtemp(path.join(path.dirname(outDir), ".remnic-okf-export-"));
   const byCategory: Record<string, number> = {};
   const idToRel = new Map<string, string>();
   for (const memory of included) {
-    const rel = toRel(memory.path, opts.memoryDir);
+    const rel = toRel(memory.path, memoryDir);
     idToRel.set(memory.frontmatter.id, rel);
   }
   for (const memory of included) {
-    const rel = toRel(memory.path, opts.memoryDir);
+    const rel = toRel(memory.path, memoryDir);
     const rendered = renderMemory(memory, rel, idToRel);
     writeBundleFile(staging, rel, rendered);
     const category = memory.frontmatter.category;
@@ -140,7 +156,7 @@ export async function exportOkfBundle(opts: ExportOkfOptions): Promise<ExportOkf
     writeBundleFile(staging, "log.md", renderLog(events, idToRel, opts.logMaxEntries ?? DEFAULT_OKF_LOG_MAX_ENTRIES));
   }
 
-  writeIndexes(staging, included, opts.memoryDir);
+  writeIndexes(staging, included, memoryDir);
   const lint = lintOkfDir(staging);
   const blocking = lint.findings.filter((f) => f.code !== "skipped_encrypted" && f.code !== "reserved_basename");
   if (blocking.length > 0) {

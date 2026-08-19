@@ -1,4 +1,3 @@
-import path from "node:path";
 import type { Orchestrator } from "../orchestrator.js";
 import type { CliCommand } from "../cli.js";
 import { runOkfCliCommand } from "../okf/cli.js";
@@ -44,11 +43,9 @@ export function registerExportOkfCommand(exportCmd: CliCommand, orchestrator: Or
       if (!out) throw new Error("Missing --out");
       const includeStatus = parseIncludeStatus(options.includeStatus);
       const namespace = options.namespace ? String(options.namespace) : "";
-      const memoryDir = namespace
-        ? path.join(orchestrator.config.memoryDir, "namespaces", namespace)
-        : orchestrator.config.memoryDir;
       const result = await exportOkfBundle({
-        memoryDir,
+        memoryDir: orchestrator.config.memoryDir,
+        namespace,
         outDir: out,
         includeStatus,
         includeCategories: options.includeCategories ? String(options.includeCategories).split(",") : undefined,

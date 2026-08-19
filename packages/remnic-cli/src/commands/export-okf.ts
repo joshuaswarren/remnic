@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import path from "node:path";
 import { Orchestrator, parseConfig, resolveRemnicConfigRecord } from "@remnic/core";
 import { exportOkfBundle, parseIncludeStatus } from "@remnic/core/export-okf";
 import { resolveConfigPath } from "../index.js";
@@ -36,11 +35,9 @@ export async function runExportOkfBinaryCommand(rest: string[]): Promise<void> {
     orchestrator = new Orchestrator(config);
     await orchestrator.initialize();
     await orchestrator.deferredReady;
-    const memoryDir = namespace
-      ? path.join(orchestrator.config.memoryDir, "namespaces", namespace)
-      : orchestrator.config.memoryDir;
     const result = await exportOkfBundle({
-      memoryDir,
+      memoryDir: orchestrator.config.memoryDir,
+      namespace,
       outDir: out,
       includeStatus: parseIncludeStatus(takeFlag(args, "--include-status")),
       includeCategories: takeFlag(args, "--include-categories")?.split(","),
