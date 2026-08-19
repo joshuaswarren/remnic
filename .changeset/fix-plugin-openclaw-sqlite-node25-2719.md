@@ -1,5 +1,5 @@
 ---
-"@remnic/plugin-openclaw": patch
+"@remnic/core": patch
 ---
 
-Ship `ensure-better-sqlite3.mjs` in the plugin tarball and run it via `postinstall`, so a plugin-only install repairs the native binding when `better-sqlite3` has no prebuild for the running Node ABI (e.g. Node 25 / ABI 141). Both script copies now print an actionable recovery command (`npm rebuild better-sqlite3 --build-from-source`) with the running Node major and ABI when verification and rebuild fail.
+Surface an actionable recovery hint when the better-sqlite3 native binding cannot load (issue #2719). `better-sqlite3` publishes prebuilds for LTS Node only, so a newer runtime leaves the package with no loadable binding and every SQLite-backed path failed with a bare "Could not locate the bindings file" at first use. `nativeBindingRecoveryHint` recognizes that failure (and NODE_MODULE_VERSION / ELF-header mismatches), then names the running Node major, the ABI, and the exact `npm rebuild better-sqlite3 --build-from-source` command; the LCM observe-enqueue error path appends it. The postinstall repair script also prints the same hint when a rebuild fails or the rebuilt binding still does not load. An unrelated error yields no hint, so existing messages read unchanged.

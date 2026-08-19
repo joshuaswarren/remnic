@@ -12,6 +12,7 @@ import { LcmWorkQueue, type LcmObserveMessage } from "./queue.js";
 import type { PluginConfig } from "../types.js";
 import { estimateTokenCount } from "../token-estimate.js";
 import { log } from "../logger.js";
+import { nativeBindingRecoveryHint } from "../native-binding-hint.js";
 export interface LcmEngineConfig {
   enabled: boolean;
   leafBatchSize: number;
@@ -225,7 +226,9 @@ export class LcmEngine {
       })
       .catch((err) => {
         if (this.closed) return;
-        log.error(`LCM observe enqueue initialization error: ${err}`);
+        log.error(
+          `LCM observe enqueue initialization error: ${err}${nativeBindingRecoveryHint(err)}`,
+        );
       })
       .finally(() => {
         this.releasePendingObserveInit(normalizedSessionId);
