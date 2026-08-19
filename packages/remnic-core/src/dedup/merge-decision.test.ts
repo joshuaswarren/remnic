@@ -126,3 +126,32 @@ test("unparseable updatedAt sorts last", () => {
     { action: "update", targetId: "newer" },
   );
 });
+
+// Two unparseable timestamps must not make the comparator asymmetric: testing
+// each side against NaN independently returned 1 for both orderings, so the
+// winner depended on array order.
+test("two unparseable updatedAt values break the tie by id, whatever the order", () => {
+  const options = { updateThreshold: 0.5, duplicateThreshold: 0.95 };
+  const alpha = { id: "alpha", similarity: 0.7, updatedAt: "not-a-date" };
+  const beta = { id: "beta", similarity: 0.7, updatedAt: "also-not-a-date" };
+
+  for (const candidates of [[alpha, beta], [beta, alpha]]) {
+    assert.deepEqual(decideMergeOnWrite(candidates, options), {
+      action: "update",
+      targetId: "alpha",
+    });
+  }
+});
+
+test("a parseable updatedAt still outranks an unparseable one in both orders", () => {
+  const options = { updateThreshold: 0.5, duplicateThreshold: 0.95 };
+  const dated = { id: "zeta", similarity: 0.7, updatedAt: "2026-08-19T00:00:00.000Z" };
+  const undated = { id: "alpha", similarity: 0.7, updatedAt: "nope" };
+
+  for (const candidates of [[dated, undated], [undated, dated]]) {
+    assert.deepEqual(decideMergeOnWrite(candidates, options), {
+      action: "update",
+      targetId: "zeta",
+    });
+  }
+});

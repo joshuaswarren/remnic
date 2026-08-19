@@ -31,13 +31,15 @@ function assertThreshold(value: number, name: string): void {
 function compareCandidates(a: MergeCandidate, b: MergeCandidate): number {
   if (a.similarity !== b.similarity) return b.similarity - a.similarity;
   // Date.parse never throws; unparseable timestamps yield NaN and sort last.
+  // NaN !== NaN, so the two sides must be classified as a pair: testing each
+  // independently returned 1 for BOTH orderings when both were unparseable,
+  // which breaks antisymmetry and made the winner depend on array order.
   const aTime = Date.parse(a.updatedAt);
   const bTime = Date.parse(b.updatedAt);
-  if (aTime !== bTime) {
-    if (Number.isNaN(aTime)) return 1;
-    if (Number.isNaN(bTime)) return -1;
-    return bTime - aTime;
-  }
+  const aUnparseable = Number.isNaN(aTime);
+  const bUnparseable = Number.isNaN(bTime);
+  if (aUnparseable !== bUnparseable) return aUnparseable ? 1 : -1;
+  if (!aUnparseable && aTime !== bTime) return bTime - aTime;
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
