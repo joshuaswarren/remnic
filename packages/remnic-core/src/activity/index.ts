@@ -24,3 +24,4 @@ export * from "./vault-path.js";
 export * from "./vault-publish.js";
 export * from "./vault-frontmatter.js";
 export * from "./vault-wikilink.js";
+export * from "./vault-region.js";
