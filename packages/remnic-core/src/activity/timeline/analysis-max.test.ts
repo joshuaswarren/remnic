@@ -18,3 +18,9 @@ test("negative maxBatch throws", () => {
 test("float maxBatch throws", () => {
   assert.throws(() => parseMaxBatch(1.5), /non-negative integer/);
 });
+
+test("non-number maxBatch throws RangeError", () => {
+  for (const bad of ["8", undefined, Number.NaN, null]) {
+    assert.throws(() => parseMaxBatch(bad), RangeError);
+  }
+});
