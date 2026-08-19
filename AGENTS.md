@@ -328,6 +328,26 @@ remain. Work with this, not against it:
    run as a product defect.
 5. A positive CodeRabbit review on the current head satisfies
    `ai-reviewers` when Cursor never starts. Cursor remains accepted.
+6. Rulesets evaluate the LATEST check-run per required context, not the best
+   one. A `neutral` check-run posted after a `success` on the same head keeps
+   `mergeable_state: blocked` indefinitely — the gate reads red even though a
+   real positive verdict exists on that SHA. Before concluding a PR is stuck on
+   its own code, group the head's check-runs by name and take the newest
+   `completed_at` per name: `gh api repos/<o>/<r>/commits/<sha>/check-runs
+   --paginate`. If the only non-success entry is a bookkeeping `neutral` newer
+   than the covering success, that is the scheduling artifact (issue #2711), not
+   a defect in the PR.
+7. Poll with REST, resolve threads with GraphQL. The two share no rate-limit
+   budget, and per-PR GraphQL polling exhausts the hourly GraphQL allowance —
+   after which `resolveReviewThread` (GraphQL-only) becomes impossible and the
+   `unresolved-review-threads` gate cannot be cleared at all. Use
+   `/commits/{sha}/check-runs`, `/pulls/{n}`, and `PUT /pulls/{n}/merge` for the
+   loop; reserve GraphQL for reading and resolving threads.
+8. Check conclusions are lowercase over REST (`success`, `failure`, `neutral`,
+   `skipped`) and UPPERCASE in the `gh pr view --json statusCheckRollup`
+   projection. A filter written for the wrong casing reports zero failures on a
+   red PR, which reads as "CI is green but merge is blocked" and sends the loop
+   chasing a nonexistent policy problem.
 
 
 ### Transactional review rounds (issues #1992, #2442)

@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   copyFileSync,
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -97,6 +98,90 @@ test("runs source-condition root pnpm scripts without shell-specific environment
     assert.match(
       calls,
       /exec --yes pnpm@10\.32\.1 -- exec tsx --test tests\/openclaw-hook-privacy\.test\.ts/,
+    );
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+/**
+ * Writes a fake `pnpm` next to the fake `npm` so the wrapper's PATH probe has
+ * something to resolve. `--version` answers with `version`; every other call
+ * appends its argv to `pnpm.log`.
+ */
+function addFakePnpm(fixture, version) {
+  const log = path.join(fixture.root, "pnpm.log");
+  writeFileSync(
+    path.join(fixture.bin, "pnpm"),
+    "#!/bin/sh\n" +
+      `if [ "$1" = "--version" ]; then printf '${version}\\n'; exit 0; fi\n` +
+      'printf \'%s\\n\' "$*" >> "$REMNIC_PNPM_TEST_PNPM_LOG"\n',
+  );
+  chmodSync(path.join(fixture.bin, "pnpm"), 0o755);
+  return log;
+}
+
+const posixOnly = { skip: process.platform === "win32" ? "posix shim fixture" : false };
+
+// A registry round trip per wrapper call is a flake source: the root
+// check-types script calls the wrapper three times, and one ETIMEDOUT
+// resolving pnpm fails `checks`, which cascades into the required `quality`
+// gate on a PR whose code is clean. CI already installs the pinned version.
+test("prefers a pinned pnpm on PATH over the npm registry", posixOnly, () => {
+  const fixture = createFakeNpm();
+  const pnpmLog = addFakePnpm(fixture, "10.32.1");
+
+  try {
+    const result = spawnSync(process.execPath, ["scripts/pnpm.mjs", "run", "check-types"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: fixture.bin,
+        REMNIC_PNPM_TEST_LOG: fixture.log,
+        REMNIC_PNPM_TEST_PNPM_LOG: pnpmLog,
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readFileSync(pnpmLog, "utf8").trim(), "run check-types");
+    assert.equal(
+      existsSync(fixture.log),
+      false,
+      "a matching PATH pnpm must not trigger an npm registry fetch",
+    );
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+// The pin stays authoritative: a different local pnpm must not silently
+// replace the version the lockfile was resolved with.
+test("falls back to the pinned npm exec when the PATH pnpm version differs", posixOnly, () => {
+  const fixture = createFakeNpm();
+  const pnpmLog = addFakePnpm(fixture, "9.0.0");
+
+  try {
+    const result = spawnSync(process.execPath, ["scripts/pnpm.mjs", "run", "check-types"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: fixture.bin,
+        REMNIC_PNPM_TEST_LOG: fixture.log,
+        REMNIC_PNPM_TEST_PNPM_LOG: pnpmLog,
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      readFileSync(fixture.log, "utf8").trim(),
+      "exec --yes pnpm@10.32.1 -- run check-types",
+    );
+    assert.equal(
+      existsSync(pnpmLog),
+      false,
+      "a mismatched PATH pnpm must not run the forwarded command",
     );
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
