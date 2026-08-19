@@ -11,4 +11,5 @@ export * from "./weekly.js";
 export * from "./weekly-persist.js";
 export * from "./analysis.js";
 export * from "./recap-export.js";
+export * from "./week-export.js";
 export * from "./analysis-batch.js";
