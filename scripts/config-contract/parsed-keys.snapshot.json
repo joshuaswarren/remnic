@@ -61,6 +61,8 @@
     "activity.timeline.enabled",
     "activity.timeline.journal",
     "activity.timeline.journal.enabled",
+    "activity.timeline.journal.heading",
+    "activity.timeline.journal.source",
     "activity.timeline.qa",
     "activity.timeline.qa.enabled",
     "activity.timeline.qa.maxRangeDays",
