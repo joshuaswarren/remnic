@@ -30,6 +30,7 @@ if (!rebuild.ok) {
   console.error(
     "[remnic] Install the package dependencies so node-gyp is available locally, then retry installation.",
   );
+  console.error(recoveryHint());
   process.exit(rebuild.status ?? 1);
 }
 
@@ -41,6 +42,7 @@ try {
   console.error(
     `[remnic] better-sqlite3 rebuild completed but the binding still does not load: ${errorMessage(error)}`,
   );
+  console.error(recoveryHint());
   process.exit(1);
 }
 
@@ -122,4 +124,12 @@ function clearBetterSqlite3RequireCache(packageDir) {
 
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function recoveryHint() {
+  const nodeMajor = process.versions.node.split(".")[0];
+  return (
+    `[remnic] Recovery: run \`npm rebuild better-sqlite3 --build-from-source\` with Node ${nodeMajor} ` +
+    `(ABI ${process.versions.modules}) — the shipped binding does not match this Node/ABI.`
+  );
 }
