@@ -20,3 +20,4 @@ export * from "./journal-vault-read.js";
 export * from "./memory-gen.js";
 export * from "./privacy.js";
 export * from "./vault-path.js";
+export * from "./vault-publish.js";
