@@ -153,6 +153,22 @@ test("AI review gate neutralizer clears only OLDER same-PR cancellations, never 
   assert.match(guard, /return;/);
 });
 
+test("AI review gate neutralizer skips neutral stamp when ai-reviewers success is already latest (#2711)", () => {
+  const neutralizer = readFileSync(
+    ".github/workflows/ai-review-gate-neutralizer.yml",
+    "utf8",
+  );
+  assert.match(neutralizer, /github\.rest\.checks\.listForRef/);
+  assert.match(neutralizer, /filter:\s*'name'/);
+  assert.match(neutralizer, /name:\s*'ai-reviewers'/);
+  assert.match(neutralizer, /latestCheck\?\.conclusion === 'success'/);
+  assert.match(neutralizer, /skipping neutral stamp \(#2711\)/);
+  assert.ok(
+    neutralizer.indexOf("listForRef") < neutralizer.indexOf("github.rest.checks.create("),
+    "existing check lookup must precede neutral checks.create",
+  );
+});
+
 test("AI review gate workflow limits the Dependabot exception to manifest-only missing Cursor activity", () => {
   const workflow = readFileSync(".github/workflows/ai-review-gate.yml", "utf8");
 
