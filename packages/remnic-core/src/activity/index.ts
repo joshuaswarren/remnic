@@ -26,3 +26,4 @@ export * from "./vault-frontmatter.js";
 export * from "./vault-wikilink.js";
 export * from "./vault-region.js";
 export * from "./vault-suffix.js";
+export * from "./vault-join.js";
