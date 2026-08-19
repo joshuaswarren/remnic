@@ -460,3 +460,10 @@ function walkMdFiles(
     }
   }
 }
+
+export {
+  decideMergeOnWrite,
+  type MergeCandidate,
+  type MergeDecision,
+  type MergeDecisionOptions,
+} from "./merge-decision.js";
