@@ -159,8 +159,8 @@ test("AI review gate neutralizer skips neutral stamp when ai-reviewers success i
     "utf8",
   );
   assert.match(neutralizer, /github\.rest\.checks\.listForRef/);
-  assert.match(neutralizer, /filter:\s*'name'/);
-  assert.match(neutralizer, /name:\s*'ai-reviewers'/);
+  assert.match(neutralizer, /filter:\s*'all'/);
+  assert.match(neutralizer, /check_name:\s*'ai-reviewers'/);
   assert.match(neutralizer, /latestCheck\?\.conclusion === 'success'/);
   assert.match(neutralizer, /skipping neutral stamp \(#2711\)/);
   assert.ok(

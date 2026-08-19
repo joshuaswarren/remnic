@@ -148,8 +148,8 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 ref: headSha,
-                filter: 'name',
-                name: 'ai-reviewers',
+                filter: 'all',
+                check_name: 'ai-reviewers',
                 per_page: 100,
               });
             } catch (error) {
