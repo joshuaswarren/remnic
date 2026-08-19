@@ -23,6 +23,7 @@ export * from "./privacy-status.js";
 export * from "./privacy-window.js";
 export * from "./vault-path.js";
 export * from "./vault-publish.js";
+export * from "./vault-insert.js";
 export * from "./vault-frontmatter.js";
 export * from "./vault-wikilink.js";
 export * from "./vault-region.js";
