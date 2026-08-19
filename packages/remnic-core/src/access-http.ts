@@ -71,6 +71,7 @@ import { RelayMissionStoreError } from "./relay/mission.js";
 import { ReviewDeckAccessHttpBase } from "./review/review-deck-http-base.js";
 import { serializeInlineScriptValue } from "./inline-script.js";
 import { toDottedRemnicName } from "./access-mcp-tool-names.js";
+import type { SupportPassportExternalRequestHandler } from "./support-passport/public-http.js";
 export interface AccessHttpReadinessState {
   ready: boolean;
   warmupAttempts: number;
