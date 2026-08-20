@@ -115,12 +115,28 @@ export function reportConfigKeys(rawText: string, maxKeys = 200): ConfigKeyRepor
       continue;
     }
     if (ch === "}" || ch === "]") {
+      // The closer must match the container it closes. Popping blindly let
+      // `{"list":[},"secret":0]}` close the ARRAY with `}`, after which the
+      // comma made the scanner expect an object key and the next string — a
+      // value — was reported as one.
+      const expected = ch === "}";
+      if (inObject.length === 0 || inObject[inObject.length - 1] !== expected) {
+        truncated = true;
+        break scan;
+      }
       inObject.pop();
       expectKey = false;
       i = skipWs(rawText, i + 1);
       continue;
     }
     if (ch === ",") {
+      // A comma while already expecting a key means an empty member:
+      // `{"a":1,,"secret":2` previously left the scanner in key position, so
+      // the next string — a value — was reported as a key.
+      if (expectKey || inObject.length === 0) {
+        truncated = true;
+        break scan;
+      }
       expectKey = inObject[inObject.length - 1] === true;
       i = skipWs(rawText, i + 1);
       continue;
@@ -141,6 +157,12 @@ export function reportConfigKeys(rawText: string, maxKeys = 200): ConfigKeyRepor
         if (REPORTABLE_KEY.test(read.value)) keys.add(read.value);
         // Look at the value only to classify its SHAPE. Nothing is copied.
         const valueStart = skipWs(rawText, after + 1);
+        if (valueStart >= rawText.length) {
+          // The file ends after `"key":` — the pair is incomplete, so the key
+          // list is not the whole story and the operator must be told.
+          truncated = true;
+          break scan;
+        }
         if (rawText[valueStart] === '"') {
           const value = readString(rawText, valueStart);
           if (value && value.value.startsWith("${") && value.value.endsWith("}")) {

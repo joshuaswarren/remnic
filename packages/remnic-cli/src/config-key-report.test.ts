@@ -86,7 +86,9 @@ test("keys are sorted, de-duplicated, and capped; unresolved stays within them",
 test("malformed or empty text does not throw", () => {
   assert.deepEqual(reportConfigKeys(""), { keys: [], unresolved: [], truncated: false });
   assert.deepEqual(reportConfigKeys("   "), { keys: [], unresolved: [], truncated: false });
-  assert.deepEqual(reportConfigKeys('{"openaiApiKey": "${X}", "half":').keys, ["half", "openaiApiKey"]);
+  const dangling = reportConfigKeys('{"openaiApiKey": "${X}", "half":');
+  assert.deepEqual(dangling.keys, ["half", "openaiApiKey"]);
+  assert.equal(dangling.truncated, true, "a file ending after a colon is not a complete key list");
   assert.equal(formatConfigKeyReport({ keys: [], unresolved: [], truncated: false }), "  (no config keys found)");
   assert.equal(formatConfigKeyReport({ keys: [], unresolved: [], truncated: true }), "  (config could not be scanned)");
 });
@@ -161,4 +163,28 @@ test("a unicode-escaped key is reported, not silently dropped", () => {
   const report = reportConfigKeys('{"port\\u0031": 1, "memoryDir": "/tmp/m"}');
   assert.ok(report.keys.includes("memoryDir"));
   assert.ok(!report.keys.some((key) => key.includes("0031")), "escape digits leaked into the key name");
+});
+
+// Review round 4: popping the container stack without checking the closer let
+// a value become a key.
+test("an empty member stops the scan", () => {
+  const S = "value-that-must-never-print";
+  for (const input of [`{"a":1,,"${S}":2`, `{,"${S}":1}`, `[{"a":1},,"${S}":2]`, `,"${S}":1`]) {
+    const report = reportConfigKeys(input);
+    assert.ok(!formatConfigKeyReport(report).includes(S), `leaked from ${input}`);
+  }
+});
+
+test("a mismatched closer stops the scan", () => {
+  const S = "value-that-must-never-print";
+  for (const input of [`{"list":[},"${S}":0]}`, `{"a":{]},"${S}":1}`, `[}]`, `{]}`]) {
+    const report = reportConfigKeys(input);
+    assert.ok(!report.keys.includes(S), `leaked from ${input}`);
+    assert.ok(!formatConfigKeyReport(report).includes(S), `rendered leak from ${input}`);
+    assert.equal(report.truncated, true, `should have stopped on ${input}`);
+  }
+  // Correctly nested containers still scan.
+  const ok = reportConfigKeys('{"list":[{"inner":1}],"after":2}');
+  assert.deepEqual(ok.keys, ["after", "inner", "list"]);
+  assert.equal(ok.truncated, false);
 });
