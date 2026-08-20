@@ -47,11 +47,17 @@ export function planVaultDryRun(inputs: readonly VaultDryRunInput[]): VaultPubli
         `vault dry-run skipReason is only valid when nextText is null (path ${JSON.stringify(input.path)})`,
       );
     }
+    // A missing note is NOT a create: the real publisher (vault-publish.ts
+    // publishVaultRegion) refuses to create missing files and returns
+    // missing_file, so the dry run must predict that skip rather than promise
+    // an update the real run will not perform.
+    if (input.currentText === null) {
+      results.push({ path: input.path, outcome: "skipped", reason: "missing_file" });
+      continue;
+    }
     // Byte-exact compare: a publish that rewrites only trailing whitespace is
-    // still a write. currentText null means the note does not exist yet, so
-    // any nextText is a create in a real publish; reported here, not done.
-    const outcome: VaultPublishOutcome =
-      input.currentText !== null && input.currentText === input.nextText ? "unchanged" : "updated";
+    // still a write.
+    const outcome: VaultPublishOutcome = input.currentText === input.nextText ? "unchanged" : "updated";
     results.push({ path: input.path, outcome });
   }
   return summarizeVaultPublish(results);

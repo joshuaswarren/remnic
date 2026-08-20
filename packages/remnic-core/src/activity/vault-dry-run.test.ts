@@ -12,20 +12,22 @@ test("planVaultDryRun predicts a mixed batch with correct per-file outcomes and 
     { path: "notes/c.md", currentText: "old", nextText: "new" },
     { path: "notes/d.md", currentText: "text", nextText: null, skipReason: "no_marker" },
   ]);
-  assert.deepEqual(status.counts, { updated: 2, unchanged: 1, skipped: 1, error: 0 });
+  assert.deepEqual(status.counts, { updated: 1, unchanged: 1, skipped: 2, error: 0 });
   assert.equal(status.hasError, false);
   assert.deepEqual(status.results, [
-    { path: "notes/a.md", outcome: "updated" },
+    { path: "notes/a.md", outcome: "skipped", reason: "missing_file" },
     { path: "notes/b.md", outcome: "unchanged" },
     { path: "notes/c.md", outcome: "updated" },
     { path: "notes/d.md", outcome: "skipped", reason: "no_marker" },
   ]);
 });
 
-test("currentText null with next text is updated: the note would be created", () => {
+// The real publisher refuses to create missing notes (missing_file), so a
+// dry run must predict that skip rather than promise an update.
+test("a missing note predicts the publisher's skip, not a create", () => {
   const status = planVaultDryRun([{ path: "new.md", currentText: null, nextText: "body" }]);
-  assert.deepEqual(status.counts, { updated: 1, unchanged: 0, skipped: 0, error: 0 });
-  assert.deepEqual(status.results, [{ path: "new.md", outcome: "updated" }]);
+  assert.deepEqual(status.counts, { updated: 0, unchanged: 0, skipped: 1, error: 0 });
+  assert.deepEqual(status.results, [{ path: "new.md", outcome: "skipped", reason: "missing_file" }]);
 });
 
 test("byte-identical text is unchanged", () => {
