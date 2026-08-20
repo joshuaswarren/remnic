@@ -45,7 +45,7 @@ test("prose is rejected even when short and single-line", () => {
     for (const prose of [
       "Summarize this user's activity",
       "The user said they were tired",
-      "sk-abc123 secret token",
+      "api key lives in the operator profile",
     ]) {
       assert.throws(
         () => buildAnalysisRunMetadata({ ...VALID, [field]: prose }),
@@ -108,7 +108,7 @@ test("observationCount accepts 0 and rejects every non-count", () => {
 // An error message is a log line. A caller that mis-passes prompt text or a
 // secret must not have it echoed there through the failure path.
 test("a rejected value is never echoed in the error message", () => {
-  const secret = "sk-live-0123456789abcdef";
+  const secret = "my-api-key-value-goes-here-0123456789";
   assert.throws(
     () => buildAnalysisRunMetadata({ ...VALID, provider: `${secret} leaked` }),
     (error: unknown) => {
