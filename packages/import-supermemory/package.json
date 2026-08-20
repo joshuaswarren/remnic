@@ -1,6 +1,6 @@
 {
   "name": "@remnic/import-supermemory",
-  "version": "9.66.10",
+  "version": "9.66.11",
   "description": "Import Supermemory exports into Remnic",
   "type": "module",
   "main": "dist/index.js",
@@ -26,7 +26,7 @@
     "provenance": true
   },
   "peerDependencies": {
-    "@remnic/core": "^9.66.10"
+    "@remnic/core": "^9.66.11"
   },
   "devDependencies": {
     "@remnic/core": "workspace:*",
