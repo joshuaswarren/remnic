@@ -218,18 +218,29 @@ export function parseRepoSlug(slug) {
   return { owner: assertRepoIdentifier(parts[0], "owner"), repo: assertRepoIdentifier(parts[1], "repo") };
 }
 
-/** Extract thread ids from piped `list` output. Empty when stdin is a TTY. */
+/**
+ * Extract thread ids from piped `list` output.
+ * `null` means nothing was piped at all (interactive run); `[]` means a pipe
+ * delivered no unresolved threads, which is a success, not a usage error.
+ */
 export function threadIdsFromStdin(readStdin = defaultReadStdin) {
   const text = readStdin();
-  if (!text) return [];
+  if (text === null) return null;
   return text.split(/\s+/).filter((token) => token.startsWith("PRRT_"));
 }
 
+function readPipedThreadIds() {
+  return threadIdsFromStdin();
+}
+
 function defaultReadStdin() {
-  if (process.stdin.isTTY) return "";
+  // A TTY means no pipe: distinct from a pipe that carried no rows.
+  if (process.stdin.isTTY) return null;
   try {
     return readFileSync(0, "utf8");
   } catch {
+    // A pipe that delivered nothing can raise EAGAIN/EOF here. stdin was
+    // still redirected, so this is an empty pipe, not an interactive run.
     return "";
   }
 }
@@ -280,9 +291,21 @@ function main(argv) {
     // resolved the rest and reported success while a requested thread stayed
     // unresolved.
     const argvIds = rest.length > 0 ? rest.map((token) => assertThreadId(token)) : [];
-    const ids = argvIds.length > 0 ? argvIds : threadIdsFromStdin();
+    let ids = argvIds;
     if (ids.length === 0) {
-      throw new Error("pr-review-threads resolve <threadId...>  (or pipe `list` output in)");
+      const piped = readPipedThreadIds();
+      if (piped === null) {
+        // Nothing on argv and nothing piped: the invocation is incomplete.
+        throw new Error("pr-review-threads resolve <threadId...>  (or pipe `list` output in)");
+      }
+      if (piped.length === 0) {
+        // `list | resolve` when every PR is already clean. The pipeline
+        // succeeded; exiting nonzero here would fail automation on the
+        // healthy path.
+        console.log("[pr-review-threads] no unresolved threads piped in; nothing to resolve");
+        return;
+      }
+      ids = piped;
     }
     // Compare against the UNIQUE ids actually sent: buildResolveMutation
     // deduplicates, so GraphQL returns one result per unique id and using the

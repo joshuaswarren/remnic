@@ -132,7 +132,14 @@ test("a hostile cursor cannot escape its string literal", () => {
 test("thread ids are recovered from piped list output", () => {
   const piped = "PR2759 PRRT_aaa coderabbitai\nPR2760 PRRT_bbb codex\n";
   assert.deepEqual(threadIdsFromStdin(() => piped), ["PRRT_aaa", "PRRT_bbb"]);
-  assert.deepEqual(threadIdsFromStdin(() => ""), []);
+});
+
+// Review: `list | resolve` on a clean repo pipes nothing, and that is the
+// SUCCESS path — it must not be confused with an incomplete invocation.
+test("an empty pipe is distinguishable from no pipe at all", () => {
+  assert.deepEqual(threadIdsFromStdin(() => ""), [], "a pipe with no rows yields an empty list");
+  assert.deepEqual(threadIdsFromStdin(() => "PR1 nothing here"), [], "rows without ids yield an empty list");
+  assert.equal(threadIdsFromStdin(() => null), null, "no pipe yields null");
 });
 
 // Review round 3: an adjacent-duplicate check misses a longer cycle, which
