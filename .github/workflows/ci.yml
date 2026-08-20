@@ -180,6 +180,13 @@ jobs:
         env:
           REMNIC_REGEX_SAFETY_BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.event.pull_request.base.ref) || 'origin/main' }}
 
+      # Navigation link-type vocabulary agreement (#1956 review fallout): the
+      # shared parser must know every link type the stepper accepts and every
+      # type that is actually persisted. Three lists drifted apart silently and
+      # cost two review rounds to find.
+      - name: Navigation link vocabularies agree
+        run: node scripts/check-nav-link-vocabularies.mjs
+
   # The root/misc suite runs on a hosted runner. Package tests use two
   # deterministic file shards on the self-hosted pool when it is safe.
   # selectTestShard is an exact partition (enforced by test), so the package
