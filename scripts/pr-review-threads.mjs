@@ -23,7 +23,7 @@ import path from "node:path";
 import process from "node:process";
 
 /** Build a single query with one aliased pullRequest field per PR number. */
-export function buildListQuery(owner, repo, prNumbers) {
+export function buildListQuery(owner, repo, prNumbers, cursors = {}) {
   if (prNumbers.length === 0) throw new Error("pr-review-threads: no PR numbers given");
   for (const pr of prNumbers) {
     if (!Number.isInteger(pr) || pr <= 0) {
@@ -31,16 +31,35 @@ export function buildListQuery(owner, repo, prNumbers) {
     }
   }
   const fields = prNumbers
-    .map(
-      (pr) =>
+    .map((pr) => {
+      // A PR with more than one page of threads (resolved ones count) would
+      // otherwise silently truncate, and the helper would report "none
+      // unresolved" while the review guard stayed red.
+      const after = cursors[pr] ? `, after: "${cursors[pr]}"` : "";
+      return (
         `  pr${pr}: pullRequest(number: ${pr}) { ` +
-        "reviewThreads(first: 50) { nodes { id isResolved comments(first: 1) { nodes { author { login } } } } } }",
-    )
+        `reviewThreads(first: 50${after}) { pageInfo { hasNextPage endCursor } ` +
+        "nodes { id isResolved comments(first: 1) { nodes { author { login } } } } } }"
+      );
+    })
     .join("\n");
   return `query {\n repository(owner: "${owner}", name: "${repo}") {\n${fields}\n }\n}`;
 }
 
 /** Build a single mutation with one aliased resolveReviewThread per thread. */
+export function uniqueThreadIds(threadIds) {
+  const seen = new Set();
+  for (const id of threadIds) {
+    if (typeof id !== "string" || id.trim() === "" || id !== id.trim()) {
+      throw new Error(
+        `pr-review-threads: thread id must be a trimmed non-blank string, got ${JSON.stringify(id)}`,
+      );
+    }
+    seen.add(id);
+  }
+  return [...seen];
+}
+
 export function buildResolveMutation(threadIds) {
   if (threadIds.length === 0) throw new Error("pr-review-threads: no thread ids given");
   const seen = new Set();
@@ -56,6 +75,19 @@ export function buildResolveMutation(threadIds) {
     fields.push(`  t${index}: resolveReviewThread(input: { threadId: "${id}" }) { thread { isResolved } }`);
   }
   return `mutation {\n${fields.join("\n")}\n}`;
+}
+
+export function collectPageInfo(data) {
+  const repository = data?.data?.repository ?? {};
+  const more = {};
+  for (const [alias, pr] of Object.entries(repository)) {
+    if (!alias.startsWith("pr") || pr === null || typeof pr !== "object") continue;
+    const info = pr.reviewThreads?.pageInfo;
+    if (info?.hasNextPage === true && typeof info.endCursor === "string") {
+      more[alias.slice(2)] = info.endCursor;
+    }
+  }
+  return more;
 }
 
 export function collectUnresolved(data) {
@@ -79,11 +111,31 @@ export function collectUnresolved(data) {
 }
 
 function gh(query) {
-  const out = execFileSync("gh", ["api", "graphql", "-f", `query=${query}`], {
-    encoding: "utf8",
-    maxBuffer: 32 * 1024 * 1024,
-  });
-  return JSON.parse(out);
+  let out;
+  try {
+    out = execFileSync("gh", ["api", "graphql", "-f", `query=${query}`], {
+      encoding: "utf8",
+      maxBuffer: 32 * 1024 * 1024,
+    });
+  } catch (error) {
+    // A rate limit is the condition this helper exists to survive, so report
+    // it as one line instead of a raw execFileSync stack trace.
+    const stdout = typeof error?.stdout === "string" ? error.stdout : "";
+    if (stdout.includes("RATE_LIMIT") || stdout.includes("rate limit")) {
+      throw new Error(
+        "pr-review-threads: the GraphQL point budget is exhausted. Wait for it to " +
+          "refill and re-run; this helper already batches requests, so there is " +
+          "nothing smaller to retry.",
+      );
+    }
+    throw new Error(`pr-review-threads: gh api graphql failed: ${stdout || error?.message || "unknown error"}`);
+  }
+  const parsed = JSON.parse(out);
+  if (Array.isArray(parsed?.errors) && parsed.errors.length > 0) {
+    const first = parsed.errors[0];
+    throw new Error(`pr-review-threads: GraphQL error ${first?.type ?? ""}: ${first?.message ?? "unknown"}`.trim());
+  }
+  return parsed;
 }
 
 function main(argv) {
@@ -92,8 +144,23 @@ function main(argv) {
     const [slug, ...prs] = rest;
     if (!slug || !slug.includes("/")) throw new Error("pr-review-threads list <owner/repo> <pr...>");
     const [owner, repo] = slug.split("/");
-    const query = buildListQuery(owner, repo, prs.map((pr) => Number(pr)));
-    for (const row of collectUnresolved(gh(query))) {
+    const numbers = prs.map((pr) => Number(pr));
+    const rows = [];
+    let cursors = {};
+    let pending = numbers;
+    // Round 1 covers every PR in one request; later rounds only revisit the
+    // PRs that reported another page, so the common case stays at one request.
+    for (let round = 0; round < 20 && pending.length > 0; round += 1) {
+      const page = gh(buildListQuery(owner, repo, pending, cursors));
+      rows.push(...collectUnresolved(page));
+      cursors = collectPageInfo(page);
+      pending = Object.keys(cursors).map((pr) => Number(pr));
+    }
+    if (pending.length > 0) {
+      throw new Error("pr-review-threads: thread pagination did not terminate");
+    }
+    rows.sort((a, b) => Number(a.pr) - Number(b.pr) || (a.threadId < b.threadId ? -1 : a.threadId > b.threadId ? 1 : 0));
+    for (const row of rows) {
       console.log(`PR${row.pr} ${row.threadId} ${row.author}`);
     }
     return;
@@ -101,10 +168,14 @@ function main(argv) {
   if (mode === "resolve") {
     const ids = rest.filter((token) => token.startsWith("PRRT_"));
     if (ids.length === 0) throw new Error("pr-review-threads resolve <threadId...>");
+    // Compare against the UNIQUE ids actually sent: buildResolveMutation
+    // deduplicates, so GraphQL returns one result per unique id and using the
+    // caller's raw count would fail a run that resolved everything.
+    const unique = uniqueThreadIds(ids);
     const result = gh(buildResolveMutation(ids));
     const resolved = Object.values(result?.data ?? {}).filter((entry) => entry?.thread?.isResolved === true);
-    console.log(`[pr-review-threads] resolved ${resolved.length}/${ids.length} in one request`);
-    if (resolved.length !== ids.length) process.exit(1);
+    console.log(`[pr-review-threads] resolved ${resolved.length}/${unique.length} in one request`);
+    if (resolved.length !== unique.length) process.exit(1);
     return;
   }
   throw new Error("usage: pr-review-threads.mjs list <owner/repo> <pr...> | resolve <threadId...>");
