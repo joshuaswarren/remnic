@@ -218,3 +218,30 @@ test("sort-then-dedup also decides which target survives a tight limit", () => {
   assert.deepEqual(shuffled.neighbors, straight.neighbors);
   assert.deepEqual(straight.neighbors, [{ targetId: "m-a", linkType: "elaborates" }]);
 });
+
+
+// Round 2: the persisted MemoryLinkType values are real neighbors, not
+// unknown rows to drop. The selector gets them from the widened parser.
+test("persisted link types survive an unfiltered traversal", () => {
+  const result = selectTraverseNeighbors({
+    links: [
+      { targetId: "m-1", linkType: "follows" },
+      { targetId: "m-2", linkType: "references" },
+      { targetId: "m-3", linkType: "related" },
+    ],
+  });
+  assert.ok(result.ok);
+  assert.equal(result.neighbors.length, 3);
+});
+
+test("relation: related is a valid filter, not unknown", () => {
+  const result = selectTraverseNeighbors({
+    links: [
+      { targetId: "m-1", linkType: "related" },
+      { targetId: "m-2", linkType: "supports" },
+    ],
+    relation: "related",
+  });
+  assert.ok(result.ok);
+  assert.deepEqual(result.neighbors, [{ targetId: "m-1", linkType: "related" }]);
+});

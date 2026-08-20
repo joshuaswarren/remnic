@@ -1,7 +1,13 @@
 /**
- * Recall navigation link-type parse (issue #1956 leftover).
+ * Recall navigation link-type parse (issue #1956).
  *
- * Pure. Surfaces wait. Unknown or empty is unknown_link.
+ * One allow-list covering BOTH vocabularies a traversal can meet:
+ * the navigation set this module originally defined and the persisted
+ * `MemoryLinkType` values (`follows | references | related`) that real
+ * memory frontmatter carries. Review found the narrower list silently
+ * dropped every persisted `follows`/`references`/`related` edge and
+ * rejected `relation: "related"` as unknown — a traversal over actual
+ * stored links would lose valid neighbors. Surfaces wait.
  */
 
 const NAVIGATE_LINK_TYPES = [
@@ -10,6 +16,10 @@ const NAVIGATE_LINK_TYPES = [
   "elaborates",
   "causes",
   "caused_by",
+  // Persisted MemoryLinkType values (types.ts) that real frontmatter carries.
+  "follows",
+  "references",
+  "related",
 ] as const;
 
 export type NavigateLinkType = (typeof NAVIGATE_LINK_TYPES)[number];
