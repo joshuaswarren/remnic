@@ -109,3 +109,28 @@ test("input gates object is not mutated", () => {
   resolveActivityGates({ enabled: true, gates: input });
   assert.deepEqual(input, { analysis: "yes" });
 });
+
+// Review: Object.keys enumerates own properties only, so the unknown-key
+// check never saw an inherited "analysis"; reading by bracket would have
+// honored it anyway. Own-property reads close that.
+test("an inherited gate property is ignored, not honored", () => {
+  const proto = { analysis: true } as Record<string, unknown>;
+  const gates: Record<string, unknown> = Object.create(proto);
+  gates.journal = true; // own, allowed, and genuinely set by the caller
+  const resolved = resolveActivityGates({ enabled: true, gates });
+  assert.equal(resolved.analysis, false, "inherited analysis must not enable");
+  assert.equal(resolved.journal, true, "an own gate still works");
+});
+
+test("the exported gate registry resists runtime mutation", () => {
+  const registry = ACTIVITY_FEATURE_GATES as unknown as string[];
+  assert.throws(() => registry.push("injected"), /not extensible|frozen|read only/i);
+  assert.equal(
+    (ACTIVITY_FEATURE_GATES as readonly string[]).includes("injected"),
+    false,
+  );
+  assert.throws(
+    () => resolveActivityGates({ enabled: true, gates: { injected: true } }),
+    /unknown activity gate/,
+  );
+});

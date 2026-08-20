@@ -10,18 +10,20 @@
 
 import { parsePrivacyEnabled } from "./privacy-enabled.js";
 
-export const ACTIVITY_FEATURE_GATES = [
+// Frozen: `as const` is a compile-time notion and this array is re-exported
+// through the public activity entry, so a runtime consumer could otherwise
+// push a key into it and have resolveActivityGates accept that key forever.
+export const ACTIVITY_FEATURE_GATES: readonly string[] = Object.freeze([
   "analysis",
   "journal",
   "weekly",
   "export",
   "memoryCreation",
-] as const;
+] as const);
 export type ActivityFeatureGate = (typeof ACTIVITY_FEATURE_GATES)[number];
 
 export type ActivityGateSet = Readonly<Record<ActivityFeatureGate, boolean>>;
 
-const GATE_KEY_LIST: readonly string[] = ACTIVITY_FEATURE_GATES;
 
 function parseGateValue(key: string, value: unknown): boolean {
   const parsed = parsePrivacyEnabled(value);
@@ -43,7 +45,7 @@ export function resolveActivityGates(input: {
   }
   if (rawGates) {
     for (const key of Object.keys(rawGates)) {
-      if (!GATE_KEY_LIST.includes(key)) {
+      if (!ACTIVITY_FEATURE_GATES.includes(key)) {
         throw new TypeError(
           `unknown activity gate "${key}"; allowed gates: ${ACTIVITY_FEATURE_GATES.join(", ")}`,
         );
@@ -56,7 +58,13 @@ export function resolveActivityGates(input: {
 
   const result = {} as Record<ActivityFeatureGate, boolean>;
   for (const gate of ACTIVITY_FEATURE_GATES) {
-    const raw = rawGates?.[gate];
+    // Object.keys above enumerates OWN properties only, so an inherited
+    // "analysis" never reaches the unknown-key check. Reading it here anyway
+    // would let a gate object with an altered prototype enable a gate the
+    // caller never set: read own properties only.
+    const raw = rawGates !== undefined && Object.hasOwn(rawGates, gate)
+      ? rawGates[gate]
+      : undefined;
     result[gate] = raw === undefined ? false : parseGateValue(gate, raw);
   }
   if (!master) {
