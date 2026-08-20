@@ -9,6 +9,7 @@ import { StorageManager } from "../storage.js";
 import {
   DEFAULT_OKF_LOG_MAX_ENTRIES,
   exportOkfBundle,
+  firstHeading,
   OKF_EXPORT_VERSION,
   OKF_LOG_TRUNCATION_MARKER,
   parseIncludeStatus,
@@ -237,4 +238,25 @@ test("--out that is a file is rejected before anything is written", async () => 
     await rm(memoryDir, { recursive: true, force: true });
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("firstHeading: pins H1 extraction semantics", () => {
+  assert.equal(firstHeading("# Title\nbody"), "Title");
+  assert.equal(firstHeading("## h2 skipped\n# Real"), "Real");
+  assert.equal(firstHeading("no heading\nnone"), undefined);
+  assert.equal(firstHeading("#   spaced   title  "), "spaced   title");
+  // `.` cannot span \u2028, so that line is skipped and a later H1 wins.
+  assert.equal(firstHeading("# a\u2028b\n# ok"), "ok");
+});
+
+test("firstHeading: stays linear on whitespace-heavy blocked headings", () => {
+  // The \u2028 after the first non-space blocks the match (the regex must
+  // fail), and the long whitespace run forces every \s+/capture split point
+  // to be tried — the pre-fix superlinear case.
+  const content = "# " + "  ".repeat(25_000) + "a\u2028b\nplain";
+  const startedAt = Date.now();
+  const heading = firstHeading(content);
+  const elapsedMs = Date.now() - startedAt;
+  assert.ok(elapsedMs < 1000, `firstHeading took ${elapsedMs}ms`);
+  assert.equal(heading, undefined);
 });

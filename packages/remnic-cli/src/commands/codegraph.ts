@@ -1,10 +1,11 @@
 import fs from "node:fs";
-import { Orchestrator, parseConfig, resolveRemnicConfigRecord } from "@remnic/core";
+import { Orchestrator, parseConfig, resolveRemnicConfigRecord, type PluginConfig } from "@remnic/core";
 import {
   exportCodegraphOkfBundle,
   parseOkfCodegraphSymbolFilter,
 } from "@remnic/core/export-okf-codegraph";
 import { resolveConfigPath } from "../index.js";
+import { redactConfigForLog } from "../redact-config.js";
 
 function takeFlag(rest: string[], name: string): string | undefined {
   const index = rest.indexOf(name);
@@ -36,8 +37,24 @@ export async function runCodegraphBinaryCommand(rest: string[]): Promise<void> {
     if (!project) throw new Error("Missing --project");
     if (!out) throw new Error("Missing --out");
     const configPath = resolveConfigPath();
-    const raw = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {};
-    const config = parseConfig(resolveRemnicConfigRecord(raw));
+    let rawConfig: Record<string, unknown> = {};
+    let config: PluginConfig;
+    try {
+      rawConfig = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {};
+      config = parseConfig(resolveRemnicConfigRecord(rawConfig));
+    } catch (err) {
+      // parseConfig error strings embed raw config values (unresolved ${...}
+      // placeholder text from key material, JSON.stringify'd rejects), so
+      // err.message must not reach console output (CodeQL js/clear-text-
+      // logging). The key-redacted config keeps the diagnostic value:
+      // operators still see every field except secret-named ones.
+      console.error(
+        `codegraph export-okf: failed to load config at ${configPath} (${err instanceof Error ? err.name : "unknown error"})`,
+      );
+      console.error(JSON.stringify(redactConfigForLog(rawConfig), null, 2));
+      process.exitCode = 1;
+      return;
+    }
     orchestrator = new Orchestrator(config);
     await orchestrator.initialize();
     await orchestrator.deferredReady;

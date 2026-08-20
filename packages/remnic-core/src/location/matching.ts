@@ -233,7 +233,12 @@ export function locationTagSlug(placeId: string): string {
   const slug = placeId
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+    // The collapse above leaves at most one dash at each edge, so single-char
+    // strips are complete. The old /^-+|-+$/ alternation backtracked
+    // quadratically on unsanitized dash runs (CodeQL js/polynomial-redos);
+    // single-character anchors are linear.
+    .replace(/^-/, "")
+    .replace(/-$/, "");
   return slug.slice(0, TAG_LIMITS.maxTagLength - LOCATION_TAG_PREFIX.length);
 }
 

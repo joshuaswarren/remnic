@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { matchDominantPlace, memoryLocationWindow, type LocationTagPolicy } from "./matching.js";
+import { locationTagSlug, matchDominantPlace, memoryLocationWindow, type LocationTagPolicy } from "./matching.js";
 import type { LocationPlace, LocationSegment } from "./types.js";
 
 const policy: LocationTagPolicy = {
@@ -62,4 +62,25 @@ test("dominant named place wins; ties stay unmatched", () => {
   );
   assert.equal(tied.status, "unmatched");
   if (tied.status === "unmatched") assert.equal(tied.reason, "ambiguous");
+});
+
+test("locationTagSlug: pins slug collapsing and edge trimming", () => {
+  assert.equal(locationTagSlug("reitti:place:7"), "reitti-place-7");
+  assert.equal(locationTagSlug("  --Mixed CASE--  "), "mixed-case");
+  assert.equal(locationTagSlug("---"), "");
+  assert.equal(locationTagSlug("a---b"), "a-b");
+  assert.equal(locationTagSlug("Café Central"), "caf-central");
+});
+
+test("locationTagSlug: stays linear on adversarial dash runs", () => {
+  // Tripwire for the pre-collapse invariant: the /[^a-z0-9]+/ collapse ahead
+  // of the edge trim is what bounds the trim's input, so these must stay
+  // fast even if the collapse is ever reordered or relaxed.
+  for (const placeId of ["-".repeat(50_000), "a" + "-".repeat(50_000) + "b", "-".repeat(50_000) + "a"]) {
+    const startedAt = Date.now();
+    const slug = locationTagSlug(placeId);
+    const elapsedMs = Date.now() - startedAt;
+    assert.ok(elapsedMs < 1000, `locationTagSlug took ${elapsedMs}ms on a ${placeId.length}-char dash run`);
+    assert.equal(typeof slug, "string");
+  }
 });

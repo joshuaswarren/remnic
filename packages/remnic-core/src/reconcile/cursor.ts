@@ -27,6 +27,17 @@ export interface ConvergeCursorState {
   pendingRefreshes?: ConvergeRefreshTarget[];
 }
 
+/**
+ * Linear trailing-slash trim. `/\/+$/` backtracks quadratically on long
+ * slash runs that do not end in a slash (CodeQL js/polynomial-redos); a
+ * bounded character loop cannot.
+ */
+function stripTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === "/") end -= 1;
+  return end === value.length ? value : value.slice(0, end);
+}
+
 export function normalizeConvergePeerUrl(peerUrl: string): string {
   const trimmed = peerUrl.trim();
   try {
@@ -35,10 +46,10 @@ export function normalizeConvergePeerUrl(peerUrl: string): string {
     url.password = "";
     url.search = "";
     url.hash = "";
-    url.pathname = url.pathname.replace(/\/+$/, "");
+    url.pathname = stripTrailingSlashes(url.pathname);
     return url.toString().replace(/\/$/, "");
   } catch {
-    return trimmed.replace(/\/+$/, "");
+    return stripTrailingSlashes(trimmed);
   }
 }
 

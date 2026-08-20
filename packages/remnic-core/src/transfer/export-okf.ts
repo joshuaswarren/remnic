@@ -276,9 +276,13 @@ function boldAction(raw: string): string {
 }
 
 
-function firstHeading(content: string): string | undefined {
+export function firstHeading(content: string): string | undefined {
   for (const line of content.split("\n")) {
-    const match = /^#\s+(.+)$/.exec(line.trim());
+    // `\S` makes the capture boundary disjoint from `\s+`, so the regex
+    // cannot backtrack across split points — `\s+(.+)` was superlinear on
+    // whitespace-heavy lines (CodeQL js/polynomial-redos). `.` still excludes
+    // \r\u2028\u2029, preserving the skip-line behavior on those lines.
+    const match = /^#\s+(\S.*)$/.exec(line.trim());
     if (match) return match[1]!.trim();
   }
   return undefined;
