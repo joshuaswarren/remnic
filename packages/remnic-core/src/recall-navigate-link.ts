@@ -20,6 +20,10 @@ const NAVIGATE_LINK_TYPES = [
   "follows",
   "references",
   "related",
+  // The stepper's own navigation contract (recall-navigate.ts) accepts
+  // supersedes; omitting it here would reject a relation that surface is
+  // prepared to handle.
+  "supersedes",
 ] as const;
 
 export type NavigateLinkType = (typeof NAVIGATE_LINK_TYPES)[number];
