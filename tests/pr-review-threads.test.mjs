@@ -157,3 +157,10 @@ test("a slug must be exactly owner/repo", () => {
     assert.throws(() => parseRepoSlug(bad), /exactly owner\/repo|must match/, `accepted ${bad}`);
   }
 });
+
+// Review: `list owner/repo` with no numbers exited 0 with no output, which
+// reads exactly like "no unresolved threads".
+test("list refuses an empty PR set at both layers", () => {
+  assert.throws(() => buildListQuery("o", "r", []), /no PR numbers given/);
+  assert.throws(() => buildResolveMutation([]), /no thread ids given/);
+});

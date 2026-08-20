@@ -242,6 +242,11 @@ function main(argv) {
     // owner/repo/extra previously queried owner/repo and presented the result
     // as the requested repository's thread state.
     const { owner, repo } = parseRepoSlug(slug);
+    // `list owner/repo` with no numbers previously exited 0 with no output,
+    // which is indistinguishable from "no unresolved threads".
+    if (prs.length === 0) {
+      throw new Error("pr-review-threads list <owner/repo> <pr...>: at least one PR number is required");
+    }
     const numbers = prs.map((pr) => Number(pr));
     const rows = [];
     let cursors = {};
