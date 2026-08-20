@@ -134,3 +134,22 @@ test("inputs are not mutated", () => {
   assert.deepEqual(claims, claimsSnapshot);
   assert.deepEqual(availableItemIds, availableSnapshot);
 });
+
+// Review: two claims sharing a claimId AND a reason still differ by their
+// unknownIds, so a comparator returning 0 there let input order decide the
+// output — the contract says the result is deterministic.
+test("duplicate claim ids with different unknown ids sort deterministically", () => {
+  const available = ["item-ok"];
+  const claims = [
+    { claimId: "claim-dup", citedItemIds: ["item-ok", "zeta-missing"] },
+    { claimId: "claim-dup", citedItemIds: ["item-ok", "alpha-missing"] },
+  ];
+  const forward = lintCuratedClaims({ claims, availableItemIds: available });
+  const reversed = lintCuratedClaims({ claims: [...claims].reverse(), availableItemIds: available });
+  assert.deepEqual(forward, reversed, "reversing the input must not reorder findings");
+  assert.deepEqual(
+    forward.map((f) => f.unknownIds),
+    [["alpha-missing"], ["zeta-missing"]],
+    "findings order by unknownIds once claimId and reason tie",
+  );
+});

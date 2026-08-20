@@ -55,6 +55,13 @@ export function lintCuratedClaims(input: {
   findings.sort((a, b) => {
     if (a.claimId !== b.claimId) return a.claimId < b.claimId ? -1 : 1;
     if (a.reason !== b.reason) return a.reason < b.reason ? -1 : 1;
+    // Duplicate claim ids are linted independently, so two findings can share
+    // both keys above and still differ. Without this tertiary key the result
+    // would depend on upstream iteration order, which the deterministic-output
+    // contract forbids.
+    const left = (a.unknownIds ?? []).join(",");
+    const right = (b.unknownIds ?? []).join(",");
+    if (left !== right) return left < right ? -1 : 1;
     return 0;
   });
   return findings;
