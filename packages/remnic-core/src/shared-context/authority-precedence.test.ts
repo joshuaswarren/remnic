@@ -104,3 +104,24 @@ test("sorting a shuffled mixed list is deterministic", () => {
   ]);
   assert.deepEqual(first, second);
 });
+
+// Review round 2: the flag was read twice — once to validate, once to decide.
+// A getter that changes between those reads is the whole attack.
+test("a changing allowBinding getter cannot smuggle binding through", () => {
+  let reads = 0;
+  const input = {
+    authority: "binding",
+    get allowBinding() {
+      reads += 1;
+      // undefined for the validation read, true for the decision read.
+      return reads === 1 ? undefined : true;
+    },
+  };
+  assert.equal(resolveSharedAuthority(input), "advisory");
+  assert.equal(reads, 1, "the switch must be read exactly once");
+});
+
+test("an explicit boolean opt-in still honors binding", () => {
+  assert.equal(resolveSharedAuthority({ authority: "binding", allowBinding: true }), "binding");
+  assert.equal(resolveSharedAuthority({ authority: "binding", allowBinding: false }), "advisory");
+});

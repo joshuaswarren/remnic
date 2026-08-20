@@ -33,11 +33,15 @@ function isKnownAuthority(value: string): value is SharedAuthority {
 
 
 export function resolveSharedAuthority(input: ResolveSharedAuthorityInput): SharedAuthority {
-  if (input.allowBinding !== undefined && typeof input.allowBinding !== "boolean") {
+  // Read the security switch ONCE. A getter (or a Proxy) can return undefined
+  // during validation and true at the decision, which would let binding
+  // through without a validated opt-in.
+  const allowBinding = input.allowBinding;
+  if (allowBinding !== undefined && typeof allowBinding !== "boolean") {
     // The flag is the security switch, so a truthy string or number must
     // not enable binding: reject it instead of coercing.
     throw new TypeError(
-      `resolveSharedAuthority: allowBinding must be a boolean when supplied, got ${typeof input.allowBinding}`,
+      `resolveSharedAuthority: allowBinding must be a boolean when supplied, got ${typeof allowBinding}`,
     );
   }
   const authority = input.authority;
@@ -48,7 +52,7 @@ export function resolveSharedAuthority(input: ResolveSharedAuthorityInput): Shar
   // are unrecognized data, not normalized matches for a known class.
   if (typeof authority !== "string") return "informational";
   if (!isKnownAuthority(authority)) return "informational";
-  if (authority === "binding" && input.allowBinding !== true) {
+  if (authority === "binding" && allowBinding !== true) {
     // Downgrade rather than throw: a legacy item already carrying "binding"
     // is stored data, not a caller bug, so it resolves to the highest class
     // that does not require the explicit opt-in.
