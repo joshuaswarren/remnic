@@ -10,6 +10,18 @@ case " ${NODE_OPTIONS:-} " in
   *) export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source" ;;
 esac
 
+# A fresh `git worktree` has no node_modules of its own. Workspace packages
+# then resolve `@remnic/*` against absent build output, so unrelated packages
+# fail check-types with "has no exported member" errors that read like real
+# defects. Say so once, up front, instead of letting a resolution artifact
+# masquerade as a finding.
+if [ ! -d node_modules ]; then
+  echo "[preflight] NOTE: node_modules is missing in this checkout." >&2
+  echo "[preflight]   Install dependencies here first; without them," >&2
+  echo "[preflight]   cross-package \"has no exported member\" type errors" >&2
+  echo "[preflight]   are resolution artifacts, not defects." >&2
+fi
+
 run() {
   echo "[preflight] $*"
   "$@"
