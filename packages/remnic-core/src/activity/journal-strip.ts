@@ -6,8 +6,12 @@
  * owned heading section is removed, so published output can never
  * re-enter the journal. An unterminated start marker fails closed and
  * strips to the end of the section. Pure string-in/string-out. No
- * filesystem.
+ * filesystem. Heading lines parse through the SAME exported ATX
+ * parser the journal-section reader uses, so a heading the reader
+ * recognizes is always a heading this stripper strips.
  */
+
+import { parseAtxHeading } from "./journal-section.js";
 
 const MARKER_OPEN = "<!-- remnic:";
 const MARKER_CLOSE = "-->";
@@ -49,11 +53,11 @@ function stripOwnedHeadings(text: string, ownedHeadings: readonly string[]): str
   const keep = lines.map(() => true);
   for (let i = 0; i < lines.length; i++) {
     if (!keep[i]) continue;
-    const heading = parseOwnedHeading(lines[i]!);
+    const heading = parseAtxHeading(lines[i]!);
     if (!heading || !wanted.has(heading.text)) continue;
     keep[i] = false;
     for (let j = i + 1; j < lines.length; j++) {
-      const next = parseOwnedHeading(lines[j]!);
+      const next = parseAtxHeading(lines[j]!);
       if (next && next.level <= heading.level) break;
       keep[j] = false;
     }
@@ -98,13 +102,6 @@ function parseRegionMarker(line: string): RegionMarker | null {
     return name.length > 0 ? { kind: "end", name } : null;
   }
   return null;
-}
-
-function parseOwnedHeading(line: string): { level: number; text: string } | null {
-  let level = 0;
-  while (level < 6 && line[level] === "#") level++;
-  if (level === 0 || line[level] !== " ") return null;
-  return { level, text: line.slice(level + 1) };
 }
 
 function ownedHeadingSet(ownedHeadings: readonly string[]): Set<string> {

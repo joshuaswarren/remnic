@@ -93,3 +93,34 @@ test("stripRemnicOwnedRegions returns unchanged text when nothing is owned", () 
   const text = ["first", "", "second", "", "third"].join("\n");
   assert.equal(stripRemnicOwnedRegions(text, ["Timeline"]), text);
 });
+
+// Regression: the journal-section reader normalizes tab separators, extra
+// spaces, trailing whitespace, and closing # sequences. The stripper must
+// recognize exactly the same set, or an owned heading the reader treats as
+// the journal section would keep its generated body in the journal text.
+test("owned heading matching accepts every ATX form the section reader accepts", () => {
+  const body = ["generated line", "", "## User Notes", "kept"].join("\n");
+  for (const headingLine of [
+    "## Timeline",
+    "##  Timeline",
+    "##\tTimeline",
+    "## Timeline   ",
+    "## Timeline ##",
+    "## Timeline ### ",
+  ]) {
+    const stripped = stripRemnicOwnedRegions(
+      [headingLine, body].join("\n"),
+      ["Timeline"],
+    );
+    assert.equal(
+      stripped,
+      ["## User Notes", "kept"].join("\n"),
+      `heading line ${JSON.stringify(headingLine)} must strip as owned`,
+    );
+  }
+});
+
+test("an indented heading is not owned, matching the section reader", () => {
+  const text = ["  ## Timeline", "not owned body"].join("\n");
+  assert.equal(stripRemnicOwnedRegions(text, ["Timeline"]), text);
+});

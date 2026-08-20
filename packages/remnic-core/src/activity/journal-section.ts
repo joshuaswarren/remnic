@@ -53,7 +53,7 @@ function splitFileLines(fileText: string): string[] {
   return lines;
 }
 
-function parseAtxHeading(line: string): { level: number; text: string } | null {
+export function parseAtxHeading(line: string): { level: number; text: string } | null {
   let level = 0;
   while (level < line.length && level < 6 && line[level] === "#") level++;
   if (level === 0) return null;
