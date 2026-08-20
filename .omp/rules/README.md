@@ -72,6 +72,22 @@ conditions without new evidence; each baseline below is the receipt.
   (`access-service.ts:843`). Only the `.every(...)` "all empty" shape can
   disagree with a nullish top-level branch, so
   `remnic-guard-inner-nullish` conditions on `.every(` alone.
+- **`Date.parse(...)` used in a comparison without a NaN guard** — the
+  underlying bug is real (an unparseable timestamp makes every `<`/`>`
+  false, so a comparator loses antisymmetry and a retention check reads
+  as "not retained"), but the signature matches 30+ files of correct
+  code: comparators subtracting two parses of known-valid frontmatter,
+  DST window assertions, and half-open interval math. Sort instability
+  is already covered by `remnic-comparator-total-order`; the
+  non-finite-into-a-destructive-branch half is semantic and lives in the
+  `AGENTS.md` checklist instead.
+- **Single-argument `assert.throws(fn)` / `assert.rejects(fn)`** (no
+  error matcher) — a real hazard, and it did let one test pass for the
+  wrong reason (a raw `ENOTDIR` incidentally matched a loose
+  `/not a directory/`), but 18+ existing test files use the bare form
+  where *any* rejection is precisely the contract (`readFile` on a
+  deleted path, a loop of clearly-typed invalid inputs). Tightening the
+  matcher is a review judgement, not a signature.
 
 The dominant review clusters in the 2026-06-20..07-04 subset (605
 findings across 40 PRs; the full derivation corpus spans four weeks) —

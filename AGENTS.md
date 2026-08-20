@@ -582,6 +582,16 @@ Reviewers caught multiple tests that passed vacuously.
   test that forces the error path and asserts recovery behavior.
 - **Don't use fragile CWD-relative paths** — use `import.meta.dirname` or
   `path.resolve(__dirname, ...)` instead of assuming CWD.
+- **Prove each new test discriminates, mechanically.** "Looks like it tests
+  the fix" is not evidence. Before committing, either (a) stash the source
+  change and re-run — every new test defending it MUST fail, or (b) mutate
+  the specific behavior (flip a comparator's sign, swap an append order)
+  and confirm the suite goes red. A test that passes with AND without the
+  change proves nothing: delete it rather than keep it green. This is
+  cheap — a stash plus one test-file run — and it is the only way to tell a
+  regression test from decoration. Three vacuous tests were deleted and two
+  suites confirmed via killed mutants in one recent multi-PR run; each of
+  those would otherwise have shipped as false coverage.
 
 ### 7. Documentation Accuracy — Examples Must Be Copy-Pasteable
 
@@ -1256,6 +1266,34 @@ allowed dispatching from any branch without branch protection.
   property in the schema, write a test that sets it and verifies it affects
   the documented behavior. Missing tests mean the property may be silently
   ignored.
+
+### 45. Validate the Exact Value — Never Normalize First, Never Let Non-Finite Fall Through
+
+Two failure shapes, both caught in review on a *deletion planner*, both of
+which resolve toward the destructive branch. Neither has a textual
+signature (see the receipts in `.omp/rules/README.md`), so they are checked
+here, by hand, on every validator you write.
+
+- **Never normalize an input before validating it.** `isRefusable(p)` that
+  starts with `p.trim()` will accept `" activity/x.md"` as owned and then
+  act on `"activity/x.md"` — a value the caller never supplied. Validate
+  the exact string; use `trim()` only to detect blankness, and treat
+  surrounding whitespace as a refusal in its own right. The same applies to
+  case folding, separator rewriting, and Unicode normalization: every
+  "helpful" transform before the check widens what passes it.
+- **Never let a non-finite number fall through a comparison.** Every
+  comparison against `NaN` is `false`, so a corrupt timestamp makes
+  `now - captured < window` false, which a retention check reads as
+  "not retained" — and the item is queued for deletion. Reject or refuse
+  non-finite numbers explicitly, before the decision, and choose the
+  refusal branch rather than the permissive one. `Number.isFinite` on every
+  externally-sourced number that feeds a delete, supersede, tombstone, or
+  authority decision.
+
+The general rule both instances share: when a guard's two outcomes are
+"keep data" and "destroy data", an unparseable or unexpected input MUST
+resolve to "keep". Write the test that feeds it `NaN`, `Infinity`, and a
+whitespace-padded path, and assert nothing was planned for deletion.
 
 ---
 
