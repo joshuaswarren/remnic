@@ -474,3 +474,10 @@ export {
   type MergeJudgeVerdictName,
   type ParseMergeVerdictResult,
 } from "./merge-verdict.js";
+
+export {
+  MERGE_DERIVED_VIA,
+  buildMergeFrontmatterUpdate,
+  type MergeFrontmatterUpdate,
+  type MergeProvenanceSource,
+} from "./merge-provenance.js";
