@@ -36,10 +36,16 @@ export interface ActivityDeletePlan {
   refused: string[];
 }
 
-function isRefusablePath(relPath: string): boolean {
-  const trimmed = relPath.trim();
-  if (trimmed === "" || trimmed.startsWith("/")) return true;
-  const segments = trimmed.split("/");
+function isRefusablePath(relPath: unknown): boolean {
+  if (typeof relPath !== "string") return true;
+  if (relPath.trim() === "") return true;
+  // Validate the EXACT candidate path. Trimming first would let
+  // " activity/x.md" validate as owned and then plan a delete for
+  // "activity/x.md" — a path the caller never supplied. Surrounding
+  // whitespace means this is not a clean owned path: refuse it.
+  if (relPath !== relPath.trim()) return true;
+  if (relPath.startsWith("/")) return true;
+  const segments = relPath.split("/");
   if (segments.includes("..")) return true;
   const [root = "", ...rest] = segments;
   return (
@@ -80,11 +86,18 @@ export function planActivityDeletion(input: {
 
   for (const candidate of candidates) {
     if (!KNOWN_SCOPES.includes(candidate.scope)) {
-      refused.push(candidate.relPath);
+      refused.push(String(candidate.relPath));
       continue;
     }
     if (!selectedScopes.has(candidate.scope)) continue;
     if (isRefusablePath(candidate.relPath)) {
+      refused.push(String(candidate.relPath));
+      continue;
+    }
+    // A corrupt timestamp must never resolve toward deletion: every
+    // comparison against NaN is false, which shouldRetain reads as
+    // "not retained". Refuse the candidate instead.
+    if (typeof candidate.capturedAtMs !== "number" || !Number.isFinite(candidate.capturedAtMs)) {
       refused.push(candidate.relPath);
       continue;
     }
@@ -92,7 +105,7 @@ export function planActivityDeletion(input: {
       keptCount += 1;
       continue;
     }
-    deletePaths.push(candidate.relPath.trim());
+    deletePaths.push(candidate.relPath);
   }
 
   return {

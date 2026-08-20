@@ -176,3 +176,40 @@ test("input candidates are not mutated", () => {
   plan(candidates);
   assert.deepEqual(candidates, snapshot);
 });
+
+// Review round 1: the planner trimmed relPath before validating it, so
+// " activity/x.md" validated as owned and the plan then targeted
+// "activity/x.md" — a path the caller never supplied.
+test("a path with surrounding whitespace is refused, not normalized into a delete", () => {
+  const expired = 0;
+  for (const relPath of [" activity/day.md", "activity/day.md ", "\tactivity/day.md"]) {
+    const plan = planActivityDeletion({
+      candidates: [{ scope: "cards", relPath, capturedAtMs: expired }],
+      scopes: ["cards"],
+      retentionDays: 1,
+      nowMs: 10 * 86_400_000,
+    });
+    assert.deepEqual(plan.deletePaths, [], `${JSON.stringify(relPath)} must not be planned`);
+    assert.deepEqual(plan.refused, [relPath], "the exact candidate path is reported as refused");
+  }
+});
+
+// Review round 1: every comparison against NaN is false, so shouldRetain
+// reported "not retained" and a corrupt timestamp resolved toward deletion.
+test("a non-finite capturedAtMs is refused instead of deleted", () => {
+  for (const capturedAtMs of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+    const plan = planActivityDeletion({
+      candidates: [{ scope: "cards", relPath: "activity/corrupt.md", capturedAtMs }],
+      scopes: ["cards"],
+      retentionDays: 1,
+      nowMs: 10 * 86_400_000,
+    });
+    assert.deepEqual(
+      plan.deletePaths,
+      [],
+      `capturedAtMs ${String(capturedAtMs)} must never resolve toward deletion`,
+    );
+    assert.deepEqual(plan.refused, ["activity/corrupt.md"]);
+    assert.equal(plan.keptCount, 0);
+  }
+});
