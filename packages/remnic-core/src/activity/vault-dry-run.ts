@@ -4,8 +4,8 @@
  * `planVaultDryRun` predicts per-note publish outcomes from text the caller
  * has already read. It takes strings, not paths, and returns only a report:
  * zero writes is a property of the signature, not a promise. Reporting a
- * note as `updated` when `currentText` is null describes the create a real
- * publish WOULD do; nothing is created here.
+ * note as `skipped` with reason `missing_file` when `currentText` is null,
+ * matching the real publisher, which refuses to create a missing note.
  *
  * Internal helper: nothing calls it yet. CLI/HTTP wiring for the `--dry-run`
  * flag is a later slice of #1985.
