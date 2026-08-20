@@ -1295,6 +1295,79 @@ The general rule both instances share: when a guard's two outcomes are
 resolve to "keep". Write the test that feeds it `NaN`, `Infinity`, and a
 whitespace-padded path, and assert nothing was planned for deletion.
 
+### 46. Key Validation Must Read the Same Keys It Validates
+
+Two bypasses of the same allow-list shipped one review round apart, both in
+a config gate resolver, both because the validating loop and the reading
+expression disagreed about which keys exist.
+
+- **`Object.keys` enumerates own, ENUMERABLE properties.** A key defined with
+  `Object.defineProperty(obj, "x", { value: v, enumerable: false })` is
+  invisible to it — and still readable by `obj.x`. Validate with
+  `Object.getOwnPropertyNames`.
+- **A bracket read follows the prototype chain.** After validating with
+  `Object.keys(raw)`, `raw[gate]` still honors an inherited `gate`, so an
+  object with a doctored prototype enables something the allow-list never
+  approved. Gate every read on `Object.hasOwn(raw, key)`.
+- **Present-with-`undefined` is not absent.** `hasOwn` true plus an
+  `undefined` value is a caller that explicitly set nothing, which composed
+  config objects produce constantly. If the API promises to reject invalid
+  values, that value must go through the validator, not silently default.
+
+The rule: enumerate with `getOwnPropertyNames`, read with `hasOwn`, and treat
+presence and validity as separate questions. Add a regression with a
+non-enumerable key and one with an inherited key — both are three lines.
+
+### 47. A Frozen `as const` Must Not Be Annotated `readonly T[]`
+
+`Object.freeze([...] as const)` already delivers both halves: runtime
+immutability and a narrow literal tuple. Adding `: readonly string[]` throws
+the second half away, so a derived `type X = (typeof LIST)[number]` widens to
+`string` and consumers can assign values the runtime rejects.
+
+This shipped as a regression *inside a hardening fix*: a review round asked
+for a frozen registry, the fix added `Object.freeze` and the annotation
+together, and the next round caught that the gate union had silently become
+`string`. When a call site then rejects the narrow type (usually
+`.includes(someString)`), cast at that call site —
+`(LIST as readonly string[]).includes(key)` — rather than widening the
+declaration for every consumer.
+
+Pin it so it cannot regress silently:
+
+```ts
+// @ts-expect-error "bogus" is not a Gate
+const bad: Gate = "bogus";
+```
+
+An unused `@ts-expect-error` is itself a compile error, so that line fails the
+build the moment the union widens. A regex cannot police this — the annotation
+is legitimate on the many frozen *data* arrays that have no derived union
+(measured: 13 such arrays in this repo), which is why it lives here.
+
+### 48. Every Claim in a PR, Comment, or Changeset Must Be Enforced or Deleted
+
+Reviewers reject prose that the code does not back, and they are right to:
+a false guarantee is worse than a missing one, because the next reader stops
+checking.
+
+Two instances shipped in one run and both were caught:
+
+- A metadata record was described as "structurally incapable of carrying
+  content" while its validator accepted any single-line string under 200
+  characters — `"Summarize this user's activity"` passed. Either enforce the
+  claim (identifier syntax, which is what landed) or delete it.
+- A helper was called an "internal helper" in its changeset while being
+  re-exported from the package entry point, giving consumers a wrong
+  lifecycle signal.
+
+Before pushing, take every guarantee in the PR body, the module header, and
+the changeset, and name the line of code or the test that enforces it. A
+comment is not enforcement: put the invariant in the types, in a validator,
+or in an assertion. If none of those is practical, weaken the sentence to
+what is true — "takes no path to write to" is a fact; "cannot corrupt data"
+is a claim.
+
 ---
 
 ## What This Project Does (Simple Explanation)

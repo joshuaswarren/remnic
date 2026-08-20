@@ -88,6 +88,16 @@ conditions without new evidence; each baseline below is the receipt.
   where *any* rejection is precisely the contract (`readFile` on a
   deleted path, a loop of clearly-typed invalid inputs). Tightening the
   matcher is a review judgement, not a signature.
+- **`: readonly T[] = Object.freeze([...])`** (literal-union widening) — the
+  defect is real and shipped once as a regression inside a hardening fix,
+  but the signature matches 13 legitimate frozen *data* arrays (seed
+  vocabularies, prose frames, fixture memories) where no
+  `(typeof X)[number]` union is derived and the annotation is exactly the
+  intended type. Distinguishing them needs two facts in different places —
+  an `as const` initializer AND a derived union — so it is not a
+  single-line signature. `AGENTS.md` pattern 47 carries the remedy,
+  including the `@ts-expect-error` pin that makes a future widening fail
+  the build.
 
 The dominant review clusters in the 2026-06-20..07-04 subset (605
 findings across 40 PRs; the full derivation corpus spans four weeks) —
