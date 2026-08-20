@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  type ActivityFeatureGate,
   ACTIVITY_FEATURE_GATES,
   resolveActivityGates,
 } from "./privacy-gate-resolve.js";
@@ -152,4 +153,23 @@ test("an explicitly undefined gate value throws rather than reading as false", (
   // An absent key is still a legitimate default-false.
   const resolved = resolveActivityGates({ enabled: true, gates: {} });
   assert.equal(resolved.analysis, false);
+});
+
+// Round 3: a non-enumerable own key must still hit the unknown-key check.
+test("a non-enumerable unknown gate key is rejected", () => {
+  const gates: Record<string, unknown> = {};
+  Object.defineProperty(gates, "sneaky", { value: true, enumerable: false });
+  assert.throws(
+    () => resolveActivityGates({ enabled: true, gates }),
+    /unknown activity gate "sneaky"/,
+  );
+});
+
+// Compile-time: the frozen registry must keep its literal type, so "bogus"
+// is not assignable to ActivityFeatureGate. This assertion fails the build
+// if a future annotation widens the union back to string.
+test("ActivityFeatureGate stays a literal union", () => {
+  // @ts-expect-error "bogus" is not an ActivityFeatureGate
+  const bogus: ActivityFeatureGate = "bogus";
+  assert.equal(bogus, "bogus");
 });

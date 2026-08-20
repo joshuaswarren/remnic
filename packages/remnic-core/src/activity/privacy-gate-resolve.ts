@@ -46,7 +46,10 @@ export function resolveActivityGates(input: {
     throw new TypeError("activity gates must be an object");
   }
   if (rawGates) {
-    for (const key of Object.keys(rawGates)) {
+    // getOwnPropertyNames, not Object.keys: a non-enumerable own property
+    // would skip the unknown-key check below while still being readable by
+    // the hasOwn path that resolves values.
+    for (const key of Object.getOwnPropertyNames(rawGates)) {
       if (!(ACTIVITY_FEATURE_GATES as readonly string[]).includes(key)) {
         throw new TypeError(
           `unknown activity gate "${key}"; allowed gates: ${ACTIVITY_FEATURE_GATES.join(", ")}`,
