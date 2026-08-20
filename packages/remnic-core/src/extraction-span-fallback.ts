@@ -7,7 +7,9 @@
  * refuses Phase B at >= SPAN_GATE_MAX_FALLBACK_RATE_PCT).
  *
  * An unrecognized outcome throws: bucketing it as a success would understate
- * the fallback rate and could wave a failing gate through.
+ * the fallback rate and could wave a failing gate through. A zero-attempt
+ * tally reports `fallbackRatePct: null`, which the gate's `number` input
+ * cannot accept, so an unmeasured run cannot be handed to it as 0%.
  *
  * Pure. No I/O, no randomness. The input array is not mutated.
  */
@@ -18,8 +20,17 @@ export type SpanOutcome = (typeof SPAN_OUTCOMES)[number];
 export interface SpanFallbackTally {
   attempts: number;
   fallbacks: number;
-  /** Percentage in [0, 100], matching the gate's fallbackRatePct input. */
-  fallbackRatePct: number;
+  /**
+   * Percentage in [0, 100] for the gate's `fallbackRatePct` input, or `null`
+   * when there were no attempts.
+   *
+   * `null` rather than 0 is the enforcement: a 0 satisfies the gate's
+   * `fallbackRatePct < 15` comparison, so an unmeasured run could have
+   * approved Phase B. `null` is not assignable to the gate's `number`
+   * parameter, so a caller must handle "no measurement" explicitly instead of
+   * relying on a comment to tell it not to.
+   */
+  fallbackRatePct: number | null;
 }
 
 export function tallySpanFallbacks(outcomes: readonly string[]): SpanFallbackTally {
@@ -40,12 +51,12 @@ export function tallySpanFallbacks(outcomes: readonly string[]): SpanFallbackTal
     }
   }
   const attempts = outcomes.length;
-  // Zero attempts means "no measurement", not "0% fallbacks". Returning 0
-  // keeps the gate's `fallbackRatePct < 15` comparison defined (0/0 is NaN,
-  // and NaN < 15 is false, which would fail a gate that merely has no data
-  // yet). Callers must not read this 0 as a passing measurement.
-  const rate = attempts === 0 ? 0 : (fallbacks / attempts) * 100;
+  if (attempts === 0) {
+    // No measurement. Never 0 and never NaN: 0 would pass the gate's
+    // `< 15` check on no data, and NaN would fail it for the same absence.
+    return { attempts: 0, fallbacks: 0, fallbackRatePct: null };
+  }
   // Cap at 4 decimal places so repeated tallies are byte-identical.
-  const fallbackRatePct = Math.round(rate * 10_000) / 10_000;
+  const fallbackRatePct = Math.round((fallbacks / attempts) * 100 * 10_000) / 10_000;
   return { attempts, fallbacks, fallbackRatePct };
 }

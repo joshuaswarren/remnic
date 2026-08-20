@@ -29,8 +29,8 @@ test("tallySpanFallbacks: zero attempts means no measurement, never NaN", () => 
   const tally = tallySpanFallbacks([]);
   assert.equal(tally.attempts, 0);
   assert.equal(tally.fallbacks, 0);
-  assert.equal(tally.fallbackRatePct, 0);
-  assert.equal(Number.isNaN(tally.fallbackRatePct), false);
+  assert.equal(tally.fallbackRatePct, null);
+  assert.equal(Number.isNaN(tally.fallbackRatePct as unknown as number), false);
 });
 
 test("tallySpanFallbacks: unknown outcome throws and lists the allow-list", () => {
@@ -88,4 +88,16 @@ test("tallySpanFallbacks: does not mutate the input", () => {
   const outcomes = ["span", "fallback", "span"];
   tallySpanFallbacks(outcomes);
   assert.deepEqual(outcomes, ["span", "fallback", "span"]);
+});
+
+// Review: a 0 rate satisfies the gate's `fallbackRatePct < 15`, so returning 0
+// for an empty sample let an unmeasured run approve Phase B. null cannot be
+// passed to the gate at all, which is the enforcement the comment lacked.
+test("tallySpanFallbacks: an empty sample is null, which the gate cannot accept as a rate", () => {
+  const tally = tallySpanFallbacks([]);
+  assert.equal(tally.fallbackRatePct, null);
+  assert.equal(tally.attempts, 0);
+  assert.equal(Number.isNaN(tally.fallbackRatePct as unknown as number), false);
+  // A measured all-span run is a real 0 and stays distinguishable from null.
+  assert.equal(tallySpanFallbacks(["span"]).fallbackRatePct, 0);
 });
