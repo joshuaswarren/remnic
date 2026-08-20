@@ -481,3 +481,9 @@ export {
   type MergeFrontmatterUpdate,
   type MergeProvenanceSource,
 } from "./merge-provenance.js";
+
+export {
+  MERGE_CONTENT_LENGTH_FACTOR,
+  checkMergedContent,
+  type MergeContentCheck,
+} from "./merge-content.js";
