@@ -6,21 +6,22 @@
  * checkable. It compares the lines the pipeline would inject WITHOUT state
  * views (baseline) against the lines it would inject WITH them (annotated).
  *
- * Ok reasons are distinguishable by design:
- * - `no_historical_items`: annotated holds no historical or transition item,
- *   and the byte-exact comparison ran and held. The guarantee was checked
- *   and held.
- * - `unchanged`: annotated holds at least one historical or transition item,
- *   so the "no historical item qualifies" precondition is false. The
- *   guarantee does not apply to this render.
+ * Ok reasons are named for what a reader will assume they mean:
+ * - `verified`: no historical or transition item is present, so the promise
+ *   applies, and the byte-exact comparison ran and held.
+ * - `not_applicable`: at least one historical or transition item is present,
+ *   so the "when no historical item qualifies" precondition is false and
+ *   nothing was compared.
  *
  * Text comparison is byte-exact; a trailing space added by a renderer is a
  * diff. Current-line text mismatches are reported before order mismatches,
  * so `order_changed` means every line matched by memoryId had identical
  * text and only the memoryId sequence moved.
  *
- * Pure: no I/O, inputs are never mutated. Standalone helper — wiring it
- * into a recall-path caller is a later slice.
+ * Pure: no I/O, inputs are never mutated. Tests drive it through the live
+ * recall route (`applyRecallStateViews` then
+ * `RecallResultFormatter.formatQmdResultEntries`); wiring the guard into a
+ * runtime caller is a later slice.
  */
 import type { StateLabel } from "./recall-state-view.js";
 

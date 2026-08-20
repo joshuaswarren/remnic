@@ -4,7 +4,6 @@ import test from "node:test";
 import { parseConfig } from "./config.js";
 import { RecallResultFormatter } from "./orchestration/recall-result-formatter.js";
 import { applyRecallStateViews } from "./recall-state-view-wire.js";
-import { isChangeOrientedQuery } from "./recall-state-view.js";
 import { checkStateViewZeroDiff, type StateViewLine } from "./recall-state-view-zero-diff.js";
 
 function line(memoryId: string, text: string, stateLabel = "current"): StateViewLine {
@@ -156,7 +155,7 @@ function liveEntries(
   results: readonly LiveFixtureRow[],
   query: string,
   stateViewsEnabled: boolean,
-): string[] {
+): { entries: string[]; widened: { id?: string; stateLabel?: string }[] } {
   // parseConfig intentionally does not carry `recallStateViews` (see
   // recall-state-view-wire.ts: "parseConfig cannot grow"), so operators set it
   // on the live config object. Setting it INSIDE parseConfig silently yields a
@@ -169,6 +168,10 @@ function liveEntries(
     path: `/tmp/remnic-zero-diff-test/facts/${result.memoryId}.md`,
     score: result.score,
     snippet: result.text,
+    // `resultStateViewId` reads `id ?? docid` — NOT memoryId. A fixture keyed
+    // only on memoryId gives every row the empty id, so widening drops any
+    // superseded row and the test silently measures nothing.
+    id: result.memoryId,
     memoryId: result.memoryId,
     stateLabel: result.stateLabel,
     ...(result.supersededAt ? { supersededAt: result.supersededAt } : {}),
@@ -178,7 +181,8 @@ function liveEntries(
   const widened = applyRecallStateViews(qmdResults as any[], query, config);
   const formatter = new RecallResultFormatter(config);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture
-  return formatter.formatQmdResultEntries("Relevant Memories", widened as any[]).entries;
+  const entries = formatter.formatQmdResultEntries("Relevant Memories", widened as any[]).entries;
+  return { entries, widened: widened as unknown as { id?: string; stateLabel?: string }[] };
 }
 
 function linesFrom(
@@ -192,23 +196,69 @@ function linesFrom(
   }));
 }
 
-test("the fixture really enables state views (guards a vacuous zero-diff)", () => {
-  const parsed = parseConfig({ memoryDir: "/tmp/remnic-zero-diff-test" }) as unknown as Record<string, unknown>;
-  assert.equal(parsed.recallStateViews, undefined, "parseConfig must not carry the flag");
-  const live = { ...parsed, recallStateViews: true };
-  assert.equal(live.recallStateViews, true, "the live config object must carry it");
-  // A change-oriented query is the other half of the enable condition.
-  assert.ok(isChangeOrientedQuery("what changed about the database?"));
+test("the enabled route labels an admitted superseded row; disabled leaves labels alone", () => {
+  const results = [
+    { memoryId: "m-1", text: "we use PostgreSQL", stateLabel: "current" as const, score: 0.9 },
+    {
+      memoryId: "m-0",
+      text: "we use SQLite",
+      stateLabel: "current" as const,
+      supersededAt: "2026-08-01",
+      supersededBy: "m-1",
+      score: 0.7,
+    },
+  ];
+  const query = "what changed about the database?";
+  const enabled = liveEntries(results, query, true);
+  const disabled = liveEntries(results, query, false);
+
+  // Observable effect #1: widening relabels the superseded row, and only when
+  // the live config carries the flag. This fails if recallStateViews is ignored.
+  assert.equal(
+    enabled.widened.find((row) => row.id === "m-0")?.stateLabel,
+    "historical",
+    "the enabled route must relabel the superseded row",
+  );
+  assert.equal(
+    disabled.widened.find((row) => row.id === "m-0")?.stateLabel,
+    "current",
+    "the disabled route must not touch labels",
+  );
+  // NOTE: the live formatter renders no superseded prefix — formatSupersededPrefix
+  // is reachable only from renderStateViewLine, which has no production caller.
+  // So the rendered entries are identical here, and asserting a rendered
+  // annotation through this route would be asserting a feature that is not
+  // wired. That gap belongs to the rendering slice, not to this guard.
+  assert.deepEqual(enabled.entries, disabled.entries);
 });
 
+test("the enabled route drops a superseded row whose successor is absent", () => {
+  // Observable effect #2, and the sharper one: an orphaned superseded row is
+  // admitted when state views are off and dropped when they are on, so the
+  // entry count itself depends on the live config reaching widening.
+  const results = [
+    { memoryId: "m-9", text: "unrelated current fact", stateLabel: "current" as const, score: 0.9 },
+    {
+      memoryId: "m-0",
+      text: "we use SQLite",
+      stateLabel: "current" as const,
+      supersededAt: "2026-08-01",
+      supersededBy: "m-absent",
+      score: 0.7,
+    },
+  ];
+  const query = "what changed about the database?";
+  assert.equal(liveEntries(results, query, false).entries.length, 2, "disabled admits both rows");
+  assert.equal(liveEntries(results, query, true).entries.length, 1, "enabled drops the orphan");
+});
 test("the live recall route is zero-diff for a current-only result set", () => {
   const results = [
     { memoryId: "m-1", text: "the API limit is 100/min", stateLabel: "current" as const, score: 0.9 },
     { memoryId: "m-2", text: "we chose SQLite", stateLabel: "current" as const, score: 0.8 },
   ];
   const query = "what changed about the database?";
-  const baseline = liveEntries(results, query, false);
-  const annotated = liveEntries(results, query, true);
+  const baseline = liveEntries(results, query, false).entries;
+  const annotated = liveEntries(results, query, true).entries;
 
   assert.deepEqual(annotated, baseline, "state views must not touch a current-only render");
   const check = checkStateViewZeroDiff({
@@ -225,7 +275,7 @@ test("the live route still renders every current entry it was given", () => {
     { memoryId: "m-1", text: "the API limit is 100/min", stateLabel: "current" as const, score: 0.9 },
     { memoryId: "m-2", text: "we chose SQLite", stateLabel: "current" as const, score: 0.8 },
   ];
-  const entries = liveEntries(results, "what changed about the database?", true);
+  const entries = liveEntries(results, "what changed about the database?", true).entries;
   assert.equal(entries.length, 2);
   assert.match(entries[0]!, /the API limit is 100\/min/);
   assert.match(entries[1]!, /we chose SQLite/);
