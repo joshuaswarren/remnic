@@ -98,3 +98,17 @@ test("input is not mutated", () => {
   planVaultDryRun(inputs);
   assert.deepEqual(inputs, snapshot);
 });
+
+// Round 3: undefined and non-string text fields are malformed input, never a
+// prediction. Two undefined fields used to compare equal and report unchanged.
+test("undefined and non-string text fields throw rather than predict", () => {
+  for (const bad of [
+    { path: "a.md", currentText: undefined as unknown as string, nextText: "x" },
+    { path: "a.md", currentText: "x", nextText: undefined as unknown as string },
+    { path: "a.md", currentText: 5 as unknown as string, nextText: "x" },
+    { path: "a.md", currentText: "x", nextText: {} as unknown as string },
+    { path: "a.md", currentText: undefined as unknown as string, nextText: undefined as unknown as string },
+  ]) {
+    assert.throws(() => planVaultDryRun([bad]), /must be a string or null/);
+  }
+});

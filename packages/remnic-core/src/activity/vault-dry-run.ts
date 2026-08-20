@@ -33,6 +33,18 @@ export function planVaultDryRun(inputs: readonly VaultDryRunInput[]): VaultPubli
     if (typeof input.path !== "string" || input.path.trim() === "") {
       throw new RangeError(`vault dry-run input requires a non-blank path (got ${JSON.stringify(input.path)})`);
     }
+    // Validate the exact values before classification: a non-string or
+    // undefined text field is malformed input, and letting it reach the
+    // comparison would silently report a prediction for data the contract
+    // does not permit (two undefined fields would read as "unchanged").
+    for (const field of ["currentText", "nextText"] as const) {
+      const value = input[field];
+      if (value !== null && typeof value !== "string") {
+        throw new TypeError(
+          `vault dry-run input ${field} must be a string or null (got ${typeof value})`,
+        );
+      }
+    }
     if (input.nextText === null) {
       if (typeof input.skipReason !== "string" || input.skipReason.trim() === "") {
         throw new TypeError(
