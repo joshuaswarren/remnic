@@ -4,8 +4,12 @@ import test from "node:test";
 import {
   buildListQuery,
   buildResolveMutation,
+  assertRepoIdentifier,
+  assertThreadId,
   collectPageInfo,
   collectUnresolved,
+  graphqlString,
+  threadIdsFromStdin,
   uniqueThreadIds,
 } from "../scripts/pr-review-threads.mjs";
 
@@ -100,4 +104,31 @@ test("unique ids are what a resolve run is measured against", () => {
   assert.throws(() => uniqueThreadIds([" PRRT_a"]), /trimmed non-blank string/);
   const mutation = buildResolveMutation(["PRRT_a", "PRRT_a"]);
   assert.equal(mutation.match(/resolveReviewThread/g).length, 1);
+});
+
+// Review round 2: interpolated values could change the GraphQL operation that
+// runs under the configured gh credential (GraphQL injection, not shell).
+test("string values are serialized, not pasted", () => {
+  assert.equal(graphqlString('a"b', "x"), '"a\\"b"');
+  assert.equal(graphqlString("a\\b", "x"), '"a\\\\b"');
+  assert.throws(() => graphqlString("", "x"), /non-empty string/);
+});
+
+test("repo identifiers and thread ids are charset-checked", () => {
+  assert.throws(() => assertRepoIdentifier('r" ) { x }', "repo"), /must match/);
+  assert.throws(() => assertThreadId('PRRT_" ) { a }'), /must match/);
+  assert.equal(assertThreadId("PRRT_kwDO-a_b="), "PRRT_kwDO-a_b=");
+});
+
+test("a hostile cursor cannot escape its string literal", () => {
+  const query = buildListQuery("o", "r", [1], { 1: 'x" ) { evil }' });
+  assert.match(query, /after: "x\\" \) \{ evil \}"/, "the quote is escaped in place");
+  assert.equal(query.match(/reviewThreads\(/g).length, 1, "no extra selection was injected");
+});
+
+// Review round 2: the documented `list | resolve` pipe read only argv.
+test("thread ids are recovered from piped list output", () => {
+  const piped = "PR2759 PRRT_aaa coderabbitai\nPR2760 PRRT_bbb codex\n";
+  assert.deepEqual(threadIdsFromStdin(() => piped), ["PRRT_aaa", "PRRT_bbb"]);
+  assert.deepEqual(threadIdsFromStdin(() => ""), []);
 });

@@ -42,9 +42,55 @@ const PERSISTED = {
   symbol: "MemoryLinkType",
 };
 
+/**
+ * Remove comments before any declaration is scanned. Without this, a
+ * commented-out member (`// "related"`) reads as vocabulary the parser
+ * supports, and the gate can pass while the real lists still diverge.
+ * String-aware so a `//` inside a literal survives.
+ */
+export function stripComments(text) {
+  let out = "";
+  let i = 0;
+  let quote = null;
+  while (i < text.length) {
+    const ch = text[i];
+    const next = text[i + 1];
+    if (quote) {
+      out += ch;
+      if (ch === "\\") {
+        out += next ?? "";
+        i += 2;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      i += 1;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === "/" && next === "/") {
+      while (i < text.length && text[i] !== "\n") i += 1;
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      i += 2;
+      while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) i += 1;
+      i += 2;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
 /** Extract the string literals of a `const NAME = [...] as const` array. */
 function readArrayLiterals(relFile, symbol) {
-  const text = readFileSync(path.join(ROOT, relFile), "utf8");
+  const text = stripComments(readFileSync(path.join(ROOT, relFile), "utf8"));
   const declaration = new RegExp(
     `(?:export\\s+)?const\\s+${symbol}\\b[^=]*=\\s*(?:Object\\.freeze\\()?\\s*\\[([\\s\\S]*?)\\]`,
     "m",
@@ -65,7 +111,7 @@ function readArrayLiterals(relFile, symbol) {
 
 /** Extract the members of a `type NAME = "a" | "b"` union. */
 function readUnionLiterals(relFile, symbol) {
-  const text = readFileSync(path.join(ROOT, relFile), "utf8");
+  const text = stripComments(readFileSync(path.join(ROOT, relFile), "utf8"));
   const match = text.match(new RegExp(`export\\s+type\\s+${symbol}\\s*=\\s*([^;]+);`, "m"));
   if (!match) {
     throw new Error(

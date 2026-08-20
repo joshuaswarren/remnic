@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { findVocabularyGaps } from "../scripts/check-nav-link-vocabularies.mjs";
+import { findVocabularyGaps, stripComments } from "../scripts/check-nav-link-vocabularies.mjs";
 
 test("agreeing vocabularies report no gaps", () => {
   const gaps = findVocabularyGaps({
@@ -70,4 +70,21 @@ test("a type required by both lists is reported once per requiring list", () => 
     { missing: "shared", requiredBy: "persisted" },
     { missing: "shared", requiredBy: "stepper" },
   ]);
+});
+
+// Review round 2: quoted text in comments read as vocabulary members, so the
+// gate could pass while the real lists still diverged.
+test("commented-out members are not vocabulary", () => {
+  const source = 'const X = [\n  "supports",\n  // "related" is not supported yet\n  /* "causes" */\n] as const;';
+  const stripped = stripComments(source);
+  assert.match(stripped, /"supports"/);
+  assert.doesNotMatch(stripped, /"related"/);
+  assert.doesNotMatch(stripped, /"causes"/);
+});
+
+test("a URL inside a string literal survives stripping", () => {
+  const source = 'const U = "https://example.com/a"; // trailing note';
+  const stripped = stripComments(source);
+  assert.match(stripped, /"https:\/\/example\.com\/a"/);
+  assert.doesNotMatch(stripped, /trailing note/);
 });
