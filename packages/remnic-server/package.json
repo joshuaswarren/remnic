@@ -38,7 +38,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@remnic/core": "workspace:^",
     "express": "^4.21.2",
     "express-rate-limit": "^8.5.2"
