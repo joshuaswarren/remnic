@@ -1,7 +1,7 @@
 {
   "name": "remnic",
   "description": "Universal memory for AI agents — automatic recall, observation, and cross-agent knowledge sharing",
-  "version": "9.66.11",
+  "version": "9.66.12",
   "author": {
     "name": "Joshua Warren"
   },
