@@ -6,8 +6,12 @@
  * caller derives the same value for the same inputs. Stable across category
  * order and key insertion order; any semantic change produces a new digest,
  * which keys a new snapshot file instead of mutating an unrelated period.
+ *
+ * Values are validated, not merely non-blank: a typo like `"Not/AZone"` or
+ * `"monady"` would otherwise get a durable snapshot identity, and correcting
+ * the typo later would fork the stored history instead of continuing it.
  */
-import { hashActivityBody } from "../digest.js";
+import { assertValidTimezone, hashActivityBody } from "../digest.js";
 
 export interface WeeklyConfigInput {
   timezone: string;
@@ -15,6 +19,17 @@ export interface WeeklyConfigInput {
   /** Category definitions that shape the snapshot. */
   categories: readonly { id: string; name: string }[];
 }
+
+/** Week-start vocabulary. Lowercase day names, matching the config surface. */
+export const WEEK_START_DAYS = Object.freeze([
+  "monday",
+  "tuesday",
+  "wednesday",
+  "thursday",
+  "friday",
+  "saturday",
+  "sunday",
+] as const);
 
 function requireNonBlank(value: unknown, field: string): string {
   if (typeof value !== "string" || value.trim() === "") {
@@ -28,7 +43,15 @@ export function computeWeeklyConfigHash(input: WeeklyConfigInput): string {
     throw new RangeError("input must be a WeeklyConfigInput object");
   }
   const timezone = requireNonBlank(input.timezone, "timezone");
+  // Same IANA check the activity config and weekly builder apply, so an
+  // unusable timezone cannot acquire a snapshot identity here.
+  assertValidTimezone(timezone);
   const weekStartsOn = requireNonBlank(input.weekStartsOn, "weekStartsOn");
+  if (!(WEEK_START_DAYS as readonly string[]).includes(weekStartsOn)) {
+    throw new RangeError(
+      `weekStartsOn must be one of ${WEEK_START_DAYS.join(", ")}; got ${JSON.stringify(weekStartsOn)}`,
+    );
+  }
   if (!Array.isArray(input.categories)) {
     throw new RangeError("categories must be an array of category definitions");
   }

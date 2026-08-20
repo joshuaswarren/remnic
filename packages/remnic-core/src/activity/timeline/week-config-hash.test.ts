@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { computeWeeklyConfigHash, type WeeklyConfigInput } from "./week-config-hash.js";
+import { computeWeeklyConfigHash, WEEK_START_DAYS, type WeeklyConfigInput } from "./week-config-hash.js";
 
 const BASE: WeeklyConfigInput = {
   timezone: "Europe/Paris",
@@ -132,4 +132,55 @@ test("the caller's category array is not mutated", () => {
   const before = structuredClone(input);
   computeWeeklyConfigHash(input);
   assert.deepStrictEqual(input, before);
+});
+
+// Review: a non-blank check let a typo acquire a durable snapshot identity,
+// so correcting the typo later forked the stored history.
+test("an invalid IANA timezone is refused before hashing", () => {
+  // "utc" is deliberately absent: IANA zone names are case-insensitive, so
+  // the shared validator accepts it and it is not a typo.
+  for (const timezone of ["Not/AZone", "America/Nowhere", "Chicago"]) {
+    assert.throws(
+      () =>
+        computeWeeklyConfigHash({
+          timezone,
+          weekStartsOn: "monday",
+          categories: [{ id: "dev", name: "Development" }],
+        }),
+      /timezone/i,
+    );
+  }
+  // A real zone still works.
+  assert.match(
+    computeWeeklyConfigHash({
+      timezone: "America/Chicago",
+      weekStartsOn: "monday",
+      categories: [{ id: "dev", name: "Development" }],
+    }),
+    /^[0-9a-f]+$/,
+  );
+});
+
+test("weekStartsOn must be a known weekday", () => {
+  for (const weekStartsOn of ["monady", "Monday", "mon", ""]) {
+    assert.throws(
+      () =>
+        computeWeeklyConfigHash({
+          timezone: "UTC",
+          weekStartsOn,
+          categories: [{ id: "dev", name: "Development" }],
+        }),
+      /weekStartsOn/,
+    );
+  }
+  for (const weekStartsOn of WEEK_START_DAYS) {
+    assert.match(
+      computeWeeklyConfigHash({
+        timezone: "UTC",
+        weekStartsOn,
+        categories: [{ id: "dev", name: "Development" }],
+      }),
+      /^[0-9a-f]+$/,
+    );
+  }
 });
