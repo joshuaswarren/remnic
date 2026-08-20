@@ -31,7 +31,7 @@
 #     deserialization cluster GHSA-qxrp-vhvm-j765 / -hxxf-235m-72v3 /
 #     -wrfc-pvp9-mr9g (all < 4.48.0).
 --extra-index-url https://download.pytorch.org/whl/cu126
-torch==2.12.1+cu126
+torch==2.13.0+cu126
 transformers==5.5.0
 datasets==3.6.0
 huggingface-hub==1.5.0  # transformers 5.5.0 requires huggingface-hub>=1.5.0,<2.0
