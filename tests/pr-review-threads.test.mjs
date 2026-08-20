@@ -4,11 +4,13 @@ import test from "node:test";
 import {
   buildListQuery,
   buildResolveMutation,
+  assertCursorsAdvance,
   assertRepoIdentifier,
   assertThreadId,
   collectPageInfo,
   collectUnresolved,
   graphqlString,
+  parseRepoSlug,
   threadIdsFromStdin,
   uniqueThreadIds,
 } from "../scripts/pr-review-threads.mjs";
@@ -131,4 +133,27 @@ test("thread ids are recovered from piped list output", () => {
   const piped = "PR2759 PRRT_aaa coderabbitai\nPR2760 PRRT_bbb codex\n";
   assert.deepEqual(threadIdsFromStdin(() => piped), ["PRRT_aaa", "PRRT_bbb"]);
   assert.deepEqual(threadIdsFromStdin(() => ""), []);
+});
+
+// Review round 3: an adjacent-duplicate check misses a longer cycle, which
+// keeps issuing requests until the rate limiter stops them.
+test("a cursor cycle longer than one step is caught", () => {
+  const seen = new Map();
+  assertCursorsAdvance(seen, { 1: "C1" });
+  assertCursorsAdvance(seen, { 1: "C2" });
+  assert.throws(() => assertCursorsAdvance(seen, { 1: "C1" }), /cursor C1 twice/);
+});
+
+test("distinct PRs do not share cursor history", () => {
+  const seen = new Map();
+  assertCursorsAdvance(seen, { 1: "C1", 2: "C1" });
+  assert.throws(() => assertCursorsAdvance(seen, { 2: "C1" }), /PR 2 returned cursor C1 twice/);
+});
+
+// Review round 3: owner/repo/extra silently queried owner/repo.
+test("a slug must be exactly owner/repo", () => {
+  assert.deepEqual(parseRepoSlug("o/r"), { owner: "o", repo: "r" });
+  for (const bad of ["o/r/extra", "o/", "/r", "o", "", "o//r"]) {
+    assert.throws(() => parseRepoSlug(bad), /exactly owner\/repo|must match/, `accepted ${bad}`);
+  }
 });

@@ -80,6 +80,9 @@ export function stripComments(text) {
       i += 2;
       while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) i += 1;
       i += 2;
+      // A separator, not nothing: `export/* note */type X` must not collapse
+      // into `exporttype X`, which no declaration regex can match.
+      out += " ";
       continue;
     }
     out += ch;

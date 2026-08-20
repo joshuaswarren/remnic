@@ -88,3 +88,12 @@ test("a URL inside a string literal survives stripping", () => {
   assert.match(stripped, /"https:\/\/example\.com\/a"/);
   assert.doesNotMatch(stripped, /trailing note/);
 });
+
+// Review round 3: removing a block comment with no separator turned valid
+// TypeScript into `exporttype`, which no declaration regex can match, so the
+// gate would fail on valid source.
+test("a block comment between tokens leaves a separator", () => {
+  const stripped = stripComments('export/* note */type NavLink = "a" | "b";');
+  assert.match(stripped, /export\s+type NavLink/);
+  assert.doesNotMatch(stripped, /exporttype/);
+});

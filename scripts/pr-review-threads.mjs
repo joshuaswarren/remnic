@@ -186,6 +186,38 @@ function gh(query) {
   return parsed;
 }
 
+/**
+ * Throw when a PR returns a cursor it has already returned. Tracks the whole
+ * set per PR so a cycle longer than one step is caught too.
+ */
+export function assertCursorsAdvance(seenCursors, cursors) {
+  for (const [pr, cursor] of Object.entries(cursors)) {
+    let seen = seenCursors.get(pr);
+    if (!seen) {
+      seen = new Set();
+      seenCursors.set(pr, seen);
+    }
+    if (seen.has(cursor)) {
+      throw new Error(
+        `pr-review-threads: PR ${pr} returned cursor ${cursor} twice; pagination is looping`,
+      );
+    }
+    seen.add(cursor);
+  }
+  return seenCursors;
+}
+
+/** Split `owner/repo`, refusing anything that is not exactly two components. */
+export function parseRepoSlug(slug) {
+  const parts = typeof slug === "string" ? slug.split("/") : [];
+  if (parts.length !== 2 || parts.some((part) => part === "")) {
+    throw new Error(
+      `pr-review-threads: expected exactly owner/repo, got ${JSON.stringify(slug)}`,
+    );
+  }
+  return { owner: assertRepoIdentifier(parts[0], "owner"), repo: assertRepoIdentifier(parts[1], "repo") };
+}
+
 /** Extract thread ids from piped `list` output. Empty when stdin is a TTY. */
 export function threadIdsFromStdin(readStdin = defaultReadStdin) {
   const text = readStdin();
@@ -206,8 +238,10 @@ function main(argv) {
   const [mode, ...rest] = argv;
   if (mode === "list") {
     const [slug, ...prs] = rest;
-    if (!slug || !slug.includes("/")) throw new Error("pr-review-threads list <owner/repo> <pr...>");
-    const [owner, repo] = slug.split("/");
+    if (!slug) throw new Error("pr-review-threads list <owner/repo> <pr...>");
+    // owner/repo/extra previously queried owner/repo and presented the result
+    // as the requested repository's thread state.
+    const { owner, repo } = parseRepoSlug(slug);
     const numbers = prs.map((pr) => Number(pr));
     const rows = [];
     let cursors = {};
@@ -217,20 +251,15 @@ function main(argv) {
     // No page cap: a valid cursor chain must be allowed to finish however long
     // it is. A cursor that repeats for the same PR is a real loop, and that is
     // what terminates instead.
-    const lastCursor = new Map();
+    // Every cursor ever seen for a PR, not just the previous one: a C1 -> C2 ->
+    // C1 cycle would otherwise pass an adjacent-duplicate check and keep
+    // issuing requests until the rate limiter stopped it.
+    const seenCursors = new Map();
     while (pending.length > 0) {
       const page = gh(buildListQuery(owner, repo, pending, cursors));
       rows.push(...collectUnresolved(page));
       cursors = collectPageInfo(page);
-      for (const [pr, cursor] of Object.entries(cursors)) {
-        if (lastCursor.get(pr) === cursor) {
-          throw new Error(
-            `pr-review-threads: PR ${pr} returned the same cursor twice (${cursor}); ` +
-              "pagination is looping",
-          );
-        }
-        lastCursor.set(pr, cursor);
-      }
+      assertCursorsAdvance(seenCursors, cursors);
       pending = Object.keys(cursors).map((pr) => Number(pr));
     }
     rows.sort((a, b) => Number(a.pr) - Number(b.pr) || (a.threadId < b.threadId ? -1 : a.threadId > b.threadId ? 1 : 0));
@@ -242,7 +271,10 @@ function main(argv) {
   if (mode === "resolve") {
     // The documented `list | resolve` pipe puts the rows on stdin, so read it
     // when no ids are given on argv rather than telling the user it worked.
-    const argvIds = rest.filter((token) => token.startsWith("PRRT_"));
+    // Every argv token must be a valid id. Filtering invalid ones away
+    // resolved the rest and reported success while a requested thread stayed
+    // unresolved.
+    const argvIds = rest.length > 0 ? rest.map((token) => assertThreadId(token)) : [];
     const ids = argvIds.length > 0 ? argvIds : threadIdsFromStdin();
     if (ids.length === 0) {
       throw new Error("pr-review-threads resolve <threadId...>  (or pipe `list` output in)");
