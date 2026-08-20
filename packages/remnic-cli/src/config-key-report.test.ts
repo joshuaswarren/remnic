@@ -135,3 +135,30 @@ test("adversarial sweep: no value-position secret ever prints", () => {
   const leaks = corpus.filter((input) => formatConfigKeyReport(reportConfigKeys(input)).includes(S));
   assert.deepEqual(leaks, [], `inputs that leaked: ${JSON.stringify(leaks)}`);
 });
+
+// Review round 3: an invalid scalar let a later '{' open what looked like a
+// nested object, so a value-position string after it was read as a key.
+test("an invalid scalar stops the scan instead of resyncing on later braces", () => {
+  const S = "value-that-must-never-print";
+  const hostile = `{"openaiApiKey":oops${" ".repeat(200)}{"${S}":0}}`;
+  const report = reportConfigKeys(hostile);
+  assert.ok(!report.keys.includes(S), "the secret was reported as a key");
+  assert.deepEqual(report.keys, ["openaiApiKey"]);
+  assert.equal(report.truncated, true);
+  assert.ok(!formatConfigKeyReport(report).includes(S));
+});
+
+test("valid scalars still scan through", () => {
+  const report = reportConfigKeys('{"a":1,"b":-2.5,"c":1e3,"d":true,"e":false,"f":null,"g":{"h":0}}');
+  assert.deepEqual(report.keys, ["a", "b", "c", "d", "e", "f", "g", "h"]);
+  assert.equal(report.truncated, false);
+});
+
+test("a unicode-escaped key is reported, not silently dropped", () => {
+  // readString previously advanced a fixed 2 characters past any backslash,
+  // leaving the four hex digits of \uXXXX in the value so the key failed the
+  // charset test and vanished from the report.
+  const report = reportConfigKeys('{"port\\u0031": 1, "memoryDir": "/tmp/m"}');
+  assert.ok(report.keys.includes("memoryDir"));
+  assert.ok(!report.keys.some((key) => key.includes("0031")), "escape digits leaked into the key name");
+});

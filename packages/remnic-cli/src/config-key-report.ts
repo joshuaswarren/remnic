@@ -43,9 +43,14 @@ function readString(text: string, i: number): { value: string; next: number } | 
   while (index < text.length) {
     const ch = text[index]!;
     if (ch === "\\") {
-      // Keep the pair opaque: the escape's meaning does not matter here, only
-      // that it cannot terminate the string.
-      index += 2;
+      // Consume the FULL escape. A fixed +2 left the four hex digits of a
+      // \uXXXX escape in the output, which then failed REPORTABLE_KEY and
+      // dropped the key from the report entirely.
+      const next = text[index + 1];
+      if (next === undefined) return null;
+      index += next === "u" ? 6 : 2;
+      // The escape's meaning does not matter here, only that it cannot
+      // terminate the string and cannot leak the decoded character.
       out += "\u0000";
       continue;
     }
@@ -55,6 +60,22 @@ function readString(text: string, i: number): { value: string; next: number } | 
     index += 1;
   }
   return null;
+}
+
+/** A valid JSON scalar: number, true, false, or null. */
+const JSON_SCALAR = /^(?:-?(?:0|[1-9][0-9]{0,19})(?:\.[0-9]{1,20})?(?:[eE][+-]?[0-9]{1,3})?|true|false|null)$/;
+
+/**
+ * Read the scalar starting at `i` and validate it. Returns null when the token
+ * is not a valid JSON scalar, which is the caller's signal to stop scanning:
+ * past an invalid token there is no structure left to trust.
+ */
+function readScalar(text: string, i: number): { next: number } | null {
+  let end = i;
+  while (end < text.length && !",}] \t\n\r".includes(text[end])) end += 1;
+  const token = text.slice(i, end);
+  if (token === "" || !JSON_SCALAR.test(token)) return null;
+  return { next: end };
 }
 
 /** Skip whitespace. Bounded by the input length; no backtracking. */
@@ -151,8 +172,15 @@ export function reportConfigKeys(rawText: string, maxKeys = 200): ConfigKeyRepor
       truncated = true;
       break scan;
     }
-    // Otherwise this is a scalar in value position: skip one character.
-    i += 1;
+    // A scalar in value position. It MUST be a valid JSON scalar: skipping
+    // characters one at a time let `{"k":oops … {"secret":0}}` treat the later
+    // `{` as a real nested object and report the secret as a key.
+    const token = readScalar(rawText, i);
+    if (!token) {
+      truncated = true;
+      break scan;
+    }
+    i = skipWs(rawText, token.next);
   }
 
   const sort = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
