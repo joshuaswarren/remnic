@@ -139,6 +139,13 @@ test("inputs are not mutated", () => {
   assert.deepEqual(annotated, annotatedCopy);
 });
 
+/** A fixture row: the guard's line shape plus the fields the live route reads. */
+type LiveFixtureRow = StateViewLine & {
+  score: number;
+  supersededAt?: string;
+  supersededBy?: string;
+};
+
 // Review round 2: the earlier follow-up ran `injectStateViewLines`, which has
 // no production caller. The live route in orchestration/recall-entry.ts is
 // applyRecallStateViews -> RecallResultFormatter.formatQmdResultEntries, so
@@ -146,7 +153,7 @@ test("inputs are not mutated", () => {
 // or perturbs current-only entries in widening OR in live formatting now
 // fails here.
 function liveEntries(
-  results: readonly (StateViewLine & { score: number })[],
+  results: readonly LiveFixtureRow[],
   query: string,
   stateViewsEnabled: boolean,
 ): string[] {
@@ -176,7 +183,7 @@ function liveEntries(
 
 function linesFrom(
   entries: readonly string[],
-  results: readonly (StateViewLine & { score: number })[],
+  results: readonly LiveFixtureRow[],
 ): StateViewLine[] {
   return entries.map((text, index) => ({
     memoryId: results[index]!.memoryId,
@@ -186,7 +193,7 @@ function linesFrom(
 }
 
 test("the fixture really enables state views (guards a vacuous zero-diff)", () => {
-  const parsed = parseConfig({ memoryDir: "/tmp/remnic-zero-diff-test" }) as Record<string, unknown>;
+  const parsed = parseConfig({ memoryDir: "/tmp/remnic-zero-diff-test" }) as unknown as Record<string, unknown>;
   assert.equal(parsed.recallStateViews, undefined, "parseConfig must not carry the flag");
   const live = { ...parsed, recallStateViews: true };
   assert.equal(live.recallStateViews, true, "the live config object must carry it");
