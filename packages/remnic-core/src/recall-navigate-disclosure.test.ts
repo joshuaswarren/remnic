@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  DISCLOSURE_LEVELS,
   disclosureRank,
   planDisclosureStep,
 } from "./recall-navigate-disclosure.js";
+import { RECALL_DISCLOSURE_LEVELS } from "./types.js";
 
 // The declared input type is strings; agents send arbitrary JSON. Cast only
 // at this boundary so the invalid-shape cases stay one line each.
@@ -13,14 +13,14 @@ const plan = (from: unknown, to: unknown) =>
   planDisclosureStep({ from, to } as unknown as { from: string; to: string });
 
 test("disclosureRank returns the index of every level, shallowest first", () => {
-  for (const [i, level] of DISCLOSURE_LEVELS.entries()) {
+  for (const [i, level] of RECALL_DISCLOSURE_LEVELS.entries()) {
     assert.equal(disclosureRank(level), i);
   }
   assert.ok(
-    disclosureRank(DISCLOSURE_LEVELS[0]) < disclosureRank(DISCLOSURE_LEVELS[1]),
+    disclosureRank(RECALL_DISCLOSURE_LEVELS[0]) < disclosureRank(RECALL_DISCLOSURE_LEVELS[1]),
   );
   assert.ok(
-    disclosureRank(DISCLOSURE_LEVELS[1]) < disclosureRank(DISCLOSURE_LEVELS[2]),
+    disclosureRank(RECALL_DISCLOSURE_LEVELS[1]) < disclosureRank(RECALL_DISCLOSURE_LEVELS[2]),
   );
 });
 
@@ -64,8 +64,8 @@ test("chunk→raw is two steps", () => {
 });
 
 test("every level pair is only deeper in one direction", () => {
-  for (const shallower of DISCLOSURE_LEVELS) {
-    for (const deeper of DISCLOSURE_LEVELS) {
+  for (const shallower of RECALL_DISCLOSURE_LEVELS) {
+    for (const deeper of RECALL_DISCLOSURE_LEVELS) {
       const result = planDisclosureStep({ from: shallower, to: deeper });
       if (disclosureRank(shallower) < disclosureRank(deeper)) {
         assert.deepEqual(result, {
@@ -82,7 +82,7 @@ test("every level pair is only deeper in one direction", () => {
 });
 
 test("equal levels are not_deeper", () => {
-  for (const level of DISCLOSURE_LEVELS) {
+  for (const level of RECALL_DISCLOSURE_LEVELS) {
     assert.deepEqual(planDisclosureStep({ from: level, to: level }), {
       ok: false,
       error: "not_deeper",
