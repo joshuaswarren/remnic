@@ -165,3 +165,56 @@ test("inputs are not mutated", () => {
     { targetId: "m-1", linkType: "causes" },
   ]);
 });
+
+// Review: the contract said bad stored data is skipped, but a nullish
+// targetId threw before the skip checks could run.
+test("a nullish or non-string targetId is skipped, never thrown", () => {
+  const result = selectTraverseNeighbors({
+    links: [
+      { targetId: undefined as unknown as string, linkType: "supports" },
+      { targetId: null as unknown as string, linkType: "supports" },
+      { targetId: 42 as unknown as string, linkType: "supports" },
+      { targetId: "m-real", linkType: "supports" },
+    ],
+  });
+  assert.ok(result.ok);
+  assert.deepEqual(result.neighbors, [{ targetId: "m-real", linkType: "supports" }]);
+});
+
+// A padded id is malformed, not a variant of the trimmed id: trimming would
+// guess at an identity, so the row is skipped.
+test("a whitespace-padded targetId is skipped rather than trimmed", () => {
+  const result = selectTraverseNeighbors({
+    links: [
+      { targetId: " m-1", linkType: "supports" },
+      { targetId: "m-2", linkType: "supports" },
+    ],
+  });
+  assert.ok(result.ok);
+  assert.deepEqual(result.neighbors, [{ targetId: "m-2", linkType: "supports" }]);
+});
+
+// Review: dedup ran before sorting, so input order decided which relation
+// survived for a doubly-linked target. Sorting first fixes the survivor.
+test("a target under two relations keeps the smallest linkType regardless of input order", () => {
+  const a = { targetId: "m-1", linkType: "supports" };
+  const b = { targetId: "m-1", linkType: "contradicts" };
+  const forward = selectTraverseNeighbors({ links: [a, b] });
+  const reversed = selectTraverseNeighbors({ links: [b, a] });
+  assert.ok(forward.ok && reversed.ok);
+  assert.deepEqual(forward.neighbors, reversed.neighbors);
+  assert.deepEqual(forward.neighbors, [{ targetId: "m-1", linkType: "contradicts" }]);
+});
+
+test("sort-then-dedup also decides which target survives a tight limit", () => {
+  const links = [
+    { targetId: "m-z", linkType: "supports" },
+    { targetId: "m-a", linkType: "supports" },
+    { targetId: "m-a", linkType: "elaborates" },
+  ];
+  const shuffled = selectTraverseNeighbors({ links: [...links].reverse(), limit: 1 });
+  const straight = selectTraverseNeighbors({ links, limit: 1 });
+  assert.ok(shuffled.ok && straight.ok);
+  assert.deepEqual(shuffled.neighbors, straight.neighbors);
+  assert.deepEqual(straight.neighbors, [{ targetId: "m-a", linkType: "elaborates" }]);
+});

@@ -32,27 +32,42 @@ export function selectTraverseNeighbors(input: {
     return { ok: false, error: "unknown_relation" };
   }
 
-  const seen = new Set<string>();
   const kept: TraverseNeighbor[] = [];
   // Asymmetry is intentional: a bad request (unknown relation, invalid
-  // limit) is refused, but bad stored data (a link whose linkType is not a
-  // known type, or a blank targetId) is skipped — stored data may predate a
-  // type, and one bad row must not fail the whole traverse.
+  // limit) is refused, but bad stored data is skipped — stored data may
+  // predate a type or carry a malformed id, and one bad row must not fail
+  // the whole traverse. A targetId that is not a non-blank string, including
+  // undefined/null and whitespace-only, is malformed and skipped. Padded ids
+  // are NOT trimmed into validity: an id is an exact identity, and guessing
+  // the intended target is worse than skipping the row.
   for (const link of input.links) {
     if (!parseNavigateLinkType(link.linkType).ok) continue;
     if (input.relation !== undefined && link.linkType !== input.relation) continue;
-    if (link.targetId.trim() === "") continue;
-    if (seen.has(link.targetId)) continue;
-    seen.add(link.targetId);
+    if (typeof link.targetId !== "string" || link.targetId.trim() === "" || link.targetId.trim() !== link.targetId) {
+      continue;
+    }
     kept.push({ targetId: link.targetId, linkType: link.linkType });
   }
 
+  // Sort BEFORE deduplicating: first-occurrence dedup on an unsorted list
+  // lets input order decide which relation survives for a target that is
+  // linked under two types, and after the cap is applied, which target is
+  // returned at all. Sorting first makes the survivor deterministic
+  // (smallest linkType wins the tie).
   kept.sort((a, b) => {
     if (a.linkType !== b.linkType) return a.linkType < b.linkType ? -1 : 1;
     if (a.targetId !== b.targetId) return a.targetId < b.targetId ? -1 : 1;
     return 0;
   });
 
-  const truncated = kept.length > limit;
-  return { ok: true, neighbors: truncated ? kept.slice(0, limit) : kept, truncated };
+  const seen = new Set<string>();
+  const deduped: TraverseNeighbor[] = [];
+  for (const link of kept) {
+    if (seen.has(link.targetId)) continue;
+    seen.add(link.targetId);
+    deduped.push(link);
+  }
+
+  const truncated = deduped.length > limit;
+  return { ok: true, neighbors: truncated ? deduped.slice(0, limit) : deduped, truncated };
 }
