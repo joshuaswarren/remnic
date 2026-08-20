@@ -2,7 +2,6 @@ import fs from "node:fs";
 import { Orchestrator, parseConfig, resolveRemnicConfigRecord, type PluginConfig } from "@remnic/core";
 import { exportOkfBundle, parseIncludeStatus } from "@remnic/core/export-okf";
 import { resolveConfigPath } from "../index.js";
-import { formatConfigKeyReport, reportConfigKeys } from "../config-key-report.js";
 
 function takeFlag(rest: string[], name: string): string | undefined {
   const index = rest.indexOf(name);
@@ -31,23 +30,27 @@ export async function runExportOkfBinaryCommand(rest: string[]): Promise<void> {
     if (!out) throw new Error("Missing --out");
     const namespace = takeFlag(args, "--namespace") ?? "";
     const configPath = resolveConfigPath();
-    let rawConfig: Record<string, unknown> = {};
-    let rawText = "";
     let config: PluginConfig;
     try {
-      rawText = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : "";
-      rawConfig = rawText === "" ? {} : JSON.parse(rawText);
+      const rawConfig = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {};
       config = parseConfig(resolveRemnicConfigRecord(rawConfig));
     } catch (err) {
-      // parseConfig error strings embed raw config values, so err.message must
-      // not reach console output (CodeQL js/clear-text-logging). Neither a
-      // redactor nor a shape walk is enough: both READ the sensitive
-      // properties. The key report scans the raw TEXT, so no config property
-      // is ever accessed here.
+      // parseConfig error strings embed raw config values — an unresolved
+      // ${...} placeholder is the key's own text — so err.message must not
+      // reach console output (CodeQL js/clear-text-logging).
+      //
+      // Nothing derived from the config is logged either. Three earlier
+      // attempts each failed: redacting the parsed object (taint analysis
+      // cannot see through a generic redactor, and a key deny-list is only as
+      // complete as its last edit), describing its shape (still reads every
+      // value), and scanning the file text for key names (CodeQL treats the
+      // text as sensitive once a credential is parsed out of it, and a
+      // malformed file repeatedly let a value be read as a key). The only
+      // amount of config-derived logging that is safe is none.
       console.error(
         `export-okf: failed to load config at ${configPath} (${err instanceof Error ? err.name : "unknown error"})`,
       );
-      console.error(formatConfigKeyReport(reportConfigKeys(rawText)));
+      console.error("  config values are never printed; inspect the file directly");
       process.exitCode = 1;
       return;
     }
