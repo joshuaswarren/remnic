@@ -56,10 +56,20 @@ function requireStamp(expected: SpanSourceStamp): void {
   }
 }
 
-/** Hash the exact string. No trimming, no newline normalization. */
+/**
+ * Hash the exact string. No trimming, no newline normalization.
+ *
+ * The digest covers UTF-16LE code units, not UTF-8 bytes: Node's UTF-8
+ * encoder replaces an unpaired surrogate with U+FFFD before hashing, so
+ * "\ud800", "\ud801", and "\ufffd" all produce ONE digest under utf8 and
+ * drift between them would verify as unchanged. Unpaired surrogates reach
+ * real memory text through JSON escapes, and this stamp exists to catch
+ * exactly that class of silent substitution, so it hashes a lossless
+ * representation of the string instead.
+ */
 export function stampSpanSource(text: string): SpanSourceStamp {
   requireText(text);
-  const hash = createHash("sha256").update(text, "utf8").digest("hex");
+  const hash = createHash("sha256").update(Buffer.from(text, "utf16le")).digest("hex");
   return { hash, length: text.length };
 }
 
@@ -75,11 +85,16 @@ export function verifySpanSource(
   requireText(text);
   requireStamp(expected);
   const actual = stampSpanSource(text);
-  if (actual.length !== expected.length) {
-    return { ok: false, error: "length_mismatch", expected, actual };
+  // Project the caller's stamp down to exactly the two stamp fields. Echoing
+  // the original object would re-export any extra property it carries — a
+  // `source` field holding the text defeats the whole point of a stamp, which
+  // exists so the content does not have to travel.
+  const safeExpected: SpanSourceStamp = { hash: expected.hash, length: expected.length };
+  if (actual.length !== safeExpected.length) {
+    return { ok: false, error: "length_mismatch", expected: safeExpected, actual };
   }
-  if (actual.hash !== expected.hash) {
-    return { ok: false, error: "hash_mismatch", expected, actual };
+  if (actual.hash !== safeExpected.hash) {
+    return { ok: false, error: "hash_mismatch", expected: safeExpected, actual };
   }
   return { ok: true };
 }
