@@ -199,3 +199,21 @@ test("converge refresh obligations survive restart and clear independently", asy
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
 });
+
+test("normalizeConvergePeerUrl: non-URL peers trim trailing slashes", () => {
+  assert.equal(normalizeConvergePeerUrl("local///"), "local");
+  assert.equal(normalizeConvergePeerUrl("peer-a/"), "peer-a");
+  assert.equal(normalizeConvergePeerUrl("peer-a"), "peer-a");
+});
+
+test("normalizeConvergePeerUrl: stays linear on long unparseable slash runs", () => {
+  // No scheme, so the URL constructor throws and the fallback branch runs;
+  // the trailing "a" means no suffix of slashes can match, which is the
+  // backtracking worst case for the old /\/+$/ trim.
+  const peerUrl = "/".repeat(50_000) + "a";
+  const startedAt = Date.now();
+  const normalized = normalizeConvergePeerUrl(peerUrl);
+  const elapsedMs = Date.now() - startedAt;
+  assert.ok(elapsedMs < 1000, `normalizeConvergePeerUrl took ${elapsedMs}ms on a ${peerUrl.length}-char slash run`);
+  assert.equal(normalized, peerUrl);
+});

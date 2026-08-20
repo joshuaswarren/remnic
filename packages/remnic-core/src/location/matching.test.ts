@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { matchDominantPlace, memoryLocationWindow, type LocationTagPolicy } from "./matching.js";
+import { locationTagSlug, matchDominantPlace, memoryLocationWindow, type LocationTagPolicy } from "./matching.js";
 import type { LocationPlace, LocationSegment } from "./types.js";
 
 const policy: LocationTagPolicy = {
@@ -62,4 +62,34 @@ test("dominant named place wins; ties stay unmatched", () => {
   );
   assert.equal(tied.status, "unmatched");
   if (tied.status === "unmatched") assert.equal(tied.reason, "ambiguous");
+});
+
+test("locationTagSlug: pins slug collapsing and edge trimming", () => {
+  assert.equal(locationTagSlug("reitti:place:7"), "reitti-place-7");
+  assert.equal(locationTagSlug("  --Mixed CASE--  "), "mixed-case");
+  assert.equal(locationTagSlug("---"), "");
+  assert.equal(locationTagSlug("a---b"), "a-b");
+  assert.equal(locationTagSlug("Café Central"), "caf-central");
+});
+
+test("locationTagSlug: the collapse keeps edges single-dash, so the trim is complete", () => {
+  // This is the invariant the single-character edge strips depend on: the
+  // /[^a-z0-9]+/ collapse cannot leave two dashes at an edge. Relax or reorder
+  // the collapse and the strips silently stop being complete, so assert the
+  // OUTPUT contract directly rather than timing something the collapse has
+  // already bounded.
+  const adversarial = [
+    "-".repeat(5_000),
+    "a" + "-".repeat(5_000) + "b",
+    "-".repeat(5_000) + "a",
+    "a" + "-".repeat(5_000),
+    "___---...   a   ...---___",
+    "\u2014\u2014a\u2014\u2014",
+  ];
+  for (const placeId of adversarial) {
+    const slug = locationTagSlug(placeId);
+    assert.ok(!slug.startsWith("-"), `leading dash survived: ${JSON.stringify(slug)}`);
+    assert.ok(!slug.endsWith("-"), `trailing dash survived: ${JSON.stringify(slug)}`);
+    assert.doesNotMatch(slug, /--/, `adjacent dashes survived: ${JSON.stringify(slug)}`);
+  }
 });

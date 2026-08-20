@@ -1,10 +1,11 @@
 import fs from "node:fs";
-import { Orchestrator, parseConfig, resolveRemnicConfigRecord } from "@remnic/core";
+import { Orchestrator, parseConfig, resolveRemnicConfigRecord, type PluginConfig } from "@remnic/core";
 import {
   exportCodegraphOkfBundle,
   parseOkfCodegraphSymbolFilter,
 } from "@remnic/core/export-okf-codegraph";
 import { resolveConfigPath } from "../index.js";
+import { formatConfigKeyReport, reportConfigKeys } from "../config-key-report.js";
 
 function takeFlag(rest: string[], name: string): string | undefined {
   const index = rest.indexOf(name);
@@ -36,8 +37,26 @@ export async function runCodegraphBinaryCommand(rest: string[]): Promise<void> {
     if (!project) throw new Error("Missing --project");
     if (!out) throw new Error("Missing --out");
     const configPath = resolveConfigPath();
-    const raw = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {};
-    const config = parseConfig(resolveRemnicConfigRecord(raw));
+    let rawConfig: Record<string, unknown> = {};
+    let rawText = "";
+    let config: PluginConfig;
+    try {
+      rawText = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : "";
+      rawConfig = rawText === "" ? {} : JSON.parse(rawText);
+      config = parseConfig(resolveRemnicConfigRecord(rawConfig));
+    } catch (err) {
+      // parseConfig error strings embed raw config values, so err.message must
+      // not reach console output (CodeQL js/clear-text-logging). Neither a
+      // redactor nor a shape walk is enough: both READ the sensitive
+      // properties. The key report scans the raw TEXT, so no config property
+      // is ever accessed here.
+      console.error(
+        `codegraph export-okf: failed to load config at ${configPath} (${err instanceof Error ? err.name : "unknown error"})`,
+      );
+      console.error(formatConfigKeyReport(reportConfigKeys(rawText)));
+      process.exitCode = 1;
+      return;
+    }
     orchestrator = new Orchestrator(config);
     await orchestrator.initialize();
     await orchestrator.deferredReady;
