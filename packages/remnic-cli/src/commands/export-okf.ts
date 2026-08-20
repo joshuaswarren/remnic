@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { Orchestrator, parseConfig, resolveRemnicConfigRecord, type PluginConfig } from "@remnic/core";
 import { exportOkfBundle, parseIncludeStatus } from "@remnic/core/export-okf";
 import { resolveConfigPath } from "../index.js";
-import { describeConfigShape, formatConfigShape } from "../describe-config-shape.js";
+import { formatConfigKeyReport, reportConfigKeys } from "../config-key-report.js";
 
 function takeFlag(rest: string[], name: string): string | undefined {
   const index = rest.indexOf(name);
@@ -32,21 +32,22 @@ export async function runExportOkfBinaryCommand(rest: string[]): Promise<void> {
     const namespace = takeFlag(args, "--namespace") ?? "";
     const configPath = resolveConfigPath();
     let rawConfig: Record<string, unknown> = {};
+    let rawText = "";
     let config: PluginConfig;
     try {
-      rawConfig = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {};
+      rawText = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : "";
+      rawConfig = rawText === "" ? {} : JSON.parse(rawText);
       config = parseConfig(resolveRemnicConfigRecord(rawConfig));
     } catch (err) {
-      // parseConfig error strings embed raw config values (unresolved ${...}
-      // placeholder text from key material, JSON.stringify'd rejects), so
-      // err.message must not reach console output (CodeQL js/clear-text-
-      // logging). A redactor is not enough either: taint analysis cannot see
-      // through it, and a key pattern is only as complete as its last edit.
-      // The config's SHAPE carries the diagnosis without any value.
+      // parseConfig error strings embed raw config values, so err.message must
+      // not reach console output (CodeQL js/clear-text-logging). Neither a
+      // redactor nor a shape walk is enough: both READ the sensitive
+      // properties. The key report scans the raw TEXT, so no config property
+      // is ever accessed here.
       console.error(
         `export-okf: failed to load config at ${configPath} (${err instanceof Error ? err.name : "unknown error"})`,
       );
-      console.error(formatConfigShape(describeConfigShape(rawConfig)));
+      console.error(formatConfigKeyReport(reportConfigKeys(rawText)));
       process.exitCode = 1;
       return;
     }
