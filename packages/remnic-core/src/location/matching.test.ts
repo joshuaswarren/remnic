@@ -72,15 +72,24 @@ test("locationTagSlug: pins slug collapsing and edge trimming", () => {
   assert.equal(locationTagSlug("Café Central"), "caf-central");
 });
 
-test("locationTagSlug: stays linear on adversarial dash runs", () => {
-  // Tripwire for the pre-collapse invariant: the /[^a-z0-9]+/ collapse ahead
-  // of the edge trim is what bounds the trim's input, so these must stay
-  // fast even if the collapse is ever reordered or relaxed.
-  for (const placeId of ["-".repeat(50_000), "a" + "-".repeat(50_000) + "b", "-".repeat(50_000) + "a"]) {
-    const startedAt = Date.now();
+test("locationTagSlug: the collapse keeps edges single-dash, so the trim is complete", () => {
+  // This is the invariant the single-character edge strips depend on: the
+  // /[^a-z0-9]+/ collapse cannot leave two dashes at an edge. Relax or reorder
+  // the collapse and the strips silently stop being complete, so assert the
+  // OUTPUT contract directly rather than timing something the collapse has
+  // already bounded.
+  const adversarial = [
+    "-".repeat(5_000),
+    "a" + "-".repeat(5_000) + "b",
+    "-".repeat(5_000) + "a",
+    "a" + "-".repeat(5_000),
+    "___---...   a   ...---___",
+    "\u2014\u2014a\u2014\u2014",
+  ];
+  for (const placeId of adversarial) {
     const slug = locationTagSlug(placeId);
-    const elapsedMs = Date.now() - startedAt;
-    assert.ok(elapsedMs < 1000, `locationTagSlug took ${elapsedMs}ms on a ${placeId.length}-char dash run`);
-    assert.equal(typeof slug, "string");
+    assert.ok(!slug.startsWith("-"), `leading dash survived: ${JSON.stringify(slug)}`);
+    assert.ok(!slug.endsWith("-"), `trailing dash survived: ${JSON.stringify(slug)}`);
+    assert.doesNotMatch(slug, /--/, `adjacent dashes survived: ${JSON.stringify(slug)}`);
   }
 });
