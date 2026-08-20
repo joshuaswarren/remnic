@@ -12,6 +12,8 @@
  * into the recap build path is a later slice.
  */
 
+import { isAnalysisFailureKind } from "./analysis-failure.js";
+
 export const RECAP_SOURCE_KINDS = ["ai", "deterministic", "previous"] as const;
 export type RecapSourceKind = (typeof RECAP_SOURCE_KINDS)[number];
 
@@ -46,14 +48,27 @@ export function selectRecapForDay(input: {
   deterministic?: RecapCandidate | null;
   /** The last valid stored journal for this day, if any. */
   previous?: RecapCandidate | null;
-  /** Typed failure kind from a provider error, when one occurred. */
+  /**
+   * Typed failure kind from a provider error, when one occurred. Validated
+   * against the analysis-failure allow-list: an arbitrary string here would
+   * flow into telemetry and downstream exhaustive handling as though it were
+   * a known kind, so a misspelled "timeot" is refused instead of echoed.
+   */
   failure?: string | null;
 }): RecapSelection {
-  const failure =
-    typeof input.failure === "string" && input.failure.trim() !== ""
-      ? input.failure
-      : undefined;
+  let failure: string | undefined;
+  if (input.failure !== undefined && input.failure !== null) {
+    if (!isAnalysisFailureKind(input.failure)) {
+      throw new TypeError(
+        `unknown recap failure kind; expected one of the analysis failure kinds, got a non-allow-listed value`,
+      );
+    }
+    failure = input.failure;
+  }
 
+  // Validate every supplied candidate FIRST. Returning on the first valid
+  // body would let a malformed lower-priority candidate hide behind a valid
+  // higher-priority one, so the kind contract would hold only sometimes.
   for (const slot of SLOT_ORDER) {
     const candidate = input[slot];
     if (candidate == null) continue;
@@ -69,18 +84,20 @@ export function selectRecapForDay(input: {
         `recap candidate passed as "${slot}" has kind "${kind}"; kind must match its slot`,
       );
     }
-
-    const body = candidate.body;
-    if (typeof body !== "string") {
+    if (typeof candidate.body !== "string") {
       throw new TypeError(
         `recap candidate body for slot "${slot}" must be a string`,
       );
     }
-    if (body.trim() === "") continue;
+  }
 
+  for (const slot of SLOT_ORDER) {
+    const candidate = input[slot];
+    if (candidate == null) continue;
+    if (candidate.body.trim() === "") continue;
     return failure === undefined
-      ? { ok: true, body, kind }
-      : { ok: true, body, kind, failure };
+      ? { ok: true, body: candidate.body, kind: candidate.kind }
+      : { ok: true, body: candidate.body, kind: candidate.kind, failure };
   }
 
   return failure === undefined

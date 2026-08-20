@@ -108,22 +108,25 @@ test("an unknown kind throws and lists the allow-list", () => {
   );
 });
 
-test("blank failure is omitted from the result object", () => {
+test("an absent failure omits the key; whitespace is refused, not cleaned", () => {
   const result = selectRecapForDay({
     deterministic: { body: "deterministic render", kind: "deterministic" },
-    failure: "   ",
   });
   assert.deepEqual(result, {
     ok: true,
     body: "deterministic render",
     kind: "deterministic",
   });
-  assert.ok(!("failure" in result));
-
-  const none = selectRecapForDay({
-    failure: null,
-  });
-  assert.ok(!("failure" in none));
+  // With the typed contract, whitespace is an unknown kind, not a blank to
+  // silently drop: a caller must omit the field, not send a placeholder.
+  assert.throws(
+    () =>
+      selectRecapForDay({
+        deterministic: { body: "deterministic render", kind: "deterministic" },
+        failure: "   ",
+      }),
+    /unknown recap failure kind/,
+  );
 });
 
 test("input is not mutated", () => {
@@ -136,4 +139,46 @@ test("input is not mutated", () => {
   const snapshot = structuredClone(input);
   selectRecapForDay(input);
   assert.deepEqual(input, snapshot);
+});
+
+// Review: an unknown failure kind must be refused, not echoed into telemetry
+// as though it were typed.
+test("an unknown failure kind throws instead of being echoed", () => {
+  assert.throws(
+    () =>
+      selectRecapForDay({
+        deterministic: { body: "cards", kind: "deterministic" },
+        failure: "timeot",
+      }),
+    /unknown recap failure kind/,
+  );
+  for (const kind of ["timeout", "aborted", "provider_unavailable"]) {
+    const result = selectRecapForDay({
+      deterministic: { body: "cards", kind: "deterministic" },
+      failure: kind,
+    });
+    assert.ok(result.ok);
+    assert.equal(result.failure, kind);
+  }
+});
+
+// Review: a malformed lower-priority candidate must not hide behind a valid
+// higher-priority one. The contract throws on a bad kind whatever wins.
+test("a valid ai candidate does not hide a malformed previous candidate", () => {
+  assert.throws(
+    () =>
+      selectRecapForDay({
+        ai: { body: "fresh", kind: "ai" },
+        previous: { body: "old", kind: "ai" } as never,
+      }),
+    /kind must match its slot/,
+  );
+  assert.throws(
+    () =>
+      selectRecapForDay({
+        ai: { body: "fresh", kind: "ai" },
+        deterministic: { body: "x", kind: "weird" } as never,
+      }),
+    /unknown recap source kind/,
+  );
 });
