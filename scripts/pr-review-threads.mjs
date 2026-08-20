@@ -22,6 +22,9 @@
  */
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+
+/** Printed by `list` after its final row: proof the query completed. */
+export const LIST_SENTINEL = "# pr-review-threads: end of list";
 import path from "node:path";
 import process from "node:process";
 
@@ -207,6 +210,24 @@ export function assertCursorsAdvance(seenCursors, cursors) {
   return seenCursors;
 }
 
+/**
+ * Parse a PR number from its ORIGINAL token. `Number("0x10")` is 16 and
+ * `Number("1e2")` is 100, so a malformed token would silently report a
+ * different PR's thread state than the caller asked for.
+ */
+export function parsePrNumber(token) {
+  if (typeof token !== "string" || !/^[0-9]{1,12}$/.test(token)) {
+    throw new Error(
+      `pr-review-threads: PR number must be decimal digits, got ${JSON.stringify(token)}`,
+    );
+  }
+  const value = Number(token);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`pr-review-threads: PR number must be a positive integer, got ${JSON.stringify(token)}`);
+  }
+  return value;
+}
+
 /** Split `owner/repo`, refusing anything that is not exactly two components. */
 export function parseRepoSlug(slug) {
   const parts = typeof slug === "string" ? slug.split("/") : [];
@@ -229,8 +250,16 @@ export function threadIdsFromStdin(readStdin = defaultReadStdin) {
   return text.split(/\s+/).filter((token) => token.startsWith("PRRT_"));
 }
 
+let lastStdinText = null;
+
 function readPipedThreadIds() {
-  return threadIdsFromStdin();
+  lastStdinText = defaultReadStdin();
+  if (lastStdinText === null) return null;
+  return lastStdinText.split(/\s+/).filter((token) => token.startsWith("PRRT_"));
+}
+
+function pipedRanToCompletion() {
+  return typeof lastStdinText === "string" && lastStdinText.includes(LIST_SENTINEL);
 }
 
 function defaultReadStdin() {
@@ -258,7 +287,7 @@ function main(argv) {
     if (prs.length === 0) {
       throw new Error("pr-review-threads list <owner/repo> <pr...>: at least one PR number is required");
     }
-    const numbers = prs.map((pr) => Number(pr));
+    const numbers = prs.map((pr) => parsePrNumber(pr));
     const rows = [];
     let cursors = {};
     let pending = numbers;
@@ -282,6 +311,10 @@ function main(argv) {
     for (const row of rows) {
       console.log(`PR${row.pr} ${row.threadId} ${row.author}`);
     }
+    // Proof of completion. Without it, a `list` that died early (rate limit,
+    // inaccessible PR) hands `resolve` empty stdin, and in a pipeline without
+    // pipefail the run reports success having queried nothing.
+    console.log(LIST_SENTINEL);
     return;
   }
   if (mode === "resolve") {
@@ -299,10 +332,15 @@ function main(argv) {
         throw new Error("pr-review-threads resolve <threadId...>  (or pipe `list` output in)");
       }
       if (piped.length === 0) {
-        // `list | resolve` when every PR is already clean. The pipeline
-        // succeeded; exiting nonzero here would fail automation on the
-        // healthy path.
-        console.log("[pr-review-threads] no unresolved threads piped in; nothing to resolve");
+        // Empty input is only clean when `list` says it finished. Otherwise
+        // the upstream failed and this must not report success.
+        if (!pipedRanToCompletion()) {
+          throw new Error(
+            "pr-review-threads: empty input without the end-of-list marker — `list` did not finish, " +
+              "so there is no evidence the queried PRs are clean",
+          );
+        }
+        console.log("[pr-review-threads] list finished with no unresolved threads; nothing to resolve");
         return;
       }
       ids = piped;

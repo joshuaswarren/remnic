@@ -10,6 +10,8 @@ import {
   collectPageInfo,
   collectUnresolved,
   graphqlString,
+  LIST_SENTINEL,
+  parsePrNumber,
   parseRepoSlug,
   threadIdsFromStdin,
   uniqueThreadIds,
@@ -170,4 +172,24 @@ test("a slug must be exactly owner/repo", () => {
 test("list refuses an empty PR set at both layers", () => {
   assert.throws(() => buildListQuery("o", "r", []), /no PR numbers given/);
   assert.throws(() => buildResolveMutation([]), /no thread ids given/);
+});
+
+// Review: `Number("0x10")` is 16, so a malformed token silently reported a
+// different PR's thread state than the caller asked for.
+test("PR numbers must be decimal digits", () => {
+  assert.equal(parsePrNumber("2764"), 2764);
+  for (const bad of ["0x10", "1e2", " 12", "12 ", "+12", "-12", "12.0", "", "abc", "0"]) {
+    assert.throws(() => parsePrNumber(bad), /decimal digits|positive integer/, `accepted ${JSON.stringify(bad)}`);
+  }
+});
+
+// Review: an empty pipe is only clean if `list` actually finished. A list that
+// died early (rate limit, inaccessible PR) also produces empty stdin, and in a
+// pipeline without pipefail that would report success having queried nothing.
+test("the end-of-list marker is what makes empty input trustworthy", () => {
+  assert.equal(LIST_SENTINEL, "# pr-review-threads: end of list");
+  const finishedClean = `${LIST_SENTINEL}\n`;
+  assert.deepEqual(threadIdsFromStdin(() => finishedClean), [], "no ids in a clean run");
+  assert.ok(finishedClean.includes(LIST_SENTINEL), "a completed run carries the marker");
+  assert.ok(!"".includes(LIST_SENTINEL), "a died-early run does not");
 });
