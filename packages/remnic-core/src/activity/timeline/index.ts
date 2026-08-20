@@ -21,3 +21,4 @@ export * from "./analysis-prompt.js";
 export * from "./analysis-claim.js";
 export * from "./analysis-order.js";
 export * from "./recap-window.js";
+export * from "./analysis-failure.js";
