@@ -17,6 +17,7 @@ export * from "./reindex.js";
 export * from "./timeline/index.js";
 export * from "./journal.js";
 export * from "./journal-vault-read.js";
+export { stripRemnicOwnedRegions } from "./journal-strip.js";
 export * from "./memory-gen.js";
 export * from "./privacy.js";
 export * from "./privacy-status.js";
