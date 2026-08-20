@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { findVocabularyGaps, stripComments } from "../scripts/check-nav-link-vocabularies.mjs";
+import { assertOnlyLiteralMembers, findVocabularyGaps, stripComments } from "../scripts/check-nav-link-vocabularies.mjs";
 
 test("agreeing vocabularies report no gaps", () => {
   const gaps = findVocabularyGaps({
@@ -96,4 +96,23 @@ test("a block comment between tokens leaves a separator", () => {
   const stripped = stripComments('export/* note */type NavLink = "a" | "b";');
   assert.match(stripped, /export\s+type NavLink/);
   assert.doesNotMatch(stripped, /exporttype/);
+});
+
+// Review: a union composed through an alias or spread was silently ignored, so
+// the gate could report agreement while the vocabularies actually diverged.
+test("a non-literal member fails the gate instead of being ignored", () => {
+  assert.throws(
+    () => assertOnlyLiteralMembers('"a" | "b" | OtherLinkTypes', ["a", "b"], "T", "f.ts", "|"),
+    /non-literal member\(s\) \[OtherLinkTypes\]/,
+  );
+  assert.throws(
+    () => assertOnlyLiteralMembers('"a", ...MORE_TYPES', ["a"], "X", "f.ts", ","),
+    /non-literal member/,
+  );
+});
+
+test("a purely literal declaration passes, including a trailing as const", () => {
+  assert.doesNotThrow(() => assertOnlyLiteralMembers('"a" | "b"', ["a", "b"], "T", "f.ts", "|"));
+  assert.doesNotThrow(() => assertOnlyLiteralMembers('"a", "b",', ["a", "b"], "X", "f.ts", ","));
+  assert.doesNotThrow(() => assertOnlyLiteralMembers('\n  "a",\n  "b",\n', ["a", "b"], "X", "f.ts", ","));
 });

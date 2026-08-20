@@ -91,6 +91,30 @@ export function stripComments(text) {
   return out;
 }
 
+/**
+ * Fail closed when a declaration contains members this extractor cannot see.
+ * A union or array composed through an alias or a spread (`| OtherLinkTypes`,
+ * `...MORE_TYPES`) would otherwise be silently ignored, so the gate could
+ * report agreement while the real vocabularies diverged — the exact failure
+ * this gate exists to prevent.
+ */
+export function assertOnlyLiteralMembers(body, literals, symbol, relFile, separator) {
+  // Remove every literal we DID extract, then check nothing substantive is left.
+  let remainder = body;
+  for (const literal of literals) remainder = remainder.replace(`"${literal}"`, "");
+  const leftover = remainder
+    .split(separator === "|" ? "|" : ",")
+    .map((part) => part.trim())
+    .filter((part) => part !== "" && part !== "as const" && !part.startsWith("as const"));
+  if (leftover.length > 0) {
+    throw new Error(
+      `check-nav-link-vocabularies: ${symbol} in ${relFile} has non-literal member(s) ` +
+        `[${leftover.join(" ")}] this gate cannot read. Extend the extractor rather than ` +
+        `letting the vocabulary check pass on a partial list.`,
+    );
+  }
+}
+
 /** Extract the string literals of a `const NAME = [...] as const` array. */
 function readArrayLiterals(relFile, symbol) {
   const text = stripComments(readFileSync(path.join(ROOT, relFile), "utf8"));
@@ -109,6 +133,7 @@ function readArrayLiterals(relFile, symbol) {
   if (literals.length === 0) {
     throw new Error(`check-nav-link-vocabularies: ${symbol} in ${relFile} has no string literals`);
   }
+  assertOnlyLiteralMembers(match[1], literals, symbol, relFile, ",");
   return literals;
 }
 
@@ -126,6 +151,7 @@ function readUnionLiterals(relFile, symbol) {
   if (literals.length === 0) {
     throw new Error(`check-nav-link-vocabularies: type ${symbol} in ${relFile} has no members`);
   }
+  assertOnlyLiteralMembers(match[1], literals, symbol, relFile, "|");
   return literals;
 }
 
