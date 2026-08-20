@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { injectStateViewLines } from "./recall-state-view-inject.js";
+import { parseConfig } from "./config.js";
+import { RecallResultFormatter } from "./orchestration/recall-result-formatter.js";
+import { applyRecallStateViews } from "./recall-state-view-wire.js";
+import { isChangeOrientedQuery } from "./recall-state-view.js";
 import { checkStateViewZeroDiff, type StateViewLine } from "./recall-state-view-zero-diff.js";
 
 function line(memoryId: string, text: string, stateLabel = "current"): StateViewLine {
@@ -136,58 +139,87 @@ test("inputs are not mutated", () => {
   assert.deepEqual(annotated, annotatedCopy);
 });
 
-// Review: a guard referenced only by its own unit test is machinery, not
-// enforcement. These cases run the REAL render/inject pipeline with state
-// views disabled and enabled, then assert the promise through the guard, so a
-// change to renderStateViewLine or injectStateViewLines that perturbs a
-// current-only result set fails here.
-test("the real inject pipeline is zero-diff for a current-only result set", () => {
-  const results = [
-    { memoryId: "m-1", text: "the API limit is 100/min", stateLabel: "current" as const },
-    { memoryId: "m-2", text: "we chose SQLite", stateLabel: "current" as const },
-  ];
-  const baselineText = injectStateViewLines(results, { enabled: false });
-  const annotatedText = injectStateViewLines(results, { enabled: true });
+// Review round 2: the earlier follow-up ran `injectStateViewLines`, which has
+// no production caller. The live route in orchestration/recall-entry.ts is
+// applyRecallStateViews -> RecallResultFormatter.formatQmdResultEntries, so
+// these cases drive those two real stages. A regression that reorders, drops,
+// or perturbs current-only entries in widening OR in live formatting now
+// fails here.
+function liveEntries(
+  results: readonly (StateViewLine & { score: number })[],
+  query: string,
+  stateViewsEnabled: boolean,
+): string[] {
+  // parseConfig intentionally does not carry `recallStateViews` (see
+  // recall-state-view-wire.ts: "parseConfig cannot grow"), so operators set it
+  // on the live config object. Setting it INSIDE parseConfig silently yields a
+  // disabled render, which makes a zero-diff assertion vacuous.
+  const parsed = parseConfig({ memoryDir: "/tmp/remnic-zero-diff-test" });
+  const config = stateViewsEnabled
+    ? ({ ...parsed, recallStateViews: true } as typeof parsed)
+    : parsed;
+  const qmdResults = results.map((result) => ({
+    path: `/tmp/remnic-zero-diff-test/facts/${result.memoryId}.md`,
+    score: result.score,
+    snippet: result.text,
+    memoryId: result.memoryId,
+    stateLabel: result.stateLabel,
+    ...(result.supersededAt ? { supersededAt: result.supersededAt } : {}),
+    ...(result.supersededBy ? { supersededBy: result.supersededBy } : {}),
+  }));
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture
+  const widened = applyRecallStateViews(qmdResults as any[], query, config);
+  const formatter = new RecallResultFormatter(config);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture
+  return formatter.formatQmdResultEntries("Relevant Memories", widened as any[]).entries;
+}
 
+function linesFrom(
+  entries: readonly string[],
+  results: readonly (StateViewLine & { score: number })[],
+): StateViewLine[] {
+  return entries.map((text, index) => ({
+    memoryId: results[index]!.memoryId,
+    text,
+    stateLabel: results[index]!.stateLabel,
+  }));
+}
+
+test("the fixture really enables state views (guards a vacuous zero-diff)", () => {
+  const parsed = parseConfig({ memoryDir: "/tmp/remnic-zero-diff-test" }) as Record<string, unknown>;
+  assert.equal(parsed.recallStateViews, undefined, "parseConfig must not carry the flag");
+  const live = { ...parsed, recallStateViews: true };
+  assert.equal(live.recallStateViews, true, "the live config object must carry it");
+  // A change-oriented query is the other half of the enable condition.
+  assert.ok(isChangeOrientedQuery("what changed about the database?"));
+});
+
+test("the live recall route is zero-diff for a current-only result set", () => {
+  const results = [
+    { memoryId: "m-1", text: "the API limit is 100/min", stateLabel: "current" as const, score: 0.9 },
+    { memoryId: "m-2", text: "we chose SQLite", stateLabel: "current" as const, score: 0.8 },
+  ];
+  const query = "what changed about the database?";
+  const baseline = liveEntries(results, query, false);
+  const annotated = liveEntries(results, query, true);
+
+  assert.deepEqual(annotated, baseline, "state views must not touch a current-only render");
   const check = checkStateViewZeroDiff({
-    baseline: results.map((result, i) => ({
-      memoryId: result.memoryId,
-      text: baselineText[i]!,
-      stateLabel: "current",
-    })),
-    annotated: results.map((result, i) => ({
-      memoryId: result.memoryId,
-      text: annotatedText[i]!,
-      stateLabel: result.stateLabel,
-    })),
+    baseline: linesFrom(baseline, results),
+    annotated: linesFrom(annotated, results),
   });
   assert.deepEqual(check, { ok: true, reason: "verified" });
 });
 
-test("the real pipeline does annotate once a historical item qualifies", () => {
+test("the live route still renders every current entry it was given", () => {
+  // Guards the inverse failure: an empty or dropped render would satisfy a
+  // naive zero-diff comparison, so assert the payload actually survives.
   const results = [
-    { memoryId: "m-1", text: "we use PostgreSQL", stateLabel: "current" as const },
-    {
-      memoryId: "m-0",
-      text: "we use SQLite",
-      stateLabel: "historical" as const,
-      supersededAt: "2026-08-01",
-      supersededBy: "m-1",
-    },
+    { memoryId: "m-1", text: "the API limit is 100/min", stateLabel: "current" as const, score: 0.9 },
+    { memoryId: "m-2", text: "we chose SQLite", stateLabel: "current" as const, score: 0.8 },
   ];
-  const annotatedText = injectStateViewLines(results, { enabled: true });
-  // Sanity that the pipeline really changes historical rows, so the zero-diff
-  // assertion above is not passing because rendering is a no-op everywhere.
-  assert.match(annotatedText[1]!, /superseded 2026-08-01 by m-1/);
-
-  const check = checkStateViewZeroDiff({
-    baseline: [{ memoryId: "m-1", text: "we use PostgreSQL", stateLabel: "current" }],
-    annotated: results.map((result, i) => ({
-      memoryId: result.memoryId,
-      text: annotatedText[i]!,
-      stateLabel: result.stateLabel,
-    })),
-  });
-  assert.ok(check.ok, "a qualifying historical item means the promise does not apply");
-  assert.equal(check.ok && check.reason, "not_applicable");
+  const entries = liveEntries(results, "what changed about the database?", true);
+  assert.equal(entries.length, 2);
+  assert.match(entries[0]!, /the API limit is 100\/min/);
+  assert.match(entries[1]!, /we chose SQLite/);
 });
