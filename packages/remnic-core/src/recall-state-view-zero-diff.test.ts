@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { injectStateViewLines } from "./recall-state-view-inject.js";
 import { checkStateViewZeroDiff, type StateViewLine } from "./recall-state-view-zero-diff.js";
 
 function line(memoryId: string, text: string, stateLabel = "current"): StateViewLine {
@@ -12,11 +13,11 @@ test("identical current-only lists pass", () => {
   const annotated = baseline.map((l) => ({ ...l }));
   assert.deepEqual(checkStateViewZeroDiff({ baseline, annotated }), {
     ok: true,
-    reason: "no_historical_items",
+    reason: "verified",
   });
   assert.deepEqual(checkStateViewZeroDiff({ baseline: [], annotated: [] }), {
     ok: true,
-    reason: "no_historical_items",
+    reason: "verified",
   });
 });
 
@@ -78,12 +79,12 @@ test("historical or transition item means the guarantee does not apply", () => {
   const withHistorical = [line("old", "Was a baker", "historical"), line("new", "Current job")];
   assert.deepEqual(checkStateViewZeroDiff({ baseline, annotated: withHistorical }), {
     ok: true,
-    reason: "unchanged",
+    reason: "not_applicable",
   });
   const withTransition = [line("mid", "Bridge job", "transition"), line("new", "Current job")];
   assert.deepEqual(checkStateViewZeroDiff({ baseline, annotated: withTransition }), {
     ok: true,
-    reason: "unchanged",
+    reason: "not_applicable",
   });
 });
 
@@ -133,4 +134,60 @@ test("inputs are not mutated", () => {
   checkStateViewZeroDiff({ baseline, annotated });
   assert.deepEqual(baseline, baselineCopy);
   assert.deepEqual(annotated, annotatedCopy);
+});
+
+// Review: a guard referenced only by its own unit test is machinery, not
+// enforcement. These cases run the REAL render/inject pipeline with state
+// views disabled and enabled, then assert the promise through the guard, so a
+// change to renderStateViewLine or injectStateViewLines that perturbs a
+// current-only result set fails here.
+test("the real inject pipeline is zero-diff for a current-only result set", () => {
+  const results = [
+    { memoryId: "m-1", text: "the API limit is 100/min", stateLabel: "current" as const },
+    { memoryId: "m-2", text: "we chose SQLite", stateLabel: "current" as const },
+  ];
+  const baselineText = injectStateViewLines(results, { enabled: false });
+  const annotatedText = injectStateViewLines(results, { enabled: true });
+
+  const check = checkStateViewZeroDiff({
+    baseline: results.map((result, i) => ({
+      memoryId: result.memoryId,
+      text: baselineText[i]!,
+      stateLabel: "current",
+    })),
+    annotated: results.map((result, i) => ({
+      memoryId: result.memoryId,
+      text: annotatedText[i]!,
+      stateLabel: result.stateLabel,
+    })),
+  });
+  assert.deepEqual(check, { ok: true, reason: "verified" });
+});
+
+test("the real pipeline does annotate once a historical item qualifies", () => {
+  const results = [
+    { memoryId: "m-1", text: "we use PostgreSQL", stateLabel: "current" as const },
+    {
+      memoryId: "m-0",
+      text: "we use SQLite",
+      stateLabel: "historical" as const,
+      supersededAt: "2026-08-01",
+      supersededBy: "m-1",
+    },
+  ];
+  const annotatedText = injectStateViewLines(results, { enabled: true });
+  // Sanity that the pipeline really changes historical rows, so the zero-diff
+  // assertion above is not passing because rendering is a no-op everywhere.
+  assert.match(annotatedText[1]!, /superseded 2026-08-01 by m-1/);
+
+  const check = checkStateViewZeroDiff({
+    baseline: [{ memoryId: "m-1", text: "we use PostgreSQL", stateLabel: "current" }],
+    annotated: results.map((result, i) => ({
+      memoryId: result.memoryId,
+      text: annotatedText[i]!,
+      stateLabel: result.stateLabel,
+    })),
+  });
+  assert.ok(check.ok, "a qualifying historical item means the promise does not apply");
+  assert.equal(check.ok && check.reason, "not_applicable");
 });

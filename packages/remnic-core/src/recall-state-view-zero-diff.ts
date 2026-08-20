@@ -32,7 +32,7 @@ export interface StateViewLine {
 }
 
 export type ZeroDiffCheck =
-  | { ok: true; reason: "no_historical_items" | "unchanged" }
+  | { ok: true; reason: "verified" | "not_applicable" }
   | { ok: false; error: "current_line_changed"; memoryId: string }
   | { ok: false; error: "order_changed" };
 
@@ -99,7 +99,7 @@ export function checkStateViewZeroDiff(input: {
     (line) => line.stateLabel === "historical" || line.stateLabel === "transition",
   );
   if (hasHistorical) {
-    return { ok: true, reason: "unchanged" };
+    return { ok: true, reason: "not_applicable" };
   }
 
   const baselineText = new Map<string, string>();
@@ -120,5 +120,5 @@ export function checkStateViewZeroDiff(input: {
       return { ok: false, error: "order_changed" };
     }
   }
-  return { ok: true, reason: "no_historical_items" };
+  return { ok: true, reason: "verified" };
 }
