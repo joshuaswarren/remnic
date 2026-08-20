@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile, symlink } from "node:fs/promises";
 import { existsSync, lstatSync, readdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -162,3 +162,79 @@ function collectFiles(root: string): string[] {
   walk(root);
   return out.sort();
 }
+
+test("--namespace cannot escape the namespace root", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-okf-ns-"));
+  const outDir = path.join(await mkdtemp(path.join(os.tmpdir(), "remnic-okf-nsout-")), "bundle");
+  try {
+    await seedStore(memoryDir);
+    // A raw path.join on the operator value used to resolve outside
+    // <memoryDir>/namespaces and export an arbitrary tree.
+    for (const namespace of ["../../..", "../sibling", path.resolve(memoryDir)]) {
+      await assert.rejects(
+        () => exportOkfBundle({ memoryDir, namespace, outDir }),
+        /invalid --namespace/,
+        `namespace ${namespace} must be rejected`,
+      );
+    }
+    assert.equal(existsSync(outDir), false, "a rejected namespace must not create the bundle");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a plain --namespace still exports from the namespace subtree", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-okf-nsok-"));
+  const outDir = path.join(root, "bundle");
+  try {
+    await seedStore(path.join(root, "namespaces", "team-a"));
+    const result = await exportOkfBundle({ memoryDir: root, namespace: "team-a", outDir });
+    assert.ok(result.exported > 0, "namespaced export must find its own memories");
+    assert.ok(existsSync(path.join(outDir, "index.md")));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a leftover backup directory does not block a forced export", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-okf-bk-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-okf-bkout-"));
+  const outDir = path.join(root, "bundle");
+  try {
+    await seedStore(memoryDir);
+    await exportOkfBundle({ memoryDir, outDir });
+    // Simulate a crash between the two publish renames, or any directory a
+    // user happens to own at the old fixed backup path.
+    const stale = `${outDir}.okf-prev`;
+    await mkdir(stale, { recursive: true });
+    await writeFile(path.join(stale, "keep.md"), "stale\n", "utf8");
+
+    const again = await exportOkfBundle({ memoryDir, outDir, force: true });
+    assert.ok(again.exported > 0);
+    assert.ok(existsSync(path.join(outDir, "index.md")), "forced export must republish");
+    assert.equal(existsSync(path.join(stale, "keep.md")), true, "an unrelated directory is left alone");
+    const leftovers = readdirSync(root).filter((name) => name.startsWith("bundle.okf-prev-"));
+    assert.deepEqual(leftovers, [], "each attempt removes its own backup");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("--out that is a file is rejected before anything is written", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-okf-file-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-okf-fileout-"));
+  const outDir = path.join(root, "bundle");
+  try {
+    await seedStore(memoryDir);
+    await writeFile(outDir, "not a directory\n", "utf8");
+    await assert.rejects(
+      () => exportOkfBundle({ memoryDir, outDir, force: true }),
+      /--out exists and is not a directory/,
+    );
+    assert.equal(await readFile(outDir, "utf8"), "not a directory\n", "the file is left untouched");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
+  }
+});
