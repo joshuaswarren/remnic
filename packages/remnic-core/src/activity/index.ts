@@ -20,6 +20,7 @@ export * from "./journal-vault-read.js";
 export { stripRemnicOwnedRegions } from "./journal-strip.js";
 export * from "./memory-gen.js";
 export * from "./privacy.js";
+export * from "./privacy-delete-plan.js";
 export * from "./privacy-status.js";
 export * from "./privacy-window.js";
 export * from "./vault-path.js";
