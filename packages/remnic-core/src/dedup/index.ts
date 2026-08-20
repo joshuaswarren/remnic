@@ -467,3 +467,10 @@ export {
   type MergeDecision,
   type MergeDecisionOptions,
 } from "./merge-decision.js";
+
+export {
+  MERGE_JUDGE_VERDICTS,
+  parseMergeJudgeVerdict,
+  type MergeJudgeVerdictName,
+  type ParseMergeVerdictResult,
+} from "./merge-verdict.js";
