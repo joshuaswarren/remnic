@@ -24,3 +24,4 @@ export * from "./analysis-order.js";
 export * from "./recap-window.js";
 export * from "./analysis-failure.js";
 export * from "./recap-merge-edits.js";
+export * from "./analysis-metadata.js";
