@@ -134,3 +134,22 @@ test("the exported gate registry resists runtime mutation", () => {
     /unknown activity gate/,
   );
 });
+
+// Round 2: an explicit `readonly string[]` widened the union to `string`.
+test("the frozen registry keeps its literal type", () => {
+  const gates: readonly string[] = ACTIVITY_FEATURE_GATES;
+  // Compile-time narrowing is asserted via the resolver's own typing: at
+  // runtime, the frozen array rejects mutation and injection.
+  assert.throws(() => (gates as string[]).push("bogus"), /not extensible|frozen|read only/i);
+});
+
+// Round 2: a present-but-undefined own value is invalid, not absent.
+test("an explicitly undefined gate value throws rather than reading as false", () => {
+  assert.throws(
+    () => resolveActivityGates({ enabled: true, gates: { analysis: undefined } }),
+    /invalid value for activity gate "analysis"/,
+  );
+  // An absent key is still a legitimate default-false.
+  const resolved = resolveActivityGates({ enabled: true, gates: {} });
+  assert.equal(resolved.analysis, false);
+});

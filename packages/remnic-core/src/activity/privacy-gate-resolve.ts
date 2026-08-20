@@ -10,10 +10,12 @@
 
 import { parsePrivacyEnabled } from "./privacy-enabled.js";
 
-// Frozen: `as const` is a compile-time notion and this array is re-exported
-// through the public activity entry, so a runtime consumer could otherwise
-// push a key into it and have resolveActivityGates accept that key forever.
-export const ACTIVITY_FEATURE_GATES: readonly string[] = Object.freeze([
+// Frozen at runtime AND still literal-typed: `Object.freeze` preserves the
+// `as const` tuple, so ActivityFeatureGate stays a five-member union for
+// TypeScript consumers while a JavaScript consumer cannot push a key into
+// the array and have resolveActivityGates accept it forever. An explicit
+// `readonly string[]` annotation would widen the union back to `string`.
+export const ACTIVITY_FEATURE_GATES = Object.freeze([
   "analysis",
   "journal",
   "weekly",
@@ -45,7 +47,7 @@ export function resolveActivityGates(input: {
   }
   if (rawGates) {
     for (const key of Object.keys(rawGates)) {
-      if (!ACTIVITY_FEATURE_GATES.includes(key)) {
+      if (!(ACTIVITY_FEATURE_GATES as readonly string[]).includes(key)) {
         throw new TypeError(
           `unknown activity gate "${key}"; allowed gates: ${ACTIVITY_FEATURE_GATES.join(", ")}`,
         );
@@ -62,10 +64,13 @@ export function resolveActivityGates(input: {
     // "analysis" never reaches the unknown-key check. Reading it here anyway
     // would let a gate object with an altered prototype enable a gate the
     // caller never set: read own properties only.
-    const raw = rawGates !== undefined && Object.hasOwn(rawGates, gate)
-      ? rawGates[gate]
-      : undefined;
-    result[gate] = raw === undefined ? false : parseGateValue(gate, raw);
+    // A PRESENT own key whose value is undefined is not the same as an
+    // absent key: composed config objects often carry explicit undefined,
+    // and the API promises to throw for invalid values, so present-but-
+    // undefined goes through parseGateValue (which refuses it) rather than
+    // silently reading as false.
+    const present = rawGates !== undefined && Object.hasOwn(rawGates, gate);
+    result[gate] = present ? parseGateValue(gate, (rawGates as Record<string, unknown>)[gate]) : false;
   }
   if (!master) {
     for (const gate of ACTIVITY_FEATURE_GATES) {
