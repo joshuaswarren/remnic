@@ -1,21 +1,24 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildAnalysisRunMetadata } from "./analysis-metadata.js";
+import {
+  ANALYSIS_METADATA_MAX_FIELD_LENGTH,
+  buildAnalysisRunMetadata,
+} from "./analysis-metadata.js";
 
-const valid = {
-  provider: "ollama",
-  model: "llama",
-  promptVersion: "1",
-  observationCount: 40,
+const VALID = {
+  provider: "openai",
+  model: "gpt-5.2",
+  promptVersion: "timeline-analysis.v2",
+  observationCount: 12,
 };
 
-test("valid metadata round-trips exactly", () => {
-  assert.deepEqual(buildAnalysisRunMetadata(valid), valid);
-});
+const STRING_FIELDS = ["provider", "model", "promptVersion"] as const;
 
-test("result has exactly the four documented keys", () => {
-  assert.deepEqual(Object.keys(buildAnalysisRunMetadata(valid)).sort(), [
+test("a valid record round-trips with exactly the documented keys", () => {
+  const result = buildAnalysisRunMetadata(VALID);
+  assert.deepEqual(result, VALID);
+  assert.deepEqual(Object.keys(result).sort(), [
     "model",
     "observationCount",
     "promptVersion",
@@ -23,68 +26,122 @@ test("result has exactly the four documented keys", () => {
   ]);
 });
 
-test("blank or whitespace-padded provider/model/promptVersion throws", () => {
-  for (const field of ["provider", "model", "promptVersion"] as const) {
-    for (const bad of ["", "   ", " ollama ", "\tollama", "ollama\t"]) {
+test("real provider and model slugs are accepted", () => {
+  for (const model of ["gpt-5.2", "claude-4_1", "anthropic/claude-4", "llama3:8b", "o1"]) {
+    assert.equal(buildAnalysisRunMetadata({ ...VALID, model }).model, model);
+  }
+  for (const promptVersion of ["v3", "2026-08-01", "timeline.v2"]) {
+    assert.equal(
+      buildAnalysisRunMetadata({ ...VALID, promptVersion }).promptVersion,
+      promptVersion,
+    );
+  }
+});
+
+// The guarantee this record makes is that it cannot carry content. A length
+// cap does not deliver that: a short single-line string is happily prose.
+test("prose is rejected even when short and single-line", () => {
+  for (const field of STRING_FIELDS) {
+    for (const prose of [
+      "Summarize this user's activity",
+      "The user said they were tired",
+      "sk-abc123 secret token",
+    ]) {
       assert.throws(
-        () => buildAnalysisRunMetadata({ ...valid, [field]: bad }),
-        (error: unknown) => error instanceof RangeError && error.message.includes(field),
-        `${field}=${JSON.stringify(bad)} must throw`,
+        () => buildAnalysisRunMetadata({ ...VALID, [field]: prose }),
+        /must be an identifier/,
+        `${field} must reject ${JSON.stringify(prose)}`,
       );
     }
   }
 });
 
-test("non-string provider throws RangeError naming the field", () => {
+test("every line-break character is rejected, including U+2028 and U+2029", () => {
+  for (const field of STRING_FIELDS) {
+    for (const sep of ["\n", "\r", "\u2028", "\u2029"]) {
+      assert.throws(
+        () => buildAnalysisRunMetadata({ ...VALID, [field]: `openai${sep}gpt` }),
+        /must not contain a line break/,
+      );
+    }
+  }
+});
+
+test("blank, padded, and non-string values are rejected", () => {
+  for (const field of STRING_FIELDS) {
+    assert.throws(() => buildAnalysisRunMetadata({ ...VALID, [field]: "" }), /must not be empty/);
+    assert.throws(
+      () => buildAnalysisRunMetadata({ ...VALID, [field]: "   " }),
+      /must be an identifier/,
+    );
+    // Validate the exact value: a padded identifier is not trimmed into validity.
+    assert.throws(
+      () => buildAnalysisRunMetadata({ ...VALID, [field]: " openai" }),
+      /must be an identifier/,
+    );
+    assert.throws(
+      () => buildAnalysisRunMetadata({ ...VALID, [field]: 42 as unknown as string }),
+      /must be a string; received number/,
+    );
+  }
+});
+
+test("the field length cap is enforced at the boundary", () => {
+  const max = "a".repeat(ANALYSIS_METADATA_MAX_FIELD_LENGTH);
+  assert.equal(buildAnalysisRunMetadata({ ...VALID, model: max }).model, max);
   assert.throws(
-    () => buildAnalysisRunMetadata({ ...valid, provider: 42 as unknown as string }),
-    (error: unknown) => error instanceof RangeError && error.message.includes("provider"),
+    () => buildAnalysisRunMetadata({ ...VALID, model: `${max}a` }),
+    /is too long/,
   );
 });
 
-test("embedded newline in provider/model/promptVersion throws /newline/", () => {
-  for (const field of ["provider", "model", "promptVersion"] as const) {
-    for (const bad of ["two\nlines", "cr\rreturn", "end\n", "\rstart"]) {
-      assert.throws(
-        () => buildAnalysisRunMetadata({ ...valid, [field]: bad }),
-        /newline/,
-        `${field}=${JSON.stringify(bad)} must match /newline/`,
-      );
-    }
-  }
-});
-
-test("201-character value throws /too long/; 200 is accepted", () => {
-  const twoHundred = "a".repeat(200);
-  const twoHundredOne = "a".repeat(201);
-  for (const field of ["provider", "model", "promptVersion"] as const) {
+test("observationCount accepts 0 and rejects every non-count", () => {
+  assert.equal(buildAnalysisRunMetadata({ ...VALID, observationCount: 0 }).observationCount, 0);
+  for (const bad of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
     assert.throws(
-      () => buildAnalysisRunMetadata({ ...valid, [field]: twoHundredOne }),
-      /too long/,
-      `${field} of 201 chars must match /too long/`,
-    );
-  }
-  assert.equal(buildAnalysisRunMetadata({ ...valid, provider: twoHundred }).provider, twoHundred);
-  assert.equal(buildAnalysisRunMetadata({ ...valid, model: twoHundred }).model, twoHundred);
-  assert.equal(
-    buildAnalysisRunMetadata({ ...valid, promptVersion: twoHundred }).promptVersion,
-    twoHundred,
-  );
-});
-
-test("observationCount 0 is accepted; invalid counts throw /observationCount/", () => {
-  assert.equal(buildAnalysisRunMetadata({ ...valid, observationCount: 0 }).observationCount, 0);
-  for (const bad of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
-    assert.throws(
-      () => buildAnalysisRunMetadata({ ...valid, observationCount: bad }),
-      /observationCount/,
-      `observationCount=${bad} must throw`,
+      () => buildAnalysisRunMetadata({ ...VALID, observationCount: bad }),
+      /observationCount must be a non-negative integer/,
     );
   }
 });
 
-test("input object is not mutated", () => {
-  const input = { ...valid };
-  buildAnalysisRunMetadata(input);
-  assert.deepEqual(input, valid);
+// An error message is a log line. A caller that mis-passes prompt text or a
+// secret must not have it echoed there through the failure path.
+test("a rejected value is never echoed in the error message", () => {
+  const secret = "sk-live-0123456789abcdef";
+  assert.throws(
+    () => buildAnalysisRunMetadata({ ...VALID, provider: `${secret} leaked` }),
+    (error: unknown) => {
+      assert.ok(error instanceof RangeError);
+      assert.equal(error.message.includes(secret), false, "message must not echo the value");
+      return true;
+    },
+  );
+  const circular: Record<string, unknown> = {};
+  circular.self = circular;
+  assert.throws(
+    () =>
+      buildAnalysisRunMetadata({
+        ...VALID,
+        observationCount: circular as unknown as number,
+      }),
+    (error: unknown) => {
+      // JSON.stringify would throw a TypeError here instead of the intended
+      // RangeError, and would echo content for a plain object.
+      assert.ok(error instanceof RangeError);
+      assert.equal(error.message.includes("self"), false);
+      return true;
+    },
+  );
+  assert.throws(
+    () =>
+      buildAnalysisRunMetadata({
+        ...VALID,
+        observationCount: 10n as unknown as number,
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof RangeError, "a bigint must not escape as a TypeError");
+      return true;
+    },
+  );
 });
