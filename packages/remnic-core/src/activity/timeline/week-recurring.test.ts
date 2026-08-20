@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   DEFAULT_RECURRENCE_MIN_DAYS,
+  MIN_RECURRENCE_MIN_DAYS,
   findRecurringPatterns,
   type WeekDayOccurrence,
 } from "./week-recurring.js";
@@ -70,8 +71,8 @@ test("keys are compared trimmed and case-sensitively", () => {
   assert.deepEqual(result, [{ key: "code", dayCount: 3, totalDurationMs: 300 }]);
 });
 
-test("minDays must be an integer >= 1", () => {
-  for (const bad of [0, -3, 1.5]) {
+test("minDays must be an integer >= MIN_RECURRENCE_MIN_DAYS", () => {
+  for (const bad of [0, 1, -3, 1.5]) {
     assert.throws(
       () => findRecurringPatterns({ occurrences: [], minDays: bad }),
       rangeErrorMatching(/minDays/),
@@ -80,17 +81,23 @@ test("minDays must be an integer >= 1", () => {
   assert.doesNotThrow(() =>
     findRecurringPatterns({
       occurrences: [{ date: "2026-08-10", key: "code", durationMs: 1 }],
-      minDays: 1,
+      minDays: MIN_RECURRENCE_MIN_DAYS,
     }),
   );
 });
 
-test("minDays 1 reports every non-blank key", () => {
-  const result = findRecurringPatterns({
-    occurrences: [{ date: "2026-08-10", key: "code", durationMs: 5 }],
-    minDays: 1,
-  });
-  assert.deepEqual(result, [{ key: "code", dayCount: 1, totalDurationMs: 5 }]);
+// minDays 1 would make a single-day key "recurring", which is the invariant
+// this helper exists to enforce — configuration must not be able to disable it.
+test("minDays 1 is refused rather than reporting one-off keys", () => {
+  assert.throws(
+    () =>
+      findRecurringPatterns({
+        occurrences: [{ date: "2026-08-10", key: "code", durationMs: 5 }],
+        minDays: 1,
+      }),
+    rangeErrorMatching(/minDays/),
+  );
+  assert.equal(MIN_RECURRENCE_MIN_DAYS, 2);
 });
 
 test("durationMs must be a finite number >= 0", () => {
