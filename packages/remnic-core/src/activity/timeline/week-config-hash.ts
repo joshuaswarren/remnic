@@ -42,10 +42,14 @@ export function computeWeeklyConfigHash(input: WeeklyConfigInput): string {
   if (typeof input !== "object" || input === null) {
     throw new RangeError("input must be a WeeklyConfigInput object");
   }
-  const timezone = requireNonBlank(input.timezone, "timezone");
-  // Same IANA check the activity config and weekly builder apply, so an
-  // unusable timezone cannot acquire a snapshot identity here.
-  assertValidTimezone(timezone);
+  const rawTimezone = requireNonBlank(input.timezone, "timezone");
+  assertValidTimezone(rawTimezone);
+  // Canonicalize before hashing: `utc` and `UTC` are the same zone, and
+  // `US/Eastern` is an alias of `America/New_York`. Hashing the raw string
+  // gives two callers two identities for one zone, which would fork one
+  // snapshot history on a harmless casing or alias change.
+  const timezone = new Intl.DateTimeFormat("en-US", { timeZone: rawTimezone })
+    .resolvedOptions().timeZone;
   const weekStartsOn = requireNonBlank(input.weekStartsOn, "weekStartsOn");
   if (!(WEEK_START_DAYS as readonly string[]).includes(weekStartsOn)) {
     throw new RangeError(

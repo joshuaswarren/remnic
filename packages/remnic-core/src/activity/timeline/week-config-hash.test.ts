@@ -184,3 +184,24 @@ test("weekStartsOn must be a known weekday", () => {
     );
   }
 });
+
+// Review round 2: equivalent zone identifiers must not fork one snapshot
+// history. Canonicalization happens before hashing.
+test("equivalent timezone identifiers hash identically", () => {
+  const base = { weekStartsOn: "monday", categories: [{ id: "c", name: "Code" }] };
+  assert.equal(
+    computeWeeklyConfigHash({ ...base, timezone: "utc" }),
+    computeWeeklyConfigHash({ ...base, timezone: "UTC" }),
+    "casing is not a semantic change",
+  );
+  assert.equal(
+    computeWeeklyConfigHash({ ...base, timezone: "US/Eastern" }),
+    computeWeeklyConfigHash({ ...base, timezone: "America/New_York" }),
+    "an alias is not a semantic change",
+  );
+  assert.notEqual(
+    computeWeeklyConfigHash({ ...base, timezone: "UTC" }),
+    computeWeeklyConfigHash({ ...base, timezone: "America/New_York" }),
+    "genuinely different zones still differ",
+  );
+});
