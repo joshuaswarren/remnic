@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { Orchestrator, parseConfig, resolveRemnicConfigRecord, type PluginConfig } from "@remnic/core";
 import { exportOkfBundle, parseIncludeStatus } from "@remnic/core/export-okf";
 import { resolveConfigPath } from "../index.js";
-import { redactConfigForLog } from "../redact-config.js";
+import { describeConfigShape, formatConfigShape } from "../describe-config-shape.js";
 
 function takeFlag(rest: string[], name: string): string | undefined {
   const index = rest.indexOf(name);
@@ -40,12 +40,13 @@ export async function runExportOkfBinaryCommand(rest: string[]): Promise<void> {
       // parseConfig error strings embed raw config values (unresolved ${...}
       // placeholder text from key material, JSON.stringify'd rejects), so
       // err.message must not reach console output (CodeQL js/clear-text-
-      // logging). The key-redacted config keeps the diagnostic value:
-      // operators still see every field except secret-named ones.
+      // logging). A redactor is not enough either: taint analysis cannot see
+      // through it, and a key pattern is only as complete as its last edit.
+      // The config's SHAPE carries the diagnosis without any value.
       console.error(
-        `export okf: failed to load config at ${configPath} (${err instanceof Error ? err.name : "unknown error"})`,
+        `export-okf: failed to load config at ${configPath} (${err instanceof Error ? err.name : "unknown error"})`,
       );
-      console.error(JSON.stringify(redactConfigForLog(rawConfig), null, 2));
+      console.error(formatConfigShape(describeConfigShape(rawConfig)));
       process.exitCode = 1;
       return;
     }
