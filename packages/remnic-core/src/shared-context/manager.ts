@@ -575,24 +575,32 @@ export class SharedContextManager {
     supersedes?: string;
     /**
      * Server-resolved identity of the caller, supplied by the access
-     * surface (issue #1957 review). When present it IS the acting agent and
-     * the envelope origin; a disagreeing caller-supplied `agentId` is
+     * surface (issue #1957 review). When present it IS both the producer
+     * and the envelope origin; a disagreeing caller-supplied `agentId` is
      * rejected so no caller can publish as another agent.
      */
     authenticatedIdentity?: string;
+    /**
+     * Server-owned origin token for a write that crosses an external
+     * boundary but resolved no identity (issue #1957 review round 4).
+     * Stamped as the envelope origin (`sharedBy`); the caller label stays
+     * the producer so grouping never collapses.
+     */
+    unattributedOrigin?: string;
   }): Promise<string> {
-    const agentId = resolveWriteOrigin({
+    const identity = resolveWriteOrigin({
       agentId: opts.agentId,
       authenticatedIdentity: opts.authenticatedIdentity,
+      unattributedOrigin: opts.unattributedOrigin,
     });
     const createdAt = opts.createdAt ?? new Date();
     const date = ymd(createdAt);
     const time = createdAt.toISOString().slice(11, 19).replace(/:/g, "");
     const slug = safeSlug(opts.title);
-    const agentPathSegment = safePathSegment(agentId, "agentId");
+    const agentPathSegment = safePathSegment(identity.agent, "agentId");
 
     const envelope = composeWriteEnvelope({
-      agentId,
+      origin: identity.origin,
       authority: opts.authority,
       expiresAt: opts.expiresAt,
       supersedes: opts.supersedes,
@@ -605,7 +613,7 @@ export class SharedContextManager {
     const body = [
       "---",
       "kind: agent_output",
-      `agent: ${formatFrontmatterScalar(agentId)}`,
+      `agent: ${formatFrontmatterScalar(identity.agent)}`,
       `createdAt: ${createdAt.toISOString()}`,
       `title: ${formatFrontmatterScalar(opts.title.replace(/\n/g, " ").slice(0, 200))}`,
       ...envelopeToFrontmatterLines(envelope),
@@ -627,7 +635,7 @@ export class SharedContextManager {
       }
     }
 
-    throw new Error(`Unable to allocate unique shared-context output path for ${agentId}`);
+    throw new Error(`Unable to allocate unique shared-context output path for ${identity.agent}`);
   }
 
   async appendFeedback(entry: SharedFeedbackEntry): Promise<void> {

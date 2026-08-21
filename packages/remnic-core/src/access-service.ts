@@ -33,6 +33,7 @@ import { readAggregateExtractionWatermark } from "./orchestration/extraction-wat
 import { ReplicaDivergenceMonitor } from "./replica-divergence.js";
 import type { ResolveSecretRefFn } from "./resolve-auth-token.js";
 import { buildAccessWriteRequestFingerprint, buildObserveRequestFingerprint } from "./write-envelope.js";
+import { UNATTRIBUTED_ACCESS_WRITE_ORIGIN } from "./shared-context/envelope-io.js";
 export type { EngramAccessHealthResponse, EngramAccessQmdCollectionState, EngramAccessQmdHealthResponse };
 import { AccessAuditAdapter, type AccessAuditConfig, type AccessAuditResult } from "./access-audit.js";
 import {
@@ -4442,9 +4443,15 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
         agentId: request.agentId,
         title: request.title,
         content: request.content,
-        // Governance origin comes from the authenticated principal, so a
-        // caller cannot publish an item attributed to another agent.
-        authenticatedIdentity: request.principal,
+        // The origin is server-owned in BOTH cases (issue #1957 review
+        // round 4): the authenticated principal when one resolved, and a
+        // reserved unattributed token otherwise — a principal-less
+        // authenticated request must never stamp the client's `agentId`
+        // as audit metadata. The client label survives only as the
+        // producer, which feeds grouping and display, never authority.
+        ...(request.principal
+          ? { authenticatedIdentity: request.principal }
+          : { unattributedOrigin: UNATTRIBUTED_ACCESS_WRITE_ORIGIN }),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

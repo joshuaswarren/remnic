@@ -1,9 +1,13 @@
 /**
  * Regression: shared-context write origin is server-derived (issue #1957
- * review finding). A caller-supplied `agentId` must never decide the
+ * review rounds 2-4). A caller-supplied `agentId` must never decide the
  * governance envelope's origin: when the surface resolved an authenticated
- * identity, that identity is stamped as `sharedBy`, and an `agentId` naming a
- * different agent is rejected instead of silently overridden.
+ * identity, that identity is stamped as `sharedBy`, and an `agentId` naming
+ * a different agent is rejected instead of silently overridden. An
+ * authenticated access write that resolved NO principal (round 4) stamps the
+ * reserved server-owned `unattributed:access-surface` origin — never the
+ * client's `agentId`, which survives only as the producer label that feeds
+ * grouping and display.
  *
  * Exercises the REAL manager write path, the REAL access-service adapter, and
  * the REAL operation registry — no stubbed provenance.
@@ -87,10 +91,33 @@ test("access service: the authenticated principal, not the request, stamps the o
     agentId: "real-principal",
     title: "Owned",
     content: "x",
+
     principal: "real-principal",
   })) as { written: boolean; path: string };
   assert.equal(result.written, true);
   assert.match(await readFile(result.path, "utf-8"), /^sharedBy: "real-principal"$/m);
+});
+
+test("access service: a principal-less authenticated write never stamps the caller's agentId as sharedBy", async (t) => {
+  const { manager, dir, config } = await makeManager();
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const service = new EngramAccessService({ config, sharedContext: manager } as unknown as Orchestrator);
+
+  // The default request-identity path: bearer-authenticated surface, no
+  // configured principal, no adapter identity — principal resolves to
+  // undefined. The client's `agentId` must not become audit metadata.
+  const result = (await service.sharedContextWriteOutput({
+    agentId: "claimed-agent",
+    title: "Principal-less",
+    content: "x",
+  })) as { written: boolean; path: string };
+  assert.equal(result.written, true);
+  const raw = await readFile(result.path, "utf-8");
+  assert.match(raw, /^sharedBy: "unattributed:access-surface"$/m);
+  assert.doesNotMatch(raw, /^sharedBy: "claimed-agent"$/m);
+  // The producer label survives for grouping/display — it is not audit
+  // metadata and collapsing it would erase multi-agent overlaps.
+  assert.match(raw, /^agent: "claimed-agent"$/m);
 });
 
 test("operation: shared_context_write_output forwards the authenticated principal", async () => {

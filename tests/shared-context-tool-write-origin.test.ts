@@ -3,14 +3,12 @@
  * RUNTIME agent id as the shared-context envelope origin (issue #1957 review
  * round 2), and still writes on hosts that expose none (round 3).
  *
- * The round-1 fix passed `agentAccessHttp.principal`, which belongs to the
- * separate external HTTP bridge: unset (the default) it left the
- * model-supplied `agentId` as the origin — a provenance-spoofing hole — and
- * configured for the bridge it rejected every legitimate tool write. The
- * round-2 fix then refused every write on a host without
- * `api.runtime.agent.id`, which is optional in the SDK and absent on older
- * hosts inside the supported compatibility window — a permanent refusal on a
- * previously working tool.
+ * Round 4 splits origin from producer: on a host without a runtime agent id
+ * the reserved token is the ORIGIN (`sharedBy`, governance audit) while the
+ * model-supplied `agentId` stays the PRODUCER (`agent` frontmatter, on-disk
+ * segment, cross-signals grouping key). Round 3 had collapsed both onto the
+ * token, which assigned every writer the same agent and erased multi-agent
+ * overlaps from `synthesizeCrossSignals`.
  *
  * Exercises the REAL `registerTools` registration and the REAL
  * `SharedContextManager` write path. No stubbed provenance.
@@ -117,7 +115,8 @@ test("a model-supplied agentId naming another agent cannot become the origin", a
   assert.deepEqual(await readdir(outputsDir), []);
 });
 
-test("a host with no runtime agent id still writes, under a non-attributable origin", async (t) => {
+
+test("a host with no runtime agent id writes under a non-attributable origin, keeping the producer label", async (t) => {
   const { tool, outputsDir, cleanup } = await setup(undefined);
   t.after(cleanup);
 
@@ -127,12 +126,14 @@ test("a host with no runtime agent id still writes, under a non-attributable ori
   const fp = text.match(/Wrote shared agent output: (.+)/)?.[1];
   assert.ok(fp, `expected a written path on an older host, got: ${text}`);
 
-  // The write lands, but the model-supplied "oracle" is discarded: neither the
-  // origin nor the on-disk layout attributes the item to any real agent.
+  // The governance origin names no agent (audit cannot be attributed to the
+  // model's claim), but the producer label is NOT discarded: it drives the
+  // on-disk layout and cross-signals grouping. Round 3 collapsed both fields
+  // onto the token and merged every writer into one producer.
   const raw = await readFile(fp!, "utf-8");
   assert.match(raw, /^sharedBy: "unattributed:openclaw-host"$/m);
-  assert.doesNotMatch(raw, /oracle/);
-  assert.deepEqual(await readdir(outputsDir), [encodeURIComponent(UNATTRIBUTED_TOOL_WRITE_ORIGIN)]);
+  assert.match(raw, /^agent: "oracle"$/m);
+  assert.deepEqual(await readdir(outputsDir), ["oracle"]);
 });
 
 test("the reserved unattributed origin cannot be claimed on a host that has an agent id", async (t) => {
@@ -149,4 +150,20 @@ test("the reserved unattributed origin cannot be claimed on a host that has an a
   assert.match(text, /shared_context_write_output error:/);
   assert.match(text, /write origin mismatch/);
   assert.deepEqual(await readdir(outputsDir), []);
+});
+
+test("two distinct producers on a host without a runtime agent id stay distinct writers", async (t) => {
+  const { tool, outputsDir, cleanup } = await setup(undefined);
+  t.after(cleanup);
+
+  for (const agentId of ["oracle", "generalist"]) {
+    const text = toolText(
+      await tool.execute(`tc-5-${agentId}`, { agentId, title: `Findings ${agentId}`, content: "body" }),
+    );
+    assert.match(text, /Wrote shared agent output:/, `${agentId} must write on an older host`);
+  }
+
+  // One shared origin class, two distinct producers — the precondition
+  // `synthesizeCrossSignals` needs to keep multi-agent overlaps alive.
+  assert.deepEqual(await readdir(outputsDir).then((e) => e.sort()), ["generalist", "oracle"]);
 });

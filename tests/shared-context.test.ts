@@ -231,7 +231,7 @@ test("shared context output rejects agent ids with line breaks", async () => {
       title: "Invalid Agent",
       content: "Hello world",
     }),
-    /agentId must not contain line breaks/,
+    /must be a non-blank single-line string/,
   );
 });
 
@@ -376,6 +376,47 @@ test("cross signals preserve original agent ids from encoded output paths", asyn
     ["research bot", "research bot", "research bot"],
   );
   assert.equal(result.report.overlaps.length, 0);
+});
+
+test("cross signals keep distinct producers under a shared unattributed origin", async () => {
+  const memoryDir = tmpDir("engram-sc-mem");
+  const sharedDir = tmpDir("engram-shared");
+  await mkdir(memoryDir, { recursive: true });
+
+  const cfg = minimalConfig(memoryDir, sharedDir);
+  const m = new SharedContextManager(cfg);
+  await m.ensureStructure();
+  const createdAt = new Date("2026-05-19T10:11:12.000Z");
+
+  // Two writers on a host/surface that resolved no server identity: both
+  // stamp the same reserved origin token, and their producer labels are all
+  // that distinguishes them. Collapsing the producer onto the token (issue
+  // #1957 review round 3 regression) merged them into one agent and erased
+  // the multi-agent overlap below.
+  for (const agentId of ["oracle", "generalist"]) {
+    await m.writeAgentOutput({
+      agentId,
+      title: "Shared topic report",
+      content: "quokka-signin rollout findings",
+      createdAt,
+      unattributedOrigin: "unattributed:openclaw-host",
+    });
+  }
+
+  const result = await m.synthesizeCrossSignals({ date: "2026-05-19" });
+
+  assert.deepEqual(
+    result.report.sources.map((source) => source.agent).sort(),
+    ["generalist", "oracle"],
+  );
+  assert.ok(
+    result.report.sources.every((source) => source.sharedBy === "unattributed:openclaw-host"),
+    "both outputs carry the reserved origin",
+  );
+  const overlap = result.report.overlaps.find((entry) => entry.agents.includes("oracle"));
+  assert.ok(overlap, "the multi-agent overlap must survive shared-origin writes");
+  assert.equal(overlap.agentCount, 2);
+  assert.deepEqual(overlap.agents, ["generalist", "oracle"]);
 });
 
 test("cross signals collapse feedback markdown control text to one rendered line", async () => {

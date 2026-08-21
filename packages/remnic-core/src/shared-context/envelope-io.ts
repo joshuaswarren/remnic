@@ -19,8 +19,8 @@ import { parseEnvelopeAt } from "./envelope-at.js";
 import { parseEnvelopeId } from "./envelope-id.js";
 
 export interface ComposeWriteEnvelopeInput {
-  /** Acting agent id. Becomes the envelope origin (`sharedBy`). */
-  agentId: string;
+  /** Governance origin. Becomes the envelope's `sharedBy`. */
+  origin: string;
   /** Requested authority class. Unrecognized values throw. */
   authority?: string;
   /** Optional ISO-8601 expiry. Invalid timestamps throw. */
@@ -58,35 +58,84 @@ function optionalEnvelopeId(supersedes: string | undefined): string | undefined 
 }
 
 /**
- * Resolve the acting agent identity for a shared-context write.
- *
- * Provenance is server-derived, never model-chosen: when the surface
- * resolved an authenticated identity, that identity IS the write's agent
- * (and therefore the envelope origin), and a caller-supplied `agentId`
- * claiming a different agent is REJECTED rather than silently overridden,
- * so a caller can never publish an item attributed to another agent.
- * Surfaces with no resolvable identity (in-process callers, an
- * unauthenticated local CLI) keep using the supplied agent id.
+ * Reserved governance origin for an authenticated external access write that
+ * resolved no principal (`agentAccessHttp.principal` unset, no adapter
+ * identity). Server-owned: the caller cannot mint or influence it, and the
+ * caller-supplied `agentId` never becomes audit metadata on that path.
  */
-export function resolveWriteOrigin(input: { agentId: string; authenticatedIdentity?: string }): string {
+export const UNATTRIBUTED_ACCESS_WRITE_ORIGIN = "unattributed:access-surface";
+
+export interface ResolvedWriteIdentity {
+  /**
+   * Producer identity: frontmatter `agent`, on-disk segment, and the
+   * cross-signals grouping key. Self-declared by the caller only on
+   * surfaces that resolved no server identity; never decides authority.
+   */
+  agent: string;
+  /** Governance origin stamped as the envelope's `sharedBy`. */
+  origin: string;
+}
+
+/**
+ * Resolve the producer identity and governance origin for a shared-context
+ * write. They are different fields with different trust requirements:
+ *
+ * - The origin (`sharedBy`) is audit metadata and is always server-derived.
+ *   When the surface resolved an authenticated identity, that identity IS the
+ *   origin; when it resolved none but the write crosses an external
+ *   boundary, the caller-supplied `unattributedOrigin` token is stamped
+ *   instead — never the caller's value. Only a trusted in-process caller
+ *   (no identity, no token) may stamp its own id as the origin.
+ * - The producer (`agent`) drives grouping and display only. When an
+ *   authenticated identity exists it is also the producer, and a
+ *   caller-supplied `agentId` naming a different agent is REJECTED, so a
+ *   caller can never publish an item attributed to another agent. Without a
+ *   server identity the caller's label stands as the producer — collapsing
+ *   it instead would merge every writer into one agent and erase
+ *   multi-agent overlaps from `synthesizeCrossSignals`.
+ */
+export function resolveWriteOrigin(input: {
+  agentId: string;
+  authenticatedIdentity?: string;
+  unattributedOrigin?: string;
+}): ResolvedWriteIdentity {
   const identity = input.authenticatedIdentity?.trim() ?? "";
-  if (identity.length === 0) return input.agentId;
-  const requested = input.agentId.trim();
-  if (requested.length > 0 && requested !== identity) {
-    throw new Error(
-      `shared-context write origin mismatch: authenticated identity ${JSON.stringify(identity)} cannot publish as ${JSON.stringify(requested)}`,
-    );
+  if (identity.length > 0) {
+    const requested = input.agentId.trim();
+    if (requested.length > 0 && requested !== identity) {
+      throw new Error(
+        `shared-context write origin mismatch: authenticated identity ${JSON.stringify(identity)} cannot publish as ${JSON.stringify(requested)}`,
+      );
+    }
+    return { agent: identity, origin: identity };
   }
-  return identity;
+  const unattributed = input.unattributedOrigin?.trim() ?? "";
+  if (unattributed.length > 0) {
+    const label = input.agentId.trim();
+    return {
+      agent: label.length > 0 ? requireProducer(label) : requireProducer(unattributed),
+      origin: requireProducer(unattributed),
+    };
+  }
+  const actor = requireProducer(input.agentId);
+  return { agent: actor, origin: actor };
+}
+
+function requireProducer(value: string): string {
+  const parsed = parseEnvelopeActor(value);
+  if (!parsed.ok) {
+    throw new Error(`shared-context write producer must be a non-blank single-line string (${parsed.error})`);
+  }
+  return parsed.actor;
 }
 
 /**
  * Validate and compose the envelope for a shared-context write.
- * `sharedBy` is stamped from the acting agent id — provenance is derived
- * by the manager, never injected through item content.
+ * `sharedBy` is stamped from the server-derived origin — provenance is
+ * never injected through item content or the caller's producer label.
  */
 export function composeWriteEnvelope(input: ComposeWriteEnvelopeInput): SharedEnvelope {
-  const sharedBy = requireEnvelopeActor(input.agentId);
+  const sharedBy = requireEnvelopeActor(input.origin);
   const expiresAt = optionalEnvelopeAt(input.expiresAt);
   const supersedes = optionalEnvelopeId(input.supersedes);
   return applyDefaultEnvelope(
