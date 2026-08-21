@@ -2,6 +2,7 @@ import { coerceBooleanLike, coerceNumber } from "../connectors/coerce.js";
 import { assertValidTimezone } from "./digest.js";
 import { resolveJournalSource } from "./journal-source.js";
 import { validateVaultNoteTemplate } from "./vault-path.js";
+import { validateRegionName } from "./vault-region.js";
 import type {
   ActivityConfig,
   ActivityExtractionMode,
@@ -402,6 +403,15 @@ function parseVaultTarget(
   const section = entry.section === undefined ? fallback.section : entry.section;
   if (typeof section !== "string" || section.trim().length === 0 || section !== section.trim()) {
     throw new RangeError(`activity.timeline.vault.publish.${kind}.section must be a non-empty trimmed string`);
+  }
+  // The accepted config domain must equal what the publisher accepts: a name
+  // containing `-->` or a line break passes the trimmed-string check above
+  // but is rejected downstream by `publishVaultNote`, which would turn an
+  // apparently valid config into a runtime failure.
+  if (!validateRegionName(section).ok) {
+    throw new RangeError(
+      `activity.timeline.vault.publish.${kind}.section must not contain a line break or "-->"`,
+    );
   }
   if (target === "weekly" && weeklyNotePath.length === 0) {
     throw new RangeError(

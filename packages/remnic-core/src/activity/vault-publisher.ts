@@ -238,9 +238,9 @@ function applySection(
   freshNote: boolean,
 ): SectionOutcome {
   if (strategy === "markers") {
-    const crossed = findCrossedPair(text);
-    if (crossed !== null) {
-      return { ok: false, outcome: "skipped", reason: `name_mismatch:${crossed.begin}:${crossed.end}` };
+    const mismatch = findMarkerMismatch(text);
+    if (mismatch !== null) {
+      return { ok: false, outcome: "skipped", reason: mismatch };
     }
     const applied = applyManagedRegion(text, { strategy: "markers", name: section.name, content });
     if (applied.ok) return { ok: true, text: applied.text };
@@ -276,31 +276,38 @@ function applySection(
 }
 
 /**
- * A begin marker whose next end marker names a different region is a
- * malformed pair; replacing inside it could clobber another section's
- * bytes. The WHOLE note is scanned: a valid pair only closes the current
- * region and the scan continues, because `applyManagedRegion` pairs a
- * start with the next end of the SAME name, which can span a malformed
- * region and delete every byte in between. A mismatch anywhere refuses the
- * file — ambiguity always resolves to "keep the user's bytes".
+ * Refuse any note whose `remnic:<name>:{start,end}` markers are not a flat
+ * sequence of correctly named pairs. The WHOLE note is scanned, because
+ * `applyManagedRegion` pairs a start with the next end of the SAME name and
+ * would otherwise span a malformed region and delete every byte in between.
+ * Three shapes are malformed:
+ *   - a crossed pair (`start:A` closed by `end:B`)
+ *   - a nested start (`start:A`, `start:B`, `end:A`, `end:B`), where the
+ *     inner region's end is the ONLY end left after A closes, so a
+ *     replacement spans B's start marker and the user bytes around it
+ *   - an orphan end with no open region, which cannot be paired at all
+ * Ambiguity always resolves to "keep the user's bytes".
  */
-function findCrossedPair(text: string): { begin: string; end: string } | null {
+function findMarkerMismatch(text: string): string | null {
   const lines = text.split(/(?<=\n)/);
   let begin: string | null = null;
   for (const line of lines) {
     const trimmed = line.trim();
-    if (begin === null) {
-      const start = START_MARKER_RE.exec(trimmed);
-      if (start) begin = start[1]!;
+    const start = START_MARKER_RE.exec(trimmed);
+    if (start) {
+      const name = start[1]!;
+      if (begin !== null) return `nested_start:${begin}:${name}`;
+      begin = name;
       continue;
     }
     const match = END_MARKER_RE.exec(trimmed);
     if (!match) continue;
     const end = match[1]!;
+    if (begin === null) return `orphan_end:${end}`;
     // A blank marker name cannot be paired at all: refuse rather than let
     // assertBeginEndPair throw out of the publisher.
-    if (begin.trim().length === 0 || end.trim().length === 0) return { begin, end };
-    if (!assertBeginEndPair({ beginName: begin, endName: end }).ok) return { begin, end };
+    if (begin.trim().length === 0 || end.trim().length === 0) return `name_mismatch:${begin}:${end}`;
+    if (!assertBeginEndPair({ beginName: begin, endName: end }).ok) return `name_mismatch:${begin}:${end}`;
     begin = null;
   }
   return null;

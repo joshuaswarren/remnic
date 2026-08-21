@@ -173,3 +173,22 @@ test("activity config rejects a null extractionMode instead of silently defaulti
 test("activity config rejects a null maxMemoriesPerDay instead of silently uncapping", () => {
   assert.throws(() => parseActivityConfig({ maxMemoriesPerDay: null }), /maxMemoriesPerDay/);
 });
+
+test("vault publish section names are rejected at config load when the publisher would reject them", () => {
+  // `Timeline-->` and an embedded newline both pass a trimmed-string check
+  // but break the `<!-- remnic:<name>:start -->` marker, so `publishVaultNote`
+  // throws. The accepted config domain must equal the publisher's.
+  for (const section of ["Timeline-->", "Time\nline"]) {
+    assert.throws(
+      () =>
+        parseActivityConfig({
+          timeline: { vault: { publish: { timeline: { section } } } },
+        }),
+      /publish\.timeline\.section must not contain a line break or "-->"/,
+    );
+  }
+  const ok = parseActivityConfig({
+    timeline: { vault: { publish: { timeline: { section: "Timeline" } } } },
+  });
+  assert.equal(ok.timeline.vault.publish.timeline.section, "Timeline");
+});

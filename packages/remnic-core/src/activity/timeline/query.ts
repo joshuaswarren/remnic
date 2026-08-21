@@ -9,7 +9,9 @@
  * MCP/HTTP and recall injection are later PRs.
  */
 import { parseFlexibleIsoTimestamp } from "../../utils/iso-timestamp.js";
+import type { PluginConfig } from "../../types.js";
 import type { ActivityTimelineQaConfig } from "../types.js";
+import { runTimelinePublishCli } from "./publish-cli.js";
 import type { TimelineCard } from "./types.js";
 
 const RANGE_FORMATS = ["cards", "compact"] as const;
@@ -70,6 +72,8 @@ export interface TimelineCliDeps {
   cards: readonly TimelineQueryCard[] | null;
   qa: ActivityTimelineQaConfig;
   timelineEnabled?: boolean;
+  /** Required for `publish`; range/search never read it. */
+  config?: PluginConfig;
 }
 
 const USAGE = `Usage: timeline <command> [options]
@@ -77,6 +81,7 @@ const USAGE = `Usage: timeline <command> [options]
 Commands:
   range --from <ISO> --to <ISO> [--format cards|compact] [--categories id,id] [--include-distractions]
   search --query <text> [--from <ISO>] [--to <ISO>] [--limit N]
+  publish [--date YYYY-MM-DD] [--what timeline] [--dry-run]
 `;
 
 const VALUE_FLAGS: Record<string, true> = {
@@ -86,8 +91,11 @@ const VALUE_FLAGS: Record<string, true> = {
   "--categories": true,
   "--query": true,
   "--limit": true,
+  "--date": true,
+  "--week": true,
+  "--what": true,
 };
-const BOOLEAN_FLAGS: Record<string, true> = { "--include-distractions": true };
+const BOOLEAN_FLAGS: Record<string, true> = { "--include-distractions": true, "--dry-run": true };
 
 function parseInstant(value: string, label: string): number {
   const ms = parseFlexibleIsoTimestamp(value);
@@ -259,6 +267,26 @@ export async function runTimelineCliCommand(
       io.stdout.write(USAGE);
       return command === undefined ? 1 : 0;
     }
+    // `publish` writes into the user's vault and is not a qa/query surface,
+    // so it dispatches before the qa gate. Its own flags are parsed here to
+    // keep range/search error precedence unchanged.
+    if (command === "publish") {
+      if (deps.config === undefined) {
+        io.stderr.write("timeline publish requires the Remnic config — run `remnic doctor`\n");
+        return 1;
+      }
+      const publishFlags = parseFlags(rest).flags;
+      return runTimelinePublishCli(
+        deps.config,
+        {
+          date: flagString(publishFlags, "--date"),
+          week: flagString(publishFlags, "--week"),
+          what: flagString(publishFlags, "--what"),
+          dryRun: publishFlags.get("--dry-run") === true,
+        },
+        io,
+      );
+    }
     if (deps.timelineEnabled === false || !deps.qa.enabled) {
       io.stderr.write("timeline qa disabled — set activity.timeline.qa.enabled=true\n");
       return 1;
@@ -305,7 +333,7 @@ export async function runTimelineCliCommand(
       io.stdout.write(`${JSON.stringify(result)}\n`);
       return result.ok ? 0 : 1;
     }
-    throw new TypeError(`unknown command ${command} (valid: range, search)`);
+    throw new TypeError(`unknown command ${command} (valid: range, search, publish)`);
   } catch (err) {
     io.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
     return 1;

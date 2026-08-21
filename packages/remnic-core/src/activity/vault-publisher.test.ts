@@ -221,3 +221,60 @@ test("frontmatter updates only match top-level keys, never nested user metadata"
   assert.ok(after.includes("custom:"));
   assert.ok(after.includes("tags: daily-notes"));
 });
+
+test("nested start markers (start:A, start:B, end:A, end:B) refuse the whole note", () => {
+  const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
+  const notePath = path.join(vault, `${DATE}.md`);
+  // Marker order start:timeline, start:standup, end:timeline, end:standup.
+  // A scan that only looks for a mismatched END accepts end:timeline as a
+  // valid close and never sees the orphaned end:standup, so
+  // `applyManagedRegion` pairs start:timeline with end:timeline and deletes
+  // the standup start marker plus every user byte between them.
+  const note = [
+    "<!-- remnic:timeline:start -->",
+    "stale recap",
+    "<!-- remnic:standup:start -->",
+    "standup body the user wrote",
+    "<!-- remnic:timeline:end -->",
+    "user content between the ends",
+    "<!-- remnic:standup:end -->",
+    "",
+  ].join("\n");
+  writeFileSync(notePath, note, "utf8");
+
+  const status = publishVaultNote({
+    vaultPath: vault,
+    notePathTemplate: "{yyyy}-{MM}-{dd}.md",
+    date: DATE,
+    sections: [{ name: "timeline", content: "fresh recap" }],
+  });
+
+  assert.equal(status.results[0]?.outcome, "skipped");
+  assert.match(status.results[0]?.reason ?? "", /nested_start:timeline:standup/);
+  const after = readFileSync(notePath, "utf8");
+  assert.equal(after, note, "every byte of the note is preserved");
+  // Each intervening byte the crossed replacement would have eaten.
+  assert.ok(after.includes("<!-- remnic:standup:start -->"), "inner start marker survives");
+  assert.ok(after.includes("standup body the user wrote"), "inner region body survives");
+  assert.ok(after.includes("user content between the ends"), "text between the ends survives");
+  assert.ok(after.includes("<!-- remnic:standup:end -->"), "inner end marker survives");
+  assert.ok(after.includes("stale recap"), "nothing is published over the stale region");
+});
+
+test("an orphan end marker with no open region refuses the whole note", () => {
+  const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
+  const notePath = path.join(vault, `${DATE}.md`);
+  const note = ["user notes", "<!-- remnic:timeline:end -->", "more user notes", ""].join("\n");
+  writeFileSync(notePath, note, "utf8");
+
+  const status = publishVaultNote({
+    vaultPath: vault,
+    notePathTemplate: "{yyyy}-{MM}-{dd}.md",
+    date: DATE,
+    sections: [{ name: "timeline", content: "fresh recap" }],
+  });
+
+  assert.equal(status.results[0]?.outcome, "skipped");
+  assert.match(status.results[0]?.reason ?? "", /orphan_end:timeline/);
+  assert.equal(readFileSync(notePath, "utf8"), note);
+});
