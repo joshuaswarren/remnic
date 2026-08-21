@@ -28,12 +28,16 @@ export interface ConvergeWatchOutcome {
   cycles: number;
   convergedCycles: number;
   appliedCycles: number;
+  /** Threw, stopped on unresolved conflicts, or completed with failed transfers — every cycle the pair did NOT make progress. `cycles === convergedCycles + appliedCycles + failedCycles` always holds. */
   failedCycles: number;
   lastStatus: ConvergeApplyResult["status"] | "error" | "aborted";
 }
 
 const CONVERGE_WATCH_MIN_INTERVAL_MS = 1000;
 const CONVERGE_WATCH_DEFAULT_INTERVAL_MS = 300_000;
+/** Node clamps a setTimeout delay above 2^31-1 ms to 1ms, which would
+ *  hot-loop the watch — same ceiling guard as replicaPeers (issue #2149). */
+const CONVERGE_WATCH_MAX_INTERVAL_MS = 2_147_483_647;
 
 function sleepAborted(ms: number, signal: AbortSignal): Promise<boolean> {
   return new Promise((resolve) => {
@@ -64,18 +68,11 @@ function sleepAborted(ms: number, signal: AbortSignal): Promise<boolean> {
  * recent real outcome.
  */
 export async function convergeWatch(options: ConvergeWatchOptions): Promise<ConvergeWatchOutcome> {
-  const intervalMs = Math.max(
-    CONVERGE_WATCH_MIN_INTERVAL_MS,
-    options.intervalMs ?? CONVERGE_WATCH_DEFAULT_INTERVAL_MS,
+  const intervalMs = Math.min(
+    CONVERGE_WATCH_MAX_INTERVAL_MS,
+    Math.max(CONVERGE_WATCH_MIN_INTERVAL_MS, options.intervalMs ?? CONVERGE_WATCH_DEFAULT_INTERVAL_MS)
   );
-  const {
-    apply,
-    intervalMs: _intervalMs,
-    maxCycles,
-    onCycle,
-    signal,
-    ...applyOptions
-  } = options;
+  const { apply, intervalMs: _intervalMs, maxCycles, onCycle, signal, ...applyOptions } = options;
 
   const outcome: ConvergeWatchOutcome = {
     cycles: 0,
@@ -90,8 +87,13 @@ export async function convergeWatch(options: ConvergeWatchOptions): Promise<Conv
     try {
       const result = await apply(applyOptions);
       outcome.cycles += 1;
+      // A cycle that stopped on unresolved conflicts or had failed transfers
+      // made no progress — count it as failed so monitoring sees a stuck
+      // pair instead of a string of "applied" successes.
       if (result.converged) outcome.convergedCycles += 1;
-      else outcome.appliedCycles += 1;
+      else if (result.status === "stopped_unresolved_conflicts" || result.transfers.failed > 0) {
+        outcome.failedCycles += 1;
+      } else outcome.appliedCycles += 1;
       outcome.lastStatus = result.status;
       onCycle?.(outcome.cycles, { result });
     } catch (err) {

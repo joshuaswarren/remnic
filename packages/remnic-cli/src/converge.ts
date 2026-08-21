@@ -37,7 +37,7 @@ import {
   type ReconcileManifest,
 } from "@remnic/core/reconcile/manifest.js";
 import { createOfflineStorageIo } from "./offline-storage-io.js";
-import { convergeWatch } from "./converge-watch.js";
+import { convergeWatch, type ConvergeWatchOutcome } from "./converge-watch.js";
 import { resolveAgentAccessAuthToken } from "@remnic/core/resolve-auth-token.js";
 import {
   DEFAULT_PEER_REQUEST_TIMEOUT_MS,
@@ -121,10 +121,7 @@ function parseTombstoneEvidence(content: string): TombstoneEvidence {
   return { contentHashes, fileSha256 };
 }
 
-function tombstonedFileDigests(
-  evidence: TombstoneEvidence,
-  manifest: ReconcileManifest | undefined,
-): Set<string> {
+function tombstonedFileDigests(evidence: TombstoneEvidence, manifest: ReconcileManifest | undefined): Set<string> {
   const result = new Set(evidence.fileSha256);
   for (const file of manifest?.files ?? []) {
     if (file.memory && evidence.contentHashes.has(file.memory.contentHash.toLowerCase())) {
@@ -171,7 +168,6 @@ async function discoverCursorNamespaces(memoryDir: string, peerUrl: string): Pro
   return [...namespaces].sort();
 }
 
-
 export async function computeConvergePlan(options: ConvergePlanOptions = {}): Promise<ReconcilePlan> {
   const baseMap = new Map<string, ReconcileFileState[]>();
   const semanticAgreementMap = new Map<string, ReconcileSemanticAgreement[]>();
@@ -188,7 +184,10 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
   if (options.baseFilesByNamespace) {
     for (const [ns, files] of options.baseFilesByNamespace) {
       namespacesToPlan.add(ns);
-      baseMap.set(ns, files.filter((file) => !isInternalRemnicStatePath(file.path)));
+      baseMap.set(
+        ns,
+        files.filter((file) => !isInternalRemnicStatePath(file.path))
+      );
     }
   }
   if (options.semanticAgreementsByNamespace) {
@@ -200,7 +199,10 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
   if (options.localFilesByNamespace) {
     for (const [ns, files] of options.localFilesByNamespace) {
       namespacesToPlan.add(ns);
-      localMap.set(ns, files.filter((file) => !isInternalRemnicStatePath(file.path)));
+      localMap.set(
+        ns,
+        files.filter((file) => !isInternalRemnicStatePath(file.path))
+      );
     }
   }
   if (options.localTombstonesByNamespace) {
@@ -217,7 +219,10 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
   if (options.peerFilesByNamespace) {
     for (const [ns, files] of options.peerFilesByNamespace) {
       namespacesToPlan.add(ns);
-      peerMap.set(ns, files.filter((file) => !isInternalRemnicStatePath(file.path)));
+      peerMap.set(
+        ns,
+        files.filter((file) => !isInternalRemnicStatePath(file.path))
+      );
     }
   }
   if (options.peerTombstonesByNamespace) {
@@ -319,12 +324,7 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
     }
     const fetchFn = options.fetchImpl ?? globalThis.fetch;
     const timeoutMs = options.peerRequestTimeoutMs ?? DEFAULT_PEER_REQUEST_TIMEOUT_MS;
-    const capabilities = await fetchPeerSyncCapabilities(
-      peerUrl,
-      resolvedToken,
-      fetchFn,
-      timeoutMs,
-    );
+    const capabilities = await fetchPeerSyncCapabilities(peerUrl, resolvedToken, fetchFn, timeoutMs);
     for (const ns of namespacesToPlan) {
       const peerData = await fetchPeerSnapshot(peerUrl, ns, resolvedToken, fetchFn, timeoutMs);
       const streamedManifest = capabilities?.manifestStream
@@ -362,14 +362,7 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
       for (const tombstonePath of TOMBSTONE_PATHS) {
         const state = peerFiles.find((file) => file.path === tombstonePath);
         if (!state) continue;
-        const remote = await fetchPeerFileContent(
-          peerUrl,
-          ns,
-          tombstonePath,
-          resolvedToken,
-          fetchFn,
-          timeoutMs,
-        );
+        const remote = await fetchPeerFileContent(peerUrl, ns, tombstonePath, resolvedToken, fetchFn, timeoutMs);
         if (!remote || remote.sha256.toLowerCase() !== state.sha256.toLowerCase()) {
           throw new Error(`failed to read peer tombstone evidence: ${tombstonePath}`);
         }
@@ -383,32 +376,27 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
     }
   }
 
-  if (
-    memoryDir
-    && options.peerUrl
-    && (!options.baseFilesByNamespace || !options.semanticAgreementsByNamespace)
-  ) {
+  if (memoryDir && options.peerUrl && (!options.baseFilesByNamespace || !options.semanticAgreementsByNamespace)) {
     for (const ns of namespacesToPlan) {
       const cursorPath = defaultConvergeCursorPath(memoryDir, options.peerUrl, ns);
       const cursor = await readConvergeCursor(cursorPath);
       if (!options.baseFilesByNamespace && cursor?.baseFiles && cursor.baseFiles.length > 0) {
         baseMap.set(
           ns,
-          cursor.baseFiles.filter((file) => !isInternalRemnicStatePath(file.path)),
+          cursor.baseFiles.filter((file) => !isInternalRemnicStatePath(file.path))
         );
       }
       if (
-        !options.semanticAgreementsByNamespace
-        && cursor?.semanticAgreements
-        && cursor.semanticAgreements.length > 0
+        !options.semanticAgreementsByNamespace &&
+        cursor?.semanticAgreements &&
+        cursor.semanticAgreements.length > 0
       ) {
         semanticAgreementMap.set(
           ns,
           cursor.semanticAgreements.filter(
             (agreement) =>
-              !isInternalRemnicStatePath(agreement.local.path)
-              && !isInternalRemnicStatePath(agreement.peer.path),
-          ),
+              !isInternalRemnicStatePath(agreement.local.path) && !isInternalRemnicStatePath(agreement.peer.path)
+          )
         );
       }
     }
@@ -433,19 +421,14 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
     });
   }
 
-  const conflictPolicy = options.conflictPolicy
-    ?? config?.converge.conflictPolicy
-    ?? DEFAULT_CONVERGE_CONFLICT_POLICY;
+  const conflictPolicy = options.conflictPolicy ?? config?.converge.conflictPolicy ?? DEFAULT_CONVERGE_CONFLICT_POLICY;
   const plan = planReconciliation(inputs, { conflictPolicy });
   return collapseActiveFactDuplicates(plan, localManifests, peerManifests, semanticAgreementMap);
 }
 
-export async function executeConvergeApply(
-  options: ConvergeApplyOptions = {},
-): Promise<ConvergeApplyResult> {
-  const conflictPolicy = options.conflictPolicy
-    ?? options.config?.converge.conflictPolicy
-    ?? DEFAULT_CONVERGE_CONFLICT_POLICY;
+export async function executeConvergeApply(options: ConvergeApplyOptions = {}): Promise<ConvergeApplyResult> {
+  const conflictPolicy =
+    options.conflictPolicy ?? options.config?.converge.conflictPolicy ?? DEFAULT_CONVERGE_CONFLICT_POLICY;
   const plan = await computeConvergePlan({ ...options, conflictPolicy });
 
   if (plan.converged && !options.dryRun) {
@@ -564,9 +547,7 @@ export async function executeConvergeApply(
       if (options.localFileBuffers) {
         let remoteFile: PeerFileContent | null = null;
         if (buffered) {
-          const state = options.peerFilesByNamespace
-            ?.get(entry.namespace)
-            ?.find((file) => file.path === peerPath);
+          const state = options.peerFilesByNamespace?.get(entry.namespace)?.find((file) => file.path === peerPath);
           remoteFile = {
             content: buffered,
             sha256: state?.sha256 ?? entry.peerSha256 ?? createHash("sha256").update(buffered).digest("hex"),
@@ -580,7 +561,7 @@ export async function executeConvergeApply(
             peerPath,
             resolvedToken,
             fetchFn,
-            timeoutMs,
+            timeoutMs
           );
         }
         if (!remoteFile || (entry.peerSha256 && remoteFile.sha256 !== entry.peerSha256)) {
@@ -640,9 +621,7 @@ export async function executeConvergeApply(
 
       let metadata: Omit<PeerFileContent, "content"> | null = null;
       if (buffered) {
-        const state = options.peerFilesByNamespace
-          ?.get(entry.namespace)
-          ?.find((file) => file.path === peerPath);
+        const state = options.peerFilesByNamespace?.get(entry.namespace)?.find((file) => file.path === peerPath);
         const sha256 = state?.sha256 ?? entry.peerSha256 ?? createHash("sha256").update(buffered).digest("hex");
         const bytes = buffered.length;
         const mtimeMs = state?.mtimeMs ?? 0;
@@ -650,7 +629,7 @@ export async function executeConvergeApply(
         do {
           const content = buffered.subarray(
             offset,
-            Math.min(bytes, offset + OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES),
+            Math.min(bytes, offset + OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES)
           );
           await applyChunk({ content, offset, sha256, bytes, mtimeMs });
           offset += content.length;
@@ -664,14 +643,14 @@ export async function executeConvergeApply(
           applyChunk,
           resolvedToken,
           fetchFn,
-          timeoutMs,
+          timeoutMs
         );
       }
       if (
-        metadata
-        && transferComplete
-        && !transferRejected
-        && (!entry.peerSha256 || metadata.sha256 === entry.peerSha256)
+        metadata &&
+        transferComplete &&
+        !transferRejected &&
+        (!entry.peerSha256 || metadata.sha256 === entry.peerSha256)
       ) {
         if (entry.action === "conflict") actualTransfers.conflictsResolved += 1;
         else actualTransfers.pulled += 1;
@@ -687,10 +666,8 @@ export async function executeConvergeApply(
         source = {
           sha256: entry.localSha256,
           bytes: localBuffer.length,
-          mtimeMs: options.localFilesByNamespace
-            ?.get(entry.namespace)
-            ?.find((file) => file.path === localPath)
-            ?.mtimeMs ?? 0,
+          mtimeMs:
+            options.localFilesByNamespace?.get(entry.namespace)?.find((file) => file.path === localPath)?.mtimeMs ?? 0,
           ...(expectedPeerSha256 ? { baseSha256: expectedPeerSha256 } : {}),
           readChunk: async (offset, length) => localBuffer.subarray(offset, offset + length),
         };
@@ -709,12 +686,14 @@ export async function executeConvergeApply(
             let chunkOffset = 0;
             const resetChunks = async (): Promise<void> => {
               await chunks?.return?.();
-              chunks = io.readFileChunks({
-                root: rootDir,
-                path: localPath,
-                filePath,
-                chunkSize: OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES,
-              })[Symbol.asyncIterator]();
+              chunks = io
+                .readFileChunks({
+                  root: rootDir,
+                  path: localPath,
+                  filePath,
+                  chunkSize: OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES,
+                })
+                [Symbol.asyncIterator]();
               chunkOffset = 0;
             };
             closeSource = async () => {
@@ -767,7 +746,7 @@ export async function executeConvergeApply(
             source,
             resolvedToken,
             fetchFn,
-            timeoutMs,
+            timeoutMs
           );
           if (applied) {
             if (applied === "applied") peerMutatedNamespaces.add(entry.namespace);
@@ -787,11 +766,7 @@ export async function executeConvergeApply(
       const bufferedFiles = options.localFileBuffers?.get(entry.namespace);
       if (options.localFileBuffers) {
         const current = bufferedFiles?.get(localPath);
-        if (
-          current
-          && entry.localSha256
-          && createHash("sha256").update(current).digest("hex") === entry.localSha256
-        ) {
+        if (current && entry.localSha256 && createHash("sha256").update(current).digest("hex") === entry.localSha256) {
           bufferedFiles!.delete(localPath);
           deleted = true;
         }
@@ -818,11 +793,7 @@ export async function executeConvergeApply(
       const bufferedFiles = options.peerFileBuffers?.get(entry.namespace);
       if (options.peerFileBuffers) {
         const current = bufferedFiles?.get(peerPath);
-        if (
-          current
-          && entry.peerSha256
-          && createHash("sha256").update(current).digest("hex") === entry.peerSha256
-        ) {
+        if (current && entry.peerSha256 && createHash("sha256").update(current).digest("hex") === entry.peerSha256) {
           bufferedFiles!.delete(peerPath);
           deleted = true;
         }
@@ -834,7 +805,7 @@ export async function executeConvergeApply(
           entry.peerSha256,
           resolvedToken,
           fetchFn,
-          timeoutMs,
+          timeoutMs
         );
         deleted = Boolean(deletionResult);
         if (deletionResult === "applied") peerMutatedNamespaces.add(entry.namespace);
@@ -887,7 +858,7 @@ export async function executeConvergeApply(
             entry.peerSha256,
             resolvedToken,
             fetchFn,
-            timeoutMs,
+            timeoutMs
           );
           deletedPeer = Boolean(result);
           if (result === "applied") peerMutatedNamespaces.add(entry.namespace);
@@ -901,13 +872,7 @@ export async function executeConvergeApply(
 
   if (options.peerUrl && peerMutatedNamespaces.size > 0) {
     const namespaces = [...peerMutatedNamespaces].sort();
-    if (!await postPeerConvergenceComplete(
-      options.peerUrl,
-      namespaces,
-      resolvedToken,
-      fetchFn,
-      timeoutMs,
-    )) {
+    if (!(await postPeerConvergenceComplete(options.peerUrl, namespaces, resolvedToken, fetchFn, timeoutMs))) {
       actualTransfers.failed += 1;
     }
   }
@@ -927,10 +892,7 @@ export async function executeConvergeApply(
   };
 }
 
-async function updateCursorsForPlan(
-  plan: ReconcilePlan,
-  options: ConvergeApplyOptions,
-): Promise<void> {
+async function updateCursorsForPlan(plan: ReconcilePlan, options: ConvergeApplyOptions): Promise<void> {
   const peerUrl = normalizeConvergePeerUrl(options.peerUrl ?? "local");
   let memoryDir: string | undefined;
   if (options.cursorDir) {
@@ -943,14 +905,11 @@ async function updateCursorsForPlan(
   const namespaces = new Set(plan.byNamespace.map((n) => n.namespace));
   for (const ns of namespaces) {
     const cursorPath = defaultConvergeCursorPath(memoryDir, peerUrl, ns);
-    const priorSemanticAgreements = options.semanticAgreementsByNamespace?.get(ns)
-      ?? (await readConvergeCursor(cursorPath))?.semanticAgreements
-      ?? [];
-    const { baseFiles, semanticAgreements } = deriveConvergeCursorBase(
-      plan.entries,
-      ns,
-      priorSemanticAgreements,
-    );
+    const priorSemanticAgreements =
+      options.semanticAgreementsByNamespace?.get(ns) ??
+      (await readConvergeCursor(cursorPath))?.semanticAgreements ??
+      [];
+    const { baseFiles, semanticAgreements } = deriveConvergeCursorBase(plan.entries, ns, priorSemanticAgreements);
 
     const cursorState: ConvergeCursorState = {
       version: 1,
@@ -1009,7 +968,7 @@ export async function cmdConverge(
   action: string,
   rest: string[],
   json: boolean,
-  config: PluginConfig = parseConfig({}),
+  config: PluginConfig = parseConfig({})
 ): Promise<void> {
   if (action === "help" || action === "--help" || action === "-h" || rest.includes("--help") || rest.includes("-h")) {
     console.log(`Usage: remnic converge <plan|apply|watch> [options]
@@ -1025,6 +984,8 @@ Options:
   --conflict-policy <policy>
                     Policy override (newest-wins|manual)
                     Default: converge.conflictPolicy (newest-wins)
+  --interval <seconds>
+                    Watch cadence in seconds (watch only; default 300, min 1)
   --dry-run         Simulate transfers without mutating disk or remote peer
   --json            Output detailed JSON plan report
 `);
@@ -1064,13 +1025,8 @@ Options:
       i += 1;
     } else if (arg === "--conflict-policy") {
       const policy = rest[i + 1];
-      if (
-        typeof policy !== "string"
-        || !CONVERGE_CONFLICT_POLICIES.includes(policy as ConvergeConflictPolicy)
-      ) {
-        throw new Error(
-          `converge: --conflict-policy must be one of ${CONVERGE_CONFLICT_POLICIES.join(", ")}`,
-        );
+      if (typeof policy !== "string" || !CONVERGE_CONFLICT_POLICIES.includes(policy as ConvergeConflictPolicy)) {
+        throw new Error(`converge: --conflict-policy must be one of ${CONVERGE_CONFLICT_POLICIES.join(", ")}`);
       }
       conflictPolicy = policy as ConvergeConflictPolicy;
       i += 1;
@@ -1082,38 +1038,47 @@ Options:
     const onSignal = () => controller.abort();
     process.once("SIGINT", onSignal);
     process.once("SIGTERM", onSignal);
+    let outcome: ConvergeWatchOutcome | undefined;
     try {
-      const outcome = await convergeWatch({
+      outcome = await convergeWatch({
         apply: (applyOptions) => executeConvergeApply(applyOptions),
         config,
         peerUrl,
+        dryRun,
         peerToken,
         conflictPolicy,
         intervalMs: intervalSeconds !== undefined ? intervalSeconds * 1000 : undefined,
         signal: controller.signal,
-        onCycle: (cycle, event) => {
-          if (event.error !== undefined) {
-            console.error(`converge watch: cycle ${cycle} failed: ${String(event.error)}`);
-            return;
-          }
-          const result = event.result;
-          if (!result) return;
-          const transfers = result.transfers;
-          console.log(
-            `converge watch: cycle ${cycle} status=${result.status} pulled=${transfers.pulled} pushed=${transfers.pushed} conflicts=${transfers.conflictsResolved} failed=${transfers.failed}`,
-          );
-        },
+        onCycle: json
+          ? undefined
+          : (cycle, event) => {
+              if (event.error !== undefined) {
+                console.error(`converge watch: cycle ${cycle} failed: ${String(event.error)}`);
+                return;
+              }
+              const result = event.result;
+              if (!result) return;
+              const transfers = result.transfers;
+              console.log(
+                `converge watch: cycle ${cycle} status=${result.status} pulled=${transfers.pulled} pushed=${transfers.pushed} conflicts=${transfers.conflictsResolved} failed=${transfers.failed}`
+              );
+            },
       });
       if (json) {
         console.log(JSON.stringify(outcome, null, 2));
       } else {
         console.log(
-          `converge watch stopped after ${outcome.cycles} cycle(s): ${outcome.convergedCycles} converged, ${outcome.appliedCycles} applied, ${outcome.failedCycles} failed (last: ${outcome.lastStatus}).`,
+          `converge watch stopped after ${outcome.cycles} cycle(s): ${outcome.convergedCycles} converged, ${outcome.appliedCycles} applied, ${outcome.failedCycles} failed (last: ${outcome.lastStatus}).`
         );
       }
     } finally {
       process.removeListener("SIGINT", onSignal);
       process.removeListener("SIGTERM", onSignal);
+      // A supervisor needs a nonzero exit when the watch never made progress
+      // (peer unreachable, bad token) — exit 1 only when EVERY cycle failed.
+      if (outcome && outcome.cycles > 0 && outcome.failedCycles === outcome.cycles) {
+        process.exitCode = 1;
+      }
     }
     return;
   }
