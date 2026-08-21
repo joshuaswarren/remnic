@@ -37,6 +37,7 @@ import {
   type ReconcileManifest,
 } from "@remnic/core/reconcile/manifest.js";
 import { createOfflineStorageIo } from "./offline-storage-io.js";
+import { convergeWatch } from "./converge-watch.js";
 import { resolveAgentAccessAuthToken } from "@remnic/core/resolve-auth-token.js";
 import {
   DEFAULT_PEER_REQUEST_TIMEOUT_MS,
@@ -1011,11 +1012,12 @@ export async function cmdConverge(
   config: PluginConfig = parseConfig({}),
 ): Promise<void> {
   if (action === "help" || action === "--help" || action === "-h" || rest.includes("--help") || rest.includes("-h")) {
-    console.log(`Usage: remnic converge <plan|apply> [options]
+    console.log(`Usage: remnic converge <plan|apply|watch> [options]
 
 Subcommands:
   plan              Compute and display reconciliation plan
   apply             Execute bidirectional converge transport (alias: transport, sync)
+  watch             Run apply on a cadence until stopped (scheduled replication)
 
 Options:
   --peer <url>      Peer server URL (or --remote-url / --remote)
@@ -1029,8 +1031,8 @@ Options:
     return;
   }
 
-  if (action !== "plan" && action !== "apply" && action !== "transport" && action !== "sync") {
-    process.stderr.write(`converge: unknown action "${action}". Use: plan or apply [options].\n`);
+  if (action !== "plan" && action !== "apply" && action !== "transport" && action !== "sync" && action !== "watch") {
+    process.stderr.write(`converge: unknown action "${action}". Use: plan, apply, or watch [options].\n`);
     process.exitCode = 2;
     return;
   }
@@ -1039,6 +1041,7 @@ Options:
   let peerToken: string | undefined;
   let dryRun = false;
   let conflictPolicy: ConvergeConflictPolicy | undefined;
+  let intervalSeconds: number | undefined;
 
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i];
@@ -1050,6 +1053,15 @@ Options:
       i += 1;
     } else if (arg === "--dry-run") {
       dryRun = true;
+    } else if (arg === "--interval" && rest[i + 1]) {
+      const parsed = Number(rest[i + 1]);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        process.stderr.write("converge: --interval must be a positive number of seconds.\n");
+        process.exitCode = 2;
+        return;
+      }
+      intervalSeconds = parsed;
+      i += 1;
     } else if (arg === "--conflict-policy") {
       const policy = rest[i + 1];
       if (
@@ -1063,6 +1075,47 @@ Options:
       conflictPolicy = policy as ConvergeConflictPolicy;
       i += 1;
     }
+  }
+
+  if (action === "watch") {
+    const controller = new AbortController();
+    const onSignal = () => controller.abort();
+    process.once("SIGINT", onSignal);
+    process.once("SIGTERM", onSignal);
+    try {
+      const outcome = await convergeWatch({
+        apply: (applyOptions) => executeConvergeApply(applyOptions),
+        config,
+        peerUrl,
+        peerToken,
+        conflictPolicy,
+        intervalMs: intervalSeconds !== undefined ? intervalSeconds * 1000 : undefined,
+        signal: controller.signal,
+        onCycle: (cycle, event) => {
+          if (event.error !== undefined) {
+            console.error(`converge watch: cycle ${cycle} failed: ${String(event.error)}`);
+            return;
+          }
+          const result = event.result;
+          if (!result) return;
+          const transfers = result.transfers;
+          console.log(
+            `converge watch: cycle ${cycle} status=${result.status} pulled=${transfers.pulled} pushed=${transfers.pushed} conflicts=${transfers.conflictsResolved} failed=${transfers.failed}`,
+          );
+        },
+      });
+      if (json) {
+        console.log(JSON.stringify(outcome, null, 2));
+      } else {
+        console.log(
+          `converge watch stopped after ${outcome.cycles} cycle(s): ${outcome.convergedCycles} converged, ${outcome.appliedCycles} applied, ${outcome.failedCycles} failed (last: ${outcome.lastStatus}).`,
+        );
+      }
+    } finally {
+      process.removeListener("SIGINT", onSignal);
+      process.removeListener("SIGTERM", onSignal);
+    }
+    return;
   }
 
   if (action === "plan") {

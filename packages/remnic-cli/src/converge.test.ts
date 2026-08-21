@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { ContentHashIndex, OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES, parseConfig } from "@remnic/core";
-import type { ReconcileFileState } from "@remnic/core/reconcile/plan.js";
+import type { ReconcileFileState, ReconcilePlan } from "@remnic/core/reconcile/plan.js";
 import {
   defaultConvergeCursorPath,
   readConvergeCursor,
@@ -17,7 +17,9 @@ import {
   executeConvergeApply,
   formatConvergeApplyReport,
   formatConvergeReport,
+  type ConvergeApplyResult,
 } from "./converge.js";
+import { convergeWatch } from "./converge-watch.js";
 
 const shaA = "a".repeat(64);
 const shaB = "b".repeat(64);
@@ -1542,4 +1544,103 @@ test("remnic converge apply: durable cursor state is excluded and a clean second
   } finally {
     await fs.rm(memoryDir, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// converge watch (scheduled replication)
+// ---------------------------------------------------------------------------
+
+
+function applyResult(overrides: Partial<ConvergeApplyResult> = {}): ConvergeApplyResult {
+  return {
+    converged: true,
+    status: "converged",
+    plan: { converged: true, byNamespace: [], entries: [] } as unknown as ReconcilePlan,
+    transfers: { pulled: 0, pushed: 0, conflictsResolved: 0, suppressed: 0, failed: 0 },
+    cursorUpdated: false,
+    ...overrides,
+  };
+}
+
+test("converge watch: cycles on the injected applier until maxCycles", async () => {
+  let calls = 0;
+  const outcome = await convergeWatch({
+    intervalMs: 1,
+    maxCycles: 3,
+    apply: async () => {
+      calls += 1;
+      return applyResult({ converged: calls !== 2, status: calls === 2 ? "applied" : "converged" });
+    },
+  });
+  assert.equal(outcome.cycles, 3);
+  assert.equal(outcome.convergedCycles, 2);
+  assert.equal(outcome.appliedCycles, 1);
+  assert.equal(outcome.failedCycles, 0);
+  assert.equal(outcome.lastStatus, "converged");
+});
+
+test("converge watch: a failing cycle reports and does not stop the watch", async () => {
+  const events: Array<{ cycle: number; error?: unknown }> = [];
+  let calls = 0;
+  const outcome = await convergeWatch({
+    intervalMs: 1,
+    maxCycles: 3,
+    apply: async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("peer temporarily unreachable");
+      return applyResult();
+    },
+    onCycle: (cycle, event) => events.push({ cycle, error: event.error }),
+  });
+  assert.equal(outcome.cycles, 3);
+  assert.equal(outcome.failedCycles, 1);
+  assert.equal(outcome.convergedCycles, 2);
+  assert.equal(outcome.lastStatus, "converged");
+  assert.equal(events[0]?.cycle, 1);
+  assert.ok(events[0]?.error instanceof Error);
+  assert.equal(events.length, 3);
+});
+
+test("converge watch: pre-aborted signal runs no cycles", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  let calls = 0;
+  const outcome = await convergeWatch({
+    intervalMs: 1,
+    signal: controller.signal,
+    apply: async () => {
+      calls += 1;
+      return applyResult();
+    },
+  });
+  assert.equal(calls, 0);
+  assert.equal(outcome.cycles, 0);
+  assert.equal(outcome.lastStatus, "aborted");
+});
+
+test("converge watch: abort during the sleep stops after the current cycle", async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  const outcome = await convergeWatch({
+    intervalMs: 60_000,
+    signal: controller.signal,
+    apply: async () => {
+      calls += 1;
+      if (calls === 1) {
+        // Abort while the watch is sleeping after cycle 1.
+        queueMicrotask(() => controller.abort());
+      }
+      return applyResult();
+    },
+  });
+  assert.equal(calls, 1);
+  assert.equal(outcome.cycles, 1);
+  assert.equal(outcome.lastStatus, "converged");
+});
+
+test("remnic converge watch: bad --interval is rejected with exit code 2", async () => {
+  process.exitCode = undefined;
+  await cmdConverge("watch", ["--interval", "abc"], false);
+  assert.equal(process.exitCode, 2);
+  process.exitCode = undefined;
 });

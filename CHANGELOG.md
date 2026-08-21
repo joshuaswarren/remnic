@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `remnic converge watch` runs bidirectional convergence on a cadence (default 300s, `--interval <seconds>`, SIGINT/SIGTERM-safe) so an active/backup pair converges continuously instead of only when an operator runs `converge apply` — the scheduled-replication companion to `replicaPeers` divergence detection.
+
 ## [v9.62.2] — 2026-08-17
 
 ### Added
