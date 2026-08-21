@@ -2556,8 +2556,8 @@ export class ExtractionPersistCoordinator {
       const citedFactContent = applyInlineCitation(rawPersistBody);
       const semanticMerge = await applySemanticMergeAtPersist(this.deps, {
         storage: targetStorage, content: fact.content, category: writeCategory, sources: fact.sources, sourceConnector: extractionSourceConnector,
-        incomingMetadata: { tags: [...fact.tags, ...injectionScreenTags], entityRef: fact.entityRef, structuredAttributes: fact.structuredAttributes, validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt, biTemporal: biTemporal !== undefined, importanceScore: importance.score, provenanceStrength: fact.provenance, toolScoped: factToolScoped }, skip: contradictionDetected || faithfulnessEnforceStatus === "pending_review" || batchBackendUnavailable || novelty.decision === "add",
-        targetHasPromotedCopies: (targetId) => mergeTargetHasPromotedCopies({ config: this.deps.config, getStorageRouter: this.deps.getStorageRouter, scopeProfileWritePlan, profileAllowsSharedWrites, sourceStorage: targetStorage, targetMemoryId: targetId }),
+        incomingMetadata: { tags: [...fact.tags, ...injectionScreenTags], entityRef: fact.entityRef, structuredAttributes: fact.structuredAttributes, validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt, biTemporal: biTemporal !== undefined, importanceScore: importance.score, provenanceStrength: fact.provenance, toolScoped: factToolScoped, subject: factSubject }, skip: contradictionDetected || faithfulnessEnforceStatus === "pending_review" || batchBackendUnavailable || novelty.decision === "add",
+        targetHasPromotedCopies: (targetId) => mergeTargetHasPromotedCopies({ config: this.deps.config, getStorageRouter: this.deps.getStorageRouter, scopeProfileWritePlan, sourceStorage: targetStorage, targetMemoryId: targetId }),
       });
       // D: a failed merge lookup arms the batch short circuit for the remaining facts.
       if (semanticMerge.action === "created" && semanticMerge.reason === "backend_unavailable") batchBackendUnavailable = true;

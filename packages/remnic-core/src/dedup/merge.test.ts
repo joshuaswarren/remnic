@@ -18,8 +18,9 @@ import type {
   MemoryFile,
   MemoryFrontmatter,
   MemoryStatus,
-  PluginConfig,
+  MemorySubject,
   ProvenanceSource,
+  PluginConfig,
 } from "../types.js";
 import {
   DEFAULT_SEMANTIC_MERGE_CANDIDATES,
@@ -352,8 +353,8 @@ async function harness(
     /** Stamp `toolScoped: true` on the target's frontmatter (finding A). */
     targetToolScoped?: boolean;
     lookupHits?: SemanticDedupHit[];
-    verdict?: MergeJudgeRawVerdict;
-    /** Simulate a concurrent writer landing between the CAS read and write. */
+    /** Stamp `subject` on the target's frontmatter (finding A). */
+    targetSubject?: MemorySubject;
     mutateOnWrite?: string;
     /**
      * Simulate a concurrent writer replacing the target between the content
@@ -377,6 +378,7 @@ async function harness(
     category: targetCategory,
     ...(overrides.targetStatus ? { status: overrides.targetStatus } : {}),
     ...(overrides.targetToolScoped ? { toolScoped: true as const } : {}),
+    ...(overrides.targetSubject ? { subject: overrides.targetSubject } : {}),
     sources: [
       {
         sessionKey: "project/example/2026-08-20T00:00:00.000Z",
@@ -642,20 +644,30 @@ test("decideSemanticMerge: a foreign-connector neighbor is never a merge target"
   });
   assert.deepEqual(unattributed, { action: "create", reason: "no_candidates" });
 
-  // Same connector merges, and a whitespace-only scope is "unattributed",
-  // preserving the pre-provenance unscoped behavior.
+  // Same connector merges, and a whitespace-only scope is "unattributed".
   const same = await decideSemanticMerge({
     ...base,
     sourceConnector: "connector-b",
     lookup: async () => [{ id: "mem-b", score: 0.85, sourceConnector: "connector-b" }],
   });
   assert.equal(same.action, "merge");
+  // Finding B: an UNSCOPED incoming fact must not merge into a
+  // connector-owned target either — the merge would rewrite A's body while
+  // A's `sourceConnector` frontmatter still names A, so recall would label
+  // the unscoped claims as A's. Merge selection requires BOTH sides
+  // unscoped or the identical connector (stricter than the dedup gates).
   const unscoped = await decideSemanticMerge({
     ...base,
     sourceConnector: "   ",
     lookup: async () => [{ id: "mem-a", score: 0.85, sourceConnector: "connector-a" }],
   });
-  assert.equal(unscoped.action, "merge");
+  assert.deepEqual(unscoped, { action: "create", reason: "no_candidates" });
+  const bothUnscoped = await decideSemanticMerge({
+    ...base,
+    sourceConnector: "   ",
+    lookup: async () => hits(["mem-operator", 0.85]),
+  });
+  assert.equal(bothUnscoped.action, "merge");
 });
 
 test("applySemanticMergeAtPersist: the incoming fact's connector scopes the lookup", async () => {
@@ -808,7 +820,7 @@ test("applySemanticMergeAtPersist: new metadata the merge cannot carry bypasses 
   const cases: Array<[string, ApplySemanticMergeOptions["incomingMetadata"]]> = [
     ["structuredAttributes", { structuredAttributes: { region: "us-east" } }],
     ["bi-temporal bounds", { biTemporal: true }],
-    ["a new entityRef", { entityRef: "billing-service" }],
+    ["a subject the target lacks", { subject: "user" }],
     ["a new validAt", { validAt: "2026-08-21T00:00:00.000Z" }],
     ["a tag the target lacks", { tags: ["deploy"] }],
     ["a higher importance", { importanceScore: 0.9 }],
@@ -1042,12 +1054,49 @@ test("applySemanticMergeAtPersist: a tool-scoped target keeps its stricter scope
     incomingMetadata: { toolScoped: true },
     judgeCall: (options) => acceptingJudge(options),
   });
-
   assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", provenancePatched: true });
   // The merge patch carries no `toolScoped` key at all — the stricter flag
   // survives because the patch never touches it, never because it is rewritten.
   assert.equal(h.calls.frontmatterPatches.length, 1);
   assert.equal("toolScoped" in h.calls.frontmatterPatches[0].patch, false);
+});
+
+// ── Finding A: a merge must not relabel content across the subject guard ────
+
+
+test("applySemanticMergeAtPersist: a user-subject fact never merges into an agent-labeled target", async () => {
+  const h = await harness({ targetSubject: "agent" });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    incomingMetadata: { subject: "user" },
+    judgeCall: (options) => acceptingJudge(options),
+  });
+
+  // Merging would increment reinforcement_count on an agent-labeled memory
+  // while its body now carries user-specific claims — the promotion path
+  // treats reinforced agent memories as shared-promotion candidates. The
+  // create path must run so the fact persists under its own subject.
+  assert.deepEqual(outcome, { action: "created", reason: "metadata_unpreservable" });
+  assert.deepEqual(h.calls.contentUpdates, []);
+  assert.deepEqual(h.calls.frontmatterPatches, []);
+  const history = await listVersions(h.target.path, { enabled: true, maxVersionsPerPage: 20, sidecarDir: ".versions" }, h.storage.dir);
+  assert.equal(history.versions.length, 0, "a bypassed merge must leave no snapshot");
+});
+
+test("applySemanticMergeAtPersist: an identical subject still merges", async () => {
+  const h = await harness({ targetSubject: "agent" });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    incomingMetadata: { subject: "agent" },
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", provenancePatched: true });
 });
 
 // ── Finding C: promoted copies are reconciled only by the create path ────────

@@ -142,12 +142,14 @@ export async function flushDeferredFactHashOnFailure(
  * target must bypass the merge and let the normal write run.
  *
  * Target resolution mirrors `backfillTemporalBoundsOnPromotionCopies`: ALL
- * authorized auto-promote targets plus the shared namespace (gated only by
- * shared-write authorization), never the current confidence — a promoted
- * copy may exist from an earlier extraction with a higher confidence or
- * older auto-promote settings. An unreadable promotion namespace is treated
- * as "copies may exist": the conservative create path runs rather than risk
- * cross-namespace divergence.
+ * known auto-promote target namespaces plus the shared namespace, NEVER
+ * gated by current write authorization or the current confidence — a
+ * promoted copy may exist from an earlier extraction made under older
+ * settings (higher confidence, an authorized profile, shared-write
+ * permission later revoked). A permission change must never make an
+ * existing copy invisible to this scan. An unreadable promotion namespace
+ * is treated as "copies may exist": the conservative create path runs
+ * rather than risk cross-namespace divergence.
  */
 export async function mergeTargetHasPromotedCopies(args: {
   config: PluginConfig;
@@ -155,7 +157,6 @@ export async function mergeTargetHasPromotedCopies(args: {
     storageFor: (namespace: string) => Promise<StorageManager>;
   };
   scopeProfileWritePlan: ResolvedScopeProfilePlan | null | undefined;
-  profileAllowsSharedWrites: boolean;
   sourceStorage: StorageManager;
   targetMemoryId: string;
 }): Promise<boolean> {
@@ -166,14 +167,13 @@ export async function mergeTargetHasPromotedCopies(args: {
       if (
         target.target !== "serverShared" &&
         autoTargets.has(target.target) &&
-        target.authorized &&
         target.namespace
       ) {
         namespaces.push(target.namespace);
       }
     }
   }
-  if (args.profileAllowsSharedWrites) namespaces.push(args.config.sharedNamespace);
+  namespaces.push(args.config.sharedNamespace);
   for (const namespace of namespaces) {
     try {
       const storage = await args.getStorageRouter().storageFor(namespace);

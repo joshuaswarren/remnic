@@ -19,7 +19,7 @@ import { semanticDedupThresholdFrom } from "./novelty-gate.js";
 import { parseMinMergeScore } from "./merge-min-score.js";
 import { checkMergedContent } from "./merge-content.js";
 import type { SemanticDedupHit, SemanticDedupLookup } from "./semantic.js";
-import { connectorMatchesScope, normalizeConnectorScope } from "./connector-scope.js";
+import { normalizeConnectorScope } from "./connector-scope.js";
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -94,11 +94,12 @@ export interface DecideSemanticMergeOptions {
   dedupThreshold: number;
   resolveCandidate: MergeCandidateResolver;
   /**
-   * Provenance connector of the INCOMING fact. A provenance-bearing fact may
-   * only merge into a neighbor from the same connector — otherwise the merge
-   * rewrites another connector's memory while its `sourceConnector`
-   * frontmatter still identifies that connector. Same shared scope contract
-   * the novelty and semantic-dedup gates apply (`connector-scope.ts`).
+   * Provenance connector of the INCOMING fact. Merge selection is stricter
+   * than the novelty and semantic-dedup gates (`connector-scope.ts`): a merge
+   * may only pair an unscoped fact with an unscoped target, or a
+   * provenance-bearing fact with a neighbor from the same connector. A merge
+   * rewrites the target's body, so any other pairing would relabel one side's
+   * claims under the other's `sourceConnector` frontmatter (finding B).
    */
   sourceConnector?: string;
 }
@@ -136,11 +137,12 @@ export async function decideSemanticMerge(
     return { action: "create", reason: "no_candidates" };
   }
 
-  // Shared connector scope (`connector-scope.ts`): a provenance-bearing fact
-  // may only merge into a neighbor from the SAME connector. Without this the
-  // judge can rewrite connector A's memory with connector B's claim while A's
-  // `sourceConnector` frontmatter still identifies A — the same provenance
-  // corruption the novelty and semantic-dedup gates already refuse.
+  // Connector scope (finding B): a merge REWRITES the neighbor's body, so it
+  // is stricter than the shared dedup helper — both sides must be unscoped or
+  // carry the identical connector. An unscoped merge into a connector-owned
+  // target would rewrite A's memory while A's `sourceConnector` frontmatter
+  // still identifies A, so recall and connector-aware dedup would label the
+  // unscoped claims as A's.
   const scope = normalizeConnectorScope(options.sourceConnector);
   const candidates: MergeCandidate[] = [];
   for (const hit of hits) {
@@ -158,7 +160,7 @@ export async function decideSemanticMerge(
     if (!(hit.score >= config.minSimilarity && hit.score < options.dedupThreshold)) {
       continue;
     }
-    if (!connectorMatchesScope(hit.sourceConnector, scope)) continue;
+    if (normalizeConnectorScope(hit.sourceConnector) !== scope) continue;
     const meta = await options.resolveCandidate(hit.id);
     if (!meta) continue;
     if (meta.category !== options.category) continue;

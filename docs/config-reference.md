@@ -1180,9 +1180,12 @@ into a create-or-update decision:
 
 1. Query the same namespace-scoped lookup semantic dedup uses, keeping only
    neighbors inside `[minSimilarity, semanticDedupThreshold)` that share the
-   candidate's category, share its provenance connector (the same
-   connector-scope rule the novelty and near-duplicate gates apply, so a merge
-   can never rewrite another connector's memory), and are still `active`.
+   candidate's category, carry the identical provenance connector — or are
+   unscoped when the fact itself is unscoped (stricter than the novelty and
+   near-duplicate gates, which keep the broad unscoped neighborhood, because
+   a merge rewrites the neighbor's body: an unscoped merge into a
+   connector-owned target would rewrite it while its `sourceConnector`
+   frontmatter kept naming that connector) — and are still `active`.
 2. Ask an LLM merge judge (routed like the extraction judge — local model first,
    then the gateway fallback chain) whether the pair describes the same
    underlying concept. `contradicts` and `create` verdicts fall through to the
@@ -1204,7 +1207,10 @@ into a create-or-update decision:
 4. A merge carries only content, category, sources, and connector. A fact
    that also carries extraction metadata the merge cannot preserve —
    structured attributes, an entity ref, bi-temporal bounds, tags the target
-   lacks, a higher importance, stronger provenance, or a `toolScoped: true`
+   lacks, a higher importance, stronger provenance, a subject classification
+   the target does not already carry (the merge patch has no carrier for
+   `subject`, so a user fact is never merged into an agent-labeled memory
+   that reinforcement could then promote), or a `toolScoped: true`
    classification the target lacks (a tool-scoped fact never widens into an
    unscoped target; an already-scoped target keeps its stricter flag) — is
    created through the normal write instead, so metadata and access scope are
@@ -1212,6 +1218,9 @@ into a create-or-update decision:
    shared/profile copies (memories linked back by `sourceMemoryId`) also
    bypasses the merge: those copies are reconciled only by the normal write's
    promotion step, so merging would strand them at the pre-merge body. The
+   copy scan inspects every known promotion layer and the shared namespace
+   regardless of current write authorization, so a permission revoked after a
+   copy was promoted cannot hide that copy from the scan. The
    merge lookup also honors the batch's embedding-outage short circuit (its
    own lookup failures arm it for the remaining facts) and the novelty
    gate's `add` decision: when either bypasses semantic dedup for a fact, no

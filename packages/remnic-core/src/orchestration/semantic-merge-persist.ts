@@ -43,7 +43,7 @@ import {
   resolvePresentationCapabilities,
   resolveRecallAuxiliaryCapabilities,
 } from "../capabilities.js";
-import type { MemoryCategory, MemoryFile, ProvenanceSource } from "../types.js";
+import type { MemoryCategory, MemoryFile, MemorySubject, ProvenanceSource } from "../types.js";
 import type { StorageManager } from "../index.js";
 import type { ExtractionPersistDeps } from "./extraction-persist-deps.js";
 
@@ -114,6 +114,13 @@ export interface ApplySemanticMergeOptions {
      * scope — the merge patch never touches that field.
      */
     toolScoped?: boolean;
+    /**
+     * Subject the write path would stamp when subject classification is
+     * enabled (finding A): the merge patch has no carrier for `subject`, so
+     * a fact whose subject differs from the target's must be created rather
+     * than merged into a target that keeps a different label.
+     */
+    subject?: MemorySubject;
   };
   /**
    * Finding C: async probe run after a merge verdict but before any
@@ -167,12 +174,11 @@ function mergeWouldLoseMetadata(
   ) {
     return true;
   }
-  // Finding A: a tool-scoped incoming fact must never widen into an
-  // unscoped target — the merge patch has no carrier for `toolScoped`, and
-  // cross-connector recall is exactly what the write path's flag blocks. A
-  // target already carrying the stricter flag keeps it (the patch never
-  // touches that field), so only the widening direction bypasses.
   if (md.toolScoped === true && target.frontmatter.toolScoped !== true) {
+    return true;
+  }
+  // Finding A (subject): the write path stamps `subject`, and the shared
+  if (md.subject !== undefined && md.subject !== target.frontmatter.subject) {
     return true;
   }
   return false;
