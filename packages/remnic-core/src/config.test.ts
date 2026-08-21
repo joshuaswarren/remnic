@@ -2679,3 +2679,22 @@ test("parseConfig rejects array contradictionLocalization values", () => {
     /contradictionLocalization must be an object/,
   );
 });
+
+test("parseConfig coerces string-typed sharedContextAllowBindingAuthority from the CLI", () => {
+  // `--config sharedContextAllowBindingAuthority=true` arrives as a string, so a
+  // strict `=== true` silently left the feature off for anyone who enabled it.
+  for (const enabled of ["true", "1", "yes", "on", true]) {
+    assert.equal(
+      parseConfig({ sharedContextAllowBindingAuthority: enabled }).sharedContextAllowBindingAuthority,
+      true,
+      `${JSON.stringify(enabled)} must enable binding authority`,
+    );
+  }
+  for (const disabled of ["false", "0", "no", "off", false, undefined, "", "garbage"]) {
+    assert.equal(
+      parseConfig({ sharedContextAllowBindingAuthority: disabled }).sharedContextAllowBindingAuthority,
+      false,
+      `${JSON.stringify(disabled)} must leave binding authority off`,
+    );
+  }
+});

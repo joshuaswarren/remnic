@@ -25,6 +25,40 @@ Shared context is a file-based coordination layer that multiple agents read and 
 - `cross-signals/<YYYY-MM-DD>.md`: human-readable recurring themes, risks, and promotion candidates with provenance
 - `cross-signals/<YYYY-MM-DD>.json`: deterministic overlap report (topics/entities) across daily outputs + feedback totals
 
+## Authority envelope
+
+Every agent output carries a governance envelope in its frontmatter (issue #1957):
+
+```yaml
+sharedBy: "agent-id"    # origin: the acting agent that wrote the item
+authority: "informational"  # informational | advisory | binding
+expiresAt: "2099-01-01T00:00:00.000Z"  # optional
+supersedes: "item-id"   # optional
+```
+
+Rules:
+
+- Default authority is `informational`. A missing, unrecognized, or malformed value never resolves above `informational` (least privilege).
+- `binding` requires two things: the writer explicitly requests it, and the operator sets `sharedContextAllowBindingAuthority: true` (default `false`). A binding write without the flag is rejected; a stored `binding` item read without the flag downgrades to `advisory`.
+- Legacy items without an envelope keep working unchanged: they read as `informational` with origin falling back to the frontmatter `agent` field.
+- Cross-signals reports (JSON and markdown) and the daily roundtable annotate every source with its resolved authority and origin, so consumers can weigh items accordingly.
+- Origin (`sharedBy`) is server-derived, never caller-chosen; producer (`agent`) and origin are distinct fields. Each surface uses its own authoritative identity: an Access-API write uses the authenticated principal it resolved, and the OpenClaw `shared_context_write_output` tool uses the host's registration-scoped runtime agent id (never `agentAccessHttp.principal`, which belongs to the separate external HTTP bridge). That identity is stamped as both `agent` and `sharedBy`, and an `agentId` parameter naming a different agent is rejected. When a surface resolved no identity — a host that exposes no runtime agent id (`api.runtime` is optional in the SDK and absent on older hosts inside the supported compatibility window), or an authenticated access write with no configured principal and no adapter identity — the origin is a reserved server-owned token (`unattributed:openclaw-host` / `unattributed:access-surface`): the token names no agent, carries no privilege (authority resolution reads only the `authority` field), and cannot be claimed by a caller — on a surface that does expose an identity, a caller passing the token is a mismatch and is rejected. On those identity-less surfaces the caller-supplied `agentId` survives as the producer label only (`agent` frontmatter, on-disk segment, cross-signals grouping key): it feeds grouping and display, never audit or authority, and keeping it distinct is what preserves multi-agent overlaps in cross-signals. Only trusted in-process surfaces with no identity concept (an in-process caller, an unauthenticated local CLI) fall back to stamping the supplied `agentId` as the origin.
+
+### What the tool surfaces can set today
+
+In this slice, `authority`, `expiresAt`, and `supersedes` are settable only by
+in-process callers of `SharedContextManager.writeAgentOutput` (for example the
+curator and other core code paths). Both documented tool surfaces — the MCP
+`engram.shared_context_write_output` operation and the OpenClaw
+`shared_context_write_output` tool — accept only `agentId`, `title`, and
+`content`, reject extra properties, and therefore always write
+`authority: informational` with no expiry and no supersession. Exposing the
+envelope fields on those surfaces (with the authority allow-list and the
+`sharedContextAllowBindingAuthority` gate enforced at the boundary) is
+deliberate follow-up work, not a capability you can reach from a tool call
+today. The read side is already live everywhere: stored `advisory`/`binding`
+items written in-process resolve and annotate exactly as described above.
+
 ## Tools
 
 - `shared_context_write_output`

@@ -46,6 +46,7 @@ import { parseProceduralMaintenanceConfig } from "./procedural/maintenance-confi
 import { parseActiveContextFields } from "./active-context-config.js";
 import { parseSkillProjectionConfig } from "./procedural/skill-projection.js";
 import { parseDriftDetectionConfig } from "./preferences/drift-config.js";
+import { parseDeepRecallConfig } from "./deep-recall-config.js";
 import { parseContradictionLocalizationConfig, parseContradictionScanConfig } from "./contradiction-config.js";
 import { parseGraphPathScoringConfig } from "./graph-path-scoring-config.js";
 import { parseWritePathDedupConfig } from "./dedup/novelty-gate.js";
@@ -1793,6 +1794,8 @@ export function parseConfig(
     contradictionScan: parseContradictionScanConfig(cfg.contradictionScan),
     // Preference drift detection (issue #2371)
     driftDetection: parseDriftDetectionConfig(cfg.driftDetection),
+    // Budgeted deep-recall surface (issue #2332)
+    deepRecall: parseDeepRecallConfig(cfg.deepRecall),
     dependencyPropagation: parseDependencyPropagationConfig(cfg),
     // Temporal Supersession (issue #375)
     temporalSupersessionEnabled: cfg.temporalSupersessionEnabled !== false, // On by default
@@ -3026,6 +3029,10 @@ export function parseConfig(
 
     // v4.0 shared-context (default off)
     sharedContextEnabled: cfg.sharedContextEnabled === true,
+    // CLI values arrive as strings (`--config sharedContextAllowBindingAuthority=true`),
+    // so a strict `=== true` silently keeps the feature off. Default stays false.
+    sharedContextAllowBindingAuthority:
+      coerceBool(cfg.sharedContextAllowBindingAuthority, "sharedContextAllowBindingAuthority") ?? false,
     sharedContextDir:
       typeof cfg.sharedContextDir === "string" && cfg.sharedContextDir.length > 0 ? cfg.sharedContextDir : undefined,
     sharedContextMaxInjectChars:

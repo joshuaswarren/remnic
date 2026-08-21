@@ -27,6 +27,7 @@ export const MCP_READ_ONLY_TOOL_SUFFIXES: Readonly<Record<string, true>> = {
   location_day: true,
   meetings_list: true,
   meetings_get: true,
+  deep_recall: true,
   standup: true,
   action_confidence: true,
   capsule_list: true,

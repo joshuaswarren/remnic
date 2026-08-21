@@ -14,7 +14,7 @@ import { bumpMemoryCorpusVersionForDir } from "./memory-corpus-version.js";
 import { utcDayRange } from "./transcript.js";
 import { padEndDisplay, truncateGraphemeSafe } from "./whitespace.js";
 import { runWearablesCliCommand } from "./wearables/cli.js";
-import { registerMeetingsCommands } from "./cli/meetings-commands.js";
+import { registerMeetingsCommands } from "./cli/meetings-commands.js"; import { registerDeepRecallCommands } from "./cli/deep-recall-commands.js";
 import { registerExportOkfCommand, registerOkfCommands } from "./cli/okf-commands.js";
 import { registerSkillsCommands } from "./cli/skills-commands.js";
 import { registerResearchStatusCommands } from "./cli/research-status-commands.js";
@@ -6230,7 +6230,7 @@ export function registerCli(
 
       registerResearchStatusCommands(cmd, orchestrator);
 
-      registerCreationLedgerCommands(cmd, orchestrator); registerMeetingsCommands(cmd, orchestrator); registerOkfCommands(cmd, orchestrator); registerTimelineCommands(cmd, orchestrator);
+      registerCreationLedgerCommands(cmd, orchestrator); registerMeetingsCommands(cmd, orchestrator); registerOkfCommands(cmd, orchestrator); registerDeepRecallCommands(cmd, orchestrator); registerTimelineCommands(cmd, orchestrator);
 
       cmd
         .command("trust-zone-promote")

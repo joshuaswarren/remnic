@@ -16,6 +16,7 @@ import {
 import { log } from "./logger.js";
 import { composeSalvagedEnvelope } from "@remnic/core/salvage-envelope";
 import { executeMemoryPromote } from "./memory-promote.js";
+import { openClawToolWriteOrigin } from "./tool-write-origin.js";
 import { WorkStorage } from "@remnic/core/work/storage";
 import { exportWorkBoardMarkdown, exportWorkBoardSnapshot, importWorkBoardSnapshot } from "@remnic/core/work/board";
 import { wrapWorkLayerContext } from "@remnic/core/work/boundary";
@@ -271,7 +272,7 @@ function formatContinuityLoopSummary(loop: ContinuityImprovementLoop): string {
   return lines.join("\n");
 }
 
-export function registerTools(api: ToolApi, orchestrator: Orchestrator): void {
+export function registerTools(api: ToolApi, orchestrator: Orchestrator, hostRuntimeAgentId?: string): void {
   const useDedicatedOpenClawMemoryTools =
     orchestrator.config.openclawToolsEnabled !== false;
   const actionTypes: MemoryActionType[] = [
@@ -2872,7 +2873,9 @@ Best for:
       description:
         "Write an agent work product into the shared-context directory (v4.0). Other agents can read these files to coordinate without explicit message passing.",
       parameters: Type.Object({
-        agentId: Type.String({ description: "Agent ID producing this output (e.g., generalist, oracle, flash)." }),
+        // Provenance is server-derived from the host runtime agent; a
+        // mismatching value here is rejected, never used as the origin.
+        agentId: Type.String({ description: "Agent ID producing this output; must match this host's runtime agent id when the host exposes one." }),
         title: Type.String({ description: "Short title for the output." }),
         content: Type.String({ description: "Markdown content to write." }),
       }),
@@ -2883,8 +2886,16 @@ Best for:
             "Shared context is disabled. Enable `sharedContextEnabled: true` to use shared-context tools.",
           );
         }
-        const fp = await orchestrator.sharedContext.writeAgentOutput({ agentId, title, content });
-        return toolResult(`Wrote shared agent output: ${fp}`);
+        try {
+          const fp = await orchestrator.sharedContext.writeAgentOutput({
+            title,
+            content,
+            ...openClawToolWriteOrigin(hostRuntimeAgentId, agentId),
+          });
+          return toolResult(`Wrote shared agent output: ${fp}`);
+        } catch (err) {
+          return toolResult(`shared_context_write_output error: ${err instanceof Error ? err.message : String(err)}`);
+        }
       },
     },
     { name: "shared_context_write_output" },

@@ -82,6 +82,7 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
     skipped: T_NUMBER,
     removed: T_ARRAY,
   }),
+  deep_recall: objectSchema({ ok: T_BOOLEAN, error: T_NULLABLE_STRING, entries: T_ARRAY, trace: T_ARRAY, rendered: T_STRING }, ["entries", "trace"]),
   standup: objectSchema({ date: T_STRING, yesterday: T_STRING, today: T_STRING, highlights: T_ARRAY, priorities: T_ARRAY, blockers: T_ARRAY, activityGrid: T_STRING, markdown: T_STRING }),
   action_confidence: objectSchema({
     schemaVersion: T_NUMBER,

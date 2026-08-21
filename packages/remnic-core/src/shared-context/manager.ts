@@ -7,6 +7,14 @@ import type { PluginConfig } from "../types.js";
 import { expandTildePath } from "../utils/path.js";
 import { resolveConversationContextCapabilities } from "../capabilities.js";
 import { throwIfAborted } from "../abort-error.js";
+import {
+  composeWriteEnvelope,
+  envelopeFromScalars,
+  envelopeToFrontmatterLines,
+  resolveReadAuthority,
+  resolveWriteOrigin,
+} from "./envelope-io.js";
+import type { SharedAuthority, SharedEnvelope } from "./governance.js";
 
 export const SharedFeedbackEntrySchema = z.object({
   agent: z.string().min(1),
@@ -311,6 +319,10 @@ interface SharedCrossSignalSource {
   path: string;
   title: string;
   topics: string[];
+  /** Resolved least-privilege authority from the item's envelope (issue #1957). */
+  authority: SharedAuthority;
+  /** Envelope origin agent id; legacy items fall back to the agent field. */
+  sharedBy: string;
 }
 
 interface SharedCrossSignalOverlap {
@@ -436,6 +448,7 @@ export class SharedContextManager {
   private readonly feedbackDir: string;
   private readonly feedbackInboxPath: string;
   private readonly crossSignalsDir: string;
+  private readonly allowBindingAuthority: boolean;
   private readonly dailySynthesisChains = new Map<string, Promise<void>>();
 
   constructor(private readonly config: PluginConfig) {
@@ -449,6 +462,7 @@ export class SharedContextManager {
     this.feedbackDir = path.join(base, "feedback");
     this.feedbackInboxPath = path.join(this.feedbackDir, "inbox.jsonl");
     this.crossSignalsDir = path.join(base, "cross-signals");
+    this.allowBindingAuthority = config.sharedContextAllowBindingAuthority === true;
   }
 
   async ensureStructure(): Promise<void> {
@@ -553,25 +567,61 @@ export class SharedContextManager {
     title: string;
     content: string;
     createdAt?: Date;
+    /** Envelope authority class (issue #1957). Unrecognized values throw. */
+    authority?: string;
+    /** Optional ISO-8601 expiry stamped on the item. */
+    expiresAt?: string;
+    /** Optional id of the shared item this output supersedes. */
+    supersedes?: string;
+    /**
+     * Server-resolved identity of the caller, supplied by the access
+     * surface (issue #1957 review). When present it IS both the producer
+     * and the envelope origin; a disagreeing caller-supplied `agentId` is
+     * rejected so no caller can publish as another agent.
+     */
+    authenticatedIdentity?: string;
+    /**
+     * Server-owned origin token for a write that crosses an external
+     * boundary but resolved no identity (issue #1957 review round 4).
+     * Stamped as the envelope origin (`sharedBy`); the caller label stays
+     * the producer so grouping never collapses.
+     */
+    unattributedOrigin?: string;
   }): Promise<string> {
+    const identity = resolveWriteOrigin({
+      agentId: opts.agentId,
+      authenticatedIdentity: opts.authenticatedIdentity,
+      unattributedOrigin: opts.unattributedOrigin,
+    });
     const createdAt = opts.createdAt ?? new Date();
     const date = ymd(createdAt);
     const time = createdAt.toISOString().slice(11, 19).replace(/:/g, "");
     const slug = safeSlug(opts.title);
-    const agentPathSegment = safePathSegment(opts.agentId, "agentId");
+    const agentPathSegment = safePathSegment(identity.agent, "agentId");
+
+    const envelope = composeWriteEnvelope({
+      origin: identity.origin,
+      authority: opts.authority,
+      expiresAt: opts.expiresAt,
+      supersedes: opts.supersedes,
+      allowBinding: this.allowBindingAuthority,
+    });
 
     const dir = path.join(this.outputsDir, agentPathSegment, date);
     await mkdir(dir, { recursive: true });
 
-    const body =
-      `---\n` +
-      `kind: agent_output\n` +
-      `agent: ${formatFrontmatterScalar(opts.agentId)}\n` +
-      `createdAt: ${createdAt.toISOString()}\n` +
-      `title: ${formatFrontmatterScalar(opts.title.replace(/\n/g, " ").slice(0, 200))}\n` +
-      `---\n\n` +
-      opts.content.trimEnd() +
-      "\n";
+    const body = [
+      "---",
+      "kind: agent_output",
+      `agent: ${formatFrontmatterScalar(identity.agent)}`,
+      `createdAt: ${createdAt.toISOString()}`,
+      `title: ${formatFrontmatterScalar(opts.title.replace(/\n/g, " ").slice(0, 200))}`,
+      ...envelopeToFrontmatterLines(envelope),
+      "---",
+      "",
+      opts.content.trimEnd(),
+      "",
+    ].join("\n");
 
     for (let attempt = 0; attempt < 100; attempt++) {
       const suffix = attempt === 0 ? "" : `-${attempt + 1}`;
@@ -585,7 +635,7 @@ export class SharedContextManager {
       }
     }
 
-    throw new Error(`Unable to allocate unique shared-context output path for ${opts.agentId}`);
+    throw new Error(`Unable to allocate unique shared-context output path for ${identity.agent}`);
   }
 
   async appendFeedback(entry: SharedFeedbackEntry): Promise<void> {
@@ -643,7 +693,7 @@ export class SharedContextManager {
     const maxSummaryItems = Math.max(1, opts.maxSummaryItems ?? 8);
 
     // Collect outputs for the day (best-effort).
-    const outputs: Array<{ agent: string; path: string; title: string; raw: string }> = [];
+    const outputs: Array<{ agent: string; path: string; title: string; raw: string; envelope: SharedEnvelope }> = [];
     try {
       const agents = (await readdir(this.outputsDir, { withFileTypes: true }))
         .sort((a, b) => a.name.localeCompare(b.name));
@@ -657,7 +707,13 @@ export class SharedContextManager {
             const raw = await readFile(p, "utf-8");
             const title = readFrontmatterScalar(raw, "title") ?? f;
             const agent = readFrontmatterScalar(raw, "agent") ?? safeDecodePathSegment(a.name);
-            outputs.push({ agent, path: p, title, raw });
+            const envelope = envelopeFromScalars({
+              sharedBy: readFrontmatterScalar(raw, "sharedBy"),
+              authority: readFrontmatterScalar(raw, "authority"),
+              expiresAt: readFrontmatterScalar(raw, "expiresAt"),
+              supersedes: readFrontmatterScalar(raw, "supersedes"),
+            });
+            outputs.push({ agent, path: p, title, raw, envelope });
           }
         } catch {
           // no outputs for this agent/date
@@ -699,6 +755,8 @@ export class SharedContextManager {
         path: output.path,
         title: output.title,
         topics: extractTopicTokens(`${output.title}\n${body}`),
+        authority: resolveReadAuthority(output.envelope, this.allowBindingAuthority),
+        sharedBy: output.envelope.sharedBy ?? output.agent,
       };
     });
 
@@ -831,7 +889,7 @@ export class SharedContextManager {
       "",
       "## Sources",
       ...(sources.length === 0 ? ["- (none)"] : sources.map((source) =>
-        `- [${markdownLineText(source.agent)}] ${markdownLineText(source.title)} (${markdownLineText(source.path)})`
+        `- [${markdownLineText(source.agent)}] ${markdownLineText(source.title)} (${markdownLineText(source.path)}) [authority: ${source.authority}; sharedBy: ${markdownLineText(source.sharedBy)}]`
       )),
       "",
     ].join("\n");
@@ -870,7 +928,8 @@ export class SharedContextManager {
       "## Notable Agent Outputs",
       ...(crossSignals.report.sources.length === 0
         ? ["- (none)"]
-        : crossSignals.report.sources.map((source) => `- ${source.title} (${source.path})`)),
+        : crossSignals.report.sources.map((source) =>
+            `- ${markdownLineText(source.title)} (${markdownLineText(source.path)}) [authority: ${source.authority}; sharedBy: ${markdownLineText(source.sharedBy)}]`)),
       "",
       "## Feedback (Approve/Reject)",
       ...feedbackLines,

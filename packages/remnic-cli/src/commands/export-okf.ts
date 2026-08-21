@@ -34,22 +34,10 @@ export async function runExportOkfBinaryCommand(rest: string[]): Promise<void> {
     try {
       const rawConfig = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {};
       config = parseConfig(resolveRemnicConfigRecord(rawConfig));
-    } catch (err) {
-      // parseConfig error strings embed raw config values — an unresolved
-      // ${...} placeholder is the key's own text — so err.message must not
-      // reach console output (CodeQL js/clear-text-logging).
-      //
-      // Nothing derived from the config is logged either. Three earlier
-      // attempts each failed: redacting the parsed object (taint analysis
-      // cannot see through a generic redactor, and a key deny-list is only as
-      // complete as its last edit), describing its shape (still reads every
-      // value), and scanning the file text for key names (CodeQL treats the
-      // text as sensitive once a credential is parsed out of it, and a
-      // malformed file repeatedly let a value be read as a key). The only
-      // amount of config-derived logging that is safe is none.
-      console.error(
-        `export-okf: failed to load config at ${configPath} (${err instanceof Error ? err.name : "unknown error"})`,
-      );
+    } catch {
+      // parseConfig error strings can embed raw config values (including
+      // resolved secrets), so this path must only emit fixed text.
+      console.error("export-okf: failed to load config");
       console.error("  config values are never printed; inspect the file directly");
       process.exitCode = 1;
       return;
@@ -71,8 +59,8 @@ export async function runExportOkfBinaryCommand(rest: string[]): Promise<void> {
     });
     if (result.plaintextWarning) console.log("PLAINTEXT EXPORT: the OKF bundle is unencrypted.");
     console.log(`OKF export: ${result.exported} concepts, ${result.excluded} excluded`);
-  } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err));
+  } catch {
+    console.error("export-okf: command failed");
     process.exitCode = 1;
   } finally {
     orchestrator?.abortDeferredInit();
