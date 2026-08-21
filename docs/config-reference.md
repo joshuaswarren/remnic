@@ -1189,21 +1189,28 @@ into a create-or-update decision:
 3. On a `merge` verdict, validate the returned target id against the candidate
    set, snapshot the target as a page version with trigger `semantic-merge`,
    then update the memory **in place** (same id and path) with a
-   compare-and-swap against the exact body the judge was shown, stamp
-   `derived_via: merge`, bump `reinforcement_count`, append the incoming fact's
-   provenance `sources`, resync the fact-content hash index, and reindex.
+   compare-and-swap against the exact body the judge was shown, then stamp
+   `derived_via: merge`, bump `reinforcement_count`, and append the incoming
+   fact's provenance `sources` through the conditional frontmatter API — a
+   second compare-and-swap, so provenance can only ever land on the merged
+   body this run committed — and resync the fact-content hash index and
+   reindex.
 4. Any doubt — no in-band candidate, fabricated target id, empty or oversized
    merged content, judge error or timeout, inactive target, a target another
    writer changed after it was judged, failed snapshot or update — creates the
    new fact exactly as before. The unsafe default is always *create*, and the
    merged entry is recoverable from the page-version snapshot. When a content
-   update commits but its provenance patch fails, the pre-merge body is
-   restored automatically before falling back to create, so the fact is never
-   both merged and written again. If that restore cannot run either — another
-   writer landed on the target in between — the outcome is reported as a merge
-   rather than a create, so the fact is still never written twice; the target
-   then holds merged text without the incoming provenance and reinforcement
-   metadata, and the error log names the page version to recover from.
+   update commits but its provenance patch fails, storage is re-read before
+   anything is reported: if the target still holds this run's merged body it is
+   restored to the pre-merge text and the outcome falls back to create, and if
+   another writer has already replaced that body the restore is skipped — that
+   writer's content is never clobbered — and the outcome is likewise a create,
+   because nothing of this merge remains. Only when the merged body is still
+   present and cannot be restored, or the target cannot be read at all, is the
+   outcome reported as a merge rather than a create, so the fact is still never
+   written twice; the target then holds merged text without the incoming
+   provenance and reinforcement metadata, and the error log names the page
+   version to recover from.
 
 Merging requires page versioning (`versioningEnabled`): without it there is no
 pre-merge snapshot to roll back to, so the merge is refused and the fact is

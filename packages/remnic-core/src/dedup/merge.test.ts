@@ -25,6 +25,7 @@ import {
   type MergeJudgeRawVerdict,
 } from "./merge.js";
 import type { SemanticDedupHit } from "./semantic.js";
+import { invalidationCommitFingerprint } from "../storage/deletion-revision-store.js";
 
 // The merge snapshot trigger must stay a literal union: a widened
 // `VersionTrigger` (e.g. annotated `readonly string[]`) would let an unknown
@@ -299,6 +300,12 @@ async function harness(
     verdict?: MergeJudgeRawVerdict;
     /** Simulate a concurrent writer landing between the CAS read and write. */
     mutateOnWrite?: string;
+    /**
+     * Simulate a concurrent writer replacing the target between the content
+     * commit and the provenance patch — the window the id-keyed patch left
+     * open.
+     */
+    mutateAtPatch?: string;
     /** Force the frontmatter patch to fail after the content update commits. */
     frontmatterFails?: boolean;
     /** Force the automatic rollback of that committed content to fail. */
@@ -339,12 +346,26 @@ async function harness(
     state = { ...state, content };
     await writeFile(targetPath, `---\nid: fact-target\ncategory: fact\n---\n\n${content}\n`, "utf8");
   };
+  // Live state: reads come off the file, so a stub can neither invent a
+  // restore that never touched storage nor compare a snapshot against itself.
+  const read = async (): Promise<MemoryFile> => {
+    const raw = await readFile(targetPath, "utf8");
+    const body = raw.slice(raw.indexOf("---", 3) + 4).trim();
+    return { path: targetPath, frontmatter: state.frontmatter, content: body };
+  };
+  const unchanged = async (expected: MemoryFile): Promise<boolean> => {
+    const current = await read();
+    // The production compare, not a content-only approximation (checklist #21).
+    return invalidationCommitFingerprint(current) === invalidationCommitFingerprint(expected);
+  };
   const storage = {
     dir,
-    getMemoryByIdIncludingArchived: async (id: string) => (id === state.frontmatter.id ? state : null),
-    // The id-keyed update: it re-reads and overwrites whatever is there now.
-    // Present so that a revert to this unsafe API fails on the assertions
-    // below rather than on a missing stub method.
+    getMemoryByIdIncludingArchived: async (id: string) =>
+      id === state.frontmatter.id ? await read() : null,
+    readMemoryByPath: async (p: string) => (p === targetPath ? await read() : null),
+    // The id-keyed APIs: they re-read and overwrite/stamp whatever is there
+    // now. Present so that a revert to either unsafe call fails on the
+    // assertions below rather than on a missing stub method.
     updateMemory: async (id: string, content: string, options?: { actor?: string }) => {
       if (id !== state.frontmatter.id) return false;
       if (overrides.mutateOnWrite !== undefined && options?.actor === "semantic-merge") {
@@ -353,6 +374,10 @@ async function harness(
       calls.contentUpdates.push({ id, content, actor: options?.actor });
       await commit(content);
       return true;
+    },
+    updateMemoryFrontmatter: async (id: string, patch: Partial<MemoryFrontmatter>) => {
+      calls.frontmatterPatches.push({ id, patch });
+      return overrides.frontmatterFails !== true;
     },
     // Signature-faithful to StorageManager.updateMemoryIfUnchanged: the
     // compare is on the caller's snapshot, not on the id.
@@ -365,13 +390,21 @@ async function harness(
       if (overrides.mutateOnWrite !== undefined && options?.actor === "semantic-merge") {
         await commit(overrides.mutateOnWrite);
       }
-      if (expected.content !== state.content) return false;
+      if (!(await unchanged(expected))) return false;
       calls.contentUpdates.push({ id: expected.frontmatter.id, content, actor: options?.actor });
       await commit(content);
       return true;
     },
-    updateMemoryFrontmatter: async (id: string, patch: Partial<MemoryFrontmatter>) => {
-      calls.frontmatterPatches.push({ id, patch });
+    // Signature-faithful to StorageManager.writeMemoryFrontmatterIfUnchanged.
+    writeMemoryFrontmatterIfUnchanged: async (
+      expected: MemoryFile,
+      patch: Partial<MemoryFrontmatter>,
+    ) => {
+      // A concurrent writer inside the patch window: after the caller's
+      // verifying read, before storage takes its own lock.
+      if (overrides.mutateAtPatch !== undefined) await commit(overrides.mutateAtPatch);
+      if (!(await unchanged(expected))) return false;
+      calls.frontmatterPatches.push({ id: expected.frontmatter.id, patch });
       return overrides.frontmatterFails !== true;
     },
     removeFactContentHashesForMemories: async (memories: MemoryFile[]) => {
@@ -626,7 +659,7 @@ test("applySemanticMergeAtPersist: a failed compare-and-swap creates instead of 
   assert.equal(onDisk.includes(MERGED), false);
 });
 
-// ── Finding 3: a failed frontmatter patch rolls the content back ─────────────
+// ── Finding 3: a failed frontmatter patch really restores the body ───────────
 
 test("applySemanticMergeAtPersist: a failed frontmatter patch restores the pre-merge body", async () => {
   const h = await harness({ frontmatterFails: true });
@@ -638,8 +671,12 @@ test("applySemanticMergeAtPersist: a failed frontmatter patch restores the pre-m
     judgeCall: (options) => acceptingJudge(options),
   });
   // Reporting `created` is only honest once the target no longer holds the
-  // merged text — otherwise the caller writes a duplicate.
+  // merged text — otherwise the caller writes a duplicate. Read the body back
+  // out of storage: a rollback that only claimed success would pass an
+  // assertion on the recorded calls alone.
   assert.deepEqual(outcome, { action: "created", reason: "update_failed" });
+  const restored = await h.storage.getMemoryByIdIncludingArchived("fact-target");
+  assert.equal(restored?.content, EXISTING);
   const onDisk = await readFile(h.target.path, "utf8");
   assert.equal(onDisk.includes(EXISTING), true);
   assert.equal(onDisk.includes(MERGED), false);
@@ -648,6 +685,39 @@ test("applySemanticMergeAtPersist: a failed frontmatter patch restores the pre-m
     { id: "fact-target", content: EXISTING, actor: "semantic-merge-rollback" },
   ]);
   // Neither hash resync nor reindex may run for a merge that did not stand.
+  assert.deepEqual(h.calls.hashRemovals, []);
+  assert.deepEqual(h.calls.reindexed, []);
+});
+
+test("applySemanticMergeAtPersist: a writer inside the patch window keeps its body and blocks a false merge", async () => {
+  const RACED = "Billing service deploys are paused during freeze weeks.";
+  // Another writer replaces the target after the content commit and after the
+  // verifying read — the window an id-keyed frontmatter patch left open. That
+  // patch would have stamped this merge's provenance onto the other writer's
+  // body and still returned `merged`, so the caller would drop the fact.
+  const h = await harness({ mutateAtPatch: RACED });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  // Never `merged`: the merged body was overwritten, so the fact is unwritten.
+  assert.deepEqual(outcome, { action: "created", reason: "update_failed" });
+  // No provenance was attached to a body this merge never composed.
+  assert.deepEqual(h.calls.frontmatterPatches, []);
+  // The other writer's body survives verbatim — the rollback must not treat
+  // someone else's content as its own to revert.
+  const current = await h.storage.getMemoryByIdIncludingArchived("fact-target");
+  assert.equal(current?.content, RACED);
+  assert.deepEqual(
+    h.calls.contentUpdates.map((c) => c.actor),
+    ["semantic-merge"],
+  );
+  const onDisk = await readFile(h.target.path, "utf8");
+  assert.equal(onDisk.includes(MERGED), false);
+  assert.equal(onDisk.includes(EXISTING), false);
   assert.deepEqual(h.calls.hashRemovals, []);
   assert.deepEqual(h.calls.reindexed, []);
 });

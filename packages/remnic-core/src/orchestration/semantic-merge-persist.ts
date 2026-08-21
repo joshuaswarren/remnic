@@ -39,7 +39,7 @@ import { REFUSED_MERGE_CATEGORIES } from "../dedup/merge-on-write.js";
 import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import { resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
 import type { StorageManager } from "../index.js";
-import type { ProvenanceSource } from "../types.js";
+import type { MemoryFile, ProvenanceSource } from "../types.js";
 import type { ExtractionPersistDeps } from "./extraction-persist-deps.js";
 
 export type SemanticMergeCreateReason =
@@ -97,18 +97,42 @@ function versioningConfigFrom(deps: ExtractionPersistDeps): VersioningConfig {
 }
 
 /**
- * Restore the pre-merge body after a committed content update whose
- * frontmatter patch failed. Compare-and-swap against the CURRENT state so a
- * third writer that landed after the merge is never clobbered by the
- * rollback; `false` means the target still holds merged text.
+ * Re-read the target through the SAME reader the storage compare-and-swaps
+ * use, so a snapshot handed to one of them carries an identical fingerprint
+ * basis. Null means the file no longer holds this memory, which no caller may
+ * read as "unchanged".
  */
-async function restorePreMergeContent(
+async function readTargetSnapshot(
   storage: StorageManager,
-  target: { path: string; content: string; frontmatter: { id: string } },
+  target: MemoryFile,
+): Promise<MemoryFile | null> {
+  const current = await storage.readMemoryByPath(target.path);
+  if (!current || current.frontmatter.id !== target.frontmatter.id) return null;
+  return current;
+}
+
+/**
+ * Undo a merged body whose provenance patch never landed, and report what is
+ * actually true of storage afterwards: `true` means the target no longer holds
+ * unprovenanced merged text, so the caller may honestly create the fact.
+ *
+ * Three states, because only one of them is ours to undo:
+ *  - the body is still our merged text → restore the pre-merge body under a
+ *    compare-and-swap on the re-read snapshot;
+ *  - another writer already replaced it → nothing of ours remains, so the
+ *    restore is skipped rather than clobbering that writer's body;
+ *  - the target is unreadable → unverifiable, so assume the merged text stands
+ *    and refuse to create a duplicate.
+ */
+async function revertMergedContent(
+  storage: StorageManager,
+  target: MemoryFile,
+  mergedContent: string,
 ): Promise<boolean> {
   try {
-    const current = await storage.getMemoryByIdIncludingArchived(target.frontmatter.id);
-    if (!current || current.path !== target.path) return false;
+    const current = await readTargetSnapshot(storage, target);
+    if (!current) return false;
+    if (current.content !== mergedContent) return true;
     return await storage.updateMemoryIfUnchanged(current, target.content, {
       actor: "semantic-merge-rollback",
     });
@@ -239,21 +263,38 @@ export async function applySemanticMergeAtPersist(
     });
     if (!updated) return { action: "created", reason: "target_changed" };
     contentCommitted = true;
-    const patched = await options.storage.updateMemoryFrontmatter(decision.targetId, {
-      updated: frontmatter.updated,
-      derived_via: frontmatter.derived_via,
-      reinforcement_count: frontmatter.reinforcement_count,
-      sources: frontmatter.sources,
-    });
-    if (!patched) throw new Error("frontmatter patch rejected");
+    // The provenance patch must land on OUR merged body. An id-keyed patch
+    // re-reads and stamps whatever the latest row holds, so a writer landing
+    // after the content commit would receive this merge's provenance while
+    // its own body stood — and the caller would still be told "merged".
+    // Verify the snapshot, then patch it through the conditional API so the
+    // window between the verify and the patch is closed by storage itself.
+    const merged = await readTargetSnapshot(options.storage, target);
+    if (!merged || merged.content !== decision.mergedContent) {
+      throw new Error("target replaced before the provenance patch");
+    }
+    const patched = await options.storage.writeMemoryFrontmatterIfUnchanged(
+      merged,
+      {
+        updated: frontmatter.updated,
+        derived_via: frontmatter.derived_via,
+        reinforcement_count: frontmatter.reinforcement_count,
+        sources: frontmatter.sources,
+      },
+      { actor: "semantic-merge" },
+    );
+    if (!patched) throw new Error("frontmatter patch rejected (target changed)");
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
-    // Content already committed means the merged text is IN the target.
-    // Reporting `created` here would write the fact a second time AND leave
-    // the merged claims without the incoming provenance and reinforcement
-    // metadata, so the pre-merge body is restored first; only a successful
-    // restore may fall back to create.
-    if (contentCommitted && !(await restorePreMergeContent(options.storage, target))) {
+    // A committed content update means the merged text may be IN the target.
+    // Reporting `created` while it is would write the fact a second time and
+    // leave those claims without the incoming provenance, so `created` is
+    // reachable only once storage has been re-read and confirms the target no
+    // longer holds this merge's unprovenanced body.
+    if (
+      contentCommitted &&
+      !(await revertMergedContent(options.storage, target, decision.mergedContent))
+    ) {
       log.error(
         `semantic-merge: ${decision.targetId} holds merged content without provenance metadata and the rollback failed (${detail}); snapshot ${versionId} holds the pre-merge state — recover with revertToVersion. Not creating a duplicate fact.`,
       );
