@@ -6,7 +6,7 @@ import path from "node:path";
 
 import { StorageManager } from "../index.js";
 import { parseConfig } from "../config.js";
-import { mergeTargetHasPromotedCopies } from "./extraction-persist-promotion.js";
+import { createBatchPromotedCopyProbe, mergeTargetHasPromotedCopies } from "./extraction-persist-promotion.js";
 import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
 
 // Synthetic fixtures only — no real paths, hosts, or memory content.
@@ -140,4 +140,87 @@ test("mergeTargetHasPromotedCopies: an unauthorized profile target's historical 
     true,
     "current authorization must not drop a known promotion layer from the scan",
   );
+});
+
+test("mergeTargetHasPromotedCopies: a layer removed from today's autoPromote targets still blocks (finding E)", async () => {
+  // The copy was promoted while the layer was listed in autoPromote.targets;
+  // the operator has since removed it. The layer is still a resolved
+  // promotionTarget, so historical-copy detection must keep scanning it —
+  // today's selection policy must not blind the scan.
+  const source = new StorageManager(await mkdtemp(path.join(os.tmpdir(), "remnic-mc-src-")));
+  const team = new StorageManager(await mkdtemp(path.join(os.tmpdir(), "remnic-mc-team-")));
+  await source.ensureDirectories();
+  await team.ensureDirectories();
+  await team.writeMemory("fact", PROMOTED_BODY, { source: "test", sourceMemoryId: "fact-target" });
+  const args = {
+    ...argsFor({
+      source,
+      router: {
+        storageFor: async (namespace: string) => {
+          if (namespace === "team" || namespace === "shared") return team;
+          throw new Error(`unexpected namespace "${namespace}"`);
+        },
+      },
+    }),
+    scopeProfileWritePlan: {
+      profileId: "synthetic",
+      profile: { autoPromote: { targets: [] } },
+      promotionTargets: [
+        { target: "team-project", namespace: "team", authorized: true, reason: "ok" },
+      ],
+    } as unknown as ResolvedScopeProfilePlan,
+  };
+  assert.equal(
+    await mergeTargetHasPromotedCopies(args),
+    true,
+    "a copy on a deselected layer still blocks — detection scans history, policy governs writes",
+  );
+});
+
+test("createBatchPromotedCopyProbe: one scan per namespace per batch, not per fact (finding F)", async () => {
+  const source = new StorageManager(await mkdtemp(path.join(os.tmpdir(), "remnic-mc-src-")));
+  const team = new StorageManager(await mkdtemp(path.join(os.tmpdir(), "remnic-mc-team-")));
+  const shared = new StorageManager(await mkdtemp(path.join(os.tmpdir(), "remnic-mc-shared-")));
+  await source.ensureDirectories();
+  await team.ensureDirectories();
+  await shared.ensureDirectories();
+  await team.writeMemory("fact", PROMOTED_BODY, { source: "test", sourceMemoryId: "fact-target" });
+  let storageForCalls = 0;
+  const probe = createBatchPromotedCopyProbe(
+    parseConfig({ memoryDir: source.dir, sharedNamespace: "shared" }),
+    () => ({
+      storageFor: async (namespace: string) => {
+        storageForCalls++;
+        if (namespace === "team") return team;
+        if (namespace === "shared") return shared;
+        throw new Error(`unexpected namespace "${namespace}"`);
+      },
+    }),
+    {
+      profileId: "synthetic",
+      profile: { autoPromote: { targets: ["team-project"] } },
+      promotionTargets: [
+        { target: "team-project", namespace: "team", authorized: true, reason: "ok" },
+      ],
+    } as unknown as ResolvedScopeProfilePlan,
+  );
+  // Three judge-approved facts in one batch, each probing the same target:
+  // every probe must see the historical copy, and the team corpus scan must
+  // have run exactly once (the hit short-circuits before shared).
+  for (let factIndex = 0; factIndex < 3; factIndex++) {
+    assert.equal(
+      await probe.check(source, "fact-target"),
+      true,
+      `fact ${factIndex}: the historical copy must block`,
+    );
+  }
+  assert.equal(storageForCalls, 1, "the team namespace scanned once — not once per fact");
+  // A fact with no copy anywhere probes PAST team into shared, once:
+  assert.equal(await probe.check(source, "fact-without-copy"), false);
+  assert.equal(await probe.check(source, "fact-without-copy"), false);
+  assert.equal(storageForCalls, 2, "the shared namespace also scanned once per batch");
+  // A promotion this batch performed must force the next fact to rescan.
+  probe.invalidate();
+  assert.equal(await probe.check(source, "fact-target"), true);
+  assert.equal(storageForCalls, 3, "invalidation drops the cache; the next fact rescans");
 });

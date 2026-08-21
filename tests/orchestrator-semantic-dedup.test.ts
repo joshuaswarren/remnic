@@ -666,3 +666,69 @@ test("semantic merge: a currently-eligible merged extraction is still promoted (
   assert.ok(copy, "a currently-eligible merged extraction must be promoted to shared");
   assert.ok(copy!.content.includes("06:00"), "the promoted copy carries the incoming claims");
 });
+
+test("semantic merge: the promoted shared copy serves the committed merged body (finding A)", async () => {
+  installCapturingLogger();
+  // The seed carries a claim ("after an audit sign-off") the incoming fact
+  // does NOT contain, so a copy holding only the incoming text is
+  // distinguishable from one holding the merged body.
+  const TARGET = "The inventory service restocks after an audit sign-off.";
+  const INCOMING = "The inventory service restocks every first Monday at 06:00.";
+  const { orchestrator, storage, memoryDir } = await makeOrchestrator({
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    autoPromoteToSharedEnabled: true,
+    semanticMerge: { enabled: true },
+    versioningEnabled: true,
+  });
+  const targetId = "fact-promote-body-target";
+  await seedMergeTarget(memoryDir, targetId, TARGET);
+  const judge = { calls: 0 };
+  installMergingJudge(orchestrator, judge);
+  orchestrator.embeddingFallback = {
+    async isAvailable() {
+      return true;
+    },
+    async search(query: string): Promise<Array<{ id: string; score: number; path: string }>> {
+      return query === INCOMING ? [{ id: targetId, score: 0.85, path: "" }] : [];
+    },
+    async indexFile() {
+      /* noop */
+    },
+    async removeFromIndex() {
+      /* noop */
+    },
+  };
+
+  const result: ExtractionResult = {
+    facts: [{ content: INCOMING, category: "fact", tags: [], confidence: 0.95 }],
+    entities: [],
+    relationships: [],
+    questions: [],
+    profileUpdates: [],
+  } as ExtractionResult;
+  const { persistedIds } = await orchestrator.persistExtraction(result, storage, null);
+
+  assert.equal(judge.calls, 1, "the merge judge must have run");
+  assert.equal(persistedIds.length, 0, "the fact merged into the target, no new fragment");
+  const mergedTargetBody = (await storage.getMemoryByIdIncludingArchived(targetId))?.content;
+  assert.ok(mergedTargetBody, "the merged target body must be readable");
+  assert.ok(mergedTargetBody.includes("audit sign-off"), "the target holds the old claim");
+  assert.ok(mergedTargetBody.includes("06:00"), "the target holds the new claim");
+  // Finding A: the promoted copy's `sourceMemoryId` points at a memory
+  // holding BOTH claims, so the copy must serve that exact committed body —
+  // promoting `fact.content` would leave the copy holding only the incoming
+  // claims while later merges reconcile against the richer source.
+  const sharedStorage = await orchestrator.getStorage("shared");
+  const copy = (await sharedStorage.readAllMemories()).find(
+    (m: { frontmatter: { sourceMemoryId?: string } }) =>
+      m.frontmatter.sourceMemoryId === targetId,
+  );
+  assert.ok(copy, "the merged extraction must be promoted to shared");
+  assert.equal(
+    copy!.content,
+    mergedTargetBody,
+    "the promoted copy must serve the committed merged body, not the incoming fact",
+  );
+});

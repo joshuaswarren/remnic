@@ -362,6 +362,12 @@ async function harness(
     targetSubject?: MemorySubject;
     /** Stamp `origin` on the target's frontmatter (finding A). */
     targetOrigin?: string;
+    /** Stamp `provenance` on the target's frontmatter (finding B). */
+    targetProvenance?: "verified" | "unverified" | "none";
+    /** Stamp `faithfulness` on the target's frontmatter (finding C). */
+    targetFaithfulness?: { verdict: "entailed" | "contradicted" | "unsupported" | "unchecked" | "skipped_no_span" };
+    /** Stamp `sourceConnector` on the target's frontmatter (finding D). */
+    targetSourceConnector?: string;
     lookupHits?: SemanticDedupHit[];
     mutateOnWrite?: string;
     /**
@@ -388,6 +394,9 @@ async function harness(
     ...(overrides.targetToolScoped ? { toolScoped: true as const } : {}),
     ...(overrides.targetSubject ? { subject: overrides.targetSubject } : {}),
     ...(overrides.targetOrigin ? { origin: overrides.targetOrigin } : {}),
+    ...(overrides.targetProvenance ? { provenance: overrides.targetProvenance } : {}),
+    ...(overrides.targetFaithfulness ? { faithfulness: overrides.targetFaithfulness } : {}),
+    ...(overrides.targetSourceConnector ? { sourceConnector: overrides.targetSourceConnector } : {}),
     sources: [
       {
         sessionKey: "project/example/2026-08-20T00:00:00.000Z",
@@ -523,7 +532,7 @@ test("applySemanticMergeAtPersist: merges in place with snapshot, provenance, ha
     judgeCall: (options) => acceptingJudge(options),
   });
 
-  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", provenancePatched: true });
+  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", mergedContent: MERGED, provenancePatched: true });
   // Same id, same file path — an update, never a new fragment.
   assert.deepEqual(h.calls.contentUpdates, [
     { id: "fact-target", content: MERGED, actor: "semantic-merge" },
@@ -812,6 +821,7 @@ test("applySemanticMergeAtPersist: an unrollbackable patch failure reports merge
   assert.deepEqual(outcome, {
     action: "merged",
     targetId: "fact-target",
+    mergedContent: MERGED,
     provenancePatched: false,
   });
   assert.equal(await readFile(h.target.path, "utf8").then((t) => t.includes(MERGED)), true);
@@ -870,7 +880,7 @@ test("applySemanticMergeAtPersist: metadata the target already carries still mer
     // write path would persist is lost, so the merge runs.
     incomingMetadata: { tags: [], importanceScore: 0, provenanceStrength: "none" },
   });
-  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", provenancePatched: true });
+  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", mergedContent: MERGED, provenancePatched: true });
   assert.deepEqual(h.calls.contentUpdates, [
     { id: "fact-target", content: MERGED, actor: "semantic-merge" },
   ]);
@@ -932,7 +942,7 @@ test("applySemanticMergeAtPersist: real storage registers the merged body in the
     sources: [INCOMING_SOURCE],
     judgeCall: (options) => acceptingJudge(options),
   });
-  assert.deepEqual(outcome, { action: "merged", targetId: created.id, provenancePatched: true });
+  assert.deepEqual(outcome, { action: "merged", targetId: created.id, mergedContent: MERGED, provenancePatched: true });
   // The merged body is registered in the exact-dedup index under the same
   // canonical form the write path hashes; the pre-merge identity is gone.
   assert.equal(await storage.hasFactContentHash(MERGED), true);
@@ -1063,7 +1073,7 @@ test("applySemanticMergeAtPersist: a tool-scoped target keeps its stricter scope
     incomingMetadata: { toolScoped: true },
     judgeCall: (options) => acceptingJudge(options),
   });
-  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", provenancePatched: true });
+  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", mergedContent: MERGED, provenancePatched: true });
   // The merge patch carries no `toolScoped` key at all — the stricter flag
   // survives because the patch never touches it, never because it is rewritten.
   assert.equal(h.calls.frontmatterPatches.length, 1);
@@ -1105,7 +1115,7 @@ test("applySemanticMergeAtPersist: an identical subject still merges", async () 
     incomingMetadata: { subject: "agent" },
     judgeCall: (options) => acceptingJudge(options),
   });
-  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", provenancePatched: true });
+  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", mergedContent: MERGED, provenancePatched: true });
 });
 
 // ── Finding C: promoted copies are reconciled only by the create path ────────
@@ -1179,7 +1189,7 @@ test("applySemanticMergeAtPersist: an identical origin still merges", async () =
     incomingMetadata: { origin: "user" },
     judgeCall: (options) => acceptingJudge(options),
   });
-  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", provenancePatched: true });
+  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", mergedContent: MERGED, provenancePatched: true });
 });
 
 test("applySemanticMergeAtPersist: a user-origin fact still merges into a legacy unstamped target", async () => {
@@ -1194,7 +1204,7 @@ test("applySemanticMergeAtPersist: a user-origin fact still merges into a legacy
   // The unstamped target renders as `unknown` (fenced) at recall, so the
   // merged body is fenced at least as strictly as the incoming fact — no
   // escalation, and legacy targets keep receiving user-origin facts.
-  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", provenancePatched: true });
+  assert.deepEqual(outcome, { action: "merged", targetId: "fact-target", mergedContent: MERGED, provenancePatched: true });
 });
 
 test("applySemanticMergeAtPersist: shadow-mode create telemetry carries no fact content (finding B)", async () => {
@@ -1256,4 +1266,180 @@ test("applySemanticMergeAtPersist: an absent incoming subject never reinforces a
     [],
     "an unclassified fact must not bump reinforcement_count on an agent target",
   );
+});
+
+// ── Final round: the create-path parity gate ─────────────────────────────────
+
+test("applySemanticMergeAtPersist: a merged outcome carries the committed merged body (finding A)", async () => {
+  const h = await harness();
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  if (outcome.action !== "merged") {
+    assert.fail(`expected a merge, got ${JSON.stringify(outcome)}`);
+  }
+  // The caller's merged-target promotion copies THIS body. It is the judge's
+  // merged text — the committed union of old and new claims — never the
+  // incoming fact alone.
+  assert.equal(outcome.mergedContent, MERGED);
+  assert.notEqual(outcome.mergedContent, INCOMING);
+  const committed = await h.storage.getMemoryByIdIncludingArchived("fact-target");
+  assert.equal(committed?.content, outcome.mergedContent);
+});
+
+test("applySemanticMergeAtPersist: a weaker incoming provenance retags the merged body, never upgrades it (finding B)", async () => {
+  const h = await harness({ targetProvenance: "verified" });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    incomingMetadata: { provenanceStrength: "unverified" },
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcome, {
+    action: "merged",
+    targetId: "fact-target",
+    mergedContent: MERGED,
+    provenancePatched: true,
+  });
+  // trust-score.ts maps `verified` to the maximum provenance contribution;
+  // the combined body now holds unverified claims, so the tag must drop.
+  assert.equal(
+    h.calls.frontmatterPatches[0]?.patch.provenance,
+    "unverified",
+    "the merged body must not stay tagged verified",
+  );
+});
+
+test("applySemanticMergeAtPersist: an unprovenanced incoming fact downgrades a verified target to none (finding B)", async () => {
+  // Extraction omits `provenance` when the strength is "none", so an absent
+  // incoming value is the weakest case, not a neutral one.
+  const h = await harness({ targetProvenance: "verified" });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    incomingMetadata: {},
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.equal(outcome.action, "merged");
+  assert.equal(h.calls.frontmatterPatches[0]?.patch.provenance, "none");
+});
+
+test("applySemanticMergeAtPersist: equal provenance merges without touching the tag (finding B)", async () => {
+  const h = await harness({ targetProvenance: "unverified" });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    incomingMetadata: { provenanceStrength: "unverified" },
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.equal(outcome.action, "merged");
+  assert.equal(
+    "provenance" in (h.calls.frontmatterPatches[0]?.patch ?? {}),
+    false,
+    "an equal tag needs no rewrite",
+  );
+});
+
+test("applySemanticMergeAtPersist: an incoming faithfulness verdict the target cannot preserve bypasses the merge (finding C)", async () => {
+  // Shadow mode: the contradicted fact carries a verdict but no
+  // pending_review status, so only the parity gate can catch it. The target
+  // keeps `entailed`; the trust stage would keep injecting the combined
+  // body instead of applying the incoming negative evidence.
+  const h = await harness({ targetFaithfulness: { verdict: "entailed" } });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    incomingMetadata: { faithfulness: { verdict: "contradicted" } },
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcome, { action: "created", reason: "metadata_unpreservable" });
+  assert.deepEqual(h.calls.contentUpdates, []);
+  assert.deepEqual(h.calls.frontmatterPatches, []);
+});
+
+test("applySemanticMergeAtPersist: an effectively identical faithfulness verdict still merges (finding C)", async () => {
+  // `skipped_no_span` and `unchecked` both read as "unchecked" to the trust
+  // stage, so the verdict IS preserved and the merge proceeds.
+  const h = await harness({ targetFaithfulness: { verdict: "skipped_no_span" } });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    incomingMetadata: { faithfulness: { verdict: "unchecked" } },
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.equal(outcome.action, "merged");
+});
+
+test("applySemanticMergeAtPersist: no incoming verdict leaves the target's own verdict describing its own claims (finding C)", async () => {
+  // Faithfulness gate off: the create path would stamp nothing, so the
+  // target's prior verdict on its prior claims survives untouched.
+  const h = await harness({ targetFaithfulness: { verdict: "entailed" } });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.equal(outcome.action, "merged");
+  assert.equal(
+    "faithfulness" in (h.calls.frontmatterPatches[0]?.patch ?? {}),
+    false,
+  );
+});
+
+test("applySemanticMergeAtPersist: an unscoped fact never merges into a connector-owned cold target (finding D)", async () => {
+  // The lookup hit carries NO sourceConnector — exactly what the hot-only
+  // enrichment in persistence-index.ts produces for a cold-tier target or a
+  // failed enrichment read. The lookup-side scope check therefore sees two
+  // unscoped sides and passes; only the cold-aware re-read of the target can
+  // supply the authoritative connector and fail the merge closed.
+  const h = await harness({
+    targetSourceConnector: "connector-a",
+    lookupHits: [{ id: "fact-target", score: 0.85 }],
+  });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.deepEqual(outcome, { action: "created", reason: "metadata_unpreservable" });
+  assert.deepEqual(h.calls.contentUpdates, [], "the connector-owned body must keep its claims");
+  assert.equal(
+    (await readFile(h.target.path, "utf8")).includes(MERGED),
+    false,
+    "the target file must not carry the merged body",
+  );
+});
+
+test("applySemanticMergeAtPersist: an identical connector scope still merges (finding D)", async () => {
+  const h = await harness({
+    targetSourceConnector: "connector-a",
+    lookupHits: [{ id: "fact-target", score: 0.85, sourceConnector: "connector-a" }],
+  });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    sourceConnector: "connector-a",
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.equal(outcome.action, "merged");
 });

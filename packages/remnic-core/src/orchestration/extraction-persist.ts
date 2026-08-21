@@ -102,8 +102,8 @@ import type {
   MemoryCategory,
 } from "../types.js";
 import {
+  createBatchPromotedCopyProbe,
   flushDeferredFactHashOnFailure,
-  mergeTargetHasPromotedCopies,
   profileAutoPromotionAllows,
   readActiveMemoriesBothTiers,
   shouldPromoteToShared,
@@ -175,6 +175,7 @@ export class ExtractionPersistCoordinator {
     >();
     const harmonicSourceInsertedAtBase = Date.now();
     let harmonicSourceOrder = 0;
+    const promotedCopyProbe = createBatchPromotedCopyProbe(this.deps.config, this.deps.getStorageRouter, scopeProfileWritePlan); // #2330 finding F: one promoted-copy scan per namespace per batch
 
   // Canonicalize stored content for dedup comparison: strip citations
   // (using the same template), sanitize, then normalize whitespace.
@@ -2547,14 +2548,13 @@ export class ExtractionPersistCoordinator {
             ? classifyMemoryKind(fact.content, fact.tags ?? [], writeCategory)
             : undefined;
 
-      // Normal write (no chunking). Cite once so memory and artifact copies share one timestamp; hash the RAW pre-citation text (a marker would defeat dedup).
-      // Merge-on-write (#2330): a judge-approved in-band match updates in place; uncarryable metadata (A), promoted copies (C), backend outage, and a novelty-add decision bypass to this write.
+      // Normal write (no chunking). Cite once so memory and artifact copies share one timestamp; hash the RAW pre-citation text. Merge-on-write (#2330): a judge-approved in-band match updates in place; uncarryable metadata, promoted copies, backend outage, and a novelty-add decision bypass to this write.
       const rawPersistBody = writeCategory === "procedure" ? buildProcedurePersistBody(fact.content, fact.procedureSteps) : fact.content;
       const citedFactContent = applyInlineCitation(rawPersistBody);
       const semanticMerge = await applySemanticMergeAtPersist(this.deps, {
         storage: targetStorage, content: fact.content, category: writeCategory, sources: fact.sources, sourceConnector: extractionSourceConnector,
-        incomingMetadata: { tags: [...fact.tags, ...injectionScreenTags], entityRef: fact.entityRef, structuredAttributes: fact.structuredAttributes, validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt, biTemporal: biTemporal !== undefined, importanceScore: importance.score, provenanceStrength: fact.provenance, toolScoped: factToolScoped, subject: factSubject, origin }, skip: contradictionDetected || faithfulnessEnforceStatus === "pending_review" || batchBackendUnavailable || novelty.decision === "add",
-        targetHasPromotedCopies: (targetId) => mergeTargetHasPromotedCopies({ config: this.deps.config, getStorageRouter: this.deps.getStorageRouter, scopeProfileWritePlan, sourceStorage: targetStorage, targetMemoryId: targetId }),
+        incomingMetadata: { tags: [...fact.tags, ...injectionScreenTags], entityRef: fact.entityRef, structuredAttributes: fact.structuredAttributes, validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt, biTemporal: biTemporal !== undefined, importanceScore: importance.score, provenanceStrength: fact.provenance, toolScoped: factToolScoped, subject: factSubject, origin, faithfulness: faithfulnessFm }, skip: contradictionDetected || faithfulnessEnforceStatus === "pending_review" || batchBackendUnavailable || novelty.decision === "add",
+        targetHasPromotedCopies: (targetId) => promotedCopyProbe.check(targetStorage, targetId),
       });
       if (semanticMerge.action === "created" && semanticMerge.reason === "backend_unavailable") batchBackendUnavailable = true; // arms the batch short circuit for the remaining facts
       if (semanticMerge.action === "merged") {
@@ -2563,7 +2563,7 @@ export class ExtractionPersistCoordinator {
         // B: the create path stores a verbatim artifact for qualifying writes; the merge must not drop it.
         await writeMergedVerbatimArtifact(this.deps, targetStorage, semanticMerge.targetId, { category: writeCategory, citedContent: citedFactContent, confidence: fact.confidence, tags: fact.tags, intent: inferredIntent ?? undefined, sourceConnector: extractionSourceConnector, origin, toolScoped: factToolScoped });
         // D: the probe above only bypasses targets that already have copies; with none, the create path's promotion must still run — anchored to the merged target, fail-open (the merge stands).
-        try { await promoteMemoryToShared({ sourceStorage: targetStorage, category: writeCategory, content: fact.content, confidence: fact.confidence, subject: factSubject, tags: fact.tags, entityRef: typeof fact.entityRef === "string" ? fact.entityRef : undefined, structuredAttributes: fact.structuredAttributes, sourceMemoryId: semanticMerge.targetId, importance, intentGoal: inferredIntent?.goal, intentActionType: inferredIntent?.actionType, intentEntityTypes: inferredIntent?.entityTypes, memoryKind, validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt, ...(biTemporal ? { observedAt: biTemporal.observedAt, eventTimeSource: biTemporal.eventTimeSource, ...(biTemporal.validUntil ? { invalidAt: biTemporal.validUntil } : {}) } : {}), source: extractionWriteSource, ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}) }); } catch (err) {
+        try { await promoteMemoryToShared({ sourceStorage: targetStorage, category: writeCategory, content: semanticMerge.mergedContent, confidence: fact.confidence, subject: factSubject, tags: fact.tags, entityRef: typeof fact.entityRef === "string" ? fact.entityRef : undefined, structuredAttributes: fact.structuredAttributes, sourceMemoryId: semanticMerge.targetId, importance, intentGoal: inferredIntent?.goal, intentActionType: inferredIntent?.actionType, intentEntityTypes: inferredIntent?.entityTypes, memoryKind, validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt, ...(biTemporal ? { observedAt: biTemporal.observedAt, eventTimeSource: biTemporal.eventTimeSource, ...(biTemporal.validUntil ? { invalidAt: biTemporal.validUntil } : {}) } : {}), source: extractionWriteSource, ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}) }); promotedCopyProbe.invalidate(); } catch (err) {
           log.warn(`persistExtraction: merged-target promotion failed open for ${semanticMerge.targetId}: ${err}`);
         }
         continue;
@@ -2692,7 +2692,7 @@ export class ExtractionPersistCoordinator {
         }
         // Faithfulness gate (#1576, chatgpt P2): skip promotion for a
         // pending_review fact so no active shared/profile copy bypasses the gate.
-        if (!postWriteGuard) await promoteMemoryToShared({
+        if (!postWriteGuard) { await promoteMemoryToShared({
           sourceStorage: targetStorage,
           category: writeCategory,
           content: fact.content,
@@ -2724,7 +2724,7 @@ export class ExtractionPersistCoordinator {
           ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
           ...(fact.provenance ? { provenance: fact.provenance } : {}),
           harmonicFact,
-        });
+        }); promotedCopyProbe.invalidate(); }
         // v8.2: graph edge building (fail-open). #1576: skip pending_review facts.
         if (graphCaps.multiGraphMemory && !postWriteGuard) {
           try {

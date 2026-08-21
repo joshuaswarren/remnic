@@ -44,7 +44,14 @@ import {
   resolvePresentationCapabilities,
   resolveRecallAuxiliaryCapabilities,
 } from "../capabilities.js";
-import type { MemoryCategory, MemoryFile, MemorySubject, ProvenanceSource } from "../types.js";
+import type {
+  FaithfulnessFrontmatter,
+  MemoryCategory,
+  MemoryFile,
+  MemorySubject,
+  ProvenanceSource,
+} from "../types.js";
+import { normalizeConnectorScope } from "../dedup/connector-scope.js";
 import type { StorageManager } from "../index.js";
 import type { ExtractionPersistDeps } from "./extraction-persist-deps.js";
 
@@ -63,6 +70,14 @@ export type SemanticMergePersistOutcome =
   | {
       action: "merged";
       targetId: string;
+      /**
+       * The committed merged body (finding A): the caller's merged-target
+       * promotion must copy THIS body — not the incoming fact — so the
+       * shared/profile copy serves the same claims its `sourceMemoryId`
+       * points at. Present on the degraded branch too, where the merged
+       * text is committed even though the provenance patch failed.
+       */
+      mergedContent: string;
       /**
        * False only in the degraded case where the content update committed,
        * the frontmatter patch failed, AND the automatic rollback could not
@@ -128,9 +143,18 @@ export interface ApplySemanticMergeOptions {
      * Authority origin the write path would stamp (finding A). The merge
      * patch has no carrier for `origin`, so the merged body would render
      * under the TARGET's authority at recall; a cross-origin merge is
-     * refused outright (see {@link mergeWouldLoseMetadata}).
+     * refused outright (see {@link createPathMergeParity}).
      */
     origin?: string;
+    /**
+     * Faithfulness verdict the write path would stamp (finding C). In
+     * shadow mode a contradicted/unsupported fact receives this frontmatter
+     * without pending_review status, so the verdict — not just the enforce
+     * status — gates parity: the merge patch cannot compose an honest
+     * verdict for a combined body, so an incoming verdict that differs from
+     * the target's effective one bypasses the merge.
+     */
+    faithfulness?: FaithfulnessFrontmatter;
   };
   /**
    * Finding C: async probe run after a merge verdict but before any
@@ -154,68 +178,163 @@ const PROVENANCE_STRENGTH_RANK: Record<string, number> = {
 };
 
 /**
- * Item A: true when the incoming fact carries extraction metadata that a
- * merge would silently discard. Fields the target already carries — a tag
- * subset, the same entity ref or validAt, an equal-or-lower importance, an
- * equal-or-weaker provenance — are already preserved, so only genuinely NEW
- * metadata bypasses the merge. Authority fields (`origin`, `subject`) are
- * compared on their EFFECTIVE values, because the merge patch carries
- * neither: absent resolves to the least-privileged form each guard applies.
+ * Create-path parity gate (final round, PR #2771). Nine review rounds all
+ * found the same defect class: the merge path did less, or something wider,
+ * than the create path. Instead of patching call sites, this ONE gate
+ * enumerates every trust/scope/verdict field the create path's write stamps
+ * (`writeSealedMemory` + extras in `extraction-persist.ts`) and decides,
+ * per field, whether the merge preserves it. A merge proceeds only when
+ * EVERY field is carried by the merge patch, preserved monotonically, or
+ * provably equal. Anything else — including anything unknown or unreadable —
+ * bypasses to a create, because a create is always safe and a merge is not.
+ *
+ * Field classification, from the create-path write:
+ *  - carried by the merge patch: content (judge-composed merged body),
+ *    sources (appended by buildMergeFrontmatterUpdate), contentHash
+ *    (restamped off the canonical merged form), status (a merge-eligible
+ *    fact is never pending_review — the caller skips — and the target is
+ *    re-verified active), provenance (only when downgraded to the
+ *    least-trusted side, see below).
+ *  - equality-required (bypass on mismatch): category (also enforced at
+ *    candidate resolution), entityRef, validAt, subject (effective),
+ *    sourceConnector (against the COLD-AWARE target snapshot, finding D),
+ *    faithfulness verdict (effective, finding C).
+ *  - monotone-preservable (bypass when the incoming side exceeds what the
+ *    target retains): tags (target must be a superset), importance score
+ *    (incoming may not exceed), provenance strength (incoming may not be
+ *    stronger — and a weaker incoming downgrades the target so the merged
+ *    body never carries trust its new claims did not earn, finding B).
+ *  - bypass-on-presence (no carrier exists at all): structuredAttributes,
+ *    bi-temporal bounds.
+ *  - escalation-refused: origin (an untrusted incoming origin may never
+ *    merge into a trusted target; equal or fence-safe mismatches may).
+ *  - scope-widening-refused: toolScoped (an unscoped target may never gain
+ *    tool-scoped claims; a scoped target keeps its stricter flag).
  */
-function mergeWouldLoseMetadata(
-  target: MemoryFile,
-  md: ApplySemanticMergeOptions["incomingMetadata"],
-  untrustedOrigins: readonly string[],
-): boolean {
-  if (!md) return false;
-  if (md.structuredAttributes && Object.keys(md.structuredAttributes).length > 0) return true;
-  if (md.biTemporal === true) return true;
-  if (md.entityRef !== undefined && md.entityRef !== target.frontmatter.entityRef) return true;
-  if (md.validAt !== undefined && md.validAt !== target.frontmatter.valid_at) return true;
+export type CreatePathMergeParity =
+  | { ok: true; provenanceFloor?: "verified" | "unverified" | "none" }
+  | { ok: false; field: string };
+
+/** Effective provenance rank; absent reads as "none" (legacy contract, types.ts). */
+function provenanceRank(value: string | undefined): number {
+  return PROVENANCE_STRENGTH_RANK[value ?? "none"] ?? 0;
+}
+
+/**
+ * Effective faithfulness verdict using the trust stage's own normalization
+ * (`skipped_no_span` reads as "unchecked"); undefined = gate never ran.
+ */
+function effectiveFaithfulness(
+  verdict: FaithfulnessFrontmatter["verdict"] | undefined,
+): FaithfulnessFrontmatter["verdict"] | undefined {
+  if (verdict === undefined) return undefined;
+  return verdict === "skipped_no_span" ? "unchecked" : verdict;
+}
+
+export function createPathMergeParity(input: {
+  /** Cold-aware committed snapshot of the merge target (never a lookup hit). */
+  target: MemoryFile;
+  incoming: ApplySemanticMergeOptions["incomingMetadata"];
+  /** The incoming fact's connector scope (finding D). */
+  sourceConnector?: string;
+  untrustedOrigins: readonly string[];
+}): CreatePathMergeParity {
+  const { target, untrustedOrigins } = input;
+  const md = input.incoming;
+  if (md?.structuredAttributes && Object.keys(md.structuredAttributes).length > 0) {
+    return { ok: false, field: "structuredAttributes" };
+  }
+  if (md?.biTemporal === true) return { ok: false, field: "biTemporal" };
+  if (md?.entityRef !== undefined && md.entityRef !== target.frontmatter.entityRef) {
+    return { ok: false, field: "entityRef" };
+  }
+  if (md?.validAt !== undefined && md.validAt !== target.frontmatter.valid_at) {
+    return { ok: false, field: "validAt" };
+  }
   const targetTags = new Set(target.frontmatter.tags ?? []);
-  if ((md.tags ?? []).some((tag) => !targetTags.has(tag))) return true;
+  if ((md?.tags ?? []).some((tag) => !targetTags.has(tag))) {
+    return { ok: false, field: "tags" };
+  }
   if (
-    md.importanceScore !== undefined &&
+    md?.importanceScore !== undefined &&
     md.importanceScore > (target.frontmatter.importance?.score ?? 0)
   ) {
-    return true;
+    return { ok: false, field: "importance" };
   }
+
+  // Finding B — provenance must not be upgraded by merging. A stronger
+  // incoming strength has no carrier (create stamps it on its own fact);
+  // a weaker one must RETAG the combined body to the least-trusted value,
+  // because `trust-score.ts` maps the memory-level tag straight to a
+  // provenance contribution and unverified new claims must not inherit
+  // `verified`'s maximum.
+  const incomingProvenanceRank = provenanceRank(md?.provenanceStrength);
+  const targetProvenanceRank = provenanceRank(target.frontmatter.provenance);
+  if (incomingProvenanceRank > targetProvenanceRank) {
+    return { ok: false, field: "provenance" };
+  }
+  const provenanceFloor =
+    incomingProvenanceRank < targetProvenanceRank
+      ? ((md?.provenanceStrength ?? "none") as "verified" | "unverified" | "none")
+      : undefined;
+
+  // Finding D — connector scope from the COLD-AWARE target snapshot. The
+  // lookup's hit enrichment reads `sourceConnector` hot-only
+  // (persistence-index.ts), so a cold-tier (or read-failed) target looks
+  // unscoped and an unscoped incoming fact slips past the lookup-side
+  // comparison. The re-read target carries the authoritative frontmatter;
+  // fail closed on any mismatch (both sides unscoped, or identical).
   if (
-    md.provenanceStrength !== undefined &&
-    (PROVENANCE_STRENGTH_RANK[md.provenanceStrength] ?? 0) >
-      (PROVENANCE_STRENGTH_RANK[target.frontmatter.provenance ?? "none"] ?? 0)
+    normalizeConnectorScope(target.frontmatter.sourceConnector) !==
+    normalizeConnectorScope(input.sourceConnector)
   ) {
-    return true;
+    return { ok: false, field: "sourceConnector" };
   }
-  if (md.toolScoped === true && target.frontmatter.toolScoped !== true) {
-    return true;
+
+  if (md?.toolScoped === true && target.frontmatter.toolScoped !== true) {
+    return { ok: false, field: "toolScoped" };
   }
-  // Finding A (subject): the write path stamps `subject`, and the merge
-  // patch has no carrier for it, so a fact whose EFFECTIVE subject differs
-  // from the target's must be created. An absent subject resolves to the
+  // Subject: the write path stamps `subject`, and the merge patch has no
+  // carrier for it, so a fact whose EFFECTIVE subject differs from the
+  // target's must be created. An absent subject resolves to the
   // least-privileged `user` — the same default the subject guard applies —
   // so classification being disabled never lets an unclassified fact merge
-  // into an `agent`-labeled target (finding C).
-  if ((md.subject ?? "user") !== (target.frontmatter.subject ?? "user")) {
-    return true;
+  // into an `agent`-labeled target.
+  if ((md?.subject ?? "user") !== (target.frontmatter.subject ?? "user")) {
+    return { ok: false, field: "subject" };
   }
-  // Finding A (origin): the merged body renders under the TARGET's origin at
-  // recall, so an UNTRUSTED incoming origin (per the deployment's
-  // untrustedOrigins) merging into a TRUSTED target would hand injected text
-  // unfenced, user-authority rendering — the escalation the recall fence
-  // exists to prevent. That merge is refused; the fact is created through the
-  // write that stamps its own origin, which the fence then judges on its own
-  // trust value. Mismatches that never reduce fencing (trusted into
-  // untrusted, or equal origins) still merge, so legacy unstamped targets
-  // (`origin` absent → `unknown`, the fence's least-privilege default) keep
-  // receiving user-origin facts as before.
+  // Origin: the merged body renders under the TARGET's origin at recall, so
+  // an UNTRUSTED incoming origin (per the deployment's untrustedOrigins)
+  // merging into a TRUSTED target would hand injected text unfenced,
+  // user-authority rendering — the escalation the recall fence exists to
+  // prevent. That merge is refused; the fact is created through the write
+  // that stamps its own origin. Mismatches that never reduce fencing still
+  // merge, so legacy unstamped targets (`origin` absent → `unknown`, the
+  // fence's least-privilege default) keep receiving user-origin facts.
   if (
-    isUntrustedOrigin(parseOriginClass(md.origin), untrustedOrigins) &&
+    isUntrustedOrigin(parseOriginClass(md?.origin), untrustedOrigins) &&
     !isUntrustedOrigin(parseOriginClass(target.frontmatter.origin), untrustedOrigins)
   ) {
-    return true;
+    return { ok: false, field: "origin" };
   }
-  return false;
+  // Finding C — faithfulness verdicts must be preserved. The create path
+  // stamps `faithfulnessFm` whenever the gate ran (shadow mode included: a
+  // contradicted fact gets the verdict without pending_review status). The
+  // merge patch cannot compose an honest verdict for a combined body, so a
+  // defined incoming verdict must equal the target's effective one —
+  // otherwise the create path runs and persists the verdict it computed.
+  // An undefined incoming verdict (gate off) leaves the target's own
+  // verdict describing the target's own claims, exactly as a create would.
+  const incomingFaithfulness = effectiveFaithfulness(md?.faithfulness?.verdict);
+  if (
+    incomingFaithfulness !== undefined &&
+    incomingFaithfulness !== effectiveFaithfulness(target.frontmatter.faithfulness?.verdict)
+  ) {
+    return { ok: false, field: "faithfulness" };
+  }
+  return provenanceFloor === undefined
+    ? { ok: true }
+    : { ok: true, provenanceFloor };
 }
 function versioningConfigFrom(deps: ExtractionPersistDeps): VersioningConfig {
   return {
@@ -350,13 +469,17 @@ export async function applySemanticMergeAtPersist(
     return { action: "created", reason: "target_changed" };
   }
 
-  // Item A — a merge forwards only content, category, sources, and connector.
-  // Extraction metadata the normal write would persist (structured attributes,
-  // entity refs, bi-temporal bounds, tags, importance, provenance strength)
-  // has no carrier in the merge patch, so when any of it is NEW relative to
-  // the target the merge is bypassed: the fact is created and the write path
-  // persists the metadata, instead of the merge silently discarding it.
-  if (mergeWouldLoseMetadata(target, options.incomingMetadata, deps.config.untrustedOrigins)) {
+  // Create-path parity gate (final round) — ONE place enumerates every
+  // trust/scope/verdict field the normal write stamps and bypasses the
+  // merge unless each is carried, preserved, or provably equal. See
+  // {@link createPathMergeParity} for the field classification.
+  const parity = createPathMergeParity({
+    target,
+    incoming: options.incomingMetadata,
+    sourceConnector: options.sourceConnector,
+    untrustedOrigins: deps.config.untrustedOrigins,
+  });
+  if (!parity.ok) {
     return { action: "created", reason: "metadata_unpreservable" };
   }
 
@@ -473,6 +596,12 @@ export async function applySemanticMergeAtPersist(
         reinforcement_count: frontmatter.reinforcement_count,
         sources: frontmatter.sources,
         ...(mergedFactHash !== undefined ? { contentHash: mergedFactHash } : {}),
+        // Finding B — a weaker incoming provenance retags the combined body
+        // to the least-trusted value instead of letting unverified new
+        // claims ride the target's stronger memory-level tag.
+        ...(parity.ok && parity.provenanceFloor !== undefined
+          ? { provenance: parity.provenanceFloor }
+          : {}),
       },
       { actor: "semantic-merge" },
     );
@@ -494,7 +623,12 @@ export async function applySemanticMergeAtPersist(
       // Item C — the merged body IS committed; repair the indexes before
       // reporting the degraded success.
       await repairIndexes();
-      return { action: "merged", targetId: decision.targetId, provenancePatched: false };
+      return {
+        action: "merged",
+        targetId: decision.targetId,
+        mergedContent: decision.mergedContent,
+        provenancePatched: false,
+      };
     }
     log.warn(
       `semantic-merge: update failed for ${decision.targetId}${contentCommitted ? " (content rolled back)" : ""} (snapshot ${versionId} holds the pre-merge state): ${detail}`,
@@ -508,7 +642,12 @@ export async function applySemanticMergeAtPersist(
   log.info(
     `semantic-merge: merged fact into ${decision.targetId} (version ${versionId})`,
   );
-  return { action: "merged", targetId: decision.targetId, provenancePatched: true };
+  return {
+    action: "merged",
+    targetId: decision.targetId,
+    mergedContent: decision.mergedContent,
+    provenancePatched: true,
+  };
 }
 
 /**

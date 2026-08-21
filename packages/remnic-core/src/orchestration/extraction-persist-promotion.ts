@@ -141,16 +141,104 @@ export async function flushDeferredFactHashOnFailure(
  * pre-merge body while the source serves the merged claims, so such a
  * target must bypass the merge and let the normal write run.
  *
- * Target resolution mirrors `backfillTemporalBoundsOnPromotionCopies`: ALL
- * known auto-promote target namespaces plus the shared namespace, NEVER
- * gated by current write authorization or the current confidence — a
- * promoted copy may exist from an earlier extraction made under older
- * settings (higher confidence, an authorized profile, shared-write
- * permission later revoked). A permission change must never make an
- * existing copy invisible to this scan. An unreadable promotion namespace
- * is treated as "copies may exist": the conservative create path runs
- * rather than risk cross-namespace divergence.
+ * Finding E (final round): the scan covers ALL resolved promotion layers —
+ * NEVER filtered by today's `autoPromote.targets` selection or by current
+ * write authorization. A copy created while a layer was listed stays linked
+ * by `sourceMemoryId` after the operator removes that layer; detection
+ * scans history while policy governs writes (the authorization-change
+ * lesson applied to selection). An unreadable promotion namespace is
+ * treated as "copies may exist": the conservative create path runs rather
+ * than risk cross-namespace divergence.
  */
+function promotionScanNamespaces(
+  config: PluginConfig,
+  scopeProfileWritePlan: ResolvedScopeProfilePlan | null | undefined,
+): string[] {
+  const namespaces: string[] = [];
+  if (scopeProfileWritePlan) {
+    for (const target of scopeProfileWritePlan.promotionTargets) {
+      if (target.target !== "serverShared" && target.namespace) {
+        namespaces.push(target.namespace);
+      }
+    }
+  }
+  namespaces.push(config.sharedNamespace);
+  return [...new Set(namespaces)];
+}
+
+/** One namespace's promoted-copy scan. `sourceIds: null` means unreadable. */
+interface PromotedCopyScanEntry {
+  dir: string;
+  sourceIds: Set<string> | null;
+}
+
+export interface BatchPromotedCopyProbe {
+  check: (sourceStorage: StorageManager, targetMemoryId: string) => Promise<boolean>;
+  /**
+   * Finding F (final round): drop the cached scans after this batch itself
+   * promoted a copy, so a later fact merging into the same target still sees
+   * the copy the batch just wrote.
+   */
+  invalidate: () => void;
+}
+
+/**
+ * Finding F (capacity regression): the guard scans every promotion
+ * namespace's full hot+cold corpus, and a multi-fact extraction calls it
+ * once per judge-approved fact — O(facts × namespaces × corpus). The probe
+ * scans each namespace ONCE per batch and reuses the result. The uncached
+ * per-call helper below shares this single implementation.
+ */
+export function createBatchPromotedCopyProbe(
+  config: PluginConfig,
+  getStorageRouter: () => {
+    storageFor: (namespace: string) => Promise<StorageManager>;
+  },
+  scopeProfileWritePlan: ResolvedScopeProfilePlan | null | undefined,
+): BatchPromotedCopyProbe {
+  const scans = new Map<string, Promise<PromotedCopyScanEntry>>();
+  const scanNamespace = (namespace: string): Promise<PromotedCopyScanEntry> => {
+    let entry = scans.get(namespace);
+    if (entry === undefined) {
+      entry = (async (): Promise<PromotedCopyScanEntry> => {
+        try {
+          const storage = await getStorageRouter().storageFor(namespace);
+          const active = await readActiveMemoriesBothTiers(storage);
+          return {
+            dir: storage.dir,
+            sourceIds: new Set(
+              active
+                .map((memory) => memory.frontmatter.sourceMemoryId)
+                .filter((id): id is string => typeof id === "string"),
+            ),
+          };
+        } catch (err) {
+          log.warn(
+            `semantic-merge guard: promotion namespace "${namespace}" unreadable; bypassing the merge (finding C): ${err instanceof Error ? err.message : String(err)}`,
+          );
+          return { dir: "", sourceIds: null };
+        }
+      })();
+      scans.set(namespace, entry);
+    }
+    return entry;
+  };
+  return {
+    check: async (sourceStorage, targetMemoryId) => {
+      for (const namespace of promotionScanNamespaces(config, scopeProfileWritePlan)) {
+        const entry = await scanNamespace(namespace);
+        if (entry.sourceIds === null) return true;
+        if (entry.dir === sourceStorage.dir) continue;
+        if (entry.sourceIds.has(targetMemoryId)) return true;
+      }
+      return false;
+    },
+    invalidate: () => {
+      scans.clear();
+    },
+  };
+}
+
 export async function mergeTargetHasPromotedCopies(args: {
   config: PluginConfig;
   getStorageRouter: () => {
@@ -160,34 +248,9 @@ export async function mergeTargetHasPromotedCopies(args: {
   sourceStorage: StorageManager;
   targetMemoryId: string;
 }): Promise<boolean> {
-  const namespaces: string[] = [];
-  if (args.scopeProfileWritePlan) {
-    const autoTargets = new Set(args.scopeProfileWritePlan.profile.autoPromote.targets);
-    for (const target of args.scopeProfileWritePlan.promotionTargets) {
-      if (
-        target.target !== "serverShared" &&
-        autoTargets.has(target.target) &&
-        target.namespace
-      ) {
-        namespaces.push(target.namespace);
-      }
-    }
-  }
-  namespaces.push(args.config.sharedNamespace);
-  for (const namespace of namespaces) {
-    try {
-      const storage = await args.getStorageRouter().storageFor(namespace);
-      if (storage.dir === args.sourceStorage.dir) continue;
-      const active = await readActiveMemoriesBothTiers(storage);
-      if (active.some((m) => m.frontmatter.sourceMemoryId === args.targetMemoryId)) {
-        return true;
-      }
-    } catch (err) {
-      log.warn(
-        `semantic-merge guard: promotion namespace "${namespace}" unreadable; bypassing the merge (finding C): ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return true;
-    }
-  }
-  return false;
+  return createBatchPromotedCopyProbe(
+    args.config,
+    args.getStorageRouter,
+    args.scopeProfileWritePlan,
+  ).check(args.sourceStorage, args.targetMemoryId);
 }
