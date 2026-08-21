@@ -8,6 +8,7 @@ import { parseConfig } from "../config.js";
 import { listVersions, type VersionTrigger } from "../page-versioning.js";
 import {
   applySemanticMergeAtPersist,
+  buildMergedTargetPromotionPayload,
   type ApplySemanticMergeOptions,
 } from "../orchestration/semantic-merge-persist.js";
 import type { ExtractionPersistDeps } from "../orchestration/extraction-persist-deps.js";
@@ -28,6 +29,7 @@ import type {
   ProvenanceSource,
   PluginConfig,
 } from "../types.js";
+import { confidenceTier } from "../types.js";
 import {
   DEFAULT_SEMANTIC_MERGE_CANDIDATES,
   DEFAULT_SEMANTIC_MERGE_MIN,
@@ -368,6 +370,8 @@ async function harness(
     targetSubject?: MemorySubject;
     /** Stamp `origin` on the target's frontmatter (finding A). */
     targetOrigin?: string;
+    /** Stamp `confidence`/`confidenceTier` on the target's frontmatter (final round A). */
+    targetConfidence?: number;
     /** Stamp `provenance` on the target's frontmatter (finding B). */
     targetProvenance?: "verified" | "unverified" | "none";
     /** Stamp `faithfulness` on the target's frontmatter (finding C). */
@@ -401,6 +405,12 @@ async function harness(
     ...(overrides.targetSubject ? { subject: overrides.targetSubject } : {}),
     ...(overrides.targetOrigin ? { origin: overrides.targetOrigin } : {}),
     ...(overrides.targetProvenance ? { provenance: overrides.targetProvenance } : {}),
+    ...(overrides.targetConfidence !== undefined
+      ? {
+          confidence: overrides.targetConfidence,
+          confidenceTier: confidenceTier(overrides.targetConfidence),
+        }
+      : {}),
     ...(overrides.targetFaithfulness ? { faithfulness: overrides.targetFaithfulness } : {}),
     ...(overrides.targetSourceConnector ? { sourceConnector: overrides.targetSourceConnector } : {}),
     sources: [TARGET_SOURCE],
@@ -1446,4 +1456,144 @@ test("applySemanticMergeAtPersist: an identical connector scope still merges (fi
     judgeCall: (options) => acceptingJudge(options),
   });
   assert.equal(outcome.action, "merged");
+});
+
+// ── Final round: min confidence across a merge; no promotion from an inactive target ──
+
+test("applySemanticMergeAtPersist: a lower incoming confidence downgrades the merged record (final round A)", async () => {
+  const h = await harness({ targetConfidence: 0.9 });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    incomingMetadata: { confidence: 0.5 },
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.equal(outcome.action, "merged");
+  // The create path would have stored the incoming fact at 0.5 ("inferred").
+  // The merged record must not keep 0.9/"explicit": lifecycle scoring,
+  // preference consolidation, and the merged-target promotion all read these
+  // fields off the committed record.
+  const patch = h.calls.frontmatterPatches[0]?.patch;
+  assert.equal(patch?.confidence, 0.5);
+  assert.equal(patch?.confidenceTier, "inferred");
+});
+
+test("applySemanticMergeAtPersist: the committed merged record carries the lower confidence (final round A)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-merge-conf-"));
+  const storage = new StorageManager(dir);
+  await storage.ensureDirectories();
+  const created = await storage.writeMemory("fact", EXISTING, {
+    source: "test",
+    confidence: 0.9,
+  });
+  const deps = {
+    config: parseConfig({
+      memoryDir: dir,
+      versioningEnabled: true,
+      semanticMerge: { enabled: true },
+    }),
+    getLocalLlm: () => null,
+    semanticDedupLookup: async () => [{ id: created.id, score: 0.85 }],
+    indexPersistedMemory: async () => {},
+  } as unknown as ExtractionPersistDeps;
+  const outcome = await applySemanticMergeAtPersist(deps, {
+    storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    incomingMetadata: { confidence: 0.5 },
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.equal(outcome.action, "merged");
+  const committed = await storage.getMemoryByIdIncludingArchived(created.id);
+  assert.equal(committed?.frontmatter.confidence, 0.5);
+  assert.equal(committed?.frontmatter.confidenceTier, "inferred");
+  // The committed record is the promotion payload's sole source, so the
+  // shared/profile copy stamps the downgraded value too.
+  const payload = await buildMergedTargetPromotionPayload(storage, {
+    targetId: created.id,
+    mergedContent: MERGED,
+  });
+  assert.ok(payload);
+  assert.equal(payload.confidence, 0.5);
+});
+
+test("applySemanticMergeAtPersist: an incoming confidence at or above the target's never rewrites confidence (final round A)", async () => {
+  const h = await harness({ targetConfidence: 0.9 });
+  const outcome = await applySemanticMergeAtPersist(h.deps, {
+    storage: h.storage,
+    content: INCOMING,
+    category: "fact",
+    sources: [INCOMING_SOURCE],
+    incomingMetadata: { confidence: 0.95 },
+    judgeCall: (options) => acceptingJudge(options),
+  });
+  assert.equal(outcome.action, "merged");
+  // min(0.95, 0.9) is the target's own 0.9 — already on the record, so the
+  // patch carries no confidence keys at all.
+  const patch = h.calls.frontmatterPatches[0]?.patch ?? {};
+  assert.equal("confidence" in patch, false);
+  assert.equal("confidenceTier" in patch, false);
+});
+
+test("applySemanticMergeAtPersist: an unreadable incoming confidence bypasses the merge (final round A)", async () => {
+  for (const bad of [Number.NaN, 1.5, -0.1]) {
+    const h = await harness({ targetConfidence: 0.9 });
+    const outcome = await applySemanticMergeAtPersist(h.deps, {
+      storage: h.storage,
+      content: INCOMING,
+      category: "fact",
+      incomingMetadata: { confidence: bad },
+      judgeCall: (options) => acceptingJudge(options),
+    });
+    assert.deepEqual(
+      outcome,
+      { action: "created", reason: "metadata_unpreservable" },
+      String(bad),
+    );
+    assert.deepEqual(h.calls.contentUpdates, [], String(bad));
+  }
+});
+
+test("buildMergedTargetPromotionPayload: never promotes from an inactive committed target (final round B)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-merge-inactive-"));
+  const storage = new StorageManager(dir);
+  await storage.ensureDirectories();
+  const created = await storage.writeMemory("fact", EXISTING, { source: "test" });
+  // The merge has committed — the target body IS the merged body. Then a
+  // concurrent lifecycle operation retires the target BEFORE the promotion
+  // reread: the multi-writer interleaving, simulated directly.
+  const snapshot = await storage.getMemoryByIdIncludingArchived(created.id);
+  assert.ok(snapshot);
+  assert.equal(await storage.updateMemoryIfUnchanged(snapshot, MERGED), true);
+  for (const status of ["superseded", "archived"] as const) {
+    assert.equal(
+      await storage.updateMemoryFrontmatter(created.id, { status }),
+      true,
+      status,
+    );
+    // Null, never a payload: the caller skips promoteMemoryToShared, so no
+    // new active copy resurrects what the lifecycle operation retired.
+    assert.equal(
+      await buildMergedTargetPromotionPayload(storage, {
+        targetId: created.id,
+        mergedContent: MERGED,
+      }),
+      null,
+      status,
+    );
+  }
+  // A still-active committed target still grounds the promotion.
+  assert.equal(
+    await storage.updateMemoryFrontmatter(created.id, { status: "active" }),
+    true,
+  );
+  const payload = await buildMergedTargetPromotionPayload(storage, {
+    targetId: created.id,
+    mergedContent: MERGED,
+  });
+  assert.ok(payload);
+  assert.equal(payload.content, MERGED);
 });

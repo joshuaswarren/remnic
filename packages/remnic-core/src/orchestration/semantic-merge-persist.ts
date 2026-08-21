@@ -39,6 +39,7 @@ import {
   type MergeCreateReason,
   type MergeJudgeRawVerdict,
 } from "../dedup/merge.js";
+import { confidenceTier } from "../types.js";
 import { REFUSED_MERGE_CATEGORIES } from "../dedup/merge-on-write.js";
 import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import {
@@ -77,7 +78,9 @@ export type SemanticMergeCreateReason =
  * unstamped legacy target promotes as `unknown`, the fence's
  * least-privilege default, and never falls back to the extraction's own
  * origin. Absent optional fields stay absent: a target without temporal
- * bounds or attributes promotes a copy without them.
+ * bounds or attributes promotes a copy without them. The record's
+ * confidence is the downgraded min(incoming, target) value the merge
+ * patch stamped (final round A), so the copy stamps that same value.
  */
 export interface MergedTargetPromotionPayload {
   category: string;
@@ -109,8 +112,11 @@ export interface MergedTargetPromotionPayload {
  * Re-read the committed merge target (cold-aware id lookup — the same
  * resolver the merge itself used) and derive the promotion payload solely
  * from that record. Returns null when the record can no longer ground the
- * promotion (deleted, or its body was replaced after the merge committed);
- * callers then skip the promotion fail-open — the merge itself stands.
+ * promotion (deleted, its body was replaced after the merge committed, or a
+ * concurrent lifecycle operation archived/superseded it between the merge
+ * commit and this reread — promoting from a retired record would resurrect
+ * content that operation retired, final round B); callers then skip the
+ * promotion fail-open — the merge itself stands.
  */
 export async function buildMergedTargetPromotionPayload(
   storage: StorageManager,
@@ -118,6 +124,14 @@ export async function buildMergedTargetPromotionPayload(
 ): Promise<MergedTargetPromotionPayload | null> {
   const committed = await storage.getMemoryByIdIncludingArchived(merge.targetId);
   if (!committed || committed.content !== merge.mergedContent) return null;
+  // Final round (B): the including-archived lookup still returns a retired
+  // record, and body equality alone cannot tell a concurrent archive or
+  // supersede apart from a live target. Recompute the status from the
+  // committed record itself and refuse to promote unless it is still
+  // active.
+  if (inferMemoryStatus(committed.frontmatter, committed.path) !== "active") {
+    return null;
+  }
   const fm = committed.frontmatter;
   return {
     category: fm.category,
@@ -205,6 +219,15 @@ export interface ApplySemanticMergeOptions {
     /** Importance score the write path would stamp. */
     importanceScore?: number;
     /**
+     * Confidence the write path would stamp (final round A). The merged
+     * record keeps the LOWER side — min(incoming, target), with the tier
+     * that score maps to — matching what the create path would have stored
+     * for the incoming fact alone; an incoming value at or above the
+     * target's needs no rewrite. An unreadable value (non-finite or outside
+     * [0, 1]) bypasses the merge rather than guessing a floor.
+     */
+    confidence?: number;
+    /**
      * Provenance strength the write path would stamp.
      */
     provenanceStrength?: "verified" | "unverified" | "none";
@@ -285,9 +308,12 @@ const PROVENANCE_STRENGTH_RANK: Record<string, number> = {
  *    faithfulness verdict (effective, finding C).
  *  - monotone-preservable (bypass when the incoming side exceeds what the
  *    target retains): tags (target must be a superset), importance score
- *    (incoming may not exceed), provenance strength (incoming may not be
- *    stronger — and a weaker incoming downgrades the target so the merged
- *    body never carries trust its new claims did not earn, finding B).
+ *    (incoming may not exceed), confidence score (incoming may not exceed;
+ *    a lower incoming DOWNGRADES the record to min(incoming, target) with
+ *    the tier that score maps to — final round A), provenance strength
+ *    (incoming may not be stronger — and a weaker incoming downgrades the
+ *    target so the merged body never carries trust its new claims did not
+ *    earn, finding B).
  *  - bypass-on-presence (no carrier exists at all): structuredAttributes,
  *    bi-temporal bounds.
  *  - escalation-refused: origin (an untrusted incoming origin may never
@@ -296,7 +322,12 @@ const PROVENANCE_STRENGTH_RANK: Record<string, number> = {
  *    tool-scoped claims; a scoped target keeps its stricter flag).
  */
 export type CreatePathMergeParity =
-  | { ok: true; provenanceFloor?: "verified" | "unverified" | "none" }
+  | {
+      ok: true;
+      provenanceFloor?: "verified" | "unverified" | "none";
+      /** Lower incoming confidence the patch must stamp (final round A). */
+      confidenceFloor?: number;
+    }
   | { ok: false; field: string };
 
 /** Effective provenance rank; absent reads as "none" (legacy contract, types.ts). */
@@ -362,6 +393,30 @@ export function createPathMergeParity(input: {
       ? ((md?.provenanceStrength ?? "none") as "verified" | "unverified" | "none")
       : undefined;
 
+  // Final round (A) — confidence must not be upgraded by merging either.
+  // Lifecycle scoring, preference consolidation, and the merged-target
+  // promotion all read the record's confidence, so a low-confidence
+  // extraction merging into a higher-confidence target must DOWNGRADE the
+  // record to min(incoming, target) — the value the create path would have
+  // stored for the incoming fact alone. A value at or above the target's
+  // needs no rewrite (the min IS the target's); an unreadable one bypasses
+  // the merge rather than guessing a floor. A legacy target with no
+  // confidence reads as the write path's 0.8 default (parseMemoryFrontmatter).
+  if (md?.confidence !== undefined) {
+    if (
+      typeof md.confidence !== "number" ||
+      !Number.isFinite(md.confidence) ||
+      md.confidence < 0 ||
+      md.confidence > 1
+    ) {
+      return { ok: false, field: "confidence" };
+    }
+  }
+  const confidenceFloor =
+    md?.confidence !== undefined && md.confidence < (target.frontmatter.confidence ?? 0.8)
+      ? md.confidence
+      : undefined;
+
   // Finding D — connector scope from the COLD-AWARE target snapshot. The
   // lookup's hit enrichment reads `sourceConnector` hot-only
   // (persistence-index.ts), so a cold-tier (or read-failed) target looks
@@ -416,9 +471,11 @@ export function createPathMergeParity(input: {
   ) {
     return { ok: false, field: "faithfulness" };
   }
-  return provenanceFloor === undefined
-    ? { ok: true }
-    : { ok: true, provenanceFloor };
+  return {
+    ok: true,
+    ...(provenanceFloor !== undefined ? { provenanceFloor } : {}),
+    ...(confidenceFloor !== undefined ? { confidenceFloor } : {}),
+  };
 }
 function versioningConfigFrom(deps: ExtractionPersistDeps): VersioningConfig {
   return {
@@ -688,6 +745,17 @@ export async function applySemanticMergeAtPersist(
         // claims ride the target's stronger memory-level tag.
         ...(parity.ok && parity.provenanceFloor !== undefined
           ? { provenance: parity.provenanceFloor }
+          : {}),
+        // Final round (A) — min(incoming, target) confidence: the merged
+        // record keeps the lower score, and the tier that score maps to,
+        // so lifecycle scoring and the committed-record promotion payload
+        // can never treat the combined body as higher-confidence than the
+        // create path would have stored for the incoming fact alone.
+        ...(parity.ok && parity.confidenceFloor !== undefined
+          ? {
+              confidence: parity.confidenceFloor,
+              confidenceTier: confidenceTier(parity.confidenceFloor),
+            }
           : {}),
       },
       { actor: "semantic-merge" },

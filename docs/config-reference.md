@@ -1228,7 +1228,12 @@ into a create-or-update decision:
    fact-content hash index, reindex, and, when verbatim artifacts are enabled
    and the fact's category and confidence qualify, store the incoming
    extraction's text as a verbatim artifact anchored to the merged target —
-   the same anchor the normal write would have stored.
+   the same anchor the normal write would have stored. A lower incoming
+   confidence downgrades the merged record to `min(incoming, target)`
+   (restamped with the tier that score maps to; an unreadable value
+   bypasses the merge), so a low-confidence extraction can never leave a
+   merged record — or a copy promoted from it — scoring above what the
+   create path would have stored for that fact alone.
 4. A merge carries only content, category, sources, and connector. A fact
    that also carries extraction metadata the merge cannot preserve —
    structured attributes, an entity ref, bi-temporal bounds, tags the target
@@ -1266,10 +1271,13 @@ into a create-or-update decision:
    the source its `sourceMemoryId` names (an unstamped legacy target promotes
    as `unknown`, the fence's least-privilege default; a target whose temporal
    bounds or attributes the incoming fact omits keeps them on the copy).
-   Promotion eligibility gates on the committed target's own confidence. A
-   target that cannot be re-read after the merge commits (deleted, or its body
-   replaced by another writer) skips the promotion fail-open — the merge
-   itself stands. The
+   Promotion eligibility gates on the committed target's own confidence —
+   the downgraded `min(incoming, target)` value where a lower incoming
+   confidence merged in. A target that cannot ground the promotion after
+   the merge commits (deleted, its body replaced by another writer, or
+   archived/superseded by a concurrent lifecycle operation — promoting
+   from a retired record would resurrect it) skips the promotion
+   fail-open — the merge itself stands. The
    merge lookup also honors the batch's embedding-outage short circuit (its
    own lookup failures arm it for the remaining facts) and the novelty
    gate's `add` decision: when either bypasses semantic dedup for a fact, no
