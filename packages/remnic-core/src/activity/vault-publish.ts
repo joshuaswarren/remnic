@@ -84,12 +84,38 @@ function applyHeadingRegion(fileText: string, name: string, content: string): Ap
     }
   }
 
-  const { body, eol } = ownedBody(fileText, content);
+  const { body, eol } = ownedBody(fileText, demoteOwnedHeadings(content, hit.level));
   const prefix =
     hit.next === fileText.length && !fileText.endsWith("\n") && !fileText.endsWith("\r")
       ? `${fileText}${eol}`
       : fileText.slice(0, hit.next);
   return { ok: true, text: `${prefix}${body}${eol}${fileText.slice(sectionEnd)}` };
+}
+
+/**
+ * Re-level every ATX heading in the owned content so it sits strictly
+ * below the owning heading (issue #1985 review). A published recap that
+ * itself starts with `#`/`##` headings would otherwise terminate its own
+ * managed region on the NEXT publish — the new copy lands before the old
+ * heading and each republish leaves a stale duplicate behind. New level is
+ * owning + original, clamped at six. A level-6 owning heading has no
+ * deeper ATX level, so its owned headings flatten to bold text — still
+ * rendered, never a terminator. Headings inside fenced or indented code
+ * are content, not structure, and pass through untouched.
+ */
+function demoteOwnedHeadings(content: string, owningLevel: number): string {
+  const rows = fileLines(content);
+  let out = "";
+  let cursor = 0;
+  for (const row of rows) {
+    const heading = row.fenced ? null : parseAtxHeading(row.line);
+    if (heading === null) continue;
+    const level = Math.min(owningLevel + heading.level, 6);
+    const replacement = level > owningLevel ? `${"#".repeat(level)} ${heading.text}` : `**${heading.text}**`;
+    out += content.slice(cursor, row.start) + replacement;
+    cursor = row.start + row.line.length;
+  }
+  return out + content.slice(cursor);
 }
 
 function ownedBody(fileText: string, content: string): { body: string; eol: string } {

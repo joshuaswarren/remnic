@@ -429,6 +429,57 @@ test("a fenced heading does not terminate the owned section early", () => {
   assert.ok(after.includes("human paragraph"), "content after the real heading survives");
 });
 
+test("heading strategy republish is idempotent when the recap has its own headings", () => {
+  const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
+  const notePath = path.join(vault, `${DATE}.md`);
+  // The persisted journal recap begins with `# Journal` and carries `##`
+  // sections. Untouched, those headings terminate the managed region on
+  // the next publish, so every republish leaves the previous copy behind.
+  const note = [
+    "# Daily",
+    "",
+    "## Timeline",
+    "",
+    "stale body",
+    "",
+    "## Notes",
+    "",
+    "human paragraph",
+    "",
+  ].join("\n");
+  writeFileSync(notePath, note, "utf8");
+  const recap = [
+    "# Journal — 2026-08-21 (UTC)",
+    "",
+    "## Categories",
+    "",
+    "- code review: 42m",
+  ].join("\n");
+  const publish = () =>
+    publishVaultNote({
+      vaultPath: vault,
+      notePathTemplate: "{yyyy}-{MM}-{dd}.md",
+      date: DATE,
+      strategy: "heading",
+      sections: [{ name: "Timeline", content: recap }],
+    });
+
+  publish();
+  const first = readFileSync(notePath, "utf8");
+  const second = publish();
+  const afterSecond = readFileSync(notePath, "utf8");
+  const third = publish();
+
+  assert.equal(second.results[0]?.outcome, "unchanged");
+  assert.equal(third.results[0]?.outcome, "unchanged");
+  assert.equal(afterSecond, first, "second publish is byte-identical to the first");
+  assert.equal(readFileSync(notePath, "utf8"), first, "third publish is byte-identical too");
+  assert.equal((first.match(/Journal — 2026-08-21/g) ?? []).length, 1, "exactly one copy of the recap heading");
+  assert.ok(first.includes("### Journal — 2026-08-21 (UTC)"), "recap heading is demoted under the owning heading");
+  assert.ok(first.includes("#### Categories"), "recap sections are demoted one level deeper");
+  assert.ok(first.includes("## Notes\n\nhuman paragraph"), "the next real section survives");
+});
+
 test("createMissingNotes creates the confined nested parent hierarchy for a new note", () => {
   const vault = mkdtempSync(path.join(tmpdir(), "remnic-vault-publisher-"));
   writeFileSync(path.join(vault, "daily.md"), "# {yyyy}-{MM}-{dd}\n", "utf8");
