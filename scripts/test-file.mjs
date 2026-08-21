@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { isAnySourceNewerThan } from "./build-staleness.mjs";
 import { appendNodeOption } from "./root-test-runner-env.mjs";
-import { buildTestSpawnPlan, resolveTsxCliPath } from "./test-spawn-plan.mjs";
+import { buildTestSpawnPlan } from "./test-spawn-plan.mjs";
 import { shouldBuildBench } from "./test-file-deps.mjs";
 import {
   loadNativeManifest,
@@ -126,13 +126,19 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
 }
 
 const workspaceBinDir = join(repoRoot, "node_modules", ".bin");
-const spawnPlan = buildTestSpawnPlan({
-  platform: process.platform,
-  execPath: process.execPath,
-  tsxCliPath: process.platform === "win32" ? resolveTsxCliPath(repoRoot) : undefined,
-  runnerArgs,
-  files: filesToRun,
-});
+let spawnPlan;
+try {
+  spawnPlan = buildTestSpawnPlan({
+    platform: process.platform,
+    execPath: process.execPath,
+    repoRoot,
+    runnerArgs,
+    files: filesToRun,
+  });
+} catch (error) {
+  console.error(`[test-file] ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+}
 const result = await new Promise((resolve) => {
   testProcess = spawn(spawnPlan.command, spawnPlan.args, {
     cwd: repoRoot,

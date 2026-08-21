@@ -450,6 +450,9 @@ jobs:
               const failures = [];
               let evaluatedCount = 0;
               let hasBlockers = false;
+              // Any current-head activity from a configured reviewer, whatever
+              // the verdict. The waiver below is only for total absence.
+              let hasReviewerActivity = false;
 
               for (const pr of pullRequestNumbers) {
                 try {
@@ -525,6 +528,13 @@ jobs:
                     result.present.map(p => `${p.alias}(${p.kind}:${p.state})`).join(', ') || 'none'
                   }`,
                 );
+
+                if ((result.participated ?? []).length > 0) {
+                  hasReviewerActivity = true;
+                  core.info(
+                    `PR #${pr} current-head reviewer participation (any verdict): ${result.participated.join(', ')}`,
+                  );
+                }
 
                 if (result.blockers.length > 0) {
                   core.info(
@@ -622,7 +632,7 @@ jobs:
                 }
               }
 
-              return { failures, evaluatedCount, hasBlockers };
+              return { failures, evaluatedCount, hasBlockers, hasReviewerActivity };
             }
 
             // Poll instead of a fixed sleep: pass the moment every required
@@ -693,7 +703,7 @@ jobs:
                   return;
                 }
               }
-              const { failures, evaluatedCount, hasBlockers } = await evaluatePullRequests();
+              const { failures, evaluatedCount, hasBlockers, hasReviewerActivity } = await evaluatePullRequests();
 
               if (evaluatedCount === 0) {
                 core.setFailed('AI review gate did not evaluate any non-draft pull requests.');
@@ -705,29 +715,50 @@ jobs:
               }
 
               const elapsedMs = Date.now() - startedAt;
-              const onlyMissingReviews = !hasBlockers && failures.every((failure) =>
+              // `!hasReviewerActivity` is the premise of the waiver: it fires only
+              // when NO configured reviewer produced current-head activity of any
+              // kind. Without it, a bot posting a bare COMMENTED review (real
+              // participation, no positive phrase, no formal CHANGES_REQUESTED)
+              // also reached the waiver and turned reviewer output into success.
+              const onlyMissingReviews = !hasBlockers && !hasReviewerActivity && failures.every((failure) =>
                 String(failure.reason || '').startsWith('Missing required positive AI review groups'),
               );
               if (onlyMissingReviews && elapsedMs + POLL_INTERVAL_MS > POLL_DEADLINE_MS) {
                 core.notice(
-                  `AI reviewers never posted on this head after ${Math.round(elapsedMs / 1000)}s. Exiting neutral so checks and test shards remain the merge bar.`,
+                  `AI reviewers never posted on this head after ${Math.round(elapsedMs / 1000)}s. Concluding success with an explicit reason so checks and test shards remain the merge bar.`,
                 );
                 try {
+                  // Deliberately `success`, not `neutral`. The ruleset requires
+                  // this context and evaluates the LATEST run per name, and it
+                  // does not treat `neutral` as passing — so the previous
+                  // `neutral` left every such PR blocked and the only way
+                  // forward was an admin merge, which bypasses ALL required
+                  // checks at once. Concluding here keeps `checks`, the test
+                  // shards, and the thread guard enforced while unblocking the
+                  // one case this branch has already decided is not a product
+                  // defect: no required reviewer posted anything at all.
+                  //
+                  // A negative verdict is unaffected: `hasBlockers` short-
+                  // circuits this path, so CHANGES_REQUESTED still fails below.
                   await github.rest.checks.create({
                     owner,
                     repo,
                     name: 'ai-reviewers',
                     head_sha: triggerHeadSha || context.sha,
                     status: 'completed',
-                    conclusion: 'neutral',
+                    conclusion: 'success',
                     output: {
-                      title: 'Reviewers never posted',
-                      summary: `Required AI review bots did not post on this head before the poll deadline. This is not a product defect. checks and test shards remain the merge bar.`,
+                      title: 'Reviewers never posted — gate waived',
+                      summary:
+                        'No required AI review bot posted on this head before the poll deadline, so there is no verdict to act on. ' +
+                        'This is a reviewer-availability outcome, not a product defect, and it is recorded as success only to avoid ' +
+                        'forcing an admin merge that would bypass every other required check. `checks`, the test shards, and ' +
+                        '`unresolved-review-threads` remain the merge bar. A posted CHANGES_REQUESTED still fails this gate.',
                     },
                   });
                 } catch (error) {
                   core.notice(
-                    `Could not post a neutral ai-reviewers check (${error?.message ?? error}); exiting without failing the job.`,
+                    `Could not post the waived ai-reviewers check (${error?.message ?? error}); exiting without failing the job.`,
                   );
                 }
                 return;

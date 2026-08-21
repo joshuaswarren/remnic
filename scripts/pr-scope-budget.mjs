@@ -111,6 +111,23 @@ export function loadThresholds(thresholdsPath) {
 }
 
 /**
+ * Articles that, in front of a PAST-PARTICIPLE keyword, form a noun phrase
+ * rather than a claim: "follow-up to the closed #2448" names history, so
+ * counting it inflated the multi-issue signal on a single-issue PR.
+ *
+ * Only articles qualify, and the list stays this short on purpose. A
+ * demonstrative or copula is the grammatical SUBJECT of an ordinary claim —
+ * "This closed #123", "That fixed #7" — and suppressing those undercounts a
+ * genuinely multi-issue PR, letting it evade this gate. Undercounting is the
+ * worse failure of the two, so anything that is not clearly a noun phrase
+ * counts as a claim.
+ */
+const DESCRIPTIVE_ARTICLES = new Set(["the", "a", "an"]);
+
+/** Past-participle spellings of the closing keywords ("closed", not "closes"). */
+const PAST_PARTICIPLE_KEYWORDS = new Set(["fixed", "closed", "resolved"]);
+
+/**
  * All #<n> issue references in free text, deduped (issue #2067). Non-rendered
  * content is dropped first — HTML comments (template/generated <!-- ... -->
  * blocks) and fenced + inline code spans — so a hidden `<!-- related #2 -->`
@@ -127,10 +144,24 @@ export function extractIssueRefs(text) {
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/`[^`]*`/g, " ");
   for (const match of prose.matchAll(
-    /\b(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s+#(\d+)((?:\s*(?:,|and)\s*#\d+)*)/gi,
+    /(\w+\s+)?\b(fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s+#(\d+)((?:\s*(?:,|and)\s*#\d+)*)/gi,
   )) {
-    issues.add(Number(match[1]));
-    for (const extra of match[2].matchAll(/#(\d+)/g)) {
+    // An ARTICLE in front of a PAST-PARTICIPLE keyword is a noun phrase, not a
+    // claim: "follow-up to the closed #2448" names history, while "Closes
+    // #2448" claims the issue. Counting the former inflated the multi-issue
+    // signal on a single-issue PR (issue #2774), whose body cited the
+    // predecessor issue the file's own docstring also references.
+    //
+    // Both narrowings below are load-bearing, and both came from review:
+    // requiring past tense keeps "This fixes #123" countable, and requiring an
+    // article (not any determiner) keeps "This closed #123" countable. Either
+    // over-broad form UNDERCOUNTS a real multi-issue PR and lets it evade this
+    // gate — worse than the false positive being fixed.
+    const lead = (match[1] ?? "").trim().toLowerCase();
+    const keyword = match[2].toLowerCase();
+    if (DESCRIPTIVE_ARTICLES.has(lead) && PAST_PARTICIPLE_KEYWORDS.has(keyword)) continue;
+    issues.add(Number(match[3]));
+    for (const extra of match[4].matchAll(/#(\d+)/g)) {
       issues.add(Number(extra[1]));
     }
   }

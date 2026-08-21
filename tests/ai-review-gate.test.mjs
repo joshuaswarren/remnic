@@ -68,10 +68,19 @@ test("AI review gate self-supersession neutralization is best-effort for fork PR
     /try\s*\{[\s\S]*?await github\.rest\.checks\.create\([\s\S]*?\}\s*catch\s*\(\s*\w+\s*\)\s*\{[\s\S]*?core\.notice\([\s\S]*?\}/,
   );
   // Scope to the supersession block: its catch handler must never fail the job.
-  const supersession = workflow.slice(
-    workflow.indexOf("if (triggerHeadSha)"),
-    workflow.indexOf("const { failures, evaluatedCount, hasBlockers }"),
+  // Anchor on a PREFIX of the destructuring, not its full field list: pinning
+  // the exact list made `indexOf` return -1 the moment a field was added, and
+  // `slice(start, -1)` then silently spanned to EOF and matched an unrelated
+  // `core.setFailed(`. Assert both anchors resolve so a future rename fails
+  // loudly here instead of turning this into a vacuous or misleading check.
+  const supersessionStart = workflow.indexOf("if (triggerHeadSha)");
+  const supersessionEnd = workflow.indexOf("const { failures, evaluatedCount");
+  assert.ok(supersessionStart >= 0, "supersession block start anchor not found");
+  assert.ok(
+    supersessionEnd > supersessionStart,
+    "supersession block end anchor not found after the start anchor",
   );
+  const supersession = workflow.slice(supersessionStart, supersessionEnd);
   assert.match(supersession, /catch\s*\(\s*\w+\s*\)\s*\{[\s\S]*?core\.notice\(/);
   assert.doesNotMatch(supersession, /core\.setFailed\(/);
 });
@@ -857,9 +866,49 @@ test("missing-review-only failures are distinct from blocker failures", () => {
   assert.equal(isMissingReviewOnlyFailure(blocked), false);
 });
 
-test("AI review gate workflow exits neutral when bots never post", () => {
+test("AI review gate workflow waives the gate with success when bots never post", () => {
   const workflow = readFileSync(".github/workflows/ai-review-gate.yml", "utf8");
   assert.match(workflow, /AI reviewers never posted/);
   assert.match(workflow, /onlyMissingReviews/);
-  assert.match(workflow, /conclusion:\s*'neutral'/);
+  // `success`, not `neutral`: the ruleset requires this context and does not
+  // accept neutral, so the old conclusion left such PRs blocked and forced an
+  // admin merge that bypasses every other required check.
+  assert.match(workflow, /conclusion:\s*'success'/);
+  assert.match(workflow, /Reviewers never posted — gate waived/);
+  // The waiver must be predicated on real absence, not merely on a missing
+  // positive verdict.
+  assert.match(workflow, /!hasReviewerActivity/);
+});
+
+test("participation is reported for any current-head reviewer activity, not just positives", () => {
+  // A bare COMMENTED review with no recognized verdict phrase is participation:
+  // waiving the gate on it would convert real reviewer output into success.
+  const commented = evaluateAiReviewGate({
+    groups: parseReviewerGroups("cursor"),
+    headSha,
+    headCommittedAt,
+    reviews: [{ user: { login: "cursor" }, state: "COMMENTED", commit_id: headSha }],
+  });
+  assert.equal(commented.ok, false, "a bare COMMENTED review is not a positive verdict");
+  assert.deepEqual(commented.blockers, [], "and it is not a blocker either");
+  assert.deepEqual(commented.participated, ["cursor"], "but it IS participation");
+
+  // A verdict-less comment counts too.
+  const chatter = evaluateAiReviewGate({
+    groups: parseReviewerGroups("cursor"),
+    headSha,
+    headCommittedAt,
+    reviews: [],
+    issueComments: [{ user: { login: "cursor" }, body: `reviewing ${headSha} now`, created_at: new Date().toISOString() }],
+  });
+  assert.deepEqual(chatter.participated, ["cursor"]);
+
+  // True silence reports no participation — the only case the waiver covers.
+  const silent = evaluateAiReviewGate({
+    groups: parseReviewerGroups("cursor"),
+    headSha,
+    headCommittedAt,
+    reviews: [],
+  });
+  assert.deepEqual(silent.participated, []);
 });
